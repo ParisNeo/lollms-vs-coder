@@ -86,5 +86,10 @@ export interface ToolDefinition {
         description: string;
         required: boolean;
     }[];
+    /**
+     * A string showing the LLM exactly how to use this tool in Discussion Mode.
+     * Example: <lollms_tool name="execute_command" params='{"command": "ls"}' />
+     */
+    manualTagFormat?: string;
     execute(params: any, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }>;
-}
+    }

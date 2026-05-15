@@ -3,7 +3,7 @@ import { ToolDefinition, ToolExecutionEnv } from '../tool';
 
 export const removeFilesFromContextTool: ToolDefinition = {
     name: "remove_files_from_context",
-    description: "Removes specific files from the AI's context to save tokens, setting them back to 'tree-only' state. Use this if your context is getting full and you no longer need to see the content of these files.",
+    description: "Ejects files from the AI's 'vision' (context window) to improve attention and save tokens. Mandatory use: Call this as soon as a file is no longer actively being modified or analyzed to keep the reasoning sharp and high-density.",
     isAgentic: true,
     isDefault: true,
     parameters: [

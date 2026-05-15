@@ -36,6 +36,12 @@ export const imageAssetPlugin: TagPlugin = {
         const lastSlash = outputFile.lastIndexOf('/');
         const folder = lastSlash !== -1 ? outputFile.substring(0, lastSlash) : '.';
         const filename = lastSlash !== -1 ? outputFile.substring(lastSlash + 1) : outputFile;
+        
+        // --- DYNAMIC DIMENSIONS ---
+        // Look for <width> and <height> tags if provided by the AI
+        const targetWidth = extract('width') || "1024";
+        const targetHeight = extract('height') || "1024";
+
         // Use a predictable ID based on message and a hash of the prompt to avoid collisions
         const blockId = `img-edit-${context.messageId}`;
 
@@ -49,7 +55,9 @@ export const imageAssetPlugin: TagPlugin = {
 
         const sourcesHtml = inputFiles.map((p, idx) => `
             <div class="staged-image-card" id="src-thumb-${context.messageId}-${idx}" 
-                 style="width: 60px; height: 60px; flex-shrink: 0;" title="${p}">
+                 style="width: 60px; height: 60px; flex-shrink: 0; ${idx === 0 ? 'border: 2px solid var(--vscode-charts-blue);' : ''}" 
+                 title="${idx === 0 ? 'PRIMARY SUBJECT' : 'STYLE REFERENCE'}: ${p}">
+                ${idx === 0 ? '<div style="position:absolute; top:-5px; left:-5px; background:var(--vscode-charts-blue); color:white; font-size:8px; padding:1px 4px; border-radius:4px; z-index:10;">SUBJECT</div>' : ''}
                 <div class="spinner"></div>
             </div>`).join('');
 
@@ -68,7 +76,25 @@ export const imageAssetPlugin: TagPlugin = {
                     </button>
                 </div>
             </div>
-            <div style="display:flex; gap:10px; padding: 8px 12px; background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-widget-border);">
+            <div style="display:grid; grid-template-columns: 1fr 1fr 60px 60px; gap:8px; padding: 8px 12px; background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-widget-border);">
+                <div>
+                    <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">FOLDER</label>
+                    <input type="text" class="asset-folder-input" value="${folder}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px;">
+                </div>
+                <div>
+                    <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">FILENAME</label>
+                    <input type="text" class="asset-name-input" value="${filename}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px; font-weight:bold;">
+                </div>
+                <div>
+                    <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">WIDTH</label>
+                    <input type="number" class="asset-width-input" value="${targetWidth}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px;">
+                </div>
+                <div>
+                    <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">HEIGHT</label>
+                    <input type="number" class="asset-height-input" value="${targetHeight}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px;">
+                </div>
+            </div>
+            <div class="generation-body" style="padding: 12px;">
                 <div style="flex:1;">
                     <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">TARGET FOLDER</label>
                     <input type="text" class="asset-folder-input" value="${folder}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px;">
@@ -100,10 +126,12 @@ export const imageAssetPlugin: TagPlugin = {
             (btn as HTMLButtonElement).onclick = () => {
                 const d = (btn as HTMLElement).dataset;
                 const block = btn.closest('.asset-editor-block') as HTMLElement;
-                
-                // Get possibly edited paths from UI inputs
+
                 const folder = (block.querySelector('.asset-folder-input') as HTMLInputElement).value;
                 const name = (block.querySelector('.asset-name-input') as HTMLInputElement).value;
+                const width = (block.querySelector('.asset-width-input') as HTMLInputElement).value;
+                const height = (block.querySelector('.asset-height-input') as HTMLInputElement).value;
+
                 const finalOutputPath = (folder === '.' || !folder) ? name : `${folder}/${name}`;
 
                 btn.innerHTML = '<div class="spinner"></div> Processing...';
@@ -116,7 +144,8 @@ export const imageAssetPlugin: TagPlugin = {
                     params: {
                         paths: JSON.parse(d.inputPaths || '[]'),
                         prompt: decodeURIComponent(d.prompt || ''),
-                        output_path: finalOutputPath
+                        output_path: finalOutputPath,
+                        output_size: `${width}x${height}`
                     }
                 });
             };

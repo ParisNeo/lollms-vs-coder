@@ -66,9 +66,9 @@ export class ContextManager {
   private _tokenCache: {
     tree: number,
     system: number,
-    history: number,
+    history: Record<string, number>, // DiscussionID -> Tokens
     files: Record<string, { hash: string, tokens: number }>
-  } = { tree: 0, system: 0, history: 0, files: {} };
+  } = { tree: 0, system: 0, history: {}, files: {} };
 
   // --- GLOBAL CACHE STATE ---
   private _cachedTreeString: string | null = null;
@@ -76,6 +76,7 @@ export class ContextManager {
   private _fileTreeObject: any = null;
   private _fileContentCache!: Map<string, { content: string, state: ContextState }>;
   private _cachedVisibleFiles: string[] | null = null;
+  private static PROJECT_TOOLS_KEY = 'lollms_project_active_tools';
 
   constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
     this.context = context;
@@ -661,8 +662,19 @@ export class ContextManager {
         let filesInThisFolderCount = 0;
 
         // Use the contextFiles list (73 files in your case) and filter by ownership
+        const totalFiles = contextFiles.length;
+        let filesProcessed = 0;
+
         for (const fileEntry of contextFiles) {
           if (signal?.aborted) throw new Error("Operation cancelled");
+
+          filesProcessed++;
+          if (options?.onProgress) {
+              const pct = Math.round((filesProcessed / totalFiles) * 100);
+              // Report both percentage and current filename for the "Live" feel
+              options.onProgress(pct);
+              // We'll use a custom message or the status text to show the filename
+          }
 
           // CRITICAL: Use the existing resolver to handle namespacing/roots correctly
           const resolution = await this.resolveWorkspaceFromPath(fileEntry.path);
@@ -1621,54 +1633,41 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
 
     const roleName = isBuilder ? "Sovereign Project Builder" : "Lead Project Librarian";
     const primaryGoal = isBuilder 
-        ? "autonomously implement the user's request by discovering the codebase, applying surgical patches, and verifying the result."
+        ? "implement the user's request by discovering the codebase, writing high-quality code, and delegating all execution to the human user."
         : "optimize the project context for the User by selecting the right files.";
+
+    const builderSafetyMandate = isBuilder ? `
+    ### 🛑 THE ZERO-EXECUTION MANDATE (CRITICAL)
+    1. **NO AUTONOMOUS EXECUTION**: You are FORBIDDEN from running commands, scripts, or terminals yourself.
+    2. **DELEGATE TO USER**: If you need to run a test, install a library, or check a result, you MUST use the \`delegate_to_user\` tool. Provide the user with the exact command to copy-paste.
+    3. **WRITE & VERIFY**: Your writing tools (\`edit_code\`, \`generate_code\`) automatically trigger a syntax audit. You do not need to 'run' code to verify it exists.
+    ` : "";
 
     const pruningMandate = isEconomy ? `
     ### 🧹 SELECTIVE PRUNING MANDATE (TOKEN ECONOMY)
-    Before adding new files, evaluate the '[Currently Selected]' list provided below.
-    1. **IDENTIFY CRUFT**: Determine which files currently in context are irrelevant to the user's specific request.
-    2. **PRUNE FIRST**: Your very first action should be \`remove_files\` to eject only those irrelevant files. 
-    3. **KEEP ESSENTIALS**: Do NOT remove files that are clearly relevant to the task. This saves tokens and redundant search steps.
-    ` : "";
-
+    You are responsible for the health of the AI's Attention Map. A cluttered context leads to logic errors.
+    
+    **STRICT RULES:**
+    1. **PRUNE BY DEFAULT**: In every turn, look at the '[Currently Selected]' list. If a file is not DIRECTLY necessary for the next technical step, you MUST use \`remove_files\` immediately to eject it.
+    2. **SURGICAL SELECTION**: Do not "clump" files. Only 'possess' (add to context) the 2-3 files you are actively analyzing or modifying. 
+    3. **TEMPORARY PEEKING**: If you only need to check a definition or a small snippet in a dependency, use \`read_file\` (peek) instead of adding it permanently to context.
+    4. **ZERO-CRUFT POLICY**: Once a file has been analyzed and its discovery recorded via \`record_discovery\`, remove it from the context to make room for implementation details.
+    `:"";
     const fullContext = await this.getContextContent({ includeTree: true, modelName: model, signal });
 
-    const systemPrompt = `You are the **${roleName}**.
-    Your goal is to ${primaryGoal}
-    ${pruningMandate}
-    ${isBuilder ? `
-    ### 🦾 WRITE AUTHORITY: ACTIVE
-    You are a Builder. You are authorized and EXPECTED to use implementation tools like 'edit_code' and 'generate_code' to fulfill the objective directly.
-    ` : `
-    ### 🛑 READ-ONLY RESTRICTION
-    You are a Librarian. You select files and document strategy, but you are FORBIDDEN from using 'edit_code' or 'generate_code'.
-    `}
+    // Use the PlanParser to generate the specialized system identity
+    const planParser = (this as any).agentManager?.planParser;
+    const allowedTools = (this as any).toolManager?.getEnabledTools() || [];
+    
+    let systemPrompt = "";
+    if (isBuilder) {
+        systemPrompt = await planParser.getBuilderSystemPrompt(allowedTools, discussion?.importedSkills);
+    } else {
+        systemPrompt = await planParser.getLibrarianSystemPrompt(allowedTools, discussion?.importedSkills);
+    }
 
-    ### 📜 DISCOVERY PROTOCOL (TREE-FIRST MANDATE)
-    1. **USE YOUR EYES**: The 'PROJECT WORLD STATE' tree lists every visible file. 
-    2. **DIRECT ADDITION**: If the file you need is in the tree, call \`add_files\` immediately with the exact path.
-    3. **WHEN TO SEARCH**: Use search tools ONLY if a folder is marked \`(Collapsed)\` or you need to grep for a string.
-    4. **NO HALLUCINATION**: If a file is not in the tree and search returns nothing, it doesn't exist.
-    5. **STATUS MARKERS**: Files marked \`[C]\` or \`[D]\` are already loaded — do not add them again.
-    6. **NO REDUNDANCY**: Do not \`read_file\` a file already marked \`[C]\`.
-
-    **TOOLS:**
-    1. \`add_briefing_entry(id, info)\`: Record a technical discovery or strategy step.
-    2. \`amend_briefing_entry(id, info)\`: Update a previous discovery.
-    3. \`add_files(files=[{"path", "mode"}])\`: Add files (mode: "included" or "signatures").
-    4. \`remove_files(paths=[])\`: Prune unnecessary files to save tokens.
-    5. \`read_file(path, start_line, end_line)\`: Peek at a file.
-    6. \`find_files_by_name(pattern)\`: Search file index (e.g. "*.vue").
-    7. \`grep_search(pattern, path)\`: Search text inside files.
-    ${isBuilder ? `8. edit_code(file_path, instructions): Apply Aider-style surgical patches.
-    9. execute_command(command): Run tests or verify syntax.` : ''}
-    10. \`done()\`: Finish mission.
-
-**OUTPUT**: JSON only.
-\`\`\`json
-{ "scratchpad": "Thinking...", "tool": "tool_name", "params": { ... } }
-\`\`\``;
+    // Append the dynamic mandates (Pruning, Discovery)
+    systemPrompt += `\n\n${pruningMandate}\n\n**RESPONSE FORMAT**: You MUST output only a valid JSON object.`;
 
     // --- 🧠 LIBRARIAN BOOT-UP ---
     const possessedContent = fullContext.selectedFilesContent;
@@ -1803,7 +1802,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
 
       chatHistory.push({
         role: 'user',
-        content: `${loadStatus}\n\n### 🛠️ ACTUAL PROJECT STATE\n${currentData.projectTree}\n\n### 🧠 YOUR NOTES\n${cumulativeBrain || "No observations yet."}\n\n[Currently Selected]: ${JSON.stringify(Array.from(selectedFiles))}\n\n**INSTRUCTION**: If context is sufficient, call \`done\`. If dependency missing, call \`add_files\`. If full, call \`remove_files\`.`,
+        content: `${loadStatus}\n\n### 🛠️ ACTUAL PROJECT STATE\n${currentData.projectTree}\n\n### 📄 ACCESSIBLE FILE CONTENTS\n${currentData.selectedFilesContent || "No files loaded."}\n\n[Currently Selected]: ${JSON.stringify(Array.from(selectedFiles))}\n\n**LIBRARIAN TASK**: \n1. Review the files listed in '[Currently Selected]'. \n2. Use \`remove_files\` for any file not essential to the goal: "${userPrompt}".\n3. Use \`add_files\` for missing intelligence.\n4. If the context is perfectly optimized and the goal is reachable, call \`done\`.`,
         skipInPrompt: true
       });
 
@@ -1843,8 +1842,10 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
 
         if (toolCall?.scratchpad) {
           const newEntry = toolCall.scratchpad.trim();
-          cumulativeBrain += `\n\n**Insight**: ${newEntry}`;
-          actionLog.push(`🧠 **Insight**: ${newEntry}`);
+          // Builder-specific scratchpad enhancement
+          const entryPrefix = isBuilder ? "🛠️ Builder Logic" : "🧠 Librarian Insight";
+          cumulativeBrain += `\n\n**${entryPrefix}**: ${newEntry}`;
+          actionLog.push(`${isBuilder ? '🛠️' : '🧠'} ${newEntry}`);
         }
         if (toolCall?.briefing) technicalBriefing = toolCall.briefing.trim();
 
@@ -1878,6 +1879,51 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
           chatHistory.push({ role: 'system', content: "SUCCESS: Briefing entry updated." });
           renderUpdate("Updating Knowledge Base...", false, step);
           continue;
+        }
+
+        // --- NEW: DELEGATE TO USER SUPPORT ---
+        if (toolName === 'delegate_to_user') {
+            actionLog.push(`👤 **Delegating to User**: ${params.title}`);
+            renderUpdate(`Waiting for User...`, false, step);
+
+            const tool = (this as any).toolManager?.getTool('delegate_to_user');
+            if (tool) {
+                const env = { agentManager: (this as any).agentManager, workspaceRoot: folders[0], contextManager: this };
+                const result = await tool.execute(params, env, signal);
+                chatHistory.push({ role: 'system', content: `USER DELEGATION RESULT:\n${result.output}` });
+                actionLog.push(`✅ User responded to: ${params.title}`);
+                continue;
+            } else {
+                chatHistory.push({ role: 'system', content: "Error: delegate_to_user tool logic missing in host." });
+                continue;
+            }
+        }
+
+        // --- NEW: GENERATE CODE SUPPORT ---
+        if (toolName === 'generate_code' && isBuilder) {
+            actionLog.push(`🛠️ **Generating File**: ${params.file_path}`);
+            renderUpdate(`Manifesting ${params.file_path}...`, false, step);
+
+            try {
+                const fullUri = vscode.Uri.joinPath(folders[0].uri, params.file_path);
+                const parentDir = vscode.Uri.joinPath(fullUri, '..');
+                await vscode.workspace.fs.createDirectory(parentDir);
+
+                // Use the specialist logic: Ask LLM for the full file content
+                const prompt = `You are a specialist manifesting the file: ${params.file_path}\n\nBriefing: ${params.technical_briefing}\n\nInstructions: ${params.instructions}`;
+                const fileContentRaw = await this.lollmsAPI.sendChat([{ role: 'system', content: prompt }], null, signal, model);
+                const fileContent = stripThinkingTags(fileContentRaw).replace(/```\w*\n?/, '').replace(/\n?```$/, '').trim();
+
+                await vscode.workspace.fs.writeFile(fullUri, Buffer.from(fileContent, 'utf8'));
+                this.refreshFileInCache(fullUri);
+
+                chatHistory.push({ role: 'system', content: `SUCCESS: File '${params.file_path}' created and written to disk.` });
+                actionLog.push(`✅ Successfully created: ${params.file_path}`);
+                continue;
+            } catch (e: any) {
+                chatHistory.push({ role: 'system', content: `ERROR: Failed to generate file: ${e.message}` });
+                continue;
+            }
         }
 
         stepsTaken++;
@@ -1935,6 +1981,23 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
             actionLog.push(`➖ **Context Pruned**: Removed ${removed.length} files.`);
             renderUpdate("Cleaning context...", false, step);
           }
+        } else if (toolName === 'edit_code' && isBuilder) {
+            actionLog.push(`📝 **Patching File**: ${params.file_path}`);
+            renderUpdate(`Editing ${params.file_path}...`, false, step);
+            const tool = (this as any).toolManager?.getTool('edit_code');
+            if (tool) {
+                const env = { 
+                    agentManager: (this as any).agentManager, 
+                    workspaceRoot: folders[0], 
+                    contextManager: this,
+                    lollmsApi: this.lollmsAPI,
+                    currentPlan: { objective: rephrasedObjective, tasks: [] } // Mock plan for tool compatibility
+                };
+                const result = await tool.execute(params, env, signal);
+                chatHistory.push({ role: 'system', content: `EDIT_CODE RESULT:\n${result.output}` });
+                actionLog.push(`✅ Applied patch to: ${params.file_path}`);
+                continue;
+            }
         } else if (toolName === 'read_file') {
           let pathArg = params.path || params.file;
           if (pathArg && !allFiles.includes(pathArg)) {
@@ -2108,6 +2171,22 @@ Example:
   public async removeSkillFromProject(skillId: string) {
     const current = await this.getActiveProjectSkills();
     await this.context.workspaceState.update(ContextManager.PROJECT_SKILLS_KEY, current.filter(id => id !== skillId));
+  }
+
+  public async getActiveProjectTools(): Promise<string[]> {
+    return this.context.workspaceState.get<string[]>(ContextManager.PROJECT_TOOLS_KEY, []);
+  }
+
+  public async addToolToProject(toolName: string) {
+    const current = await this.getActiveProjectTools();
+    if (!current.includes(toolName)) {
+      await this.context.workspaceState.update(ContextManager.PROJECT_TOOLS_KEY, [...current, toolName]);
+    }
+  }
+
+  public async removeToolFromProject(toolName: string) {
+    const current = await this.getActiveProjectTools();
+    await this.context.workspaceState.update(ContextManager.PROJECT_TOOLS_KEY, current.filter(id => id !== toolName));
   }
 
   // ─────────────────────────────────────────────────────────────

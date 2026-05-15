@@ -11,6 +11,7 @@ export const executeCommandTool: ToolDefinition = {
         { name: "shell", type: "string", description: "Optional: 'powershell', 'cmd', or 'bash'. Defaults to system default.", required: false },
         { name: "timeout_s", type: "number", description: "Optional: Execution timeout in seconds. Default is 900s (15 minutes). Use higher values for long tasks like downloading or training.", required: false }
         ],
+    manualTagFormat: `<lollms_tool name="execute_command" params='{"command": "ls", "shell": "bash"}' />`,
         async execute(params: { command: string, shell?: string, timeout_s?: number }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         if (!params.command) {
             return { success: false, output: "Error: 'command' parameter is required." };
@@ -18,7 +19,15 @@ export const executeCommandTool: ToolDefinition = {
         if (!env.agentManager) {
             return { success: false, output: "Error: Agent capabilities not available." };
         }
-        
+
+        const isBuilder = env.agentManager.getCurrentDiscussion()?.capabilities?.workerType === 'builder';
+        if (isBuilder) {
+            return { 
+                success: false, 
+                output: "🛑 SECURITY ERROR: The 'Builder' agent is forbidden from executing shell commands autonomously. You MUST use 'delegate_to_user' to ask the human to run this command for you." 
+            };
+        }
+
         const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : 900000; // 15 minute default
 
         // --- 🛡️ SOVEREIGN SECURITY AUDIT ---

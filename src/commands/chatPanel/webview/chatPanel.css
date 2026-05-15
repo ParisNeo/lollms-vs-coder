@@ -325,9 +325,18 @@ body {
 
 /* Hide standard chat elements for technical events */
 .message.technical-event .message-avatar,
-.message.technical-event .message-header,
-.message.technical-event .message-actions {
+.message.technical-event .message-header {
     display: none !important;
+}
+
+/* Allow actions to be seen if the user hovers over a technical event */
+.message.technical-event .message-actions {
+    opacity: 0;
+}
+.message.technical-event:hover .message-actions {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
 }
 
 .message.technical-event .message-body {
@@ -444,20 +453,83 @@ body.agent-mode-active .chat-container {
     top: 0;
     z-index: 5000;
     width: 100%;
-    pointer-events: none; /* Let clicks pass through empty areas */
+    /* Allow HUD header to stay on top, but don't block clicks to messages below it */
+    pointer-events: none; 
+}
+
+/* Ensure the visible bubble remains interactive */
+#fused-context-dashboard {
+    pointer-events: auto !important;
 }
 
 .context-message.agent-mode-bubble,
 .context-message.standard-mode-bubble {
-    pointer-events: auto; /* Enable clicks on the actual bubble */
-    margin: 8px 12px !important;
+    pointer-events: auto;
+    margin: 0 12px 8px 12px !important;
     border-radius: 8px !important;
     background-color: var(--vscode-editor-background) !important;
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
     border: 1px solid var(--vscode-widget-border) !important;
-    box-shadow: 0 8px 20px rgba(0,0,0,0.4) !important;
-    overflow: hidden;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.5) !important;
+    overflow: hidden !important; /* Contain the scrollable body */
+}
+
+/* 🧬 HUD INTERNAL SCROLL SANCTUARY */
+.persistent-hud .message-body {
+    max-height: 65vh; /* Allow more vertical space for context management */
+    overflow-y: auto;
+    overflow-x: hidden;
+    scroll-behavior: smooth;
+    background-color: var(--vscode-editor-background);
+    padding: 12px !important;
+    border-bottom-left-radius: 8px;
+    border-bottom-right-radius: 8px;
+    border-top: 1px solid var(--vscode-widget-border);
+    /* Improve scrollbar visibility in dark mode */
+    scrollbar-width: thin;
+    scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+.persistent-hud .message-body::-webkit-scrollbar {
+    width: 8px;
+}
+
+.persistent-hud .message-body::-webkit-scrollbar-thumb {
+    background: var(--vscode-scrollbarSlider-background);
+    border-radius: 4px;
+}
+
+.persistent-hud .message-body::-webkit-scrollbar-thumb:hover {
+    background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+/* Custom Scrollbar for HUD */
+.persistent-hud .message-body::-webkit-scrollbar {
+    width: 10px;
+}
+
+.persistent-hud .message-body::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.persistent-hud .message-body::-webkit-scrollbar-thumb {
+    background-color: var(--vscode-scrollbarSlider-background);
+    border: 2px solid var(--vscode-editor-background);
+    border-radius: 5px;
+}
+
+.persistent-hud .message-body::-webkit-scrollbar-thumb:hover {
+    background-color: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+/* Custom scrollbar for HUD to keep it thin */
+.persistent-hud .message-body::-webkit-scrollbar {
+    width: 4px;
+}
+.persistent-hud .message-body::-webkit-scrollbar-thumb {
+    background: var(--vscode-scrollbarSlider-background);
+    border-radius: 2px;
 }
 
 .messages {
@@ -600,6 +672,11 @@ body.agent-mode-active .chat-container {
     pointer-events: auto;
 }
 
+.hud-scroll-container{
+    max-height: 200px;
+    overflow-y: auto;
+    min-height: 0;
+}
 /* Ensure code blocks and other content don't have their own sticky/overflow that traps the HUD */
 .message-content {
     overflow: visible !important;
@@ -640,9 +717,9 @@ body.agent-mode-active .chat-container {
 /* Consolidated message-actions to ensure it stays in front of code toolbars */
 .message-actions { 
     position: absolute; 
-    top: 6px; 
-    right: 6px; 
-    z-index: 10001; /* Higher than .code-summary (500) and other UI elements */
+    top: 10px; 
+    right: 10px; 
+    z-index: 20000; /* Force to very top */
     display: flex; 
     gap: 4px; 
     background-color: var(--vscode-editor-background); 
@@ -725,24 +802,60 @@ body.agent-mode-active .chat-container {
 details[open] > .code-summary::before { transform: rotate(0deg); }
 details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .summary-lang-label { 
-    font-weight: 600; 
+    font-weight: 800; 
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
+    margin-right: auto; /* Push actions to the right */
 }
+
+.lang-badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    color: #ffffff !important;
+    text-transform: uppercase;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.5px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+    background-color: var(--vscode-badge-background); /* Fallback */
+}
+
+/* 🎨 LANGUAGE COLOR MAP */
+.lang-badge[data-lang="python"]     { background: linear-gradient(135deg, #3776ab, #ffd343); color: #fff !important; }
+.lang-badge[data-lang="javascript"] { background: #f7df1e; color: #000 !important; }
+.lang-badge[data-lang="typescript"] { background: #3178c6; }
+.lang-badge[data-lang="html"]       { background: #e34f26; }
+.lang-badge[data-lang="vue"]        { background: #42b883; }
+.lang-badge[data-lang="css"]        { background: #1572b6; }
+.lang-badge[data-lang="rust"]       { background: #dea584; color: #000 !important; }
+.lang-badge[data-lang="cpp"], .lang-badge[data-lang="c"] { background: #00599c; }
+.lang-badge[data-lang="csharp"]     { background: #178600; }
+.lang-badge[data-lang="java"]       { background: #007396; }
+.lang-badge[data-lang="godot"], .lang-badge[data-lang="gdscript"] { background: #478cbf; }
+.lang-badge[data-lang="bash"], .lang-badge[data-lang="powershell"] { background: #4eaa25; }
+.lang-badge[data-lang="json"]       { background: #292929; border: 1px solid #555; }
+.lang-badge[data-lang="sql"]        { background: #e38c00; }
+
+/* Apply a subtle glow to the code block border matching the language */
+.code-collapsible:has(.lang-badge[data-lang="python"])     { border-color: #3776ab66 !important; }
+.code-collapsible:has(.lang-badge[data-lang="javascript"]) { border-color: #f7df1e66 !important; }
+.code-collapsible:has(.lang-badge[data-lang="vue"])        { border-color: #42b88366 !important; }
+.code-collapsible:has(.lang-badge[data-lang="rust"])       { border-color: #dea58466 !important; }
 
 .path-editor-input {
     background: transparent;
     border: 1px solid transparent;
-    color: var(--vscode-textLink-foreground);
-    font-family: var(--vscode-font-family);
-    font-size: 12px;
-    padding: 1px 4px;
+    color: var(--vscode-foreground);
+    opacity: 0.8;
+    font-family: var(--vscode-editor-font-family);
+    font-size: 11px;
+    padding: 2px 6px;
     border-radius: 3px;
     width: auto;
-    min-width: 250px;
-    flex-grow: 1;
-    cursor: edit;
+    min-width: 300px;
+    cursor: text;
     transition: all 0.2s;
 }
 
@@ -4483,6 +4596,24 @@ details[open] > summary .folder-handle::before {
 
 .file-search-item.already-in-context:hover {
     background-color: transparent !important;
+}
+
+.tool-picker-item {
+    padding: 12px;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 6px;
+    transition: all 0.1s ease;
+}
+
+.tool-picker-item:hover {
+    border-color: var(--vscode-focusBorder);
+    background: var(--vscode-list-hoverBackground);
+}
+
+.tool-picker-item.selected {
+    border-left: 4px solid var(--vscode-charts-orange);
+    background: rgba(214, 122, 13, 0.05);
 }
 
 #usage-list-container tr:hover {

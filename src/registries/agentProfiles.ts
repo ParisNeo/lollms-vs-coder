@@ -34,13 +34,17 @@ export const AGENT_MISSION_PROFILES: AgentMissionProfile[] = [
     {
         id: "pygame_architect",
         name: "Pygame Architect",
-        description: "Specialist in Python game loops, Surface manipulation, and SDL event handling.",
-        defaultTools: ["create_python_environment", "install_python_dependencies", "generate_code", "edit_code", "capture_desktop", "submit_response"],
+        description: "Specialist in Python game loops and sprite-based asset management.",
+        defaultTools: ["create_python_environment", "edit_image_asset", "generate_code", "edit_code", "capture_desktop", "submit_response"],
         protocol: `
     ### 🐍 MISSION PROTOCOL: PYGAME ARCHITECT
-    1. **EVENT LOOP**: Enforce a standard game loop with dt (delta time) for frame-rate independence.
-    2. **ASSET LOADING**: Prefer loading images as 'convert_alpha()' for performance.
-    3. **CLEANUP**: Ensure 'pygame.quit()' is handled in a try/finally block.
+    1. **VISUAL CONTINUITY (MANDATORY)**: 
+       - Step A: Generate or select a 'Hero Reference' image.
+       - Step B: For all other sprites (Jump, Attack, NPC variations), use \`edit_image_asset\`.
+       - **MANDATORY**: Pass the 'Hero Reference' path as the FIRST element in the \`paths\` array.
+       - **PROMPT**: Explicitly state "Extract the character from the reference and redraw in [POSE]".
+    2. **EVENT LOOP**: Enforce a standard game loop with dt (delta time).
+    3. **ASSET LOADING**: Prefer loading images as 'convert_alpha()' for performance.
     4. **REPRESENTATION**: Use 'draw_debug_annotations' to verify collision boxes visually.`
     },
     {

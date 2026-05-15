@@ -2,6 +2,10 @@ import * as vscode from 'vscode';
 import { ToolDefinition } from "./tool";
 import { allTools } from './builtins';
 import { McpClient } from '../mcpClient';
+import { generateImageTool } from './builtins/generateImage';
+import { editImageAssetTool } from './builtins/editImageAsset';
+import { searchKeywordsTool } from './builtins/searchKeywords';
+import { updateFunctionTool } from './builtins/updateFunction';
 
 export class ToolManager {
     private tools: Map<string, ToolDefinition> = new Map();
@@ -18,6 +22,7 @@ export class ToolManager {
         this.setDefaultEnabledTools();
     }
 
+    
     private loadTools() {
         allTools.forEach(tool => {
             this.tools.set(tool.name, tool);

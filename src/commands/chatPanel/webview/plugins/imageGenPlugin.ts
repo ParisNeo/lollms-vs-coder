@@ -29,16 +29,28 @@ export const imageGenPlugin: TagPlugin = {
                     </button>
                 </div>
             </div>
-            <div style="display:flex; gap:10px; padding: 8px 12px; background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-widget-border);">
-                <div style="flex:1;">
+            <div style="display:grid; grid-template-columns: 1fr 1fr 60px 60px; gap:8px; padding: 8px 12px; background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-widget-border);">
+                <div>
                     <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">FOLDER</label>
                     <input type="text" class="asset-folder-input" value="${folder}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px;">
                 </div>
-                <div style="flex:2;">
+                <div>
                     <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">FILENAME</label>
                     <input type="text" class="asset-name-input" value="${filename}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px; font-weight:bold;">
                 </div>
-            </div>
+                <div>
+                    <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">WIDTH</label>
+                    <input type="number" class="asset-width-input" value="${attrs.width || '1024'}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px;">
+                </div>
+                <div>
+                    <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">HEIGHT</label>
+                    <input type="number" class="asset-height-input" value="${attrs.height || '1024'}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px;">
+                </div>
+                <div style="grid-column: span 2;">
+                    <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">CHROMA KEY</label>
+                    <input type="text" class="asset-key-input" value="${attrs.chroma_key || 'pure green #00FF00'}" style="width:100%; background:transparent; border:none; color:var(--vscode-charts-green); font-size:11px; font-weight:bold;">
+                </div>
+                </div>
             <div class="generation-body" style="padding: 12px;">
                 <p style="font-size:11px; opacity:0.8;"><strong>Prompt:</strong> ${prompt}</p>
                 <div id="gallery-${blockId}" class="image-results-gallery" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-top: 10px;"></div>
@@ -51,15 +63,23 @@ export const imageGenPlugin: TagPlugin = {
                 const block = btn.closest('.asset-gen-block') as HTMLElement;
                 const folder = (block.querySelector('.asset-folder-input') as HTMLInputElement).value;
                 const name = (block.querySelector('.asset-name-input') as HTMLInputElement).value;
+                const width = (block.querySelector('.asset-width-input') as HTMLInputElement).value;
+                const height = (block.querySelector('.asset-height-input') as HTMLInputElement).value;
+
                 const finalPath = (folder === '.' || !folder) ? name : `${folder}/${name}`;
 
                 btn.innerHTML = '<div class="spinner"></div> Generating...';
                 btn.disabled = true;
 
+                const chromaKey = (block.querySelector('.asset-key-input') as HTMLInputElement).value;
+
                 context.vscode.postMessage({
                     command: 'generateImage',
                     prompt: decodeURIComponent((btn as HTMLElement).dataset.prompt || ''),
                     filePath: finalPath,
+                    width: width,
+                    height: height,
+                    chroma_key: chromaKey,
                     buttonId: btn.id
                 });
             };

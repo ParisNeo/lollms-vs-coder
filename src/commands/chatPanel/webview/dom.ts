@@ -81,6 +81,7 @@ export interface DiscussionCapabilities {
     autoApply: boolean;
     autoContextMode: boolean;
     autoSkillMode: boolean;
+    autoToolMode: boolean;
     disableProjectContext: boolean;
     ttftTimeout: number;
     interTokenTimeout: number;
@@ -108,7 +109,7 @@ export const state: {
     matrixStats: Record<string, { tree: number, files: number }>, // Per-folder token stats
     usageData: { project: any[], extra: any[] },
     currentUsageSort: { column: 'name' | 'tokens', direction: 'asc' | 'desc' },
-    lastContextData: { context: string, files: string[], skills: any[], diagrams: any[], briefing: string, skillIds?: string[] } | null,
+    lastContextData: { context: string, files: string[], skills: any[], tools: any[], diagrams: any[], briefing: string, skillIds?: string[] } | null,
     capabilities: DiscussionCapabilities | null,
     currentBranch: string,
     lastCommitHash: string,

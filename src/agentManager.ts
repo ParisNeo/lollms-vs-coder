@@ -203,7 +203,12 @@ Keep it strictly technical and extremely concise.`
     
     public getEnabledTools(): ToolDefinition[] {
         const policies = this.currentDiscussion?.capabilities?.toolPolicies || {};
-        const activeIds = (this.sessionState as any).activeToolIds as Set<string> | undefined;
+        const isBuilderMode = this.currentDiscussion?.capabilities?.workerType === 'builder';
+
+        // --- HUD-BASED TOOL FILTERING ---
+        // If the user has equipped specific tools in the HUD, we prioritize that list.
+        const equippedTools = this.currentDiscussion?.importedTools || [];
+        const hasEquippedList = equippedTools.length > 0;
 
         const attachments = this.currentDiscussion?.messages
             .filter(m => (m as any).attachmentData).length || 0;
@@ -217,13 +222,19 @@ Keep it strictly technical and extremely concise.`
             // --- CIRCUIT BREAKER: HIDE BROKEN TOOLS ---
             if (this.sessionState.blacklistedTools.has(t.name)) return false;
 
-            // --- HIDE read_discussion_file IF NO ATTACHMENTS ---
-            if (t.name === 'read_discussion_file' && attachments === 0) return false;
-
-            // If the agent is in an autonomous loop, only tools in the "equipped" active list are available.
-            if (this.isActive && activeIds && !activeIds.has(t.name)) {
+            // --- HUD INVENTORY FILTER ---
+            // If the user manually equipped tools, only show those.
+            // Exception: 'submit_response' and 'record_milestone' are infrastructure and always present.
+            const isInfra = ['submit_response', 'record_milestone', 'record_discovery'].includes(t.name);
+            if (hasEquippedList && !isInfra && !equippedTools.includes(t.name)) {
                 return false;
             }
+
+            // --- BUILDER SAFETY LOCKDOWN ---
+            if (isBuilderMode && t.permissionGroup === 'shell_execution') return false;
+
+            // --- HIDE read_discussion_file IF NO ATTACHMENTS ---
+            if (t.name === 'read_discussion_file' && attachments === 0) return false;
             // Determine default if not set
             let policy = policies[t.name];
             if (!policy) {
@@ -270,8 +281,8 @@ Keep it strictly technical and extremely concise.`
             // We only stop the active loop.
             if (this.currentPlan) {
                 this.currentPlan.status = 'stale';
-                this.displayAndSavePlan(this.currentPlan);
-            }
+                this.displayPlan(this.currentPlan);
+                }
         }
         this.ui.updateAgentMode(this.isActive);
     }
@@ -291,7 +302,7 @@ Keep it strictly technical and extremely concise.`
         };
     }
 
-    private async displayAndSavePlan(plan: Plan | null) {
+    public async displayPlan(plan: Plan | null) {
         this.currentPlan = plan;
         if (this.currentDiscussion && !this.currentDiscussion.id.startsWith('temp-') && !this.currentDiscussion.id.startsWith('remote-')) {
             this.currentDiscussion.plan = plan;
@@ -1059,7 +1070,17 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 await this.displayAndSavePlan(this.currentPlan);
                 }
 
-                // 5. UI Emission: Standard Agent Mode (Individual cards)
+                // 5. MODE-AWARE EXECUTION
+                const isBuilder = this.currentDiscussion?.capabilities?.workerType === 'builder';
+
+                if (isBuilder) {
+                    // BUILDER: Direct execution, no chat cards for middle steps
+                    const res = await this.runSingleTask(task, signal, model);
+                    this.completedActionsHistory.push(`[BUILDER ACTION] ${task.action}: ${res.output.substring(0, 100)}...`);
+                    continue; 
+                }
+
+                // DISCUSSION: UI Emission (Interactive cards)
                 await this.ui.addMessageToDiscussion({
                     id: `agent_task_${task.id}`,
                     role: 'assistant',
@@ -1730,7 +1751,12 @@ Please provide a clear, concise final response to the user summarizing the outco
             } else if (isStuck) {
                 result = {
                     success: false,
-                    output: `🛑 SYSTEM OVERRIDE: You have failed to use the '${task.action}' tool successfully 3 times in a row. You are stuck in a loop. You MUST step back, use 'read_file' to gather more context, use 'execute_command' to run a diagnostic, or ask the user for help using 'submit_response'. DO NOT use '${task.action}' again this turn.`
+                    output: `🛑 LOOP DETECTED: You are repeating tool '${task.action}' with identical logic. 
+                    
+                    STRICT MANDATE:
+                    1. Use 'peek_at_context' to see what you actually know.
+                    2. Use 'read_file_relations' to find a DIFFERENT file.
+                    3. Do NOT try to read ${targetFile} again. I have already provided its content to you.`
                 };
             } else if (redundantPath) {
                 result = {

@@ -47,6 +47,8 @@ import { promoteMemoryToSkillTool } from './promoteMemoryToSkill';
 import { extractYoutubeTranscriptTool } from './extractYoutubeTranscript';
 import { summarizeTextTool } from './summarizeText';
 import { reportPlanStatusTool } from './reportPlanStatus';
+import { peekAtContextTool } from './peekAtContext';
+import { readFileRelationsTool } from './readFileRelations';
 import { searchWikipediaTool } from './searchWikipedia';
 import { searchStackOverflowTool } from './searchStackOverflow';
 import { testWebPageTool } from './testWebPage';
@@ -62,6 +64,7 @@ import { webConsolidateTool } from './webConsolidate';
 import { editImageAssetTool } from './editImageAsset';
 import { buildGamePersonaTool } from './buildGamePersona';
 import { buildGameAssetsTool } from './buildGameAssets';
+import { buildAssetBundleTool } from './buildAssetBundle';
 import { requestFormInputTool } from './requestFormInput';
 import { drawDebugAnnotationsTool } from './drawDebugAnnotations';
 import { manageExtensionTool } from './manageExtension';
@@ -97,6 +100,7 @@ export const allTools: ToolDefinition[] = [
     editImageAssetTool,
     buildGamePersonaTool,
     buildGameAssetsTool,
+    buildAssetBundleTool,
     drawDebugAnnotationsTool,
     requestFormInputTool,
     manageToolsTool,
@@ -152,6 +156,8 @@ export const allTools: ToolDefinition[] = [
     readMemoryCategoryTool, // NEW
     promoteMemoryToSkillTool, 
     reportPlanStatusTool,
+    peekAtContextTool,
+    readFileRelationsTool,
     {
         name: "search_deep_memory",
         description: "Retrieves the full content of a memory engram from deep storage using its ID found in the TIER 2 index.",

@@ -125,7 +125,24 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 {
                     const container = document.getElementById(message.targetId);
                     if (container) {
-                        container.innerHTML = `<img src="${message.uri}" style="max-width: 100%; border-radius: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); cursor: zoom-in;" onclick="window.open('${message.uri}')" />`;
+                        const img = new Image();
+                        img.onload = () => {
+                            // Automatically update the parent block's Width/Height inputs
+                            const block = container.closest('.generation-block');
+                            if (block) {
+                                const wInp = block.querySelector('.asset-width-input') as HTMLInputElement;
+                                const hInp = block.querySelector('.asset-height-input') as HTMLInputElement;
+                                if (wInp) wInp.value = img.naturalWidth.toString();
+                                if (hInp) hInp.value = img.naturalHeight.toString();
+                            }
+                        };
+                        img.src = message.uri;
+                        container.innerHTML = '';
+                        container.appendChild(img);
+                        img.style.cssText = "max-width: 100%; border-radius: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); cursor: zoom-in;";
+                        img.onclick = () => {
+                            import('./ui.js').then(ui => ui.openImageZoom(message.uri));
+                        };
 
                         // If this was an auto-resolution for a generation block, mark the button as done
                         if (message.targetId.startsWith('prev-gen-')) {
@@ -192,7 +209,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (countEl && message.count) countEl.textContent = message.count;
                 break;
             case 'updateContext':
-                updateContext(message.context, message.files, message.skills, message.diagrams, message.briefing);
+                updateContext(message.context, message.files, message.skills, message.tools, message.diagrams, message.briefing);
                 // Force immediate and delayed sync to catch late-rendering Markdown segments
                 import('./ui.js').then(ui => {
                     ui.syncExpansionBlocks();
@@ -276,15 +293,19 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     setGeneratingState(false);
 
-                    // PERSISTENCE FIX: After loading history, try to sync. 
-                    // If files are still empty, the next 'updateTokenProgress' will catch it.
+                   // PERSISTENCE FIX: After loading history, try to sync UI blocks. 
                     setTimeout(async () => {
                         const { syncExpansionBlocks } = await import('./ui.js');
                         syncExpansionBlocks();
                     }, 100);
 
-                    // Request a fresh context sync immediately to fill the gap
-                    vscode.postMessage({ command: 'calculateTokens' });
+                    // Only request a fresh scan if we have no cached metrics
+                    if (this._currentDiscussion && !this._currentDiscussion.lastTokenMetrics) {
+                        this._panel.webview.postMessage({ command: 'calculateTokens' });
+                    } else if (this._currentDiscussion) {
+                        // Tell the UI we are done with the hydration phase
+                        this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                    }
 
                     if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
                     }
@@ -1007,6 +1028,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'webSearchResults':
                 renderWebSearchResults(message.action, message.results);
                 break;
+            case 'showToolPicker':
+                if (typeof (window as any).renderToolPicker === 'function') {
+                    (window as any).renderToolPicker(
+                        message.allTools, 
+                        message.discussionTools, 
+                        message.projectTools
+                    );
+                }
+                break;
             case 'showSkillsModal':
                 if (dom.skillsModal) {
                     dom.skillsModal.classList.add('visible');
@@ -1251,9 +1281,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             const manualBtn = actionsEl.querySelector('.manual-fix-btn') as HTMLButtonElement;
                             const ignoreBtn = actionsEl.querySelector('.ignore-fix-btn') as HTMLButtonElement;
 
-                            // AUTOMATIC REDIRECTION: If this was a manual triggered apply that failed, 
-                            // pop the raw code modal immediately to help the user.
+                            // AUTOMATIC REDIRECTION: If any apply fails, pop the raw code modal immediately.
+                            // We trigger this for both single hunk failures and full block failures.
                             if (!message.repaired && !message.alreadyApplied) {
+                                console.log("[UI] Apply failed. Triggering manual stitching modal...");
                                 manualBtn.click();
                             }
 
@@ -1377,12 +1408,25 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const { title, content } = message;
                     if (dom.contextViewerModal && dom.contextViewerDisplay && dom.contextViewerTitle) {
                         dom.contextViewerTitle.textContent = title;
-                        // Use marked to render it nicely in the modal. 
-                        // Note: We allow <img> tags for the Visual Context view.
-                        dom.contextViewerDisplay.innerHTML = sanitizer.sanitize((window as any).marked.parse(content), {
-                            ADD_TAGS: ['img'],
-                            ADD_ATTR: ['src', 'style']
+
+                        // We use a custom configuration for the sanitizer to allow data-uri images in the preview
+                        const previewHtml = (window as any).marked.parse(content);
+                        dom.contextViewerDisplay.innerHTML = sanitizer.sanitize(previewHtml, {
+                            ADD_TAGS: ['img', 'span', 'i'],
+                            ADD_ATTR: ['src', 'style', 'class'],
+                            ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|ftp|tel|file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i // Default
                         });
+
+                        // Specific fix: allow data: URIs for the base64 images
+                        const images = dom.contextViewerDisplay.querySelectorAll('img');
+                        images.forEach(img => {
+                            // Ensure data URIs are preserved if sanitizer stripped them due to strict default regex
+                            const rawMatch = content.match(/src="(data:image\/[^"]+)"/);
+                            if (rawMatch && !img.src.startsWith('data:')) {
+                                img.src = rawMatch[1];
+                            }
+                        });
+
                         dom.contextViewerModal.classList.add('visible');
 
                         // Apply syntax highlighting to code blocks in the modal
@@ -1391,7 +1435,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         });
                     }
                 }
-                break;                
+                break;
             }
     } catch(e: any) {
         console.error("Lollms Webview Error: Failed to process message from extension.", e);

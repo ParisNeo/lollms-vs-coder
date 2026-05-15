@@ -30,12 +30,18 @@ export const contextExpansionPlugin: TagPlugin = {
         const blockId = `ctx-exp-${context.messageId}-${Math.random().toString(36).substring(7)}`;
         const fileListJson = JSON.stringify(paths).replace(/"/g, '&quot;');
 
-        let allIncluded = true;
-        const fileItems = paths.map(f => {
-            // Normalize path for comparison (slashes and trim)
-            const cleanPath = f.replace(/\\/g, '/');
-            const isIncluded = currentFiles.some((cf: string) => cf.replace(/\\/g, '/') === cleanPath);
+        // --- RESILIENT PATH MATCHING ---
+        const isPathInContext = (p: string) => {
+            const cleanP = p.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
+            return currentFiles.some((cf: string) => {
+                const cleanCf = cf.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
+                return cleanCf === cleanP || cleanCf.endsWith('/' + cleanP) || cleanP.endsWith('/' + cleanCf);
+            });
+        };
 
+        let allIncluded = true;
+        const fileItems = (paths || []).map(f => {
+            const isIncluded = isPathInContext(f);
             if (!isIncluded) allIncluded = false;
 
             const itemStyle = isIncluded ? 'border-color: var(--vscode-charts-green); background: rgba(15, 157, 88, 0.1); border-left: 4px solid var(--vscode-charts-green);' : '';
@@ -52,8 +58,12 @@ export const contextExpansionPlugin: TagPlugin = {
         }).join('');
 
         const btnText = allIncluded ? 'Added to Context' : 'Add all to Context';
-        const btnClass = allIncluded ? 'applied' : 'apply-btn';
+        const addBtnClass = allIncluded ? 'applied' : 'apply-btn';
         const btnIcon = allIncluded ? 'codicon-check' : 'codicon-add';
+
+        // The Reprompt button stays active even if files are added
+        const repromptText = allIncluded ? 'Reprompt AI' : 'Add & Reprompt';
+        const repromptIcon = allIncluded ? 'codicon-play' : 'codicon-sync';
 
         return `
         <div class="context-expansion-block expansion-request-block" id="${blockId}" data-files="${fileListJson}">
@@ -66,11 +76,11 @@ export const contextExpansionPlugin: TagPlugin = {
                     ${fileItems}
                 </div>
                 <div style="display:flex; gap: 8px; flex-wrap: wrap;">
-                    <button class="code-action-btn ${btnClass} add-btn" ${allIncluded ? 'disabled' : ''} data-block-id="${blockId}">
+                    <button class="code-action-btn ${addBtnClass} add-btn" ${allIncluded ? 'disabled' : ''} data-block-id="${blockId}">
                         <span class="codicon ${btnIcon}"></span> ${btnText}
                     </button>
-                    <button class="code-action-btn ${btnClass} add-reprompt-btn" ${allIncluded ? 'disabled' : ''} data-block-id="${blockId}">
-                        <span class="codicon ${allIncluded ? 'codicon-check' : 'codicon-sync'}"></span> Add & Reprompt
+                    <button class="code-action-btn apply-btn add-reprompt-btn" data-block-id="${blockId}">
+                        <span class="codicon ${repromptIcon}"></span> ${repromptText}
                     </button>
                     <button class="code-action-btn secondary-btn copy-btn" data-files="${fileListJson}">
                         <span class="codicon codicon-clippy"></span> Copy Contents

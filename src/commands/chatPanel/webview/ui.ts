@@ -596,22 +596,42 @@ export function hideProjectLoader() {
 
 export function updateLoaderStatus(status: string, stats?: { files?: number, tokens?: number }) {
     const statusEl = document.getElementById('loader-status-text');
-    if (statusEl) statusEl.textContent = status;
-    
+    if (statusEl) {
+        statusEl.textContent = status;
+        // Add a slight "glitch" effect to the text when it updates to match the blueprint theme
+        statusEl.style.opacity = '0.5';
+        setTimeout(() => { statusEl.style.opacity = '1'; }, 50);
+    }
+
     if (stats) {
         if (stats.files !== undefined) {
             const el = document.getElementById('loader-stat-files');
-            if (el) el.textContent = stats.files.toString();
+            if (el) el.textContent = stats.files > 0 ? stats.files.toString() : '---';
         }
         if (stats.tokens !== undefined) {
             const el = document.getElementById('loader-stat-tokens');
-            if (el) el.textContent = `${(stats.tokens / 1000).toFixed(1)}k`;
+            if (el) {
+                if (stats.tokens === -1) {
+                    el.textContent = 'Counting...';
+                    el.style.fontSize = '10px';
+                } else {
+                    el.textContent = `${(stats.tokens / 1000).toFixed(1)}k`;
+                    el.style.fontSize = '';
+                }
+            }
         }
     }
 }
-export function setCalculatingTokens(isCalculating: boolean) {
-    const spinner = dom.tokenCountingOverlay;
-    if (spinner) spinner.style.display = isCalculating ? 'flex' : 'none';
+export function setCalculatingTokens(isCalculating: boolean, text?: string) {
+    const label = document.getElementById('token-count-label');
+    const quickRefreshIcon = document.querySelector('#hud-quick-refresh-btn .codicon');
+
+    if (isCalculating) {
+        if (label) label.textContent = text || 'Counting...';
+        if (quickRefreshIcon) quickRefreshIcon.classList.add('spin');
+    } else {
+        if (quickRefreshIcon) quickRefreshIcon.classList.remove('spin');
+    }
 }
 
 
@@ -772,6 +792,7 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
 
 /**
  * Detects if the menu will go off-screen and flips it if necessary.
+ * Optimized for Sovereign HUD placement at the top of the viewport.
  */
 function adjustMenuPosition(trigger: HTMLElement, menu: HTMLElement) {
     // Reset classes first
@@ -785,12 +806,19 @@ function adjustMenuPosition(trigger: HTMLElement, menu: HTMLElement) {
     const triggerRect = trigger.getBoundingClientRect();
     const viewportHeight = window.innerHeight;
 
-    // Check if opening DOWN would hit the bottom of the screen
+    // Logic: Since HUD is at top, priority is to open DOWN.
+    // Flip UP only if we are at the bottom of the screen.
     const spaceBelow = viewportHeight - triggerRect.bottom;
     const needsFlip = spaceBelow < menuRect.height && triggerRect.top > menuRect.height;
 
     if (needsFlip) {
         menu.classList.add('open-up');
+        // If HUD is sticky, we might need to manually set top to avoid clipping
+        menu.style.top = 'auto';
+        menu.style.bottom = '100%';
+    } else {
+        menu.style.top = '100%';
+        menu.style.bottom = 'auto';
     }
 
     // Restore state
@@ -961,15 +989,20 @@ export function syncExpansionBlocks() {
         const pathAttr = item.getAttribute('data-path');
         if (!pathAttr) return;
 
-        // Clean and normalize the UI path
-        const cleanPath = pathAttr.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase().trim();
+        // Clean and normalize the UI path (from the XML tag)
+        // Strip ./ and leading slashes
+        const cleanPath = pathAttr.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
 
         // GREEDY MATCH: Check for structural equality
         const isIncluded = normalizedGlobal.some(gf => {
-            const cleanGf = gf.replace(/^\.\//, '').trim();
+            // Clean the Global File path (from the extension state)
+            const cleanGf = gf.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
+
             return cleanGf === cleanPath || 
                    cleanGf.endsWith('/' + cleanPath) || 
-                   cleanPath.endsWith('/' + cleanGf);
+                   cleanPath.endsWith('/' + cleanGf) ||
+                   // Handle the case in your screenshot: "lollms_game/assets/..." vs "assets/..."
+                   (cleanPath.includes('/') && cleanPath.split('/').slice(1).join('/') === cleanGf);
         });
 
         if (isIncluded) {
@@ -1088,7 +1121,10 @@ export function updateBadges() {
                 
                 item.onclick = (e: MouseEvent) => {
                     e.stopPropagation();
+                    // Update local state immediately for visual feedback
+                    state.currentPersonalityId = p.id;
                     vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: p.id });
+                    updateBadges();
                     menu.classList.remove('visible');
                 };
                 
@@ -1540,9 +1576,11 @@ export function updateBadges() {
         if (memBadge) memPopup.appendChild(memBadge);
     }
 
-    // --- THEME: KNOWLEDGE (Librarian/Skills) ---
+    // --- THEME: KNOWLEDGE (Librarian/Skills/Tools) ---
     const isBuilderMode = caps.workerType === 'builder';
-    if (!isAgentMode && !isBuilderMode && (guiState.autoContextBadge || guiState.autoSkillBadge !== false)) {
+    const hasActiveTools = (state.lastContextData?.tools?.length || 0) > 0;
+
+    if (!isAgentMode && !isBuilderMode && (guiState.autoContextBadge || guiState.autoSkillBadge !== false || hasActiveTools)) {
         const knowledgeGroup = document.createElement('div');
         knowledgeGroup.className = 'badge-group hud-options-parent';
         container.appendChild(knowledgeGroup);
@@ -2538,8 +2576,105 @@ function refreshUsageDisplay(contextSize: number) {
     });
 }
 
+/**
+ * Renders the Tool Picker modal allowing users to equip specific agent capabilities.
+ */
+/**
+ * Renders the Tool Picker modal allowing users to equip specific agent capabilities.
+ */
+export function renderToolPicker(allTools: any[], discussionTools: string[], projectTools: string[]) {
+    const modal = document.getElementById('tool-picker-modal');
+    const list = document.getElementById('tool-picker-list');
+    const searchInp = document.getElementById('tool-picker-search') as HTMLInputElement;
+    if (!modal || !list) return;
+
+    if (searchInp) searchInp.value = '';
+
+    const renderList = (filter = "") => {
+        const query = filter.toLowerCase();
+
+        let html = `
+            <div style="display: flex; justify-content: flex-end; padding: 0 10px 8px 10px; border-bottom: 1px solid var(--vscode-widget-border); margin-bottom: 10px;">
+                <div style="display: flex; gap: 20px;">
+                    <span style="font-size: 9px; font-weight: 800; opacity: 0.6;">CHAT</span>
+                    <span style="font-size: 9px; font-weight: 800; opacity: 0.6;">PROJECT</span>
+                </div>
+            </div>
+        `;
+
+        html += allTools.map(tool => {
+            const inChat = discussionTools.includes(tool.name);
+            const inProject = projectTools.includes(tool.name);
+            const matches = tool.name.toLowerCase().includes(query) || tool.description.toLowerCase().includes(query);
+
+            return `
+                <div class="tool-picker-item ${(inChat || inProject) ? 'selected' : ''}" data-name="${tool.name}" style="display: ${matches ? 'flex' : 'none'}; align-items: center; justify-content: space-between; padding: 8px 12px;">
+                    <div style="flex:1; min-width:0; padding-right: 15px;">
+                        <div style="font-weight:bold; font-size:12px; color: var(--vscode-foreground);">${tool.name}</div>
+                        <div style="font-size:10px; opacity:0.7; line-height:1.4; margin-bottom: 4px;">${tool.description}</div>
+                        <div style="font-size:9px; opacity:0.5; font-family:monospace;">
+                            Params: [${(tool.parameters || []).map((p: any) => p.name).join(', ')}]
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 20px; flex-shrink: 0;">
+                        <label class="switch" style="width: 24px; height: 14px;">
+                            <input type="checkbox" value="${tool.name}" class="tool-chat-check" ${inChat ? 'checked' : ''}>
+                            <span class="slider" style="border-radius: 14px;"></span>
+                        </label>
+                        <label class="switch" style="width: 24px; height: 14px;">
+                            <input type="checkbox" value="${tool.name}" class="tool-project-check" ${inProject ? 'checked' : ''}>
+                            <span class="slider" style="border-radius: 14px;"></span>
+                        </label>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        list.innerHTML = html;
+    };
+
+    renderList();
+
+    if (searchInp) {
+        searchInp.oninput = () => renderList(searchInp.value);
+        setTimeout(() => searchInp.focus(), 100);
+    }
+
+    modal.classList.add('visible');
+
+    const closeBtn = document.getElementById('tool-picker-close-btn');
+    if (closeBtn) closeBtn.onclick = () => modal.classList.remove('visible');
+
+    const applyBtn = document.getElementById('tool-picker-apply-btn');
+    if (applyBtn) {
+        applyBtn.onclick = () => {
+            const chatTools = Array.from(list.querySelectorAll('.tool-chat-check:checked')).map((el: any) => el.value);
+            const projTools = Array.from(list.querySelectorAll('.tool-project-check:checked')).map((el: any) => el.value);
+
+            vscode.postMessage({ 
+                command: 'updateDiscussionCapabilitiesPartial', 
+                partial: { 
+                    importedTools: chatTools,
+                    projectTools: projTools
+                } 
+            });
+            modal.classList.remove('visible');
+
+            if (state.capabilities) {
+                state.capabilities.importedTools = chatTools;
+            }
+            updateBadges();
+            vscode.postMessage({ command: 'calculateTokens' });
+        };
+    }
+}
+// Expose globally for the message handler
+(window as any).renderToolPicker = renderToolPicker;
+
 export function updateContextFileUsage(filePath: string, tokens: number) {
     // 1. Update State Model
+    if (!state.usageData || !state.usageData.project) return;
+
     let item = state.usageData.project.find(i => i.path === filePath) || state.usageData.extra.find(i => i.path === filePath);
     if (item) item.tokens = tokens;
 
@@ -2727,6 +2862,20 @@ export function openRawCodeModal(messageId: string, blockIndex: number, filePath
     });
 
     switchHunk(initialHunkIdx);
+
+    // --- AUTO-FOCUS LOGIC ---
+    // If we just opened this because of a failure, try to help the user find the spot.
+    const searchPart = matches[initialHunkIdx]?.[1];
+    if (searchPart && dom.rawSearchInput) {
+        // Take a small unique snippet from the search block (e.g. first 30 chars)
+        const uniqueLine = searchPart.split('\n').find(l => l.trim().length > 10) || searchPart.substring(0, 30);
+        dom.rawSearchInput.value = uniqueLine.trim();
+        // Trigger the search manually
+        import('./events.js').then(() => {
+            // This invokes the search logic we defined in events.ts
+            dom.rawSearchInput.dispatchEvent(new Event('input'));
+        });
+    }
 
     // Explicitly force layout to absolute center
     modal.style.display = 'flex';
@@ -2924,6 +3073,7 @@ export function updateProgressBar(container: HTMLElement | null, current: number
 
     if (segments && total > 0) {
         container.innerHTML = '';
+        // Ordered array for visual consistency in the bar
         const types = ['system', 'tree', 'skills', 'memory', 'files', 'history', 'images'];
 
         types.forEach(type => {
@@ -2936,12 +3086,14 @@ export function updateProgressBar(container: HTMLElement | null, current: number
                 segDiv.style.width = `${pct}%`;
                 segDiv.title = `${type.toUpperCase()}: ${count.toLocaleString()} tokens (Click to view)`;
 
-                // Segment is also clickable
+                // Segment click handler
                 segDiv.onclick = (e) => {
+                    e.preventDefault();
                     e.stopPropagation();
+                    const contextViewType = type === 'history' ? 'chat' : type;
                     vscode.postMessage({
-                        command: 'executeLollmsCommand',
-                        details: { command: 'lollms-vs-coder.viewFullContext', params: type }
+                        command: 'executeLollmsCommand', 
+                        details: { command: 'lollms-vs-coder.viewFullContext', params: contextViewType }
                     });
                 };
                 container.appendChild(segDiv);
@@ -2957,26 +3109,39 @@ export function updateProgressBar(container: HTMLElement | null, current: number
             container.parentElement?.after(legendContainer);
         }
 
+        // Force visibility
+        legendContainer.style.display = 'flex';
+
         legendContainer.innerHTML = types.map(type => {
             const count = segments[type] || 0;
             if (count === 0) return '';
-            const label = type.charAt(0).toUpperCase() + type.slice(1);
+
+            // Clean up the label for the UI
+            let label = type.charAt(0).toUpperCase() + type.slice(1);
+            if (type === 'files') label = 'Code';
+            if (type === 'history') label = 'History';
+
+            // High-density numeric display
+            const displayVal = count >= 1000 ? `${(count/1024).toFixed(1)}k` : count;
+
             return `
-                <div class="legend-item" data-type="${type}" title="View ${label} details">
+                <div class="legend-item" data-type="${type}" title="Analyze ${label} Segment">
                     <div class="legend-dot segment-${type}"></div>
-                    <span>${label}</span>
-                    <span style="opacity:0.5; margin-left:2px;">${Math.round(count/1024)}k</span>
+                    <span class="legend-label">${label}</span>
+                    <span style="opacity:0.5; margin-left:2px; font-weight:bold;">${displayVal}</span>
                 </div>`;
         }).join('');
 
         // Attach listeners to legend items
         legendContainer.querySelectorAll('.legend-item').forEach(item => {
             (item as HTMLElement).onclick = (e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 const type = (item as HTMLElement).dataset.type;
+                const contextViewType = type === 'history' ? 'chat' : type;
                 vscode.postMessage({
                     command: 'executeLollmsCommand',
-                    details: { command: 'lollms-vs-coder.viewFullContext', params: type }
+                    details: { command: 'lollms-vs-coder.viewFullContext', params: contextViewType }
                 });
             };
         });

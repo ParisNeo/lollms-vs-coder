@@ -9,44 +9,61 @@ export const editImageAssetTool: ToolDefinition = {
     permissionGroup: 'filesystem_write',
     parameters: [
         { name: "paths", type: "array", description: "An array of relative paths to images. The first is the base image to edit; others are used for style reference.", required: true },
-        { name: "prompt", type: "string", description: "Detailed editing instructions. For background color changes, use: 'Change the background color to [COLOR]' or 'Replace the background with [DESCRIPTION]'.", required: true },
-        { name: "output_path", type: "string", description: "Relative path where the edited image will be saved (e.g., 'assets/edited_image.png').", required: true }
+        { name: "prompt", type: "string", description: "Detailed editing instructions.", required: true },
+        { name: "output_path", type: "string", description: "Relative path where the edited image will be saved.", required: true },
+        { name: "output_size", type: "string", description: "The target dimensions for the edit (e.g., '1280x720', '1024x1024').", required: false },
+        { name: "chroma_key", type: "string", description: "Standard key color (e.g. 'pure green #00FF00' or 'magenta #FF00FF'). Use this to force a consistent background across all edited assets.", required: false }
     ],
-    async execute(params: { paths: string[], prompt?: string, instructions?: string, output_path: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
+    async execute(params: { paths: string[], prompt: string, output_path: string, output_size?: string, verify?: boolean, is_style_reference?: boolean, chroma_key?: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         if (!env.workspaceRoot || !params.paths || !params.paths.length) return { success: false, output: "Error: No source paths provided." };
 
-        // Ensure the prompt is captured regardless of how the architect named the parameter
-        const finalPrompt = params.prompt || params.instructions;
-        if (!finalPrompt || finalPrompt.trim() === "") {
-            return { success: false, output: "Error: No editing instructions (prompt) provided. You must specify what changes to make to the image." };
-        }
-
         try {
-            // Read and format all provided sources as Data URIs
+            // 1. Prepare Inputs (The first path is the SUBJECT, subsequent are STYLE REFERENCES)
             const imageParts = await Promise.all(params.paths.map(async (p) => {
-                const uri = vscode.Uri.joinPath(env.workspaceRoot!.uri, p);
-                const data = await vscode.workspace.fs.readFile(uri);
-                const base64 = data.toString('base64');
-
-                // Detect MIME type from extension
+                const res = await env.contextManager.resolveWorkspaceFromPath(p);
+                if (!res) throw new Error(`Could not find source: ${p}`);
+                const data = await vscode.workspace.fs.readFile(res.uri);
                 const ext = p.split('.').pop()?.toLowerCase() || 'png';
-                const mime = ext === 'jpg' ? 'jpeg' : (ext === 'svg' ? 'svg+xml' : ext);
-
-                return `data:image/${mime};base64,${base64}`;
+                return `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${data.toString('base64')}`;
             }));
 
-            // Trigger the API endpoint with the full array of base64 images.
-            const resultB64 = await env.lollmsApi.editImage(finalPrompt, imageParts);
-            
-            const outUri = vscode.Uri.joinPath(env.workspaceRoot.uri, params.output_path);
-            const outDir = vscode.Uri.joinPath(outUri, '..');
-            await vscode.workspace.fs.createDirectory(outDir);
-            await vscode.workspace.fs.writeFile(outUri, Buffer.from(resultB64, 'base64'));
+            // 2. Execute Edit via API
+            // 2. Execute Edit via API
+            const keyColor = params.chroma_key || "pure green #00FF00";
+            let refinedPrompt = `[CHROMA KEY: ${keyColor}] REPLACE THE BACKGROUND WITH A 100% FLAT SOLID ${keyColor}. NO SHADOWS ON BACKGROUND. ${params.prompt}`;
 
-            return { 
-                success: true, 
-                output: `Successfully modified image. Saved to \`${params.output_path}\`.\n\n<image_result path="${params.output_path}" />` 
-            };
+            if (params.is_style_reference) {
+                refinedPrompt = `Maintain character design from the reference image. Redraw the subject on a FLAT SOLID ${keyColor} background. ${params.prompt}`;
+            }
+
+            const resultB64 = await env.lollmsApi.editImage(refinedPrompt, imageParts, undefined, undefined, signal as any);
+
+            // 3. Persist to Disk
+            const outRes = await env.contextManager.resolveWorkspaceFromPath(params.output_path);
+            if (!outRes) throw new Error("Invalid output path.");
+            await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(outRes.uri, '..'));
+            await vscode.workspace.fs.writeFile(outRes.uri, Buffer.from(resultB64, 'base64'));
+            env.contextManager.refreshFileInCache(outRes.uri);
+
+            let output = `✅ Image modified and saved to \`${params.output_path}\`.\n<image_result path="${params.output_path}" />`;
+
+            // 4. AUTOMATIC VERIFICATION LOOP
+            if (params.verify !== false) {
+                const verifyPrompt = [
+                    { role: "system", content: "You are a Visual Quality Auditor. Compare the result with the original instruction." },
+                    { 
+                        role: "user", 
+                        content: [
+                            { type: "text", text: `Instruction was: "${params.prompt}". Does the attached resulting image successfully fulfill this? Explain what you see.` },
+                            { type: "image_url", image_url: { url: `data:image/png;base64,${resultB64}` } }
+                        ]
+                    }
+                ];
+                const audit = await env.lollmsApi.sendChat(verifyPrompt as any, null, signal);
+                output += `\n\n### 🔬 VISUAL VERIFICATION REPORT:\n${audit}`;
+            }
+
+            return { success: true, output };
         } catch (e: any) {
             return { success: false, output: `Image editing failed: ${e.message}` };
         }

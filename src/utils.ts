@@ -31,9 +31,8 @@ export async function hardenWorkspace(folder: vscode.WorkspaceFolder): Promise<v
             config.update('search.exclude', searchToExclude, vscode.ConfigurationTarget.WorkspaceFolder),
             config.update('python.analysis.exclude', pythonExclude, vscode.ConfigurationTarget.WorkspaceFolder),
             config.update('python.analysis.ignore', pythonExclude, vscode.ConfigurationTarget.WorkspaceFolder),
-            // Explicitly kill isort interference and disable its checks for the .lollms directory
-            config.update('isort.args', ['--skip', '.lollms', '--skip-glob', '*/.lollms/*'], vscode.ConfigurationTarget.WorkspaceFolder),
-            config.update('isort.check', false, vscode.ConfigurationTarget.WorkspaceFolder),
+            // Disable 'Organize Imports' on save which causes deadlocks during AI file writes
+            config.update('editor.codeActionsOnSave', { "source.organizeImports": "never" }, vscode.ConfigurationTarget.WorkspaceFolder),
             // Mute linting and indexing for internal scripts to prevent host overhead
             config.update('python.linting.ignorePatterns', ['**/.lollms/**/*.py'], vscode.ConfigurationTarget.WorkspaceFolder)
         ]);
@@ -204,6 +203,7 @@ export interface DiscussionCapabilities {
     selectedFolders?: string[];
     folderSettings?: Record<string, { tree: boolean, content: boolean }>;
     autoSkillMode: boolean;
+    autoToolMode: boolean; // For future agentic auto-selection
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     tokenEconomyMode: boolean;
     projectMemoryEnabled: boolean;
@@ -632,16 +632,26 @@ export async function getProcessedSystemPrompt(
     } else {
         // Discussion mode is strictly Tag-Based
         operationalMandate = `
-    ### 🛡️ DISCUSSION MODE: TAG-ONLY PROTOCOL
-    You are currently in 'Discussion Mode'. 
-    1. **TOOLS HIDDEN**: Background terminal and file-system tools are DISABLED. 
-    2. **AUTHORIZED TAGS**: You are only authorized to use the following XML tags for interaction:
-    - \`<add_files_to_context>\`: To request file content you cannot see.
-    - \`<edit_image_asset>\`: To request modifications to visual assets.
-    - \`<generate_image>\`: To manifest new images.
+    ### 🛡️ DISCUSSION MODE: USER-VALIDATED TOOLS
+    You are currently in 'Discussion Mode'. While you cannot execute code autonomously, you can request that the user performs actions for you.
+
+    **HOW TO REQUEST ACTIONS:**
+    You have a set of equipped tools. To use one, output its specific XML tag. The user will see an 'Execute' button and must manually approve the run.
+
+    ### 🛠️ EQUIPPED TOOL TAGS (YOUR CAPABILITIES)
+    ${(context as any).toolManager?.getEnabledTools().map((t: any) => `- **${t.name}**: ${t.description}\n  Tag: \`${t.manualTagFormat || `<lollms_tool name="${t.name}" params='{...}' />`}\``).join('\n')}
+
+    **STRICT RULES:**
+    1. **ONE AT A TIME**: Do not request more than one tool per response.
+    2. **JSON PARAMS**: The \`params\` attribute MUST be a single-line, valid JSON string.
+    3. **WAIT FOR OUTPUT**: Once you output the tag, the UI will present an 'Execute' button to the user. Do not assume the action is finished until the user clicks it and provides the output in the next turn.
+
+    **AUTHORIZED TAGS:**
+    - \`<add_files_to_context>\`: To expand your vision.
+    - \`<lollms_tool>\`: For any equipped tool (e.g. execute_command, scrape_website).
     - \`<project_memory>\`: To save technical discoveries.
 
-    **STRICT RULE**: You are FORBIDDEN from outputting JSON tool calls. Use natural language and the authorized tags above.
+    **STRICT RULE**: You are FORBIDDEN from outputting raw JSON tool calls. Use the \`<lollms_tool />\` tag format only.
     `;
     }
 

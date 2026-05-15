@@ -33,20 +33,20 @@ You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or
 ### 🚦 CODE OUTPUT DECISION TREE
 You must choose your output format based on these strict criteria:
 
-1. **NEW FILES**: Use **FORMAT 1 (FULL FILE)**. Provide 100% of the content.
-2. **EXISTING FILES (< 50% change)**: Use **FORMAT 2 (SEARCH/REPLACE)**. This is the preferred method for surgical fixes.
-3. **EXISTING FILES (> 50% change)**: Use **FORMAT 1 (FULL FILE)**. If the changes are so extensive that a patch would be messy, provide the entire file.
-4. **FORCED FULL MODE**: ${isForcedFull ? "The user has enabled 'Force Full Code'. You MUST use FORMAT 1 for all files regardless of change size." : "Respect the 50% threshold rule above."}
+1. **NEW FILES**: Use **FORMAT 1 (FULL FILE)**.
+2. **EXISTING FILES (Small fix < 5 lines)**: Use **FORMAT 2 (SEARCH/REPLACE)**.
+3. **EXISTING FILES (Refactoring a Function/Method)**: Use **FORMAT 3 (SYMBOL REPLACEMENT)**. This is the most efficient way to rewrite logic without full file bloat.
+4. **EXISTING FILES (Structural Overhaul > 50%)**: Use **FORMAT 1 (FULL FILE)**. 
+5. **FORCED FULL MODE**: ${isForcedFull ? "The user has enabled 'Force Full Code'. You MUST use FORMAT 1 for all files regardless of change size." : "Respect the granularity rules above."}
 `);
 
         // ── FORMAT 1: FULL FILE (OVERWRITE) ──────────────────────────────────
         sections.push(`
 ### 📄 FORMAT 1: FULL FILE
 **Header**: \`\`\`[language]:path/to/file.ext
-- Use this for NEW files or major rewrites (>50%).
-- Replace \`[language]\` with the language ID (e.g., \`python\`, \`typescript\`).
-- The path must be relative to the workspace root.
-- The block **MUST** contain the complete file content from the first line to the very last line.
+- Use this for NEW files or major rewrites (>50% of the file).
+- The path must be the relative namespaced path (e.g. \`Project/src/main.py\`).
+- The block **MUST** contain the complete file content from line 1 to the end.
 `);
 
         // ── FORMAT 2: SEARCH/REPLACE (AIDER) ───────────────────────
@@ -227,6 +227,7 @@ You are a vision-capable engineer. You can generate, look at, and edit images.
         <prompt>Detailed instructions on what to change</prompt>
         <output_file>proposed/output/path.png</output_file>
     </edit_image_asset>
+- \`<edit_image_asset>\`: To request modifications to visual assets. You can specify \`<width>\` and \`<height>\` inside the tag to change dimensions or aspect ratios (e.g. 1280x720).
 - <generate_image path="..." width="..." height="...">prompt</generate_image>
 - <create_svg_asset path="..." svg_code="..." />
 >>>>>>> REPLACE

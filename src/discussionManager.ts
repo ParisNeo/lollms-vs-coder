@@ -20,8 +20,22 @@ export interface Discussion {
     importedSkills?: string[];
     selectedFolders?: string[]; // URIs of selected workspace folders
     activeDiagrams?: string[]; // e.g., ['class_diagram', 'call_graph']
+    importedTools?: string[]; // List of tool names explicitly added to context
     appliedState?: Record<string, Record<number, number[]>>;
     discussion_data_zone?: string;
+    lastTokenMetrics?: {
+        total: number;
+        contextSize: number;
+        segments: {
+            system: number;
+            tree: number;
+            skills: number;
+            memory: number;
+            files: number;
+            history: number;
+            images: number;
+        }
+    };
     agentSession?: {
         replVariables: Record<string, any>;
         workingMemory: string[];

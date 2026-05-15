@@ -111,6 +111,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     contextManager.setSkillsManager(skillsManager);
     contextManager.setCodeGraphManager(codeGraphManager);
+    (contextManager as any).toolManager = toolManager;
 
     // SETUP DIFF MANAGER
     diffManager.setup(context);
@@ -253,18 +254,14 @@ export async function activate(context: vscode.ExtensionContext) {
         contextManager.updateTreeStructure(uri, 'change');
         codeGraphManager.reset();
 
-        // 🚀 INCREMENTAL TOKEN UPDATE
+        // 🚀 SILENT INVALIDATION
+        // We clear the cache so the NEXT JIT sync (on send) uses the new content.
+        // We DO NOT trigger updateContextAndTokens here to avoid UI flicker.
         const provider = contextManager.getContextStateProvider();
         if (provider) {
             const state = provider.getStateForUri(uri);
             if (state === 'included' || state === 'definitions-only') {
-                Logger.info(`Incremental token update for: ${path.basename(p)}`);
-                // Delay slightly to let the file finish writing to disk
-                setTimeout(() => {
-                    if (ChatPanel.currentPanel) {
-                        ChatPanel.currentPanel.updateContextAndTokens();
-                    }
-                }, 500);
+                Logger.info(`Background cache invalidated for: ${path.basename(p)}`);
             }
         }
     });

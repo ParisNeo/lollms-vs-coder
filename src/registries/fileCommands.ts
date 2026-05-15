@@ -766,7 +766,12 @@ ${originalContent}
                 }
 
                 if (errors.length > 0) {
-                    return { success: false, error: `Failed to apply ${errors.length} blocks.\n- ${errors.join('\n- ')}` };
+                    // Send back the raw content that failed so the UI can populate the manual modal
+                    return { 
+                        success: false, 
+                        error: `Match failure in ${sanitizedFilePath}.`,
+                        repaired: false
+                    };
                 }
 
                 return { success: true, alreadyApplied: !wasActuallyModified || !!options?.autoSave };

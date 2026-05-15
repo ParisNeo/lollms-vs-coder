@@ -460,11 +460,7 @@ export class ChatPanel {
   public async loadDiscussion(): Promise<void> {
     if (this._isDisposed) return;
 
-    // 🚀 START SOVEREIGN PROJECT LOADER
-    this._panel.webview.postMessage({ 
-        command: 'showProjectLoader', 
-        projectName: vscode.workspace.workspaceFolders?.[0]?.name || "Project"
-    });
+    // REMOVED: No more showProjectLoader here. We want a seamless transition.
 
     if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
           let discussion: Discussion | null;
@@ -700,15 +696,28 @@ export class ChatPanel {
           this.updateGeneratingState();
       }
 
-      // Use a safer execution for context sync
-      setImmediate(async () => {
-          try {
-              await this.updateContextAndTokens();
-          } catch (e) {
-              this.log("Initial context sync failed", 'WARN');
-              this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-          }
-      });
+      // --- INSTANT HYDRATION ---
+      if (this._currentDiscussion?.lastTokenMetrics) {
+          const m = this._currentDiscussion.lastTokenMetrics;
+          this._panel.webview.postMessage({
+              command: 'updateTokenProgress',
+              totalTokens: m.total,
+              contextSize: m.contextSize,
+              isApproximate: false,
+              segments: m.segments
+          });
+          
+          // CRITICAL: Explicitly clear the "Calculating..." status on load
+          this._panel.webview.postMessage({ 
+              command: 'updateStatus', 
+              status: 'Ready (Cached)', 
+              type: 'info' 
+          });
+          this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+      } else {
+          // Fallback only if never calculated before
+          this.updateContextAndTokens();
+      }
       
       await this._fetchAndSetModels(false);
   }
@@ -723,12 +732,20 @@ export class ChatPanel {
       }
   }
 
-  private getCurrentPersonaSystemPrompt(): string {
-      if (this._personalityManager && this._currentDiscussion && this._currentDiscussion.personalityId) {
-          const p = this._personalityManager.getPersonality(this._currentDiscussion.personalityId);
-          if (p) return p.systemPrompt;
+  private getCurrentPersona(): any {
+      if (this._personalityManager && this._currentDiscussion) {
+          const pId = this._currentDiscussion.personalityId || 'default_coder';
+          return this._personalityManager.getPersonality(pId);
       }
-      return '';
+      return null;
+  }
+
+  /**
+   * Helper to retrieve the active system prompt for the current personality.
+   */
+  private getCurrentPersonaSystemPrompt(): string {
+      const persona = this.getCurrentPersona();
+      return persona ? persona.systemPrompt : "";
   }
 
   private async _fetchAndSetModels(forceRefresh: boolean = false) {
@@ -754,8 +771,10 @@ export class ChatPanel {
     }
   }
 
-  public async updateContextAndTokens() {
+  public async updateContextAndTokens(options?: { isBackgroundSync?: boolean }) {
     if (this._isDisposed) return;
+
+    const isBackground = options?.isBackgroundSync === true;
 
     // Concurrency Lock: If already tokenizing, cancel previous and restart
     if (this._tokenAbortController) {
@@ -783,14 +802,21 @@ export class ChatPanel {
 
         if (!this._isDisposed) {
             const isRebuildNeeded = this._contextManager.isTreeDirty();
-            const statusText = isRebuildNeeded ? 'Building file tree...' : 'Counting tokens...';
+            const statusText = isRebuildNeeded ? 'Syncing...' : 'Counting...';
 
-            this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: statusText });
-            this._panel.webview.postMessage({ 
-                command: 'updateStatus', 
-                status: isRebuildNeeded ? 'Scanning project files...' : 'Syncing context...', 
-                type: 'info' 
-            });
+            // Only send 'CalculationStarted' if we don't have cached data to show
+            // This prevents the "Calculating..." flicker on every tab switch
+            if (this._currentDiscussion && (!this._currentDiscussion.lastTokenMetrics || !isBackground)) {
+                this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: statusText });
+            }
+
+            if (!isBackground) {
+                this._panel.webview.postMessage({ 
+                    command: 'updateStatus', 
+                    status: isRebuildNeeded ? 'Scanning project files...' : 'Syncing context...', 
+                    type: 'info' 
+                });
+            }
         }
 
         try {
@@ -800,6 +826,7 @@ export class ChatPanel {
 
             this._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Assembling Codebase Map...' });
 
+            let currentTokenEstimate = 0;
             const context = await this._contextManager.getContextContent({ 
                 signal, 
                 capabilities: this._discussionCapabilities,
@@ -808,7 +835,19 @@ export class ChatPanel {
                 modelName: modelForTokenization,
                 onProgress: (pct) => {
                     if (!this._isDisposed) {
+                        // 1. Update the top small progress bar
                         this._panel.webview.postMessage({ command: 'tokenCalculationProgress', progress: pct });
+
+                        // 2. Update the big Blueprint loader with "Live" stats
+                        // We calculate a rough token estimate (chars / 3.5) to show growth in real-time
+                        this._panel.webview.postMessage({
+                            command: 'updateLoaderStatus',
+                            status: `Indexing: ${pct}% complete...`,
+                            stats: { 
+                                files: Math.round((pct / 100) * context.selectedFilesContent.length), 
+                                tokens: -1 // Indicate we are still counting
+                            }
+                        });
                     }
                 }
             });
@@ -829,15 +868,29 @@ export class ChatPanel {
                 : context.text;
 
             if (!this._isDisposed) {
-                this._panel.webview.postMessage({ 
-                    command: 'updateContext', 
-                    context: contextTextForUI,
-                    files: includedFiles,
-                    skills: context.importedSkills || [],
-                    diagrams: context.diagrams || [],
-                    images: context.images || [], // Pass images list for counter
-                    briefing: this._currentDiscussion?.discussion_data_zone || ""
-                });
+                if (!this._isDisposed) {
+                    // --- MULTI-SCOPE TOOL RESOLUTION ---
+                    const discussionTools = this._currentDiscussion?.importedTools || [];
+                    const projectTools = await this._contextManager.getActiveProjectTools();
+
+                    // Merge unique names from both scopes
+                    const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
+
+                    const equippedTools = this.agentManager.getTools()
+                        .filter(t => allEquippedNames.includes(t.name))
+                        .map(t => ({ name: t.name, description: t.description }));
+
+                    this._panel.webview.postMessage({ 
+                        command: 'updateContext', 
+                        context: contextTextForUI,
+                        files: includedFiles,
+                        skills: context.importedSkills || [],
+                        tools: equippedTools,
+                        diagrams: context.diagrams || [],
+                        images: context.images || [], // Pass images list for counter
+                        briefing: this._currentDiscussion?.discussion_data_zone || ""
+                    });
+                }
             }
             this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
 
@@ -865,15 +918,21 @@ export class ChatPanel {
             const visionEnabled = this._discussionCapabilities.enableImages !== false;
 
             if (visionEnabled) {
+                // Determine a base cost per image. 
+                // If model-specific estimation fails (returns 0), we use a standard 600 token floor 
+                // to ensure images are visible in the progress bar segments.
+                const imgBaseCost = estimateImageTokens(modelForTokenization);
+                const safeImgCost = imgBaseCost > 0 ? imgBaseCost : 600;
+
                 // Calculate from Context (Included Files)
                 context.images.forEach(img => {
-                    imageTokens += estimateImageTokens(modelForTokenization);
+                    imageTokens += safeImgCost;
                 });
                 // Calculate from Discussion History
                 this._currentDiscussion.messages.forEach(m => {
                     if (Array.isArray(m.content)) {
                         m.content.forEach((p: any) => { 
-                            if (p.type === 'image_url') imageTokens += estimateImageTokens(modelForTokenization); 
+                            if (p.type === 'image_url') imageTokens += safeImgCost; 
                         });
                     }
                 });
@@ -1015,31 +1074,36 @@ export class ChatPanel {
                 Logger.warn(`[TokenStats] Context size is dangerously high (${totalTokens}). Model ${modelForTokenization} will likely fail.`);
             }
 
-            if (this._panel && this._panel.webview) {
-                // Update the specialized loader with the final results
-                this._panel.webview.postMessage({
-                    command: 'updateLoaderStatus',
-                    status: 'Context Grounding Complete',
-                    stats: { files: includedFiles.length, tokens: totalTokens }
-                });
+            const segments = {
+                system: systemRes.count || 0,
+                tree: treeRes.count || 0,
+                skills: skillTokens || 0,
+                memory: memoryRes.count || 0,
+                files: contentTokens || 0,
+                history: historyRes.count || 0,
+                images: imageTokens || 0
+            };
 
-                this._panel.webview.postMessage({
-                    command: 'updateTokenProgress',
-                    totalTokens: totalTokens,
+            // PERSIST FOR INSTANT HYDRATION
+            if (this._currentDiscussion) {
+                this._currentDiscussion.lastTokenMetrics = {
+                    total: totalTokens,
                     contextSize: ctxSize,
-                    isApproximate: isActuallyApproximate, 
-                    folderStats: folderStats,
-                    files: includedFiles, // INJECT: Pass the actual list of paths
-                    segments: {
-                        system: systemRes.count || 0,
-                        tree: treeRes.count || 0,
-                        skills: skillTokens || 0,
-                        memory: memoryRes.count || 0,
-                        files: contentTokens || 0,
-                        history: historyRes.count || 0,
-                        images: imageTokens || 0
-                    }
-                });
+                    segments: segments
+                };
+                if (!this._currentDiscussion.id.startsWith('temp-')) {
+                    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                }
+            }
+
+            if (this._panel && this._panel.webview) {
+                if (!isBackground) {
+                    this._panel.webview.postMessage({
+                        command: 'updateLoaderStatus',
+                        status: 'Context Grounding Complete',
+                        stats: { files: includedFiles.length, tokens: totalTokens }
+                    });
+                }
             }
             
             if (isActuallyApproximate) {
@@ -2097,8 +2161,12 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         // ... (rest of standard agent logic)
     }
 
-    const { id: processId, controller } = this.processManager.register(this.discussionId, 'Preparing request...');
+    const { id: processId, controller } = this.processManager.register(this.discussionId, 'Synchronizing Context...');
     this.updateGeneratingState();
+
+    // --- JIT CONTEXT SYNC ---
+    // This is where we do the heavy lifting only once the user is ready to send.
+    await this.updateContextAndTokens();
 
     // Strictly check if AutoContext is enabled AND not muted
     // CRITICAL: Skip automated agents if the message is a 'system' role.
@@ -2519,8 +2587,8 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         this.updateGeneratingState();
 
         // Identify current personality and its specific prompt
-        const currentP = this._personalityManager?.getPersonality(this._currentDiscussion!.personalityId || 'default_coder');
-        const personaContent = currentP?.systemPrompt || this.getCurrentPersonaSystemPrompt();
+        const currentP = this.getCurrentPersona();
+        const personaContent = currentP?.systemPrompt || "";
         const personaName = currentP?.name || "Lollms";
 
         const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
@@ -4539,10 +4607,29 @@ ${targetContent}
             case 'removeSkillFromContext':
                 if (this._currentDiscussion && this._currentDiscussion.importedSkills) {
                     this._currentDiscussion.importedSkills = this._currentDiscussion.importedSkills.filter(id => id !== message.skillId);
-                    
-                    // Also remove from project if it was added globally
                     await this._contextManager.removeSkillFromProject(message.skillId);
-
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                    this.updateContextAndTokens();
+                }
+                break;
+            case 'requestToolPicker':
+                {
+                    const allTools = this.agentManager.getTools().map(t => ({ name: t.name, description: t.description }));
+                    const discussionTools = this._currentDiscussion?.importedTools || [];
+                    const projectTools = await this._contextManager.getActiveProjectTools();
+                    this._panel.webview.postMessage({ 
+                        command: 'showToolPicker', 
+                        allTools, 
+                        discussionTools,
+                        projectTools
+                    });
+                }
+                break;
+            case 'removeToolFromContext':
+                if (this._currentDiscussion) {
+                    this._currentDiscussion.importedTools = (this._currentDiscussion.importedTools || []).filter(n => n !== message.toolName);
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
@@ -5064,11 +5151,37 @@ Task:
                 if (this._discussionCapabilities) {
                     const partial = message.partial;
 
+                    // --- PROJECT TOOL SCOPE SYNC ---
+                    if (partial.projectTools !== undefined) {
+                        const allToolNames = this.agentManager.getTools().map(t => t.name);
+                        for (const toolName of allToolNames) {
+                            if (partial.projectTools.includes(toolName)) {
+                                await this._contextManager.addToolToProject(toolName);
+                            } else {
+                                await this._contextManager.removeToolFromProject(toolName);
+                            }
+                        }
+                        delete partial.projectTools;
+                    }
+
                     if (partial.clearBriefing && this._currentDiscussion) {
                         this._currentDiscussion.discussion_data_zone = "";
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                         this.updateContextAndTokens();
                         return;
+                    }
+
+                    // --- ROOT REDIRECTION LAYER ---
+                    // Some fields sent in the 'partial' actually belong to the root Discussion object
+                    if (this._currentDiscussion) {
+                        if (partial.importedTools !== undefined) {
+                            this._currentDiscussion.importedTools = partial.importedTools;
+                            delete partial.importedTools;
+                        }
+                        if (partial.importedSkills !== undefined) {
+                            this._currentDiscussion.importedSkills = partial.importedSkills;
+                            delete partial.importedSkills;
+                        }
                     }
 
                     // Handle specific diagram removal
@@ -5097,7 +5210,12 @@ Task:
                             this.agentManager.toggleAgentMode();
                         }
                     }
-                    
+
+                    // Refresh Plan HUD if plan exists (e.g. after adding tools)
+                    if (this.agentManager["currentPlan"]) {
+                        this.agentManager.displayPlan(this.agentManager["currentPlan"]);
+                    }
+
                     if (partial.webSearch !== undefined && this.agentManager) {
                         if (partial.webSearch) {
                             const tools = this.agentManager.getEnabledTools().map(t => t.name);
@@ -5119,12 +5237,18 @@ Task:
                         await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
                     }
 
+                    // Sync HUD state and re-tokenize since Tools/Skills might have changed
+                    this.updateContextAndTokens();
                     this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
                 }
                 break;
             case 'updateDiscussionPersonality':
                 if (this._currentDiscussion) {
                     this._currentDiscussion.personalityId = message.personalityId;
+                    const persona = this._personalityManager?.getPersonality(message.personalityId);
+                    if (persona) {
+                        this.log(`Personality switched to: ${persona.name}`);
+                    }
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
@@ -6164,6 +6288,29 @@ Task:
                 </div>
                 <div class="modal-footer">
                     <button id="skills-import-btn">Apply Selected</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="tool-picker-modal" class="modal">
+            <div class="modal-content" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h2 style="display:flex; align-items:center; gap:8px;"><i class="codicon codicon-wrench"></i> Equip Agent Tools</h2>
+                    <span class="close-btn" id="tool-picker-close-btn">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <p style="font-size:11px; opacity:0.7; margin-bottom:12px;">Equipped tools will be described to the AI. Keep the list small to save context tokens.</p>
+
+                    <div style="margin-bottom: 12px; position: sticky; top: 0; background: var(--vscode-editorWidget-background); z-index: 10;">
+                        <input type="text" id="tool-picker-search" class="search-modal-input" placeholder="Search tools by name or description..." style="width: 100%;">
+                    </div>
+
+                    <div id="tool-picker-list" style="max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;">
+                        <!-- Tools list injected here -->
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="tool-picker-apply-btn" class="code-action-btn apply-btn" style="width:100%; justify-content:center; height:32px;">Update Intelligence Capabilities</button>
                 </div>
             </div>
         </div>

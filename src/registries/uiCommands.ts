@@ -332,7 +332,19 @@ export const myCustomTool: ToolDefinition = {
                     content = contextData.projectTree;
                 } else if (type === 'files') {
                     title = "Project Context Files";
-                    content = `# 🧊 ATTACHED PROJECT CONTEXT\n\n` + contextData.selectedFilesContent;
+                    let filesContent = contextData.selectedFilesContent;
+
+                    // --- HUMAN-READABLE VISUAL RECOVERY ---
+                    // The selectedFilesContent contains [VISUAL CONTEXT INDEX: N] pointers.
+                    // We replace these with actual image tags for the UI preview.
+                    if (contextData.images && contextData.images.length > 0) {
+                        contextData.images.forEach((img, idx) => {
+                            const pointer = `[VISUAL CONTEXT INDEX: ${idx}]`;
+                            const imgTag = `\n<img src="${img.data}" style="max-width:100%; border-radius:8px; border:1px solid var(--vscode-widget-border); margin: 10px 0;" />\n`;
+                            filesContent = filesContent.replace(pointer, imgTag);
+                        });
+                    }
+                    content = `# 🧊 ATTACHED PROJECT CONTEXT\n\n` + filesContent;
                 } else if (type === 'chat') {
                     title = "Conversation History";
                     content = (disc?.messages || [])

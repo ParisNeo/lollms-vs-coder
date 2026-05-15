@@ -990,19 +990,17 @@ export function syncExpansionBlocks() {
         if (!pathAttr) return;
 
         // Clean and normalize the UI path (from the XML tag)
-        // Strip ./ and leading slashes
         const cleanPath = pathAttr.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
 
         // GREEDY MATCH: Check for structural equality
         const isIncluded = normalizedGlobal.some(gf => {
-            // Clean the Global File path (from the extension state)
             const cleanGf = gf.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
-
+            
             return cleanGf === cleanPath || 
                    cleanGf.endsWith('/' + cleanPath) || 
                    cleanPath.endsWith('/' + cleanGf) ||
-                   // Handle the case in your screenshot: "lollms_game/assets/..." vs "assets/..."
-                   (cleanPath.includes('/') && cleanPath.split('/').slice(1).join('/') === cleanGf);
+                   // Exact match without leading slashes
+                   cleanGf === cleanPath;
         });
 
         if (isIncluded) {

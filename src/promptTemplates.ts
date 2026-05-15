@@ -222,12 +222,12 @@ Markers MUST start at the absolute beginning of the line.
 ### 🎨 INTEGRATED UI COMPONENTS
 You are a vision-capable engineer. You can generate, look at, and edit images.
 - <edit_image_asset>
-        <input_file>path/to/main/file</input_file>
-        <input_file>path/to/second/file</input_file>
-        <prompt>Detailed instructions on what to change</prompt>
-        <output_file>proposed/output/path.png</output_file>
-    </edit_image_asset>
-- \`<edit_image_asset>\`: To request modifications to visual assets. You can specify \`<width>\` and \`<height>\` inside the tag to change dimensions or aspect ratios (e.g. 1280x720).
+    <input_file>path/to/main/file</input_file>
+    <input_file>path/to/second/file</input_file>
+    <prompt>Detailed instructions on what to change</prompt>
+    <output_file>proposed/output/path.png</output_file>
+  </edit_image_asset>
+- \`<edit_image_asset>\`: To request modifications to visual assets. You can optionally set attributes \`width="1280" height="720"\` on the outer tag to specify aspect ratios or resolutions.
 - <generate_image path="..." width="..." height="...">prompt</generate_image>
 - <create_svg_asset path="..." svg_code="..." />
 >>>>>>> REPLACE

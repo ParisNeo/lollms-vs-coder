@@ -2,12 +2,22 @@ import { TagPlugin, PluginContext } from '../pluginSystem';
 
 export const imageAssetPlugin: TagPlugin = {
     id: 'edit_image_asset',
-    tagPattern: /<edit_image_asset>([\s\S]*?)<\/edit_image_asset>/gi,
+    // Captures attributes in group 1, inner content in group 2
+    tagPattern: /<edit_image_asset\b([^>]*?)>([\s\S]*?)<\/edit_image_asset>/gi,
 
     render: (match, context) => {
         console.log(`[Plugin:Image] Match found in message ${context.messageId}`);
-        const inner = match[1];
-        
+        const attrPart = match[1] || "";
+        const inner = match[2] || "";
+
+        // Attribute Parsing logic
+        const attrs: any = {};
+        const attrRegex = /(\w+)=["']([^"']*)["']/g;
+        let m;
+        while ((m = attrRegex.exec(attrPart)) !== null) {
+            attrs[m[1]] = m[2];
+        }
+
         // Helper to extract nested XML content
         const extract = (tag: string) => {
             const regex = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i');
@@ -37,10 +47,10 @@ export const imageAssetPlugin: TagPlugin = {
         const folder = lastSlash !== -1 ? outputFile.substring(0, lastSlash) : '.';
         const filename = lastSlash !== -1 ? outputFile.substring(lastSlash + 1) : outputFile;
         
-        // --- DYNAMIC DIMENSIONS ---
-        // Look for <width> and <height> tags if provided by the AI
-        const targetWidth = extract('width') || "1024";
-        const targetHeight = extract('height') || "1024";
+        // --- DYNAMIC DIMENSIONS (OPTIONAL ATTRIBUTES) ---
+        // Prioritize attributes on the outer tag, then fall back to square defaults
+        const targetWidth = attrs.width || "1024";
+        const targetHeight = attrs.height || "1024";
 
         // Use a predictable ID based on message and a hash of the prompt to avoid collisions
         const blockId = `img-edit-${context.messageId}`;

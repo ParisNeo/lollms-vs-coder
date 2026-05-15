@@ -32,8 +32,9 @@ export const contextExpansionPlugin: TagPlugin = {
 
         // --- RESILIENT PATH MATCHING ---
         const isPathInContext = (p: string) => {
+            if (!p) return false;
             const cleanP = p.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
-            return currentFiles.some((cf: string) => {
+            return (currentFiles || []).some((cf: string) => {
                 const cleanCf = cf.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
                 return cleanCf === cleanP || cleanCf.endsWith('/' + cleanP) || cleanP.endsWith('/' + cleanCf);
             });
@@ -45,13 +46,12 @@ export const contextExpansionPlugin: TagPlugin = {
             if (!isIncluded) allIncluded = false;
 
             const itemStyle = isIncluded ? 'border-color: var(--vscode-charts-green); background: rgba(15, 157, 88, 0.1); border-left: 4px solid var(--vscode-charts-green);' : '';
-            const iconClass = isIncluded ? 'codicon-check' : 'codicon-file-add';
             const iconStyle = isIncluded ? 'color: var(--vscode-charts-green);' : '';
 
             return `
             <div class="expansion-file-item" data-path="${f}" data-message-id="${context.messageId}" style="display:flex; align-items:center; padding: 6px 12px; margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; ${itemStyle}">
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <span class="codicon ${iconClass}" style="${iconStyle}"></span>
+                    <span class="codicon ${isIncluded ? 'codicon-check' : 'codicon-file-add'}" style="${iconStyle}"></span>
                     <span class="file-label" style="font-family: var(--vscode-editor-font-family); font-size: 12px;">${f}</span>
                 </div>
             </div>`;

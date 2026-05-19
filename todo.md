@@ -46,7 +46,8 @@ Add the possibility to force a model name without scan.
 Implement add from search feature to be abele to add new files to context by doing a search and selecting the files that match that search
 UI problems in the modify with lollms ui
 
-When there are images in the prompt, the user bubble is blank.
+When there are images in the prompt, it is not rendered in the bubble.
+When a hunk is applied its content disapears and we can't bring it back (it needs to be uncollapsible)
 
 
 # IMPORTANT

@@ -2,14 +2,16 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { CodeGraphManager } from '../codeGraphManager';
 import { ChatPanel } from './chatPanel/chatPanel';
+import { LollmsAPI } from '../lollmsAPI';
 
 export class CodeExplorerPanel {
     public static currentPanel: CodeExplorerPanel | undefined;
     private readonly panel: vscode.WebviewPanel;
     private readonly extensionUri: vscode.Uri;
     private readonly graphManager: CodeGraphManager;
+    private readonly lollmsApi?: LollmsAPI;
 
-    static createOrShow(extensionUri: vscode.Uri, graphManager: CodeGraphManager) {
+    static createOrShow(extensionUri: vscode.Uri, graphManager: CodeGraphManager, lollmsApi?: LollmsAPI) {
         const column = vscode.window.activeTextEditor?.viewColumn;
 
         if (CodeExplorerPanel.currentPanel) {
@@ -30,17 +32,18 @@ export class CodeExplorerPanel {
             }
         );
 
-        CodeExplorerPanel.currentPanel = new CodeExplorerPanel(panel, extensionUri, graphManager);
+        CodeExplorerPanel.currentPanel = new CodeExplorerPanel(panel, extensionUri, graphManager, lollmsApi);
     }
 
     public focusSymbol(label: string, type: string) {
         this.panel.webview.postMessage({ command: 'focusNode', label, type });
     }
 
-    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, graphManager: CodeGraphManager) {
+    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, graphManager: CodeGraphManager, lollmsApi?: LollmsAPI) {
         this.panel = panel;
         this.extensionUri = extensionUri;
         this.graphManager = graphManager;
+        this.lollmsApi = lollmsApi;
 
         this.panel.webview.html = this.html(this.panel.webview);
         this.panel.onDidDispose(() => CodeExplorerPanel.currentPanel = undefined);
@@ -56,15 +59,61 @@ export class CodeExplorerPanel {
                 );
                 
                 if (targetNode) {
-                    // Switch from "Execute" to "Focus Visual"
                     this.focusSymbol(targetNode.label, targetNode.type);
                 } else {
                     vscode.window.showWarningMessage(`Symbol "${msg.symbol}" not found in graph.`);
                 }
             }
 
+            if (msg.command === 'translateNLQuery') {
+                if (!this.lollmsApi) {
+                    this.panel.webview.postMessage({ command: 'nlTranslationResult', error: 'AI engine not configured.' });
+                    return;
+                }
+
+                const systemPrompt = `You are a SPARQL-lite Translation Expert.
+Your only job is to translate a natural language query into a single valid SPARQL-lite query based on the LoLLMs Source Code Ontology.
+
+### ONTOLOGY SPECIFICATION:
+Classes:
+- s:File (e.g. ?x type 'file')
+- s:Class (e.g. ?x type 'class')
+- s:Function (e.g. ?x type 'function')
+- s:Method (e.g. ?x type 'method')
+- s:Library (e.g. ?x type 'library')
+
+Properties:
+- s:contains (e.g. ?x contains ?y)
+- s:imports (e.g. ?x imports ?y)
+- s:calls (e.g. ?x calls ?y)
+- s:inherits (e.g. ?x inherits ?y)
+- s:name (e.g. ?x name 'filename')
+- s:path (e.g. ?x path 'relative/path')
+
+### RULES:
+1. Output ONLY the SPARQL-lite query. No explanations, no markdown code blocks.
+2. If a specific name is mentioned, use single quotes (e.g. 'auth.py').
+3. Keep it simple.
+
+### EXAMPLES:
+- "find all files that import utils" -> SELECT ?x WHERE { ?x imports ?y . ?y name 'utils' }
+- "what calls main" -> SELECT ?x WHERE { ?x calls 'main' }
+- "all functions in auth" -> SELECT ?x WHERE { ?y name 'auth' . ?y contains ?x . ?x type 'function' }
+
+Translate: "${msg.text}"`;
+
+                try {
+                    const response = await this.lollmsApi.sendChat([
+                        { role: 'system', content: systemPrompt }
+                    ]);
+                    const query = response.trim().replace(/```sparql|```/g, '').trim();
+                    this.panel.webview.postMessage({ command: 'nlTranslationResult', query });
+                } catch(e: any) {
+                    this.panel.webview.postMessage({ command: 'nlTranslationResult', error: e.message });
+                }
+            }
+
             if (msg.command === 'ready') {
-                // Ensure manager is synchronized with the actual workspace root before building
                 const folders = vscode.workspace.workspaceFolders;
                 if (folders && folders.length > 0) {
                     this.graphManager.setWorkspaceRoot(folders[0].uri);
@@ -76,7 +125,6 @@ export class CodeExplorerPanel {
                     : undefined;
 
                 if (this.graphManager.getGraphData().nodes.length === 0 && this.graphManager.getBuildState() === 'idle') {
-                    // Start build asynchronously, focusing on current file if possible
                     this.graphManager.buildGraph(focusPath).then(() => this.update());
                     this.update();
                 } else {
@@ -105,10 +153,8 @@ export class CodeExplorerPanel {
             }
 
             if (msg.command === 'regenerate') {
-                // Wipe existing data completely first
                 this.graphManager.reset();
                 this.update();
-                // Trigger full rebuild
                 this.graphManager.buildGraph().then(() => this.update());
                 this.update();
             }
@@ -122,11 +168,9 @@ export class CodeExplorerPanel {
                 const mermaid = this.graphManager.generateMermaid(msg.view);
                 const prompt = `Here is the current code structure for analysis:\n\n\`\`\`mermaid\n${mermaid}\n\`\`\``;
                 
-                // 1. Switch sidebar focus to Chat
                 vscode.commands.executeCommand('lollms-vs-coder.showChatTab');
 
                 if (ChatPanel.currentPanel) {
-                    // 2a. Add to existing chat
                     ChatPanel.currentPanel.addMessageToDiscussion({
                         role: 'user',
                         content: prompt
@@ -134,8 +178,6 @@ export class CodeExplorerPanel {
                     ChatPanel.currentPanel._panel.reveal();
                     vscode.window.showInformationMessage("Architecture graph added to active chat.");
                 } else {
-                    // 2b. Create new chat and inject content
-                    // We use the existing command that handles creation and initial prompt injection
                     vscode.commands.executeCommand('lollms-vs-coder.newDiscussionFromClipboard', prompt);
                     vscode.window.showInformationMessage("Starting new discussion with architecture graph.");
                 }
@@ -159,7 +201,6 @@ export class CodeExplorerPanel {
                         vscode.window.showInformationMessage('Mermaid diagram exported.');
                     }
                 } else {
-                    // Delegate visual exports to webview
                     this.panel.webview.postMessage({ 
                         command: 'triggerExport', 
                         format: format === 'PNG Image' ? 'png' : 'svg',
@@ -183,7 +224,6 @@ export class CodeExplorerPanel {
                 if (uri) {
                     let buffer: Buffer;
                     if (format === 'png') {
-                        // Remove header "data:image/png;base64,"
                         const base64Data = content.replace(/^data:image\/png;base64,/, "");
                         buffer = Buffer.from(base64Data, 'base64');
                     } else {
@@ -209,7 +249,9 @@ export class CodeExplorerPanel {
             state: this.graphManager.getBuildState(),
             lastError: this.graphManager.getLastError(),
             classDiagram: this.graphManager.generateMermaid('class_diagram'),
-            functionSignatures: this.graphManager.generateMermaid('function_signatures')
+            functionSignatures: this.graphManager.generateMermaid('function_signatures'),
+            moduleDependencyGraph: this.graphManager.generateMermaid('module_dependency_graph'),
+            externalLibraryGraph: this.graphManager.generateMermaid('external_library_graph')
         });
     }
 
@@ -243,6 +285,7 @@ export class CodeExplorerPanel {
         gap: 10px;
         align-items: center;
         flex-shrink: 0;
+        flex-wrap: wrap;
     }
     #content-area {
         flex: 1;
@@ -253,7 +296,7 @@ export class CodeExplorerPanel {
         width: 100%;
         height: 100%;
         background-color: var(--vscode-editor-background);
-        display: none; /* Hidden by default until render */
+        display: none;
     }
     #mermaid-container {
         width: 100%;
@@ -303,7 +346,7 @@ export class CodeExplorerPanel {
         top: 0; left: 0; right: 0; bottom: 0;
         background: rgba(0,0,0,0.5);
         color: white;
-        display: none; /* Hidden by default */
+        display: none;
         justify-content: center;
         align-items: center;
         z-index: 100;
@@ -340,18 +383,44 @@ export class CodeExplorerPanel {
         <select id="view">
             <option value="call_graph">Call Graph</option>
             <option value="import_graph">Import Graph</option>
+            <option value="module_dependency_graph">Module/Folder Dependency Graph</option>
+            <option value="external_library_graph">External Library Graph</option>
+            <option value="hotspot_complexity_graph">Complexity Hotspot Map</option>
             <option value="class_diagram">Inheritance Diagram</option>
             <option value="function_signatures">Function Signatures</option>
         </select>
-        <div style="position:relative; flex:1; display:flex; gap:5px;">
-            <input type="text" id="symbol-search" list="symbols-list" placeholder="Search symbol or SPARQL...">
+        
+        <select id="layout-style" title="Arrangement Style">
+            <option value="organic">Organic (Force-Directed)</option>
+            <option value="hierarchical_ud">Hierarchical (Up-Down)</option>
+            <option value="hierarchical_lr">Hierarchical (Left-Right)</option>
+            <option value="circular">Circular</option>
+            <option value="grid">Grid</option>
+        </select>
+
+        <select id="grouping-mode" title="Grouping Mode">
+            <option value="none">No Grouping</option>
+            <option value="file">Group by File</option>
+            <option value="type">Group by Type</option>
+        </select>
+
+        <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; user-select:none;">
+            <input type="checkbox" id="hide-orphans" style="width:auto; margin:0;" /> Hide Orphans
+        </label>
+
+        <div style="position:relative; flex:1; display:flex; gap:5px; min-width:180px;">
+            <input type="text" id="symbol-search" list="symbols-list" placeholder="Search, SPARQL, or ask in plain English...">
             <datalist id="symbols-list"></datalist>
-            <button id="run">Run / Query</button>
+            <button id="run" title="Run manual query">Query</button>
+            <button id="ai-translate-btn" title="Translate plain English to SPARQL with AI" style="background-color: var(--vscode-charts-purple); color: white; display: ${this.lollmsApi ? 'inline-block' : 'none'};"><span class="codicon codicon-sparkle"></span> Translate</button>
             <select id="sparql-examples" style="max-width:100px;">
                 <option value="">Examples</option>
                 <option value="SELECT ?x WHERE { ?x type 'class' }">All Classes</option>
-                <option value="SELECT ?x WHERE { ?x imports 'auth.py' }">Imports Auth</option>
+                <option value="SELECT ?x WHERE { ?x imports ?y . ?y name 'utils' }">Imports 'utils'</option>
                 <option value="SELECT ?target WHERE { 'main' calls ?target }">Called by Main</option>
+                <option value="SELECT ?method WHERE { ?class name 'authservice' . ?class contains ?method . ?method type 'method' }">AuthService Methods</option>
+                <option value="SELECT ?file WHERE { ?file imports ?lib . ?lib type 'library' }">Uses Ext Libraries</option>
+                <option value="SELECT ?child WHERE { ?child inherits ?parent . ?parent name 'base' }">Inherits from 'Base'</option>
             </select>
         </div>
         <button id="rebuild" title="Update current view with new changes">Refresh</button>

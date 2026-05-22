@@ -31,6 +31,12 @@ export async function hardenWorkspace(folder: vscode.WorkspaceFolder): Promise<v
             config.update('search.exclude', searchToExclude, vscode.ConfigurationTarget.WorkspaceFolder),
             config.update('python.analysis.exclude', pythonExclude, vscode.ConfigurationTarget.WorkspaceFolder),
             config.update('python.analysis.ignore', pythonExclude, vscode.ConfigurationTarget.WorkspaceFolder),
+            // BLOCK ISORT & PYLANCE FROM CRASHING
+            config.update('isort.check', false, vscode.ConfigurationTarget.WorkspaceFolder),
+            config.update('isort.importStrategy', 'useBundled', vscode.ConfigurationTarget.WorkspaceFolder),
+            config.update('black-formatter.importStrategy', 'useBundled', vscode.ConfigurationTarget.WorkspaceFolder),
+            config.update('flake8.importStrategy', 'useBundled', vscode.ConfigurationTarget.WorkspaceFolder),
+            config.update('python.analysis.indexing', false, vscode.ConfigurationTarget.WorkspaceFolder),
             // Disable 'Organize Imports' on save which causes deadlocks during AI file writes
             config.update('editor.codeActionsOnSave', { "source.organizeImports": "never" }, vscode.ConfigurationTarget.WorkspaceFolder),
             // Mute linting and indexing for internal scripts to prevent host overhead
@@ -210,6 +216,7 @@ export interface DiscussionCapabilities {
     temperature: number;
     ttftTimeout: number;
     interTokenTimeout: number;
+    contextGovernorThreshold: number; // Percentage (0-100)
     guiState?: {
         agentBadge: boolean;
         autoContextBadge: boolean;
@@ -349,21 +356,36 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         }
 
         if (match) {
-            // SUCCESS: Match found. Now reconstruct the file.
-            const targetIndent = indentDelta || "";
-            
-            // Re-apply original indentation to the replacement lines
+            // SUCCESS: Match found. Now reconstruct the file with strict indentation re-basing.
+
+            // 1. Find the first non-empty line index in the SEARCH block to use as anchor
+            const firstContentIdx = searchLines.findIndex(l => l.trim().length > 0);
+            const anchorIdx = firstContentIdx === -1 ? 0 : firstContentIdx;
+
+            // 2. Calculate actual file indentation at the match site
+            const fileAnchorLine = contentLines[i + anchorIdx];
+            const fileIndent = fileAnchorLine?.match(/^\s*/)?.[0] || "";
+
+            // 3. Calculate AI's search anchor indentation
+            const aiAnchorLine = searchLines[anchorIdx];
+            const aiIndent = aiAnchorLine?.match(/^\s*/)?.[0] || "";
+
+            // 4. Calculate the rigid indentation delta
+            // If file has 8 spaces and AI used 4, delta is +4.
+            // If file has 4 spaces and AI used 8, delta is -4.
+            const indentDelta = fileIndent.length - aiIndent.length;
+
             const adjustedReplace = replaceLines.map(line => {
                 if (line.trim().length === 0) return "";
-                // If AI already provided indentation, we try to preserve the relative nesting
-                const aiIndent = line.match(/^\s*/)?.[0] || "";
-                const searchBaseIndent = searchLines.find(l => l.trim().length > 0)?.match(/^\s*/)?.[0] || "";
-                
-                if (aiIndent.startsWith(searchBaseIndent)) {
-                    // Re-base AI indentation onto the file's indentation
-                    return targetIndent + aiIndent.substring(searchBaseIndent.length) + line.trimStart();
-                }
-                return targetIndent + line.trimStart();
+
+                const currentIndentMatch = line.match(/^\s*/);
+                const currentIndentStr = currentIndentMatch ? currentIndentMatch[0] : "";
+
+                // Calculate the new indentation length by applying the fixed delta
+                const newIndentLength = Math.max(0, currentIndentStr.length + indentDelta);
+
+                // Reconstruct the line with the shifted indentation
+                return " ".repeat(newIndentLength) + line.trimStart();
             });
 
             const before = contentLines.slice(0, i);
@@ -626,23 +648,32 @@ export async function getProcessedSystemPrompt(
 
     let operationalMandate = "";
 
-    if (isAutonomous || isBuilder) {
+    if (promptType === 'surgical_agent') {
+        // Surgical agents are strictly text-to-code modifiers and must not have any tools or system prompts about tools
+        operationalMandate = "\n### 🚫 STRICT OPERATIONAL RULE\nYou are a single-file refactoring engine. You are FORBIDDEN from using, referencing, or outputting any JSON tool calls, XML tags, or external commands. Your only authorized action is to output the SEARCH/REPLACE block modifying the code.\n";
+    } else if (isAutonomous || isBuilder) {
         // Builders and Agents have full tool access
         operationalMandate = "\n### 🦾 OPERATIONAL AUTHORITY: ACTIVE\nYou have permission to use JSON tool calls to interact with the filesystem, terminal, and vision systems directly.\n";
     } else {
-        // Discussion mode is strictly Tag-Based
+        // --- DISCUSSION MODE: SCOPE-AWARE FILTERING ---
+        // Only show tools that the user has explicitly equipped in the HUD
+        const allTools = (context as any)?.toolManager?.getEnabledTools() || [];
+        const HUD_SAFE_LIST = ['generate_image', 'edit_image_asset', 'add_files_to_context', 'record_milestone', 'record_discovery'];
+
+        // Filter: Show only if in HUD safe list OR if explicitly passed in context (Equipped)
+        const activeTools = allTools.filter((t: any) => HUD_SAFE_LIST.includes(t.name));
+
         operationalMandate = `
     ### 🛡️ DISCUSSION MODE: USER-VALIDATED TOOLS
-    You are currently in 'Discussion Mode'. While you cannot execute code autonomously, you can request that the user performs actions for you.
+    You are currently in 'Discussion Mode'. You cannot execute code autonomously. To perform actions, you MUST request user approval by outputting specific XML tags.
 
-    **HOW TO REQUEST ACTIONS:**
-    You have a set of equipped tools. To use one, output its specific XML tag. The user will see an 'Execute' button and must manually approve the run.
+    **STRICT RULES**: 
+    1. **NO JSON**: Do NOT output \`{"tool": "..."}\` JSON blocks. They will be ignored.
+    2. **TAGS ONLY**: You MUST use the \`<lollms_tool />\` or specialized tags listed below.
+    3. **ONE AT A TIME**: Request exactly one action per turn.
 
-    ### 🛠️ EQUIPPED TOOL TAGS (YOUR CAPABILITIES)
-    ${(context as any).toolManager?.getEnabledTools().map((t: any) => `- **${t.name}**: ${t.description}\n  Tag: \`${t.manualTagFormat || `<lollms_tool name="${t.name}" params='{...}' />`}\``).join('\n')}
-
-    **STRICT RULES:**
-    1. **ONE AT A TIME**: Do not request more than one tool per response.
+    ### 🛠️ EQUIPPED CAPABILITIES (USE THESE TAGS)
+    ${activeTools.map((t: any) => `- **${t.name}**: ${t.description}\n  Tag: \`${t.manualTagFormat || `<lollms_tool name="${t.name}" params='{...}' />`}\``).join('\n')}
     2. **JSON PARAMS**: The \`params\` attribute MUST be a single-line, valid JSON string.
     3. **WAIT FOR OUTPUT**: Once you output the tag, the UI will present an 'Execute' button to the user. Do not assume the action is finished until the user clicks it and provides the output in the next turn.
 
@@ -690,6 +721,7 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
     'mixtral-8x7b': 32768,
     'deepseek-v3': 64000,
     'deepseek-r1': 64000,
+    'lollms': 200000, // Modern large-context standard
     'phi3': 128000,
     'command-r': 128000,
     'kimi': 128000,

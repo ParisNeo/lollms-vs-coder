@@ -19,8 +19,6 @@ import { RLMDatabaseManager } from './rlmDatabaseManager';
 import { FailureMemory } from './agent/failureHandling'; 
 import { Logger } from './logger';
 
-
-// Interface decoupling the UI from the logic
 export interface IAgentUI {
     addMessageToDiscussion(message: ChatMessage): Promise<void>;
     updateMessageContent?(messageId: string, newContent: string): Promise<void>;
@@ -28,7 +26,6 @@ export interface IAgentUI {
     updateGeneratingState(): void;
     requestUserInput(question: string, signal: AbortSignal, options?: { isAgentZone?: boolean }): Promise<string>;
     updateAgentMode(isActive: boolean): void;
-    // New methods to allow the Manager to control the pipeline stages
     runVerificationAgent(content: string, signal: AbortSignal): Promise<string>;
     executeAutomationPipeline(content: string, messageId: string, signal: AbortSignal, processId: string): Promise<void>;
 }
@@ -61,23 +58,16 @@ export class AgentManager {
 
     private failureMemory: FailureMemory = new FailureMemory();
     private isDebugging: boolean = false;
-    public projectMemoryManager?: any; // Required for ChatPanel to process memory tags
+    public projectMemoryManager?: any; 
     public personalityManager?: PersonalityManager;
     
-    /**
-     * Explicitly track completed actions for prompt injection to prevent
-     * the Architect from planning steps it has already finished.
-     */
     private completedActionsHistory: string[] = [];
 
     public rlmDb?: RLMDatabaseManager;
-    /**
-     * Chapter 2: State Management Layers
-     * Explicit tracking of different time horizons for the agent.
-     */
+
     public sessionState: {
-        activeEnv?: string; // Legacy fallback
-        projectEnvironments: Record<string, string>; // Map of project root to env path
+        activeEnv?: string; 
+        projectEnvironments: Record<string, string>; 
         replVariables: Record<string, any>; 
         installedPackages: string[];
         environmentHistory: string[];
@@ -88,9 +78,9 @@ export class AgentManager {
         unverifiedFiles: Set<string>; 
         lastFilesystemWriteTime: number; 
         blacklistedTools: Set<string>; 
-        extensionVersion: string; // Track version to invalidate blacklist on update
+        extensionVersion: string; 
         backgroundProcesses: Map<string, { pid: number, logFile: string, startTime: number }>;
-        } = {
+    } = {
         projectEnvironments: {},
         replVariables: {},
         installedPackages: [],
@@ -104,7 +94,7 @@ export class AgentManager {
         blacklistedTools: new Set(),
         extensionVersion: "",
         backgroundProcesses: new Map()
-        };
+    };
 
     constructor(
         private ui: IAgentUI,
@@ -124,7 +114,6 @@ export class AgentManager {
         this.planParser = new PlanParser(this.lollmsApi, this.contextManager, this.toolManager);
         this.rlmDb = rlmDb;
 
-        // --- MITIGATION: ANTI-NESTING PROTOCOL ---
         this.sessionState.workingMemory.push(
             "LESSON: Avoid nesting shells. Do not use 'powershell -Command' or 'bash -c' inside 'execute_command'. " +
             "Submit the raw command directly. For complex logic involving pipes or variables, always generate a temporary script in the target language (py, js, sh) first."
@@ -138,10 +127,9 @@ export class AgentManager {
         }
 
         this.setupDreamScheduler();
-        }
+    }
 
-        private setupDreamScheduler() {
-        // Check every hour
+    private setupDreamScheduler() {
         setInterval(async () => {
             const config = vscode.workspace.getConfiguration('lollmsVsCoder.memory');
             if (!config.get<boolean>('autoDream')) return;
@@ -154,9 +142,9 @@ export class AgentManager {
                 Logger.info("Genie: Starting scheduled Dream Cycle...");
                 await this.projectMemoryManager.performDreamCycle();
             }
-        }, 60000); // Check once a minute
-        }
-    // Add this helper method inside the AgentManager class
+        }, 60000); 
+    }
+
     private async condenseObservations(model: string, signal: AbortSignal) {
         if (!this.currentPlan || !this.currentPlan.observations) return;
 
@@ -182,6 +170,7 @@ Keep it strictly technical and extremely concise.`
             console.error("Compression failed", e);
         }
     }
+
     public setUI(ui: IAgentUI) {
         this.ui = ui;
         this.ui.updateAgentMode(this.isActive);
@@ -204,11 +193,25 @@ Keep it strictly technical and extremely concise.`
     public getEnabledTools(): ToolDefinition[] {
         const policies = this.currentDiscussion?.capabilities?.toolPolicies || {};
         const isBuilderMode = this.currentDiscussion?.capabilities?.workerType === 'builder';
+        const isAgentMode = this.isActive; 
 
-        // --- HUD-BASED TOOL FILTERING ---
-        // If the user has equipped specific tools in the HUD, we prioritize that list.
-        const equippedTools = this.currentDiscussion?.importedTools || [];
-        const hasEquippedList = equippedTools.length > 0;
+        const discussionTools = this.currentDiscussion?.importedTools || [];
+        const projectTools = (this as any)._projectToolsCache || []; 
+
+        const allEquipped = new Set([...discussionTools, ...projectTools]);
+
+        const DISCUSSION_SAFE_LIST = [
+            'add_files_to_context',
+            'remove_files_from_context',
+            'move_file',
+            'delete_file',
+            'generate_image',
+            'edit_image_asset',
+            'read_code_graph',
+            'record_milestone',
+            'record_discovery',
+            'smart_scout'
+        ];
 
         const attachments = this.currentDiscussion?.messages
             .filter(m => (m as any).attachmentData).length || 0;
@@ -219,23 +222,19 @@ Keep it strictly technical and extremely concise.`
         }
 
         const tools = this.toolManager.getAllTools().filter(t => {
-            // --- CIRCUIT BREAKER: HIDE BROKEN TOOLS ---
             if (this.sessionState.blacklistedTools.has(t.name)) return false;
+            if (t.name === 'submit_response') return true;
+            if (t.name === 'read_discussion_file' && attachments === 0) return false;
 
-            // --- HUD INVENTORY FILTER ---
-            // If the user manually equipped tools, only show those.
-            // Exception: 'submit_response' and 'record_milestone' are infrastructure and always present.
-            const isInfra = ['submit_response', 'record_milestone', 'record_discovery'].includes(t.name);
-            if (hasEquippedList && !isInfra && !equippedTools.includes(t.name)) {
-                return false;
+            const isEquipped = allEquipped.has(t.name);
+            const isDefaultDiscussion = DISCUSSION_SAFE_LIST.includes(t.name);
+
+            if (!isAgentMode) {
+                if (!isDefaultDiscussion && !isEquipped) return false;
             }
 
-            // --- BUILDER SAFETY LOCKDOWN ---
             if (isBuilderMode && t.permissionGroup === 'shell_execution') return false;
 
-            // --- HIDE read_discussion_file IF NO ATTACHMENTS ---
-            if (t.name === 'read_discussion_file' && attachments === 0) return false;
-            // Determine default if not set
             let policy = policies[t.name];
             if (!policy) {
                 const sensitiveGroups = ['shell_execution', 'filesystem_write'];
@@ -277,18 +276,15 @@ Keep it strictly technical and extremely concise.`
             });
         } else {
             this.ui.addMessageToDiscussion({ role: 'system', content: '🤖 **Agent Mode Deactivated.**' });
-            // PRESERVE THE PLAN: We no longer nullify currentPlan here.
-            // We only stop the active loop.
             if (this.currentPlan) {
                 this.currentPlan.status = 'stale';
                 this.displayPlan(this.currentPlan);
-                }
+            }
         }
         this.ui.updateAgentMode(this.isActive);
     }
 
     public getMetrics() {
-        // Calculate raw data weights for the Brain Bar
         const memoryChars = this.sessionState.workingMemory.join('\n').length;
         const scratchpadChars = this.currentPlan?.scratchpad?.length || 0;
         const historyChars = this.completedActionsHistory.join('\n').length;
@@ -309,14 +305,10 @@ Keep it strictly technical and extremely concise.`
             await this.discussionManager.saveDiscussion(this.currentDiscussion);
         }
 
-        // Inject metrics into the UI update
         const metrics = this.getMetrics();
         this.ui.displayPlan(plan ? { ...plan, metrics } : null);
     }
 
-    /**
-     * Generates a self-contained HTML report of the entire mission.
-     */
     public async exportTimelineToHtml() {
         if (!this.currentPlan) return;
 
@@ -351,16 +343,11 @@ Keep it strictly technical and extremely concise.`
         };
         this.currentPlan.attempts.push(archive);
     }
-/**
-     * Programmatic implementation of Phase 0.
-     * Ensures the Genie never works on a dangerous or unstable environment without consent.
-     */
+
     private async preFlightSafetyCheck(folder: vscode.WorkspaceFolder, signal: AbortSignal): Promise<boolean> {
-        // --- RADICAL SHIFT: SOVEREIGN ISOLATION ---
         const { hardenWorkspace } = require('./utils');
         await hardenWorkspace(folder);
 
-        // If we already have a plan and history, safety has already been established
         if (this.currentPlan && this.completedActionsHistory.length > 0) {
             this.sessionState.isSafetyCheckPassed = true;
             return true;
@@ -376,7 +363,6 @@ Keep it strictly technical and extremely concise.`
 
         Logger.info(`[Phase 0] Starting Pre-Flight Safety Check for: ${folder.name}`);
         
-        // --- FIXED: Use a managed timeout helper to prevent unhandled rejections ---
         const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
             let timeoutHandle: NodeJS.Timeout;
             const timeoutPromise = new Promise<never>((_, reject) => {
@@ -398,7 +384,6 @@ Keep it strictly technical and extremely concise.`
             isRepo = false; 
         }
 
-        // Ensure we have a plan object to show the form in the sidebar
         if (!this.currentPlan) {
             this.currentPlan = {
                 objective: "Initializing Safety Protocols...",
@@ -430,24 +415,21 @@ Keep it strictly technical and extremely concise.`
                 retries: 0
             };
             this.currentPlan!.tasks.push(safetyTask);
-            await this.displayAndSavePlan(this.currentPlan);
+            await this.displayPlan(this.currentPlan);
 
             const response = await this.ui.requestUserInput(formPrompt, signal, { isAgentZone: true });
 
-            // Remove the form task from sidebar immediately
             if (this.currentPlan) {
                 this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.id !== -1);
-                await this.displayAndSavePlan(this.currentPlan);
+                await this.displayPlan(this.currentPlan);
             }
 
             let choice = this.parseFormResponse(response, "no_git_repo");
-
             const safeChoice = (choice || "").toLowerCase().trim();
 
             if (safeChoice === 'init') {
                 this.ui.addMessageToDiscussion({ role: 'system', content: `⚙️ **Initializing Atomic Clean Repository...**` });
 
-                // Use the same timeout safety for init
                 const initPromise = this.runCommand('git init', signal);
                 let timeoutHandle: NodeJS.Timeout;
                 const timeoutP = new Promise<any>((_, reject) => timeoutHandle = setTimeout(() => reject(new Error("Git init timed out")), 15000));
@@ -499,19 +481,13 @@ Keep it strictly technical and extremely concise.`
 
                 const ignorePath = path.join(folder.uri.fsPath, '.gitignore');
 
-                // 1. Write the file
                 await fs.writeFile(ignorePath, ignoreContent, 'utf8');
 
-                // 2. COMMIT THE IGNORE FIRST (Phase 1)
-                // This makes the ignore rules the "law" of the repo before any mass add
                 await this.runCommand('git add .gitignore', signal);
                 await this.runCommand('git commit -m "chore: establish ignore rules"', signal);
 
-                // 3. PURGE AND RE-ADD (Phase 2)
-                // We reset the index to be absolutely sure nothing is lingering from a previous failed attempt
                 await this.runCommand('git reset', signal);
                 await this.runCommand('git add .', signal);
-
                 await this.runCommand('git commit -m "Initial commit (clean content)"', signal);
 
                 this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Repository Secured**: Ignore rules established and confirmed. \`venv\` is excluded.` });
@@ -520,16 +496,12 @@ Keep it strictly technical and extremely concise.`
                 this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Proceeding without Git.** Automatic rollbacks are disabled.` });
                 return true;
             } else {
-                // stop, cancelled, or any other value
                 this.ui.addMessageToDiscussion({ role: 'system', content: `🛑 **Operation cancelled** — no Git repository and user declined to continue.` });
                 return false;
             }
         }
 
-        // If we're proceeding without git (continue path), we already returned above.
-        // From here on, we assume git is available.
         if (!isRepo) {
-            // Defensive: should never reach here, but prevents downstream errors
             return false;
         }
 
@@ -557,20 +529,16 @@ Keep it strictly technical and extremely concise.`
                 retries: 0
             };
 
-            // Push the safety task to the plan for internal tracking
             this.currentPlan!.tasks = [safetyTask];
-            await this.displayAndSavePlan(this.currentPlan);
+            await this.displayPlan(this.currentPlan);
 
-            // RENDER DIRECTLY IN DISCUSSION:
-            // We put the form in a system message so it appears exactly where the user is looking.
             Logger.info(`[Phase 0] Emitting Safety Form to Discussion Stream...`);
             const response = await this.ui.requestUserInput(`🛡️ **Safety Gate**: Uncommitted changes detected.\n\n${formPrompt}`, signal, { isAgentZone: false });
             Logger.info(`[Phase 0] Raw response received from UI: "${response}"`);
 
-            // Remove the form task from sidebar immediately
             if (this.currentPlan) {
                 this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.id !== -1);
-                await this.displayAndSavePlan(this.currentPlan);
+                await this.displayPlan(this.currentPlan);
             }
 
             let choice = this.parseFormResponse(response, "preflight_safety");
@@ -578,12 +546,10 @@ Keep it strictly technical and extremely concise.`
             Logger.info(`[Phase 0] Parsed safeChoice: "${safeChoice}"`);
 
             if (safeChoice === 'stash') {
-                // Perform silently
                 await this.gitIntegration.stash(folder, "Genie: Stashed before mission");
                 this.completedActionsHistory.push(`[GIT] 📦 STASHED: Uncommitted changes moved to stash.`);
                 this.sessionState.isSafetyCheckPassed = true;
             } else if (safeChoice === 'commit') {
-                // Perform silently without adding system messages
                 const msg = await this.gitIntegration.generateCommitMessage(folder);
                 const finalMsg = msg?.trim() || "Genie: pre-flight backup";
                 await this.gitIntegration.stageAllAndCommit(finalMsg, folder);
@@ -608,14 +574,12 @@ Keep it strictly technical and extremely concise.`
             const gitMsg = `[GIT] 🌿 BRANCHED: Switched from \`${currentBranch}\` to isolated workspace \`${branchName}\`.`;
             this.completedActionsHistory.push(gitMsg);
 
-            // Emit Sovereign Git Card to Discussion
             await this.ui.addMessageToDiscussion({
                 role: 'system',
                 content: `<git_event type="branch" from="${currentBranch}" to="${branchName}" />`,
                 skipInPrompt: true
             });
         } else {
-            // Log to timeline only
             this.completedActionsHistory.push(`[GIT] ℹ️ Persistence: Already on isolated branch \`${currentBranch}\`.`);
         }
 
@@ -623,31 +587,22 @@ Keep it strictly technical and extremely concise.`
         return true;
     }
 
-    /**
-     * Helper to parse form responses consistently.
-     */
     private parseFormResponse(response: string, context: string): string {
         if (response.startsWith('FORM_SUBMISSION:')) {
             try {
                 const data = JSON.parse(response.substring(16));
                 Logger.info(`[AgentManager] Parsed ${context} form data:`, data);
-                // Return 'decision' or the first available value if 'decision' is missing
                 if (data.decision) return String(data.decision);
                 const values = Object.values(data);
                 return values.length > 0 ? String(values[0]) : "";
             } catch (e) {
                 Logger.error(`[AgentManager] Failed to parse ${context} form JSON: ${response}`, e);
-                console.error(`[AgentManager] Failed to parse ${context} form data:`, e);
                 return "";
             }
         }
         return response;
     }
 
-    /**
-     * Handles user messages with enhanced "Briefing" (Prime Directive) priority.
-     * The briefing acts as the 'extra argument' ensuring architectural compliance.
-     */
     public async handleUserMessage(
         content: string, 
         discussion: Discussion, 
@@ -662,22 +617,17 @@ Keep it strictly technical and extremely concise.`
         this.chatHistory = [...discussion.messages];
         this.currentUserPermissions = permissions;
 
-        // --- RELOAD GENIE PERSISTENT SESSION ---
         const currentVersion = vscode.extensions.getExtension('parisneo.lollms-vs-coder')?.packageJSON.version || "0.0.0";
 
         if (discussion.agentSession) {
-            // Check if the extension was updated since the last turn
             const lastSessionVersion = (discussion.agentSession as any).extensionVersion || "";
             const isUpdated = lastSessionVersion !== currentVersion;
-
-
 
             this.sessionState.replVariables = discussion.agentSession.replVariables || {};
             this.sessionState.workingMemory = discussion.agentSession.workingMemory || [];
             this.sessionState.secureCredentials = discussion.agentSession.secureCredentials || {};
             this.sessionState.isSafetyCheckPassed = discussion.agentSession.isSafetyCheckPassed || false;
             
-            // HYDRATE AUDIT TRAIL FROM DISK
             this.completedActionsHistory = discussion.agentSession.completedActionsHistory || [];
             Logger.info(`[Sovereign] Restored audit trail: ${this.completedActionsHistory.length} events loaded.`);
 
@@ -688,7 +638,6 @@ Keep it strictly technical and extremely concise.`
                 Logger.info(`[Sovereign] Extension update detected (${lastSessionVersion} -> ${currentVersion}). Clearing tool blacklist.`);
                 this.sessionState.blacklistedTools.clear();
 
-                // Clean working memory of "BROKEN" warnings to let the agent try again
                 this.sessionState.workingMemory = this.sessionState.workingMemory.filter(
                     m => !m.includes("BROKEN and now FORBIDDEN") && !m.includes("DIAGNOSTIC: Tool")
                 );
@@ -709,16 +658,12 @@ Keep it strictly technical and extremely concise.`
         if (!this.currentPlan) {
             this.failureMemory.clear();
             this.consecutiveTaskFailures.clear();
-            // Only reset safety check if there is no existing session history
             if (this.completedActionsHistory.length === 0) {
                 this.sessionState.isSafetyCheckPassed = false;
             }
         } else {
-            // --- CONTINUITY PROTOCOL ---
-            // If a plan already exists, treat the incoming user message as a "Direct Intervention"
-            this.isActive = true; // Ensure agent is set to active to resume the loop
+            this.isActive = true; 
 
-            // Avoid double-logging the same intervention if re-entering the tab
             const lastLog = this.completedActionsHistory[this.completedActionsHistory.length - 1];
             const newLog = `[USER INTERVENTION]\n- FEEDBACK: "${content}"\n- ACTION: Adjusting strategy based on user input.`;
 
@@ -729,13 +674,11 @@ Keep it strictly technical and extremely concise.`
             this.ui.updateAgentMode(true);
         }
 
-        // --- DEBUG MODE GIT SANDBOX ---
         if (isDebugActive && workspaceFolder) {
             const isRepo = await this.gitIntegration.isGitRepo(workspaceFolder);
             if (isRepo) {
                 const clean = await this.gitIntegration.isClean(workspaceFolder);
                 if (!clean) {
-                    // Logically happens after the prompt is already in history
                     setTimeout(() => {
                         this.ui.addMessageToDiscussion({ 
                             role: 'system', 
@@ -756,32 +699,24 @@ Please commit or stash your work before starting an iterative debug session to e
             }
         }
 
-        // Register the primary orchestrator process
         const { id: processId, controller } = this.processManager.register(discussion.id, `Orchestrator: Initializing...`);
         this.ui.updateGeneratingState();
 
         try {
-            // --- PHASE 0: HYGIENE & SAFETY CHECK ---
             this.processManager.updateDescription(processId, "🛡️ Sovereign: Verifying workspace safety...");
             const safetyPassed = await this.preFlightSafetyCheck(workspaceFolder, controller.signal);
             if (!safetyPassed) return;
 
-            // --- PHASE 0.5: CONTEXT BOOTSTRAP ---
             this.processManager.updateDescription(processId, "🧠 Librarian: Scanning project structure...");
-            // Pre-warm the file index so the first reasoning step is instant
             await this.contextManager.getContextContent({ includeTree: true, signal: controller.signal });
 
-            // --- PHASE 0.6: MISSION DISPATCHING ---
             this.processManager.updateDescription(processId, "🎯 Dispatcher: Selecting mission profile...");
             await this.dispatchMissionProfile(content, controller.signal);
 
-            // FORCE UI SYNC
             if (this.currentPlan) {
-                await this.displayAndSavePlan(this.currentPlan);
+                await this.displayPlan(this.currentPlan);
             }
 
-            // --- CONTINUOUS AUTONOMOUS AGENT FLOW ---
-            // Initialize the REPL variables with empty containers if they don't exist
             if (!this.sessionState.replVariables) {
                 this.sessionState.replVariables = {};
             }
@@ -793,7 +728,6 @@ Please commit or stash your work before starting an iterative debug session to e
                 this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error:** ${error.message}` });
             }
         } finally {
-            // --- PERSIST GENIE SESSION ---
             if (this.currentDiscussion) {
                 this.currentDiscussion.agentSession = {
                     replVariables: this.sessionState.replVariables,
@@ -812,10 +746,6 @@ Please commit or stash your work before starting an iterative debug session to e
         }
     }
 
-    /**
-     * 🧞 THE GENIE'S MODERN LOOP (RE-ACT)
-     * Replaces static planning with an iterative Discover-Reason-Act-Observe cycle.
-     */
     private async runAutonomousLoop(
         objective: string, 
         signal: AbortSignal, 
@@ -825,7 +755,6 @@ Please commit or stash your work before starting an iterative debug session to e
     ) {
         if (!this.currentDiscussion) return;
 
-        // Initialize a "Living Plan" object to track the timeline in the UI
         if (!this.currentPlan) {
             this.currentPlan = {
                 objective: objective,
@@ -836,7 +765,7 @@ Please commit or stash your work before starting an iterative debug session to e
                 status: 'active'
             };
             this.completedActionsHistory.push(`[MISSION START]\n- OBJECTIVE: "${objective}"\n- TIMESTAMP: ${new Date().toISOString()}`);
-            await this.displayAndSavePlan(this.currentPlan);
+            await this.displayPlan(this.currentPlan);
         }
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -851,14 +780,12 @@ Please commit or stash your work before starting an iterative debug session to e
             this.processManager?.updateDescription(processId, `Genie: Reasoning (Step ${stepCount})...`);
             this.ui.updateGeneratingState();
 
-            // 1. Get Project Context for this specific step
             const contextData = await this.contextManager.getContextContent({ 
                 includeTree: true, 
                 modelName: model,
                 signal 
             });
 
-            // 2. Build the ReAct prompt
             const availableSpecialists = this.personalityManager?.getPersonalities().map(p => p.id) || [];
             const systemPrompt = await this.planParser.getArchitectSystemPrompt(
                 this.getEnabledTools(), 
@@ -866,13 +793,16 @@ Please commit or stash your work before starting an iterative debug session to e
                 availableSpecialists
             );
 
-            // Generate Context Inventory
-            const includedFiles = this.contextManager.getContextStateProvider()?.getIncludedFiles() || [];
+            const rawIncludedFiles = this.contextManager.getContextStateProvider()?.getIncludedFiles() || [];
+            const includedFiles = rawIncludedFiles.filter(f => f && f.path);
+
             const inventory = includedFiles.length > 0 
-                ? includedFiles.map(f => `- ${f.path} [${f.state === 'included' ? 'FULL CONTENT LOADED' : 'DEFINITIONS ONLY'}]`).join('\n')
+                ? includedFiles.map(f => {
+                    const status = f.state === 'included' ? '✅ FULL CONTENT LOADED (POSSESSED)' : '🔍 STRUCTURE ONLY (DEFINITIONS)';
+                    return `- \`${f.path}\` [${status}]`;
+                }).join('\n')
                 : "No project files loaded into memory yet.";
 
-            // --- IMPORTED DISCUSSION DATA (PDFs/Web) ---
             const attachments = this.currentDiscussion?.messages
                 .filter(m => (m as any).attachmentData)
                 .map(m => (m as any).attachmentData.name) || [];
@@ -882,7 +812,6 @@ Please commit or stash your work before starting an iterative debug session to e
                   attachments.map(name => `- ${name} (Use 'read_discussion_file' to see content)`).join('\n')
                 : "";
 
-            // --- SOVEREIGN ENV INVENTORY ---
             const envs = Object.entries(this.sessionState.projectEnvironments)
                 .map(([root, env]) => `- ${path.basename(root)}: Uses \`${env}\``)
                 .join('\n') || "No specialized environments active (using system default).";
@@ -913,13 +842,16 @@ ${contextData.projectTree}
 ${contextData.selectedFilesContent || "(No files read into context yet)"}
 `;
 
-            // --- ANTI-HALLUCINATION GUARD ---
-            // If the tree shows files but no content is loaded, explicitly nudge the agent
-            const structuralNudge = (contextData.projectTree.includes('├──') || contextData.projectTree.includes('└──')) && !contextData.selectedFilesContent
-                ? "\n**⚠️ LIBRARIAN NOTICE**: The Project Tree above lists all files. Stop using 'search_files' with complex regex. Look at the tree, find the exact paths that match the user's request, and use 'add_files' immediately."
-                : "";
+            const hasContentLoaded = !!contextData.selectedFilesContent;
+            const hasStructure = contextData.projectTree.includes('├──') || contextData.projectTree.includes('└──');
 
-            // --- MISSION BUDGET AWARENESS ---
+            let structuralNudge = "";
+            if (hasStructure && !hasContentLoaded) {
+                structuralNudge = "\n**⚠️ LIBRARIAN NOTICE**: You have VISION of the tree but no CODE in memory. Find the paths in the tree and use 'add_files_to_context' immediately.";
+            } else if (hasContentLoaded) {
+                structuralNudge = "\n**⚠️ SPATIAL AUDIT**: You currently possess the source code for several files (marked [C] in the tree). Review 'ACCESSIBLE FILE CONTENTS' before proposing a 'read_file' action.";
+            }
+
             const remainingSteps = maxSteps - stepCount;
             let budgetBlock = `### ⏳ MISSION BUDGET\n- **Current Step**: ${stepCount} of ${maxSteps}\n- **Remaining Turns**: ${remainingSteps}\n`;
             
@@ -927,28 +859,23 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 budgetBlock += `\n**🚨 CRITICAL WARNING: LOW BUDGET**\nYou are about to run out of turns. You are FORBIDDEN from starting new deep research, long tests, or complex refactors. You MUST use your remaining turns to:\n1. Wrap up your current work safely.\n2. Use the \`submit_response\` tool to explain to the user what you accomplished and what remains to be done before you are forcefully terminated.\n`;
             }
 
-            // --- VISION STACK ASSEMBLY ---
             const visionParts: any[] = [];
-            // 1. Add Textual Context
             visionParts.push({ type: 'text', text: `${historyContext}${structuralNudge}\n\n${budgetBlock}\n\n**OBJECTIVE:** ${objective}\n\nWhat is your next technical action? Output JSON only.` });
 
-            // Helper to ensure image data is a valid Data URI
             const ensureDataUri = (data: string) => {
                 if (!data) return "";
                 if (data.startsWith('data:') || data.startsWith('http')) return data;
-                // Default to png if prefix is missing
                 return `data:image/png;base64,${data}`;
             };
 
-            // 2. Add Project Images (Librarian/Context)
             contextData.images.forEach(img => {
                 const safeUrl = ensureDataUri(img.data);
                 if (safeUrl) {
+                    visionParts.push({ type: 'text', text: `[IMAGE DATA for ${img.filePath}]:` });
                     visionParts.push({ type: 'image_url', image_url: { url: safeUrl } });
                 }
             });
 
-            // 3. Add Discussion Images (History)
             this.chatHistory.forEach(msg => {
                 if (Array.isArray(msg.content)) {
                     msg.content.forEach((part: any) => {
@@ -973,25 +900,20 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             const lastTask = this.currentPlan!.tasks.length > 0 ? this.currentPlan!.tasks[this.currentPlan!.tasks.length - 1] : null;
 
             if (lastTask && lastTask.status === 'pending' && (lastTask as any).needsApproval === false) {
-                // Task was approved manually by the user. Skip LLM generation.
                 task = lastTask;
                 this.processManager?.updateDescription(processId, `Genie: Executing approved task...`);
                 this.ui.updateGeneratingState();
             } else {
-                // 3. Ask Genie for the next action
                 let fullResponse = "";
                 const response = await this.lollmsApi.sendChat(messages, (chunk) => {
                     fullResponse += chunk;
                     if (this.currentPlan) {
-                        // Update internal state only. DO NOT call displayAndSavePlan here.
-                        // This prevents the high-frequency UI blinking.
                         this.currentPlan.scratchpad = fullResponse;
                     }
                 }, signal, model);
 
                 const cleanResponse = stripThinkingTags(response);
 
-                // --- AUTO-COMPRESSION CHECK ---
                 if (this.currentPlan!.observations && this.currentPlan!.observations.length > 15) {
                     this.processManager?.updateDescription(processId, `Genie: Compressing memories...`);
                     await this.condenseObservations(model || "default", signal);
@@ -999,7 +921,6 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
                 const toolCall = this.planParser.extractJson(cleanResponse);
                 if (!toolCall) {
-                    // If no JSON tool is found, check if it's a "Coding Mode" response (contains code blocks)
                     if (cleanResponse.includes('```')) {
                         this.processManager?.updateDescription(processId, `Genie: Extracting and applying code...`);
 
@@ -1015,18 +936,16 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                         };
                         this.currentPlan!.tasks.push(codingTask);
 
-                        // --- PRE-WRITE SANITIZATION ---
                         await (this.ui as any).executeAutomationPipeline(cleanResponse, `agent_step_${stepCount}`, signal, processId);
 
                         codingTask.status = 'completed';
                         codingTask.result = "Code extracted and applied.";
                         this.completedActionsHistory.push(`[STEP ${codingTask.id}] COMPLETED: Applied code changes via Markdown Coding Mode.`);
 
-                        await this.displayAndSavePlan(this.currentPlan);
+                        await this.displayPlan(this.currentPlan);
                         continue;
                     }
 
-                    // Conversational fallback
                     if (cleanResponse.length < 1000) {
                         this.completedActionsHistory.push(`[CONVERSATIONAL FALLBACK]\n- CONTENT: ${cleanResponse.substring(0, 200)}...`);
                         this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
@@ -1046,7 +965,6 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                     continue;
                 }
                 
-                // 4. Update UI Timeline (Incremental)
                 if (action.new_remark) {
                     if (!this.currentPlan.observations) this.currentPlan.observations =[];
                     this.currentPlan.observations.push(action.new_remark);
@@ -1055,48 +973,92 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                     this.currentPlan.current_sub_goal = action.current_sub_goal;
                 }
 
+                if (!action.tool || action.tool.trim() === "") {
+                    this.isActive = false;
+                    this.ui.updateAgentMode(false);
+                    this.ui.addMessageToDiscussion({
+                        role: 'system',
+                        content: `🛑 **Agent Loop Halted:** The AI returned an empty or invalid tool action. Please check your model configuration or connection stability.`
+                    });
+                    break;
+                }
+
                 task = {
                     id: stepCount,
                     task_type: 'simple_action',
                     description: action.thought || action.new_remark || "Executing tool...",
                     action: action.tool,
                     parameters: action.params || {},
-                    status: 'in_progress',
+                    status: 'pending',
                     result: null,
                     retries: 0
                 };
 
                 this.currentPlan!.tasks.push(task);
-                await this.displayAndSavePlan(this.currentPlan);
-                }
+                await this.displayPlan(this.currentPlan);
+            }
 
-                // 5. MODE-AWARE EXECUTION
-                const isBuilder = this.currentDiscussion?.capabilities?.workerType === 'builder';
+            // 5. MODE-AWARE EXECUTION
+            const isBuilder = this.currentDiscussion?.capabilities?.workerType === 'builder';
 
-                if (isBuilder) {
-                    // BUILDER: Direct execution, no chat cards for middle steps
-                    const res = await this.runSingleTask(task, signal, model);
-                    this.completedActionsHistory.push(`[BUILDER ACTION] ${task.action}: ${res.output.substring(0, 100)}...`);
-                    continue; 
-                }
-
-                // DISCUSSION: UI Emission (Interactive cards)
+            if (isBuilder) {
+                const stepId = `builder_step_${task.id}_${Date.now()}`;
+                
                 await this.ui.addMessageToDiscussion({
-                    id: `agent_task_${task.id}`,
+                    id: stepId,
                     role: 'assistant',
-                    content: `<agent_task id="${task.id}" />`,
-                    skipInPrompt: true 
+                    content: `🛠️ **Builder running (${task.action}):** *${task.description}*...`,
+                    skipInPrompt: true
                 });
 
-                // Execute Action
-                this.processManager?.updateDescription(processId, `Genie: Executing ${task.action}...`);
-                this.ui.updateGeneratingState();
+                const res = await this.runSingleTask(task, signal, model);
+                this.completedActionsHistory.push(`[BUILDER ACTION] ${task.action}: ${res.output.substring(0, 100)}...`);
+                
+                if (this.ui.updateMessageContent) {
+                    const statusEmoji = res.success ? '✅' : '❌';
+                    const summaryTitle = res.success ? 'Success' : 'Failure';
+                    
+                    let trimmedOutput = res.output.trim();
+                    if (trimmedOutput.length > 400) {
+                        trimmedOutput = trimmedOutput.substring(0, 400) + '\n... [truncated]';
+                    }
 
-                if (task.action === 'submit_response') {
+                    const statusReport = `${statusEmoji} **Builder (${task.action}):** *${task.description}* (${summaryTitle})\n\n\`\`\`\n${trimmedOutput || '[No output]'}\n\`\`\``;
+                    await this.ui.updateMessageContent(stepId, statusReport);
+                }
+
+                if (!res.success) {
+                    const isEditAction = ['edit_code', 'generate_code', 'markdown_coding'].includes(task.action);
+                    if (isEditAction) {
+                        const editBudget = config.get<number>('agent.maxEditRetries') || 3;
+                        const currentRetries = this.taskEditRetries.get(task.id) || 0;
+
+                        if (currentRetries < editBudget) {
+                            this.taskEditRetries.set(task.id, currentRetries + 1);
+                            this.completedActionsHistory.push(`[REPAIR ATTEMPT ${currentRetries + 1}] Target: ${task.parameters.file_path || 'unknown'}. Error: ${res.output}`);
+                            this.currentPlan!.tasks.pop(); 
+                            continue; 
+                        }
+                    }
+                }
+                continue; 
+            }
+
+            await this.ui.addMessageToDiscussion({
+                id: `agent_task_${task.id}`,
+                role: 'assistant',
+                content: `<agent_task id="${task.id}" />`,
+                skipInPrompt: true 
+            });
+
+            this.processManager?.updateDescription(processId, `Genie: Executing ${task.action}...`);
+            this.ui.updateGeneratingState();
+
+            if (task.action === 'submit_response') {
                 task.status = 'completed';
                 task.result = "Response submitted to chat.";
                 this.completedActionsHistory.push(`[MISSION COMPLETE]\n- ACTION: submit_response\n- RESPONSE: ${task.parameters.response.substring(0, 100)}...`);
-                await this.displayAndSavePlan(this.currentPlan);
+                await this.displayPlan(this.currentPlan);
 
                 const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, task.parameters);
                 if (reflectionPrompt && this.projectMemoryManager) {
@@ -1116,7 +1078,6 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 break;
             }
 
-            // --- GRANULAR SECURITY POLICY ENFORCEMENT ---
             const toolPolicies = this.currentDiscussion?.capabilities?.toolPolicies || {};
             const toolDef = this.toolManager.getTool(task.action);
 
@@ -1125,7 +1086,6 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
             const specificPolicy = toolPolicies[task.action] || (isSensitive ? 'manual' : 'autonomous');
 
-            // Block ONLY IF it hasn't just been approved
             if (specificPolicy === 'manual' && (task as any).needsApproval !== false) {
                 task.status = 'pending'; 
                 (task as any).needsApproval = true;
@@ -1133,17 +1093,16 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                     role: 'system', 
                     content: `🛡️ **Safety Gate:** The Architect wants to use \`${task.action}\`. Please review the parameters in the sidebar and click **Run Task & Continue** to allow this specific action.` 
                 });
-                await this.displayAndSavePlan(this.currentPlan);
-                this.isActive = false; // Halt autonomic loop
+                await this.displayPlan(this.currentPlan);
+                this.isActive = false; 
                 this.ui.updateAgentMode(false);
-                break; // Stop here and wait for UI event
+                break; 
             }
             
             task.status = 'in_progress';
-            (task as any).needsApproval = false; // Reset for next potential run
-            await this.displayAndSavePlan(this.currentPlan);
+            (task as any).needsApproval = false; 
+            await this.displayPlan(this.currentPlan);
 
-            // --- WRAP EXECUTION IN TIMEOUT ---
             const resultPromise = this.runSingleTask(task, signal, model);
             const timeoutPromise = new Promise<{success: boolean, output: string}>((_, reject) => 
                 setTimeout(() => reject(new Error("EXECUTION_TIMEOUT")), 905000)
@@ -1153,12 +1112,10 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             try {
                 result = await Promise.race([resultPromise, timeoutPromise]);
 
-                // Update In-Stream Activity Card with result
                 if (this.ui.updateMessageContent) {
                     await this.ui.updateMessageContent(`agent_task_${task.id}`, `<agent_task id="${task.id}" />`);
                 }
 
-                // --- AUTOMATED EDIT REPAIR LOOP ---
                 const isEditAction = ['edit_code', 'generate_code', 'markdown_coding'].includes(task.action);
                 if (!result.success && isEditAction) {
                     const editBudget = config.get<number>('agent.maxEditRetries') || 3;
@@ -1166,38 +1123,38 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
                     if (currentRetries < editBudget) {
                         this.taskEditRetries.set(task.id, currentRetries + 1);
-                        // Log to timeline only to keep chat clean
                         this.completedActionsHistory.push(`[REPAIR ATTEMPT ${currentRetries + 1}] Target: ${task.parameters.file_path || 'unknown'}. Error: ${result.output}`);
 
-                        // We remove the failed task from the list so the agent re-proposes it in the next loop iteration
                         this.currentPlan!.tasks.pop(); 
-                        continue; // Re-run reasoning with failure in context
+                        continue; 
                     }
                 }
             } catch (e: any) {
                 task.status = 'failed';
                 task.result = e.message === "EXECUTION_TIMEOUT" ? "Hanging Error: The terminal did not return a result within the expected time." : e.message;
-                await this.displayAndSavePlan(this.currentPlan);
+                await this.displayPlan(this.currentPlan);
                 this.isActive = false;
                 this.ui.updateAgentMode(false);
-                return; // Stop the loop and let user see the RED card
+                return; 
             }
 
-            // --- 🛡️ CONTEXT GOVERNANCE (NEW) ---
-            // After every action, check if we are approaching the context limit
             const currentData = await this.contextManager.getContextContent({ modelName: model, signal });
             const tokenInfo = await this.lollmsApi.tokenize(currentData.text, model);
             const limitInfo = await this.lollmsApi.getContextSize(model);
 
             const usageRatio = tokenInfo.count / limitInfo.context_size;
-            if (usageRatio > 0.85) {
-                const pruneWarning = `[SYSTEM WARNING] Context usage is at ${Math.round(usageRatio * 100)}%. Your next turn may fail due to overflow. You should use 'remove_files' in your next step to eject unnecessary files, or switch to 'signatures' mode for reference files.`;
+            if (usageRatio > 0.90) {
+                const pruneWarning = `[SYSTEM WARNING] Context usage is at ${Math.round(usageRatio * 100)}%. Your memory is nearing capacity. 
+
+                STRICT PROTOCOL:
+                1. Review the 'ACTIVE CONTEXT INVENTORY'.
+                2. Identify any files (like mixins, large logs, or already analyzed modules) that are no longer needed for the current step.
+                3. Use 'remove_files' to eject them in this turn to ensure stability.`;
+
                 this.completedActionsHistory.push(pruneWarning);
                 this.ui.addMessageToDiscussion({ role: 'system', content: `⚖️ **Context Governor:** Usage at ${Math.round(usageRatio * 100)}%. Nudging Architect to prune context.` });
             }
 
-            // --- PATIENCE & PERSISTENCE PROTOCOL ---
-            // If the agent is monitoring or has background tasks, refuel the turn budget.
             const hasBackgroundTasks = this.sessionState.backgroundProcesses.size > 0;
             const isMonitoring = task.action === 'wait' || 
                                task.action === 'read_output_tail' || 
@@ -1212,7 +1169,6 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 });
             }
 
-            // If the loop detects a terminal success or stop condition
             if (signal.aborted) break;
         }
 
@@ -1223,6 +1179,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             });
         }
     }
+
     private async checkMoltbookKeyExists(): Promise<boolean> {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         if (config.get<string>('moltbook.apiKey')) return true;
@@ -1250,27 +1207,22 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             const currentBranch = await this.gitIntegration.getCurrentBranch(this.currentWorkspaceFolder);
             const isAiBranch = currentBranch.startsWith('ai-task-') || currentBranch.startsWith('debug/');
 
-            // LOGIC: If we are already on an isolated branch (from Phase 0), 
-            // just perform a quick checkpoint commit. DO NOT try to stash or re-branch.
             if (isAiBranch) {
                 Logger.info(`[GitBackup] Already on isolated branch: ${currentBranch}. Creating checkpoint.`);
                 try {
                     await this.gitIntegration.stageAllAndCommit(`Checkpoint: ${reason}`, this.currentWorkspaceFolder);
                 } catch (commitErr) {
-                    // Ignore "nothing to commit" errors during checkpoints
                     Logger.debug(`[GitBackup] Checkpoint skipped: nothing to commit.`);
                 }
                 return;
             }
 
-            // FALLBACK: If for some reason we aren't on an AI branch but edit is requested
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
             if (config.get<boolean>('agent.createBranchOnEdit') === false) {
                  await this.gitIntegration.stageAllAndCommit(`Auto-backup: ${reason}`, this.currentWorkspaceFolder);
                  return;
             }
 
-            // Create new branch only if strictly necessary (usually handled by Phase 0)
             const branchName = `ai-task-${Date.now()}`;
             await this.gitIntegration.createAndCheckoutBranch(this.currentWorkspaceFolder, branchName);
             this.completedActionsHistory.push(`[GIT] 🔒 MID-MISSION ISOLATION: Switched to \`${branchName}\`.`);
@@ -1280,28 +1232,27 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
         }
     }
 
-        public async resumeTask(taskId: number, processId: string, signal: AbortSignal) {
-            if (!this.currentPlan || !this.currentDiscussion) return;
-            const task = this.currentPlan.tasks.find(t => t.id === taskId);
-            if (!task) return;
+    public async resumeTask(taskId: number, processId: string, signal: AbortSignal) {
+        if (!this.currentPlan || !this.currentDiscussion) return;
+        const task = this.currentPlan.tasks.find(t => t.id === taskId);
+        if (!task) return;
 
-            (task as any).needsApproval = false;
+        (task as any).needsApproval = false;
 
-            // If it was a safety check, we don't re-run it, we assume the form handled it
-            if (task.action === 'safety_check') {
-                task.status = 'completed';
-                task.result = "Confirmed by user.";
-            } else {
-                task.status = 'pending'; 
-            }
-
-            await this.displayAndSavePlan(this.currentPlan);
-
-            this.isActive = true;
-            this.ui.updateAgentMode(true);
-
-            await this.runAutonomousLoop("User approved the task.", signal, processId, this.currentDiscussion.model);
+        if (task.action === 'safety_check') {
+            task.status = 'completed';
+            task.result = "Confirmed by user.";
+        } else {
+            task.status = 'pending'; 
         }
+
+        await this.displayPlan(this.currentPlan);
+
+        this.isActive = true;
+        this.ui.updateAgentMode(true);
+
+        await this.runAutonomousLoop("User approved the task.", signal, processId, this.currentDiscussion.model);
+    }
 
     public async editAndRetryTask(taskId: number, newParams: any) {
         if (!this.currentPlan || !this.processManager || !this.currentDiscussion) return;
@@ -1321,7 +1272,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             content: `🔄 **Manual Override:** Re-executing Task ${taskId}. Params: \`${JSON.stringify(newParams)}\`` 
         });
         
-        await this.displayAndSavePlan(this.currentPlan);
+        await this.displayPlan(this.currentPlan);
 
         const { id: processId, controller } = this.processManager.register(this.currentDiscussion.id, `Agent: Retrying task ${taskId}...`);
         this.ui.updateGeneratingState();
@@ -1341,12 +1292,11 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             task.status = res.success ? 'completed' : 'failed';
             task.result = res.output;
 
-            // Clean up unverified files if the manual run was a test/execution
             if (['execute_command', 'run_file', 'execute_python_script'].includes(task.action) && res.success) {
                 this.sessionState.unverifiedFiles.clear();
             }
 
-            await this.displayAndSavePlan(this.currentPlan);
+            await this.displayPlan(this.currentPlan);
 
             const msg = `Manual Override Applied: Task ${task.id} (${task.action}) was manually executed by the user with corrected parameters. 
             Result of Manual Execution:
@@ -1359,7 +1309,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
         } catch (e: any) {
             task.status = 'failed';
             task.result = e.message;
-            await this.displayAndSavePlan(this.currentPlan);
+            await this.displayPlan(this.currentPlan);
         } finally {
             this.processManager.unregister(processId);
             this.ui.updateGeneratingState();
@@ -1369,11 +1319,9 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
     private async synthesizeFinalResponse(originalObjective: string, signal: AbortSignal, modelOverride?: string) {
         if (signal.aborted || !this.currentPlan || !this.currentDiscussion) return;
 
-        // Don't synthesize if there are still pending tasks (meaning it was stopped/deadlocked)
         const pendingTasks = this.currentPlan.tasks.filter(t => t.status === 'pending' || t.status === 'in_progress');
         if (pendingTasks.length > 0) return;
 
-        // Only synthesize if we actually executed something
         if (this.currentPlan.tasks.length === 0) return;
 
         this.ui.addMessageToDiscussion({ role: 'system', content: '📝 **Synthesizing final results...**' });
@@ -1413,7 +1361,6 @@ Please provide a clear, concise final response to the user summarizing the outco
 
             const msgId = `agent_synthesis_${Date.now()}`;
             
-            // Scan the final summary for memory updates
             if (this.projectMemoryManager) {
                 await this.projectMemoryManager.processTags(response);
             }
@@ -1445,7 +1392,7 @@ Please provide a clear, concise final response to the user summarizing the outco
             failedTask.status = 'in_progress';
             failedTask.retries++;
             failedTask.can_retry = false;
-            this.displayAndSavePlan(this.currentPlan);
+            await this.displayPlan(this.currentPlan);
             
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
             const architectModel = config.get<string>('architectModelName') || this.currentDiscussion.model;
@@ -1470,7 +1417,6 @@ Please provide a clear, concise final response to the user summarizing the outco
         const maxConcurrent = config.get<number>('agent.maxSimultaneousAgents') || 3;
         const architectModel = config.get<string>('architectModelName') || modelOverride || this.currentDiscussion?.model;
 
-        // Reset leftover in_progress tasks back to pending if we are resuming an interrupted plan
         this.currentPlan.tasks.forEach(t => {
             if (t.status === 'in_progress') t.status = 'pending';
         });
@@ -1485,18 +1431,16 @@ Please provide a clear, concise final response to the user summarizing the outco
             const inProgressTasks = this.currentPlan.tasks.filter(t => t.status === 'in_progress');
 
             if (pendingTasks.length === 0 && inProgressTasks.length === 0) {
-                break; // Everything is finished
+                break; 
             }
 
             const availableTasks = pendingTasks.filter(t => {
                 if (!t.dependencies || t.dependencies.length === 0) {
-                    // Backwards compatibility check: If NO task in the entire plan uses dependencies, 
-                    // enforce strictly sequential execution to avoid breaking older weak models.
                     const hasAnyDeps = this.currentPlan!.tasks.some(x => x.dependencies && x.dependencies.length > 0);
                     if (!hasAnyDeps) {
                         return t.id === pendingTasks[0].id;
                     }
-                    return true; // Explicitly empty array means run immediately in parallel
+                    return true; 
                 }
                 return t.dependencies.every(depId => {
                     const depTask = this.currentPlan!.tasks.find(pt => pt.id === depId);
@@ -1513,7 +1457,7 @@ Please provide a clear, concise final response to the user summarizing the outco
             while (activePromises.length < maxConcurrent && availableTasks.length > 0 && !planAborted) {
                 const task = availableTasks.shift()!;
                 task.status = 'in_progress';
-                this.displayAndSavePlan(this.currentPlan);
+                await this.displayPlan(this.currentPlan);
                 
                 startedNewTask = true;
                 
@@ -1521,14 +1465,12 @@ Please provide a clear, concise final response to the user summarizing the outco
                     activePromises = activePromises.filter(p => p !== taskPromise);
                     
                     if (!result.success) {
-                        planAborted = true; // Prevent new tasks from launching
+                        planAborted = true; 
                         
-                        // Await running siblings to gracefully finish
                         if (activePromises.length > 0) {
                             await Promise.all(activePromises);
                         }
                         
-                        // We are now alone. Let's decide how to handle the failure.
                         if (task.retries < maxRetries) {
                             this.ui.addMessageToDiscussion({ 
                                 role: 'system', 
@@ -1538,7 +1480,7 @@ Please provide a clear, concise final response to the user summarizing the outco
 
                             const revisionSucceeded = await this.revisePlanForFailure(task, signal, architectModel);
                             if (revisionSucceeded) {
-                                planAborted = false; // Unblock to resume the loop with the newly generated plan
+                                planAborted = false; 
                             } else {
                                 await this.handleTaskFailureUserChoice(task);
                             }
@@ -1552,7 +1494,6 @@ Please provide a clear, concise final response to the user summarizing the outco
             }
 
             if (!startedNewTask && activePromises.length > 0) {
-                // Wait for at least one active task to finish before evaluating the while loop again
                 await Promise.race(activePromises);
             }
         }
@@ -1572,9 +1513,8 @@ Please provide a clear, concise final response to the user summarizing the outco
         try {
             resolvedParams = this.resolveParameters(task);
             task.parameters = resolvedParams; 
-            await this.displayAndSavePlan(this.currentPlan); 
+            await this.displayPlan(this.currentPlan); 
 
-            // --- SECURE CREDENTIAL INJECTION ---
             let secureParams = JSON.parse(JSON.stringify(resolvedParams));
             const credentials = this.sessionState.secureCredentials || {};
             if (Object.keys(credentials).length > 0) {
@@ -1592,15 +1532,37 @@ Please provide a clear, concise final response to the user summarizing the outco
                 replaceSecrets(secureParams);
             }
 
-            // --- REPETITION & LOOP DETECTION ---
             const includedFiles = this.contextManager.getContextStateProvider()?.getIncludedFiles() || [];
             let redundantPath = "";
 
+            if (task.action === 'add_files_to_context') {
+                const requestedPaths = (resolvedParams.paths || []).map((p: string) => p.replace(/\\/g, '/').toLowerCase().trim());
+                const alreadyIn = includedFiles
+                    .filter(f => f.state === 'included')
+                    .map(f => f.path.replace(/\\/g, '/').toLowerCase().trim());
+
+                const redundant = requestedPaths.filter((p: string) => {
+                    return alreadyIn.some(ai => ai === p || ai.endsWith('/' + p) || p.endsWith('/' + ai));
+                });
+
+                if (redundant.length > 0 && redundant.length === requestedPaths.length) {
+                    return {
+                        success: false,
+                        output: `🛑 COMPLIANCE ERROR: REDUNDANT CONTEXT REQUEST.
+            The following files are ALREADY present in your 'ACTIVE CONTEXT INVENTORY' with full content:
+            ${redundant.map(p => `- ${p}`).join('\n')}
+
+            STRICT PROTOCOL:
+            1. Look at the 'ACCESSIBLE FILE CONTENTS' block provided in every turn.
+            2. The source code for these files is ALREADY there.
+            3. Do NOT use 'add_files_to_context' or 'read_file' for files marked [C] in the tree.
+            4. Proceed directly with analysis using the code you already possess.`
+                    };
+                }
+            }
+
             if (task.action === 'read_file') {
                 const checkPath = (resolvedParams.path || resolvedParams.file || "").replace(/\\/g, '/');
-                // BYPASS 1: If the file has been modified (dirty), allow the read to verify changes.
-                // BYPASS 2: If the context was recently pruned (context usage > 80%), allow the read 
-                // because the file might have been evicted from the prompt to save space.
                 const isDirty = this.sessionState.unverifiedFiles.has(checkPath);
                 const isContextHeavy = (this.completedActionsHistory.some(h => h.includes("Context usage is at")));
 
@@ -1626,7 +1588,6 @@ Please provide a clear, concise final response to the user summarizing the outco
 
             const pastTasks = this.currentPlan.tasks.filter(t => t.id !== task.id && (t.status === 'completed' || t.status === 'failed'));
 
-            // --- 🛡️ REDUNDANCY HARNESS ---
             const recentTasks = pastTasks.slice(-10);
             let redundantSuccess = recentTasks.find(t => 
                 t.status === 'completed' && 
@@ -1634,8 +1595,6 @@ Please provide a clear, concise final response to the user summarizing the outco
                 JSON.stringify(t.parameters) === JSON.stringify(resolvedParams)
             );
 
-            // --- STATE-AWARE INVALIDATION ---
-            // 1. Explicit Bypass: If the agent is reading a file it recently modified, it's NOT redundant.
             if (redundantSuccess && (task.action === 'read_file' || task.action === 'read_files')) {
                 const checkPath = (resolvedParams.path || resolvedParams.file || (resolvedParams.paths && resolvedParams.paths[0]) || "").replace(/\\/g, '/');
                 if (this.sessionState.unverifiedFiles.has(checkPath)) {
@@ -1644,8 +1603,6 @@ Please provide a clear, concise final response to the user summarizing the outco
                 }
             }
 
-            // 2. Chronological Invalidation: If the filesystem was touched AFTER the last execution, it is NO LONGER redundant.
-            // This allows the "Test -> Fix -> Run same test" cycle.
             if (redundantSuccess) {
                 const lastExecTime = (redundantSuccess as any)._executionTimestamp || 0;
                 if (this.sessionState.lastFilesystemWriteTime > lastExecTime) {
@@ -1654,21 +1611,17 @@ Please provide a clear, concise final response to the user summarizing the outco
                 }
             }
 
-            // 3. Failure Reset: If code was modified, allow retrying failed commands (e.g. retrying a test that previously failed)
             const hasFailedBefore = this.failureMemory.hasFailedBefore(task.action, resolvedParams);
             const lastFailureTime = (this.failureMemory as any)._lastFailureTime || 0;
             const allowRetryAfterFix = hasFailedBefore && (this.sessionState.lastFilesystemWriteTime > lastFailureTime);
 
-            // Stuck in a rut detector (high failure rate on same tool consecutively)
             const recentFailures = pastTasks.slice(-3).filter(t => t.status === 'failed');
             const isStuck = recentFailures.length >= 3 && recentFailures.every(t => t.action === task.action);
 
-            // --- 🛡️ VERIFICATION ENFORCEMENT PROTOCOL ---
             const isWriteAction = ['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'markdown_coding'].includes(task.action);
             const isVerifyAction = ['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'test_web_page', 'secure_run'].includes(task.action);
             const targetFile = resolvedParams.file_path || resolvedParams.path || "";
 
-            // --- SURGICAL ENFORCEMENT GUARD ---
             if (task.action === 'generate_code' && resolvedParams.file_path) {
                 const fileExists = includedFiles.some(f => f.path === resolvedParams.file_path.replace(/\\/g, '/'));
                 if (fileExists) {
@@ -1680,25 +1633,6 @@ Please provide a clear, concise final response to the user summarizing the outco
                         1. You MUST use 'edit_code' with SEARCH/REPLACE blocks for existing files.
                         2. This prevents token waste and protects against accidental code deletion.
                         3. Switch tools immediately.`
-                    };
-                    return result;
-                }
-            }
-
-            // --- SURGICAL ENFORCEMENT GUARD ---
-            if (task.action === 'generate_code' && resolvedParams.file_path) {
-                const normalizedPath = resolvedParams.file_path.replace(/\\/g, '/');
-                const fileExists = includedFiles.some(f => f.path === normalizedPath);
-
-                if (fileExists) {
-                    result = {
-                        success: false,
-                        output: `🛑 RESOURCE VIOLATION: You are attempting to use 'generate_code' to rewrite \`${resolvedParams.file_path}\`, but this file already exists in the tree. 
-
-                        STRICT PROTOCOL:
-                        1. You MUST use 'edit_code' with SEARCH/REPLACE blocks for existing files.
-                        2. Rewriting a full file is a waste of context and dangerous.
-                        3. Switch to 'edit_code' now.`
                     };
                     return result;
                 }
@@ -1773,13 +1707,11 @@ Please provide a clear, concise final response to the user summarizing the outco
             4. DO NOT use 'read_file' or 'read_files' for this path again.`
                 };
             } else {
-                // Snapshot state BEFORE
                 const varsBefore = JSON.stringify(this.sessionState.replVariables);
                 const memBefore = this.sessionState.workingMemory.length;
 
                 result = await this.executeTask(task.action, secureParams, signal, undefined, specialistModel, task.agent_persona, task.agent_skills, task.agent_files);
 
-                // --- PROACTIVE ERROR TRIAGE ---
                 if (!result.success && ['execute_command', 'run_file', 'execute_python_script'].includes(task.action)) {
                     const caps = this.currentDiscussion?.capabilities;
                     if (caps?.webSearch) {
@@ -1800,7 +1732,6 @@ Please provide a clear, concise final response to the user summarizing the outco
                                         currentPlan: this.currentPlan,
                                         agentManager: this
                                     };
-                                    // Remove local file paths to make the query generic for the web
                                     const genericQuery = errorLine.replace(/[A-Za-z]:\\[^\s]+|\/[^\s]+/g, '').substring(0, 150);
                                     const searchRes = await searchTool.execute({ query: genericQuery }, tempEnv, signal);
                                     if (searchRes.success && !searchRes.output.includes('No results found') && !searchRes.output.includes('No relevant')) {
@@ -1809,14 +1740,11 @@ Please provide a clear, concise final response to the user summarizing the outco
                                     }
                                 }
                             } catch (e) {
-                                // Ignore search errors to not override the original execution error
                             }
                         }
                     }
                 }
-                // --- END PROACTIVE ERROR TRIAGE ---
 
-                // Calculate Delta AFTER
                 const newVars: Record<string, any> = {};
                 for (const [k, v] of Object.entries(this.sessionState.replVariables)) {
                     if (!varsBefore.includes(`"${k}":`)) {
@@ -1830,10 +1758,9 @@ Please provide a clear, concise final response to the user summarizing the outco
                     thought: task.description
                 };
 
-                // --- SANITIZE OUTPUT (Hide real values) ---
                 if (Object.keys(credentials).length > 0 && result.output) {
                     for (const [secId, secVal] of Object.entries(credentials)) {
-                        if (secVal && secVal.length > 2) { // Only sanitize meaningful secrets
+                        if (secVal && secVal.length > 2) { 
                             result.output = result.output.split(secVal).join(secId);
                         }
                     }
@@ -1847,9 +1774,6 @@ Please provide a clear, concise final response to the user summarizing the outco
 
         task.result = result.output;
 
-        // --- 🛡️ ERROR HEURISTIC ---
-        // If the command "succeeded" (exit 0) but the output contains clear OS error strings
-        // like "path not found" or "not recognized", force the status to failed.
         const osErrorPatterns = [
             "chemin d'accès spécifié est introuvable",
             "is not recognized as an internal or external command",
@@ -1860,7 +1784,6 @@ Please provide a clear, concise final response to the user summarizing the outco
         task.status = (result.success && !containsOsError) ? 'completed' : 'failed';
         (task as any)._executionTimestamp = Date.now();
 
-        // --- STATE UPDATE: VERIFICATION TRACKING ---
         if (result.success) {
             const isWriteAction = ['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'markdown_coding'].includes(task.action);
             const isVerifyAction = ['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'test_web_page', 'secure_run'].includes(task.action);
@@ -1872,15 +1795,11 @@ Please provide a clear, concise final response to the user summarizing the outco
             }
 
             if (isVerifyAction) {
-                // If a test/execution runs, we assume the agent is checking all dirty files
                 this.sessionState.unverifiedFiles.clear();
                 this.completedActionsHistory.push(`[SYSTEM] All file modifications marked as 'Verified' by execution of \`${task.action}\`.`);
             }
         }
 
-        // --- STRIP REDUNDANT PREAMBLES FROM LOGGING ---
-        // If the LLM still generates a preamble, we trim it for the prompt history 
-        // to prevent the "Summary Snowball" effect.
         let conciseThought = task.description;
         const objectiveStart = this.currentPlan?.objective.substring(0, 30);
         if (objectiveStart && conciseThought.includes(objectiveStart)) {
@@ -1888,7 +1807,6 @@ Please provide a clear, concise final response to the user summarizing the outco
             if (parts.length > 1) conciseThought = "Decision: " + parts[parts.length - 1].trim();
         }
         
-        // 📊 DASHBOARD UPDATE
         if (this.dashboardState && this.dashboardUpdater) {
             const shortOutput = result.output.length > 500 ? result.output.substring(0, 500) + '...' : result.output;
             if (task.action.includes('web') || task.action.includes('arxiv') || task.action.includes('scrape') || task.action.includes('research')) {
@@ -1901,9 +1819,6 @@ Please provide a clear, concise final response to the user summarizing the outco
             this.dashboardUpdater();
         }
 
-        // 📊 STRUCTURED TIMELINE
-        // Optimization: Provide a larger observation window (3000 chars) 
-        // but explicitly label it so the agent understands it's a preview.
         let observation = result.output;
         const PREVIEW_LIMIT = 3000;
 
@@ -1927,25 +1842,16 @@ Please provide a clear, concise final response to the user summarizing the outco
         if (!result.success) {
             this.failureMemory.recordFailure(task.action, resolvedParams, result.output);
         } else {
-            // --- DELTA DETECTION & MILESTONE ENFORCEMENT ---
-            const isImplementationSuccess = ['edit_code', 'generate_code', 'replaceCode', 'markdown_coding'].includes(task.action);
-            if (isImplementationSuccess && result.output.includes("Successfully")) {
-                this.completedActionsHistory.push(`[MANDATE] PROGRESS DETECTED: You just modified the codebase. You MUST now use 'record_milestone' or update '<project_memory>' to document this fix before moving to the next file.`);
-            }
-
-            // --- EVOLVING INTELLIGENCE: ARTIFACT GENERATION ---
             const isCodeEdit = ['edit_code', 'generate_code', 'markdown_coding'].includes(task.action);
             const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, resolvedParams);
 
-            // --- MEMORY POLLUTION GUARD ---
-            // Check current memory weight before allowing the Historian to add more "Lessons"
             const currentMemories = await this.projectMemoryManager.getMemories();
             const workingMemTokens = currentMemories
                 .filter((m: any) => m.importance >= 25)
                 .reduce((acc: number, m: any) => acc + (m.content.length / 4), 0);
 
             const limit = (await this.lollmsApi.getContextSize()).context_size;
-            const isMemoryFull = (workingMemTokens / limit) > 0.15; // Cap lessons at 15% of context
+            const isMemoryFull = (workingMemTokens / limit) > 0.15; 
 
             if (!isMemoryFull && (reflectionPrompt || (isCodeEdit && result.success))) {
                 this.ui.updateGeneratingState();
@@ -1976,12 +1882,10 @@ Please provide a clear, concise final response to the user summarizing the outco
                         { role: 'user', content: artifactPrompt }
                     ], null, signal, specialistModel);
 
-                    // Process tags so they appear in the UI and persistent storage
                     if (this.projectMemoryManager) {
                         await this.projectMemoryManager.processTags(artifactResponse);
                     }
 
-                    // ATTACH TO TASK INSTEAD OF CHAT
                     if (!task.artifacts) task.artifacts = [];
                     task.artifacts.push(artifactResponse);
                 } catch (e) {
@@ -1990,12 +1894,10 @@ Please provide a clear, concise final response to the user summarizing the outco
             }
         }
         
-        // --- 🛡️ AUTONOMOUS MEMORY & MILESTONE TRIGGER ---
         if (result.success) {
             const isSignificant = ['edit_code', 'generate_code', 'markdown_coding', 'execute_command', 'run_file'].includes(task.action);
 
             if (isSignificant && this.projectMemoryManager) {
-                // Determine if we should reflect based on the tool output
                 const model = task.model || specialistModel;
 
                 const artifactPrompt = `
@@ -2011,20 +1913,18 @@ Please provide a clear, concise final response to the user summarizing the outco
 
                 try {
                     const artifactResponse = await this.lollmsApi.sendChat([
-                        { role: 'system', content: "You are the Project Historian. Your job is to manifest technical progress and memories." },
+                        { role: 'system', content: "You are the Project Historian. Your job is to make technical progress and memories visible." },
                         { role: 'user', content: artifactPrompt }
                     ], null, signal, model);
 
                     if (!artifactResponse.includes("NO_ARTIFACT")) {
-                        // 1. Process the tags for persistent storage (DNA)
                         await this.projectMemoryManager.processTags(artifactResponse);
 
-                        // 2. Emit the tags to the chat stream so the renderer shows the Pink/Purple cards
                         await this.ui.addMessageToDiscussion({
                             id: `artifact_${task.id}_${Date.now()}`,
                             role: 'system',
                             content: artifactResponse,
-                            skipInPrompt: true // Don't loop this UI data back to the LLM
+                            skipInPrompt: true 
                         });
                     }
                 } catch (e) {
@@ -2033,33 +1933,31 @@ Please provide a clear, concise final response to the user summarizing the outco
             }
         }
 
-        // Scan task output directly as well for any tags the specialist might have added natively
         if (this.projectMemoryManager) {
             await this.projectMemoryManager.processTags(result.output);
         }
 
-        // PERSIST SESSION STATE AFTER EVERY ACTION
         if (this.currentDiscussion) {
             this.currentDiscussion.agentSession = {
                 replVariables: this.sessionState.replVariables,
                 workingMemory: this.sessionState.workingMemory,
                 secureCredentials: this.sessionState.secureCredentials,
                 isSafetyCheckPassed: this.sessionState.isSafetyCheckPassed,
-                completedActionsHistory: this.completedActionsHistory, // Save the log
+                completedActionsHistory: this.completedActionsHistory, 
                 blacklistedTools: Array.from(this.sessionState.blacklistedTools),
                 extensionVersion: this.sessionState.extensionVersion
             };
             await this.discussionManager.saveDiscussion(this.currentDiscussion);
         }
 
-        await this.displayAndSavePlan(this.currentPlan);
+        await this.displayPlan(this.currentPlan);
         return result;
     }
 
     private async handleTaskFailureUserChoice(task: Task) {
         if (!this.currentPlan) return;
         task.can_retry = true;
-        await this.displayAndSavePlan(this.currentPlan);
+        await this.displayPlan(this.currentPlan);
 
         const userChoice = await vscode.window.showErrorMessage(
             `Task "${task.description}" failed.`,
@@ -2071,8 +1969,8 @@ Please provide a clear, concise final response to the user summarizing the outco
             InfoPanel.createOrShow(this.extensionUri, `Task ${task.id} Log`, `## Result\n${task.result}`);
         }
         if (userChoice === 'Continue Anyway') {
-            task.status = 'completed'; // Force completion so pipeline continues
-            await this.displayAndSavePlan(this.currentPlan);
+            task.status = 'completed'; 
+            await this.displayPlan(this.currentPlan);
         }
     }
 
@@ -2100,7 +1998,6 @@ Please provide a clear, concise final response to the user summarizing the outco
             return { allowed: true };
         }
         
-        // "None" selected case
         if (this.currentDiscussion.capabilities.selectedFolders.includes('__none__')) {
             if (filePath.startsWith('.lollms/sandbox')) return { allowed: true };
             return { allowed: false, message: "Permission Denied: Discussion is in Sandbox mode. AI can only access .lollms/sandbox." };
@@ -2117,9 +2014,6 @@ Please provide a clear, concise final response to the user summarizing the outco
             : { allowed: false, message: `Permission Denied: Access to ${filePath} is outside the selected workspace scope.` };
     }
 
-    /**
-     * Analyzes the objective and switches the active mission profile if a better match is found.
-     */
     private async dispatchMissionProfile(objective: string, signal: AbortSignal): Promise<void> {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         if (!config.get<boolean>('agent.autoProfileSwitch')) return;
@@ -2158,7 +2052,6 @@ Please provide a clear, concise final response to the user summarizing the outco
             if (exists && chosenId !== currentProfileId) {
                 Logger.info(`[Dispatcher] Switching profile from ${currentProfileId} to ${chosenId}`);
 
-                // Update local session and discussion
                 if (this.currentDiscussion?.capabilities) {
                     this.currentDiscussion.capabilities.activeAgentProfileId = chosenId;
                 }
@@ -2176,10 +2069,6 @@ Please provide a clear, concise final response to the user summarizing the outco
         }
     }
 
-    /**
-     * Specialized Security Audit pass.
-     * Uses an isolated context to prevent mission bias from overriding safety rules.
-     */
     private async performSecurityAudit(command: string, signal: AbortSignal): Promise<{ safe: boolean, reason: string }> {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const model = config.get<string>('inspectorModelName') || this.lollmsApi.getModelName();
@@ -2232,7 +2121,6 @@ Please provide a clear, concise final response to the user summarizing the outco
     }
 
     private checkGlobalPermission(tool: ToolDefinition, params?: any): { allowed: boolean, message?: string } {
-        // 1. Check Project-Level Whitelist
         if (params?.path || params?.file_path || params?.source || params?.destination) {
             const pathsToCheck = [params.path, params.file_path, params.source, params.destination].filter(Boolean);
             for (const p of pathsToCheck) {
@@ -2250,6 +2138,7 @@ Please provide a clear, concise final response to the user summarizing the outco
         }
         return { allowed: true };
     }
+
     private async executeTask(action: string, params: any, signal: AbortSignal, overrideEnv?: ToolExecutionEnv, taskModel?: string, taskPersona?: string, taskSkills?: string[], taskFiles?: string[]): Promise<{ success: boolean, output: string }> {
         const tool = this.toolManager.getTool(action);
         if (!tool) return { success: false, output: `Unknown action: ${action}` };
@@ -2258,6 +2147,8 @@ Please provide a clear, concise final response to the user summarizing the outco
         if (!perm.allowed) {
             return { success: false, output: perm.message || "Permission denied." };
         }
+
+        const assetDir = vscode.Uri.joinPath(this.currentWorkspaceFolder!.uri, '.lollms', 'assets', this.currentDiscussion!.id);
 
         const env: ToolExecutionEnv = overrideEnv || {
             workspaceRoot: this.currentWorkspaceFolder,
@@ -2268,6 +2159,8 @@ Please provide a clear, concise final response to the user summarizing the outco
             personalityManager: this.personalityManager,
             currentPlan: this.currentPlan,
             agentManager: this,
+            discussionId: this.currentDiscussion?.id,
+            assetDirectory: assetDir, 
             taskModel: taskModel,
             taskPersona: taskPersona,
             taskSkills: taskSkills,
@@ -2286,7 +2179,7 @@ Please provide a clear, concise final response to the user summarizing the outco
             
             if (isDebugOn) {
                 const stack = error.stack || "No stack trace available.";
-                const sanitizedStack = stack.replace(new RegExp(os.homedir(), 'g'), '~'); // Redact local user path
+                const sanitizedStack = stack.replace(new RegExp(os.homedir(), 'g'), '~'); 
 
                 errorOutput += `\n\n### 🛠️ TOOL BUG REPORT (Debug Mode Active)\n` +
                               `- **Exception**: \`${error.name}: ${error.message}\`\n` +
@@ -2297,7 +2190,6 @@ Please provide a clear, concise final response to the user summarizing the outco
                               `If there is NO OTHER tool to complete the mission, you MUST use \`submit_response\` immediately to inform the user and STOP.\n\n` +
                               `<lollms_tool_bug_report action="${action}" error="${encodeURIComponent(error.message)}" stack="${encodeURIComponent(sanitizedStack)}" />`;
 
-                // Active Circuit Breaker
                 this.sessionState.blacklistedTools.add(action);
                 this.sessionState.workingMemory.push(`CRITICAL: Tool '${action}' is BROKEN and now FORBIDDEN. Do not attempt to use it again.`);
             }
@@ -2309,6 +2201,7 @@ Please provide a clear, concise final response to the user summarizing the outco
             return { success: false, output: errorOutput };
         }
     }
+
     public async submitFinalMessage(message: ChatMessage) {
         await this.ui.addMessageToDiscussion(message);
     }
@@ -2320,9 +2213,8 @@ Please provide a clear, concise final response to the user summarizing the outco
 
         failedTask.retries++;
         this.currentPlan.scratchpad += `\n\n⚠️ **Task ${failedTask.id} Failed.** Attempting self-correction...`;
-        this.displayAndSavePlan(this.currentPlan);
+        await this.displayPlan(this.currentPlan);
 
-        // PASS THE COMPLETED ACTIONS HISTORY TO PLAN PARSER
         const planResult = await this.planParser.generateAndParsePlan(
             this.currentPlan.objective,
             this.currentPlan,
@@ -2333,7 +2225,7 @@ Please provide a clear, concise final response to the user summarizing the outco
             this.chatHistory,
             this.getEnabledTools(),
             this.currentDiscussion?.importedSkills,
-            this.completedActionsHistory // <--- KEY CHANGE
+            this.completedActionsHistory 
         );
 
         if (signal.aborted || !planResult.plan) return false;
@@ -2348,17 +2240,17 @@ Please provide a clear, concise final response to the user summarizing the outco
         }
         
         this.currentPlan.scratchpad += `\n\n--- PLAN REVISED ---`;
-        this.displayAndSavePlan(this.currentPlan);
+        await this.displayPlan(this.currentPlan);
         return true;
     }
     
-    // ... (formatValueForDisplay, resolveParameters - kept same) ...
     private formatValueForDisplay(val: any): string {
         if (typeof val === 'string') {
             try { return JSON.stringify(JSON.parse(val), null, 2); } catch { return val; }
         }
         return JSON.stringify(val, null, 2);
     }
+
     private resolveParameters(task: Task): { [key: string]: any } {
         if (!this.currentPlan) throw new Error("No active plan.");
         const resolvedParams: { [key: string]: any } = {};
@@ -2391,7 +2283,7 @@ Please provide a clear, concise final response to the user summarizing the outco
         
         this.archiveCurrentPlanState(`Replanning requested: ${instruction}`);
         this.currentPlan.scratchpad += `\n\n🔄 **Replanning requested:** ${instruction}`;
-        this.displayAndSavePlan(this.currentPlan);
+        await this.displayPlan(this.currentPlan);
         
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const plannerModel = config.get<string>('architectModelName') || modelOverride;
@@ -2399,7 +2291,6 @@ Please provide a clear, concise final response to the user summarizing the outco
         const augmentedInstruction = `${instruction}\n\n${failureContext}\n\nSTRICT REQUIREMENT: The previous errors prove your current approach is blocked. YOU MUST CHANGE TOOLS OR LOGIC.`;
 
         try {
-            // PASS THE COMPLETED ACTIONS HISTORY
             const planResult = await this.planParser.generateAndParsePlan(
                 `${this.currentPlan.objective} (Update: ${augmentedInstruction})`,
                 this.currentPlan,
@@ -2410,12 +2301,11 @@ Please provide a clear, concise final response to the user summarizing the outco
                 this.chatHistory,
                 this.getEnabledTools(),
                 this.currentDiscussion?.importedSkills,
-                this.completedActionsHistory // <--- KEY CHANGE
+                this.completedActionsHistory 
             );
 
             if (!planResult.plan) return { success: false, output: "Failed to generate new plan." };
 
-            // Remove all currently pending tasks, we will replace them with the Architect's new plan
             this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.status !== 'pending');
 
             let nextId = this.currentPlan.tasks.length > 0 ? Math.max(...this.currentPlan.tasks.map(t => t.id)) + 1 : 1;
@@ -2423,7 +2313,6 @@ Please provide a clear, concise final response to the user summarizing the outco
             const idOffset = nextId - minGeneratedId;
 
             for (const newTask of planResult.plan.tasks) {
-                // Keep dependency references intact internally for the newly generated tasks
                 newTask.id += idOffset;
                 if (newTask.dependencies) {
                     newTask.dependencies = newTask.dependencies.map(d => d + idOffset);
@@ -2435,7 +2324,7 @@ Please provide a clear, concise final response to the user summarizing the outco
 
             planResult.plan.investigation = this.currentPlan.investigation;
 
-            this.displayAndSavePlan(this.currentPlan);
+            await this.displayPlan(this.currentPlan);
             return { success: true, output: "Plan modified successfully." };
 
         } catch (error: any) {
@@ -2443,16 +2332,10 @@ Please provide a clear, concise final response to the user summarizing the outco
         }
     }
     
-    // ... (generateFileTree, runCommand, requestUserInput, deactivateAgent - kept same) ...
-    /**
-     * Generates a safe, truncated file tree for the AI.
-     * Respects user exclusions and prevents recursion into heavy dependency folders.
-     */
     public async generateFileTree(startPath: string, prefix: string = ''): Promise<string> {
         let result = '';
         let entries;
 
-        // Define folders that are visible but MUST NOT be traversed recursively
         const TRUNCATE_FOLDERS = ['venv', '.venv', 'node_modules', '.git', '.lollms', 'dist', 'build', 'bin', 'obj', 'target', 'env'];
 
         try { 
@@ -2470,17 +2353,14 @@ Please provide a clear, concise final response to the user summarizing the outco
             const isLast = i === entries.length - 1;
             const connector = isLast ? '└── ' : '├── ';
 
-            // 1. BLOCK: Check if user has excluded this file/folder from the tree
             if (provider && provider.isStrictlyIgnored(uri)) {
                 continue; 
             }
 
             if (entry.isDirectory()) {
-                // 2. TRUNCATE: If it's a heavy folder, show it exists but don't descend
                 if (TRUNCATE_FOLDERS.includes(entry.name.toLowerCase())) {
                     result += `${prefix}${connector}${entry.name}/ ... (contents truncated, use specialized tools to inspect)\n`;
                 } else {
-                    // Standard recursion for safe project folders
                     result += `${prefix}${connector}${entry.name}/\n`;
                     result += await this.generateFileTree(fullPath, prefix + (isLast ? '    ' : '│   '));
                 }
@@ -2499,24 +2379,19 @@ Please provide a clear, concise final response to the user summarizing the outco
         let finalCommand = command;
         const isWin = process.platform === 'win32';
 
-        // --- SOVEREIGN ENV RESOLUTION ---
-        // Determine which environment to use: 1. Passed root, 2. Current workspace root, 3. Global default
         const targetRoot = options?.projectRoot || this.currentWorkspaceFolder.uri.fsPath;
         let envPath = this.sessionState.projectEnvironments[targetRoot] || this.sessionState.activeEnv;
 
-        // JIT Discovery: If no env in state, check VS Code settings for this specific folder
         if (!envPath) {
             const folderUri = vscode.Uri.file(targetRoot);
             const pythonCfg = vscode.workspace.getConfiguration('python', folderUri);
             const venvPath = pythonCfg.get<string>('defaultInterpreterPath');
             if (venvPath && venvPath !== 'python') {
-                // If it's a full path to an executable, get the parent folder
                 envPath = venvPath.includes(path.sep) ? path.dirname(path.dirname(venvPath)) : venvPath;
                 this.sessionState.projectEnvironments[targetRoot] = envPath;
             }
         }
 
-        // --- MSVC / GLOBAL ENV ACTIVATION ---
         if (activationScript) {
             if (isWin) {
                 finalCommand = `cmd /c "${activationScript} && ${command}"`;
@@ -2525,10 +2400,8 @@ Please provide a clear, concise final response to the user summarizing the outco
             }
         }
 
-        // --- VIRTUAL ENV ACTIVATION ---
         if (envPath && (command.startsWith('python') || command.startsWith('pip'))) {
             if (isWin) {
-                // Check if it's a relative path to the root
                 const fullEnvPath = path.isAbsolute(envPath) ? envPath : path.join(targetRoot, envPath);
                 finalCommand = `& "${path.join(fullEnvPath, 'Scripts', 'Activate.ps1')}"; ${finalCommand}`;
             } else {
@@ -2537,7 +2410,6 @@ Please provide a clear, concise final response to the user summarizing the outco
             }
         }
         
-        // Use a descriptive task name so the user sees what is running in the status bar/terminal tab
         const taskName = command.length > 30 ? command.substring(0, 27) + "..." : command;
         
         return runCommandInTerminal(
@@ -2553,11 +2425,6 @@ Please provide a clear, concise final response to the user summarizing the outco
         return this.ui.requestUserInput(question, signal);
     }
 
-    /**
-     * The Debugging Orchestrator:
-     * Phase 1: Mandatory Librarian Grounding (Independent)
-     * Phase 2: Architect fixes code based on grounded context.
-     */
     public async runDebuggingOrchestrator(
         objective: string, 
         signal: AbortSignal
@@ -2567,10 +2434,8 @@ Please provide a clear, concise final response to the user summarizing the outco
         }
         const processId = this.processManager.getForDiscussion(this.currentDiscussion.id)?.id || "orchestrator";
 
-        // 0. Cleanup
-        this.displayAndSavePlan(null);
+        await this.displayPlan(null);
 
-        // 1. Setup Sandbox
         const isClean = await this.gitIntegration.isClean(this.currentWorkspaceFolder);
         if (!isClean) {
             const message = `🛑 **Debug Mission Blocked**
@@ -2590,7 +2455,6 @@ I will be creating a sandbox branch and applying surgical patches. To ensure you
                 content: message 
             });
             
-            // Unregister immediately to stop the UI overlay
             this.processManager.unregister(processId);
             this.ui.updateGeneratingState();
             return "Workspace dirty";
@@ -2599,13 +2463,11 @@ I will be creating a sandbox branch and applying surgical patches. To ensure you
         await this.gitIntegration.createAndCheckoutBranch(this.currentWorkspaceFolder, debugBranch);
         this.ui.addMessageToDiscussion({ role: 'system', content: `**🛰️ Orchestrator**\n*Sandbox Ready: Switched to branch \`${debugBranch}\`.*` });
 
-        // 2. Step 1: Worker Drafting (Grounded in context)
         this.processManager.updateDescription(processId, "Phase 1: Worker drafting solution...");
         this.ui.updateGeneratingState();
         
         const model = this.currentDiscussion.model || this.lollmsApi.getModelName();
         
-        // Fetch current context so the worker can actually see the code
         const contextData = await this.contextManager.getContextContent({ 
             includeTree: true, 
             modelName: model,
@@ -2631,13 +2493,10 @@ I will be creating a sandbox branch and applying surgical patches. To ensure you
             { role: 'user', content: `Draft the complete solution for: "${objective}". Use the technical briefing.` }
         ], null, signal, model);
 
-        // 3. Step 2: Verifier Audit (Guardian)
         this.processManager.updateDescription(processId, "Phase 2: Verifier auditing logic...");
         this.ui.updateGeneratingState();
-        // Ensure the call matches the implementation added to ChatPanel
         const auditedResponse = await this.ui.runVerificationAgent(workerResponse, signal);
 
-        // 4. Step 3: Apply to Disk (Guardian Shield Enabled)
         this.processManager.updateDescription(processId, "Phase 2: Applying fixes & verifying integrity...");
         this.ui.updateGeneratingState();
         
@@ -2649,15 +2508,12 @@ I will be creating a sandbox branch and applying surgical patches. To ensure you
             model: model
         });
 
-        // executeAutomationPipeline now internally runs the "Guardian" repair loop
         await this.ui.executeAutomationPipeline(auditedResponse, workerMsgId, signal, processId);
 
-        // 5. Phase 3: Specialized Debugger Loop (Files are now on disk)
         if (this.currentDiscussion.capabilities?.debugMode) {
             this.processManager.updateDescription(processId, "Phase 3: Debugger starting validation...");
             this.ui.updateGeneratingState();
             
-            // Re-sync context so Debugger sees the new files
             await this.contextManager.getContextContent({ includeTree: true, modelName: model, signal });
 
             return await this.runDebuggerAgent(objective, signal);
@@ -2666,9 +2522,6 @@ I will be creating a sandbox branch and applying surgical patches. To ensure you
         return "Complete";
     }
 
-    /**
-     * Dedicated Debugger Agent Loop: Iterative Fix & Verify
-     */
     public async runDebuggerAgent(objective: string, signal: AbortSignal): Promise<string> {
         if (!this.currentWorkspaceFolder || !this.currentDiscussion) return "No context.";
 
@@ -2707,10 +2560,9 @@ OUTPUT JSON ONLY for tool calls.
 }
 \`\`\``;
 
-        // Maintain internal loop history to prevent amnesia
         const loopHistory: ChatMessage[] = [
             { role: 'system', content: systemPrompt },
-            ...this.chatHistory.slice(-3) // Keep some recent context
+            ...this.chatHistory.slice(-3) 
         ];
 
         let step = 0;
@@ -2718,7 +2570,6 @@ OUTPUT JSON ONLY for tool calls.
             if (signal.aborted) break;
             step++;
 
-            // 1. Provide Current State (Disk is truth)
             const currentData = await this.contextManager.getContextContent({ includeTree: true, modelName: model, signal });
             const diskStateMsg: ChatMessage = { 
                 role: 'system', 
@@ -2726,14 +2577,12 @@ OUTPUT JSON ONLY for tool calls.
                 skipInPrompt: true 
             };
 
-            // Prepare prompt for this specific step
             const currentStepPrompt: ChatMessage[] = [
                 ...loopHistory,
                 diskStateMsg,
                 { role: 'user', content: step === 1 ? `Begin the debug mission.` : `Previous tool result received. Analyze and decide next step (Step ${step}/${maxSteps}).` }
             ];
 
-            // 2. Generate Next Action
             const response = await this.lollmsApi.sendChat(currentStepPrompt, null, signal, model);
             loopHistory.push({ role: 'assistant', content: response });
 
@@ -2741,14 +2590,11 @@ OUTPUT JSON ONLY for tool calls.
             const toolMatch = this.parseToolCall(cleanResponse);
 
             if (toolMatch) {
-                // 3. Execute Action
                 const res = await this.executeTask(toolMatch.name, toolMatch.params, signal);
                 
-                // Record observation in history
                 loopHistory.push({ role: 'user', content: `[OBSERVATION]\n${res.output}` });
                 fullDebugHistoryDisplay.push(`**Step ${step}:** \`${toolMatch.name}\`\n${res.output}`);
 
-                // 4. Update UI
                 if (this.ui.updateMessageContent) {
                     const logContent = fullDebugHistoryDisplay.map((entry, i) => {
                         const title = entry.split('\n')[0];
@@ -2758,13 +2604,12 @@ OUTPUT JSON ONLY for tool calls.
                     await this.ui.updateMessageContent(dbgMsgId, `**🧪 Debug Specialist**\n*Objective: "${objective}"*\n\n${logContent}`);
                 }
 
-                // 5. If disk was touched, force a context refresh for next loop iteration
                 if (['generate_code', 'replaceCode', 'applyFileContent', 'delete_file', 'move_file'].includes(toolMatch.name)) {
                     await this.contextManager.getContextContent({ includeTree: true, modelName: model, signal });
                 }
             } else if (cleanResponse.toLowerCase().includes("mission accomplished") || cleanResponse.toLowerCase().includes("verified")) {
                 if (this.ui.updateMessageContent) {
-                    this.ui.updateMessageContent(dbgMsgId, `**🧪 Debug Specialist**\n\n${cleanResponse}`);
+                    await this.ui.updateMessageContent(dbgMsgId, `**🧪 Debug Specialist**\n\n${cleanResponse}`);
                 }
                 return "Complete";
             } else {
@@ -2773,22 +2618,18 @@ OUTPUT JSON ONLY for tool calls.
         }
         
         const finalReport = `🛑 **Debugger Stopped**: Reached maximum iteration limit (${maxSteps} steps) without reaching a verified conclusion.`;
-        if (this.ui.updateMessageContent) this.ui.updateMessageContent(dbgMsgId, finalReport);
+        if (this.ui.updateMessageContent) await this.ui.updateMessageContent(dbgMsgId, finalReport);
         return "Max steps reached";
     }
 
     private async deactivateAgent() {
         this.isActive = false;
-        // PRESERVE THE PLAN: Do not wipe plan or session on deactivation
         if (this.currentPlan) {
             this.currentPlan.status = 'stale';
         }
         this.ui.updateAgentMode(false);
     }
-    /**
-     * Final Verification Agent.
-     * Performs a logical audit against the original objective.
-     */
+
     private async runVerifierAgent(objective: string, signal: AbortSignal): Promise<void> {
         const verifierMsgId = 'verifier_report_' + Date.now();
         await this.ui.addMessageToDiscussion({ 
@@ -2821,5 +2662,4 @@ If the code is perfect, output a "VERIFICATION PASSED" report.`;
             await this.ui.updateMessageContent(verifierMsgId, response);
         }
     }
-  
 }

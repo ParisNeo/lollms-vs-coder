@@ -106,20 +106,44 @@ export class DiscussionItem extends vscode.TreeItem {
         public readonly discussion: Discussion,
         private readonly extensionUri: vscode.Uri
     ) {
-        super(discussion.title, vscode.TreeItemCollapsibleState.None);
+        // Guard against empty/malformed titles
+        const title = discussion?.title || "Untitled Discussion";
+        super(title, vscode.TreeItemCollapsibleState.None);
+
+        if (!discussion || !discussion.id) {
+            this.label = "Corrupted Discussion";
+            return;
+        }
+
         this.id = discussion.id;
         this.contextValue = 'discussion';
-        this.description = new Date(discussion.timestamp).toLocaleString();
+
+        try {
+            this.description = discussion.timestamp ? new Date(discussion.timestamp).toLocaleString() : "";
+        } catch {
+            this.description = "";
+        }
+
         this.command = {
             command: 'lollms-vs-coder.switchDiscussion',
             title: 'Switch Discussion',
-            arguments: [this.id]
+            // Ensure ID is a clean string without leading slashes which break VS Code command URIs
+            arguments: [discussion.id.startsWith('/') ? discussion.id.substring(1) : discussion.id]
         };
 
-        const isAgent = discussion.capabilities?.agentMode === true;
-        this.iconPath = isAgent 
-            ? new vscode.ThemeIcon('robot') 
-            : vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon.svg');
+        // Safety: default to standard icon if anything is missing
+        try {
+            const isAgent = discussion.capabilities?.agentMode === true;
+            if (isAgent) {
+                this.iconPath = new vscode.ThemeIcon('robot');
+            } else if (this.extensionUri) {
+                this.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon.svg');
+            } else {
+                this.iconPath = new vscode.ThemeIcon('comment-discussion');
+            }
+        } catch {
+            this.iconPath = new vscode.ThemeIcon('comment-discussion');
+        }
     }
 }
 

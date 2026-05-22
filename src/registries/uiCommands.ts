@@ -98,6 +98,18 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
     safeRegister('lollms-vs-coder.showLabTab', () => setTab('lab'));
     safeRegister('lollms-vs-coder.showDeveloperTab', () => setTab('developer'));
 
+    safeRegister('lollms-vs-coder.showHelpPopup', async (params: { title: string, content: string, link: string }) => {
+        const install = "Open GitHub (Install Lollms)";
+        const result = await vscode.window.showInformationMessage(
+            params.content.replace(/\\n/g, '\n'),
+            { modal: true },
+            install
+        );
+        if (result === install) {
+            vscode.env.openExternal(vscode.Uri.parse(params.link));
+        }
+    });
+
     safeRegister('lollms-vs-coder.showStudioTab', () => {
         setTab('studio');
         vscode.commands.executeCommand('lollms-vs-coder.openFlowStudio');

@@ -35,6 +35,7 @@ export class ContextManager {
   private codeGraphManager?: CodeGraphManager;
   private context: vscode.ExtensionContext;
   private lollmsAPI: LollmsAPI;
+  public agentManager?: any; // Set dynamically from chatPanel
   private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']);
   private docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.msg']);
   private binaryExtensions = new Set([
@@ -125,9 +126,7 @@ export class ContextManager {
 
   public refreshFileInCache(uri: vscode.Uri) {
     const relPath = this.normalize(vscode.workspace.asRelativePath(uri, false));
-    // Clear the specific file from cache to force a fresh disk read in getContextContent
     this._fileContentCache?.delete(relPath);
-    // Also clear namespaced path if it exists
     const folders = vscode.workspace.workspaceFolders || [];
     if (folders.length > 1) {
         const folder = vscode.workspace.getWorkspaceFolder(uri);
@@ -246,10 +245,6 @@ export class ContextManager {
   // TREE GENERATION
   // ─────────────────────────────────────────────────────────────
 
-  /**
-   * Generates an isolated, physically-walked tree for a single workspace folder.
-   * Uses the physical FS walk approach from v1 for accuracy and correct exclusion handling.
-   */
   public async generateIsolatedProjectTree(
     folder: vscode.WorkspaceFolder,
     signal?: AbortSignal,
@@ -357,10 +352,6 @@ export class ContextManager {
     return treeString;
   }
 
-  /**
-   * Generates the combined project tree for agents (uses cached global tree).
-   * Used by agents that need the full workspace picture.
-   */
   public async generateProjectTree(
     signal?: AbortSignal,
     onProgress?: (percentage: number) => void,
@@ -514,7 +505,7 @@ export class ContextManager {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // MAIN CONTEXT ASSEMBLY — Per-project tree + files
+  // MAIN CONTEXT ASSEMBLY
   // ─────────────────────────────────────────────────────────────
 
   async getContextContent(options?: {
@@ -548,7 +539,6 @@ export class ContextManager {
     const contextFiles = this.contextStateProvider.getIncludedFiles();
     result.projectName = path.basename(activeFolders[0].uri.fsPath);
 
-    // ── RLM check ──────────────────────────────────────────────
     let useRLM = false;
     if (options?.allowRLM && options?.modelName) {
       try {
@@ -568,7 +558,6 @@ export class ContextManager {
       } catch (e) { console.error("RLM check failed:", e); }
     }
 
-    // ── Workspace Structure Briefing ─────────────────────────────
     result.text = `# 🏢 SOVEREIGN WORKSPACE STRUCTURE\n`;
     result.text += `You are operating in a multi-root VS Code environment with ${activeFolders.length} independent project(s).\n\n`;
 
@@ -582,13 +571,12 @@ export class ContextManager {
     result.text += `- **\`[D]\` (Definitions Only)**: Only the class/function signatures are loaded. High-level structure is known, but logic is hidden.\n`;
     result.text += `- **(No Marker)**: The file is visible in the structure, but its content is completely **HIDDEN** from your current memory.\n\n`;
 
-    // ── Skills (global, shown once) ─────────────────────────────
     const discussionSkillIds = options?.importedSkillIds || [];
     const projectSkillIds = await this.getActiveProjectSkills();
     const allSkillIds = Array.from(new Set([...discussionSkillIds, ...projectSkillIds]));
 
     if (this.skillsManager && allSkillIds.length > 0) {
-      await this.skillsManager.getSkills(); // ensure cache refreshed
+      await this.skillsManager.getSkills();
       const skills = await this.skillsManager.getSkills();
       result.skillsContent = "";
       for (const skill of skills) {
@@ -606,7 +594,6 @@ export class ContextManager {
       }
     }
 
-    // ── Diagrams (global, shown once) ───────────────────────────
     const activeDiagramIds = options?.activeDiagramIds || [];
     if (activeDiagramIds.length > 0 && this.codeGraphManager) {
       if (this.codeGraphManager.getGraphData().nodes.length === 0 && this.codeGraphManager.getBuildState() === 'idle') {
@@ -622,7 +609,6 @@ export class ContextManager {
       }
     }
 
-    // ── Per-project blocks ──────────────────────────────────────
     for (const folder of activeFolders) {
       if (signal?.aborted) throw new Error("Operation cancelled");
 
@@ -635,18 +621,15 @@ export class ContextManager {
       result.text += `## 🏗️ PROJECT: ${projectName.toUpperCase()}\n`;
       result.text += `${'#'.repeat(50)}\n\n`;
 
-      // ── A. Per-project TREE ──────────────────────────────────
       if (includeTree && settings.tree !== false) {
         const isolatedTree = await this.generateIsolatedProjectTree(folder, signal, options?.capabilities);
         result.text += `### 🌳 ${projectName.toUpperCase()} — FILE STRUCTURE\n`;
         result.text += isolatedTree + '\n';
-        // Also accumulate for agents that read result.projectTree
         result.projectTree += `### ${projectName}\n${isolatedTree}\n`;
       } else if (settings.tree === false) {
         result.text += `*(Tree hidden for ${projectName} by Workspace Access Matrix)*\n\n`;
       }
 
-      // ── B. Per-project FILE CONTENTS ────────────────────────
       if (settings.content === false) {
         result.text += `*(File contents hidden for ${projectName} by Workspace Access Matrix)*\n\n`;
         continue;
@@ -661,25 +644,21 @@ export class ContextManager {
         let projectContentBuffer = "";
         let filesInThisFolderCount = 0;
 
-        // Use the contextFiles list (73 files in your case) and filter by ownership
         const totalFiles = contextFiles.length;
         let filesProcessed = 0;
 
         for (const fileEntry of contextFiles) {
           if (signal?.aborted) throw new Error("Operation cancelled");
+          if (!fileEntry || !fileEntry.path) continue;
 
           filesProcessed++;
           if (options?.onProgress) {
               const pct = Math.round((filesProcessed / totalFiles) * 100);
-              // Report both percentage and current filename for the "Live" feel
               options.onProgress(pct);
-              // We'll use a custom message or the status text to show the filename
           }
 
-          // CRITICAL: Use the existing resolver to handle namespacing/roots correctly
           const resolution = await this.resolveWorkspaceFromPath(fileEntry.path);
 
-          // Verify if this file belongs to the CURRENT folder in the project block
           if (!resolution || !resolution.folder || resolution.folder.uri.toString() !== folder.uri.toString()) {
             continue; 
           }
@@ -690,7 +669,6 @@ export class ContextManager {
           const fileUri = resolution.uri;
           const relativePath = resolution.relativePath;
 
-          // Header matches the "Sovereign" protocol: FolderName/Path
           const headerPath = activeFolders.length > 1 ? `${folder.name}/${relativePath}` : relativePath;
 
           if (this.contextStateProvider.isStrictlyIgnored(fileUri)) continue;
@@ -715,15 +693,11 @@ export class ContextManager {
             }
 
             let fileContent = '';
-            // --- LIVING CONTEXT PROTOCOL ---
-            // 1. Check if the file is currently open in any editor (Dirty or Clean)
             const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri.toString());
             const cached = this._fileContentCache.get(cacheKey);
 
             if (openDoc) {
-                // If open, the editor content is the absolute Source of Truth
                 fileContent = openDoc.getText();
-                // Update cache so it stays fresh for other components
                 this._fileContentCache.set(cacheKey, { content: fileContent, state: contextState });
             } else if (cached && cached.state === contextState) {
                 fileContent = cached.content;
@@ -749,10 +723,10 @@ export class ContextManager {
                 const imgIndex = result.images.length;
                 result.images.push({ filePath: headerPath, data: dataUri });
 
-                // SOVEREIGN MULTIMODAL TAGGING
                 projectContentBuffer += `### 🖼️ \`${headerPath}\` [C]\n`;
-                projectContentBuffer += `> [VISUAL CONTEXT INDEX: ${imgIndex}]\n`;
-                projectContentBuffer += `> Use this index to refer to the visual representation in the multipart message.\n\n`;
+                projectContentBuffer += `> [MULTIMODAL STATUS]: IMAGE LOADED IN VISION BUFFER.\n`;
+                projectContentBuffer += `> [VISUAL CONTEXT INDEX]: ${imgIndex}\n`;
+                projectContentBuffer += `> You can see this image directly in your vision stream. Do NOT use 'analyze_image' for this file.\n\n`;
                 continue;
               }
 
@@ -918,11 +892,44 @@ export class ContextManager {
 
     if (ext === '.pdf' || this.docExtensions.has(ext)) {
       try {
+        let text = "";
         if (ext === '.pdf') {
-          try { return await this.lollmsAPI.extractText(base64Data, fileName); }
-          catch (e) { return await this.parsePdfLocal(buffer); }
+          try { text = await this.lollmsAPI.extractText(base64Data, fileName); }
+          catch (e) { text = await this.parsePdfLocal(buffer); }
+        } else {
+          text = await this.lollmsAPI.extractText(base64Data, fileName);
         }
-        return await this.lollmsAPI.extractText(base64Data, fileName);
+
+        if (text.length > 100 && (text.includes('\t') || text.match(/\n\s*\|/))) {
+            Logger.info(`[Context] PDF structure detected. Running Markdown conversion pass for ${fileName}...`);
+
+            const conversionPrompt = `You are a Document Structuring Expert. 
+    I have extracted raw text from a PDF: ${fileName}. 
+    The text contains data that lost its layout during extraction.
+
+    **TASK:**
+    - Convert the provided raw text into beautiful, valid Markdown.
+    - **TABLES**: Identify data rows and columns and recreate them as standard Markdown tables.
+    - **HEADERS**: Detect section titles and apply #, ##, ### markers.
+    - **CLEANUP**: Remove page numbers, running headers/footers, and extraction artifacts.
+
+    **RAW TEXT:**
+    ${text.substring(0, 10000)}`;
+
+            try {
+                const model = this.lollmsAPI.getModelName();
+                const structured = await this.lollmsAPI.sendChat([
+                    { role: 'system', content: "You are a markdown formatting expert. Output only the structured markdown." },
+                    { role: 'user', content: conversionPrompt }
+                ], null, undefined, model);
+                return stripThinkingTags(structured).trim();
+            } catch (e) {
+                Logger.warn("PDF structural conversion failed, falling back to raw text.");
+                return text;
+            }
+        }
+        return text;
+
       } catch (apiError: any) {
         if (ext === '.docx') return await this.parseDocxLocal(buffer);
         return `⚠️ **Error processing document:** ${(apiError as Error).message}`;
@@ -1149,7 +1156,7 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
 
     if (!rawContent) {
       try {
-        const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Lollms VS Coder)' } });
+        const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Lollms Research Agent)' } });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const html = await res.text();
         rawContent = html
@@ -1225,7 +1232,7 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
           }));
         }
       } else if (action === 'arxiv') {
-        const res = await fetch(`http://export.arxiv.org/api/query?search_query=${encodeURIComponent(query)}&max_results=5`);
+        const res = await fetch(`http://export.arxiv.org/api/query?search_query=${encodeURIComponent(query)}&start=0&max_results=5`);
         const txt = await res.text();
         const titles = [...txt.matchAll(/<title>([\s\S]*?)<\/title>/g)].map(m => m[1].trim()).slice(1);
         const ids = [...txt.matchAll(/<id>([\s\S]*?)<\/id>/g)].map(m => m[1].trim()).slice(1);
@@ -1293,6 +1300,7 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
     const executedActions = new Set<string>();
     let cumulativeBrain = "";
     const MAX_STEPS = 8;
+    const isBuilder = false;
 
     const renderUpdate = (status: string, finished: boolean = false, step: number = 0) => {
       const headerTitle = isBuilder ? "Builder Mission Report" : "Librarian Mission Report";
@@ -1306,12 +1314,12 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
         ? `<details ${finished ? '' : 'open'}><summary>📜 Discovery Log</summary><div class="agent-log-container">${logHtml}</div></details>`
         : '';
       const scratchpadHtml = cumulativeBrain
-        ? `<div class="plan-scratchpad" style="margin-top:10px;"><details open><summary class="scratchpad-header">🧠 Librarian Reasoning</summary><div class="scratchpad-content">${cumulativeBrain}</div></details></div>`
+        ? `<div class="plan-scratchpad" style="margin-top:10px;"><details open><summary class="scratchpad-header">🧠 ${isBuilder ? 'Builder' : 'Librarian'} Reasoning</summary><div class="scratchpad-content">${cumulativeBrain}</div></details></div>`
         : '';
       const spinnerHtml = finished
-        ? `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span>Library Optimized</span></div>`
-        : `<div class="status-line"><div class="spinner"></div> <span>Searching Library (Step ${step + 1}): ${status}</span></div>`;
-      onUpdate(`**💡 Auto-Skill Agent**\n\n${spinnerHtml}\n\n${scratchpadHtml}\n\n${skillsTree}\n\n${logSection}`);
+        ? `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span>${isBuilder ? 'Implementation Complete' : 'Library Optimized'}</span></div>`
+        : `<div class="status-line"><div class="spinner"></div> <span>${isBuilder ? 'Builder' : 'Searching Library'} (Step ${step + 1}): ${status}</span></div>`;
+      onUpdate(`**💡 ${isBuilder ? 'Sovereign Builder' : 'Auto-Skill Agent'}**\n\n${spinnerHtml}\n\n${scratchpadHtml}\n\n${skillsTree}\n\n${logSection}`);
     };
 
     const systemPrompt = `You are the Expert Librarian Agent for the LoLLMs Skills Library.
@@ -1501,7 +1509,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
           this.updateBriefingData(discussion, toolName === 'add_briefing_entry' ? 'add' : 'amend', params.id, params.info);
           actionLog.push(`📝 **Briefing Updated**: ${params.id}`);
           chatHistory.push({ role: 'system', content: "SUCCESS: Briefing entry updated." });
-          renderUpdate("Updating Knowledge Base...");
+          renderUpdate("Updating Knowledge Base...", false, step);
           continue;
         }
 
@@ -1560,7 +1568,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
 
           const results = await Promise.all(searchPromises);
           chatHistory.push({ role: 'system', content: `SEARCH RESULTS:\n${results.join('\n\n')}\n\nNow decide to 'read_and_add' useful links or 'done'.` });
-          actionLog.push(`✅ Found ${foundResults.length} URLs.`);
+          actionLog.push(`` + `✅ Found ${foundResults.length} URLs.`);
           if (onOverlayUpdate) onOverlayUpdate(`🔍 Found ${foundResults.length} URLs`);
 
         } else if (toolName === 'read_and_add') {
@@ -1573,7 +1581,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
               const res = await this.processUrl(url, 'en', userPrompt, signal);
               const fileName = res.filename.split(/[\\/]/).pop() || 'Document';
               addedSources.push({ url, title: fileName });
-              return `📖 Added: ${res.filename}`;
+              return `` + `📖 Added: ${res.filename}`;
             } catch (e: any) { return `❌ Failed: ${url}: ${e.message}`; }
           }));
           chatHistory.push({ role: 'system', content: `Operation results:\n${readResults.join('\n')}` });
@@ -1632,21 +1640,11 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     const isBuilder = mode === 'builder';
 
     const roleName = isBuilder ? "Sovereign Project Builder" : "Lead Project Librarian";
-    const primaryGoal = isBuilder 
-        ? "implement the user's request by discovering the codebase, writing high-quality code, and delegating all execution to the human user."
-        : "optimize the project context for the User by selecting the right files.";
-
-    const builderSafetyMandate = isBuilder ? `
-    ### 🛑 THE ZERO-EXECUTION MANDATE (CRITICAL)
-    1. **NO AUTONOMOUS EXECUTION**: You are FORBIDDEN from running commands, scripts, or terminals yourself.
-    2. **DELEGATE TO USER**: If you need to run a test, install a library, or check a result, you MUST use the \`delegate_to_user\` tool. Provide the user with the exact command to copy-paste.
-    3. **WRITE & VERIFY**: Your writing tools (\`edit_code\`, \`generate_code\`) automatically trigger a syntax audit. You do not need to 'run' code to verify it exists.
-    ` : "";
 
     const pruningMandate = isEconomy ? `
     ### 🧹 SELECTIVE PRUNING MANDATE (TOKEN ECONOMY)
     You are responsible for the health of the AI's Attention Map. A cluttered context leads to logic errors.
-    
+
     **STRICT RULES:**
     1. **PRUNE BY DEFAULT**: In every turn, look at the '[Currently Selected]' list. If a file is not DIRECTLY necessary for the next technical step, you MUST use \`remove_files\` immediately to eject it.
     2. **SURGICAL SELECTION**: Do not "clump" files. Only 'possess' (add to context) the 2-3 files you are actively analyzing or modifying. 
@@ -1655,10 +1653,14 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     `:"";
     const fullContext = await this.getContextContent({ includeTree: true, modelName: model, signal });
 
-    // Use the PlanParser to generate the specialized system identity
-    const planParser = (this as any).agentManager?.planParser;
-    const allowedTools = (this as any).toolManager?.getEnabledTools() || [];
-    
+    const { PlanParser } = await import('./planParser');
+    const { ToolManager } = await import('./tools/toolManager');
+
+    const activeToolManager = (this as any).toolManager || new ToolManager();
+    const planParser = (this as any).agentManager?.planParser || new PlanParser(this.lollmsAPI, this, activeToolManager);
+
+    const allowedTools = activeToolManager.getEnabledTools() || [];
+
     let systemPrompt = "";
     if (isBuilder) {
         systemPrompt = await planParser.getBuilderSystemPrompt(allowedTools, discussion?.importedSkills);
@@ -1666,10 +1668,8 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
         systemPrompt = await planParser.getLibrarianSystemPrompt(allowedTools, discussion?.importedSkills);
     }
 
-    // Append the dynamic mandates (Pruning, Discovery)
     systemPrompt += `\n\n${pruningMandate}\n\n**RESPONSE FORMAT**: You MUST output only a valid JSON object.`;
 
-    // --- 🧠 LIBRARIAN BOOT-UP ---
     const possessedContent = fullContext.selectedFilesContent;
 
     let initialUserContent = `**USER OBJECTIVE:** "${userPrompt}"\n\n# SHARED TEAM BRIEFING\n${sharedKnowledge || "No briefing entries yet."}\n\n# PROJECT WORLD STATE (PATHS ONLY)\n${fileTree}\n\n`;
@@ -1748,7 +1748,6 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
       const briefingHtml = `<div class="technical-briefing-card"><details open><summary class="briefing-header"><div style="display:flex;align-items:center;gap:8px;flex:1;"><span class="codicon codicon-note"></span> Team Technical Briefing</div><div style="display:flex;gap:4px;"><button class="msg-action-btn" onclick="const text=this.closest('.technical-briefing-card').querySelector('.briefing-content').innerText;vscode.postMessage({command:'copyToClipboard',text:text})" style="opacity:0.6;padding:0;margin:0;height:16px;" title="Copy"><i class="codicon codicon-copy"></i></button><button class="msg-action-btn" onclick="vscode.postMessage({command:'updateDiscussionCapabilitiesPartial',partial:{clearBriefing:true}})" style="opacity:0.6;padding:0;margin:0;height:16px;" title="Clear"><i class="codicon codicon-trash"></i></button></div></summary><div class="briefing-scroll-area"><div class="briefing-content">${renderDataBriefing()}</div></div></details></div>`;
       const summaryHtml = finalSummary ? `<summary>${finalSummary}</summary>` : "";
 
-      // Ensure the timeline always has at least one step during bootstrapping
       const finalTimeline = timelineHtml.length > 0 
         ? timelineHtml.replace(/class="timeline-content"/g, 'class="step"')
         : `<div class="timeline-item active"><div class="timeline-dot"><div class="spinner"></div></div><div class="step">${status}</div></div>`;
@@ -1771,8 +1770,8 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
       else onUpdate(`**${emoji} ${headerTitle}**\n${spinnerHtml}\n${objectiveHtml}\n${briefingHtml}\n${filesTree}\n${logSection}`);
       };
 
-    if (initialCount > 0) actionLog.push(`ℹ️ Librarian started with ${initialCount} files already in context.`);
-    if (onStatusUpdate) onStatusUpdate("Librarian is formulating mission objective...");
+    if (initialCount > 0) actionLog.push(`ℹ️ ${isBuilder ? 'Builder' : 'Librarian'} started with ${initialCount} files already in context.`);
+    if (onStatusUpdate) onStatusUpdate(`${isBuilder ? 'Builder' : 'Librarian'} is formulating mission objective...`);
     renderUpdate("Formulating Objective...", false, 0);
 
     try {
@@ -1785,7 +1784,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     } catch (e) { rephrasedObjective = userPrompt; }
 
     actionLog.push("🔍 Analyzing project structure...");
-    if (onStatusUpdate) onStatusUpdate("Librarian is analyzing project state...");
+    if (onStatusUpdate) onStatusUpdate(`${isBuilder ? 'Builder' : 'Librarian'} is analyzing project state...`);
     renderUpdate("Analyzing Project...", false, 0);
 
     let retryCount = 0;
@@ -1842,7 +1841,6 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
 
         if (toolCall?.scratchpad) {
           const newEntry = toolCall.scratchpad.trim();
-          // Builder-specific scratchpad enhancement
           const entryPrefix = isBuilder ? "🛠️ Builder Logic" : "🧠 Librarian Insight";
           cumulativeBrain += `\n\n**${entryPrefix}**: ${newEntry}`;
           actionLog.push(`${isBuilder ? '🛠️' : '🧠'} ${newEntry}`);
@@ -1881,7 +1879,6 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
           continue;
         }
 
-        // --- NEW: DELEGATE TO USER SUPPORT ---
         if (toolName === 'delegate_to_user') {
             actionLog.push(`👤 **Delegating to User**: ${params.title}`);
             renderUpdate(`Waiting for User...`, false, step);
@@ -1891,7 +1888,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
                 const env = { agentManager: (this as any).agentManager, workspaceRoot: folders[0], contextManager: this };
                 const result = await tool.execute(params, env, signal);
                 chatHistory.push({ role: 'system', content: `USER DELEGATION RESULT:\n${result.output}` });
-                actionLog.push(`✅ User responded to: ${params.title}`);
+                actionLog.push(`` + `✅ User responded to: ${params.title}`);
                 continue;
             } else {
                 chatHistory.push({ role: 'system', content: "Error: delegate_to_user tool logic missing in host." });
@@ -1899,7 +1896,6 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
             }
         }
 
-        // --- NEW: GENERATE CODE SUPPORT ---
         if (toolName === 'generate_code' && isBuilder) {
             actionLog.push(`🛠️ **Generating File**: ${params.file_path}`);
             renderUpdate(`Manifesting ${params.file_path}...`, false, step);
@@ -1909,7 +1905,6 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
                 const parentDir = vscode.Uri.joinPath(fullUri, '..');
                 await vscode.workspace.fs.createDirectory(parentDir);
 
-                // Use the specialist logic: Ask LLM for the full file content
                 const prompt = `You are a specialist manifesting the file: ${params.file_path}\n\nBriefing: ${params.technical_briefing}\n\nInstructions: ${params.instructions}`;
                 const fileContentRaw = await this.lollmsAPI.sendChat([{ role: 'system', content: prompt }], null, signal, model);
                 const fileContent = stripThinkingTags(fileContentRaw).replace(/```\w*\n?/, '').replace(/\n?```$/, '').trim();
@@ -1918,7 +1913,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
                 this.refreshFileInCache(fullUri);
 
                 chatHistory.push({ role: 'system', content: `SUCCESS: File '${params.file_path}' created and written to disk.` });
-                actionLog.push(`✅ Successfully created: ${params.file_path}`);
+                actionLog.push(`` + `✅ Successfully created: ${params.file_path}`);
                 continue;
             } catch (e: any) {
                 chatHistory.push({ role: 'system', content: `ERROR: Failed to generate file: ${e.message}` });
@@ -1991,7 +1986,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
                     workspaceRoot: folders[0], 
                     contextManager: this,
                     lollmsApi: this.lollmsAPI,
-                    currentPlan: { objective: rephrasedObjective, tasks: [] } // Mock plan for tool compatibility
+                    currentPlan: { objective: rephrasedObjective, tasks: [] }
                 };
                 const result = await tool.execute(params, env, signal);
                 chatHistory.push({ role: 'system', content: `EDIT_CODE RESULT:\n${result.output}` });
@@ -2026,6 +2021,28 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
             renderUpdate("Searching...", false, step);
           }
         } else {
+          // Dynamic fallback for any other registered tool
+          const generalTool = activeToolManager.getAllTools().find((t: any) => t.name === toolName);
+          if (generalTool) {
+            actionLog.push(`🛠️ **Running Tool**: ${toolName}`);
+            renderUpdate(`Executing ${toolName}...`, false, step);
+            const env = {
+                agentManager: (this as any).agentManager,
+                workspaceRoot: folders[0],
+                contextManager: this,
+                lollmsApi: this.lollmsAPI,
+                currentPlan: { objective: rephrasedObjective, tasks: [] }
+            };
+            try {
+                const result = await generalTool.execute(params, env, signal);
+                chatHistory.push({ role: 'system', content: `${toolName.toUpperCase()} RESULT:\n${result.output}` });
+                actionLog.push(result.success ? `✅ Executed: ${toolName}` : `❌ Failed: ${toolName}`);
+            } catch (e: any) {
+                chatHistory.push({ role: 'system', content: `ERROR executing ${toolName}: ${e.message}` });
+                actionLog.push(`❌ Error: ${toolName}`);
+            }
+            continue;
+          }
           actionLog.push(`⚠️ Unknown tool: ${toolName}`);
         }
       } catch (e: any) {
@@ -2039,11 +2056,8 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
       }
     }
 
-    // Ensure the UI shows the "Check" icon and final state
-    // Ensure the UI shows the "Check" icon and final state
     renderUpdate("Context Ready", true, stepsTaken);
 
-    // If we are in Builder mode, perform a final synthesis pass for the summary zone
     if (isBuilder && !signal.aborted) {
         try {
             const finalPrompt = `Your implementation tasks are complete. Review the 'Mission Timeline' above and provide a 2-3 sentence technical summary of exactly what you manifested and verified.`;
@@ -2060,7 +2074,6 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
         }
     }
 
-    // Explicitly update the discussion object if provided to persist the briefing
     if (discussion) {
         this.updateBriefingData(discussion, 'add', 'analysis', cumulativeBrain);
     }
@@ -2072,7 +2085,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
   }
 
   // ─────────────────────────────────────────────────────────────
-  // AUTO-SELECTION (Quick, non-agentic)
+  // AUTO-SELECTION
   // ─────────────────────────────────────────────────────────────
 
   public async getAutoSelectionForContext(userPrompt: string): Promise<string[] | null> {
@@ -2118,9 +2131,6 @@ Example:
   // SKILLS / TOKEN CACHE
   // ─────────────────────────────────────────────────────────────
 
-  /**
-   * Loads the token cache from the .lollms directory.
-   */
   private async loadPersistentTokenCache() {
     const { getLollmsStorageUri } = require('./utils');
     const storage = getLollmsStorageUri(this.context);
@@ -2133,9 +2143,6 @@ Example:
     }
   }
 
-  /**
-   * Saves the current token buffer to disk.
-   */
   private async savePersistentTokenCache() {
     const { getLollmsStorageUri } = require('./utils');
     const storage = getLollmsStorageUri(this.context);

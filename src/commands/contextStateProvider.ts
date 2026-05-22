@@ -537,9 +537,11 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     
     public getIncludedFiles(): { path: string, state: ContextState }[] {
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        if (!workspaceState) return [];
 
         return Object.entries(workspaceState)
             .filter(([key, state]) => {
+                if (!key || typeof key !== 'string') return false;
                 if (state !== 'included' && state !== 'definitions-only') return false;
 
                 // Effective State Check: Ensure no parent is 'collapsed' or 'fully-excluded'
@@ -556,16 +558,17 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             .map(([key, state]) => ({ path: key, state }));
     }
 
-    public async addFilesToContext(files: string[]): Promise<void> {
+    public async addFilesToContext(files: string[]): Promise<string[]> {
         const folders = vscode.workspace.workspaceFolders;
-        if (!folders || folders.length === 0) return;
+        if (!folders || folders.length === 0) return [];
 
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
         const urisToFire: vscode.Uri[] = [];
+        const addedPaths: string[] = [];
 
         for (const file of files) {
             let targetUri: vscode.Uri | undefined;
-            const normalizedPath = this.normalize(file).trim();
+            const normalizedPath = this.normalize(file).trim().replace(/^\/+/, '');
             const segments = normalizedPath.split('/');
 
             // 1. SOVEREIGN NAMESPACE CHECK: Does the first segment match a project name?
@@ -573,44 +576,61 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             if (projectFolder && segments.length > 1) {
                 const subPath = segments.slice(1).join('/');
                 targetUri = vscode.Uri.joinPath(projectFolder.uri, subPath);
-            } else {
-                // 2. SEARCH RESOLUTION: Check across all roots for existence
+                try { await vscode.workspace.fs.stat(targetUri); } catch { targetUri = undefined; }
+            }
+
+            // 2. SEARCH RESOLUTION: Check across all roots for existence (Relative Path)
+            if (!targetUri) {
                 for (const folder of folders) {
                     const testUri = vscode.Uri.joinPath(folder.uri, normalizedPath);
                     try {
                         await vscode.workspace.fs.stat(testUri);
                         targetUri = testUri;
                         break;
-                    } catch {
-                        // If it's a namespaced path where the root name matches the folder name 
-                        // but wasn't caught by segments[0] check, try one more fallback
-                        if (normalizedPath.startsWith(folder.name + '/')) {
-                            const stripped = normalizedPath.substring(folder.name.length + 1);
-                            const testStripped = vscode.Uri.joinPath(folder.uri, stripped);
-                            try {
-                                await vscode.workspace.fs.stat(testStripped);
-                                targetUri = testStripped;
-                                break;
-                            } catch {}
-                        }
-                    }
+                    } catch {}
                 }
             }
 
-            // If we found a valid URI, record the state using the VS Code namespaced relative path as the key
+            // 3. HEURISTIC FALLBACK: Try partial segment matching (e.g. LLM says "lollms_discussion/_mixin.py" instead of "src/...")
+            if (!targetUri) {
+                const fileName = segments[segments.length - 1];
+                const foundFiles = await vscode.workspace.findFiles(`**/${fileName}`, '**/node_modules/**', 10);
+                if (foundFiles.length > 0) {
+                    // Score them by how many segments from the end match
+                    let bestMatch = foundFiles[0];
+                    let bestScore = 0;
+                    for (const f of foundFiles) {
+                        const fPath = this.normalize(f.fsPath);
+                        let score = 0;
+                        for (let i = 1; i <= segments.length; i++) {
+                            if (fPath.endsWith(segments.slice(-i).join('/'))) score = i;
+                            else break;
+                        }
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestMatch = f;
+                        }
+                    }
+                    targetUri = bestMatch;
+                }
+            }
+
+            // If we found a valid URI, record the state using the canonical VS Code key
             if (targetUri) {
                 const key = this.normalize(vscode.workspace.asRelativePath(targetUri, false));
                 workspaceState[key] = 'included';
                 urisToFire.push(targetUri);
-                Logger.info(`[Librarian] Added to context: ${key}`);
+                addedPaths.push(file); // Return the original string so the webview can map it back
+                Logger.info(`[Librarian] Successfully resolved and added: ${key}`);
             } else {
-                Logger.warn(`[Librarian] Failed to resolve path for context addition: ${file}`);
+                Logger.warn(`[Librarian] Failed to resolve path: ${file}`);
             }
         }
 
         await this.context.workspaceState.update(this.stateKey, workspaceState);
         this.refresh();
         this._onDidChangeFileDecorations.fire(urisToFire);
+        return addedPaths;
     }
 
     public async fullReset(): Promise<void> {

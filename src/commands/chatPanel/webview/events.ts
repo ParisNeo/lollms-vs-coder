@@ -5,6 +5,9 @@ import { setGeneratingState, updateBadges, openImageEditor, renderPendingImages,
 import { isScrolledToBottom } from './utils.js';
 
 export function initEventHandlers() {
+    console.log("[DEBUG:Events] Initializing handlers...");
+    console.log("[DEBUG:Events] discussionToolsButton found:", !!dom.discussionToolsButton);
+
     const resizer = dom.planResizer;
     const planZone = dom.agentPlanZone;
     const wrapper = dom.chatContentWrapper;
@@ -274,8 +277,12 @@ export function initEventHandlers() {
         dom.moreActionsMenu.classList.toggle('visible');
     });
 
-    window.addEventListener('click', () => {
-        if (dom.moreActionsMenu) dom.moreActionsMenu.classList.remove('visible');
+    window.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        // Only close the menu if the click was outside of it
+        if (dom.moreActionsMenu && !dom.moreActionsMenu.contains(target) && target !== dom.moreActionsButton) {
+            dom.moreActionsMenu.classList.remove('visible');
+        }
         document.querySelectorAll('.custom-menu').forEach(el => el.classList.remove('visible'));
     });
 
@@ -325,15 +332,20 @@ export function initEventHandlers() {
     }
     // Removed old attachButton bindClick as it's now handled with processing state
     if (dom.discussionToolsButton) {
-        dom.discussionToolsButton.addEventListener('click', () => {
-            if (dom.discussionToolsModal) {
-                dom.discussionToolsModal.classList.add('visible');
-                // Ensure voices are fresh when entering settings
-                if (typeof (window as any).refreshVoiceList === 'function') {
-                    (window as any).refreshVoiceList();
-                }
+        dom.discussionToolsButton.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log("[DEBUG:Events] Discussion Settings clicked.");
+            try {
+                vscode.postMessage({ command: 'requestDiscussionSettings' });
+                console.log("[DEBUG:Events] requestDiscussionSettings sent to Extension Host.");
+            } catch (err) {
+                console.error("[DEBUG:Events] Failed to send message:", err);
             }
-            dom.moreActionsMenu.classList.remove('visible');
+            // Close the menu immediately
+            if (dom.moreActionsMenu) {
+                dom.moreActionsMenu.classList.remove('visible');
+            }
         });
     }
 
@@ -674,6 +686,21 @@ export function initEventHandlers() {
         });
     }
 
+    if (dom.tempSlider) {
+        dom.tempSlider.addEventListener('input', (e) => {
+            const val = (e.target as HTMLInputElement).value;
+            if (dom.tempValDisplay) dom.tempValDisplay.textContent = val;
+        });
+
+        dom.tempSlider.addEventListener('change', (e) => {
+            const val = parseFloat((e.target as HTMLInputElement).value);
+            vscode.postMessage({ 
+                command: 'updateDiscussionCapabilitiesPartial', 
+                partial: { temperature: val } 
+            });
+        });
+    }
+
     bindChange(dom.personalitySelector, (e) => {
         const val = (e.target as HTMLSelectElement).value;
         vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: val });
@@ -738,6 +765,7 @@ export function initEventHandlers() {
 
     if (dom.closeDiscussionToolsModal) dom.closeDiscussionToolsModal.addEventListener('click', () => {
         dom.discussionToolsModal.classList.remove('visible');
+        dom.discussionToolsModal.style.display = 'none';
         // Clean up profile editor state if it was open
         const editor = document.getElementById('modal-profile-editor');
         const container = document.getElementById('modal-profiles-container');
@@ -813,6 +841,12 @@ export function initEventHandlers() {
         tempRange.oninput = () => { tempLabel.textContent = tempRange.value; };
     }
 
+    const govRange = document.getElementById('modal-governor-threshold') as HTMLInputElement;
+    const govLabel = document.getElementById('modal-governor-threshold-val');
+    if (govRange && govLabel) {
+        govRange.oninput = () => { govLabel.textContent = govRange.value + '%'; };
+    }
+
     if (dom.saveDiscussionToolsBtn) {
         dom.saveDiscussionToolsBtn.addEventListener('click', () => {
             const partialFormat = (document.querySelector('input[name="cap-partialFormat"]:checked') as HTMLInputElement)?.value || 'aider';
@@ -836,6 +870,7 @@ export function initEventHandlers() {
                 temperature: parseFloat((document.getElementById('modal-temperature') as HTMLInputElement)?.value || '0.7'),
                 ttftTimeout: parseInt((document.getElementById('modal-ttft-timeout') as HTMLInputElement)?.value || '0', 10),
                 interTokenTimeout: parseInt((document.getElementById('modal-inter-token-timeout') as HTMLInputElement)?.value || '0', 10),
+                contextGovernorThreshold: parseInt((document.getElementById('modal-governor-threshold') as HTMLInputElement)?.value || '90', 10),
                 contextAggression: dom.contextAggressionSelect?.value || 'respect',
                 forceFullCode: dom.capForceFullCode?.checked ?? false,
                 allowedFormats: {
@@ -878,8 +913,9 @@ export function initEventHandlers() {
             };
             vscode.postMessage({ command: 'updateDiscussionCapabilities', capabilities: caps });
             dom.discussionToolsModal.classList.remove('visible');
-        });
-    }
+            dom.discussionToolsModal.style.display = 'none';
+            });
+            }
 
     if (dom.stagingCloseBtn) dom.stagingCloseBtn.addEventListener('click', () => dom.stagingModal.classList.remove('visible'));
     if (dom.stagingNextBtn) dom.stagingNextBtn.addEventListener('click', () => {
@@ -922,11 +958,17 @@ export function initEventHandlers() {
     }
 
     if (dom.skillsSearchInput) {
-        dom.skillsSearchInput.addEventListener('input', (e) => {
-            const query = (e.target as HTMLInputElement).value;
+        const triggerFilter = () => {
+            const query = dom.skillsSearchInput.value;
             if (typeof (window as any).filterSkillsTree === 'function') {
                 (window as any).filterSkillsTree(query);
             }
+        };
+
+        dom.skillsSearchInput.addEventListener('input', triggerFilter);
+
+        ['skills-search-case', 'skills-search-regex'].forEach(id => {
+            document.getElementById(id)?.addEventListener('change', triggerFilter);
         });
     }
 
@@ -1298,8 +1340,18 @@ export function initEventHandlers() {
             dom.matrixModal.classList.add('visible');
         };
     }
-    if (dom.matrixCloseBtn) dom.matrixCloseBtn.onclick = () => dom.matrixModal.classList.remove('visible');
-    if (dom.matrixDoneBtn) dom.matrixDoneBtn.onclick = () => dom.matrixModal.classList.remove('visible');
+    if (dom.matrixCloseBtn) {
+        dom.matrixCloseBtn.onclick = () => {
+            dom.matrixModal.style.display = 'none';
+            dom.matrixModal.classList.remove('visible');
+        };
+    }
+    if (dom.matrixDoneBtn) {
+        dom.matrixDoneBtn.onclick = () => {
+            dom.matrixModal.style.display = 'none';
+            dom.matrixModal.classList.remove('visible');
+        };
+    }
 
     const matrixAllOn = document.getElementById('matrix-all-on');
     const matrixAllOff = document.getElementById('matrix-all-off');
@@ -1398,6 +1450,61 @@ export function initEventHandlers() {
      */
     function handleGlobalClick(e: MouseEvent) {
         const target = e.target as HTMLElement;
+
+        // --- HUD Dashboard Clicks ---
+        const matrixTrigger = target.closest('.hud-action-trigger');
+        if (matrixTrigger) {
+            const action = (matrixTrigger as HTMLElement).dataset.action;
+            e.preventDefault();
+            e.stopPropagation();
+
+            if (action === 'open-matrix') {
+                import('./ui.js').then(ui => {
+                    ui.renderWorkspaceMatrix();
+                    const m = document.getElementById('workspace-matrix-modal');
+                    if (m) {
+                        m.style.display = 'flex';
+                        m.classList.add('visible');
+                    }
+                });
+            }
+            return;
+        }
+
+        const refreshBtn = target.closest('#hud-quick-refresh-btn') || target.closest('#refresh-context-btn');
+        if (refreshBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            const icon = refreshBtn.querySelector('.codicon');
+            if (icon) icon.classList.add('spin');
+            vscode.postMessage({ command: 'calculateTokens' });
+            setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1000);
+            return;
+        }
+
+        // --- HUD TOOLBAR DELEGATION ---
+        const hudBtn = target.closest('.persistent-hud .icon-btn, .persistent-hud .msg-action-btn');
+        if (hudBtn) {
+            e.preventDefault();
+            e.stopPropagation(); // Prevents dashboard details from toggling
+            const id = hudBtn.id;
+
+            if (id === 'save-context-btn') {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'saveContext', params: {} } });
+            } else if (id === 'load-context-btn') {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'loadContext', params: {} } });
+            } else if (id === 'reset-context-bubble-btn') {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
+            } else if (id === 'hud-copy-markdown-btn') {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.copyDiscussionMarkdown' } });
+            } else if (id === 'hud-export-html-btn') {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.exportDiscussionHtml' } });
+            } else if (id === 'view-usage-context-btn') {
+                dom.usageModal.classList.add('visible');
+                vscode.postMessage({ command: 'requestContextUsage' });
+            }
+            return;
+        }
 
         // --- 0. Dashboard Export Handlers (CSP Safe) ---
         const mdBtn = target.closest('.export-audit-md-btn');

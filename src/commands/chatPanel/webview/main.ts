@@ -7,7 +7,7 @@ console.log("DEBUG: Lollms-VS-Coder Webview script starting...");
 
 // Global Error Handler
 window.onerror = function (msg, source, lineno, colno, error) {
-    console.error("Global Webview Error:", msg, error);
+    console.error("!!! [FATAL WEBVIEW ERROR] !!!", msg, "at", source, ":", lineno);
     vscode.postMessage({
         command: 'showError',
         message: `Client Error: ${msg} (${source}:${lineno})`

@@ -39,8 +39,10 @@ export const testWebUiTool: ToolDefinition = {
             print(f"WEB_UI_TITLE: {title}")
 
             if ${capture}:
-                os.makedirs(".lollms/ui_tests", exist_ok=True)
-                path = ".lollms/ui_tests/web_capture.png"
+                # Save into discussion-specific buffer
+                output_dir = r"${env.assetDirectory?.fsPath || '.lollms/assets/temp'}"
+                os.makedirs(output_dir, exist_ok=True)
+                path = os.path.join(output_dir, "web_capture_${Date.now()}.png")
                 await page.screenshot(path=path)
                 print(f"WEB_UI_IMAGE_PATH: {path}")
             print("WEB_UI_OK")

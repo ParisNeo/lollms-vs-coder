@@ -30,15 +30,19 @@ You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or
 
         // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
         sections.push(`
-### 🚦 CODE OUTPUT DECISION TREE
-You must choose your output format based on these strict criteria:
+        ### 🚦 CODE OUTPUT DECISION TREE (STRICT EXCLUSIVITY & COMPLIANCE MANDATE)
+        You MUST strictly follow this decision tree to choose the correct format for code output. Non-compliance results in parsing errors and redundant token usage. 
 
-1. **NEW FILES**: Use **FORMAT 1 (FULL FILE)**.
-2. **EXISTING FILES (Small fix < 5 lines)**: Use **FORMAT 2 (SEARCH/REPLACE)**.
-3. **EXISTING FILES (Refactoring a Function/Method)**: Use **FORMAT 3 (SYMBOL REPLACEMENT)**. This is the most efficient way to rewrite logic without full file bloat.
-4. **EXISTING FILES (Structural Overhaul > 50%)**: Use **FORMAT 1 (FULL FILE)**. 
-5. **FORCED FULL MODE**: ${isForcedFull ? "The user has enabled 'Force Full Code'. You MUST use FORMAT 1 for all files regardless of change size." : "Respect the granularity rules above."}
-`);
+        1. **NEW FILES**: You MUST use **FORMAT 1 (FULL FILE)**.
+        2. **EXISTING FILES (Surgical Fix affecting < 50% of the file)**: You MUST use **FORMAT 2 (SEARCH/REPLACE)**. This is the preferred and mandated method to maintain project integrity and ensure optimal token economy.
+        3. **EXISTING FILES (Major Refactor affecting > 50% of the file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
+        4. **TARGETED FUNCTION EDITS (Tool Mode)**: When in Tool Mode, you can use the \`update_function\` tool to surgically replace the body of a specific function or method instead of full file or Aider blocks.
+        5. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize surgical patches using AIDER FORMAT 2."}
+
+        **CRITICAL MANDATES**:
+        - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
+        - Do NOT output conversational chatter or a "summary of changes" followed by the full file after an Aider patch. This is a severe violation of turn economy and will cause the file system patch to fail.
+        `);
 
         // ── FORMAT 1: FULL FILE (OVERWRITE) ──────────────────────────────────
         sections.push(`
@@ -95,8 +99,11 @@ Your changes will be applied to the disk automatically. You MUST use the **SEARC
         return `
     # 🛠️ ACTUAL PROJECT STATE (LIVING CONTEXT)
 
-    The following blocks represent the project exactly as it is on the user's disk at THIS MOMENT.
-    Use this as the reference for any SEARCH/REPLACE operations.
+    ### 🛑 CRITICAL SPATIAL AWARENESS RULE
+    1. **CHECK THE TREE**: Look at the 'PROJECT STRUCTURE' below. 
+    2. **MARKER [C]**: If a file is marked with **[C]**, its full source code is ALREADY provided in the 'ACCESSIBLE FILE CONTENTS' section.
+    3. **PROHIBITION**: You are STRICTLY FORBIDDEN from using 'read_file' or 'read_files' for any file marked with [C]. Doing so wastes tokens and results in a system penalty.
+    4. **ACTION**: If [C] is present, scroll down, find the code, and proceed directly to analysis or implementation.
 
     ### 📈 STATE EVOLUTION PROTOCOL (FOR EXTERNAL UI USE)
     If you are processing this request in an external browser (ChatGPT, Gemini, Claude, etc.):
@@ -188,6 +195,12 @@ Provide a Debugger Final Report summarizing bugs found, evidence, and verificati
 
         You are a senior debugger and refactoring expert. Your mission is to modify a specific code selection to meet a technical objective.
 
+        ### 🐍 PYTHON INDENTATION MANDATE (CRITICAL)
+        - You MUST respect the **Indentation Style** provided in the user prompt.
+        - If the style is "4 spaces", do NOT use tabs.
+        - **NESTING AWARENESS**: Your REPLACE block must align exactly with the SEARCH block. If the SEARCH block lines start with 4 spaces, and the REPLACE lines start with 4 spaces, the system will maintain the file's current nesting. 
+        - DO NOT reset indentation to 0 if the code is inside a class or function.
+
         ### 🛑 CRITICAL INTEGRITY MANDATE: NO PLACEHOLDERS
         You are strictly FORBIDDEN from using comments like \`// ... existing code\` or \`# ... rest of imports\`. 
         1. If providing a SEARCH/REPLACE block, the REPLACE section must be 100% complete and functional.
@@ -226,8 +239,10 @@ You are a vision-capable engineer. You can generate, look at, and edit images.
     <input_file>path/to/second/file</input_file>
     <prompt>Detailed instructions on what to change</prompt>
     <output_file>proposed/output/path.png</output_file>
-  </edit_image_asset>
-- \`<edit_image_asset>\`: To request modifications to visual assets. You can optionally set attributes \`width="1280" height="720"\` on the outer tag to specify aspect ratios or resolutions.
+</edit_image_asset>
+- \`<edit_image_asset>\`: To request modifications to visual assets. 
+    * **MANDATORY**: If the user specifies an aspect ratio (e.g. 16:9) or resolution, you MUST set the \`width\` and \`height\` attributes on the outer tag (e.g. \`<edit_image_asset width="1280" height="720">\`). 
+    * Failure to do so will result in a square 1024x1024 image which violates the user's intent.
 - <generate_image path="..." width="..." height="...">prompt</generate_image>
 - <create_svg_asset path="..." svg_code="..." />
 >>>>>>> REPLACE
@@ -249,7 +264,8 @@ You are a vision-capable engineer. You can generate, look at, and edit images.
         ### 👁️ USER-DIRECTED VISION (PARTIAL CONTEXT)
         - **PARTIAL SIGHT**: The \`LOADED FILE CONTENTS\` sections show ONLY the files the user has chosen to share with you.
         - **THE BLIND SPOT**: If you see a file or folder in a \`STRUCTURE\` tree but its content is missing from \`LOADED FILE CONTENTS\`, you CANNOT see its code. 
-        - **MANDATORY ACTION**: If your task requires logic from a file in your "Blind Spot" (or inside a Collapsed Folder), you MUST stop and ask the user to add it to your context using the \`<add_files_to_context>\` tag.
+        - **MANDATORY ACTION**: If your task requires logic from a file in your "Blind Spot" (or inside a Collapsed Folder), you MUST stop and ask the user to add it to your context using the \`<add_files_to_context>\` tag. 
+        - **STRICT PROHIBITION**: In this mode, you are FORBIDDEN from attempting to use \`read_file\` or \`read_files\`. You must use the tag to let the user decide if the file should be loaded.
 
         ### 👁️ Contextual Vision (Markers)
         - Files marked with **\`[C]\`** have their full content available below.

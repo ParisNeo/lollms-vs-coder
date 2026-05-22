@@ -61,22 +61,62 @@ export async function buildCodeActionPrompt(
         }
     }
 
-    // --- ENHANCED SPATIAL CONTEXT ---
-    const startLine = selection.start.line;
-    const endLine = selection.end.line;
+    // --- INDENTATION DETECTION ---
+    const tabSize = editor.options.tabSize as number || 4;
+    const insertSpaces = editor.options.insertSpaces as boolean;
+    const indentStyle = insertSpaces ? `${tabSize} spaces` : "Tabs";
 
-    // We provide 50 lines of context around the selection to give the AI "handles"
-    const contextRange = new vscode.Range(
-        new vscode.Position(Math.max(0, startLine - 25), 0),
-        new vscode.Position(Math.min(document.lineCount - 1, endLine + 25), 1000)
-    );
-    const surroundingContext = document.getText(contextRange);
+    // --- GRAPH-GROUNDED CONTEXT ---
+    const graph = contextManager['codeGraphManager'];
+    let symbolContext = "";
+
+    if (graph) {
+        if (graph.getBuildState() !== 'ready') await graph.buildGraph();
+
+        // Find the symbol containing the cursor
+        const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
+            'vscode.executeDocumentSymbolProvider', 
+            document.uri
+        );
+
+        const findEnclosingSymbol = (syms: vscode.DocumentSymbol[]): vscode.DocumentSymbol | null => {
+            for (const s of syms) {
+                if (s.range.contains(selection.start)) {
+                    const child = findEnclosingSymbol(s.children);
+                    return child || s;
+                }
+            }
+            return null;
+        };
+
+        const targetSymbol = findEnclosingSymbol(symbols || []);
+        if (targetSymbol) {
+            const containerCode = document.getText(targetSymbol.range);
+            symbolContext = `#### 📦 ENCLOSING SYMBOL: ${targetSymbol.name}\n\`\`\`${languageId}\n${containerCode}\n\`\`\`\n\n`;
+
+            // Add relations from graph
+            const relations = graph.getArchitectureAnalysis(targetSymbol.name, 'dependencies');
+            const usages = graph.getArchitectureAnalysis(targetSymbol.name, 'usages');
+            symbolContext += `#### 🔗 ARCHITECTURAL RELATIONS\n${relations}\n${usages}\n\n`;
+        }
+    }
+
+    // Fallback if no symbol found
+    if (!symbolContext) {
+        const startLine = selection.start.line;
+        const contextRange = new vscode.Range(
+            new vscode.Position(Math.max(0, startLine - 15), 0),
+            new vscode.Position(Math.min(document.lineCount - 1, selection.end.line + 15), 1000)
+        );
+        symbolContext = `#### 📍 SPATIAL CONTEXT\n\`\`\`${languageId}\n${document.getText(contextRange)}\n\`\`\`\n\n`;
+    }
 
     let userPrompt = `### 🎯 SURGICAL TARGET: ${relPath}\n` +
                      `**Language:** ${languageId}\n` +
-                     `**Selection Range:** Lines ${startLine + 1} to ${endLine + 1}\n\n` +
-                     `#### 📍 IMMEDIATE SPATIAL CONTEXT (Surrounding Logic)\n` +
-                     `\`\`\`${languageId}\n${surroundingContext}\n\`\`\`\n\n` +
+                     `**Required Indentation:** ${indentStyle}\n\n` +
+                     `**STRICT INDENTATION RULE**: Your SEARCH block must match the indentation of the code below exactly. ` +
+                     `Your REPLACE block must use the exact same nesting level. Do not switch from spaces to tabs.\n\n` +
+                     symbolContext +
                      `#### 🔍 EXACT SELECTION TO MODIFY\n` +
                      `\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
                      `**USER OBJECTIVE:** "${userInstruction}"\n` +

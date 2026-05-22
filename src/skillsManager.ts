@@ -490,16 +490,30 @@ export class SkillsManager {
     public async getSkills(): Promise<Skill[]> {
         const global = await this.getGlobalSkills();
         const local = await this.getLocalSkills();
-        
-        // Deduplicate by ID: Project-local skills override Global skills
+
+        // --- STRICT DEDUPLICATION PROTOCOL ---
+        // We use the unique 'id' as the primary key.
         const deduplicated = new Map<string, Skill>();
-        
-        // Process global first
-        global.forEach(s => deduplicated.set(s.id, s));
-        // Local overrides global
-        local.forEach(s => deduplicated.set(s.id, s));
-        
-        return Array.from(deduplicated.values()).sort((a, b) => b.timestamp - a.timestamp);
+
+        // 1. Load Global Skills
+        global.forEach(s => {
+            const cleanId = s.id.trim();
+            if (!deduplicated.has(cleanId)) {
+                deduplicated.set(cleanId, s);
+            }
+        });
+
+        // 2. Load Local Skills (Local overrides Global if IDs collide)
+        local.forEach(s => {
+            const cleanId = s.id.trim();
+            // Even if it exists in global, the local one is what we want to see/edit
+            deduplicated.set(cleanId, s);
+        });
+
+        const finalResults = Array.from(deduplicated.values());
+
+        // 3. Alphabetical sort by clean name to prevent visual scattering
+        return finalResults.sort((a, b) => a.name.localeCompare(b.name));
     }
 
     public async addSkill(skillData: Omit<Skill, 'timestamp'>): Promise<Skill> {

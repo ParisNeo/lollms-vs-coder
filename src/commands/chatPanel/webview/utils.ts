@@ -132,19 +132,41 @@ export function applySearchReplace(content: string, searchBlock: string, replace
             }
 
             if (match) {
-                const targetIndent = indentDelta || "";
-                const replaceLines = normalizedReplace.split('\n');
+                // SUCCESS: Match found. Now reconstruct the file with strict indentation re-basing.
                 
-                // Re-calculate indentation for the replacement
+                // 1. Find the first non-empty line index in the SEARCH block to use as anchor
+                const firstContentIdx = searchLines.findIndex(l => l.trim().length > 0);
+                const anchorIdx = firstContentIdx === -1 ? 0 : firstContentIdx;
+
+                // 2. Calculate actual file indentation at the match site
+                const fileAnchorLine = contentLines[i + anchorIdx];
+                const fileIndent = fileAnchorLine?.match(/^\s*/)?.[0] || "";
+
+                // 3. Calculate AI's search anchor indentation
+                const aiAnchorLine = searchLines[anchorIdx];
+                const aiIndent = aiAnchorLine?.match(/^\s*/)?.[0] || "";
+                
+                // 4. Re-apply the delta to every line of the replacement
                 const adjustedReplace = replaceLines.map(line => {
                     if (line.trim().length === 0) return "";
-                    const aiIndent = line.match(/^\s*/)?.[0] || "";
-                    const searchBaseIndent = searchLines.find(l => l.trim().length > 0)?.match(/^\s*/)?.[0] || "";
                     
-                    if (aiIndent.startsWith(searchBaseIndent)) {
-                        return targetIndent + aiIndent.substring(searchBaseIndent.length) + line.trimStart();
+                    const currentLineIndent = line.match(/^\s*/)?.[0] || "";
+                    
+                    // --- RELATIVE SHIFT LOGIC ---
+                    // We calculate how far this line is indented relative to the AI's anchor line,
+                    // then apply that same offset to the file's real indentation level.
+                    if (currentLineIndent.startsWith(aiIndent)) {
+                        const relativeNesting = currentLineIndent.substring(aiIndent.length);
+                        return fileIndent + relativeNesting + line.trimStart();
+                    } else if (aiIndent.startsWith(currentLineIndent)) {
+                        // Handle cases where replacement lines are less indented than the anchor
+                        const negativeOffset = aiIndent.length - currentLineIndent.length;
+                        const newIndentLen = Math.max(0, fileIndent.length - negativeOffset);
+                        return " ".repeat(newIndentLen) + line.trimStart();
                     }
-                    return targetIndent + line.trimStart();
+                    
+                    // Default: Match the file's base level if the AI's internal spacing is chaotic
+                    return fileIndent + line.trimStart();
                 });
 
                 const before = contentLines.slice(0, i);

@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-05-22 01:24]
+
+- chore(release): bump version to 0.8.70
+
 ## [2026-05-15 22:40]
 
 - fix(webview): add null safety and refine image asset dimensions handling

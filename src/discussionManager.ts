@@ -26,6 +26,8 @@ export interface Discussion {
     lastTokenMetrics?: {
         total: number;
         contextSize: number;
+        activeTools?: { name: string, description: string }[];
+        activeSkills?: any[];
         segments: {
             system: number;
             tree: number;
@@ -147,9 +149,10 @@ export class DiscussionManager {
             maxDebugSteps: 10,
             autoContextMode: false, 
             autoSkillMode: false,
-            temperature: 0.7,
+            temperature: config.get<number>('temperature') ?? 0.7,
             ttftTimeout: 0,
             interTokenTimeout: 0,
+            contextGovernorThreshold: 90,
             contextAggression: 'respect',
             tokenEconomyMode: false,
             disableProjectContext: false,

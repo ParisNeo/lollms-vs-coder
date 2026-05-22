@@ -57,11 +57,13 @@ export interface ToolExecutionEnv {
     skillsManager?: SkillsManager;
     personalityManager?: PersonalityManager;
     currentPlan: Plan | null;
-    agentManager?: AgentManager; // Made optional for Companion use
-    taskModel?: string; // Specific model requested by the architect for this task
-    taskPersona?: string; // Specific instructions requested by the architect
-    taskSkills?: string[]; // Specific skills requested by the architect
-    taskFiles?: string[]; // Specific files requested by the architect
+    agentManager?: AgentManager; 
+    discussionId?: string; // To resolve persistent asset paths
+    assetDirectory?: vscode.Uri; // Pre-resolved path to .lollms/assets/[uuid]
+    taskModel?: string; 
+    taskPersona?: string; 
+    taskSkills?: string[]; 
+    taskFiles?: string[]; 
 }
 
 /**

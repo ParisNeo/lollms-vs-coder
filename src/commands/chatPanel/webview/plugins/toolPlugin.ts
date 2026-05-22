@@ -9,11 +9,15 @@ export const toolPlugin: TagPlugin = {
     render: (match, context) => {
         const attrStr = match[1];
         const attrs: any = {};
-        // Regex to extract attributes: name="val" or name='val'
-        const attrRegex = /(\w+)=["']([^"']*)["']/g;
+
+        // --- ENHANCED ATTRIBUTE PARSER ---
+        // Handles both name="val" and name='{"json": "val"}' correctly
+        const attrRegex = /(\w+)\s*=\s*(?:'([^']*)'|"([^"]*)")/g;
         let m;
         while ((m = attrRegex.exec(attrStr)) !== null) {
-            attrs[m[1]] = m[2];
+            const key = m[1].toLowerCase();
+            const val = m[2] !== undefined ? m[2] : m[3];
+            attrs[key] = val;
         }
 
         const toolName = attrs.name;
@@ -49,9 +53,8 @@ export const toolPlugin: TagPlugin = {
         const paramsHtml = Object.entries(params || {}).map(([k, v]) => `
             <div style="margin-bottom:4px;">
                 <span style="font-size:9px; font-weight:900; opacity:0.6; text-transform:uppercase;">${k}</span>
-                <div style="background:rgba(0,0,0,0.1); border: 1px solid var(--vscode-widget-border); padding:6px 10px; border-radius:4px; font-family:var(--vscode-editor-font-family); font-size:12px; word-break:break-all;">
-                    ${typeof v === 'string' ? v : JSON.stringify(v, null, 2)}
-                </div>
+                <input type="text" class="tool-param-input" data-key="${k}" value="${typeof v === 'string' ? v : JSON.stringify(v)}" 
+                       style="width: 100%; background:rgba(0,0,0,0.1); border: 1px solid var(--vscode-widget-border); padding:6px 10px; border-radius:4px; font-family:var(--vscode-editor-font-family); font-size:12px; color: var(--vscode-foreground); outline: none;">
             </div>
         `).join('');
 
@@ -83,15 +86,35 @@ export const toolPlugin: TagPlugin = {
     initialize: (container, context) => {
         container.querySelectorAll('.run-tool-btn').forEach(btn => {
             (btn as HTMLButtonElement).onclick = () => {
-                const d = (btn as HTMLElement).dataset;
-                btn.innerHTML = '<div class="spinner"></div> Running...';
-                btn.disabled = true;
+                const button = btn as HTMLElement;
+                const block = button.closest('.generation-block');
+                const toolName = button.dataset.tool;
+
+                // 1. Start with original params
+                let finalParams: any = {};
+                try {
+                    finalParams = JSON.parse(button.dataset.params || '{}');
+                } catch(e) {}
+
+                // 2. Scrape edited values from the UI inputs
+                if (block) {
+                    const inputs = block.querySelectorAll('.tool-param-input');
+                    inputs.forEach((input: any) => {
+                        const key = input.dataset.key;
+                        if (key) {
+                            finalParams[key] = input.value;
+                        }
+                    });
+                }
+
+                button.innerHTML = '<div class="spinner"></div> Running...';
+                button.disabled = true;
 
                 context.vscode.postMessage({
                     command: 'runTool',
-                    tool: d.tool,
-                    params: JSON.parse(d.params || '{}'),
-                    buttonId: d.blockId
+                    tool: toolName,
+                    params: finalParams,
+                    buttonId: button.dataset.blockId
                 });
             };
         });

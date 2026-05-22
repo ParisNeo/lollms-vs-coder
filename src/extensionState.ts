@@ -155,17 +155,21 @@ export async function runCommandInTerminal(
             const batFile = path.resolve(outputDir, `run_${executionId}.bat`);
             const absOutputFile = path.resolve(outputFile);
             const absExitCodeFile = path.resolve(exitCodeFile);
-            
+
             const envSetters = Object.entries(envVars).map(([k, v]) => `set "${k}=${v}"`).join('\n');
             const drive = cwd.substring(0, 2);
-            // Added explicit output file creation in the batch script to prevent 'file missing' race conditions
-            const batContent = `@echo off\nchcp 65001 >nul\n${drive}\ncd "${cwd}"\n${envSetters}\ntype nul > "${absOutputFile}"\n${sanitizedCommand}\n`;
+
+            // --- FIXED: Windows Encoding & Execution Hygiene ---
+            const batContent = `@echo off\nchcp 65001 >nul\n${drive}\ncd "${cwd}"\n${envSetters}\n${sanitizedCommand}\n`;
             fs.writeFileSync(batFile, batContent);
             batFileToCleanup = batFile;
 
             const utf8Setup = `[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;`;
-            // Simplified redirection: using standard Out-File after cmd execution to ensure stream closure
-            const psCommand = `${utf8Setup} & { cmd /c ""${batFile}"" } *>&1 | Out-File -FilePath "${absOutputFile}" -Encoding utf8; $LASTEXITCODE | Out-File -FilePath "${absExitCodeFile}" -Encoding utf8`;
+
+            // --- FIXED: Quoting Logic for PowerShell ---
+            // Use single quotes for the internal path to avoid breaking the outer double-quoted -Command string.
+            const psCommand = `${utf8Setup} & { cmd /c '${batFile}' } *>&1 | Out-File -FilePath '${absOutputFile}' -Encoding utf8; $LASTEXITCODE | Out-File -FilePath '${absExitCodeFile}' -Encoding utf8`;
+
             execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
         } else {
             const targetShell = options?.shell || 'bash';
@@ -212,7 +216,22 @@ export async function runCommandInTerminal(
                     return null;
                 };
 
-                readOutputWithRetry().then((buffer) => {
+                // Wait for the OS to finalize the file write before reading
+                setTimeout(async () => {
+                    let buffer: Buffer | null = null;
+                    let retries = 5;
+
+                    while (retries > 0) {
+                        if (fs.existsSync(outputFile)) {
+                            try {
+                                buffer = fs.readFileSync(outputFile);
+                                if (buffer.length > 0) break;
+                            } catch (e) { /* Locked */ }
+                        }
+                        await new Promise(r => setTimeout(r, 300));
+                        retries--;
+                    }
+
                     let output = "";
                     let success = e.exitCode === 0; 
                     try {
@@ -258,7 +277,7 @@ export async function runCommandInTerminal(
                     // Strip ANSI codes from the output before returning to the AI agent
                     const { stripAnsiCodes } = require('./utils');
                     resolve({ success, output: stripAnsiCodes(output) });
-                }, 800);
+                    }, 500); // Trigger timeout
             }
         });
 

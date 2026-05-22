@@ -11,6 +11,8 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     private generatedToOriginal = new Map<string, string>(); // generatedFsPath -> originalFsPath
     private originalToGenerated = new Map<string, string>(); // originalFsPath -> generatedFsPath
     private generatedToDiscussionId = new Map<string, string>(); // generatedFsPath -> discussionId
+    // Caches the user's active cursor selection and scroll viewport position before launching the diff
+    private lastPositions = new Map<string, { selection: vscode.Selection, visibleRange: vscode.Range }>();
     private context: vscode.ExtensionContext | undefined;
     private static readonly STORAGE_KEY = 'lollms_diff_state';
 
@@ -39,12 +41,19 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
             const fsPath = doc.uri.fsPath;
             if (this.generatedToOriginal.has(fsPath)) {
                 const discussionId = this.generatedToDiscussionId.get(fsPath);
+                const originalPath = this.generatedToOriginal.get(fsPath);
                 const applied = await this.applyDiffFromSave(doc);
                 if (applied) {
                     // 1. Close the diff tab
                     await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
 
-                    // 2. Reveal the discussion panel if we have a reference
+                    // 2. Restore active editor position
+                    if (originalPath) {
+                        const originalUri = vscode.Uri.file(originalPath);
+                        await this.restoreEditorPosition(originalUri);
+                    }
+
+                    // 3. Reveal the discussion panel if we have a reference
                     if (discussionId) {
                         const { ChatPanel } = require('./commands/chatPanel/chatPanel');
                         const panel = ChatPanel.panels.get(discussionId);
@@ -134,7 +143,34 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         return genPath ? vscode.Uri.file(genPath) : undefined;
     }
 
+    public async restoreEditorPosition(originalUri: vscode.Uri) {
+        try {
+            const doc = await vscode.workspace.openTextDocument(originalUri);
+            const editor = await vscode.window.showTextDocument(doc, {
+                preview: false,
+                preserveFocus: false
+            });
+
+            const cached = this.lastPositions.get(originalUri.toString());
+            if (cached && editor) {
+                editor.selection = cached.selection;
+                editor.revealRange(cached.visibleRange, vscode.TextEditorRevealType.InCenter);
+                this.lastPositions.delete(originalUri.toString());
+            }
+        } catch (e) {
+            console.error("Failed to restore editor position:", e);
+        }
+    }
+
     public async openDiff(originalUri: vscode.Uri, newContent: string, discussionId?: string) {
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor && activeEditor.document.uri.toString() === originalUri.toString()) {
+            this.lastPositions.set(originalUri.toString(), {
+                selection: activeEditor.selection,
+                visibleRange: activeEditor.visibleRanges[0]
+            });
+        }
+
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(originalUri);
         if (!workspaceFolder) {
             vscode.window.showErrorMessage("Cannot open diff: file is not in a workspace.");

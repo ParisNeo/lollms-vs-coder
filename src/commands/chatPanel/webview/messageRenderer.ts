@@ -163,80 +163,7 @@ function createButton(text: string, icon: string, onClick: () => void, className
     return btn;
 }
 
-function createGenerationBlock(type: string, filePath: string, prompt: string): HTMLElement {
-    const block = document.createElement('div');
-    block.className = 'generation-block';
-    
-    const header = document.createElement('div');
-    header.className = 'generation-header';
-    header.innerHTML = `<span class="summary-lang-label">${type}${filePath ? ': ' + filePath : ''}</span>`;
-    
-    const actions = document.createElement('div');
-    actions.className = 'code-actions';
-    header.appendChild(actions);
-
-    const buttonId = `gen-btn-${Date.now()}${Math.random()}`;
-    const generateBtn = createButton('Generate', 'codicon-sparkle', () => {
-        generateBtn.innerHTML = `<div class="spinner"></div> Generating...`;
-        generateBtn.disabled = true;
-        vscode.postMessage({
-            command: 'generateImage',
-            prompt: prompt,
-            filePath: filePath, 
-            buttonId: buttonId
-        });
-    }, 'code-action-btn apply-btn');
-    generateBtn.id = buttonId;
-
-    actions.appendChild(generateBtn);
-    
-    const body = document.createElement('div');
-    body.className = 'generation-body';
-    body.innerHTML = `<p><strong>Prompt:</strong> ${sanitizer.sanitize(prompt)}</p>`;
-    
-    block.appendChild(header);
-    block.appendChild(body);
-    
-    return block;
-}
-
-function createSearchBlock(type: string, query: string): HTMLElement {
-    const block = document.createElement('div');
-    block.className = 'generation-block';
-    
-    const header = document.createElement('div');
-    header.className = 'generation-header';
-    header.innerHTML = `<span class="summary-lang-label">${type}</span>`;
-    
-    const actions = document.createElement('div');
-    actions.className = 'code-actions';
-    header.appendChild(actions);
-
-    const buttonId = `search-btn-${Date.now()}${Math.random()}`;
-    const searchBtn = createButton('Search', 'codicon-search', () => {
-        searchBtn.innerHTML = `<div class="spinner"></div> Searching...`;
-        searchBtn.disabled = true;
-        
-        vscode.postMessage({
-            command: 'runTool',
-            tool: type === 'ArXiv Search' ? 'search_arxiv' : 'search_web',
-            params: { query: query }
-        });
-        
-        }, 'code-action-btn apply-btn');
-    searchBtn.id = buttonId;
-
-    actions.appendChild(searchBtn);
-    
-    const body = document.createElement('div');
-    body.className = 'generation-body';
-    body.innerHTML = `<p><strong>Query:</strong> ${sanitizer.sanitize(query)}</p>`;
-    
-    block.appendChild(header);
-    block.appendChild(body);
-    
-    return block;
-}
+// Dynamic block creation moved to specialized plugins to unify Discussion/Agent modes.
 
 function enablePanZoom(container: HTMLElement) {
     let zoomScale = 1;
@@ -917,7 +844,7 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
 
         const summary = document.createElement('summary');
         summary.className = 'code-summary';
-        summary.innerHTML = `<div class="summary-lang-label"><span class="lang-badge" data-lang="${language.toLowerCase()}">${language}</span>${pathVal ? ` : <input type="text" class="path-editor-input" value="${pathVal}">` : ''}</div>`;
+        summary.innerHTML = `<div class="summary-lang-label"><span class="lang-badge" data-lang="${language.toLowerCase()}">${language}</span>${pathVal ? ` : <input type="text" class="path-editor-input" value="${pathVal}"><button class="code-action-btn goto-file-btn" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto: Open this file">Goto</button>` : ''}</div>`;
 
         const actions = document.createElement('div');
         actions.className = 'code-actions';
@@ -1025,8 +952,20 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             renderDiagram(code, language, rz);
         }
 
-        // 2. Assemble Header (Summary)
+        // Assemble Header (Summary)
         details.appendChild(summary);
+
+        // Attach listener for the Goto button
+        if (pathVal) {
+            const gotoBtn = summary.querySelector('.goto-file-btn') as HTMLElement;
+            if (gotoBtn) {
+                gotoBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    const currentPath = (summary.querySelector('.path-editor-input') as HTMLInputElement).value;
+                    vscode.postMessage({ command: 'openFile', path: currentPath });
+                };
+            }
+        }
 
         if (isAider) {
             // --- AIDER MODE: TABBED HUNK NAVIGATION ---
@@ -1306,7 +1245,17 @@ function renderAiderDiff(pre: HTMLElement, rawCode: string, filePath: string, me
         <input type="text" class="path-editor-input" value="${filePath}" 
                onchange="this.closest('.code-collapsible').dataset.path = this.value"
                title="Edit target path if incorrect">
+        <button class="code-action-btn goto-file-btn" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto: Open this file">Goto</button>
     `;
+
+    const gotoBtn = label.querySelector('.goto-file-btn') as HTMLElement;
+    if (gotoBtn) {
+        gotoBtn.onclick = (e) => {
+            e.stopPropagation();
+            const currentPath = (label.querySelector('.path-editor-input') as HTMLInputElement).value;
+            vscode.postMessage({ command: 'openFile', path: currentPath });
+        };
+    }
     summary.appendChild(label);
 
     const actions = document.createElement('div');
@@ -1371,8 +1320,8 @@ function renderAiderDiff(pre: HTMLElement, rawCode: string, filePath: string, me
         const hunkBubble = document.createElement('div');
         hunkBubble.className = 'aider-hunk-bubble';
         hunkBubble.innerHTML = `
-            <div class="aider-hunk-header" onclick="this.parentElement.classList.toggle('collapsed')">
-                <div style="display:flex; align-items:center; gap:8px;">
+            <div class="aider-hunk-header" onclick="this.closest('.aider-hunk-bubble').classList.toggle('collapsed')">
+                <div style="display:flex; align-items:center; gap:8px; pointer-events: none;">
                     <i class="codicon codicon-chevron-down hunk-toggle-icon"></i>
                     <span>HUNK ${hIdx + 1} of ${matches.length}</span>
                 </div>
@@ -1606,8 +1555,26 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     if (!contentDiv) return;
 
     let sourceText = "";
+    let imagesHtml = "";
+
     if (Array.isArray(rawContent)) {
         sourceText = rawContent.filter(p => p.type === 'text').map(p => p.text).join('\n');
+
+        // --- MULTIMODAL IMAGE RENDERING ---
+        const imageParts = rawContent.filter(p => p.type === 'image_url');
+        if (imageParts.length > 0) {
+            imagesHtml = `<div class="message-images-gallery" style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;">`;
+            imageParts.forEach(p => {
+                const url = p.image_url?.url || "";
+                if (url) {
+                    imagesHtml += `
+                        <div class="message-image-container" style="position: relative; width: 200px; height: 150px; border-radius: 6px; overflow: hidden; border: 1px solid var(--vscode-widget-border); background: #000;">
+                            <img src="${url}" style="width: 100%; height: 100%; object-fit: contain; cursor: zoom-in;" onclick="if(window.openImageZoom) window.openImageZoom('${url}')">
+                        </div>`;
+                }
+            });
+            imagesHtml += `</div>`;
+        }
     } else {
         sourceText = String(rawContent || "");
     }
@@ -1623,6 +1590,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     const ctx: PluginContext = { messageId, isFinal, capabilities: state.capabilities, vscode };
 
     pluginRegistry.forEach(plugin => {
+        if (!plugin.tagPattern) return;
         plugin.tagPattern.lastIndex = 0;
         let pMatch;
         while ((pMatch = plugin.tagPattern.exec(sourceText)) !== null) {
@@ -1677,6 +1645,29 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         });
     }
 
+    // --- UNIFIED TOOL DISPATCHER (AGENT MODE SUPPORT) ---
+    // Look for JSON blocks in markdown segments and let plugins render them if they match toolName
+    finalSegments.forEach(seg => {
+        if (seg.type === 'markdown') {
+            const jsonRegex = /```json[\r\n]+([\s\S]+?)[\r\n]+```/g;
+            let jMatch;
+            while ((jMatch = jsonRegex.exec(seg.content)) !== null) {
+                try {
+                    const toolObj = JSON.parse(jMatch[1]);
+                    if (toolObj && toolObj.tool) {
+                        const plugin = pluginRegistry.find(p => p.toolName === toolObj.tool);
+                        if (plugin) {
+                            const pluginHtml = plugin.render(toolObj, ctx);
+                            if (pluginHtml) {
+                                seg.content = seg.content.replace(jMatch[0], pluginHtml);
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+        }
+    });
+
     let finalHtml = "";
     finalSegments.forEach(seg => {
         if (seg.type === 'plugin') {
@@ -1707,7 +1698,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     }
 
 
-    contentDiv.innerHTML = DOMPurify.sanitize(finalHtml, SANITIZE_CONFIG);
+    // Append images to the end of the content
+    const totalHtml = finalHtml + imagesHtml;
+
+    contentDiv.innerHTML = DOMPurify.sanitize(totalHtml, SANITIZE_CONFIG);
     enhanceCodeBlocks(contentDiv, messageId, rawContent, isFinal);
 
         // Attach listener for the new Apply All button
@@ -2009,7 +2003,21 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
     }
     
     const copyBtn = createButton('', 'codicon-copy', () => {
-        window.vscode.postMessage({ command: 'copyToClipboard', text: textForClipboard });
+        // Ensure we are sending a clean string, even from multipart messages
+        let clipboardText = "";
+        try {
+            const raw = JSON.parse(messageDiv.dataset.originalContent || '""');
+            if (Array.isArray(raw)) {
+                clipboardText = raw.filter(p => p.type === 'text').map(p => p.text).join('\n');
+            } else {
+                clipboardText = String(raw);
+            }
+        } catch (e) {
+            clipboardText = textForClipboard;
+        }
+
+        vscode.postMessage({ command: 'copyToClipboard', text: clipboardText });
+
         const iconEl = copyBtn.querySelector('.codicon');
         if(iconEl) {
             iconEl.classList.replace('codicon-copy', 'codicon-check');
@@ -2100,25 +2108,31 @@ const renderDataBriefing = (briefing: string) => {
     } catch { return raw; }
 };
 
-export function updateContext(contextText: string, files: string[] = [], skills: any[] = [], tools: any[] = [], diagrams: any[] = [], briefing: string = "") {
+export function updateContext(contextText?: string, files?: string[], skills?: any[], tools?: any[], diagrams?: any[], briefing?: string) {
     if(!dom.contextContainer) return;
 
-    // MERGE PERSISTENCE
-    const existingFiles = state.lastContextData?.files || [];
-    const finalFiles = (files && files.length > 0) ? files : existingFiles;
+    // 0. CAPTURE CURRENT EXPANSION STATE
+    const openStates: Record<string, boolean> = {};
+    dom.contextContainer.querySelectorAll('details').forEach((d, i) => {
+        const summary = d.querySelector('summary')?.innerText || i.toString();
+        openStates[summary] = d.open;
+    });
 
-    // --- MULTI-SCOPE TOOL SYNC ---
-    // Ensure the tools provided by the backend (Chat + Project) are stored
-    const finalTools = (tools && tools.length > 0) ? tools : (state.lastContextData?.tools || []);
+    // 1. MERGE WITH EXISTING STATE (Partial updates)
+    const prev = state.lastContextData || { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "" };
 
-    state.lastContextData = { 
-        context: contextText, 
-        files: finalFiles, 
-        skills, 
-        tools: finalTools, 
-        diagrams, 
-        briefing 
+    state.lastContextData = {
+        context: contextText !== undefined ? contextText : prev.context,
+        files: files !== undefined ? files : prev.files,
+        skills: skills !== undefined ? skills : prev.skills,
+        tools: tools !== undefined ? tools : prev.tools,
+        diagrams: diagrams !== undefined ? diagrams : prev.diagrams,
+        briefing: briefing !== undefined ? briefing : prev.briefing
     };
+
+    const finalFiles = state.lastContextData.files;
+    const finalTools = state.lastContextData.tools;
+    const finalSkills = state.lastContextData.skills;
 
     // Detection for Welcome Message integration
     const isNewDiscussion = !document.querySelector('.message-wrapper:not(.context-message)');
@@ -2128,8 +2142,8 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         return !isInternal;
     };
 
-    const projectFiles = files.filter(isProjectFile);
-    const externalFiles = files.filter(f => !isProjectFile(f));
+    const projectFiles = finalFiles.filter(isProjectFile);
+    const externalFiles = finalFiles.filter(f => !isProjectFile(f));
 
     const renderFileList = (list: string[], emptyMsg: string, allowSummarize: boolean = false) => {
         if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
@@ -2154,21 +2168,23 @@ export function updateContext(contextText: string, files: string[] = [], skills:
            </ul>`;
     };
 
-    const skillsList = skills && skills.length > 0
+    const skillsList = finalSkills && finalSkills.length > 0
         ? `<div class="context-skill-list">
-            ${skills.map(s => `
-                <div class="context-item skill-item">
+            ${finalSkills.map(s => `
+                <div class="context-item skill-item" style="display: flex; align-items: flex-start; gap: 8px; border-bottom: 1px solid var(--vscode-widget-border); padding: 4px 0;">
                     <details class="info-collapsible" style="flex: 1; border: none; padding: 0;">
-                        <summary style="padding: 4px 0; cursor: pointer;">${s.name}</summary>
-                        <div class="skill-content">${sanitizer.sanitize(s.content)}</div>
+                        <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600;">${sanitizer.sanitize(s.name)}</summary>
+                        <div class="skill-content" style="padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 4px; font-family: var(--vscode-editor-font-family); font-size: 10px; max-height: 150px; overflow-y: auto;">
+                            ${sanitizer.sanitize(s.content)}
+                        </div>
                     </details>
-                    <button class="remove-context-btn" data-type="skill" data-value="${s.id}" title="Remove skill">
+                    <button class="remove-context-btn" data-type="skill" data-value="${s.id}" title="Remove skill" style="padding: 2px; opacity: 0.6;">
                         <span class="codicon codicon-close"></span>
                     </button>
                 </div>
             `).join('')}
            </div>`
-        : '<div class="empty-context-msg">No skills learned.</div>';
+        : '<div class="empty-context-msg">No specialized skills currently active.</div>';
 
     const isAgentActive = state.capabilities?.agentMode === true;
 
@@ -2177,16 +2193,54 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     // Standard = Blue (Librarian/Architect mode)
     const themeClass = isAgentActive ? 'agent-mode-bubble' : 'standard-mode-bubble';
 
-    const welcomeHtml = isNewDiscussion ? `
-        <div id="welcome-message" style="padding: 15px; margin-bottom: 10px; background: rgba(0,0,0,0.1); border-radius: 6px; font-size: 12px; line-height: 1.5; border: 1px dashed var(--vscode-widget-border);">
-            <h3 style="margin-top:0; font-size:14px; color: var(--vscode-textLink-foreground);"><i class="codicon codicon-rocket"></i> Welcome to Lollms VS Coder</h3>
-            <ul style="padding-left: 20px; margin-bottom: 0;">
-                <li>Add files to context by right-clicking them in the explorer.</li>
-                <li>Use 🤖 <strong>Agent Mode</strong> for complex multi-step tasks.</li>
-                <li>Toggle 🧠 <strong>Auto-Context</strong> to let the AI find relevant code for you.</li>
-                <li>Check the 🔌 <strong>API status</strong> in the header above.</li>
-            </ul>
-        </div>` : "";
+    // --- SMART PERSISTENCE ---
+    // If the dashboard already exists, we target sub-containers instead of nuking the innerHTML.
+    // This prevents the "Badges Disappearing" flicker.
+    const existingDashboard = document.getElementById('fused-context-dashboard');
+
+    if (existingDashboard) {
+        existingDashboard.className = `context-message ${themeClass}`;
+
+        // Update specific labels
+        const filesLabel = existingDashboard.querySelector('details:nth-of-type(2) summary span');
+        if (filesLabel) filesLabel.textContent = `Selected Files (${finalFiles.length})`;
+
+        const skillsLabel = existingDashboard.querySelector('details:last-of-type summary span');
+        if (skillsLabel) skillsLabel.textContent = `Active Skills (${finalSkills.length})`;
+
+        const toolsLabel = existingDashboard.querySelector('details:nth-of-type(4) summary span');
+        if (toolsLabel) toolsLabel.textContent = `Active Tools (${finalTools.length})`;
+
+        // Re-render only the internal scrollable lists
+        const scrollContainer = existingDashboard.querySelector('.hud-scroll-container');
+        if (scrollContainer) {
+            // Update the briefing/files/skills HTML content inside their specific containers
+            // but keep the details open/closed state.
+            const briefingBody = existingDashboard.querySelector('.briefing-content');
+            if (briefingBody) briefingBody.innerHTML = briefing ? renderDataBriefing(briefing) : '...';
+            
+            // Update Lists (Skills, Tools, Files)
+            const skillsContainer = existingDashboard.querySelector('.hud-skills-list');
+            if (skillsContainer) skillsContainer.innerHTML = skillsList;
+
+            const toolsContainer = existingDashboard.querySelector('.hud-tools-list');
+            if (toolsContainer) {
+                toolsContainer.innerHTML = finalTools.length > 0 
+                    ? `<div class="context-file-list">${finalTools.map(t => `<div class="context-item" style="padding: 4px 8px;"><span class="codicon codicon-wrench" style="color:var(--vscode-charts-orange); opacity:0.8;"></span><span class="context-item-label" title="${t.description}">${t.name}</span><button class="remove-context-btn" data-type="tool" data-value="${t.name}"><span class="codicon codicon-close"></span></button></div>`).join('')}</div>`
+                    : '<div class="empty-context-msg">No specialized tools equipped.</div>';
+            }
+
+            const projFilesContainer = existingDashboard.querySelector('.hud-project-files-list');
+            if (projFilesContainer) projFilesContainer.innerHTML = renderFileList(projectFiles, "No project files selected.", false);
+
+            const extFilesContainer = existingDashboard.querySelector('.hud-external-files-list');
+            if (extFilesContainer) extFilesContainer.innerHTML = renderFileList(externalFiles, "No search results in context.", true);
+        }
+        
+        // Re-run badge logic and exit
+        import('./ui.js').then(ui => ui.updateBadges());
+        return;
+    }
 
     const innerHTML = `
     <div class="context-message ${themeClass}" id="fused-context-dashboard">
@@ -2207,8 +2261,8 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                             <div class="active-badges" id="active-badges"></div>
                         </div>
                         <div style="display: flex; align-items: center; gap: 12px;">
-                            <button id="hud-matrix-btn" class="icon-btn" title="Workspace Access Matrix" style="color: var(--vscode-textLink-foreground); padding: 2px;">
-                                <i class="codicon codicon-layers" style="font-size: 14px;"></i>
+                            <button id="hud-matrix-btn" class="icon-btn hud-matrix-btn" title="Workspace Access Matrix" style="color: var(--vscode-textLink-foreground); padding: 2px; cursor: pointer;">
+                                <i class="codicon codicon-layers" style="font-size: 14px; pointer-events: none;"></i>
                             </button>
                             <span id="status-text" style="font-size: 10px; font-weight: 900; opacity: 0.4; letter-spacing: 0.5px;">READY</span>
                             <i class="codicon codicon-chevron-down hud-toggle-icon" style="opacity:0.5; font-size: 12px;"></i>
@@ -2251,8 +2305,8 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center;">
                         <div style="display:flex; gap:4px; margin-right:8px; padding-right:8px; border-right:1px solid var(--vscode-widget-border);">
-                            <button class="icon-btn" title="Copy Discussion as Markdown" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.copyDiscussionMarkdown'}})"><i class="codicon codicon-markdown"></i></button>
-                            <button class="icon-btn" title="Export Discussion as HTML" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.exportDiscussionHtml'}})"><i class="codicon codicon-cloud-download"></i></button>
+                            <button id="hud-copy-markdown-btn" class="icon-btn" title="Copy Discussion as Markdown"><i class="codicon codicon-markdown"></i></button>
+                            <button id="hud-export-html-btn" class="icon-btn" title="Export Discussion as HTML"><i class="codicon codicon-cloud-download"></i></button>
                         </div>
                         <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
                         <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
@@ -2288,17 +2342,17 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                                 </div>
                             </div>
                         </summary>
-                        <div class="collapsible-content" style="padding-top: 8px;">
+                        <div class="collapsible-content hud-files-container" style="padding-top: 8px;">
                             <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
                                 <span>Project Files</span>
                                 ${projectFiles.length > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn"><span class="codicon codicon-checklist"></span> Bulk Remove</button>` : ''}
                             </h4>
-                            ${renderFileList(projectFiles, "No project files selected.", false)}
+                            <div class="hud-project-files-list">${renderFileList(projectFiles, "No project files selected.", false)}</div>
                             <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
                                 <span>External & Research</span>
                                 ${externalFiles.length > 0 ? `<div style="display: flex; gap: 4px;"><button id="bulk-process-external-btn" class="section-bulk-btn"><span class="codicon codicon-wand"></span> Process</button><button id="bulk-delete-external-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Delete</button></div>` : ''}
                             </h4>
-                            ${renderFileList(externalFiles, "No search results or external data in context.", true)}
+                            <div class="hud-external-files-list">${renderFileList(externalFiles, "No search results or external data in context.", true)}</div>
                         </div>
                     </details>
                     <details class="info-collapsible" style="margin-bottom: 6px;">
@@ -2318,11 +2372,11 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                                 <span>Active Tools (${finalTools.length})</span>
                                 <div style="display: flex; gap: 8px; align-items: center;">
                                     <button id="add-tool-context-btn" class="icon-btn" title="Equip Tool"><i class="codicon codicon-add"></i></button>
-                                    ${tools?.length > 0 ? `<button id="bulk-remove-tools-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Clear</button>` : ''}
+                                    ${finalTools.length > 0 ? `<button id="bulk-remove-tools-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Clear</button>` : ''}
                                 </div>
                             </div>
                         </summary>
-                        <div class="collapsible-content">
+                        <div class="collapsible-content hud-tools-list">
                             ${tools && tools.length > 0
                                 ? `<div class="context-file-list">
                                     ${tools.map(t => `
@@ -2343,14 +2397,14 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                     <details class="info-collapsible">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span>Active Skills (${skills.length})</span>
+                                <span>Active Skills (${finalSkills.length})</span>
                                 <div style="display: flex; gap: 8px; align-items: center;">
                                     <button id="add-skill-context-btn" class="icon-btn" title="Import Skill"><i class="codicon codicon-add"></i></button>
-                                    ${skills.length > 0 ? `<button id="bulk-delete-skills-btn" class="section-bulk-btn delete" style="margin-right: 5px;"><span class="codicon codicon-trash"></span> Bulk Remove</button>` : ''}
+                                    ${finalSkills.length > 0 ? `<button id="bulk-delete-skills-btn" class="section-bulk-btn delete" style="margin-right: 5px;"><span class="codicon codicon-trash"></span> Bulk Remove</button>` : ''}
                                 </div>
                             </div>
                         </summary>
-                        <div class="collapsible-content">
+                        <div class="collapsible-content hud-skills-list">
                             ${skillsList}
                         </div>
                     </details>
@@ -2359,8 +2413,16 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         </details>
     </div>`;
     
-    const hasMetadata = files.length > 0 || skills.length > 0 || (diagrams && diagrams.length > 0);
+    const hasMetadata = (files && files.length > 0) || (skills && skills.length > 0) || (diagrams && diagrams.length > 0) || (tools && tools.length > 0);
     dom.contextContainer.innerHTML = (contextText || hasMetadata) ? innerHTML : '';
+
+    // 2. RESTORE EXPANSION STATE
+    dom.contextContainer.querySelectorAll('details').forEach((d, i) => {
+        const summary = d.querySelector('summary')?.innerText || i.toString();
+        if (openStates[summary] !== undefined) {
+            d.open = openStates[summary];
+        }
+    });
 
     const markdownView = dom.contextContainer.querySelector('.markdown-context-view');
     if (markdownView) {
@@ -2572,15 +2634,37 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     }
 
     const muteBtn = document.getElementById('mute-context-btn');
-    if (muteBtn) {
-        muteBtn.addEventListener('click', () => {
-            // Instead of a binary toggle, open the matrix for granular muting
-            renderWorkspaceMatrix();
-            dom.matrixModal.classList.add('visible');
+    // --- HUD REACTIVE BINDING ---
+    // Since the HUD is inside innerHTML, we must re-bind these every time it renders.
+    const matrixBtn = dom.contextContainer.querySelector('#hud-matrix-btn');
+    if (matrixBtn) {
+        matrixBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            import('./ui.js').then(ui => {
+                ui.renderWorkspaceMatrix();
+                const modal = document.getElementById('workspace-matrix-modal');
+                if (modal) {
+                    modal.style.display = 'flex';
+                    modal.classList.add('visible');
+                }
+            });
         });
     }
 
-    // Workspace Matrix Logic
+    const hudRefresh = dom.contextContainer.querySelector('#hud-quick-refresh-btn');
+    if (hudRefresh) {
+        hudRefresh.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const icon = hudRefresh.querySelector('.codicon');
+            if (icon) icon.classList.add('spin');
+            vscode.postMessage({ command: 'calculateTokens' });
+            setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1000);
+        });
+    }
+
+    // Workspace Matrix Logic (Inside Modal)
     const container = dom.contextContainer;
     if (container) {
         container.addEventListener('click', (e) => {

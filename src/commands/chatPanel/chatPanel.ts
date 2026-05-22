@@ -17,6 +17,7 @@ import { applyDiffToString, applySearchReplace } from '../../utils';
 import { BigDataProcessor } from '../../bigDataProcessing';
 import { AutomationPanel } from '../../panels/automationPanel';
 import { LocalizationManager } from '../../utils/localizationManager';
+import { LollmsServices } from '../../lollmsContext';
 
 interface ActiveGeneration {
     messageId: string;
@@ -44,6 +45,7 @@ export class ChatPanel {
   private _gitIntegration: GitIntegration;
   private _currentDiscussion: Discussion | null = null;
   public agentManager!: AgentManager;
+  private _toolManager!: ToolManager;
   public herdManager?: HerdManager;
   private _executionLogs: string[] = [];
   private processManager!: ProcessManager;
@@ -67,7 +69,7 @@ export class ChatPanel {
   private _activeGenerationCompleteListener?: (fullContent: string) => void;
   private pdfExtractionPromises: Record<string, { resolve: (val: string[]) => void, reject: (err: Error) => void, timeout: NodeJS.Timeout }> = {};
 
-  public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string, gitIntegration: GitIntegration, skillsManager?: SkillsManager): ChatPanel {
+  public static createOrShow(services: LollmsServices, discussionId: string): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
     const existingPanel = ChatPanel.panels.get(discussionId);
@@ -84,29 +86,30 @@ export class ChatPanel {
       {
         enableScripts: true,
         localResourceRoots: [
-            vscode.Uri.joinPath(extensionUri, 'out'),
-            vscode.Uri.joinPath(extensionUri, 'media'),
-            vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri: extensionUri
+            vscode.Uri.joinPath(services.extensionUri, 'out'),
+            vscode.Uri.joinPath(services.extensionUri, 'media'),
+            vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri: services.extensionUri
         ],
         retainContextWhenHidden: true
       }
     );
-    panel.iconPath = vscode.Uri.joinPath(extensionUri, 'media', 'lollms-icon.svg');
+    panel.iconPath = vscode.Uri.joinPath(services.extensionUri, 'media', 'lollms-icon.svg');
 
-    const newPanel = new ChatPanel(panel, extensionUri, lollmsAPI, discussionManager, discussionId, gitIntegration, skillsManager);
+    const newPanel = new ChatPanel(panel, services, discussionId);
     ChatPanel.panels.set(discussionId, newPanel);
     ChatPanel.currentPanel = newPanel;
     return newPanel;
   }
 
-  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string, gitIntegration: GitIntegration, skillsManager?: SkillsManager) {
+  private constructor(panel: vscode.WebviewPanel, services: LollmsServices, discussionId: string) {
     this._panel = panel;
-    this._extensionUri = extensionUri;
-    this._lollmsAPI = lollmsAPI;
-    this._discussionManager = discussionManager;
+    this._extensionUri = services.extensionUri;
+    this._lollmsAPI = services.lollmsAPI;
+    this._discussionManager = services.discussionManager;
     this.discussionId = discussionId;
-    this._gitIntegration = gitIntegration;
-    this._skillsManager = skillsManager || new SkillsManager();
+    this._gitIntegration = services.gitIntegration;
+    this._skillsManager = services.skillsManager;
+    this._toolManager = services.toolManager;
 
     this._discussionCapabilities = this._discussionManager.getLastCapabilities();
 
@@ -144,25 +147,25 @@ export class ChatPanel {
   public setProcessManager(processManager: ProcessManager) { 
       this.processManager = processManager; 
 
-      // Only initialize AgentManager if workerType is agent
-      if (this._discussionCapabilities.workerType === 'agent') {
-          if (ChatPanel.activeAgents.has(this.discussionId)) {
-              this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
-              this.agentManager.setUI(this);
-              this.agentManager.personalityManager = this._personalityManager;
-          } else {
-              this.agentManager = new AgentManager(
-                  this, 
-                  this._lollmsAPI, 
-                  this._contextManager, 
-                  this._gitIntegration,
-                  this._discussionManager,
-                  this._extensionUri,
-                  undefined, 
-                  this._skillsManager
-              );
-              this.agentManager.personalityManager = this._personalityManager;
-          }
+      // Ensure AgentManager is initialized so its logic is available even in discussion mode
+      if (ChatPanel.activeAgents.has(this.discussionId)) {
+          this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
+          this.agentManager.setUI(this);
+          this.agentManager.personalityManager = this._personalityManager;
+      } else {
+          this.agentManager = new AgentManager(
+              this, 
+              this._lollmsAPI, 
+              this._contextManager, 
+              this._gitIntegration,
+              this._discussionManager,
+              this._extensionUri,
+              undefined, 
+              this._skillsManager,
+              this._toolManager
+          );
+          this.agentManager.personalityManager = this._personalityManager;
+          ChatPanel.activeAgents.set(this.discussionId, this.agentManager);
       }
   }
   
@@ -418,7 +421,15 @@ export class ChatPanel {
       if (!this._currentDiscussion) return;
       const msg = this._currentDiscussion.messages.find(m => m.id === messageId);
       if (msg) {
-          msg.content = newContent;
+          if (typeof newContent === 'string' && newContent.startsWith('APPEND_TAG:')) {
+              const tag = newContent.substring(11);
+              if (typeof msg.content === 'string' && !msg.content.includes(tag)) {
+                  msg.content = msg.content + "\n" + tag;
+              }
+          } else {
+              msg.content = newContent;
+          }
+
           if (!this._currentDiscussion.id.startsWith('temp-')) {
               await this._discussionManager.saveDiscussion(this._currentDiscussion);
           }
@@ -544,7 +555,14 @@ export class ChatPanel {
 
       if (this._contextManager) {
           const cachedContext = this._contextManager.getLastContext();
-          const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => f.path) || [];
+          let includedFiles: string[] = [];
+          try {
+              const provider = this._contextManager.getContextStateProvider();
+              const rawFiles = provider ? provider.getIncludedFiles() : [];
+              includedFiles = rawFiles.filter(f => f && f.path).map(f => f.path);
+          } catch (e) {
+              Logger.warn("Safeguard caught error reading included files.");
+          }
           const projectSkills = await this._contextManager.getActiveProjectSkills();
           const discussionSkills = this._currentDiscussion.importedSkills || [];
           
@@ -556,13 +574,22 @@ export class ChatPanel {
                   ? cachedContext.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Preview truncated for UI performance. Total: ${cachedContext.text.length} chars]`
                   : cachedContext.text;
 
+            // Resolve tools for the UI during initial load
+            const discussionTools = this._currentDiscussion?.importedTools || [];
+            const projectTools = await this._contextManager.getActiveProjectTools();
+            const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
+            const equippedTools = this.agentManager.getTools()
+                .filter(t => allEquippedNames.includes(t.name))
+                .map(t => ({ name: t.name, description: t.description }));
+
             this._panel.webview.postMessage({ 
                 command: 'updateContext', 
                 context: contextTextToSend,
                 files: includedFiles,
                 skills: cachedContext.importedSkills || [],
+                tools: equippedTools, // Pass tools explicitly on load
                 diagrams: cachedContext.diagrams || [],
-                briefing: this._currentDiscussion?.discussion_data_zone || "" // Sync briefing immediately
+                briefing: this._currentDiscussion?.discussion_data_zone || "" 
             });
             this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
           } else {
@@ -599,6 +626,7 @@ export class ChatPanel {
           agentMode: !!this._discussionCapabilities.agentMode, // Explicitly pass mode for UI theme
           appliedState: this._currentDiscussion.appliedState || {},
           currentModel: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
+          currentTemperature: this._discussionCapabilities.temperature ?? config.get<number>('temperature') ?? 0.7,
           workspaceFolders: workspaceFolders,
           agentProfiles: AGENT_MISSION_PROFILES
       });
@@ -699,6 +727,19 @@ export class ChatPanel {
       // --- INSTANT HYDRATION ---
       if (this._currentDiscussion?.lastTokenMetrics) {
           const m = this._currentDiscussion.lastTokenMetrics;
+
+          // 🛡️ ULTRA-DEFENSIVE PATH EXTRACTION
+          // Render HUD Metadata immediately from cache
+          const provider = this._contextManager.getContextStateProvider();
+          const safeFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
+
+          this._panel.webview.postMessage({ 
+              command: 'updateContext', 
+              tools: m.activeTools || [],
+              skills: m.activeSkills || [],
+              files: safeFiles
+          });
+
           this._panel.webview.postMessage({
               command: 'updateTokenProgress',
               totalTokens: m.total,
@@ -706,19 +747,12 @@ export class ChatPanel {
               isApproximate: false,
               segments: m.segments
           });
-          
-          // CRITICAL: Explicitly clear the "Calculating..." status on load
-          this._panel.webview.postMessage({ 
-              command: 'updateStatus', 
-              status: 'Ready (Cached)', 
-              type: 'info' 
-          });
+
           this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-      } else {
-          // Fallback only if never calculated before
-          this.updateContextAndTokens();
-      }
-      
+      } 
+
+      // Always trigger a background sync to ensure accuracy, but now the UI is pre-filled
+      this.updateContextAndTokens({ isBackgroundSync: true });
       await this._fetchAndSetModels(false);
   }
 
@@ -784,8 +818,8 @@ export class ChatPanel {
     this._tokenAbortController = new AbortController();
     const signal = this._tokenAbortController.signal;
 
-    // Small delay to debounce rapid UI interactions
-    await new Promise(resolve => setTimeout(resolve, 150));
+    // INCREASE DEBOUNCE: Give the Extension Host more time to settle (especially Python isort/pylance)
+    await new Promise(resolve => setTimeout(resolve, 800));
     if (signal.aborted) return;
 
     this._isTokenizing = true;
@@ -819,10 +853,11 @@ export class ChatPanel {
             }
         }
 
+        let briefingText = "";
         try {
             this.log("Fetching context content...");
             const importedIds = this._currentDiscussion?.importedSkills || [];
-            const activeDiagrams = this._currentDiscussion?.activeDiagrams || [];
+            const activeDiagramIds = this._currentDiscussion?.activeDiagrams || [];
 
             this._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Assembling Codebase Map...' });
 
@@ -859,7 +894,12 @@ export class ChatPanel {
 
             if (this._isDisposed) return;
 
-            const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => f.path) || [];
+            let includedFiles: string[] = [];
+            try {
+                const provider = this._contextManager.getContextStateProvider();
+                const rawFiles = provider ? provider.getIncludedFiles() : [];
+                includedFiles = rawFiles.filter(f => f && f.path).map(f => f.path);
+            } catch (e) {}
 
             // Aggressive truncation for Webview UI to prevent IPC Channel Closure
             const UI_PREVIEW_LIMIT = 10000; 
@@ -868,29 +908,50 @@ export class ChatPanel {
                 : context.text;
 
             if (!this._isDisposed) {
-                if (!this._isDisposed) {
-                    // --- MULTI-SCOPE TOOL RESOLUTION ---
-                    const discussionTools = this._currentDiscussion?.importedTools || [];
-                    const projectTools = await this._contextManager.getActiveProjectTools();
+                // --- AUTHORITATIVE DATA FETCH ---
+                const provider = this._contextManager.getContextStateProvider();
+                const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
+                const currentSkills = context.importedSkills || []; // Use the skills returned by getContextContent
 
-                    // Merge unique names from both scopes
-                    const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
+                // --- MULTI-SCOPE TOOL RESOLUTION ---
+                const discussionTools = this._currentDiscussion?.importedTools || [];
+                const projectTools = await this._contextManager.getActiveProjectTools();
 
-                    const equippedTools = this.agentManager.getTools()
-                        .filter(t => allEquippedNames.includes(t.name))
-                        .map(t => ({ name: t.name, description: t.description }));
-
-                    this._panel.webview.postMessage({ 
-                        command: 'updateContext', 
-                        context: contextTextForUI,
-                        files: includedFiles,
-                        skills: context.importedSkills || [],
-                        tools: equippedTools,
-                        diagrams: context.diagrams || [],
-                        images: context.images || [], // Pass images list for counter
-                        briefing: this._currentDiscussion?.discussion_data_zone || ""
-                    });
+                // Sync the project tools to the AgentManager so its internal filter (getEnabledTools)
+                // allows them into the system prompt.
+                if (this.agentManager) {
+                    (this.agentManager as any)._projectToolsCache = projectTools;
                 }
+
+                // Merge unique names from both scopes
+                const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
+
+                const equippedTools = this.agentManager?.getTools()
+                    ? this.agentManager.getTools().filter(t => allEquippedNames.includes(t.name)).map(t => ({ name: t.name, description: t.description }))
+                    : [];
+
+                let safeFiles: string[] = [];
+                if (provider) {
+                    try {
+                        const rawFiles = provider.getIncludedFiles() || [];
+                        safeFiles = rawFiles
+                            .filter(f => f && typeof f === 'object' && 'path' in f && typeof f.path === 'string')
+                            .map(f => f.path);
+                    } catch (e) {
+                        Logger.warn("Librarian: Failed to extract included files safely.");
+                    }
+                }
+
+                this._panel.webview.postMessage({ 
+                    command: 'updateContext', 
+                    context: contextTextForUI || "",
+                    files: safeFiles || [],
+                    skills: currentSkills.map(s => ({ id: s.id, name: s.name, content: s.content })),
+                    tools: equippedTools || [],
+                    diagrams: context.diagrams || [],
+                    images: context.images || [], 
+                    briefing: this._currentDiscussion?.discussion_data_zone || ""
+                });
             }
             this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
 
@@ -898,6 +959,9 @@ export class ChatPanel {
             const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
                 ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock()
                 : "";
+
+            const rawBriefing = this._currentDiscussion?.discussion_data_zone || "";
+            briefingText = (rawBriefing.startsWith('{')) ? this._contextManager.renderBriefing(this._currentDiscussion) : rawBriefing;
 
             this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
             this._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
@@ -1004,18 +1068,29 @@ export class ChatPanel {
             const filteredFilesText = await this._getFilteredFilesContent(context, folderSettings);
 
 
-            const [systemRes, historyRes, treeRes, skillsRes, memoryRes, contextSizeRes] = await Promise.all([
-                getTokenCount(systemText),
-                getTokenCount(historyText),
-                getTokenCount(context.projectTree),
-                getTokenCount(context.skillsContent || ""),
-                getTokenCount(projectMemory || ""),
-                this._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
-                    Logger.error(`[TokenStats] Context Size API critically failed: ${e.message}`);
-                    return { context_size: 128000, isEstimation: true }; 
-                }),
-                Promise.all(statsPromises)
-            ]);
+            let results;
+            try {
+                results = await Promise.all([
+                    getTokenCount(systemText),
+                    getTokenCount(historyText),
+                    getTokenCount(context.projectTree),
+                    getTokenCount(context.skillsContent || ""),
+                    getTokenCount(projectMemory || ""),
+                    getTokenCount(briefingText || ""),
+                    this._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
+                        Logger.error(`[TokenStats] Context Size API critically failed: ${e.message}`);
+                        return { context_size: 128000, isEstimation: true }; 
+                    }),
+                    Promise.all(statsPromises)
+                ]);
+            } catch (e: any) {
+                if (e.name === 'AbortError' || signal.aborted) {
+                    return; // Gracefully exit concurrent call
+                }
+                throw e; // Re-throw real errors
+            }
+
+            const [systemRes, historyRes, treeRes, skillsRes, memoryRes, briefingRes, contextSizeRes] = results;
 
             if (this._isDisposed || signal.aborted) return;
 
@@ -1046,16 +1121,44 @@ export class ChatPanel {
 
             // Segment 'files' represents actual code
             const contentTokens = Math.ceil(filteredFilesText.length / 3.5);
-            const skillTokens = skillsRes.count;
+            const skillTokens = (skillsRes as any).count;
+            const systemTokens = (systemRes as any).count;
+            const historyTokens = (historyRes as any).count;
+            const treeTokens = (treeRes as any).count;
+            const memoryTokens = (memoryRes as any).count;
+            const briefingTokens = (briefingRes as any).count;
 
-            // CRITICAL: Calculate the REAL total based on filtered content
-            const totalTokens = systemRes.count + 
-                                historyRes.count + 
-                                treeRes.count + 
+            // ── AUTHORITATIVE MATHEMATICAL SYNCHRONIZATION ──
+            // Calculate the total as the sum of parts to ensure the HUD bar matches the labels exactly.
+            const totalTokens = systemTokens + 
+                                briefingTokens +
+                                historyTokens + 
+                                treeTokens + 
                                 contentTokens + 
                                 skillTokens + 
-                                memoryRes.count +
+                                memoryTokens +
                                 imageTokens;
+
+
+            const segments = {
+                system: systemTokens,
+                briefing: briefingTokens,
+                tree: treeTokens,
+                skills: skillTokens,
+                memory: memoryTokens,
+                files: contentTokens,
+                history: historyTokens,
+                images: imageTokens
+            };
+            // Update the discussion object with the new authoritative total
+            if (this._currentDiscussion) {
+                this._currentDiscussion.lastTokenMetrics = {
+                    total: totalTokens,
+                    contextSize: finalCtxSize,
+                    segments: segments, // Persist segments for instant hydration
+                };
+            }
+
             const ctxSize = finalCtxSize;
             const isActuallyApproximate = isLimitApproximate;
 
@@ -1074,15 +1177,6 @@ export class ChatPanel {
                 Logger.warn(`[TokenStats] Context size is dangerously high (${totalTokens}). Model ${modelForTokenization} will likely fail.`);
             }
 
-            const segments = {
-                system: systemRes.count || 0,
-                tree: treeRes.count || 0,
-                skills: skillTokens || 0,
-                memory: memoryRes.count || 0,
-                files: contentTokens || 0,
-                history: historyRes.count || 0,
-                images: imageTokens || 0
-            };
 
             // PERSIST FOR INSTANT HYDRATION
             if (this._currentDiscussion) {
@@ -1097,6 +1191,15 @@ export class ChatPanel {
             }
 
             if (this._panel && this._panel.webview) {
+                // Send the authoritative sum and segments to the UI
+                this._panel.webview.postMessage({
+                    command: 'updateTokenProgress',
+                    totalTokens: totalTokens,
+                    contextSize: ctxSize,
+                    isApproximate: isActuallyApproximate,
+                    segments: segments
+                });
+
                 if (!isBackground) {
                     this._panel.webview.postMessage({
                         command: 'updateLoaderStatus',
@@ -1105,7 +1208,7 @@ export class ChatPanel {
                     });
                 }
             }
-            
+
             if (isActuallyApproximate) {
                 this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approximate - API Check Failed)', type: 'warning' });
             } else {
@@ -1179,6 +1282,7 @@ export class ChatPanel {
                 const treeTokens = Math.ceil((context.projectTree?.length || 0) / 3.5);
                 const filesTokens = Math.ceil((context.selectedFilesContent?.length || 0) / 3.5);
                 const skillsTokens = Math.ceil((context.skillsContent?.length || 0) / 3.5);
+                const briefingTokens = Math.ceil((briefingText?.length || 0) / 3.5);
 
                 // Fix: Fetch or default projectMemory for the fallback
                 const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
@@ -1186,14 +1290,18 @@ export class ChatPanel {
                     : "";
                 const memoryTokens = Math.ceil((projectMemory.length || 0) / 3.5);
 
+                // ── SYNCHRONIZED FALLBACK TOTAL ──
+                const totalTokens = systemTokens + historyTokens + treeTokens + filesTokens + skillsTokens + memoryTokens + briefingTokens;
+
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
-                    totalTokens: estimatedTokens,
+                    totalTokens: totalTokens, // Use synchronized sum instead of wordCount * 1.35
                     contextSize: finalCtxSize,
                     isApproximate: isLimitApproximate,
                     folderStats: folderStats,
                     segments: {
                         system: systemTokens,
+                        briefing: briefingTokens,
                         tree: treeTokens,
                         skills: skillsTokens,
                         memory: memoryTokens,
@@ -1658,8 +1766,13 @@ Please provide the **FULL CONTENT** of the file instead using the format:
   }
 
   private async copyFullPromptToClipboard(draftMessage: string) {
-      // 1. Show feedback in Chat Panel immediately
-      this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: true, statusText: 'Assembling full prompt...' });
+      // 1. Show feedback in Chat Panel immediately with specific Stop label
+      this._panel.webview.postMessage({ 
+          command: 'setGeneratingState', 
+          isGenerating: true, 
+          statusText: 'Assembling full prompt...',
+          buttonLabel: 'Stop Assembling'
+      });
 
       // 2. Use VS Code standard progress notification for long-running tasks
       await vscode.window.withProgress({
@@ -1686,7 +1799,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
               const context = {
                   tree: contextData.projectTree,
                   files: filteredFilesContent,
-                  skills: contextData.skillsContent
+                  skills: contextData.skillsContent,
+                  toolManager: this.agentManager?.['toolManager'] // Pass the toolbelt reference
               };
 
               let memoryBlock = "";
@@ -2409,7 +2523,6 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         }
     }
 
-    // --- DEBUG SANDBOX AGENT ---
     // --- DEBUG SANDBOX BRANCH CREATION (PRE-WORKER) ---
     if (this._discussionCapabilities.debugMode && message.role !== 'system') {
         this.processManager.updateDescription(processId, "🐞 Creating Debug Sandbox...");
@@ -2600,7 +2713,13 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
             personaContent, 
             undefined, 
             forceFullCode, 
-            { ...context, tree: '', files: '', projectName: contextData.projectName } 
+            { 
+                ...context, 
+                tree: '', 
+                files: '', 
+                projectName: contextData.projectName,
+                toolManager: this.agentManager?.['toolManager']
+            } 
         );
 
         // 2. Prepare the Bundled Project Context Message (User role)
@@ -2657,12 +2776,12 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
 
         // 4. Build Final Sequence for the API
         // Logical Order: [Instructions] -> [Conversational History] -> [Context Data (User)] -> [Actual Instruction (User)]
-        let messagesToSend: ChatMessage[] =[
+        let messagesToSend: ChatMessage[] = [
             { role: 'system', content: baseInstructions },
             ...history,
             projectContextUserMessage
         ];
-        
+
         if (currentPromptMessage) {
             const activeProfileId = this._discussionCapabilities.responseProfileId || config.get<string>('defaultResponseProfileId') || 'balanced';
             const profiles = config.get<ResponseProfile[]>('responseProfiles') ||[];
@@ -2679,11 +2798,12 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                 let technicalFormatNote = "";
 
                 technicalFormatNote = `
-                ### 🛠️ CODE MODIFICATION PROTOCOL
-                1. **THE 50% THRESHOLD**: 
+                ### 🛠️ CODE MODIFICATION PROTOCOL (STRICT)
+                1. **EXCLUSIVE FORMAT CHOICE**: Choose EITHER Aider Patch OR Full File. Providing both is forbidden.
+                2. **THE 50% THRESHOLD**: 
                 - If your change affects LESS than 50% of the file: You MUST use the **SEARCH/REPLACE (AIDER)** format.
                 - If your change affects MORE than 50% of the file: Provide the **FULL FILE** content.
-                2. **THE ZERO-PLACEHOLDER MANDATE (CRITICAL)**: 
+                3. **THE ZERO-PLACEHOLDER MANDATE (CRITICAL)**: 
                 - It is **STRICTLY FORBIDDEN** to use comments like \`// ... rest of code\`, \`# ... existing logic\`, or any form of ellipses to skip lines.
                 - Every line in a FULL file or within a REPLACE block must be written explicitly. 
                 - Partial code fragments inside a block will result in a system rejection.
@@ -2704,182 +2824,210 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         }
 
         // =========================================================================
-        // 🛡️ CONTEXT LIMIT CHECK & FAST PRUNING (V3: Image LUT Aware)
+        // 🛡️ CONTEXT GOVERNOR: LLM-DRIVEN SMART PRUNING
         // =========================================================================
 
-        // 1. Initialize fileBlocks at the start of the try block to ensure global scope safety
-        const fileBlocks: { fullMatch: string, path: string, content: string, keep: boolean }[] = [];
+        const fileBlocks: { fullMatch: string, path: string, tokens: number, keep: boolean, reason?: string }[] = [];
 
         try {
             const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-            const limitRes = await this._lollmsAPI.getContextSize(targetModel);
-            const maxTokens = limitRes.context_size > 0 ? limitRes.context_size : 128000;
+            const metrics = this._currentDiscussion?.lastTokenMetrics;
 
-            // Accurate Estimation: Using Model-Specific Image LUT
-            const { estimateImageTokens } = require('../../utils');
-            let textOnlySize = 0;
-            let imageTokens = 0;
+            if (metrics) {
+                const totalEstimated = metrics.total;
+                const maxTokens = metrics.contextSize;
 
-            messagesToSend.forEach(m => {
-                if (typeof m.content === 'string') {
-                    textOnlySize += m.content.length;
-                } else if (Array.isArray(m.content)) {
-                    m.content.forEach((part: any) => {
-                        if (part.type === 'text') {
-                            textOnlySize += part.text.length;
-                        } else if (part.type === 'image_url') {
-                            imageTokens += estimateImageTokens(targetModel);
-                        }
-                    });
-                }
-            });
+                // Read User-Defined Threshold (Default to 90 if missing)
+                const userThresholdPercent = this._discussionCapabilities.contextGovernorThreshold || 90;
+                const triggerThreshold = maxTokens * (userThresholdPercent / 100);
 
-            // 2. Pre-parse file blocks using a more permissive regex to catch all namespaced paths
-            // Supports ```lang:path and ```path formats
-            const blockRegex = /```(?:\w+)?[:]?([^\n]+)[\r\n]([\s\S]*?)[\r\n]```/g;
-            let fileMatch;
-            while ((fileMatch = blockRegex.exec(context.files)) !== null) {
-                const filePath = fileMatch[1].trim();
-                // Avoid capturing Aider markers as file paths
-                if (filePath.includes('<<<<<<< SEARCH')) continue;
-                
-                fileBlocks.push({
-                    fullMatch: fileMatch[0],
-                    path: filePath,
-                    content: fileMatch[2],
-                    keep: false
-                });
-            }
+                const fillPercentage = Math.round((totalEstimated / maxTokens) * 100);
 
-            // 2. Identify keywords from user prompt and historical context
-            const userPromptText = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
-            const keywords = new Set(userPromptText.toLowerCase().match(/\b[\w.-]{3,}\b/g) || []);
-            
-            // Add explicit filenames from the last 2 messages to keywords to prevent "Amnesia"
-            this._currentDiscussion?.messages.slice(-2).forEach(m => {
-                const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-                const matches = text.match(/\b[\w.-]+\.\w+\b/g);
-                if (matches) matches.forEach(match => keywords.add(match.toLowerCase()));
-            });
-
-            // 3. Mark protected files (keywords, explicit names, or recently requested files)
-            for (const b of fileBlocks) {
-                const contentLower = b.content.toLowerCase();
-                const fileNameLower = b.path.toLowerCase();
-                const fileNameOnly = fileNameLower.split('/').pop() || "";
-                
-                b.keep = Array.from(keywords).some(k => 
-                    fileNameLower.includes(k) || 
-                    contentLower.includes(k) ||
-                    k.includes(fileNameOnly)
-                );
-            }
-
-            let estimatedTokens = Math.ceil(textOnlySize / 3.5) + imageTokens;
-
-            if (estimatedTokens > maxTokens) {
-                const pruneMsgId = 'system_prune_' + Date.now();
-                this.log(`Payload exceeds context limit (${estimatedTokens} > ${maxTokens}). Pruning...`, 'WARN');
-
-                // CIRCUIT BREAKER: If history alone is too big, stop immediately
-                const nonFileTokens = estimatedTokens - (Math.ceil(context.files.length / 3.5));
-                if (nonFileTokens > maxTokens) {
-                    await this.addMessageToDiscussion({
-                        role: 'system',
-                        content: `🛑 **Context Overflow Blocked**\nYour conversation history and system instructions already exceed the limit (**${maxTokens.toLocaleString()}** tokens).\n\n**To continue:**\n1. Delete old messages using the Trash icon.\n2. Start a "New Discussion" to reset the history.`
-                    });
-                    this.processManager.unregister(processId);
+                if (totalEstimated > triggerThreshold) {
+                    this.processManager.updateDescription(processId, "⚖️ Governor: Analyzing context relevance...");
                     this.updateGeneratingState();
-                    return;
-                }
 
-                await this.addMessageToDiscussion({
-                    id: pruneMsgId,
-                    role: 'system',
-                    content: `⚖️ **Context Governor: Pruning Required**\nThe total payload (~${estimatedTokens.toLocaleString()} tokens) exceeds capacity (${maxTokens.toLocaleString()}). \n\n*Optimizing file context to prioritize relevant logic...*`,
-                    skipInPrompt: true
-                });
+                    const userPromptText = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+                    const overflow = totalEstimated - triggerThreshold;
+                    const pruneMsgId = 'system_prune_' + Date.now();
 
-                if (fileBlocks.length > 0) {
-                    let keptBlocks = fileBlocks.filter(b => b.keep);
-                    
-                    // 2. Secondary prune if still > 60% of max context (lower budget for safety)
-                    const fileBudgetTokens = Math.floor(maxTokens * 0.6);
-                    let currentFileTokens = keptBlocks.reduce((acc, b) => acc + Math.ceil(b.fullMatch.length / 3.5), 0);
-
-                    while (currentFileTokens > fileBudgetTokens && keptBlocks.length > 0) {
-                        // Evict largest files first to reach the budget faster
-                        keptBlocks.sort((a, b) => b.fullMatch.length - a.fullMatch.length);
-                        const removed = keptBlocks.shift()!;
-                        currentFileTokens -= Math.ceil(removed.fullMatch.length / 3.5);
-                    }
-
-                    // 3. Reconstruct context.files
-                    context.files = keptBlocks.map(b => b.fullMatch).join('\n\n');
-                    const removedBlocks = fileBlocks.filter(b => !b.keep);
-                    
-                    if (removedBlocks.length > 0) {
-                        const removedList = removedBlocks.map(b => `  - \`${b.path}\``).join('\n');
-                        const keptList = keptBlocks.map(b => `  - \`${b.path}\``).join('\n');
-
-                        // NEW: Inject a hidden system warning so the LLM knows it has been blinded to these files
-                        const evictionNudge = `\n[SYSTEM NOTICE]: To fit the context window, the following files were EVICTED from this prompt: ${removedBlocks.map(b => b.path).join(', ')}. Use <add_files_to_context> if you need them back.`;
-                        messagesToSend.push({ role: 'system', content: evictionNudge });
-
-                        await this.updateMessageContent(pruneMsgId, `⚖️ **Context Governor: Optimization Complete**
-To fit within the **${maxTokens.toLocaleString()}** token limit, I have reorganized the context:
-
-**✅ PRESERVED (Matched Keywords):**
-${keptList || "  - (None)"}
-
-**✂️ EVICTED (Context Pruned):**
-${removedList}
-
-*The AI still sees the file paths in the Project Tree, but their content was hidden to allow the model to process your request.*`);
-                    }
-
-                    // 4. Rebuild messagesToSend with the pruned context
-                    const projectStateText = `
-### 📂 ATTACHED PROJECT CONTEXT
-I am providing you with the current, ground-truth state of my project files and the Librarian's technical briefing. 
-Use this information as your current "vision" of the workspace.
-
-${briefing && briefing !== "Librarian is analyzing project state..." ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefing}\n` : ""}
-${context.tree ? `#### 🌳 PROJECT STRUCTURE\n${context.tree}\n` : ""}
-${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files currently selected)*"}
---------------------------------------------------
-`.trim();
-
-                    const projectContextUserMessage: ChatMessage = {
-                        role: 'user',
-                        content: projectStateText
-                    };
-
-                    messagesToSend =[
-                        { role: 'system', content: baseInstructions },
-                        ...history,
-                        projectContextUserMessage
-                    ];
-
-                    if (currentPromptMessage) {
-                        messagesToSend.push(currentPromptMessage);
-                    }
-
-                    // FINAL PAYLOAD VALIDATION
-                    let finalSize = 0;
-                    messagesToSend.forEach(m => finalSize += typeof m.content === 'string' ? m.content.length : 0);
-                    if (Math.ceil(finalSize / 3.2) > maxTokens) {
+                    // 1. Check for History Overflow (Immutable part)
+                    const fixedLoad = metrics.segments.system + metrics.segments.briefing + metrics.segments.history + metrics.segments.images;
+                    if (fixedLoad > triggerThreshold) {
                         await this.addMessageToDiscussion({
                             role: 'system',
-                            content: `🛑 **Context Still Overflowing**\nPruning could not reduce the payload enough for this model.\n\n**Action Required:** Click the **Mute** button on the Project Context bubble to hide file contents, then manually add only the files needed for this fix.`
+                            content: `🛑 **Context Overflow Blocked**\nHistory and instructions (~${fixedLoad.toLocaleString()} tokens) exceed your configured ${userThresholdPercent}% threshold (**${maxTokens.toLocaleString()}**).\n\n**To continue:** Delete old messages or start a "New Discussion".`
                         });
                         this.processManager.unregister(processId);
                         this.updateGeneratingState();
                         return;
                     }
+
+                    await this.addMessageToDiscussion({
+                        id: pruneMsgId,
+                        role: 'system',
+                        content: `⚖️ **Context Governor: Pruning Triggered**
+        Trigger Reason: Authoritative HUD payload reached **${fillPercentage}%** (${totalEstimated.toLocaleString()} / ${maxTokens.toLocaleString()} tokens).
+        *Summoning the Pruning Specialist to optimize relevance based on project structure and mission history...*`,
+                        skipInPrompt: true
+                    });
+
+                    // 2. Parse file blocks to identify candidates for eviction
+                    const blockRegex = /```(?:\w+)?[:]?([^\n]+)[\r\n]([\s\S]*?)[\r\n]```/g;
+                    let fileMatch;
+                    while ((fileMatch = blockRegex.exec(context.files)) !== null) {
+                        const filePath = fileMatch[1].trim();
+                        if (filePath.includes('<<<<<<< SEARCH')) continue;
+
+                        fileBlocks.push({
+                            fullMatch: fileMatch[0],
+                            path: filePath,
+                            tokens: Math.ceil(fileMatch[0].length / 3.5),
+                            keep: true 
+                        });
                     }
+
+                    // 3. AGENTIC DECISION PASS
+                // Provide the LLM with the tree (grounded with markers) and recent history
+                const recentHistory = history.slice(-3).map(m => {
+                    const role = m.role.toUpperCase();
+                    const content = typeof m.content === 'string' ? m.content : "[Multipart Content]";
+                    return `### ${role}\n${content.substring(0, 1000)}${content.length > 1000 ? '...' : ''}`;
+                }).join('\n\n');
+
+                const decisionPrompt = `You are the **Sovereign Context Governor**. 
+            The current request payload (**${totalEstimated.toLocaleString()}** tokens) has reached **${fillPercentage}%** of the model's limit (**${maxTokens.toLocaleString()}**).
+            You must select which files to evict from the 'possessed' context to liberate at least **${Math.round(overflow).toLocaleString()}** tokens.
+
+            ### 🌳 PROJECT STRUCTURE & CONTEXT STATUS
+            ${context.tree}
+            *(Legend: [C] = Content in memory, No marker = path only)*
+
+            ### 🕒 RECENT MISSION HISTORY
+            ${recentHistory || "No previous history."}
+
+            ### 🎯 CURRENT USER PROMPT
+            "${userPromptText}"
+
+            ### 📄 LOADED FILES (MEMOIZED CONTENT)
+            Analyze their relevance to the current mission and history.
+            ${fileBlocks.map(b => `- ${b.path} (${b.tokens} tokens)`).join('\n')}
+
+            ### 📝 PRUNING RULES:
+            1. **PROTECT CORE**: Do NOT evict files containing "core", "mixin", "types", or "api" unless they are explicitly unrelated to the prompt.
+            2. **PROTECT SELECTION**: If the user prompt refers to a specific file or logic found in one of these files, KEEP it.
+            3. **EVICT NOISE**: Target large boilerplate files, unrelated utilities, or documentation that has already been digested.
+
+            **OUTPUT FORMAT**: JSON only.
+            {
+            "keep": ["path/to/relevant/file.ts"],
+            "evict": [
+            {"path": "path/to/noise.py", "reason": "Short explanation why this is being evicted"}
+            ]
+            }
+            `;
+                let decision;
+                try {
+                    const decisionRes = await this._lollmsAPI.sendChat([
+                        { role: 'system', content: "You are an architectural context governor. Output ONLY JSON." },
+                        { role: 'user', content: decisionPrompt }
+                    ], null, controller.signal, targetModel);
+                    decision = JSON.parse(stripThinkingTags(decisionRes));
+                } catch (e) {
+                    // Fallback: Evict just enough tokens to clear the overflow instead of a blind 5-file nuke.
+                    const sortedBySize = [...fileBlocks].sort((a, b) => b.tokens - a.tokens);
+                    const evictList: any[] = [];
+                    let liberated = 0;
+
+                    for (const block of sortedBySize) {
+                        // Attempt to protect core files even in fallback
+                        const lowerPath = block.path.toLowerCase();
+                        if (lowerPath.includes('core') || lowerPath.includes('mixin') || lowerPath.includes('types')) continue;
+
+                        evictList.push({ path: block.path, reason: "Fallback: Removed to clear token overflow after decision error." });
+                        liberated += block.tokens;
+                        if (liberated >= overflow) break;
                     }
-                    } catch (e: any) {
+
+                    // If still not enough, force remove the largest remaining files
+                    if (liberated < overflow) {
+                        for (const block of sortedBySize) {
+                            if (evictList.find(e => e.path === block.path)) continue;
+                            evictList.push({ path: block.path, reason: "Emergency Fallback: Removed to prevent system crash." });
+                            liberated += block.tokens;
+                            if (liberated >= overflow) break;
+                        }
+                    }
+
+                    decision = { keep: [], evict: evictList };
+                }
+
+                // 4. APPLY DECISIONS
+                const evictedPaths = (decision.evict || []).map((e: any) => e.path);
+                let liberatedTokens = 0;
+                const keptList: string[] = [];
+                const evictedReport: string[] = [];
+
+                fileBlocks.forEach(b => {
+                    const isEvicted = evictedPaths.includes(b.path);
+                    if (isEvicted) {
+                        b.keep = false;
+                        liberatedTokens += b.tokens;
+                        const reason = decision.evict.find((e:any) => e.path === b.path)?.reason || "Irrelevant to current prompt.";
+                        evictedReport.push(`- ✂️ \`${b.path}\`: ${reason}`);
+                    } else {
+                        keptList.push(`- ✅ \`${b.path}\``);
+                    }
+                });
+
+                // 5. UPDATE CONTEXT
+                const keptBlocks = fileBlocks.filter(b => b.keep);
+                context.files = keptBlocks.map(b => b.fullMatch).join('\n\n');
+
+                // 6. DETAILED REPORT
+                const newTotal = metrics ? (metrics.total - liberatedTokens) : 0;
+                const newPct = metrics ? Math.round((newTotal / metrics.contextSize) * 100) : 0;
+
+                await this.updateMessageContent(pruneMsgId, `⚖️ **Context Governor: Optimization Complete**
+                Pruning liberated **${liberatedTokens.toLocaleString()}** tokens. New authoritative usage: **${newPct}%**.
+
+                **📦 PRESERVED (Locked for Mission):**
+                ${keptList.join('\n') || "- (None)"}
+
+                **🗑️ EVICTED (Context Pruned):**
+                ${evictedReport.join('\n')}
+
+                *Evicted files remain in the Project Tree. Use \`<add_files_to_context>\` if they are needed in subsequent turns.*`);
+
+                // Rebuild messagesToSend with the newly pruned context
+                const briefingContent = this._contextManager.renderBriefing(this._currentDiscussion);
+                const projectStateText = `
+### 📂 ATTACHED PROJECT CONTEXT
+I am providing you with the current, ground-truth state of my project files and the Librarian's technical briefing. 
+
+${briefingContent && !briefingContent.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefingContent}\n` : ""}
+${context.tree ? `#### 🌳 PROJECT STRUCTURE\n${context.tree}\n` : ""}
+${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files currently selected)*"}
+--------------------------------------------------
+`.trim();
+
+                const projectContextUserMessage: ChatMessage = {
+                    role: 'user',
+                    content: projectStateText
+                };
+
+                messagesToSend = [
+                    { role: 'system', content: baseInstructions },
+                    ...history,
+                    projectContextUserMessage
+                ];
+
+                if (currentPromptMessage) {
+                    messagesToSend.push(currentPromptMessage);
+                }
+            }
+        }
+        } catch (e: any) {
             this.log(`Error during context pruning: ${e.message}`, 'ERROR');
         }
 
@@ -2941,9 +3089,8 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             });
         }
 
-        let fullResponse = '';
         let firstTokenReceived = false;
-
+        let fullResponse = "";
         await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
             if (!firstTokenReceived) {
                 firstTokenReceived = true;
@@ -3123,7 +3270,6 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             this.updateContextAndTokens();
         }
 
-        // --- PHASE 7: TEST GENERATION ---
         // --- PHASE 7: TEST GENERATION ---
         if (this._discussionCapabilities.testMode && !controller.signal.aborted) {
             this.processManager.updateDescription(processId, "Test Engineer: Writing unit tests...");
@@ -4101,74 +4247,35 @@ ${targetContent}
                     const filesToAdd = Array.isArray(message.files) ? message.files : [];
                     const reprompt = message.reprompt;
                     const results: { [key: string]: boolean } = {};
-                    const validFiles: string[] = [];
 
                     try {
-                        const folders = vscode.workspace.workspaceFolders || [];
+                        const provider = this._contextManager.getContextStateProvider();
+                        if (provider) {
+                            // The updated provider now returns the list of strings that were actually matched
+                            const addedPaths = await provider.addFilesToContext(filesToAdd);
 
-                        for (const filePath of filesToAdd) {
-                            let found = false;
-                            const normalizedPath = filePath.replace(/\\/g, '/').trim();
-                            const segments = normalizedPath.split('/');
+                            // Map results for UI feedback
+                            filesToAdd.forEach(f => {
+                                results[f] = addedPaths.includes(f);
+                            });
 
-                            // Strategy 1: Absolute path (unlikely from AI but possible)
-                            if (path.isAbsolute(normalizedPath)) {
-                                try {
-                                    await vscode.workspace.fs.stat(vscode.Uri.file(normalizedPath));
-                                    results[filePath] = true;
-                                    validFiles.push(normalizedPath);
-                                    found = true;
-                                } catch {}
-                            }
-
-                            if (!found) {
-                                for (const folder of folders) {
-                                    // Strategy 2: Namespaced path (Lollms/src/file.ts)
-                                    // Strip the project name if it matches the current folder
-                                    let testUri: vscode.Uri | null = null;
-                                    if (segments[0] === folder.name && segments.length > 1) {
-                                        const relativeToRoot = segments.slice(1).join('/');
-                                        testUri = vscode.Uri.joinPath(folder.uri, relativeToRoot);
-                                    } else {
-                                        // Strategy 3: Direct relative path
-                                        testUri = vscode.Uri.joinPath(folder.uri, normalizedPath);
-                                    }
-
-                                    try {
-                                        await vscode.workspace.fs.stat(testUri);
-                                        results[filePath] = true;
-                                        validFiles.push(testUri.fsPath);
-                                        found = true;
-                                        break;
-                                    } catch {
-                                        // Strategy 4: Heuristic - maybe the project name is in the middle? 
-                                        // Or it's namespaced butsegments[0] didn't match perfectly.
-                                        // We skip complex heuristics for now to maintain performance.
-                                    }
+                            if (addedPaths.length > 0) {
+                                if (reprompt) {
+                                    // Trigger the next turn immediately with fresh context
+                                    await this.sendMessage({
+                                        role: 'user',
+                                        content: `I have added the requested files to context. Please proceed with the analysis.`
+                                    });
+                                } else {
+                                    // Background update (e.g. user just clicked "Add to Context")
+                                    this.updateContextAndTokens();
                                 }
-                            }
-
-                            if (!found) results[filePath] = false;
-                        }
-
-                        if (validFiles.length > 0) {
-                            await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', validFiles);
-
-                            if (reprompt) {
-                                // Close the loop by automatically notifying the AI
-                                await this.sendMessage({
-                                    role: 'user',
-                                    content: `OK, I did add the files: ${validFiles.map(f => path.basename(f)).join(', ')}. Please proceed.`
-                                });
-                            } else {
-                                // Just update tokens if we aren't reprompting (sendMessage handles this internally)
-                                this.updateContextAndTokens();
                             }
                         }
                     } catch (err: any) {
                         Logger.error(`Critical error in addFilesToContext: ${err.message}`);
                     } finally {
-                        // ALWAYS send response to unblock the "Adding..." spinner in UI
+                        // Notify UI to stop spinner and show green/red states
                         webview.postMessage({
                             command: 'filesAddedToContext',
                             results: results,
@@ -4876,7 +4983,9 @@ Task:
                 break;
             case 'switchDiscussion':
                 if (message.discussionId) {
-                    vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', message.discussionId);
+                    // Pre-clean before sending back to extension host
+                    const cleanId = message.discussionId.replace(/^\/+/, '');
+                    vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', cleanId);
                 }
                 break;
             case 'requestAgentSettings': {
@@ -4885,7 +4994,6 @@ Task:
                 const enabledTools = this.agentManager.getEnabledTools().map(t => t.name);
                 const { AGENT_MISSION_PROFILES } = require('../../registries/agentProfiles');
 
-                // Ensure the webview receives the full mission profile list for the dropdown
                 this._panel.webview.postMessage({ 
                     command: 'showAgentSettings', 
                     allTools, 
@@ -4896,6 +5004,22 @@ Task:
                         maxEditRetries: config.get('lollmsVsCoder.agent.maxEditRetries') || 3,
                         activeProfile: config.get('lollmsVsCoder.agent.activeProfile') || 'software_architect'
                     }
+                });
+                break;
+            }
+            case 'requestDiscussionSettings': {
+                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                const profiles = config.get('responseProfiles') || [];
+                const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => ({
+                    name: f.name,
+                    uri: f.uri.toString()
+                }));
+
+                this._panel.webview.postMessage({ 
+                    command: 'showDiscussionSettings',
+                    capabilities: this._discussionCapabilities,
+                    profiles: profiles,
+                    workspaceFolders: workspaceFolders
                 });
                 break;
             }
@@ -5002,7 +5126,9 @@ Task:
                     cancellable: true
                 }, async (progress, token) => {
                     try {
-                        const size = (message.width && message.height) ? `${message.width}x${message.height}` : undefined;
+                        const w = parseInt(message.width) || 1024;
+                        const h = parseInt(message.height) || 1024;
+                        const size = `${w}x${h}`;
                         const b64_json = await this._lollmsAPI.generateImage(message.prompt, { size }, token);
                         if (token.isCancellationRequested) {
                             webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: false });
@@ -5109,31 +5235,41 @@ Task:
                 const discussionSkills = message.discussionSkills || [];
                 const projectSkills = message.projectSkills || [];
 
-                const allSkills = await this._skillsManager.getSkills();
-                const uiAvailableIds = allSkills.map(s => s.id);
-
-                // Update Project Skills
-                for (const skillId of uiAvailableIds) {
-                    if (projectSkills.includes(skillId)) {
-                        await this._contextManager.addSkillToProject(skillId);
-                    } else {
-                        await this._contextManager.removeSkillFromProject(skillId);
-                    }
-                }
-
-                // Update Discussion Skills
                 if (this._currentDiscussion) {
-                    this._currentDiscussion.importedSkills = discussionSkills;
+                    // 1. Authoritative State Update
+                    this._currentDiscussion.importedSkills = Array.from(new Set(discussionSkills));
+
+                    // 2. Update Project-level persistence
+                    const allSkills = await this._skillsManager.getSkills();
+                    for (const skill of allSkills) {
+                        if (projectSkills.includes(skill.id)) {
+                            await this._contextManager.addSkillToProject(skill.id);
+                        } else {
+                            await this._contextManager.removeSkillFromProject(skill.id);
+                        }
+                    }
+
+                    // 3. Forced Sync & Save
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
-                }
 
-                // Notify webview and refresh
-                const combinedIds = Array.from(new Set([...discussionSkills, ...projectSkills]));
-                this._panel.webview.postMessage({ command: 'updateDiscussionSkillsMetadata', skillIds: combinedIds });
-                await this.loadDiscussion(); 
-                this.updateContextAndTokens();
+                    // 4. Update HUD
+                    const activeSkillsForHUD = allSkills.filter(s => 
+                        this._currentDiscussion?.importedSkills?.includes(s.id) || projectSkills.includes(s.id)
+                    );
+
+                    this._panel.webview.postMessage({ 
+                        command: 'updateContext', 
+                        skills: activeSkillsForHUD,
+                        context: "", 
+                        files: this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || []
+                    });
+
+                    // 5. Trigger Re-tokenization
+                    this.updateContextAndTokens();
+                    vscode.window.showInformationMessage(`✅ Skills context updated.`);
+                }
                 break;
             }
             case 'openSettings':
@@ -5155,12 +5291,23 @@ Task:
                     if (partial.projectTools !== undefined) {
                         const allToolNames = this.agentManager.getTools().map(t => t.name);
                         for (const toolName of allToolNames) {
-                            if (partial.projectTools.includes(toolName)) {
-                                await this._contextManager.addToolToProject(toolName);
-                            } else {
-                                await this._contextManager.removeToolFromProject(toolName);
-                            }
+                            if (partial.projectTools.includes(toolName)) await this._contextManager.addToolToProject(toolName);
+                            else await this._contextManager.removeToolFromProject(toolName);
                         }
+
+                        // IMMEDIATE HUD SYNC for Tools
+                        const discussionTools = this._currentDiscussion?.importedTools || [];
+                        const allEquippedNames = Array.from(new Set([...discussionTools, ...partial.projectTools]));
+                        const equippedTools = this.agentManager.getTools()
+                            .filter(t => allEquippedNames.includes(t.name))
+                            .map(t => ({ name: t.name, description: t.description }));
+
+                        if (this._currentDiscussion?.lastTokenMetrics) {
+                            this._currentDiscussion.lastTokenMetrics.activeTools = equippedTools;
+                        }
+
+                        this._panel.webview.postMessage({ command: 'updateContext', tools: equippedTools });
+
                         delete partial.projectTools;
                     }
 
@@ -5237,8 +5384,15 @@ Task:
                         await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
                     }
 
-                    // Sync HUD state and re-tokenize since Tools/Skills might have changed
-                    this.updateContextAndTokens();
+                    // OPTIMIZATION: If only visual modes (Think, Agent, AutoContext) changed,
+                    // do not trigger a full context scan to avoid badge-flicker.
+                    const isVisualOnly = partial.thinkingMode !== undefined || partial.agentMode !== undefined || partial.autoContextMode !== undefined;
+
+                    if (!isVisualOnly) {
+                        await this.updateContextAndTokens({ isBackgroundSync: false });
+                    }
+
+                    // Force an immediate UI refresh
                     this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
                 }
                 break;
@@ -5304,7 +5458,20 @@ Task:
                                 content: `**Tool Output (${toolName}):**\n\n${result.output}`
                             };
                             await this.addMessageToDiscussion(resultMessage);
-                        } catch (e: any) {
+
+                            // --- AUTOMATIC REACTION TRIGGER ---
+                            // If the tool was run manually via a UI button, we must nudge the AI 
+                            // to analyze the result and decide on the next step.
+                            const nudgeMessage: ChatMessage = {
+                                role: 'system',
+                                content: `The user manually triggered the tool '${toolName}'. Analyze the output above and proceed with the mission.`,
+                                skipInPrompt: false // Ensure the AI sees this nudge
+                            };
+
+                            // We use sendMessage to restart the ReAct loop
+                            await this.sendMessage(nudgeMessage);
+
+                            } catch (e: any) {
                             if (buttonId) {
                                 webview.postMessage({ command: 'imageGenerationResult', buttonId: buttonId, success: false, error: e.message });
                             }
@@ -5709,7 +5876,8 @@ Task:
               const context = {
                   tree: contextData.projectTree,
                   files: contextData.selectedFilesContent,
-                  skills: contextData.skillsContent
+                  skills: contextData.skillsContent,
+                  toolManager: this.agentManager?.['toolManager']
               };
 
               progress.report({ message: "Generating Persona..." });
@@ -6144,6 +6312,10 @@ Task:
                                     <div class="voice-controls">
                                         <button id="sttButton" title="Listen (STT)" class="voice-btn"><i class="codicon codicon-mic"></i></button>
                                     </div>
+                                    <div class="temp-slider-container" title="Model Temperature (Creativity)">
+                                        <div class="temp-tooltip" id="temp-val-display">0.7</div>
+                                        <input type="range" id="temp-slider" min="0" max="2" step="0.1" value="0.7">
+                                    </div>
                                     <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
                                 </div>
                             </div>
@@ -6278,11 +6450,29 @@ Task:
                     <h2>Apply Skills to Context</h2>
                     <span class="close-btn" id="skills-close-btn">&times;</span>
                 </div>
-                <div class="modal-body">
-                    <div style="margin-bottom: 12px;">
-                        <input type="text" id="skills-search-input" class="search-modal-input" placeholder="Filter skills by name or category..." style="width: 100%;">
+                <div class="modal-body" style="display:flex; flex-direction:column; gap:12px; height: 100%;">
+                    <div class="skills-search-ribbon" style="display:flex; flex-direction:column; gap:8px;">
+                        <div style="display:flex; align-items:center; gap:8px; background: var(--vscode-editor-inactiveSelectionBackground); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border);">
+                             <div style="display:flex; gap:12px; margin-left: auto;">
+                                <div style="display:flex; align-items:center; gap:4px;" title="Match Case">
+                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">Ab</span>
+                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                        <input type="checkbox" id="skills-search-case">
+                                        <span class="slider" style="border-radius: 14px;"></span>
+                                    </label>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:4px;" title="Use Regular Expression">
+                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">.*</span>
+                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                        <input type="checkbox" id="skills-search-regex">
+                                        <span class="slider" style="border-radius: 14px;"></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <input type="text" id="skills-search-input" class="search-modal-input" placeholder="Search skills (e.g. pip.* or best_practices)..." style="width: 100%;">
                     </div>
-                    <div id="skills-tree-container">
+                    <div id="skills-tree-container" style="flex:1;">
                         <!-- Tree generated dynamically -->
                     </div>
                 </div>
@@ -6434,6 +6624,15 @@ Task:
                             </select>
                             <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Controls how many files the Auto-Context agent tries to pack into the prompt.</p>
                         </div>
+
+                        <div style="margin-bottom: 15px;">
+                            <div style="display:flex; justify-content: space-between;">
+                                <label style="font-size: 11px; font-weight:bold;">Governor Trigger Threshold</label>
+                                <span id="modal-governor-threshold-val" style="font-size: 11px; opacity: 0.8;">90%</span>
+                            </div>
+                            <input type="range" id="modal-governor-threshold" min="10" max="98" step="1" style="width:100%; margin: 8px 0;">
+                            <p style="font-size: 10px; opacity: 0.7; margin:0;">Context filling percentage that triggers automatic pruning.</p>
+                        </div>
                         <div class="checkbox-container">
                             <label class="switch"><input type="checkbox" id="cap-projectMemoryEnabled"><span class="slider"></span></label>
                             <label for="cap-projectMemoryEnabled"><strong>🧠 Project Memory:</strong> Discreetly save technical facts.</label>
@@ -6498,16 +6697,16 @@ Task:
                         </div>
 
                         <h3 style="margin-top:20px; color:var(--vscode-charts-orange);">🚀 Automation</h3>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-autoFix" checked><span class="slider"></span></label>
-                            <label for="cap-autoFix"><strong>Auto Fix:</strong> Autonomous repair of failed patches</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-autoApply"><span class="slider"></span></label>
-                            <label for="cap-autoApply"><strong>Auto Apply:</strong> Automatically apply code blocks</label>
-                        </div>
-                        <div id="automation-sub-options" style="margin-left: 25px; opacity: 0.5; pointer-events: none;">
-ù                            <div class="checkbox-container">
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-autoFix" checked><span class="slider"></span></label>
+                        <label for="cap-autoFix"><strong>Auto Fix:</strong> Autonomous repair of failed patches</label>
+                    </div>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-autoApply"><span class="slider"></span></label>
+                        <label for="cap-autoApply"><strong>Auto Apply:</strong> Automatically apply code blocks</label>
+                    </div>
+                    <div id="automation-sub-options" style="margin-left: 25px; opacity: 0.5; pointer-events: none;">
+                            <div class="checkbox-container">
                                 <label class="switch"><input type="checkbox" id="cap-autoBranch"><span class="slider"></span></label>
                                 <label for="cap-autoBranch">Auto Branch (Git)</label>
                             </div>
@@ -7204,6 +7403,22 @@ Task:
                     <button class="code-action-btn apply-btn" id="staging-apply-all-btn" style="background: var(--vscode-charts-green) !important; color: white !important;">
                         <i class="codicon codicon-check-all"></i> Apply All Valid Files
                     </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- NEW: Raw Code Preview Modal -->
+        <div id="workspace-matrix-modal" class="modal" style="display: none; z-index: 1000000;">
+            <div class="modal-content" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h2 style="margin:0; font-size: 14px; display:flex; align-items:center; gap:8px;"><i class="codicon codicon-layers"></i> Workspace Access Matrix</h2>
+                    <span class="close-btn" id="matrix-close-btn">&times;</span>
+                </div>
+                <div class="modal-body" style="padding: 0;">
+                    <div id="matrix-rows-container" style="max-height: 400px; overflow-y: auto;"></div>
+                </div>
+                <div class="modal-footer">
+                    <button id="matrix-done-btn" class="code-action-btn apply-btn" style="width: 80px;">Done</button>
                 </div>
             </div>
         </div>

@@ -1,6 +1,27 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 
+/**
+ * ==========================================
+ * 🧊 LOLLMS SOURCE CODE ONTOLOGY
+ * ==========================================
+ * Classes (Types):
+ * - s:File : Represents a source file.
+ * - s:Class : Represents an object-oriented class or interface.
+ * - s:Function : Represents a global function.
+ * - s:Method : Represents an object-oriented method inside a class.
+ * - s:Library : Represents an external imported package.
+ * 
+ * Properties (Relationships):
+ * - s:type : Declares the class/type of a resource.
+ * - s:name : The human-readable identifier of the resource.
+ * - s:path : The relative file path of the resource.
+ * - s:contains : Indicates a file or class contains a nested symbol/method.
+ * - s:imports : Declares that a file imports another file or library.
+ * - s:calls : Indicates a function or method calls another symbol.
+ * - s:inherits : Declares that a class inherits from another class.
+ */
+
 export type GraphNode = {
     id: string;
     label: string;
@@ -11,6 +32,7 @@ export type GraphNode = {
     methods?: string[];
     attributes?: string[];
     signature?: string; // New field for function/method signatures
+    linesCount?: number; // New field
 };
 
 export type GraphEdge = {
@@ -109,9 +131,7 @@ export class CodeGraphManager {
             const files = await vscode.workspace.findFiles(
                 new vscode.RelativePattern(this.workspaceRoot, '**/*.{ts,js,jsx,tsx,py,cpp,h,hpp,c,java,cs,go,rs,php,rb}'),
                 excludePattern,
-                undefined, // maxResults
-                // Note: VS Code findFiles accepts a CancellationToken which we could use, 
-                // but we also need manual checks in the loop below.
+                undefined
             );
 
             if (signal.aborted) return;
@@ -132,13 +152,20 @@ export class CodeGraphManager {
                 const relativePath = vscode.workspace.asRelativePath(file);
                 const normalizedPath = relativePath.replace(/\\/g, '/');
 
+                let linesCount = 0;
+                try {
+                    const doc = await vscode.workspace.openTextDocument(file);
+                    linesCount = doc.lineCount;
+                } catch {}
+
                 const fileNodeId = `file_${nodeId++}`;
                 nodes.push({
                     id: fileNodeId,
                     label: path.basename(relativePath),
                     type: 'file',
                     filePath: relativePath,
-                    startLine: 0
+                    startLine: 0,
+                    linesCount: linesCount
                 });
                 
                 fileNodeMap.set(normalizedPath, fileNodeId);
@@ -598,6 +625,152 @@ export class CodeGraphManager {
         return result.trim();
     }
 
+    /**
+     * Executes a SPARQL-lite query over the built code graph.
+     * Enforces the LoLLMs Source Code Ontology:
+     * - Classes: s:File, s:Class, s:Function, s:Method, s:Library
+     * - Properties: s:contains, s:imports, s:calls, s:inherits, s:type, s:name, s:path
+     */
+    public executeSparql(query: string): string {
+        if (this.buildState !== 'ready') {
+            return "Error: Code graph is not built yet. Please run update_code_graph first.";
+        }
+
+        // Clean query comments and whitespace
+        const cleanQuery = query.replace(/#.*/g, '').trim();
+        const selectMatch = cleanQuery.match(/SELECT\s+([\?\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
+        if (!selectMatch) {
+            return "SPARQL-lite Error: Invalid query format. Expected: SELECT ?var1 ?var2 WHERE { ... }";
+        }
+
+        const selectVars = selectMatch[1].trim().split(/\s+/).map(v => v.trim());
+        const body = selectMatch[2].trim();
+        
+        // Parse Triple Patterns
+        const triples: { s: string, p: string, o: string }[] = [];
+        const lines = body.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/); // Split by dot outside quotes
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            const parts = trimmed.split(/\s+/);
+            if (parts.length >= 3) {
+                triples.push({
+                    s: parts[0],
+                    p: parts[1],
+                    o: parts.slice(2).join(' ') // Handles spaces inside quoted literals
+                });
+            }
+        }
+
+        if (triples.length === 0) {
+            return "SPARQL-lite Error: No triple patterns found in WHERE clause.";
+        }
+
+        // Collect all variables
+        const variables = new Set<string>();
+        for (const t of triples) {
+            if (t.s.startsWith('?')) variables.add(t.s);
+            if (t.p.startsWith('?')) variables.add(t.p);
+            if (t.o.startsWith('?')) variables.add(t.o);
+        }
+
+        // Generate knowledge triples/facts from internal graph
+        const facts: { s: string, p: string, o: string }[] = [];
+        for (const node of this.graph.nodes) {
+            const typeUri = `s:${node.type.charAt(0).toUpperCase() + node.type.slice(1)}`;
+            facts.push({ s: node.id, p: 's:type', o: typeUri });
+            facts.push({ s: node.id, p: 's:name', o: `"${node.label}"` });
+            if (node.filePath) {
+                facts.push({ s: node.id, p: 's:path', o: `"${node.filePath}"` });
+            }
+        }
+
+        for (const edge of this.graph.edges) {
+            const relUri = `s:${edge.label}`;
+            facts.push({ s: edge.source, p: relUri, o: edge.target });
+        }
+
+        const varList = Array.from(variables);
+        const results: Record<string, string>[] = [];
+
+        // Backtracking Search Graph Matcher
+        const solve = (varIdx: number, bindings: Record<string, string>) => {
+            if (varIdx === varList.length) {
+                let valid = true;
+                for (const t of triples) {
+                    const sVal = t.s.startsWith('?') ? bindings[t.s] : t.s;
+                    const pVal = t.p.startsWith('?') ? bindings[t.p] : t.p;
+                    const oVal = t.o.startsWith('?') ? bindings[t.o] : t.o;
+
+                    const match = facts.some(f => {
+                        return f.s === sVal && f.p === pVal && f.o.toLowerCase() === oVal.toLowerCase();
+                    });
+
+                    if (!match) {
+                        valid = false;
+                        break;
+                    }
+                }
+                if (valid) {
+                    const isDup = results.some(r => {
+                        return varList.every(v => r[v] === bindings[v]);
+                    });
+                    if (!isDup) {
+                        results.push({ ...bindings });
+                    }
+                }
+                return;
+            }
+
+            const currentVar = varList[varIdx];
+            const domain = new Set<string>();
+            for (const t of triples) {
+                if (t.s === currentVar) {
+                    facts.forEach(f => domain.add(f.s));
+                }
+                if (t.p === currentVar) {
+                    facts.forEach(f => domain.add(f.p));
+                }
+                if (t.o === currentVar) {
+                    facts.forEach(f => domain.add(f.o));
+                }
+            }
+
+            for (const val of domain) {
+                bindings[currentVar] = val;
+                solve(varIdx + 1, bindings);
+                delete bindings[currentVar];
+            }
+        };
+
+        solve(0, {});
+
+        if (results.length === 0) {
+            return "SPARQL-lite Result: No matching subgraphs found.";
+        }
+
+        // Format into a Markdown table
+        let out = `### 🔍 SPARQL-lite Query Results\n\n`;
+        out += `| ${selectVars.join(' | ')} |\n`;
+        out += `| ${selectVars.map(() => '---').join(' | ')} |\n`;
+
+        const idToLabel = new Map<string, string>();
+        this.graph.nodes.forEach(n => idToLabel.set(n.id, n.label));
+
+        results.forEach(row => {
+            const line = selectVars.map(v => {
+                const rawVal = row[v] || "";
+                if (idToLabel.has(rawVal)) {
+                    return `**${idToLabel.get(rawVal)}** (\`${rawVal}\`)`;
+                }
+                return rawVal.replace(/^"|"$/g, '');
+            }).join(' | ');
+            out += `| ${line} |\n`;
+        });
+
+        return out;
+    }
+
     generateTextSummary(): string {
         if (this.buildState !== 'ready') return "Graph not built. Run 'update_code_graph' to generate.";
 
@@ -639,6 +812,12 @@ export class CodeGraphManager {
                 break;
             case 'function_signatures':
                 diagram = this.generateFunctionSignaturesMermaid();
+                break;
+            case 'module_dependency_graph':
+                diagram = this.generateModuleDependencyGraphMermaid();
+                break;
+            case 'external_library_graph':
+                diagram = this.generateExternalLibraryGraphMermaid();
                 break;
             default:
                 diagram = 'graph TD;\n  Empty["No graph selected"]';
@@ -802,7 +981,7 @@ export class CodeGraphManager {
                     
                     if (node.type === 'library') {
                         out += `${safeId}{{"Library: ${safeLabel}"}}\n`; // Hexagon for libs
-                        out += `style ${safeId} fill:#f96,stroke:#333,stroke-width:2px\n`;
+                        out += `style ${safeId} fill:#d19a66,stroke:#333,stroke-width:2px\n`;
                     } else {
                         out += `${safeId}(["${safeLabel}"])\n`; // Rounded for files
                     }
@@ -825,6 +1004,83 @@ export class CodeGraphManager {
         }
         
         if (!hasEdges) out += 'subgraph Empty\nDirection["No imports detected"]\nend';
+        return out;
+    }
+
+    private generateModuleDependencyGraphMermaid(): string {
+        let out = 'graph TD\n';
+        const folderEdges = new Set<string>();
+        const folderNames = new Set<string>();
+
+        this.graph.edges.forEach(e => {
+            if (e.label === 'imports') {
+                const srcNode = this.graph.nodes.find(n => n.id === e.source);
+                const trgNode = this.graph.nodes.find(n => n.id === e.target);
+                if (srcNode && trgNode && srcNode.filePath && trgNode.filePath) {
+                    const srcFolder = path.dirname(srcNode.filePath).replace(/\\/g, '/');
+                    const trgFolder = path.dirname(trgNode.filePath).replace(/\\/g, '/');
+                    if (srcFolder !== trgFolder) {
+                        const edgeKey = `"${srcFolder}" --> "${trgFolder}"`;
+                        if (!folderEdges.has(edgeKey)) {
+                            folderEdges.add(edgeKey);
+                            folderNames.add(srcFolder);
+                            folderNames.add(trgFolder);
+                        }
+                    }
+                }
+            }
+        });
+
+        folderNames.forEach(folder => {
+            const safeId = folder.replace(/[^a-zA-Z0-9_]/g, '_');
+            out += `  ${safeId}["📁 ${folder}"]\n`;
+        });
+
+        folderEdges.forEach(edge => {
+            const parts = edge.match(/"([^"]+)" --> "([^"]+)"/);
+            if (parts) {
+                const srcId = parts[1].replace(/[^a-zA-Z0-9_]/g, '_');
+                const trgId = parts[2].replace(/[^a-zA-Z0-9_]/g, '_');
+                out += `  ${srcId} --> ${trgId}\n`;
+            }
+        });
+
+        if (folderEdges.size === 0) {
+            out += '  NoFolderDeps["No cross-folder dependencies found"]\n';
+        }
+
+        return out;
+    }
+
+    private generateExternalLibraryGraphMermaid(): string {
+        let out = 'graph TD\n';
+        const libNodes = this.graph.nodes.filter(n => n.type === 'library');
+        const libEdges = this.graph.edges.filter(e => {
+            const trg = this.graph.nodes.find(n => n.id === e.target);
+            return trg && trg.type === 'library';
+        });
+
+        libNodes.forEach(lib => {
+            const safeId = lib.id.replace(/[^a-zA-Z0-9_]/g, '_');
+            out += `  ${safeId}{{"📦 ${lib.label}"}}\n`;
+            out += `  style ${safeId} fill:#d19a66,stroke:#333,stroke-width:2px\n`;
+        });
+
+        libEdges.forEach(e => {
+            const srcNode = this.graph.nodes.find(n => n.id === e.source);
+            if (srcNode) {
+                const safeSrcId = srcNode.id.replace(/[^a-zA-Z0-9_]/g, '_');
+                const safeTrgId = e.target.replace(/[^a-zA-Z0-9_]/g, '_');
+                
+                out += `  ${safeSrcId}["📄 ${srcNode.label}"]\n`;
+                out += `  ${safeSrcId} --> ${safeTrgId}\n`;
+            }
+        });
+
+        if (libEdges.length === 0) {
+            out += '  NoExternalLibs["No external library imports found"]\n';
+        }
+
         return out;
     }
 

@@ -17,15 +17,8 @@ export async function startDiscussionWithInitialPrompt(
     await services.discussionManager.saveDiscussion(discussion);
     services.treeProviders.discussion?.refresh();
 
-    const panel = ChatPanel.createOrShow(
-        services.extensionUri, 
-        services.lollmsAPI, 
-        services.discussionManager, 
-        discussion.id, 
-        services.gitIntegration,
-        services.skillsManager
-    );
-    
+    const panel = ChatPanel.createOrShow(services, discussion.id);
+
     // Check if agent exists first
     if (ChatPanel.activeAgents.has(discussion.id)) {
         // Reconnect existing agent

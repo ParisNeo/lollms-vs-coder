@@ -2,12 +2,12 @@ import { ToolDefinition, ToolExecutionEnv } from '../tool';
 
 export const queryArchitectureTool: ToolDefinition = {
     name: "query_architecture",
-    description: "Queries the project's code graph to find dependencies, usages, or file outlines. This is extremely efficient for saving tokens! Use this to quickly see what a file exports, what it imports, or where a function/class is called, WITHOUT reading the full file contents.",
+    description: "Queries the project's code graph to find dependencies, usages, file outlines, or executes a powerful SPARQL-lite query. For query_type 'sparql', pass your SPARQL query inside the 'target' parameter. This is extremely efficient for saving context tokens!",
     isAgentic: true,
     isDefault: true,
     parameters:[
-        { name: "target", type: "string", description: "File path or symbol name (class/function) to inspect.", required: true },
-        { name: "query_type", type: "string", description: "Type of analysis: 'outline' (shows classes/functions in a file), 'dependencies' (what this uses/imports/calls), or 'usages' (what calls/imports this).", required: true }
+        { name: "target", type: "string", description: "File path, symbol name (class/function) to inspect, or the complete SPARQL-lite query for query_type 'sparql'.", required: true },
+        { name: "query_type", type: "string", description: "Type of analysis: 'outline' (shows classes/functions in a file), 'dependencies' (what this uses/imports), 'usages' (what calls/imports this), or 'sparql' (executes a graph-submatch ontology query).", required: true }
     ],
     async execute(params: { target: string, query_type: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         if (!env.codeGraphManager) {
@@ -19,6 +19,11 @@ export const queryArchitectureTool: ToolDefinition = {
             await env.codeGraphManager.buildGraph();
         }
         
+        if (params.query_type === 'sparql') {
+            const output = env.codeGraphManager.executeSparql(params.target);
+            return { success: true, output };
+        }
+
         const qType = params.query_type === 'outline' || params.query_type === 'dependencies' || params.query_type === 'usages' 
             ? params.query_type 
             : 'outline';

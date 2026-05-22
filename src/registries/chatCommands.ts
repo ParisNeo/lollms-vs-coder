@@ -52,8 +52,8 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         }
 
         await services.discussionManager.saveDiscussion(discussion);
-        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
-        
+        const panel = ChatPanel.createOrShow(services, discussion.id);
+
         // Use the setAgentManager which handles reconnection logic internally
         const agent = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
@@ -86,7 +86,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
 
         await services.discussionManager.saveDiscussion(discussion);
 
-        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
+        const panel = ChatPanel.createOrShow(services, discussion.id);
 
         const agent = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
@@ -114,14 +114,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newTempDiscussion', async () => {
         const tempId = 'temp-' + Date.now().toString() + Math.random().toString(36).substring(2);
         
-        const panel = ChatPanel.createOrShow(
-            services.extensionUri, 
-            services.lollmsAPI, 
-            services.discussionManager, 
-            tempId, 
-            services.gitIntegration, 
-            services.skillsManager
-        );
+        const panel = ChatPanel.createOrShow(services, tempId);
         
         const agent = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
@@ -199,17 +192,29 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         });
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
-        // Clean the ID in case it was passed with extra characters from the UI
-        const cleanId = typeof discussionId === 'string' ? discussionId.replace(/^\//, '') : discussionId;
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (arg: any) => {
+        // Robust ID extraction: Arg might be a string (direct call) or a DiscussionItem (tree click)
+        let discussionId: string | undefined;
+
+        if (typeof arg === 'string') {
+            discussionId = arg;
+        } else if (arg && typeof arg === 'object' && arg.discussion) {
+            discussionId = arg.discussion.id;
+        } else if (arg && typeof arg === 'object' && arg.id) {
+            discussionId = arg.id;
+        }
+
+        // More aggressive cleaning: remove all leading slashes and whitespace
+        const cleanId = discussionId?.trim().replace(/^\/+/, '');
 
         if (!cleanId) {
-            Logger.error("switchDiscussion: No clean ID provided.");
+            Logger.error("switchDiscussion: Could not resolve discussion ID from argument", arg);
+            // Don't show a ghost error to the user, just abort
             return;
         }
 
         // 1. Create or show panel (sets internal discussionId)
-        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, cleanId, services.gitIntegration, services.skillsManager);
+        const panel = ChatPanel.createOrShow(services, cleanId);
         panel._panel.reveal();
         
         // 2. Inject dependencies BEFORE loading

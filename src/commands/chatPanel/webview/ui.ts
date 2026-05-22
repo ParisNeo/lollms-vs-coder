@@ -635,7 +635,7 @@ export function setCalculatingTokens(isCalculating: boolean, text?: string) {
 }
 
 
-export function setGeneratingState(isGenerating: boolean, statusText?: string, showRaiseHand: boolean = false) {
+export function setGeneratingState(isGenerating: boolean, statusText?: string, showRaiseHand: boolean = false, buttonLabel?: string) {
     // Ensure project loader is cleared if we are starting a real generation
     if (isGenerating) hideProjectLoader();
 
@@ -749,10 +749,14 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
             if (dom.stopButton) {
                 const btnLabel = dom.stopButton.querySelector('span');
                 if (btnLabel) {
-                    if (isApplying) btnLabel.textContent = "STOP APPLICATION";
-                    else if (isSearching) btnLabel.textContent = "STOP SEARCH";
-                    else if (isThinking) btnLabel.textContent = "STOP REASONING";
-                    else btnLabel.textContent = "STOP GENERATION";
+                    if (buttonLabel) {
+                        btnLabel.textContent = buttonLabel.toUpperCase();
+                    } else {
+                        if (isApplying) btnLabel.textContent = "STOP APPLICATION";
+                        else if (isSearching) btnLabel.textContent = "STOP SEARCH";
+                        else if (isThinking) btnLabel.textContent = "STOP REASONING";
+                        else btnLabel.textContent = "STOP GENERATION";
+                    }
                 }
             }
         }
@@ -857,6 +861,7 @@ function createToggleBadge(
 
     // Standard Left Click: Execute if available, else Toggle
     span.onclick = (e) => {
+        e.preventDefault(); // BLOCK <details> toggle
         e.stopPropagation();
         if (onExecute) {
             if (!isActive) {
@@ -1040,11 +1045,16 @@ export function openSovereignZoom(dataUri: string) {
     if (!overlay || !display) return;
 
     display.src = dataUri;
-    overlay.classList.add('visible');
+    overlay.classList.add('active'); // Changed from 'visible' to match CSS
 
-    const close = () => overlay.classList.remove('visible');
+    const close = (e) => {
+        if (e) e.stopPropagation();
+        overlay.classList.remove('active');
+    };
+
     overlay.onclick = close;
-    overlay.querySelector('.close-btn')!.onclick = close;
+    const closeBtn = document.getElementById('zoom-close-btn');
+    if (closeBtn) closeBtn.onclick = close;
 
     const copyBtn = document.getElementById('zoom-copy-btn');
     if (copyBtn) {
@@ -1060,7 +1070,13 @@ export function openSovereignZoom(dataUri: string) {
 export function updateBadges() {
     // RESILIENT TARGETING: Look for the container in the Fused Dashboard
     const container = document.getElementById('active-badges');
-    if (!container || !state.capabilities) return;
+
+    if (!container) {
+        console.warn("[UI] updateBadges: active-badges container not found in DOM.");
+        return;
+    }
+
+    if (!state.capabilities) return;
 
     const caps = state.capabilities;
     container.innerHTML = '';
@@ -1118,6 +1134,7 @@ export function updateBadges() {
                 }
                 
                 item.onclick = (e: MouseEvent) => {
+                    e.preventDefault(); // BLOCK <details> toggle
                     e.stopPropagation();
                     // Update local state immediately for visual feedback
                     state.currentPersonalityId = p.id;
@@ -1130,6 +1147,7 @@ export function updateBadges() {
             });
 
             pBadge.onclick = (e) => {
+                e.preventDefault(); // BLOCK <details> toggle
                 e.stopPropagation();
                 const isOpening = !menu.classList.contains('visible');
                 document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
@@ -1249,6 +1267,7 @@ export function updateBadges() {
              item.className = 'custom-menu-item';
              item.innerHTML = `<span class="codicon ${p.id === currentProfileId ? 'codicon-check' : 'codicon-circle-outline'}"></span> ${p.name}`;
              item.onclick = (e: MouseEvent) => {
+                 e.preventDefault(); // BLOCK <details> toggle
                  e.stopPropagation();
                  vscode.postMessage({ 
                      command: 'updateDiscussionCapabilitiesPartial', 
@@ -1282,6 +1301,7 @@ export function updateBadges() {
         menu.appendChild(configItem);
 
         modeBadge.onclick = (e) => {
+            e.preventDefault(); // BLOCK <details> toggle
             e.stopPropagation();
             const isOpening = !menu.classList.contains('visible');
             document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
@@ -1964,11 +1984,13 @@ export function filterSkillsTree(query: string) {
     const container = dom.skillsTreeContainer;
     if (!container) return;
 
-    const searchTerm = query.toLowerCase().trim();
+    const useRegex = (document.getElementById('skills-search-regex') as HTMLInputElement)?.checked;
+    const matchCase = (document.getElementById('skills-search-case') as HTMLInputElement)?.checked;
+    const searchTerm = query.trim();
+
     const items = container.querySelectorAll('.skills-tree-item');
 
     if (!searchTerm) {
-        // Reset: Show all and collapse folders
         items.forEach((item: any) => {
             item.style.display = '';
             const details = item.querySelector('details');
@@ -1977,26 +1999,48 @@ export function filterSkillsTree(query: string) {
         return;
     }
 
-    // First pass: Hide everything
-    items.forEach((item: any) => item.style.display = 'none');
+    // 1. Prepare Matcher
+    let matcher: (text: string) => boolean;
+    try {
+        if (useRegex) {
+            const regex = new RegExp(searchTerm, matchCase ? '' : 'i');
+            matcher = (text) => regex.test(text);
+        } else {
+            const lowerTerm = matchCase ? searchTerm : searchTerm.toLowerCase();
+            matcher = (text) => (matchCase ? text : text.toLowerCase()).includes(lowerTerm);
+        }
+    } catch (e) {
+        console.warn("Invalid regex in skills search");
+        return;
+    }
 
-    // Second pass: Show matches and their parent chains
+    // 2. Hide everything initially
     items.forEach((item: any) => {
-        const label = item.textContent?.toLowerCase() || "";
-        if (label.includes(searchTerm)) {
-            let current = item;
-            // Show this item and walk up the tree to show all parents
-            while (current && current !== container) {
-                current.style.display = '';
-                if (current.tagName === 'DETAILS') {
-                    current.open = true;
+        item.style.display = 'none';
+        const details = item.querySelector('details');
+        if (details) details.open = false;
+    });
+
+    // 3. Perform Deep Search
+    items.forEach((item: any) => {
+        // We only check the label text, not the entire subtree text to avoid "coding" matching everything
+        const labelEl = item.querySelector('.skill-node label, .skill-folder-label');
+        const textToMatch = labelEl?.textContent || "";
+
+        if (matcher(textToMatch)) {
+            // Show this item
+            item.style.display = 'block';
+
+            // Walk up parents to show the path
+            let parent = item.parentElement;
+            while (parent && parent !== container) {
+                if (parent.classList.contains('skills-tree-item')) {
+                    parent.style.display = 'block';
+                    const parentDetails = parent.querySelector('details');
+                    if (parentDetails) parentDetails.open = true;
                 }
-                current = current.parentElement;
+                parent = parent.parentElement;
             }
-            
-            // If it's a folder that matched, show all its children too
-            const children = item.querySelectorAll('.skills-tree-item');
-            children.forEach((child: any) => child.style.display = '');
         }
     });
 }
@@ -2027,14 +2071,18 @@ export function renderSkillsTree(container: HTMLElement, node: any, discussionSk
         const li = document.createElement('li');
         li.className = 'skills-tree-item';
 
+        // Ensure strictly type-safe inclusion check
+        const isDiscussionActive = discussionSkills.some(id => String(id) === String(child.id));
+        const isProjectActive = projectSkills.some(id => String(id) === String(child.id));
+
         const controlsHtml = `
             <div class="skill-controls" style="display: flex; gap: 20px; flex-shrink: 0;">
-                <label class="switch" style="width: 24px; height: 14px;">
-                    <input type="checkbox" value="${child.id}" class="skill-discussion-checkbox ${child.isSkill ? '' : 'bundle-discussion'}" ${discussionSkills.includes(child.id) ? 'checked' : ''}>
+                <label class="switch" style="width: 24px; height: 14px;" title="Active in this Chat">
+                    <input type="checkbox" value="${child.id}" class="skill-discussion-checkbox ${child.isSkill ? '' : 'bundle-discussion'}" ${isDiscussionActive ? 'checked' : ''}>
                     <span class="slider" style="border-radius: 14px;"></span>
                 </label>
-                <label class="switch" style="width: 24px; height: 14px;">
-                    <input type="checkbox" value="${child.id}" class="skill-project-checkbox ${child.isSkill ? '' : 'bundle-project'}" ${projectSkills.includes(child.id) ? 'checked' : ''}>
+                <label class="switch" style="width: 24px; height: 14px;" title="Active for the whole Project">
+                    <input type="checkbox" value="${child.id}" class="skill-project-checkbox ${child.isSkill ? '' : 'bundle-project'}" ${isProjectActive ? 'checked' : ''}>
                     <span class="slider" style="border-radius: 14px;"></span>
                 </label>
             </div>
@@ -2715,11 +2763,21 @@ export function updateContextFileUsage(filePath: string, tokens: number) {
  * Renders the Workspace Access Matrix rows inside the HUD modal.
  */
 export function renderWorkspaceMatrix() {
-    const container = dom.matrixRowsContainer;
-    const workspaceFolders = (window as any).workspaceFolders || [];
+    const container = document.getElementById('matrix-rows-container');
+    const modal = document.getElementById('workspace-matrix-modal');
+    
+    if (!container || !modal) {
+        console.error("Matrix elements not found in DOM");
+        return;
+    }
+
+    // Fallback to state if window object is not yet populated
+    const workspaceFolders = (window as any).workspaceFolders || (state as any).workspaceFolders || [];
+
+    // Crucial: Use an empty object fallback for settings to prevent undefined errors
     const folderSettings = state.capabilities?.folderSettings || {};
 
-    if (!container) return;
+    container.innerHTML = '';
     container.innerHTML = '';
 
     if (workspaceFolders.length === 0) {
@@ -3072,7 +3130,7 @@ export function updateProgressBar(container: HTMLElement | null, current: number
     if (segments && total > 0) {
         container.innerHTML = '';
         // Ordered array for visual consistency in the bar
-        const types = ['system', 'tree', 'skills', 'memory', 'files', 'history', 'images'];
+        const types = ['system', 'briefing', 'tree', 'skills', 'memory', 'files', 'history', 'images'];
 
         types.forEach(type => {
             const count = segments[type] || 0;
@@ -3080,6 +3138,10 @@ export function updateProgressBar(container: HTMLElement | null, current: number
                 const segDiv = document.createElement('div');
                 segDiv.className = `token-bar-segment segment-${type}`;
                 segDiv.dataset.type = type;
+
+                // Calculate percentage based on the AUTHORITATIVE total
+                // If sum of counts > total (due to race conditions), we cap at 100% 
+                // to prevent the bar from breaking the UI layout.
                 const pct = (count / total) * 100;
                 segDiv.style.width = `${pct}%`;
                 segDiv.title = `${type.toUpperCase()}: ${count.toLocaleString()} tokens (Click to view)`;

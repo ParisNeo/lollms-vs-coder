@@ -738,6 +738,30 @@ export class SettingsPanel {
             case 'createPersonality':
                 await vscode.commands.executeCommand('lollms-vs-coder.createPersonality');
                 return;
+
+            case 'purgeSkills':
+                const scope = message.value;
+                const confirmMsg = scope === 'global' 
+                    ? "Are you sure you want to delete ALL skills from your global library? This affects all projects."
+                    : "Are you sure you want to delete all skills from this project?";
+
+                const selection_delete_all = await vscode.window.showWarningMessage(confirmMsg, { modal: true }, "Delete All");
+
+                if (selection_delete_all === "Delete All") {
+                    if (scope === 'global') {
+                        await this._skillsManager.deleteAllSkills(); 
+                    } else {
+                        const folders = vscode.workspace.workspaceFolders || [];
+                        for (const folder of folders) {
+                            const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'skills');
+                            try { await vscode.workspace.fs.delete(dir, { recursive: true, useTrash: true }); } catch(e) {}
+                        }
+                    }
+                    this._skillsManager.invalidateCache();
+                    vscode.window.showInformationMessage(`Skills purged for scope: ${scope}. Library refreshed.`);
+                    await vscode.commands.executeCommand('lollms-vs-coder.refreshSkills');
+                }
+                return;
             case 'requestLog':
                 const logContent = Logger.getLogContent();
                 this._panel.webview.postMessage({ command: 'logData', content: logContent });
@@ -935,6 +959,7 @@ personalities: this._personalityManager.getPersonalities()
               <button class="tab-link" onclick="openTab(event, 'TabPersonas')">🎭 Personas</button>
               <button class="tab-link" onclick="openTab(event, 'TabUi')">🎨 UI & Graph</button>
               <button class="tab-link" onclick="openTab(event, 'TabAdvanced')">🛠️ Advanced</button>
+              <button class="tab-link" onclick="openTab(event, 'TabMaintenance')">🔧 Maintenance</button>
               <button class="tab-link" onclick="openTab(event, 'TabLog')">📋 Log</button>
               </div>
 
@@ -982,9 +1007,12 @@ personalities: this._personalityManager.getPersonalities()
             <option value="openwebui" ${backendType === 'openwebui' ? 'selected' : ''}>Open WebUI</option>
             <option value="openrouter" ${backendType === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
         </select>
-        <div class="checkbox-container">
+        <div class="checkbox-container" style="display: flex; align-items: center; gap: 8px;">
             <input type="checkbox" id="useLollmsExtensions" ${useLollmsExtensions ? 'checked' : ''}>
-            <label for="useLollmsExtensions">Use Lollms Extensions</label>
+            <label for="useLollmsExtensions" style="margin: 0;">Use Lollms Extensions</label>
+            <button id="lollmsExtensionsHelp" class="toolbar-btn" style="width: 18px; height: 18px; border: none; opacity: 0.7;" title="What is this?">
+                <i class="codicon codicon-question"></i>
+            </button>
         </div>
         <label for="apiUrl">${t('config.apiUrl.label', 'API Host')}</label>
         <div class="input-group">
@@ -1386,6 +1414,18 @@ personalities: this._personalityManager.getPersonalities()
                   <label for="developerDebugTools">Enable Developer Debug Tools (Adds Tool Tester to Navigation)</label>
               </div>
               <p class="help-text">Requires a sidebar refresh to appear in the Navigation list.</p>
+
+              <h3>Sovereign Autonomy & Redundancy</h3>
+              <div class="security-warning" style="color: var(--vscode-charts-blue); border-color: var(--vscode-charts-blue); background: rgba(0, 122, 204, 0.1);">
+                <strong>🔌 CONFLICT DEACTIVATION</strong>
+                Enabling this allows LoLLMs to detect and prompt to disable competing or redundant assistant extensions (like GitHub Copilot and Microsoft Copilot) to ensure zero-conflict completions and optimal performance.
+              </div>
+
+              <div class="checkbox-container">
+                  <input type="checkbox" id="deactivateConflictingExtensions">
+                  <label for="deactivateConflictingExtensions">Deactivate redundant AI completions and Copilots</label>
+              </div>
+              <p class="help-text">Automatically silences inline suggestions from competing models while active.</p>
             </div>
 
             <!-- TabLog -->
@@ -1394,10 +1434,53 @@ personalities: this._personalityManager.getPersonalities()
               <div class="log-container"><pre id="logContent"></pre></div>
             </div>
 
+            <!-- TabMaintenance (NEW) -->
+            <div id="TabMaintenance" class="tab-content">
+                <h2>System Maintenance</h2>
+                <p class="help-text">Use these tools to clean up corrupted states or stale data.</p>
+
+                <div class="card" style="margin-top: 20px; border-color: var(--vscode-charts-red); padding: 15px;">
+                    <h3 style="color: var(--vscode-charts-red); border-left-color: var(--vscode-charts-red);">Purge Skills Library</h3>
+                    <p class="help-text">This will permanently delete all custom skills. <b>Bootstrap skills will be re-installed on next activation.</b></p>
+
+                    <div style="display: flex; gap: 10px; margin-top: 15px;">
+                        <button class="secondary-button remove-btn" id="purgeLocalSkillsBtn" style="flex:1;">Purge Project Skills</button>
+                        <button class="secondary-button remove-btn" id="purgeGlobalSkillsBtn" style="flex:1;">Purge Global Library</button>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: 20px; padding: 15px;">
+                    <h3>Reset UI Layout</h3>
+                    <p class="help-text">Resets the Chat Panel widths and visible badges.</p>
+                    <button class="secondary-button" id="resetUILayoutBtn" style="margin-top: 10px;">Reset UI Defaults</button>
+                </div>
+            </div>
+
           </div>
         
           <script>
             const vscode = acquireVsCodeApi();
+            
+            // Register Tab Switcher early to prevent 'undefined' errors
+            window.openTab = function(evt, tabName) {
+                const contents = document.getElementsByClassName("tab-content");
+                for (let i = 0; i < contents.length; i++) { 
+                    contents[i].style.display = "none"; 
+                    contents[i].classList.remove("active"); 
+                }
+                const links = document.getElementsByClassName("tab-link");
+                for (let i = 0; i < links.length; i++) { 
+                    links[i].className = links[i].className.replace(" active", ""); 
+                }
+                const target = document.getElementById(tabName);
+                if (target) {
+                    target.style.display = "block";
+                    target.classList.add("active");
+                }
+                if(evt) evt.currentTarget.className += " active";
+                if (tabName === 'TabLog') vscode.postMessage({ command: 'requestLog' });
+            };
+
             let stateData = ${jsonState};
             let config = stateData.config;
             let connectionProfiles = config.connectionProfiles || [];
@@ -1599,22 +1682,6 @@ personalities: this._personalityManager.getPersonalities()
                 refreshModelsList(false);
             }
 
-            function openTab(evt, tabName) {
-                const contents = document.getElementsByClassName("tab-content");
-                for (let i = 0; i < contents.length; i++) { 
-                    contents[i].style.display = "none"; 
-                    contents[i].classList.remove("active"); 
-                }
-                const links = document.getElementsByClassName("tab-link");
-                for (let i = 0; i < links.length; i++) { 
-                    links[i].className = links[i].className.replace(" active", ""); 
-                }
-                document.getElementById(tabName).style.display = "block";
-                document.getElementById(tabName).classList.add("active");
-                if(evt) evt.currentTarget.className += " active";
-                if (tabName === 'TabLog') vscode.postMessage({ command: 'requestLog' });
-            }
-
             function populateModelDropdown(selectElement, selectedValue, error) {
                 if(!selectElement) return;
                 
@@ -1764,6 +1831,47 @@ personalities: this._personalityManager.getPersonalities()
 
             attach('saveToolbar', () => vscode.postMessage({ command: 'saveConfig' }));
             attach('resetToolbar', () => vscode.postMessage({ command: 'resetConfig' }));
+
+            attach('lollmsExtensionsHelp', () => {
+                const message = "### 🔌 Lollms Extensions\\n\\n" +
+                    "These are specialized server-side features that enable:\\n" +
+                    "1. **Accurate Tokenization**: Matches the server's exact BPE logic.\\n" +
+                    "2. **Dynamic Context Size**: Automatically detects the model's limit.\\n" +
+                    "3. **Multimodal Processing**: Native support for PDF and image analysis.\\n\\n" +
+                    "**Don't have Lollms installed?**\\n" +
+                    "Install the full server from GitHub for the best local experience.";
+
+                vscode.postMessage({ 
+                    command: 'executeLollmsCommand', 
+                    details: { 
+                        command: 'lollms-vs-coder.showHelpPopup', 
+                        params: { 
+                            title: "Lollms Extensions", 
+                            content: message,
+                            link: "https://github.com/ParisNeo/lollms" 
+                        } 
+                    } 
+                });
+            });
+
+            attach('purgeLocalSkillsBtn', () => {
+                vscode.postMessage({ command: 'purgeSkills', value: 'local' });
+            });
+
+            attach('purgeGlobalSkillsBtn', () => {
+                vscode.postMessage({ command: 'purgeSkills', value: 'global' });
+            });
+
+            attach('resetUILayoutBtn', () => {
+                localStorage.removeItem('lollms_chat_layout');
+                vscode.postMessage({ 
+                    command: 'updateDiscussionCapabilitiesPartial', 
+                    partial: { 
+                        guiState: { agentBadge: true, autoContextBadge: true, herdBadge: true, debugBadge: true } 
+                    } 
+                });
+                location.reload(); // Refresh settings to show change
+            });
             attach('closeToolbar', () => vscode.postMessage({ command: 'closePanel' }));
             attach('testConnection', () => vscode.postMessage({ command: 'testConnection' }));
             attach('refreshModels', () => refreshModelsList(true));
@@ -1853,8 +1961,8 @@ personalities: this._personalityManager.getPersonalities()
 
             // Bind inputs
             ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','halApiKey','scopusApiKey','clipboardInsertRole','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose','remoteServerPort','remoteDiscordToken','remoteSlackToken','remoteSlackSigningSecret'].forEach(k => bind(k, k));
-            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled', 'developerDebugTools'].forEach(id => {
-                const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo', 'agentUseRLM': 'agent.useRLM' };
+            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions'].forEach(id => {
+                const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo', 'agentUseRLM': 'agent.useRLM', 'deactivateConflictingExtensions': 'deactivateConflictingExtensions' };
                 bind(id, map[id] || id);
             });
 

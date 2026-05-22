@@ -41,6 +41,7 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
 
         if (hasWorkspace) {
             actions.push(new ActionItem(vscode.l10n.t('Lollms Studio (Skills/Personas)'), 'lollms-vs-coder.openStudio', 'beaker', 'Open the building studio'));
+            actions.push(new ActionItem(vscode.l10n.t('Validate CVE Legitimacy'), 'lollms-vs-coder.analyzeCveLegitimacy', 'shield-check', 'Analyze code against a specific CVE'));
             actions.push(new ActionItem(vscode.l10n.t('CVE Report Builder'), 'lollms-vs-coder.openCveBuilder', 'shield', 'Build a vulnerability report'));
             actions.push(new ActionItem(vscode.l10n.t('Fix All Workspace Errors'), 'lollms-vs-coder.fixAllErrors', 'zap', 'Autonomous repair loop'));
             actions.push(new ActionItem(vscode.l10n.t('Copy All Problems'), 'lollms-vs-coder.copyAllErrors', 'clippy', 'Copy error list to clipboard'));

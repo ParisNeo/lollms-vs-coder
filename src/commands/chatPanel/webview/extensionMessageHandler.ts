@@ -191,8 +191,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const input = document.querySelector('.input-area-wrapper') as HTMLElement;
                     if (input) input.style.display = 'block';
                 }
-                // Forward the showRaiseHand flag to the UI renderer
-                setGeneratingState(message.isGenerating, message.statusText, message.showRaiseHand);
+                // Forward flags to the UI renderer
+                setGeneratingState(
+                    message.isGenerating, 
+                    message.statusText, 
+                    message.showRaiseHand, 
+                    message.buttonLabel
+                );
                 break;
             case 'updateGenerationMetrics':
                 const metricsEl = document.getElementById('generating-metrics');
@@ -210,11 +215,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateContext':
                 updateContext(message.context, message.files, message.skills, message.tools, message.diagrams, message.briefing);
-                // Force immediate and delayed sync to catch late-rendering Markdown segments
+                // Optimized sync: Wait for DOM to stabilize before matching UI blocks
                 import('./ui.js').then(ui => {
-                    ui.syncExpansionBlocks();
-                    setTimeout(() => ui.syncExpansionBlocks(), 500);
                     ui.updateBadges();
+                    if ((window as any)._syncTimer) clearTimeout((window as any)._syncTimer);
+                    (window as any)._syncTimer = setTimeout(() => ui.syncExpansionBlocks(), 800);
                 });
                 break;
             case 'updateDiscussionSkillsMetadata':
@@ -238,9 +243,16 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 {
                     if (message.workspaceFolders) {
                         (window as any).workspaceFolders = message.workspaceFolders;
+                        (state as any).workspaceFolders = message.workspaceFolders;
                     }
                     if (message.currentModel) {
                         state.currentModelName = message.currentModel;
+                    }
+                    if (message.currentTemperature !== undefined) {
+                        if (dom.tempSlider) {
+                            dom.tempSlider.value = message.currentTemperature.toString();
+                            if (dom.tempValDisplay) dom.tempValDisplay.textContent = dom.tempSlider.value;
+                        }
                     }
                     if (dom.attachmentsContainer) dom.attachmentsContainer.innerHTML = '';
                     if (dom.chatMessagesContainer) {
@@ -388,6 +400,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     
                     if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
                     if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
+
+                    if (dom.tempSlider) {
+                        // Ensure 0 is treated as a valid value but undefined triggers the 0.7 default
+                        const tempValue = (caps.temperature !== undefined && caps.temperature !== null) 
+                            ? caps.temperature 
+                            : 0.7;
+                        dom.tempSlider.value = tempValue.toString();
+                        if (dom.tempValDisplay) dom.tempValDisplay.textContent = dom.tempSlider.value;
+                    }
                     if (dom.testModeCheckbox) dom.testModeCheckbox.checked = !!caps.testMode;
                     if (dom.docsModeCheckbox) dom.docsModeCheckbox.checked = !!caps.documentationMode;
                     if (dom.capClipboardRole) dom.capClipboardRole.value = caps.clipboardInsertRole || 'user';
@@ -645,6 +666,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'error':
                 setGeneratingState(false);
+                // Clear all active spinners in buttons
+                document.querySelectorAll('.apply-btn .spinner').forEach(s => {
+                    const btn = s.closest('button');
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = btn.dataset.originalHtml || '<i class="codicon codicon-tools"></i>';
+                    }
+                });
                 // Also reset the git button if it was loading
                 if (dom.stagingNextBtn) {
                     dom.stagingNextBtn.disabled = false;
@@ -715,12 +744,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         card.onmouseleave = () => card.querySelector('.card-controls')!.style.transform = 'translateY(100%)';
 
                         // Full Screen View (Sovereign Zoom)
-                        const viewFn = async () => {
-                            const { openSovereignZoom } = await import('./ui.js');
-                            openSovereignZoom(message.webviewUri);
+                        const viewFn = (e) => {
+                            e.stopPropagation();
+                            import('./ui.js').then(ui => {
+                                ui.openSovereignZoom(message.webviewUri);
+                            });
                         };
                         card.querySelector('img')!.onclick = viewFn;
-                        (card.querySelector('.view-full-btn') as HTMLElement).onclick = viewFn;
+                        const fullBtn = card.querySelector('.view-full-btn') as HTMLElement;
+                        if (fullBtn) fullBtn.onclick = viewFn;
 
                         // Discard
                         (card.querySelector('.discard-draft-btn') as HTMLElement).onclick = () => card.remove();
@@ -739,8 +771,17 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                         gallery.prepend(card);
 
+                        // --- FIX: PERSISTENCE TRIGGER ---
+                        // Notify the extension that a new draft version exists for this message
+                        // so it can append an <image_result> tag to the persistent JSON.
+                        vscode.postMessage({
+                            command: 'updateMessage',
+                            messageId: genBtn.dataset.messageId,
+                            newContent: "APPEND_TAG:<image_result path=\"" + suggestedPath + "\" />"
+                        });
+
                         card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                    } else {
+                        } else {
                         // Error/Retry State
                         genBtn.innerHTML = `<span class="codicon codicon-refresh"></span> Retry Edit`;
                         genBtn.classList.add('delete-btn'); // Turn red
@@ -776,6 +817,50 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     // 4. Show the modal
                     if (dom.agentSettingsModal) {
                         dom.agentSettingsModal.classList.add('visible');
+                    }
+                }
+                break;
+            case 'showDiscussionSettings':
+                {
+                    console.log("[DEBUG:Handler] RECEIVED showDiscussionSettings", message);
+                    state.capabilities = message.capabilities;
+                    state.profiles = message.profiles;
+
+                    if (message.workspaceFolders) {
+                        (window as any).workspaceFolders = message.workspaceFolders;
+                    }
+
+                    // 1. Update the UI fields inside the modal first
+                    console.log("[DEBUG:Handler] Triggering updateDiscussionCapabilities sync...");
+                    const updateEvent = new MessageEvent('message', {
+                        data: {
+                            command: 'updateDiscussionCapabilities',
+                            capabilities: message.capabilities,
+                            profiles: message.profiles
+                        }
+                    });
+                    window.dispatchEvent(updateEvent);
+
+                    // 2. Force Modal Visibility
+                    const modalId = 'discussion-tools-modal';
+                    const modal = document.getElementById(modalId);
+                    console.log("[DEBUG:Handler] Attempting to show modal with ID:", modalId, !!modal);
+
+                    if (modal) {
+                        modal.classList.add('visible');
+                        modal.style.setProperty('display', 'flex', 'important');
+                        modal.style.setProperty('visibility', 'visible', 'important');
+                        modal.style.setProperty('opacity', '1', 'important');
+                        console.log("[DEBUG:Handler] Modal visibility classes/styles applied.");
+
+                        // 3. Refresh voices if available
+                        if (typeof (window as any).refreshVoiceList === 'function') {
+                            (window as any).refreshVoiceList();
+                        }
+                    } else {
+                        console.error("[DEBUG:Handler] FATAL: Discussion settings modal element not found in DOM!");
+                        // Fallback: check if the dom.ts getter finds it
+                        console.log("[DEBUG:Handler] dom.discussionToolsModal check:", !!dom.discussionToolsModal);
                     }
                 }
                 break;
@@ -1083,6 +1168,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'applyAllResult':
                 {
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                    const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
                     if (!wrapper) break;
 
                     // 1. Update the individual code block UI (even if it wasn't part of an "Apply All" run)
@@ -1156,14 +1242,25 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 blockEl.open = false;
                             }
                         } else {
-                            const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`);
                             if (mainApplyBtn) restoreBtn(mainApplyBtn);
 
                             blockEl.querySelectorAll('.aider-hunk-actions .apply-btn').forEach(restoreBtn);
-                            blockEl.querySelectorAll('.aider-hunk-bubble').forEach(h => h.classList.add('collapsed'));
 
-                            // COLLAPSE MANDATE: Close the code block container on successful full apply
-                            blockEl.open = false;
+                            // VISUAL SHRINK: We mark them as applied but do NOT use the hard 'collapsed' class 
+                            // if it blocks the user from opening it again.
+                            blockEl.querySelectorAll('.aider-hunk-bubble').forEach(h => {
+                                h.classList.add('collapsed');
+                                // Ensure the checkmark icon is updated in the header too
+                                const icon = h.querySelector('.hunk-toggle-icon');
+                                if (icon) icon.className = 'codicon codicon-chevron-right hunk-toggle-icon';
+                            });
+
+                            // We keep the block element OPEN if there are multiple hunks so the user sees the summary
+                            // Only close if it's a single hunk block.
+                            const hunkCount = blockEl.querySelectorAll('.aider-hunk-bubble').length;
+                            if (hunkCount <= 1) {
+                                blockEl.open = false;
+                            }
                         }
 
                         // RE-SYNC main button state for the entire message
@@ -1171,6 +1268,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
 
                     } else if (blockEl && !message.success) {
+                        // 1. STOP THE SPINNER
+                        if (mainApplyBtn) {
+                            mainApplyBtn.disabled = false;
+                            // Restore original icon (Tools or Aider swap)
+                            const isAider = blockEl.dataset.rawCode?.includes('<<<<<<< SEARCH');
+                            mainApplyBtn.innerHTML = `<span class="codicon ${isAider ? 'codicon-arrow-swap' : 'codicon-tools'}"></span>`;
+                        }
+
                         // TAB SYNC: Highlight the failing tab
                         if (message.hunkIndex !== undefined) {
                             const tab = blockEl.querySelector(`.hunk-tab-${message.hunkIndex}`) as HTMLElement;
@@ -1201,17 +1306,21 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
 
                         // AUTOMATIC REDIRECTION to the NEW Tabbed Raw Code Modal
+                        // We trigger this immediately so the user can see the raw code and the search failure
                         if (!message.repaired && !message.alreadyApplied) {
                             const codeText = blockEl.dataset.rawCode || "";
-                            import('./ui.js').then(ui => {
-                                ui.openRawCodeModal(
-                                    message.messageId, 
-                                    message.blockIndex, 
-                                    message.filePath, 
-                                    codeText, 
-                                    message.hunkIndex || 0
-                                );
-                            });
+                            // Small timeout to allow the "Apply" button to finish its spinner animation
+                            setTimeout(() => {
+                                import('./ui.js').then(ui => {
+                                    ui.openRawCodeModal(
+                                        message.messageId, 
+                                        message.blockIndex, 
+                                        message.filePath, 
+                                        codeText, 
+                                        message.hunkIndex !== undefined ? message.hunkIndex : 0
+                                    );
+                                });
+                            }, 100);
                         }
                     }
 
@@ -1284,8 +1393,20 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             // AUTOMATIC REDIRECTION: If any apply fails, pop the raw code modal immediately.
                             // We trigger this for both single hunk failures and full block failures.
                             if (!message.repaired && !message.alreadyApplied) {
-                                console.log("[UI] Apply failed. Triggering manual stitching modal...");
-                                manualBtn.click();
+                                // We call the UI function directly instead of clicking the button to ensure reliability
+                                const targetBlock = document.getElementById(`block-${message.messageId}-${message.blockIndex}`);
+                                if (targetBlock) {
+                                    const codeText = (targetBlock as any).dataset.rawCode || "";
+                                    import('./ui.js').then(ui => {
+                                        ui.openRawCodeModal(
+                                            message.messageId, 
+                                            message.blockIndex, 
+                                            message.filePath, 
+                                            codeText, 
+                                            message.hunkIndex !== undefined ? message.hunkIndex : 0
+                                        );
+                                    });
+                                }
                             }
 
                             aiBtn.onclick = (e) => {

@@ -92,6 +92,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const processManager = new ProcessManager();
     const codeGraphManager = new CodeGraphManager();
     const toolManager = new ToolManager(); // Clean instantiation
+    contextManager['toolManager'] = toolManager; // Inject into contextManager for Librarian/Builder use
     const notebookManager = new NotebookManager(lollmsAPI);
     const inlineDiffProvider = new InlineDiffProvider(lollmsAPI);
     const quickEditManager = new QuickEditManager(lollmsAPI, inlineDiffProvider, contextManager, memoryManager);
@@ -254,13 +255,16 @@ export async function activate(context: vscode.ExtensionContext) {
         contextManager.updateTreeStructure(uri, 'change');
         codeGraphManager.reset();
 
-        // 🚀 SILENT INVALIDATION
+        // 🚀 REACTIVE HUD SYNC
         // We clear the cache so the NEXT JIT sync (on send) uses the new content.
-        // We DO NOT trigger updateContextAndTokens here to avoid UI flicker.
+        // We trigger a background sync to update the file count (234 -> 235) in the HUD.
         const provider = contextManager.getContextStateProvider();
         if (provider) {
             const state = provider.getStateForUri(uri);
-            if (state === 'included' || state === 'definitions-only') {
+            if (state === 'included' || state === 'definitions-only' || state === 'tree-only') {
+                if (ChatPanel.currentPanel) {
+                    ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: true });
+                }
                 Logger.info(`Background cache invalidated for: ${path.basename(p)}`);
             }
         }
@@ -393,6 +397,11 @@ export async function activate(context: vscode.ExtensionContext) {
     projectMemoryManager.performDreamCycle().then(() => {
         Logger.info("Dream Cycle complete: Neural memory reorganized.");
     });
+
+    // --- DEACTIVATE CONFLICTING EXTENSIONS ---
+    if (config.get<boolean>('deactivateConflictingExtensions')) {
+        deactivateConflictingExtensions();
+    }
 
     // --- FIRST RUN & COMPLIANCE WIZARD ---
     const wasConfigured = context.globalState.get<boolean>('lollms.wasConfigured', false);
@@ -615,6 +624,47 @@ async function showQuickSetupWizard(context: vscode.ExtensionContext) {
     } else if (selection === choices[1].label) {
         await vscode.commands.executeCommand('lollms-vs-coder.showConfigView');
         await context.globalState.update('lollms.wasConfigured', true);
+    }
+}
+
+async function deactivateConflictingExtensions() {
+    const conflicting = [
+        { id: 'github.copilot', name: 'GitHub Copilot', configKeys: [['github.copilot.enable', { '*': false }]] },
+        { id: 'github.copilot-chat', name: 'GitHub Copilot Chat', configKeys: [] },
+        { id: 'ms-dotnettools.vscode-dotnet-runtime', name: 'Microsoft Copilot / .NET Runtime', configKeys: [] }
+    ];
+
+    for (const ext of conflicting) {
+        const extension = vscode.extensions.getExtension(ext.id);
+        if (extension) {
+            Logger.info(`[Conflict] Detected competing extension: ${ext.name} (${ext.id})`);
+
+            // 1. Mute their features in Settings (if applicable)
+            for (const [key, value] of ext.configKeys) {
+                try {
+                    const targetConfig = vscode.workspace.getConfiguration();
+                    await targetConfig.update(key as string, value, vscode.ConfigurationTarget.Global);
+                } catch (e) {
+                    Logger.warn(`[Conflict] Failed to update config for ${ext.id}: ${e}`);
+                }
+            }
+
+            // 2. Offer workspace deactivation prompt
+            const choice = await vscode.window.showWarningMessage(
+                `Lollms has detected that '${ext.name}' is active, which competes with LoLLMs completions. Disable it for this workspace to optimize performance?`,
+                "Disable Extension (Workspace)",
+                "Ignore"
+            );
+
+            if (choice === "Disable Extension (Workspace)") {
+                try {
+                    await vscode.commands.executeCommand('workbench.extensions.action.disable', ext.id);
+                    vscode.window.showInformationMessage(`Successfully disabled '${ext.name}' for this workspace.`);
+                } catch (e: any) {
+                    vscode.window.showErrorMessage(`Failed to disable extension: ${e.message}. You can manually disable it in the Extensions tab.`);
+                }
+            }
+        }
     }
 }
 

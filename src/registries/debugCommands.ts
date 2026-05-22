@@ -254,6 +254,38 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.analyzeCveLegitimacy', async () => {
+        const cveId = await vscode.window.showInputBox({
+            prompt: "Enter CVE ID or Vulnerability Description",
+            placeHolder: "e.g. CVE-2024-1234 or 'Insecure deserialization in config loader'"
+        });
+
+        if (!cveId) return;
+
+        const prompt = `### CVE VALIDATION REQUEST
+    **Target Vulnerability**: ${cveId}
+
+    **TASK**:
+    1. Inspect the loaded project context.
+    2. Determine if the logic in the code is susceptible to the vulnerability described above.
+    3. Provide a definitive validation verdict with technical arguments.
+    4. If valid, provide a fix.`;
+
+        // We force the CVE Analyzer persona for this discussion
+        const services = (vscode.extensions.getExtension('parisneo.lollms-vs-coder')?.exports as any)?.services;
+        if (services) {
+            const workspace = vscode.workspace.workspaceFolders?.[0];
+            if (workspace) {
+                const { startDiscussionWithInitialPrompt } = require('../utils/discussionUtils');
+                // Start discussion and then force personality switch
+                await startDiscussionWithInitialPrompt(services, prompt, workspace, true);
+                if (ChatPanel.currentPanel) {
+                    await ChatPanel.currentPanel.updateDiscussionPersonality('cve_analyzer');
+                }
+            }
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.inspectCode', async (args?: { code: string, language: string }) => {
         if (!ChatPanel.currentPanel) {
             vscode.window.showErrorMessage("Please open a Lollms chat panel to show inspection results.");

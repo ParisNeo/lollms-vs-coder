@@ -73,8 +73,18 @@ export class LollmsAPI {
   constructor(config: LollmsConfig, globalState?: vscode.Memento) {
     this.config = config;
     this.globalState = globalState;
+
+    // Tier 1: Global Force Disable
+    if (this.config.disableSslVerification) {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+        Logger.warn("[SSL] Global SSL verification disabled via NODE_TLS_REJECT_UNAUTHORIZED=0");
+    } else {
+        // Reset to default if user re-enables it
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = '1';
+    }
+
     this.httpsAgent = this.createHttpsAgent();
-    
+
     if (!this.config.apiKey) {
         this.config.apiKey = process.env.LOLLMS_KEY || '';
     }
@@ -114,14 +124,16 @@ export class LollmsAPI {
 
       const options: https.AgentOptions = {
           keepAlive: true,
-          rejectUnauthorized: !this.config.disableSslVerification,
-          // Support older/custom TLS configurations often found in local AI servers
-          ciphers: this.config.disableSslVerification ? 'ALL' : undefined
+          rejectUnauthorized: !this.config.disableSslVerification
       };
 
+      // Tier 2: Enhanced Bypass for Self-Signed/Local Certs
       if (this.config.disableSslVerification) {
-          // Additional layer of bypass for hostname/identity mismatches on local IPs
           options.checkServerIdentity = () => undefined;
+          // Some environments require specific ciphers for self-signed legacy servers
+          options.ciphers = 'ALL';
+          // Ensure we allow unsafe legacy renegotiation which is common in local proxy setups
+          (options as any).secureOptions = require('constants').SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION;
       }
 
       if (certPath && fs.existsSync(certPath)) {
@@ -129,10 +141,11 @@ export class LollmsAPI {
               const stat = fs.statSync(certPath);
               if (stat.isFile()) {
                   const certBuffer = fs.readFileSync(certPath);
+                  // If user provides a cert, we treat it as an authoritative CA
                   options.ca = certBuffer;
-                  Logger.info(`[SSL] Custom CA loaded: ${certPath}`);
-              } else {
-                  Logger.warn(`[SSL] Path is a directory: ${certPath}`);
+                  // If they provided a cert, they likely want to verify against IT specifically
+                  // unless they also checked "Disable Verification"
+                  Logger.info(`[SSL] Custom CA injected into Agent: ${certPath}`);
               }
           } catch (e) {
               Logger.error(`[SSL] Failed to load cert file: ${certPath}`, e);
@@ -621,7 +634,15 @@ export class LollmsAPI {
    * Edits or Blends images.
    * Matches create_image_edit (Multipart/Form-Data) backend endpoint.
    */
-  public async editImage(prompt: string, imagesBase64: string[], maskBase64?: string, model?: string, token?: vscode.CancellationToken): Promise<string> {
+  public async editImage(
+    prompt: string, 
+    imagesBase64: string[], 
+    maskBase64?: string, 
+    model?: string, 
+    token?: vscode.CancellationToken,
+    width: number = 1024,
+    height: number = 1024
+  ): Promise<string> {
     if (!this.baseUrl) throw new Error("Lollms API URL is not configured correctly.");
 
     const url = `${this.baseUrl}/v1/images/edits`;
@@ -643,6 +664,10 @@ export class LollmsAPI {
     if (finalModel) {
         formData.append('model', finalModel);
     }
+
+    // 1.5 Add dimensions if provided
+    if (width) formData.append('width', width.toString());
+    if (height) formData.append('height', height.toString());
 
     // 2. Append multiple 'image' files to support blending/multi-source
     imagesBase64.forEach((uri, idx) => {
@@ -708,6 +733,9 @@ export class LollmsAPI {
     modelOverride?: string,
     options?: { thinking?: boolean, capabilities?: any, temperature?: number }
   ): Promise<string> {
+    // Tier 3: Universal Agent Enforcement
+    // We force the agent on EVERY call in sendChat, regardless of the URL, 
+    // but prioritize it for the baseUrl (local/configured server).
     const backend = this.config.backendType;
     const model = modelOverride || this.config.modelName;
     const stream = !!onChunk;

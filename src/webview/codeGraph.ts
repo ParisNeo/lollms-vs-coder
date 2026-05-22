@@ -1,11 +1,5 @@
-import cytoscape from 'cytoscape';
-import dagre from 'cytoscape-dagre';
-import coseBilkent from 'cytoscape-cose-bilkent';
+import { Network, DataSet } from 'vis-network/standalone';
 import mermaid from 'mermaid';
-
-// Register extensions
-cytoscape.use(dagre);
-cytoscape.use(coseBilkent);
 
 // Initialize Mermaid
 mermaid.initialize({
@@ -23,9 +17,13 @@ const vscode = acquireVsCodeApi();
 const cyContainer = document.getElementById('cy') as HTMLDivElement;
 const mermaidContainer = document.getElementById('mermaid-container') as HTMLDivElement;
 const viewSelect = document.getElementById('view') as HTMLSelectElement;
+const layoutStyleSelect = document.getElementById('layout-style') as HTMLSelectElement;
+const groupingModeSelect = document.getElementById('grouping-mode') as HTMLSelectElement;
+const hideOrphansCheckbox = document.getElementById('hide-orphans') as HTMLInputElement;
 const symbolSearch = document.getElementById('symbol-search') as HTMLInputElement;
 const symbolList = document.getElementById('symbols-list') as HTMLDataListElement;
 const runBtn = document.getElementById('run') as HTMLButtonElement;
+const aiTranslateBtn = document.getElementById('ai-translate-btn') as HTMLButtonElement;
 const exampleSelect = document.getElementById('sparql-examples') as HTMLSelectElement;
 const rebuildBtn = document.getElementById('rebuild') as HTMLButtonElement;
 const regenerateBtn = document.getElementById('regenerate') as HTMLButtonElement;
@@ -39,48 +37,33 @@ const loadingOverlay = document.getElementById('loading') as HTMLDivElement;
 let currentGraphData: any = null;
 let currentClassDiagram: string = '';
 let currentFunctionSignatures: string = '';
-let cyInstance: cytoscape.Core | null = null;
+let currentModuleDependencyGraph: string = '';
+let currentExternalLibraryGraph: string = '';
+let networkInstance: Network | null = null;
 let currentConfig = { zoomSensitivity: 0.5, panningEnabled: true, zoomToCursor: true };
 
-// SPARQL-lite Logic
-function runGraphQuery(query: string) {
-    if (!cyInstance) return;
-    
-    // Reset visibility
-    cyInstance.elements().removeClass('highlighted hidden');
-    
-    const lowerQuery = query.toLowerCase().trim();
-    if (!lowerQuery) return;
-
-    // 1. Handle "Isolate" command
-    if (lowerQuery.startsWith('isolate ')) {
-        const target = lowerQuery.replace('isolate ', '');
-        const roots = cyInstance.nodes().filter(n => n.data('label').toLowerCase().includes(target));
-        const neighborhood = roots.neighborhood().add(roots);
-        cyInstance.elements().not(neighborhood).addClass('hidden');
-        return;
-    }
-
-    // 2. Handle SPARQL-lite: "SELECT ?x WHERE { ?x imports 'target' }"
-    const sparqlMatch = lowerQuery.match(/select\s+\?(\w+)\s+where\s+\{\s*\?\w+\s+(\w+)\s+['"]([^'"]+)['"]\s*\}/i);
-    if (sparqlMatch) {
-        const [_, variable, relation, target] = sparqlMatch;
-        const targetNodes = cyInstance.nodes().filter(n => n.data('label').toLowerCase().includes(target.toLowerCase()));
-        
-        if (relation === 'imports' || relation === 'depends') {
-            const dependents = targetNodes.incomers('edge[label="imports"]').sources();
-            dependents.addClass('highlighted');
-            cyInstance.elements().not(dependents.add(targetNodes).add(dependents.edgesWith(targetNodes))).addClass('hidden');
-        }
-        return;
-    }
-
-    // 3. Default: Simple Search & Center
-    const matches = cyInstance.nodes().filter(n => n.data('label').toLowerCase().includes(lowerQuery));
-    if (matches.length > 0) {
-        cyInstance.animate({ center: { eles: matches }, zoom: 1 });
-        matches.addClass('highlighted');
-    }
+// Ontological Tooltip Element (Drawn dynamically)
+let tooltipElement = document.getElementById('ontological-tooltip');
+if (!tooltipElement) {
+    tooltipElement = document.createElement('div');
+    tooltipElement.id = 'ontological-tooltip';
+    tooltipElement.style.cssText = `
+        position: absolute;
+        z-index: 10000;
+        background: var(--vscode-editorWidget-background);
+        color: var(--vscode-editorWidget-foreground);
+        border: 1px solid var(--vscode-widget-border);
+        border-radius: 6px;
+        padding: 10px 14px;
+        font-size: 11px;
+        font-family: var(--vscode-font-family);
+        pointer-events: none;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        display: none;
+        max-width: 280px;
+        line-height: 1.4;
+    `;
+    document.body.appendChild(tooltipElement);
 }
 
 // Event Listeners
@@ -88,14 +71,12 @@ window.addEventListener('message', event => {
     const message = event.data;
     
     if (message.command === 'graph') {
-        const { graph, state, lastError, classDiagram, functionSignatures, config } = message;
+        const { graph, state, lastError, classDiagram, functionSignatures, moduleDependencyGraph, externalLibraryGraph, config } = message;
         if (config) currentConfig = config;
         
-        // Update Status UI
         if (state === 'building') {
             if (loadingOverlay) {
                 loadingOverlay.style.display = 'flex';
-                // Also hide the graph area while building to prevent showing stale data
                 if (cyContainer) cyContainer.style.opacity = '0.3';
                 if (mermaidContainer) mermaidContainer.style.opacity = '0.3';
             }
@@ -118,10 +99,8 @@ window.addEventListener('message', event => {
             }
         }
 
-        // Store Data
         if (graph) {
             currentGraphData = graph;
-            // Update Autocomplete
             if (symbolList) {
                 symbolList.innerHTML = graph.nodes
                     .filter((n: any) => n.type !== 'file')
@@ -131,8 +110,9 @@ window.addEventListener('message', event => {
         }
         if (classDiagram) currentClassDiagram = classDiagram;
         if (functionSignatures) currentFunctionSignatures = functionSignatures;
+        if (moduleDependencyGraph) currentModuleDependencyGraph = moduleDependencyGraph;
+        if (externalLibraryGraph) currentExternalLibraryGraph = externalLibraryGraph;
 
-        // Render if ready
         if (state === 'ready' || (graph && graph.nodes.length > 0)) {
             render();
         }
@@ -140,6 +120,20 @@ window.addEventListener('message', event => {
         handleFocusNode(message.label, message.type);
     } else if (message.command === 'triggerExport') {
         exportVisualGraph(message.format, message.view);
+    } else if (message.command === 'nlTranslationResult') {
+        if (aiTranslateBtn) {
+            aiTranslateBtn.disabled = false;
+            aiTranslateBtn.innerHTML = '<span class="codicon codicon-sparkle"></span> Translate';
+        }
+        if (message.error) {
+            statusLabel.textContent = `AI Error: ${message.error}`;
+            statusLabel.style.color = 'var(--vscode-errorForeground)';
+        } else if (message.query) {
+            symbolSearch.value = message.query;
+            statusLabel.textContent = "AI translated query successfully!";
+            statusLabel.style.color = 'var(--vscode-charts-green)';
+            executeSparqlQuery(message.query);
+        }
     }
 });
 
@@ -149,9 +143,52 @@ if (runBtn) {
         if (!query) return;
 
         if (query.toUpperCase().startsWith('SELECT')) {
-            executeSparql(query);
+            executeSparqlQuery(query);
         } else {
             vscode.postMessage({ command: 'runSymbol', symbol: query });
+        }
+    });
+}
+
+if (aiTranslateBtn) {
+    aiTranslateBtn.addEventListener('click', () => {
+        const query = symbolSearch.value.trim();
+        if (!query) return;
+
+        aiTranslateBtn.disabled = true;
+        aiTranslateBtn.innerHTML = '<div class="spinner" style="width:12px; height:12px; border-width:2px;"></div> Translating...';
+        vscode.postMessage({ command: 'translateNLQuery', text: query });
+    });
+}
+
+if (symbolSearch) {
+    symbolSearch.addEventListener('input', () => {
+        const query = symbolSearch.value.trim().toLowerCase();
+        if (!query || !networkInstance || !currentGraphData) {
+            if (networkInstance) networkInstance.selectNodes([]);
+            return;
+        }
+
+        if (query.toUpperCase().startsWith('SELECT')) return; // Ignore SPARQL on input
+
+        const matchedNodes = currentGraphData.nodes.filter((n: any) => 
+            n.label.toLowerCase().includes(query) || n.id.toLowerCase().includes(query)
+        );
+
+        if (matchedNodes.length > 0) {
+            const ids = matchedNodes.map((n: any) => n.id);
+            networkInstance.selectNodes(ids);
+            
+            const exactMatch = matchedNodes.find((n: any) => n.label.toLowerCase() === query);
+            const nodeToFocus = exactMatch || matchedNodes[0];
+            
+            networkInstance.focus(nodeToFocus.id, {
+                scale: 1.1,
+                animation: {
+                    duration: 400,
+                    easingFunction: 'easeInOutQuad'
+                }
+            });
         }
     });
 }
@@ -161,96 +198,163 @@ if (exampleSelect) {
         if (exampleSelect.value) {
             symbolSearch.value = exampleSelect.value;
             exampleSelect.value = "";
+            executeSparqlQuery(symbolSearch.value);
         }
     });
 }
 
-function executeSparql(query: string) {
-    if (!cyInstance || !currentGraphData) return;
-    
-    console.log("[Graph] Executing SPARQL:", query);
+if (layoutStyleSelect) {
+    layoutStyleSelect.addEventListener('change', () => {
+        render();
+    });
+}
 
-    // 1. Reset current state
-    cyInstance.elements().removeClass('highlight');
+if (groupingModeSelect) {
+    groupingModeSelect.addEventListener('change', () => {
+        render();
+    });
+}
 
-    // 2. Improved Regex: Supports variables (?x) or literals ('file.py', "MyClass")
-    const match = query.match(/SELECT\s+(\?\w+)\s+WHERE\s*\{\s*(\S+)\s+(\S+)\s+(\S+)\s*\}/i);
-    
-    if (!match) {
-        statusLabel.textContent = "Query syntax error. Use: SELECT ?x WHERE { ?x type 'class' }";
+if (hideOrphansCheckbox) {
+    hideOrphansCheckbox.addEventListener('change', () => {
+        render();
+    });
+}
+
+/**
+ * Executes a SPARQL-lite query locally and animates the resulting subgraph.
+ * Custom Matcher: Normalizes namespace syntax and handles case-insensitivity.
+ */
+function executeSparqlQuery(query: string) {
+    if (!networkInstance || !currentGraphData) return;
+
+    const cleanQuery = query.replace(/#.*/g, '').trim();
+    const selectMatch = cleanQuery.match(/SELECT\s+([\?\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
+
+    if (!selectMatch) {
+        statusLabel.textContent = "SPARQL-lite Error: Invalid query format.";
         statusLabel.style.color = 'var(--vscode-errorForeground)';
         return;
     }
 
-    const [,, subject, predicate, object] = match;
-    const selectVar = match[1];
-    const clean = (s: string) => s.replace(/['"]/g, '');
+    const selectVars = selectMatch[1].trim().split(/\s+/).map(v => v.trim());
+    const body = selectMatch[2].trim();
 
-    // 3. Triple Matching logic
-    const matchingElements = cyInstance.collection();
-
-    cyInstance.edges().forEach(edge => {
-        const source = edge.source();
-        const target = edge.target();
-        const edgeLabel = edge.data('label');
-
-        if (edgeLabel === clean(predicate)) {
-            // Check if Subject or Object match (either literal match or variable)
-            const subjectMatches = subject.startsWith('?') || source.data('label') === clean(subject);
-            const objectMatches = object.startsWith('?') || target.data('label') === clean(object);
-
-            if (subjectMatches && objectMatches) {
-                matchingElements.merge(edge);
-                
-                // Map the SELECT variable back to the correct part of the triple
-                if (subject === selectVar) matchingElements.merge(source);
-                if (object === selectVar) matchingElements.merge(target);
-                
-                // Also highlight literals for context
-                if (!subject.startsWith('?')) matchingElements.merge(source);
-                if (!object.startsWith('?')) matchingElements.merge(target);
-            }
+    const triples: { s: string, p: string, o: string }[] = [];
+    const lines = body.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/);
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const parts = trimmed.split(/\s+/);
+        if (parts.length >= 3) {
+            triples.push({
+                s: parts[0],
+                p: parts[1],
+                o: parts.slice(2).join(' ')
+            });
         }
+    }
+
+    if (triples.length === 0) return;
+
+    const variables = new Set<string>();
+    for (const t of triples) {
+        if (t.s.startsWith('?')) variables.add(t.s);
+        if (t.p.startsWith('?')) variables.add(t.p);
+        if (t.o.startsWith('?')) variables.add(t.o);
+    }
+
+    const facts: { s: string, p: string, o: string }[] = [];
+    currentGraphData.nodes.forEach((node: any) => {
+        const typeUri = `s:${node.type.charAt(0).toUpperCase() + node.type.slice(1)}`;
+        facts.push({ s: node.id, p: 's:type', o: typeUri });
+        facts.push({ s: node.id, p: 's:name', o: `"${node.label}"` });
     });
 
-    // Special case for node-only metadata (e.g. type)
-    if (clean(predicate) === 'type') {
-        cyInstance.nodes().forEach(node => {
-            if (node.data('type') === clean(object)) {
-                matchingElements.merge(node);
+    currentGraphData.edges.forEach((edge: any) => {
+        facts.push({ s: edge.source, p: `s:${edge.label}`, o: edge.target });
+    });
+
+    const varList = Array.from(variables);
+    const results: Record<string, string>[] = [];
+
+    const matchValue = (factVal: string, queryVal: string): boolean => {
+        if (!factVal || !queryVal) return false;
+        const cleanFact = factVal.replace(/^s:/i, '').toLowerCase().replace(/['"]/g, '').trim();
+        const cleanQuery = queryVal.replace(/^s:/i, '').toLowerCase().replace(/['"]/g, '').trim();
+        return cleanFact === cleanQuery;
+    };
+
+    const solve = (varIdx: number, bindings: Record<string, string>) => {
+        if (varIdx === varList.length) {
+            let valid = true;
+            for (const t of triples) {
+                const sVal = t.s.startsWith('?') ? bindings[t.s] : t.s;
+                const pVal = t.p.startsWith('?') ? bindings[t.p] : t.p;
+                const oVal = t.o.startsWith('?') ? bindings[t.o] : t.o;
+
+                const match = facts.some(f => 
+                    matchValue(f.s, sVal) && matchValue(f.p, pVal) && matchValue(f.o, oVal)
+                );
+                if (!match) { valid = false; break; }
             }
-        });
+            if (valid) {
+                const isDup = results.some(r => varList.every(v => r[v] === bindings[v]));
+                if (!isDup) results.push({ ...bindings });
+            }
+            return;
+        }
+
+        const currentVar = varList[varIdx];
+        const domain = new Set<string>();
+        for (const t of triples) {
+            if (t.s === currentVar) facts.forEach(f => domain.add(f.s));
+            if (t.p === currentVar) facts.forEach(f => domain.add(f.p));
+            if (t.o === currentVar) facts.forEach(f => domain.add(f.o));
+        }
+
+        for (const val of domain) {
+            bindings[currentVar] = val;
+            solve(varIdx + 1, bindings);
+            delete bindings[currentVar];
+        }
+    };
+
+    solve(0, {});
+
+    if (results.length === 0) {
+        statusLabel.textContent = "SPARQL-lite: No matching subgraphs found.";
+        statusLabel.style.color = 'var(--vscode-charts-orange)';
+        return;
     }
 
-    // 4. Update UI and Zoom
-    if (matchingElements.length > 0) {
-        matchingElements.addClass('highlight');
-        statusLabel.textContent = `Found ${matchingElements.nodes().length} matches`;
-        statusLabel.style.color = 'inherit';
-        
-        cyInstance.animate({
-            fit: { eles: matchingElements, padding: 80 },
-            duration: 500
+    const matchedNodeIds = new Set<string>();
+    results.forEach(row => {
+        selectVars.forEach(v => {
+            const val = row[v];
+            if (val && !val.startsWith('s:')) {
+                matchedNodeIds.add(val);
+            }
         });
-    } else {
-        statusLabel.textContent = "No matches found.";
-        statusLabel.style.color = 'var(--vscode-charts-orange)';
-    }
+    });
+
+    networkInstance.selectNodes(Array.from(matchedNodeIds));
+
+    statusLabel.textContent = `SPARQL-lite: Isolated ${matchedNodeIds.size} nodes`;
+    statusLabel.style.color = 'var(--vscode-charts-green)';
 }
 
 async function handleFocusNode(label: string, type: string) {
-    // 1. Auto-switch view based on symbol type
     const isClass = (type || '').includes('class');
     const targetView = isClass ? 'class_diagram' : 'call_graph';
-    
+
     if (viewSelect.value !== targetView) {
         viewSelect.value = targetView;
         render();
         await new Promise(resolve => setTimeout(resolve, 600));
     }
 
-    // 2. Perform search/focus
-    if (viewSelect.value === 'class_diagram' || viewSelect.value === 'function_signatures') {
+    if (viewSelect.value === 'class_diagram' || viewSelect.value === 'function_signatures' || viewSelect.value === 'module_dependency_graph' || viewSelect.value === 'external_library_graph') {
         const textNodes = Array.from(mermaidContainer.querySelectorAll('text, .nodeLabel'));
         const match = textNodes.find(n => n.textContent?.trim() === label || n.textContent?.includes(label));
         if (match) {
@@ -258,30 +362,22 @@ async function handleFocusNode(label: string, type: string) {
             (match as HTMLElement).style.filter = 'drop-shadow(0 0 10px #ff9d00)';
             setTimeout(() => { (match as HTMLElement).style.filter = ''; }, 3000);
         }
-    } else if (cyInstance) {
-        const node = cyInstance.nodes().filter(n => n.data('label') === label || n.data('id') === label);
-        
-        if (node.length > 0) {
-            cyInstance.elements().removeClass('highlight');
-            
-            // HIGHLIGHT NODE + NEIGHBORHOOD (Connections)
-            const neighborhood = node.closedNeighborhood();
-            neighborhood.addClass('highlight');
-            
-            // Ensure parents (file boxes) are visible but not blocking
-            node.parents().style('background-opacity', 0.05);
-
-            cyInstance.animate({
-                zoom: 1.2, // Slightly out to see connections
-                center: { eles: node },
-                duration: 800,
-                easing: 'ease-in-out-quint'
+    } else if (networkInstance) {
+        const nodes = currentGraphData.nodes;
+        const targetNode = nodes.find((n: any) => n.label === label || n.id === label);
+        if (targetNode) {
+            networkInstance.selectNodes([targetNode.id]);
+            networkInstance.focus(targetNode.id, {
+                scale: 1.2,
+                animation: {
+                    duration: 800,
+                    easingFunction: 'easeInOutQuad'
+                }
             });
-            
             statusLabel.textContent = `Focused on ${label}`;
         }
     }
-    
+
     if (symbolSearch) symbolSearch.value = label;
 }
 
@@ -321,13 +417,11 @@ if (viewSelect) {
     });
 }
 
-// Initial Ready Signal
 vscode.postMessage({ command: 'ready' });
 
 function render() {
     const view = viewSelect.value;
 
-    // Reset containers to ensure clean render
     if (cyContainer) cyContainer.style.display = 'none';
     if (mermaidContainer) {
         mermaidContainer.style.display = 'none';
@@ -336,33 +430,11 @@ function render() {
         mermaidContainer.style.cursor = 'default';
     }
 
-    if (view === 'class_diagram' || view === 'function_signatures') {
+    if (view === 'class_diagram' || view === 'function_signatures' || view === 'module_dependency_graph' || view === 'external_library_graph') {
         renderMermaidView(view);
     } else {
         renderCytoscapeView(view);
     }
-}
-
-/**
- * Cleans up Mermaid code to prevent rendering errors.
- * Ensures node labels are properly quoted and special characters are handled.
- */
-function preprocessMermaid(code: string): string {
-    if (code.includes('classDiagram')) {
-        return code; // Do NOT run the node bracket replacement on class diagrams!
-    }
-    return code.split('\n').map(line => {
-        const trimmed = line.trim();
-        // Skip header definitions and keywords
-        if (trimmed.match(/^(subgraph|end|class|state|note|participant|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|gitGraph|flowchart|graph|class)/i)) {
-            return line;
-        }
-        // Identify node definitions like ID[Label] and wrap label in quotes
-        return line.replace(/([a-zA-Z0-9_-]+)\s*([\[\(\{]{1,2})\s*([^"'\n\r\t]+?)\s*([\]\)\}]{1,2})/g, (match, id, open, label, close) => {
-            const safeLabel = label.replace(/"/g, "'");
-            return `${id}${open}"${safeLabel.trim()}"${close}`;
-        });
-    }).join('\n');
 }
 
 async function renderMermaidView(view: string) {
@@ -370,37 +442,468 @@ async function renderMermaidView(view: string) {
     if (mermaidContainer) {
         mermaidContainer.style.display = 'block';
         
-        const rawDiagram = view === 'class_diagram' ? currentClassDiagram : currentFunctionSignatures;
+        let rawDiagram = '';
+        if (view === 'class_diagram') rawDiagram = currentClassDiagram;
+        else if (view === 'function_signatures') rawDiagram = currentFunctionSignatures;
+        else if (view === 'module_dependency_graph') rawDiagram = currentModuleDependencyGraph;
+        else if (view === 'external_library_graph') rawDiagram = currentExternalLibraryGraph;
+
         const sanitizedDiagram = preprocessMermaid(rawDiagram);
         const id = `mermaid-render-${Date.now()}`;
         
-        // Render to a temporary string first to let mermaid generate the SVG
         try {
             const { svg } = await mermaid.render(id, sanitizedDiagram);
             mermaidContainer.innerHTML = `<div class="mermaid">${svg}</div>`;
-            
-            // Enable Pan/Zoom
             const handlers = enablePanZoom(mermaidContainer);
-            
-            // Initial fit
             handlers.fitToScreen();
             
         } catch (e: any) {
             console.error("📊 Mermaid Syntax Error:", e);
-            
-            console.group("❌ Faulty Mermaid Source");
-            console.log(sanitizedDiagram);
-            console.groupEnd();
-
             mermaidContainer.innerHTML = `
                 <div style="color:var(--vscode-errorForeground); padding:20px; background:var(--vscode-inputValidation-errorBackground); border:1px solid var(--vscode-errorForeground); border-radius:4px;">
                     <div style="font-weight:bold; margin-bottom:8px;"><span class="codicon codicon-error"></span> Mermaid Render Failed</div>
                     <div style="font-family:monospace; font-size:11px; white-space:pre-wrap;">${e.message || e}</div>
-                    <div style="margin-top:10px; font-size:10px; opacity:0.8;">The error and source have been logged to the Developer Tools console (Help > Toggle Developer Tools).</div>
                 </div>
             `;
         }
     }
+}
+
+function renderCytoscapeView(viewType: string) {
+    if (mermaidContainer) mermaidContainer.style.display = 'none';
+    if (cyContainer) cyContainer.style.display = 'block';
+
+    if (!currentGraphData) return;
+
+    const visNodes: any[] = [];
+    const visEdges: any[] = [];
+
+    const hideOrphans = hideOrphansCheckbox ? hideOrphansCheckbox.checked : false;
+    const groupingMode = groupingModeSelect ? groupingModeSelect.value : 'none';
+    const layoutStyle = layoutStyleSelect ? layoutStyleSelect.value : 'organic';
+
+    // 1. Process specific Graph / Topology views
+    if (viewType === 'module_dependency_graph') {
+        const folderNodesMap = new Map<string, any>();
+        const folderEdgesSet = new Set<string>();
+
+        // Gather folders from file paths
+        currentGraphData.nodes.forEach((n: any) => {
+            if (n.type === 'file' && n.filePath) {
+                const folder = n.filePath.includes('/') ? n.filePath.substring(0, n.filePath.lastIndexOf('/')) : '.';
+                if (!folderNodesMap.has(folder)) {
+                    folderNodesMap.set(folder, {
+                        id: `folder_${folder}`,
+                        label: `📁 ${folder}`,
+                        shape: 'box',
+                        color: { background: '#1572b6', border: '#ffffff' }
+                    });
+                }
+            }
+        });
+
+        // Gather cross-folder imports
+        currentGraphData.edges.forEach((e: any) => {
+            if (e.label === 'imports') {
+                const src = currentGraphData.nodes.find((n: any) => n.id === e.source);
+                const trg = currentGraphData.nodes.find((n: any) => n.id === e.target);
+                if (src && trg && src.filePath && trg.filePath) {
+                    const srcFolder = src.filePath.includes('/') ? src.filePath.substring(0, src.filePath.lastIndexOf('/')) : '.';
+                    const trgFolder = trg.filePath.includes('/') ? trg.filePath.substring(0, trg.filePath.lastIndexOf('/')) : '.';
+                    if (srcFolder !== trgFolder) {
+                        const edgeId = `folder_${srcFolder}-->folder_${trgFolder}`;
+                        if (!folderEdgesSet.has(edgeId)) {
+                            folderEdgesSet.add(edgeId);
+                            visEdges.push({
+                                id: edgeId,
+                                from: `folder_${srcFolder}`,
+                                to: `folder_${trgFolder}`,
+                                arrows: 'to',
+                                color: { color: '#888888', highlight: '#ff9d00' }
+                            });
+                        }
+                    }
+                }
+            }
+        });
+
+        folderNodesMap.forEach(node => {
+            visNodes.push({
+                ...node,
+                font: { color: '#ffffff', face: 'monospace', size: 12 },
+                customData: { type: 'folder', label: node.label }
+            });
+        });
+
+    } else if (viewType === 'external_library_graph') {
+        const libraryNodes = currentGraphData.nodes.filter((n: any) => n.type === 'library');
+        const importedFileIds = new Set<string>();
+
+        currentGraphData.edges.forEach((e: any) => {
+            const trg = currentGraphData.nodes.find((n: any) => n.id === e.target);
+            if (trg && trg.type === 'library') {
+                importedFileIds.add(e.source);
+                visEdges.push({
+                    id: e.id,
+                    from: e.source,
+                    to: e.target,
+                    label: 'imports',
+                    arrows: 'to',
+                    color: { color: '#d19a66', highlight: '#ff9d00' }
+                });
+            }
+        });
+
+        currentGraphData.nodes.forEach((n: any) => {
+            if (n.type === 'library' || importedFileIds.has(n.id)) {
+                let shape = n.type === 'library' ? 'hexagon' : 'box';
+                let color = n.type === 'library' ? '#d19a66' : '#569cd6';
+
+                visNodes.push({
+                    id: n.id,
+                    label: n.label,
+                    shape: shape,
+                    color: {
+                        background: color,
+                        border: '#ffffff'
+                    },
+                    font: { color: '#ffffff', face: 'monospace', size: 12 },
+                    customData: n
+                });
+            }
+        });
+
+    } else if (viewType === 'hotspot_complexity_graph') {
+        const fileNodes = currentGraphData.nodes.filter((n: any) => n.type === 'file');
+        
+        fileNodes.forEach((n: any) => {
+            const lines = n.linesCount || 50; 
+            const nodeSize = Math.max(15, Math.min(60, 15 + (lines / 10)));
+            
+            let color = '#569cd6'; 
+            if (lines > 1000) color = '#e74c3c'; 
+            else if (lines > 300) color = '#e67e22'; 
+
+            visNodes.push({
+                id: n.id,
+                label: `${n.label}\n(${lines} LOC)`,
+                shape: 'box',
+                size: nodeSize,
+                color: {
+                    background: color,
+                    border: '#ffffff'
+                },
+                font: { color: '#ffffff', face: 'monospace', size: 12, multi: 'html' },
+                customData: n
+            });
+        });
+
+        currentGraphData.edges.forEach((e: any) => {
+            if (e.label === 'imports') {
+                const src = fileNodes.find((n: any) => n.id === e.source);
+                const trg = fileNodes.find((n: any) => n.id === e.target);
+                if (src && trg) {
+                    visEdges.push({
+                        id: e.id,
+                        from: e.source,
+                        to: e.target,
+                        arrows: 'to',
+                        color: { color: '#888888', highlight: '#ff9d00' }
+                    });
+                }
+            }
+        });
+
+    } else {
+        // Fallback for default views (Call/Import Graphs)
+        currentGraphData.edges.forEach((e: any) => {
+            let include = false;
+            if (viewType === 'call_graph' && e.label === 'calls') include = true;
+            if (viewType === 'import_graph' && e.label === 'imports') include = true;
+
+            if (include) {
+                visEdges.push({
+                    id: e.id,
+                    from: e.source,
+                    to: e.target,
+                    label: e.label,
+                    arrows: 'to',
+                    color: { color: '#888888', highlight: '#ff9d00' },
+                    font: { color: '#888888', size: 10, align: 'top' }
+                });
+            }
+        });
+
+        currentGraphData.nodes.forEach((n: any) => {
+            let shape = 'ellipse';
+            let color = '#3c3c3c'; 
+
+            if (n.type === 'file') {
+                shape = 'box';
+                color = '#569cd6';
+            } else if (n.type === 'class') {
+                shape = 'database';
+                color = '#4ec9b0';
+            } else if (n.type === 'function') {
+                shape = 'ellipse';
+                color = '#dcdcaa';
+            } else if (n.type === 'library') {
+                shape = 'hexagon';
+                color = '#d19a66';
+            }
+
+            let nodeGroup: string | undefined = undefined;
+            if (groupingMode === 'file') {
+                nodeGroup = n.filePath || 'External / Global';
+            } else if (groupingMode === 'type') {
+                nodeGroup = n.type;
+            }
+
+            visNodes.push({
+                id: n.id,
+                label: n.label,
+                shape: shape,
+                group: nodeGroup,
+                color: nodeGroup ? undefined : {
+                    background: color,
+                    border: '#ffffff',
+                    highlight: {
+                        background: '#ff9d00',
+                        border: '#ffffff'
+                    }
+                },
+                font: { color: '#ffffff', face: 'monospace', size: 12 },
+                title: `Type: s:${n.type.charAt(0).toUpperCase() + n.type.slice(1)}\nPath: ${n.filePath || ''}\nID: ${n.id}`,
+                customData: n
+            });
+        });
+    }
+
+    // 2. Filter unconnected nodes (Orphans) if requested
+    let finalVisNodes = visNodes;
+    if (hideOrphans) {
+        const connectedNodeIds = new Set<string>();
+        visEdges.forEach((e: any) => {
+            connectedNodeIds.add(e.from);
+            connectedNodeIds.add(e.to);
+        });
+        finalVisNodes = visNodes.filter((n: any) => connectedNodeIds.has(n.id));
+    }
+
+    // 3. Configure layout and physics dynamically
+    let layoutOptions: any = { improvedLayout: true };
+    let physicsOptions: any = { enabled: true };
+
+    if (layoutStyle === 'hierarchical_ud' || layoutStyle === 'hierarchical_lr') {
+        const dir = layoutStyle === 'hierarchical_ud' ? 'UD' : 'LR';
+        layoutOptions = {
+            hierarchical: {
+                enabled: true,
+                direction: dir,
+                sortMethod: 'hubsize',
+                nodeSpacing: 150,
+                treeSpacing: 250,
+                blockShifting: true,
+                edgeMinimization: true,
+                parentCentralization: true
+            }
+        };
+        physicsOptions = { enabled: false };
+    } else if (layoutStyle === 'organic') {
+        layoutOptions = { hierarchical: { Directory: false } };
+        physicsOptions = {
+            enabled: true,
+            solver: 'barnesHut',
+            barnesHut: {
+                theta: 0.5,
+                gravitationalConstant: -2000,
+                centralGravity: 0.3,
+                springLength: 95,
+                springConstant: 0.04,
+                damping: 0.09,
+                avoidOverlap: 1
+            },
+            stabilization: {
+                enabled: true,
+                iterations: 1000,
+                updateInterval: 100,
+                onlyDynamicEdges: false,
+                fit: true
+            }
+        };
+    } else if (layoutStyle === 'circular') {
+        layoutOptions = { hierarchical: { enabled: false } };
+        physicsOptions = { enabled: false };
+        
+        const radius = Math.max(200, finalVisNodes.length * 15);
+        finalVisNodes.forEach((n: any, idx: number) => {
+            const angle = (idx / finalVisNodes.length) * 2 * Math.PI;
+            n.x = radius * Math.cos(angle);
+            n.y = radius * Math.sin(angle);
+        });
+    } else if (layoutStyle === 'grid') {
+        layoutOptions = { hierarchical: { enabled: false } };
+        physicsOptions = { enabled: false };
+        
+        const cols = Math.ceil(Math.sqrt(finalVisNodes.length));
+        const spacing = 180;
+        finalVisNodes.forEach((n: any, idx: number) => {
+            const col = idx % cols;
+            const row = Math.floor(idx / cols);
+            n.x = col * spacing;
+            n.y = row * spacing;
+        });
+    }
+
+    const isLarge = finalVisNodes.length > 100;
+
+    const data = {
+        nodes: new DataSet(finalVisNodes),
+        edges: new DataSet(visEdges)
+    };
+
+    const options = {
+        physics: physicsOptions,
+        interaction: {
+            hover: true,
+            zoomView: currentConfig.panningEnabled,
+            dragView: currentConfig.panningEnabled
+        },
+        layout: layoutOptions
+    };
+
+    networkInstance = new Network(cyContainer, data, options);
+
+    if (isLarge && statusLabel) {
+        statusLabel.textContent += ' (Performance Mode Active)';
+        statusLabel.style.color = 'var(--vscode-charts-orange)';
+    }
+
+    networkInstance.on('doubleClick', function(properties) {
+        if (!properties.nodes || properties.nodes.length === 0) return;
+        const nodeId = properties.nodes[0];
+        const matchedNode = visNodes.find(n => n.id === nodeId);
+        const data = matchedNode?.customData;
+
+        if (data && data.filePath) {
+            vscode.postMessage({ 
+                command: 'open', 
+                file: data.filePath, 
+                line: data.line || 0 
+            });
+        }
+    });
+
+    networkInstance.on('hoverNode', function(properties) {
+        const nodeId = properties.node;
+        const matchedNode = visNodes.find(n => n.id === nodeId);
+        const data = matchedNode?.customData;
+        if (!tooltipElement || !data) return;
+
+        const screenPos = networkInstance.canvasToDOM(networkInstance.getPositions([nodeId])[nodeId]);
+        const rect = cyContainer.getBoundingClientRect();
+        const nodeTypeLabel = `s:${data.type.charAt(0).toUpperCase() + data.type.slice(1)}`;
+
+        tooltipElement.innerHTML = `
+            <div style="font-weight: bold; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 4px; margin-bottom: 6px;">
+                <span class="codicon codicon-symbol-class" style="color:var(--vscode-charts-purple)"></span> 
+                ${data.label}
+            </div>
+            <div><strong>RDF Class:</strong> <code style="color:var(--vscode-charts-blue);">${nodeTypeLabel}</code></div>
+            ${data.filePath ? `<div><strong>s:path:</strong> <code style="font-size:10px;">${data.filePath}</code></div>` : ''}
+            <div><strong>s:id:</strong> <code>${nodeId}</code></div>
+        `;
+        tooltipElement.style.display = 'block';
+        tooltipElement.style.left = `${rect.left + screenPos.x + 15}px`;
+        tooltipElement.style.top = `${rect.top + screenPos.y - 15}px`;
+    });
+
+    networkInstance.on('blurNode', function() {
+        if (tooltipElement) tooltipElement.style.display = 'none';
+    });
+}
+
+async function exportVisualGraph(format: 'png' | 'svg', viewType: string) {
+    if (viewType === 'class_diagram' || viewType === 'function_signatures' || viewType === 'module_dependency_graph' || viewType === 'external_library_graph') {
+        const svgElement = mermaidContainer.querySelector('svg');
+        if (!svgElement) {
+            vscode.postMessage({ command: 'showError', message: 'No diagram to export.' });
+            return;
+        }
+
+        if (format === 'svg') {
+            const svgData = getSvgData(svgElement);
+            vscode.postMessage({ command: 'saveContent', name: `${viewType}.svg`, content: svgData, format: 'svg' });
+        } else {
+            const svgData = getSvgData(svgElement);
+            const img = new Image();
+            const scale = 3;
+            
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const rect = svgElement.getBoundingClientRect();
+                const width = rect.width;
+                const height = rect.height;
+
+                canvas.width = width * scale;
+                canvas.height = height * scale;
+                
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    ctx.fillStyle = '#1e1e1e';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    
+                    ctx.scale(scale, scale);
+                    ctx.drawImage(img, 0, 0);
+                    
+                    const pngData = canvas.toDataURL('image/png');
+                    vscode.postMessage({ command: 'saveContent', name: `${viewType}.png`, content: pngData, format: 'png' });
+                }
+            };
+            img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+        }
+    } else {
+        if (!networkInstance) return;
+
+        if (format === 'svg') {
+            vscode.postMessage({ command: 'showError', message: 'Vector (SVG) export not supported for network view. Use PNG instead.' });
+        } else {
+            const canvas = cyContainer.querySelector('canvas');
+            if (canvas) {
+                const pngContent = canvas.toDataURL('image/png');
+                vscode.postMessage({ command: 'saveContent', name: `${viewType}.png`, content: pngContent, format: 'png' });
+            }
+        }
+    }
+}
+
+function getSvgData(svg: SVGSVGElement): string {
+    const serializer = new XMLSerializer();
+    let source = serializer.serializeToString(svg);
+    if(!source.match(/^<svg[^>]+xmlns="http\:\/\/www\.w3\.org\/2000\/svg"/)){
+        source = source.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
+    }
+    if(!source.match(/^<svg[^>]+xmlns:xlink/)){
+        source = source.replace(/^<svg/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
+    }
+    return '<?xml version="1.0" standalone="no"?>\r\n' + source;
+}
+
+function preprocessMermaid(code: string): string {
+    if (code.includes('classDiagram')) {
+        return code;
+    }
+    return code.split('\n').map(line => {
+        const trimmed = line.trim();
+        if (trimmed.match(/^(subgraph|end|class|state|note|participant|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|gitGraph|flowchart|graph)/i)) {
+            return line;
+        }
+
+        return line.replace(/([a-zA-Z0-9_-]+)\s*([\[\(\{]{1,2})\s*([^"'\n\r\t]+?)\s*([\]\)\}]{1,2})/g, (match, id, open, label, close) => {
+            const safeLabel = label.replace(/"/g, "'");
+            return `${id}${open}"${safeLabel.trim()}"${close}`;
+        });
+    }).join('\n');
 }
 
 function enablePanZoom(container: HTMLElement) {
@@ -411,443 +914,73 @@ function enablePanZoom(container: HTMLElement) {
     let startX = 0;
     let startY = 0;
 
-    const innerDiv = container.querySelector('.mermaid') as HTMLElement;
-    if (!innerDiv) return { fitToScreen: () => {} };
-
-    const svg = innerDiv.querySelector('svg') as SVGSVGElement;
+    const svg = container.querySelector('svg') as unknown as SVGSVGElement;
     if (!svg) return { fitToScreen: () => {} };
 
     container.style.overflow = 'hidden';
     container.style.cursor = 'grab';
+    container.style.border = '1px solid var(--vscode-widget-border)';
+    container.style.borderRadius = '4px';
+    container.style.background = 'var(--vscode-editor-background)';
+    container.style.minHeight = '400px'; 
     container.style.position = 'relative';
 
     svg.style.transformOrigin = '0 0';
     svg.style.transition = 'transform 0.1s ease-out';
-    
-    // Remove static sizing
-    svg.removeAttribute('width');
-    svg.removeAttribute('height');
-    svg.style.width = '100%';
+    svg.style.width = '100%'; 
     svg.style.height = '100%';
-    svg.style.maxWidth = 'none';
+    
+    svg.style.display = 'block';
 
     const updateTransform = () => {
         svg.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomScale})`;
     };
 
-    const fitToScreen = () => {
-        const containerRect = container.getBoundingClientRect();
-        const bbox = svg.getBBox();
-        
-        if (bbox.width <= 0 || bbox.height <= 0) return;
-
-        const padding = 40;
-        const availableWidth = containerRect.width - padding;
-        const availableHeight = containerRect.height - padding;
-
-        const scaleX = availableWidth / bbox.width;
-        const scaleY = availableHeight / bbox.height;
-        
-        zoomScale = Math.min(scaleX, scaleY, 1.5); // Limit max auto-zoom to 1.5x
-        
-        panX = (containerRect.width / 2) - (zoomScale * (bbox.x + bbox.width / 2));
-        panY = (containerRect.height / 2) - (zoomScale * (bbox.y + bbox.height / 2));
-        
-        updateTransform();
-    };
-
     container.addEventListener('wheel', (e) => {
-        // Only block scroll if performing a graph zoom action
-        if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-        }
-        const intensity = currentConfig.zoomSensitivity * 0.2;
-        const delta = e.deltaY > 0 ? -intensity : intensity;
-        const factor = Math.exp(delta);
-        
-        const newScale = Math.min(Math.max(0.01, zoomScale * factor), 20);
-        
-        if (currentConfig.zoomToCursor) {
-            const rect = container.getBoundingClientRect();
-            const mouseX = e.clientX - rect.left;
-            const mouseY = e.clientY - rect.top;
-            panX = mouseX - (mouseX - panX) * (newScale / zoomScale);
-            panY = mouseY - (mouseY - panY) * (newScale / zoomScale);
-        }
-        
-        zoomScale = newScale;
+        e.preventDefault();
+        e.stopPropagation();
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        zoomScale *= delta;
         updateTransform();
-        }, { passive: false });
+    }, { passive: false });
 
-    if (!currentConfig.panningEnabled) {
-        container.onmousedown = null;
-    }
-
-    container.onmousedown = (e) => {
+    container.addEventListener('mousedown', (e) => {
         isDragging = true;
         startX = e.clientX - panX;
         startY = e.clientY - panY;
         container.style.cursor = 'grabbing';
-        innerDiv.style.transition = 'none'; 
-    };
+        svg.style.transition = 'none';
+    });
 
-    window.onmousemove = (e) => {
+    window.addEventListener('mousemove', (e) => {
         if (!isDragging) return;
         e.preventDefault();
         panX = e.clientX - startX;
         panY = e.clientY - startY;
         updateTransform();
-    };
+    });
 
-    window.onmouseup = () => {
+    const stopDrag = () => {
         if(isDragging) {
             isDragging = false;
             container.style.cursor = 'grab';
-            innerDiv.style.transition = 'transform 0.1s ease-out';
+            svg.style.transition = 'transform 0.1s ease-out';
         }
     };
 
+    window.addEventListener('mouseup', stopDrag);
+
+    const fitToScreen = () => {
+        const containerRect = container.getBoundingClientRect();
+        const svgRect = svg.getBoundingClientRect();
+        if (svgRect.width === 0 || svgRect.height === 0) return;
+        const scaleX = containerRect.width / svgRect.width;
+        const scaleY = containerRect.height / svgRect.height;
+        zoomScale = Math.min(scaleX, scaleY, 1) * 0.95;
+        panX = (containerRect.width - svgRect.width * zoomScale) / 2;
+        panY = (containerRect.height - svgRect.height * zoomScale) / 2;
+        updateTransform();
+    };
+
     return { fitToScreen };
-}
-
-function renderCytoscapeView(viewType: string) {
-    if (mermaidContainer) mermaidContainer.style.display = 'none';
-    if (cyContainer) cyContainer.style.display = 'block';
-
-    if (!currentGraphData) return;
-
-    const elements: any[] = [];
-    const parentMap = new Map<string, string>();
-
-    // 1. Identify containment for Compound Nodes
-    currentGraphData.edges.forEach((e: any) => {
-        if (e.label === 'contains') {
-            parentMap.set(e.target, e.source);
-        }
-    });
-    
-    // 2. Add Nodes with nesting
-    currentGraphData.nodes.forEach((n: any) => {
-        let cssClass = n.type;
-        if (n.type === 'file') cssClass = 'node-file';
-        else if (n.type === 'class') cssClass = 'node-class';
-        else if (n.type === 'function') cssClass = 'node-function';
-        else if (n.type === 'library') cssClass = 'node-library';
-
-        elements.push({
-            group: 'nodes',
-            data: { 
-                id: n.id, 
-                label: n.label, 
-                type: n.type, 
-                filePath: n.filePath, 
-                line: n.startLine,
-                parent: parentMap.get(n.id) // This triggers the "box-inside-box" rendering
-            },
-            classes: cssClass
-        });
-    });
-
-    // 3. Add Interaction Edges (filtering out "contains" since it's now a nesting relation)
-    currentGraphData.edges.forEach((e: any) => {
-        let include = false;
-        if (viewType === 'call_graph' && e.label === 'calls') include = true;
-        if (viewType === 'import_graph' && e.label === 'imports') include = true;
-
-        if (include) {
-            elements.push({
-                group: 'edges',
-                data: { id: e.id, source: e.source, target: e.target, label: e.label },
-                classes: e.label
-            });
-        }
-    });
-
-    // Use 'cose' (physics) for everything to avoid flat, overlapping graphs
-    // FCose would be better but requires an extension; cose is built-in.
-    
-    const isLarge = elements.length > 500;
-
-    cyInstance = cytoscape({
-        container: cyContainer,
-        elements: elements,
-        style: getCyStyle(),
-        layout: isLarge ? {
-            name: 'dagre',
-            rankDir: 'LR',
-            nodeSep: 120, // Increased spacing
-            rankSep: 200, // Increased spacing
-            animate: false
-        } : {
-            name: 'cose-bilkent',
-            quality: 'proof',           // Highest quality for best packing
-            nodeDimensionsIncludeLabels: true,
-            randomize: false,           // Deterministic layout is less messy
-            fit: true,
-            padding: 30,
-            // --- ULTRA-COMPACT PACKING ---
-            nodeRepulsion: 2500,        // Drastically lower to let nodes huddle
-            idealEdgeLength: 30,        // Very short connections
-            edgeElasticity: 0.55,       // Very strong pull on edges
-            nestingFactor: 0.05,        // Tighten the bounds around children
-            gravity: 2.5,               // Strong pull to center
-            numIter: 5000,
-            tile: true,                 // Aggressively tile orphans
-            tilingPaddingVertical: 20,
-            tilingPaddingHorizontal: 20,
-            animate: false
-        } as any,
-        minZoom: 0.005,
-        maxZoom: 10.0,
-        wheelSensitivity: currentConfig.zoomSensitivity,
-        userPanningEnabled: currentConfig.panningEnabled
-    });
-
-    if (isLarge) {
-        statusLabel.textContent += ' (Performance Mode Active)';
-        statusLabel.style.color = 'var(--vscode-charts-orange)';
-    }
-
-    // CRITICAL FIX: Ensure container is ready and force a spread-out layout
-    setTimeout(() => {
-        if (!cyInstance) return;
-        cyInstance.resize();
-        cyInstance.layout(isLarge ? {
-            name: 'dagre',
-            rankDir: 'LR',
-            nodeSep: 200, // Even wider
-            rankSep: 350, // Even deeper
-            animate: true,
-            animationDuration: 400
-        } : {
-            name: 'cose-bilkent',
-            animate: true,
-            nodeRepulsion: 25000, // Massive repulsion to prevent packing
-            idealEdgeLength: 200,   // Longer connections
-            nodeDimensionsIncludeLabels: true
-        } as any).run();
-        cyInstance.fit(undefined, 60);
-    }, 150);
-
-    // Node Interaction
-    cyInstance.on('tap', 'node', function(evt) {
-        const node = evt.target;
-        const data = node.data();
-        if (data.filePath) {
-            vscode.postMessage({ 
-                command: 'open', 
-                file: data.filePath, 
-                line: data.line || 0 
-            });
-        }
-    });
-}
-
-function getCyStyle() {
-    return [
-        {
-            selector: 'node',
-            style: {
-                'label': 'data(label)',
-                'color': '#ffffff',
-                'font-size': '10px',
-                'text-valign': 'center', // Labels moved inside
-                'text-halign': 'center',
-                'text-wrap': 'wrap',
-                'text-max-width': '80px',
-                'background-color': '#3c3c3c',
-                'border-width': 1.5,
-                'border-color': '#ffffff',
-                'width': '60px', // Larger nodes to fit text
-                'height': '60px',
-                'shape': 'ellipse',
-                'text-outline-color': '#1e1e1e', // Contrast for readability
-                'text-outline-width': 2,
-                'overlay-opacity': 0,
-                'transition-property': 'background-color, line-color, target-arrow-color',
-                'transition-duration': '0.2s'
-            }
-        },
-        {
-            selector: ':parent', // This represents FILES
-            style: {
-                'text-valign': 'top',
-                'text-halign': 'center',
-                'background-color': '#569cd6',
-                'background-opacity': 0.03,
-                'border-color': '#569cd6',
-                'border-opacity': 0.4,
-                'border-width': 2,
-                'border-style': 'solid',
-                'padding': '40px', // More space inside files
-                'shape': 'roundrectangle',
-                'font-size': '14px',
-                'font-weight': 'bold',
-                'text-margin-y': '-15px'
-            }
-        },
-        {
-            selector: '.node-class',
-            style: {
-                'background-color': '#4ec9b0', // Teal
-                'border-color': '#ffffff',
-                'shape': 'rectangle',
-                'width': '80px'
-            }
-        },
-        {
-            selector: '.node-function',
-            style: {
-                'background-color': '#dcdcaa', // Yellow
-                'border-color': '#ffffff',
-                'shape': 'ellipse'
-            }
-        },
-        {
-            selector: 'node[type="method"]',
-            style: {
-                'background-color': '#ce9178', // Orange/Brown
-                'border-color': '#ffffff',
-                'shape': 'round-rectangle'
-            }
-        },
-        {
-            selector: '.node-library',
-            style: {
-                'background-color': '#6e3e1e',
-                'border-color': '#f96',
-                'shape': 'hexagon',
-                'color': '#ffffff'
-            }
-        },
-        {
-            selector: 'edge',
-            style: {
-                'width': 1.5,
-                'line-color': '#666',
-                'target-arrow-color': '#666',
-                'target-arrow-shape': 'triangle',
-                'curve-style': 'bezier',
-                'arrow-scale': 0.8
-            }
-        },
-        {
-            selector: 'edge.contains',
-            style: {
-                'width': 1,
-                'line-style': 'dashed',
-                'line-color': '#444',
-                'target-arrow-shape': 'none'
-            }
-        },
-        {
-            selector: 'edge.imports',
-            style: {
-                'target-arrow-color': '#569cd6',
-                'target-arrow-shape': 'triangle'
-            }
-        },
-        {
-            selector: 'node.highlight',
-            style: {
-                'background-color': '#ff9d00',
-                'transition-property': 'background-color, width, height',
-                'transition-duration': '0.3s',
-                'width': '35px',
-                'height': '35px',
-                'border-width': 4,
-                'border-color': '#ffffff',
-                'font-size': '14px',
-                'font-weight': 'bold',
-                'z-index': 9999
-            }
-        },
-        {
-            selector: 'edge.highlight',
-            style: {
-                'line-color': '#ff9d00',
-                'target-arrow-color': '#ff9d00',
-                'width': '4px',
-                'arrow-scale': 1.5,
-                'z-index': 9998,
-                'opacity': 1
-            }
-        }
-    ];
-}
-
-async function exportVisualGraph(format: 'png' | 'svg', viewType: string) {
-    if (viewType === 'class_diagram') {
-        const svgElement = mermaidContainer.querySelector('svg');
-        if (!svgElement) {
-            vscode.postMessage({ command: 'showError', message: 'No diagram to export.' });
-            return;
-        }
-
-        if (format === 'svg') {
-            const svgData = getSvgData(svgElement);
-            vscode.postMessage({ command: 'saveContent', name: 'class_diagram.svg', content: svgData, format: 'svg' });
-        } else {
-            // PNG Export for Mermaid (SVG -> Canvas -> PNG)
-            const svgData = getSvgData(svgElement);
-            const img = new Image();
-            
-            // High resolution scale
-            const scale = 3;
-            
-            img.onload = () => {
-                const canvas = document.createElement('canvas');
-                // Use getBBox to ensure we capture the whole visual area, or clientWidth/Height
-                // Mermaid SVGs often set width/height to 100% or maxWidth, so we rely on viewBox or bounding client rect
-                const rect = svgElement.getBoundingClientRect();
-                const width = rect.width;
-                const height = rect.height;
-
-                canvas.width = width * scale;
-                canvas.height = height * scale;
-                
-                const ctx = canvas.getContext('2d');
-                if (ctx) {
-                    // Fill background (transparent by default, let's make it dark theme bg or white? 
-                    // Usually PNGs for diagrams are better with transparent or matching bg. 
-                    // Let's use the editor background color for consistency)
-                    ctx.fillStyle = '#1e1e1e'; // Default dark theme bg
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
-                    
-                    ctx.scale(scale, scale);
-                    ctx.drawImage(img, 0, 0);
-                    
-                    const pngData = canvas.toDataURL('image/png');
-                    vscode.postMessage({ command: 'saveContent', name: 'class_diagram.png', content: pngData, format: 'png' });
-                }
-            };
-            
-            // Handle loading SVG data into image
-            img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
-        }
-    } else {
-        // Cytoscape Export
-        if (!cyInstance) return;
-
-        if (format === 'svg') {
-            const svgContent = cyInstance.svg({ scale: 1, full: true });
-            vscode.postMessage({ command: 'saveContent', name: `${viewType}.svg`, content: svgContent, format: 'svg' });
-        } else {
-            const pngContent = cyInstance.png({ scale: 3, full: true, output: 'base64uri' });
-            vscode.postMessage({ command: 'saveContent', name: `${viewType}.png`, content: pngContent, format: 'png' });
-        }
-    }
-}
-
-function getSvgData(svg: SVGSVGElement): string {
-    const serializer = new XMLSerializer();
-    let source = serializer.serializeToString(svg);
-    // Add namespaces if missing
-    if(!source.match(/^<svg[^>]+xmlns="http\:\/\/www\.w3\.org\/2000\/svg"/)){
-        source = source.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
-    }
-    if(!source.match(/^<svg[^>]+xmlns:xlink/)){
-        source = source.replace(/^<svg/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
-    }
-    return '<?xml version="1.0" standalone="no"?>\r\n' + source;
 }

@@ -101,7 +101,8 @@ ${memoryBlock}
 6. **STRUCTURAL RECONNAISSANCE**: For any task involving more than two files, your FIRST action should be \`read_code_graph(type="summary")\`. This is 10x faster than reading files one-by-one and prevents architectural errors.
 7. **RCA**: If the last turn was a FAILURE, your 'scratchpad' MUST begin with "RCA: [Reason why the last step failed]".
 8. **JSON ONLY**: Your response must be a single valid JSON object.
-9. **SPATIAL AWARENESS**: Check the "ACTIVE CONTEXT INVENTORY". If a file is listed, you possess its content. Reading it again is a violation of turn economy.
+9. **GROUNDING MANDATE**: Before using 'read_file' or 'add_files_to_context', you MUST perform a "Context Audit": check the 'ACTIVE CONTEXT INVENTORY' below. If the file is already listed as 'FULL CONTENT LOADED', you are FORBIDDEN from calling the tool.
+10. **SPATIAL AWARENESS**: Look at the 'PROJECT WORLD STATE' tree. Markers **[C]** mean the file is already in your memory. Reading or adding a **[C]** file is a critical logical failure that wastes tokens.
 
 ### ⏳ MISSION BUDGET & POCKET PROTECTION
 Turns wasted on repetition or broken tools directly decrease your mission score and cost the user money.
@@ -135,13 +136,47 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
 
                 if (!jsonString) throw new Error("No valid JSON.");
 
-                let plan: Plan;
-                try { plan = JSON.parse(jsonString) as Plan; } catch (e: any) { throw new Error(`JSON Error.`); }
+                let plan: any;
+                try {
+                    plan = JSON.parse(jsonString);
+                } catch (parseErr) {
+                    // Fallback: Attempt to extract tool/arguments using Regex if JSON is malformed
+                    const toolMatch = jsonString.match(/"name"\s*:\s*"([^"]+)"/);
+                    const argsMatch = jsonString.match(/"arguments"\s*:\s*"([\s\S]+?)"\s*}\s*}/);
+
+                    if (toolMatch) {
+                        const toolName = toolMatch[1];
+                        let params: any = {};
+                        if (argsMatch) {
+                            const rawArgs = argsMatch[1];
+                            try {
+                                params = JSON.parse(rawArgs.replace(/\\"/g, '"').replace(/\\n/g, '\n'));
+                            } catch {
+                                // Extract command directly for poorly-escaped shell commands
+                                const cmdMatch = rawArgs.match(/"command"\s*:\s*"([\s\S]+)"/);
+                                if (cmdMatch) {
+                                    params = { command: cmdMatch[1].replace(/\\"/g, '"').replace(/\\n/g, '\n') };
+                                }
+                            }
+                        }
+                        plan = {
+                            tool_calls: [{
+                                type: 'function',
+                                function: {
+                                    name: toolName,
+                                    arguments: params
+                                }
+                            }]
+                        };
+                    } else {
+                        throw new Error(`JSON Error.`);
+                    }
+                }
 
                 this.validateAndInitializePlan(plan, toolsToUse);
                 return { plan, rawResponse: lastResponse };
 
-            } catch (error: any) {
+                } catch (error: any) {
                 lastError = error.message;
                 if (i >= this.maxRetries) return { plan: null, rawResponse: lastResponse, error: `Failed.` };
             }
@@ -163,6 +198,56 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
 
     public validateAndInitializePlan(plan: any, allowedTools: ToolDefinition[]): void {
         if (!plan || typeof plan !== 'object') throw new Error("Not an object.");
+
+        // --- POLYMORPHIC PARSING LAYER ---
+        // 1. Handle native tool_calls format
+        if (plan.tool_calls && Array.isArray(plan.tool_calls)) {
+            plan.tasks = plan.tool_calls.map((tc: any, idx: number) => {
+                let params = {};
+                if (tc.function?.arguments) {
+                    if (typeof tc.function.arguments === 'string') {
+                        try {
+                            params = JSON.parse(tc.function.arguments);
+                        } catch (e) {
+                            // Recover unescaped commands
+                            const argStr = tc.function.arguments;
+                            const cmdMatch = argStr.match(/"command"\s*:\s*"([\s\S]+?)"/);
+                            if (cmdMatch) {
+                                params = { command: cmdMatch[1].replace(/\\"/g, '"').replace(/\\n/g, '\n') };
+                            } else {
+                                params = { raw: argStr };
+                            }
+                        }
+                    } else if (typeof tc.function.arguments === 'object') {
+                        params = tc.function.arguments;
+                    }
+                }
+                return {
+                    id: idx + 1,
+                    task_type: 'simple_action',
+                    description: `Executing tool ${tc.function?.name || 'unknown'}`,
+                    action: tc.function?.name,
+                    parameters: params,
+                    status: 'pending',
+                    result: null,
+                    retries: 0
+                };
+            });
+        }
+        // 2. Handle root-level single tool format
+        else if (plan.tool && !plan.tasks) {
+            plan.tasks = [{
+                id: 1,
+                task_type: 'simple_action',
+                description: plan.thought || plan.new_remark || "Executing tool...",
+                action: plan.tool,
+                parameters: plan.params || {},
+                status: 'pending',
+                result: null,
+                retries: 0
+            }];
+        }
+
         if (!plan.tasks) {
             if (plan.steps && Array.isArray(plan.steps)) plan.tasks = plan.steps;
             else if (plan.plan && Array.isArray(plan.plan)) plan.tasks = plan.plan;
@@ -257,10 +342,11 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
     Your goal is to optimize the project context for a human-led technical discussion.
 
     ### 📜 LIBRARIAN CONSTITUTION
-    1. **ATTENTION HYGIENE**: You MUST remove files that are not directly relevant to the current question using \`remove_files\`.
-    2. **SCOUTING**: Use \`read_file_relations\` to find dependencies. Do not guess.
-    3. **DOCUMENTATION**: Record all technical findings in the 'Briefing' using \`add_briefing_entry\`. This briefing is the ONLY way the Chat LLM will understand the project's "Hidden Logic".
-    4. **NO IMPLEMENTATION**: You are a Scout, not a Coder. Do NOT attempt to fix code. Your job finishes when the right files are loaded and the briefing is clear.
+    1. **SPATIAL AWARENESS (MANDATORY)**: Before asking for a file, look at the tree. If it is marked **[C]**, you ALREADY possess it. Asking for it again is a system violation.
+    2. **ATTENTION HYGIENE**: You MUST remove files that are not directly relevant to the current question using \`remove_files\`.
+    3. **SCOUTING**: Use \`read_file_relations\` to find dependencies. Do not guess.
+    4. **DOCUMENTATION**: Record all technical findings in the 'Briefing' using \`add_briefing_entry\`. This briefing is the ONLY way the Chat LLM will understand the project's "Hidden Logic".
+    5. **NO IMPLEMENTATION**: You are a Scout, not a Coder. Do NOT attempt to fix code. Your job finishes when the right files are loaded and the briefing is clear.
 
     ### 🛠️ AVAILABLE LIBRARIAN TOOLS:
     ${allowedTools.map(t => `- ${t.name}: ${t.description}`).join('\n')}
@@ -274,6 +360,11 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
     public async getBuilderSystemPrompt(allowedTools: ToolDefinition[], importedSkillIds?: string[]): Promise<string> {
         return `You are the **Sovereign Project Builder**.
     Your goal is to autonomously implement the user's request.
+
+    ### 🛠️ ERROR RECOVERY & JSON HYGIENE
+    - If you receive an "Unknown tool" error, DO NOT repeat the call. Check the 'AVAILABLE TOOLS' list below and pivot to a different strategy (e.g., use 'execute_command' to run 'ls' or 'grep').
+    - If you are stuck in a loop, use 'read_code_graph' to reset your awareness.
+    - **JSON ESCAPING MANDATE**: When outputting tool parameters containing newlines, quotes, or backslashes, you MUST escape them correctly. Do NOT write raw unescaped newlines or double quotes inside a JSON string value, as this causes parser failures like "Unterminated string in JSON".
 
     ### 🏗️ BUILDER PROTOCOL
     1. **ASSEMBLY**: Before writing code, you MUST 'possess' (add to context) the target file AND its direct dependencies (interfaces, types, or base classes).
@@ -386,7 +477,11 @@ You operate in a high-frequency loop: **Reason -> Act -> Observe**.
     - Briefing: Summarize internal project discoveries in the \`technical_briefing\`.
 
 15.  **🎨 VISUAL ASSET PROTOCOL (NON-NEGOTIABLE)**:
+    - **VISION GROUNDING**: Check the 'ACCESSIBLE FILE CONTENTS'. If a file is marked with '🖼️' and 'IMAGE LOADED IN VISION BUFFER', you can see it directly. 
+    - **NO REDUNDANT ANALYSIS**: You are FORBIDDEN from using \`analyze_image\` on files already in the vision buffer. Simply refer to the image content in your thoughts.
     - When creating or modifying images, always use \`generate_image\` or \`edit_image_asset\`.
+    - **DIMENSION MANDATE**: If the request implies a specific screen ratio (e.g. "for a phone", "16:9", "HD"), you MUST calculate the pixel dimensions and provide them as \`width\` and \`height\` attributes on the tag. 
+    - **16:9 Example**: Use \`width="1280" height="720"\`.
     - **VERIFICATION**: These tools provide an automatic visual audit. Review the 'VISUAL VERIFICATION REPORT' in the tool output. If the result is technically incorrect (e.g., wrong background color), you MUST use \`edit_image_asset\` to fix it in the next turn. Do NOT settle for "close enough" if it violates project standards.
 
 16.  **🛡️ PROACTIVE RESEARCH PROTOCOL (NON-NEGOTIABLE)**:

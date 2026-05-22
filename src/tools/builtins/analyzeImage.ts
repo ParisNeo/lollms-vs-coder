@@ -11,19 +11,21 @@ export const analyzeImageTool: ToolDefinition = {
         { name: "file_path", type: "string", description: "The relative path to the image file.", required: true },
         { name: "prompt", type: "string", description: "Specific question about the image (e.g., 'What is the date in this photo?', 'Describe the landscape').", required: false }
     ],
-    async execute(params: { file_path: string, prompt?: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
-        if (!params.file_path) {
-            return { success: false, output: "Error: 'file_path' is required." };
+    async execute(params: { file_path?: string, path?: string, prompt?: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
+        const targetPath = params.file_path || params.path;
+
+        if (!targetPath) {
+            return { success: false, output: "Error: 'file_path' or 'path' is required." };
         }
 
         try {
             // Correctly use the contextManager for path resolution
-            const res = await env.contextManager.resolveWorkspaceFromPath(params.file_path);
-            if (!res) return { success: false, output: `Could not resolve path: ${params.file_path}` };
+            const res = await env.contextManager.resolveWorkspaceFromPath(targetPath);
+            if (!res) return { success: false, output: `Could not resolve path: ${targetPath}` };
 
             const data = await vscode.workspace.fs.readFile(res.uri);
             const base64 = Buffer.from(data).toString('base64');
-            const ext = path.extname(params.file_path).replace('.', '').toLowerCase();
+            const ext = path.extname(targetPath).replace('.', '').toLowerCase();
             const mime = ext === 'svg' ? 'svg+xml' : (ext === 'jpg' ? 'jpeg' : ext);
 
             const userPrompt = params.prompt || "Describe this image in detail.";

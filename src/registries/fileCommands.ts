@@ -485,16 +485,17 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 const applied = await vscode.workspace.applyEdit(edit);
                 if (applied) {
                     await originalDoc.save();
-                    
+
                     // Close the diff tab before cleaning up the file
                     if (vscode.window.activeTextEditor?.document.uri.toString() === generatedUri.toString()) {
                         await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
                     }
-                    
+
                     // Clean up: This deletes the file from disk
                     await services.diffManager.cleanup(generatedUri);
-                    
-                    await vscode.window.showTextDocument(originalDoc);
+
+                    // RESTORE: Use DiffManager to restore original document with its cached position
+                    await services.diffManager.restoreEditorPosition(originalUri);
                     vscode.window.showInformationMessage("Changes accepted.");
                 }
             }
@@ -555,7 +556,14 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const resolution = await services.contextManager.resolveWorkspaceFromPath(sanitizedFilePath);
         if (!resolution || !resolution.uri) {
             Logger.error(`Resolution failed for path: ${sanitizedFilePath}`);
-            return { success: false, error: "Invalid path or workspace not found" };
+            return { 
+                success: false, 
+                error: "Invalid path or workspace not found",
+                messageId: messageId,
+                blockIndex: options?.blockIndex,
+                hunkIndex: options?.hunkIndex,
+                filePath: sanitizedFilePath
+            };
         }
 
         const { uri: fileUri } = resolution;
@@ -598,6 +606,19 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         
         try {
             // Force a refresh of the document in case it was modified by a previous hunk in a bulk operation
+            try {
+                document = await vscode.workspace.openTextDocument(fileUri);
+            } catch (openErr) {
+                return { 
+                    success: false, 
+                    error: "Could not open file for editing.",
+                    messageId: messageId,
+                    blockIndex: options?.blockIndex,
+                    hunkIndex: options?.hunkIndex,
+                    filePath: sanitizedFilePath
+                };
+            }
+
             if (options?.autoSave) {
                 await vscode.commands.executeCommand('workbench.action.files.save');
             }
@@ -770,13 +791,25 @@ ${originalContent}
                     return { 
                         success: false, 
                         error: `Match failure in ${sanitizedFilePath}.`,
-                        repaired: false
+                        repaired: false,
+                        messageId: messageId,
+                        blockIndex: options?.blockIndex,
+                        hunkIndex: options?.hunkIndex,
+                        filePath: sanitizedFilePath
                     };
                 }
 
                 return { success: true, alreadyApplied: !wasActuallyModified || !!options?.autoSave };
-            }
-            return { success: false, error: "Failed to apply edits to document." };
+                }
+                return { 
+                success: false, 
+                error: "Failed to apply edits to document.",
+                repaired: false,
+                messageId: messageId,
+                blockIndex: options?.blockIndex,
+                hunkIndex: options?.hunkIndex,
+                filePath: sanitizedFilePath
+                };
 
         } catch(e: any) {
             vscode.window.showErrorMessage(`Error accessing file ${filePath}: ${e.message}`);

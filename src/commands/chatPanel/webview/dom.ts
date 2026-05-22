@@ -85,6 +85,7 @@ export interface DiscussionCapabilities {
     disableProjectContext: boolean;
     ttftTimeout: number;
     interTokenTimeout: number;
+    contextGovernorThreshold: number;
     selectedFolders?: string[];
     folderSettings?: Record<string, { tree: boolean, content: boolean }>;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
@@ -128,7 +129,7 @@ export const state: {
     appliedState: {},
     usageData: { project: [], extra: [] },
     currentUsageSort: { column: 'tokens', direction: 'desc' }, // Default to biggest first
-    lastContextData: null,
+    lastContextData: { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "" },
     capabilities: null,
     currentBranch: '',
     lastCommitHash: '',
@@ -200,9 +201,11 @@ export const dom = {
     get searchPrevBtn() { return document.getElementById('search-prev') as HTMLButtonElement; },
     get searchNextBtn() { return document.getElementById('search-next') as HTMLButtonElement; },
     get searchCloseBtn() { return document.getElementById('search-close') as HTMLButtonElement; },
-    get agentToolsButton() { return document.getElementById('agentToolsButton') as HTMLButtonElement; },
+    get discussionToolsButton() { return document.getElementById('discussionToolsButton') || document.getElementById('discussion-tools-btn'); },
+    get agentToolsButton() { return document.getElementById('agentToolsButton') || document.getElementById('agent-tools-btn'); },
     get agentSettingsModal() { return document.getElementById('agent-settings-modal') as HTMLDivElement; },
     get toolsModal() { return document.getElementById('agent-settings-modal') as HTMLDivElement; },
+    get discussionToolsModal() { return document.getElementById('discussion-tools-modal') as HTMLDivElement; },
     get closeAgentSettingsModal() { return document.getElementById('close-agent-settings-modal') as HTMLSpanElement; },
     get closeToolsModal() { return document.getElementById('close-agent-settings-modal') as HTMLSpanElement; },
     get closeDiscussionToolsModal() { return document.getElementById('close-discussion-tools-modal') as HTMLSpanElement; },
@@ -224,6 +227,8 @@ export const dom = {
     get webcamCancelBtn() { return document.getElementById('webcam-cancel') as HTMLButtonElement; },
     get addUserMessageBtn() { return document.getElementById('add-user-message-btn') as HTMLButtonElement; },
     get addAiMessageBtn() { return document.getElementById('add-ai-message-btn') as HTMLButtonElement; },
+    get tempSlider() { return document.getElementById('temp-slider') as HTMLInputElement; },
+    get tempValDisplay() { return document.getElementById('temp-val-display') as HTMLDivElement; },
     get copyContextButton() { return document.getElementById('copyContextButton') as HTMLButtonElement; },
     get statusLabel() { return document.getElementById('status-label') as HTMLDivElement; },
     get hudMatrixBtn() { return document.getElementById('hud-matrix-btn') as HTMLButtonElement; },

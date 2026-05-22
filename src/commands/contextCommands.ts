@@ -59,14 +59,17 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextDefinitionsOnly', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'definitions-only')));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFilesToContext', async (files: string[]) => {
-        if (services.contextManager.getContextStateProvider()) {
-            await services.contextManager.getContextStateProvider()!.addFilesToContext(files);
-            
+        const provider = services.contextManager.getContextStateProvider();
+        if (provider) {
+            const added = await provider.addFilesToContext(files);
+
             // Immediately refresh the current chat bubble if open
-            if (ChatPanel.currentPanel) {
+            if (ChatPanel.currentPanel && added.length > 0) {
                 ChatPanel.currentPanel.updateContextAndTokens();
             }
+            return added;
         }
+        return [];
     }));
 
     // Auto Select Context Files Command
@@ -91,7 +94,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
              discussion.title = `Auto-Context: ${objective}`;
              await services.discussionManager.saveDiscussion(discussion);
              
-             const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
+             const panel = ChatPanel.createOrShow(services, discussion.id);
              
              // Setup Panel Dependencies (same as in newDiscussion)
              panel.agentManager = new AgentManager(

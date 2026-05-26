@@ -111,7 +111,16 @@ const SANITIZE_CONFIG = {
             'expansion-file-list', 'expansion-file-item', 'code-action-btn', 'apply-btn', 
             'add-files-to-context-btn', 'add-and-reprompt-btn', 'copy-files-to-clipboard-btn',
             'learning-card', 'learning-card-header', 'learning-body', 'learning-title', 
-            'learning-content', 'learning-meta', 'project-memory-block', 'memory-summary'
+            'learning-content', 'learning-meta', 'project-memory-block', 'memory-summary',
+            // File Operations Cards & Rows
+            'file-operation-block', 'file-operation-header', 'file-operation-details', 
+            'file-operation-actions', 'file-op-btn', 'path-old', 'path-new', 'file-operation-arrow',
+            // Milestones, Progress, and Builder Reports
+            'milestone-card', 'milestone-card-header', 'milestone-body', 'milestone-section', 
+            'win', 'hurdle', 'fix', 'milestone-section-title', 'milestone-section-content',
+            'builder_report', 'objective', 'briefing', 'timeline', 'timeline-item', 
+            'timeline-dot', 'spinner', 'step', 'active', 'success', 'failed', 'git-event',
+            'agent-thought-step', 'thought-label', 'collapsible-content'
         ] 
     }
 };
@@ -2201,15 +2210,18 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     if (existingDashboard) {
         existingDashboard.className = `context-message ${themeClass}`;
 
-        // Update specific labels
-        const filesLabel = existingDashboard.querySelector('details:nth-of-type(2) summary span');
+        // Update specific labels with 100% precise class queries
+        const filesLabel = existingDashboard.querySelector('.files-count-label');
         if (filesLabel) filesLabel.textContent = `Selected Files (${finalFiles.length})`;
 
-        const skillsLabel = existingDashboard.querySelector('details:last-of-type summary span');
+        const skillsLabel = existingDashboard.querySelector('.skills-count-label');
         if (skillsLabel) skillsLabel.textContent = `Active Skills (${finalSkills.length})`;
 
-        const toolsLabel = existingDashboard.querySelector('details:nth-of-type(4) summary span');
+        const toolsLabel = existingDashboard.querySelector('.tools-count-label');
         if (toolsLabel) toolsLabel.textContent = `Active Tools (${finalTools.length})`;
+
+        const diagramsLabel = existingDashboard.querySelector('.diagrams-count-label');
+        if (diagramsLabel) diagramsLabel.textContent = `Active Diagrams (${(diagrams || []).length})`;
 
         // Re-render only the internal scrollable lists
         const scrollContainer = existingDashboard.querySelector('.hud-scroll-container');
@@ -2315,7 +2327,7 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                     </div>
                 </div>
                 <div class="hud-scroll-container">
-                    <details class="info-collapsible" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);">
+                    <details class="info-collapsible briefing-details" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
                                 <span>Mission Briefing & Constraints</span>
@@ -2323,16 +2335,16 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                             </div>
                         </summary>
                         <div class="collapsible-content">
-                            <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5; opacity: 0.9;">
+                            <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5; color: var(--vscode-editor-foreground);">
                                 ${briefing ? renderDataBriefing(briefing) : '<div style="font-style:italic; opacity:0.5;">No specific task constraints defined. Click the shield to add instructions.</div>'}
                             </div>
                         </div>
                     </details>
 
-                    <details class="info-collapsible" style="margin-bottom: 6px;">
+                    <details class="info-collapsible files-details" style="margin-bottom: 6px;">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span>Selected Files (${files.length})</span>
+                                <span class="files-count-label">Selected Files (${files.length})</span>
                                 <div style="display: flex; gap: 8px; align-items: center;">
                                     <button id="view-usage-context-btn" class="icon-btn" title="Verify File Sizes / Token Usage"><i class="codicon codicon-dashboard"></i></button>
                                     <div style="width: 1px; height: 12px; background: var(--vscode-widget-border);"></div>
@@ -2355,10 +2367,10 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                             <div class="hud-external-files-list">${renderFileList(externalFiles, "No search results or external data in context.", true)}</div>
                         </div>
                     </details>
-                    <details class="info-collapsible" style="margin-bottom: 6px;">
+                    <details class="info-collapsible diagrams-details" style="margin-bottom: 6px;">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span>Active Diagrams (${diagrams?.length || 0})</span>
+                                <span class="diagrams-count-label">Active Diagrams (${diagrams?.length || 0})</span>
                                 <button id="add-diagram-context-btn" class="icon-btn" title="Add Diagram"><i class="codicon codicon-add"></i></button>
                             </div>
                         </summary>
@@ -2366,46 +2378,50 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                             ${diagrams && diagrams.length > 0 ? diagrams.map(d => `<div class="context-item" style="flex-direction:column; align-items:stretch;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;"><span style="font-weight:bold; font-size:11px;">${d.type.replace('_', ' ').toUpperCase()}</span><button class="remove-context-btn" data-type="diagram" data-value="${d.type}"><span class="codicon codicon-close"></span></button></div><pre class="mermaid" style="background:var(--vscode-editor-background); border-radius:4px; padding:5px;">${d.mermaid}</pre></div>`).join('') : '<div class="empty-context-msg">No diagrams included.</div>'}
                         </div>
                     </details>
-                    <details class="info-collapsible" style="margin-bottom: 6px;">
+                    <details class="info-collapsible tools-details" style="margin-bottom: 6px;">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span>Active Tools (${finalTools.length})</span>
+                                <span class="tools-count-label">Active Tools (${finalTools.length})</span>
                                 <div style="display: flex; gap: 8px; align-items: center;">
                                     <button id="add-tool-context-btn" class="icon-btn" title="Equip Tool"><i class="codicon codicon-add"></i></button>
                                     ${finalTools.length > 0 ? `<button id="bulk-remove-tools-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Clear</button>` : ''}
                                 </div>
                             </div>
                         </summary>
-                        <div class="collapsible-content hud-tools-list">
-                            ${tools && tools.length > 0
-                                ? `<div class="context-file-list">
-                                    ${tools.map(t => `
-                                        <div class="context-item" style="padding: 4px 8px;">
-                                            <span class="codicon codicon-wrench" style="color:var(--vscode-charts-orange); opacity:0.8;"></span>
-                                            <span class="context-item-label" title="${t.description}">${t.name}</span>
-                                            <button class="remove-context-btn" data-type="tool" data-value="${t.name}" title="Unequip Tool">
-                                                <span class="codicon codicon-close"></span>
-                                            </button>
-                                        </div>
-                                    `).join('')}
-                                   </div>`
-                                : '<div class="empty-context-msg">No specialized tools equipped. Using defaults only.</div>'
-                            }
+                        <div class="collapsible-content collapsible-content-inner-tools" style="padding-top: 8px;">
+                            <div class="hud-tools-list">
+                                ${tools && tools.length > 0
+                                    ? `<div class="context-file-list">
+                                        ${tools.map(t => `
+                                            <div class="context-item" style="padding: 4px 8px;">
+                                                <span class="codicon codicon-wrench" style="color:var(--vscode-charts-orange); opacity:0.8;"></span>
+                                                <span class="context-item-label" title="${t.description}">${t.name}</span>
+                                                <button class="remove-context-btn" data-type="tool" data-value="${t.name}" title="Unequip Tool">
+                                                    <span class="codicon codicon-close"></span>
+                                                </button>
+                                            </div>
+                                        `).join('')}
+                                       </div>`
+                                    : '<div class="empty-context-msg">No specialized tools equipped. Using defaults only.</div>'
+                                }
+                            </div>
                         </div>
                     </details>
 
-                    <details class="info-collapsible">
+                    <details class="info-collapsible skills-details">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span>Active Skills (${finalSkills.length})</span>
+                                <span class="skills-count-label">Active Skills (${finalSkills.length})</span>
                                 <div style="display: flex; gap: 8px; align-items: center;">
                                     <button id="add-skill-context-btn" class="icon-btn" title="Import Skill"><i class="codicon codicon-add"></i></button>
                                     ${finalSkills.length > 0 ? `<button id="bulk-delete-skills-btn" class="section-bulk-btn delete" style="margin-right: 5px;"><span class="codicon codicon-trash"></span> Bulk Remove</button>` : ''}
                                 </div>
                             </div>
                         </summary>
-                        <div class="collapsible-content hud-skills-list">
-                            ${skillsList}
+                        <div class="collapsible-content collapsible-content-inner-skills" style="padding-top: 8px;">
+                            <div class="hud-skills-list">
+                                ${skillsList}
+                            </div>
                         </div>
                     </details>
                 </div>

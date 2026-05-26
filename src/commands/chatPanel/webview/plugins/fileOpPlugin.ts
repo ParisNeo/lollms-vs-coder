@@ -25,7 +25,7 @@ export const fileOpPlugin: TagPlugin = {
             }).join('');
         }
 
-        const payload = type === 'delete_files' ? lines.join(',') : { operations: lines.map(l => ({ src: l.split('->')[0], dest: l.split('->')[1] })) };
+        const payload = type === 'delete_files' ? { filePaths: lines } : { operations: lines.map(l => ({ src: l.split('->')[0], dest: l.split('->')[1] })) };
 
         return `
         <div class="file-operation-block">
@@ -42,7 +42,8 @@ export const fileOpPlugin: TagPlugin = {
         container.querySelectorAll('.file-op-btn').forEach(btn => {
             (btn as HTMLElement).onclick = () => {
                 const d = (btn as HTMLElement).dataset;
-                context.vscode.postMessage({ command: d.command, payload: JSON.parse(d.payload!) });
+                const parsedPayload = JSON.parse(d.payload!);
+                context.vscode.postMessage({ command: d.command, ...parsedPayload });
                 (btn as HTMLButtonElement).disabled = true;
                 btn.innerHTML = '<i class="codicon codicon-check"></i> Applied';
             };

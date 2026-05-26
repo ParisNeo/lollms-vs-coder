@@ -1236,9 +1236,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 if (hunkBtn) restoreBtn(hunkBtn);
                             }
 
-                            // If this was the last pending hunk, collapse the main container
-                            const remainingHunks = Array.from(hunkBubbles).filter(h => !h.classList.contains('collapsed'));
-                            if (remainingHunks.length === 0) {
+                            // If this was the last pending hunk, collapse the main container and let subsequent content reflow naturally
+                            const totalHunks = hunkBubbles.length;
+                            const appliedHunks = state.appliedState[message.messageId][message.blockIndex] || [];
+                            const allHunksApplied = appliedHunks.length === totalHunks || appliedHunks.includes(-1);
+                            if (allHunksApplied) {
                                 blockEl.open = false;
                             }
                         } else {
@@ -1246,21 +1248,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                             blockEl.querySelectorAll('.aider-hunk-actions .apply-btn').forEach(restoreBtn);
 
-                            // VISUAL SHRINK: We mark them as applied but do NOT use the hard 'collapsed' class 
-                            // if it blocks the user from opening it again.
+                            // Ensure checkmark icon is updated without hiding the code content
                             blockEl.querySelectorAll('.aider-hunk-bubble').forEach(h => {
-                                h.classList.add('collapsed');
-                                // Ensure the checkmark icon is updated in the header too
                                 const icon = h.querySelector('.hunk-toggle-icon');
                                 if (icon) icon.className = 'codicon codicon-chevron-right hunk-toggle-icon';
                             });
 
-                            // We keep the block element OPEN if there are multiple hunks so the user sees the summary
-                            // Only close if it's a single hunk block.
-                            const hunkCount = blockEl.querySelectorAll('.aider-hunk-bubble').length;
-                            if (hunkCount <= 1) {
-                                blockEl.open = false;
-                            }
+                            blockEl.open = false;
                         }
 
                         // RE-SYNC main button state for the entire message
@@ -1299,7 +1293,6 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         blockEl.style.borderColor = 'var(--vscode-errorForeground)';
 
                         // FAILURE CASE: Restore the button so the user can try again
-                        const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`);
                         if (mainApplyBtn && mainApplyBtn.dataset.originalHtml) {
                             mainApplyBtn.disabled = false;
                             mainApplyBtn.innerHTML = mainApplyBtn.dataset.originalHtml;

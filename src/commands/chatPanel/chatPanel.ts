@@ -866,7 +866,7 @@ export class ChatPanel {
                 signal, 
                 capabilities: this._discussionCapabilities,
                 importedSkillIds: importedIds,
-                activeDiagramIds: activeDiagrams,
+                activeDiagramIds: activeDiagramIds,
                 modelName: modelForTokenization,
                 onProgress: (pct) => {
                     if (!this._isDisposed) {
@@ -1346,13 +1346,13 @@ export class ChatPanel {
     */
     private async _getFilteredFilesContent(contextData: ContextResult, folderSettings: any): Promise<string> {
         const folders = vscode.workspace.workspaceFolders || [];
-        // The block format is ```lang:path\ncontent\n```
-        const blocks = contextData.selectedFilesContent.split('```\n\n').filter(b => b.trim().length > 0);
+        // The block format is ```lang:path\ncontent\n```. Use a robust regex split to handle both CRLF and LF line endings.
+        const blocks = contextData.selectedFilesContent.split(/```\r?\n\s*\r?\n/).filter(b => b.trim().length > 0);
 
         const filteredBlocks = blocks.filter(block => {
             // Re-add the closing backticks stripped by split for regex matching
             const testBlock = block.endsWith('```') ? block : block + '```';
-            const match = testBlock.match(/```(?:\w+)?:([^\n]+)/);
+            const match = testBlock.match(/```(?:\w+)?:([^\r\n]+)/);
             if (!match) return true; // Keep blocks without headers (like global notes)
 
             const filePath = match[1].trim();
@@ -1782,7 +1782,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
       }, async (progress) => {
           try {
               const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-              const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
+              const forceFullCode = this._discussionCapabilities?.forceFullCode || false;
 
               const importedIds = this._currentDiscussion?.importedSkills || [];
               
@@ -2704,7 +2704,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         const personaContent = currentP?.systemPrompt || "";
         const personaName = currentP?.name || "Lollms";
 
-        const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
+        const forceFullCode = this._discussionCapabilities?.forceFullCode || false;
 
         // 1. Get Base System Instructions (VS Code Interface Tools, Skills, Rules)
         const baseInstructions = await getProcessedSystemPrompt(
@@ -2803,7 +2803,11 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                 2. **THE 50% THRESHOLD**: 
                 - If your change affects LESS than 50% of the file: You MUST use the **SEARCH/REPLACE (AIDER)** format.
                 - If your change affects MORE than 50% of the file: Provide the **FULL FILE** content.
-                3. **THE ZERO-PLACEHOLDER MANDATE (CRITICAL)**: 
+                3. **MINIMALIST ATOMIC SEARCH BLOCKS (AIDER)**: 
+                - Keep your SEARCH blocks as **small and focused as possible** (ideally 1 to 5 lines of context).
+                - Large SEARCH blocks have an exponentially higher probability of a whitespace or line-ending mismatch.
+                - If you need to make multiple changes across a file, use **multiple separate, highly focused SEARCH/REPLACE blocks** instead of one huge block.
+                4. **THE ZERO-PLACEHOLDER MANDATE (CRITICAL)**: 
                 - It is **STRICTLY FORBIDDEN** to use comments like \`// ... rest of code\`, \`# ... existing logic\`, or any form of ellipses to skip lines.
                 - Every line in a FULL file or within a REPLACE block must be written explicitly. 
                 - Partial code fragments inside a block will result in a system rejection.

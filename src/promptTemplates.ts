@@ -70,9 +70,10 @@ You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or
 
 **STRICT RULES FOR SEARCH/REPLACE:**
 1. **LITERAL MATCH**: The SEARCH block must be a character-for-character, whitespace-perfect match of the code currently on the user's disk.
-2. **NO SKIPPING**: Do not use \`...\` inside a SEARCH block. Include every line in the middle of your match.
-3. **ANCHORING**: Include 3-4 lines of unchanged context code to ensure a unique match.
-4. **ATOMICITY**: For multiple changes in one file, use multiple separate SEARCH/REPLACE blocks.
+2. **MINIMALIST SEARCH BLOCKS**: Keep your SEARCH blocks as small and focused as possible (ideally 1 to 5 lines of context). Large SEARCH blocks have an exponentially higher probability of failing to match due to minor whitespace, carriage return, or formatting discrepancies.
+3. **NO SKIPPING**: Do not use \`...\` inside a SEARCH block. Include every line in the middle of your match.
+4. **ANCHORING**: Include only 2-3 lines of unchanged context code before and after the modified line(s) to ensure a unique, safe match.
+5. **ATOMICITY**: Divide complex, multi-line refactors into multiple smaller, highly focused SEARCH/REPLACE blocks within the same response.
 `);
         }
 
@@ -215,6 +216,12 @@ You are provided with a "Surgical Target" including the selection and surroundin
    - Only return to Coding Mode once your internal model of the dependency is clear.
 3. **NO ASSUMPTIONS**: Do not hallucinate code from files you haven't read.
 
+### ⚠️ CRITICAL CONSTRAINTS:
+- The SEARCH block MUST match the original file EXACTLY, including indentation.
+- **ATOMIC MINIMALIST SEARCH BLOCKS**: Keep your SEARCH blocks extremely small (ideally 1-5 lines of context). Large SEARCH blocks often fail due to whitespace or line-ending mismatches. If you are modifying different parts of a file, use **multiple separate, highly focused SEARCH/REPLACE blocks** instead of one giant block.
+- If you are only modifying a few lines inside a large selection, do NOT replace the whole selection. Create a focused, minimal SEARCH/REPLACE block.
+- NEVER include explanations, chatter, or "Here is your code". Output ONLY the SEARCH/REPLACE blocks (or tool calls if needed).
+
 ### ⚠️ CRITICAL OPERATIONAL RULES
 1. **CONTENT ACCESS**: The target code is in your prompt. Do not claim you cannot see it.
 2. **PROTOCOL CHOICE**: 
@@ -329,10 +336,15 @@ path/to/file.ext
     - **Extract**: Use \`extract_image_tiles\` to slice the document into individual assets.
     - **Verify**: Use \`process_image_asset\` to check tile integrity before using them in code.
 Consistent parameter usage for file operations:
-
-- **Library & Content** (NEVER wrap these tags in markdown code blocks/backticks):
+- **Sovereign XML Tags** (NEVER wrap any of these tags in markdown code blocks/backticks):
   - \`<skill title="..." description="..." category="...">[SKILL_CODE_OR_DOCS]</skill>\`
   - \`<generate_image path="..." width="..." height="...">[LONG_IMAGE_PROMPT]</generate_image>\`
+  - \`<move_files>\nsource->destination\n</move_files>\`
+  - \`<copy_files>\nsource->destination\n</copy_files>\`
+  - \`<delete_files>\npath\n</delete_files>\`
+  - \`<add_files_to_context>\npath\n</add_files_to_context>\`
+  - \`<remove_files_from_context>\npath\n</remove_files_from_context>\`
+  - \`<project_memory action="add" id="...">content</project_memory>\`
 
 - **File Operations** (One entry per line inside the tag, supports files AND folders):
   <move_files>

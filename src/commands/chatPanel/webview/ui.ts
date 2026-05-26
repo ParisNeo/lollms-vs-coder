@@ -2031,6 +2031,18 @@ export function filterSkillsTree(query: string) {
             // Show this item
             item.style.display = 'block';
 
+            // If the matched item is a folder, show and expand all of its children
+            const details = item.querySelector('details');
+            if (details) {
+                details.open = true;
+                const descendants = item.querySelectorAll('.skills-tree-item');
+                descendants.forEach((desc: any) => {
+                    desc.style.display = 'block';
+                    const descDetails = desc.querySelector('details');
+                    if (descDetails) descDetails.open = true;
+                });
+            }
+
             // Walk up parents to show the path
             let parent = item.parentElement;
             while (parent && parent !== container) {

@@ -365,6 +365,14 @@ export class SkillsManager {
                     const content = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(uri, hasSkillMd[0]));
                     const skillId = path.basename(uri.fsPath);
                     const skill = parseSkillMd(content.toString(), skillId, scope);
+
+                    // Auto-infer category from relative directory structure (e.g. skills/theme/name/SKILL.md)
+                    const relPath = path.relative(dir.fsPath, uri.fsPath).replace(/\\/g, '/');
+                    const parts = relPath.split('/').filter(p => p);
+                    if (parts.length > 1) {
+                        skill.category = parts.slice(0, -1).join('/');
+                    }
+
                     skills.push(skill);
                 } catch (e) {}
                 return; // Stop recursion for this branch, we found the skill leaf
@@ -381,12 +389,30 @@ export class SkillsManager {
                         try {
                             const content = await vscode.workspace.fs.readFile(entryUri);
                             const skillId = name.replace(/\.md$/, '');
-                            skills.push(parseSkillMd(content.toString(), skillId, scope));
+                            const skill = parseSkillMd(content.toString(), skillId, scope);
+
+                            // Auto-infer category for loose files in subdirectories (e.g. skills/theme/file.md)
+                            const relPath = path.relative(dir.fsPath, uri.fsPath).replace(/\\/g, '/');
+                            const parts = relPath.split('/').filter(p => p);
+                            if (parts.length > 0) {
+                                skill.category = parts.join('/');
+                            }
+
+                            skills.push(skill);
                         } catch (e) {}
                     } else if (name.endsWith('.xml')) {
                         try {
                             const content = await vscode.workspace.fs.readFile(entryUri);
-                            skills.push(xmlToSkill(content.toString(), scope));
+                            const skill = xmlToSkill(content.toString(), scope);
+
+                            // Auto-infer category for XML files in subdirectories
+                            const relPath = path.relative(dir.fsPath, uri.fsPath).replace(/\\/g, '/');
+                            const parts = relPath.split('/').filter(p => p);
+                            if (parts.length > 0) {
+                                skill.category = parts.join('/');
+                            }
+
+                            skills.push(skill);
                         } catch (e) {}
                     }
                 }

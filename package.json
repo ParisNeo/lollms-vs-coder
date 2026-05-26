@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.70",
+  "version": "0.8.75",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -24,6 +24,17 @@
   "activationEvents": [
     "onStartupFinished",
     "onDebug",
+    "onView:lollmsTabsView",
+    "onView:lollmsDiscussionsView",
+    "onView:lollmsFileTreeView",
+    "onView:lollmsSkillsView",
+    "onView:lollmsProjectMemoryView",
+    "onView:lollmsCodeExplorerView",
+    "onView:lollmsPersonalitiesView",
+    "onView:lollmsWorkflowsView",
+    "onCommand:lollms-vs-coder.switchDiscussion",
+    "onCommand:lollms-vs-coder.startChat",
+    "onCommand:lollms-vs-coder.newDiscussion",
     "onCommand:lollms-vs-coder.triggerCodeAction"
   ],
   "contributes": {

@@ -693,7 +693,8 @@ export class ContextManager {
             }
 
             let fileContent = '';
-            const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri.toString());
+            // Use case-insensitive fsPath comparison to avoid drive-letter casing mismatch on Windows
+            const openDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath.toLowerCase() === fileUri.fsPath.toLowerCase());
             const cached = this._fileContentCache.get(cacheKey);
 
             if (openDoc) {

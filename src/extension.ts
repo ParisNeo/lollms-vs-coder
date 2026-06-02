@@ -165,7 +165,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Code Graph Panel Command
     const showCodeGraphPanelCommand = vscode.commands.registerCommand('lollms-vs-coder.showCodeGraphPanel', () => {
         if (services.codeGraphManager) {
-            CodeExplorerPanel.createOrShow(context.extensionUri, services.codeGraphManager);
+            CodeExplorerPanel.createOrShow(context.extensionUri, services.codeGraphManager, services.lollmsAPI);
         } else {
             vscode.window.showErrorMessage('Code Graph Manager not initialized.');
         }
@@ -173,7 +173,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(showCodeGraphPanelCommand);
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.findInGraph', (params: { label: string, type: string }) => {
-        CodeExplorerPanel.createOrShow(context.extensionUri, services.codeGraphManager);
+        CodeExplorerPanel.createOrShow(context.extensionUri, services.codeGraphManager, services.lollmsAPI);
         CodeExplorerPanel.currentPanel?.focusSymbol(params.label, params.type);
     }));
 

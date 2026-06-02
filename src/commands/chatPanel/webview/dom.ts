@@ -275,6 +275,7 @@ export const dom = {
     get capSearchInCacheFirst() { return document.getElementById('cap-searchInCacheFirst') as HTMLInputElement; },
     get capArxivSearch() { return document.getElementById('cap-arxivSearch') as HTMLInputElement; },
     get capGitWorkflow() { return document.getElementById('cap-gitWorkflow') as HTMLInputElement; },
+    get capIncludeGitInfo() { return document.getElementById('cap-includeGitInfo') as HTMLInputElement; },
     get capGitWorkflowContainer() { return document.getElementById('cap-gitWorkflowContainer') as HTMLDivElement; },
 
     get modeFunMode() { return document.getElementById('mode-funMode') as HTMLInputElement; },

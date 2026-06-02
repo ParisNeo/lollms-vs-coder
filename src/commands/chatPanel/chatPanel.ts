@@ -4264,6 +4264,13 @@ ${targetContent}
                             });
 
                             if (addedPaths.length > 0) {
+                                // Notify UI immediately to stop the spinner and show updated visual states (checkmarks)
+                                webview.postMessage({
+                                    command: 'filesAddedToContext',
+                                    results: results,
+                                    blockId: blockId
+                                });
+
                                 if (reprompt) {
                                     // Trigger the next turn immediately with fresh context
                                     await this.sendMessage({
@@ -4274,12 +4281,18 @@ ${targetContent}
                                     // Background update (e.g. user just clicked "Add to Context")
                                     this.updateContextAndTokens();
                                 }
+                            } else {
+                                // Even if nothing was added, notify the UI to clear any pending spinners
+                                webview.postMessage({
+                                    command: 'filesAddedToContext',
+                                    results: results,
+                                    blockId: blockId
+                                });
                             }
                         }
                     } catch (err: any) {
                         Logger.error(`Critical error in addFilesToContext: ${err.message}`);
-                    } finally {
-                        // Notify UI to stop spinner and show green/red states
+                        // Safety fallback to clear spinners on error
                         webview.postMessage({
                             command: 'filesAddedToContext',
                             results: results,
@@ -6836,6 +6849,10 @@ Task:
                             <div class="checkbox-container" id="cap-gitWorkflowContainer">
                                 <label class="switch"><input type="checkbox" id="cap-gitWorkflow"><span class="slider"></span></label>
                                 <label for="cap-gitWorkflow">Git Workflow</label>
+                            </div>
+                            <div class="checkbox-container" id="cap-includeGitInfoContainer">
+                                <label class="switch"><input type="checkbox" id="cap-includeGitInfo"><span class="slider"></span></label>
+                                <label for="cap-includeGitInfo">Include Git Info</label>
                             </div>
                         </div>
                     </div>

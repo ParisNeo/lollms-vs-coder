@@ -26,6 +26,7 @@ export class SettingsPanel {
     gitCommitModelName: '',
     surgicalModelName: '',
     summarizationModelName: '',
+    graphModelName: '',
     disableSslVerification: false,
     sslCertPath: '',
     requestTimeout: 600000,
@@ -160,6 +161,7 @@ export class SettingsPanel {
     this._pendingConfig.gitCommitModelName = config.get<string>('gitCommitModelName') || '';
     this._pendingConfig.surgicalModelName = config.get<string>('surgicalModelName') || '';
     this._pendingConfig.summarizationModelName = config.get<string>('summarizationModelName') || '';
+    this._pendingConfig.graphModelName = config.get<string>('graphModelName') || '';
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
     this._pendingConfig.sslCertPath = config.get<string>('sslCertPath') || '';
     this._pendingConfig.requestTimeout = config.get<number>('requestTimeout') || 600000;
@@ -213,6 +215,7 @@ export class SettingsPanel {
 
     this._pendingConfig.deleteBranchAfterMerge = config.get<boolean>('git.deleteBranchAfterMerge') ?? true;
     this._pendingConfig.unstagedChangesBehavior = config.get<string>('git.unstagedChangesBehavior') || 'stash';
+    this._pendingConfig.includeGitInfo = config.get<boolean>('git.includeGitInfo') ?? false;
 
     this._pendingConfig.showOs = config.get<boolean>('systemEnv.showOs') ?? true;
     this._pendingConfig.showIp = config.get<boolean>('systemEnv.showIp') ?? false;
@@ -554,6 +557,7 @@ export class SettingsPanel {
                   ['gitCommitModelName', this._pendingConfig.gitCommitModelName],
                   ['surgicalModelName', this._pendingConfig.surgicalModelName],
                   ['summarizationModelName', this._pendingConfig.summarizationModelName],
+                  ['graphModelName', this._pendingConfig.graphModelName],
                   ['disableSslVerification', this._pendingConfig.disableSslVerification],
                   ['sslCertPath', this._pendingConfig.sslCertPath],
                   ['requestTimeout', this._pendingConfig.requestTimeout],
@@ -592,6 +596,7 @@ export class SettingsPanel {
                   ['mcpServers', parsedMcpServers],
                   ['git.deleteBranchAfterMerge', this._pendingConfig.deleteBranchAfterMerge],
                   ['git.unstagedChangesBehavior', this._pendingConfig.unstagedChangesBehavior],
+                  ['git.includeGitInfo', this._pendingConfig.includeGitInfo],
                   ['systemEnv.showOs', this._pendingConfig.showOs],
                   ['systemEnv.showIp', this._pendingConfig.showIp],
                   ['systemEnv.showShells', this._pendingConfig.showShells],
@@ -1068,9 +1073,12 @@ personalities: this._personalityManager.getPersonalities()
                     
                     <label>Surgical Model (Refactoring/Repair)</label>
                     <select id="surgicalModelSelect" class="model-dropdown"></select>
-                    
+
                     <label>Summarization Model (Big Files)</label>
                     <select id="summarizationModelSelect" class="model-dropdown"></select>
+
+                    <label>Architecture Graph Model (Query)</label>
+                    <select id="graphModelSelect" class="model-dropdown"></select>
                 </div>
                 <label for="requestTimeout">${t('config.requestTimeout.label', 'Request Timeout (ms)')}</label>
                 <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
@@ -1311,7 +1319,8 @@ personalities: this._personalityManager.getPersonalities()
             <!-- TabGit -->
             <div id="TabGit" class="tab-content">
               <h2>Git Integration</h2>
-              <div class="checkbox-container"><input type="checkbox" id="autoUpdateChangelog" ${autoUpdateChangelog ? 'checked' : ''}><label for="autoUpdateChangelog">Auto-update CHANGELOG.md</label></div>
+              <div class="checkbox-container"><input type="checkbox" id="includeGitInfo" \${includeGitInfo ? 'checked' : ''}><label for="includeGitInfo">Include Git Info (Branch/Commit/Remote) in AI Context</label></div>
+              <div class="checkbox-container"><input type="checkbox" id="autoUpdateChangelog" \${autoUpdateChangelog ? 'checked' : ''}><label for="autoUpdateChangelog">Auto-update CHANGELOG.md</label></div>
               <div class="checkbox-container"><input type="checkbox" id="deleteBranchAfterMerge" ${deleteBranchAfterMerge ? 'checked' : ''}><label for="deleteBranchAfterMerge">Auto-delete temporary branch after merge</label></div>
               
               <label for="unstagedChangesBehavior">Action for unstaged changes before new AI branch:</label>
@@ -1646,6 +1655,7 @@ personalities: this._personalityManager.getPersonalities()
                 safeSet('chatPersona', config.chatPersona);
                 safeSet('agentPersona', config.agentPersona);
                 safeSet('commitMessagePersona', config.commitMessagePersona);
+                safeSet('graphModelSelect', config.graphModelName);
                 safeSet('searchApiKey', config.searchApiKey);
                 safeSet('searchCx', config.searchCx);
                 safeSet('companionEnableWebSearch', config.companionEnableWebSearch, true);
@@ -1653,6 +1663,7 @@ personalities: this._personalityManager.getPersonalities()
                 safeSet('mcpServers', config.mcpServers);
                 safeSet('autoUpdateChangelog', config.autoUpdateChangelog, true);
                 safeSet('deleteBranchAfterMerge', config.deleteBranchAfterMerge, true);
+                safeSet('includeGitInfo', config.includeGitInfo, true);
                 safeSet('unstagedChangesBehavior', config.unstagedChangesBehavior);
                 safeSet('userInfoName', config.userInfoName);
                 safeSet('userInfoEmail', config.userInfoEmail);
@@ -1680,6 +1691,16 @@ personalities: this._personalityManager.getPersonalities()
                 renderMcpServers();
                 updatePersonaSelects();
                 refreshModelsList(false);
+
+                bind('graphModelSelect', 'graphModelName');
+                bind('modelSelect', 'modelName');
+                bind('ttiModelSelect', 'ttiModelName');
+                bind('architectModelSelect', 'architectModelName');
+                bind('inspectorModelName', 'inspectorModelName');
+                bind('titlingModelSelect', 'titlingModelName');
+                bind('gitCommitModelSelect', 'gitCommitModelName');
+                bind('surgicalModelSelect', 'surgicalModelName');
+                bind('summarizationModelSelect', 'summarizationModelName');
             }
 
             function populateModelDropdown(selectElement, selectedValue, error) {
@@ -1961,8 +1982,8 @@ personalities: this._personalityManager.getPersonalities()
 
             // Bind inputs
             ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','halApiKey','scopusApiKey','clipboardInsertRole','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose','remoteServerPort','remoteDiscordToken','remoteSlackToken','remoteSlackSigningSecret'].forEach(k => bind(k, k));
-            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions'].forEach(id => {
-                const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo', 'agentUseRLM': 'agent.useRLM', 'deactivateConflictingExtensions': 'deactivateConflictingExtensions' };
+            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','includeGitInfo','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions'].forEach(id => {
+                const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'includeGitInfo': 'git.includeGitInfo', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo', 'agentUseRLM': 'agent.useRLM', 'deactivateConflictingExtensions': 'deactivateConflictingExtensions' };
                 bind(id, map[id] || id);
             });
 
@@ -1988,7 +2009,7 @@ personalities: this._personalityManager.getPersonalities()
                     // Update all relevant dropdowns
                     const targets = [
                         'modelSelect', 'ttiModelSelect', 'architectModelSelect', 'inspectorModelName', 
-                        'titlingModelSelect', 'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect'
+                        'titlingModelSelect', 'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect', 'graphModelSelect'
                     ];
                     targets.forEach(id => {
                         const el = document.getElementById(id);
@@ -2001,6 +2022,7 @@ personalities: this._personalityManager.getPersonalities()
                             if (id === 'gitCommitModelSelect') valToRestore = config.gitCommitModelName;
                             if (id === 'surgicalModelSelect') valToRestore = config.surgicalModelName;
                             if (id === 'summarizationModelSelect') valToRestore = config.summarizationModelName;
+                            if (id === 'graphModelSelect') valToRestore = config.graphModelName;
 
                             populateModelDropdown(el, valToRestore, m.error);
                         }

@@ -82,6 +82,12 @@ export const contextExpansionPlugin: TagPlugin = {
                     <button class="code-action-btn apply-btn add-reprompt-btn" data-block-id="${blockId}">
                         <span class="codicon ${repromptIcon}"></span> ${repromptText}
                     </button>
+                    <button class="code-action-btn secondary-btn replace-btn" data-block-id="${blockId}" title="Remove all other files from context and add these">
+                        <span class="codicon codicon-clear-all"></span> Replace Context
+                    </button>
+                    <button class="code-action-btn secondary-btn save-selection-btn" data-files="${fileListJson}" title="Save this selection of files as a context file">
+                        <span class="codicon codicon-save"></span> Save Selection
+                    </button>
                     <button class="code-action-btn secondary-btn copy-btn" data-files="${fileListJson}">
                         <span class="codicon codicon-clippy"></span> Copy Contents
                     </button>
@@ -100,7 +106,7 @@ export const contextExpansionPlugin: TagPlugin = {
             btn.innerHTML = '<div class="spinner"></div> Adding...';
 
             // Disable both buttons to prevent double-triggering
-            block.querySelectorAll('.add-btn, .add-reprompt-btn').forEach(b => (b as HTMLButtonElement).disabled = true);
+            block.querySelectorAll('.add-btn, .add-reprompt-btn, .replace-btn').forEach(b => (b as HTMLButtonElement).disabled = true);
 
             context.vscode.postMessage({ 
                 command: 'addFilesToContext', 
@@ -116,6 +122,44 @@ export const contextExpansionPlugin: TagPlugin = {
 
         container.querySelectorAll('.add-reprompt-btn').forEach(btn => {
             (btn as HTMLButtonElement).onclick = () => handleAdd(btn as HTMLButtonElement, true);
+        });
+
+        container.querySelectorAll('.replace-btn').forEach(btn => {
+            (btn as HTMLButtonElement).onclick = () => {
+                const block = btn.closest('.context-expansion-block') as HTMLElement;
+                const files = JSON.parse(block?.dataset.files || '[]');
+                btn.innerHTML = '<div class="spinner"></div> Replacing...';
+
+                // Disable buttons during transition
+                block.querySelectorAll('.add-btn, .add-reprompt-btn, .replace-btn').forEach(b => (b as HTMLButtonElement).disabled = true);
+
+                // 1. Reset selection first
+                context.vscode.postMessage({
+                    command: 'executeLollmsCommand',
+                    details: { command: 'lollms-vs-coder.resetContextSelection' }
+                });
+
+                // 2. Add these files to context
+                context.vscode.postMessage({ 
+                    command: 'addFilesToContext', 
+                    files, 
+                    blockId: block.id,
+                    reprompt: false
+                });
+            };
+        });
+
+        container.querySelectorAll('.save-selection-btn').forEach(btn => {
+            (btn as HTMLButtonElement).onclick = () => {
+                const files = JSON.parse((btn as HTMLElement).dataset.files || '[]');
+                context.vscode.postMessage({
+                    command: 'executeLollmsCommand',
+                    details: {
+                        command: 'lollms-vs-coder.saveCustomContextSelection',
+                        params: [files]
+                    }
+                });
+            };
         });
 
         container.querySelectorAll('.copy-btn').forEach(btn => {

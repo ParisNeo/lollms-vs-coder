@@ -44,12 +44,16 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private workspaceFolder?: vscode.WorkspaceFolder;
     private static readonly DEPTH_THRESHOLD = 5;
     private static readonly MUTE_DEEP_WARNING_KEY = 'lollms.muteDeepFolderWarning';
-    
+
     private _onDidChangeFileDecorations: vscode.EventEmitter<vscode.Uri | vscode.Uri[]> = new vscode.EventEmitter<vscode.Uri | vscode.Uri[]>();
     readonly onDidChangeFileDecorations: vscode.Event<vscode.Uri | vscode.Uri[]> = this._onDidChangeFileDecorations.event;
 
     public context: vscode.ExtensionContext;
     private readonly stateKey: string = 'lollms-context-selection-unified';
+
+    // --- NATIVE DISCOVERY CACHE ---
+    private _cachedVisibleFiles: string[] | null = null;
+    private _isTreeDirty: boolean = true;
     
     private defaultCollapsedFolders = new Set([
         'node_modules', 'dist', 'build', 'out', 'bin', 'obj', 'target',
@@ -77,12 +81,16 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     public async switchWorkspace(newWorkspaceFolder: vscode.WorkspaceFolder) {
         this.workspaceFolder = newWorkspaceFolder;
         this.stateKey = `context-state-${newWorkspaceFolder.uri.fsPath}`;
+        this._isTreeDirty = true;
+        this._cachedVisibleFiles = null;
         await this.cleanNonExistentFiles();
         await this.migrateDefaultCollapsedFolders();
         this.refresh();
     }
 
     refresh(): void {
+        this._isTreeDirty = true;
+        this._cachedVisibleFiles = null;
         this._onDidChangeTreeData.fire();
         this._onDidChangeFileDecorations.fire();
     }

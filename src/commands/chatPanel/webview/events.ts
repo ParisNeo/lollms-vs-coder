@@ -903,6 +903,7 @@ export function initEventHandlers() {
                     github: (document.getElementById('src-github') as HTMLInputElement)?.checked ?? false
                 },
                 gitWorkflow: dom.capGitWorkflow?.checked ?? false,
+                includeGitInfo: dom.capIncludeGitInfo?.checked ?? false,
                 enableTTS: (document.getElementById('cap-enableTTS') as HTMLInputElement)?.checked ?? true,
                 enableSTT: (document.getElementById('cap-enableSTT') as HTMLInputElement)?.checked ?? true,
                 herdMode: dom.capHerdMode?.checked ?? false,

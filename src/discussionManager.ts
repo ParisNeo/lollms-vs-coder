@@ -159,6 +159,7 @@ export class DiscussionManager {
             projectMemoryEnabled: true,
             gitWorkflow: false,
             gitAutoWorkflow: false,
+            includeGitInfo: config.get<boolean>('git.includeGitInfo') ?? false,
             autoApply: false,
             autoFix: true,
             autoBranch: false,

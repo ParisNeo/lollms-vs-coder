@@ -231,4 +231,26 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
             vscode.window.showErrorMessage(vscode.l10n.t("error.failedToExportContext", error.message));
         }
     }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveCustomContextSelection', async (files: string[]) => {
+        if (!files || files.length === 0) {
+            vscode.window.showInformationMessage("No files to save.");
+            return;
+        }
+
+        const uri = await vscode.window.showSaveDialog({
+            filters: { 'Lollms Context': ['lollms-ctx'] },
+            saveLabel: 'Save Selection'
+        });
+
+        if (uri) {
+            try {
+                const content = JSON.stringify(files, null, 2);
+                await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
+                vscode.window.showInformationMessage(`Selection saved to ${path.basename(uri.fsPath)}`);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Failed to save selection: ${e.message}`);
+            }
+        }
+    }));
 }

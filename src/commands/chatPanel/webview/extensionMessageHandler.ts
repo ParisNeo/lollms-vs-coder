@@ -390,7 +390,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                     
                     if(dom.capGitWorkflow) dom.capGitWorkflow.checked = caps.gitWorkflow;
-                    
+                    if(dom.capIncludeGitInfo) dom.capIncludeGitInfo.checked = !!caps.includeGitInfo;
+
                     if(dom.modeFunMode) dom.modeFunMode.checked = caps.funMode;
                     
                     if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
@@ -905,24 +906,46 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 const specificBlock = document.getElementById(blockId);
 
                 if (specificBlock) {
-                    buttons = Array.from(specificBlock.querySelectorAll('.add-btn, .add-files-to-context-btn'));
+                    buttons = Array.from(specificBlock.querySelectorAll('.add-btn, .add-reprompt-btn, .replace-btn'));
                 } else {
                     // Fallback for streaming race conditions
-                    buttons = Array.from(document.querySelectorAll('.add-btn, .add-files-to-context-btn'))
+                    buttons = Array.from(document.querySelectorAll('.add-btn, .add-reprompt-btn, .replace-btn'))
                         .filter(b => b.innerHTML.includes('spinner') || b.textContent?.includes('Adding')) as HTMLButtonElement[];
                 }
 
-                // 3. Update all identified buttons to 'Success' state
+                const allIncluded = Object.values(results || {}).every(v => v === true);
+
+                // 3. Update all identified buttons
                 buttons.forEach(btn => {
-                    const isReprompt = btn.classList.contains('add-and-reprompt-btn');
-                    btn.innerHTML = isReprompt ? `<span class="codicon codicon-check"></span> Added` : `<span class="codicon codicon-check"></span> Added to Context`;
-                    btn.classList.remove('apply-btn');
-                    btn.classList.add('applied');
-                    btn.disabled = true;
-                    // Remove loading class if present
+                    const isReprompt = btn.classList.contains('add-reprompt-btn');
+                    const isReplace = btn.classList.contains('replace-btn');
+
+                    if (allIncluded) {
+                        if (isReplace) {
+                            btn.disabled = true;
+                            btn.style.display = 'none'; // Hide replace if all are included
+                        } else {
+                            btn.innerHTML = isReprompt 
+                                ? `<span class="codicon codicon-check"></span> Added` 
+                                : `<span class="codicon codicon-check"></span> Added to Context`;
+                            btn.classList.remove('apply-btn');
+                            btn.classList.add('applied');
+                            btn.disabled = true;
+                        }
+                    } else {
+                        // Some files failed! Restore buttons and stop the spinner so the user can retry
+                        btn.disabled = false;
+                        if (isReplace) {
+                            btn.innerHTML = `<span class="codicon codicon-clear-all"></span> Replace Context`;
+                        } else if (isReprompt) {
+                            btn.innerHTML = `<span class="codicon codicon-sync"></span> Add & Reprompt`;
+                        } else {
+                            btn.innerHTML = `<span class="codicon codicon-add"></span> Add to Context`;
+                        }
+                    }
                     btn.classList.remove('loading');
                 });
-
+                
                 // 4. Update the individual file rows
                 const listContainer = document.getElementById(`list-${blockId}`) || 
                                       buttons[0]?.closest('.context-expansion-block')?.querySelector('.expansion-file-list');

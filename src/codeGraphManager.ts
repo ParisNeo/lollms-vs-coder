@@ -138,25 +138,44 @@ export class CodeGraphManager {
 
             const nodes: GraphNode[] = [];
             const edges: GraphEdge[] = [];
-            
+
             const fileNodeMap = new Map<string, string>();
             const classNodeMap = new Map<string, string>();
 
             let nodeId = 0;
             let edgeId = 0;
 
-            // --- PASS 1: Create Nodes for Files ---
-            for (const file of files) {
+            const fileContents = new Map<string, { text: string, linesCount: number }>();
+
+            // --- PASS 1: Read Files & Create Nodes for Files (High Performance) ---
+            for (let i = 0; i < files.length; i++) {
                 if (signal.aborted) return;
 
+                // Yield occasionally to keep the VS Code UI perfectly responsive
+                if (i % 10 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 5));
+                }
+
+                const file = files[i];
                 const relativePath = vscode.workspace.asRelativePath(file);
                 const normalizedPath = relativePath.replace(/\\/g, '/');
 
+                let text = "";
                 let linesCount = 0;
                 try {
-                    const doc = await vscode.workspace.openTextDocument(file);
-                    linesCount = doc.lineCount;
-                } catch {}
+                    // High-performance raw file read (bypasses editor & language server overhead)
+                    const fileBytes = await vscode.workspace.fs.readFile(file);
+                    text = Buffer.from(fileBytes).toString('utf8');
+
+                    // Skip very large files (> 500KB) to prevent freezes during parsing
+                    if (text.length > 500000) continue;
+
+                    linesCount = text.split('\n').length;
+                    fileContents.set(normalizedPath, { text, linesCount });
+                } catch (readError) {
+                    console.warn(`Error reading file ${file.fsPath}:`, readError);
+                    continue;
+                }
 
                 const fileNodeId = `file_${nodeId++}`;
                 nodes.push({
@@ -167,39 +186,24 @@ export class CodeGraphManager {
                     startLine: 0,
                     linesCount: linesCount
                 });
-                
+
                 fileNodeMap.set(normalizedPath, fileNodeId);
             }
 
             const libraryNodeMap = new Map<string, string>();
 
             // --- PASS 2: Parse Content ---
-            // Process files in chunks to avoid blocking the event loop for too long
-            for (let i = 0; i < files.length; i++) {
+            for (const [normalizedPath, data] of fileContents.entries()) {
                 if (signal.aborted) return;
 
-                // Yield every 5 files on big projects to prevent Extension Host starvation
-                if (i % 5 === 0) {
-                    await new Promise(resolve => setTimeout(resolve, 10));
-                }
-
-                const file = files[i];
-                const relativePath = vscode.workspace.asRelativePath(file);
-                const normalizedPath = relativePath.replace(/\\/g, '/');
                 const fileNodeId = fileNodeMap.get(normalizedPath);
-                
                 if (!fileNodeId) continue;
 
                 try {
-                    const doc = await vscode.workspace.openTextDocument(file);
-                    const text = doc.getText();
-                    
-                    // Skip very large files (> 500KB) to prevent freezes during parsing
-                    if (text.length > 500000) continue;
-
+                    const text = data.text;
                     const cleanText = this.stripCommentsAndStrings(text); 
                     const lines = cleanText.split('\n');
-                    const ext = path.extname(file.fsPath).toLowerCase().replace('.', '');
+                    const ext = path.extname(normalizedPath).toLowerCase().replace('.', '');
 
                     let currentClass: GraphNode | null = null;
                     let currentClassIndent = 0;
@@ -217,13 +221,13 @@ export class CodeGraphManager {
                             const name = fnMatch ? fnMatch[1] : pyMatch![1];
                             const args = fnMatch ? fnMatch[2] : pyMatch![2];
                             const ret = fnMatch ? (fnMatch[3] || 'any') : (pyMatch![3] || 'None');
-                            
+
                             const fnNodeId = `fn_${nodeId++}`;
                             nodes.push({
                                 id: fnNodeId,
                                 label: name,
                                 type: 'function',
-                                filePath: relativePath,
+                                filePath: normalizedPath,
                                 startLine: index,
                                 signature: `${name}(${args.trim()}) -> ${ret.trim()}`
                             });
@@ -234,18 +238,18 @@ export class CodeGraphManager {
                         if (classMatch) {
                             const className = classMatch[1];
                             const classNodeId = `class_${nodeId++}`;
-                            
+
                             currentClass = {
                                 id: classNodeId,
                                 label: className,
                                 type: 'class',
-                                filePath: relativePath,
+                                filePath: normalizedPath,
                                 startLine: index,
                                 methods: [],
                                 attributes: []
                             };
                             currentClassIndent = indent;
-                            
+
                             nodes.push(currentClass);
                             classNodeMap.set(className, classNodeId);
                             edges.push({ id: `edge_${edgeId++}`, source: fileNodeId, target: classNodeId, label: 'contains' });
@@ -277,7 +281,7 @@ export class CodeGraphManager {
                                             id: methodNodeId,
                                             label: methodName,
                                             type: 'method',
-                                            filePath: relativePath,
+                                            filePath: normalizedPath,
                                             startLine: index,
                                             signature: `${methodName}(${methodMatch[2].trim()}) -> ${methodMatch[3]?.trim() || 'None'}`
                                         });
@@ -293,7 +297,7 @@ export class CodeGraphManager {
                                             id: methodNodeId,
                                             label: methodName,
                                             type: 'method',
-                                            filePath: relativePath,
+                                            filePath: normalizedPath,
                                             startLine: index,
                                             signature: `${methodName}(${methodMatch[2].trim()}) : ${methodMatch[3]?.trim() || 'any'}`
                                         });
@@ -318,7 +322,7 @@ export class CodeGraphManager {
                     const rawImports = this.extractImports(cleanText, ext);
                     for (const importStr of rawImports) {
                         const targetPath = this.resolveImport(importStr, normalizedPath, fileNodeMap);
-                        
+
                         if (targetPath) {
                             // Local File Import
                             const targetId = fileNodeMap.get(targetPath);
@@ -327,10 +331,9 @@ export class CodeGraphManager {
                             }
                         } else if (!importStr.startsWith('.')) {
                             // External Library Detection
-                            // We treat non-relative imports that don't resolve to local files as libraries
-                            const libName = importStr.split('/')[0]; // Get base package name
+                            const libName = importStr.split('/')[0];
                             let libId = libraryNodeMap.get(libName);
-                            
+
                             if (!libId) {
                                 libId = `lib_${nodeId++}`;
                                 nodes.push({
@@ -340,7 +343,7 @@ export class CodeGraphManager {
                                 });
                                 libraryNodeMap.set(libName, libId);
                             }
-                            
+
                             edges.push({
                                 id: `edge_${edgeId++}`,
                                 source: fileNodeId,
@@ -349,86 +352,69 @@ export class CodeGraphManager {
                             });
                         }
                     }
-                } catch (readError) {
-                    console.warn(`Error processing file ${file.fsPath}:`, readError);
+                } catch (parseError) {
+                    console.warn(`Error parsing file ${normalizedPath}:`, parseError);
                 }
             }
 
             // --- PASS 3: Function Calls & References (Links) ---
             const allSymbols = nodes.filter(n => n.type === 'function' || n.type === 'class');
-            
-            for (let i = 0; i < files.length; i++) {
+
+            for (const [normalizedPath, data] of fileContents.entries()) {
                 if (signal.aborted) return;
-                const file = files[i];
-                const normalizedPath = vscode.workspace.asRelativePath(file).replace(/\\/g, '/');
                 const fileNodeId = fileNodeMap.get(normalizedPath);
                 if (!fileNodeId) continue;
 
-                try {
-                    const doc = await vscode.workspace.openTextDocument(file);
-                    const text = doc.getText();
-                    
-                    // For every known symbol in the project, check if this file calls it
-                    for (const symbol of allSymbols) {
-                        // Avoid self-references or linking a file to its own children via 'calls'
-                        if (symbol.filePath === normalizedPath) continue;
+                const text = data.text;
 
-                        // Use a word-boundary regex to find the function/class name in the text
-                        const callRegex = new RegExp(`\\b${symbol.label}\\s*\\(`, 'g');
-                        if (callRegex.test(text)) {
-                            edges.push({
-                                id: `call_${edgeId++}`,
-                                source: fileNodeId,
-                                target: symbol.id,
-                                label: 'calls'
-                            });
-                        }
+                // For every known symbol in the project, check if this file calls it
+                for (const symbol of allSymbols) {
+                    if (symbol.filePath === normalizedPath) continue;
+
+                    const callRegex = new RegExp(`\\b${symbol.label}\\s*\\(`, 'g');
+                    if (callRegex.test(text)) {
+                        edges.push({
+                            id: `call_${edgeId++}`,
+                            source: fileNodeId,
+                            target: symbol.id,
+                            label: 'calls'
+                        });
                     }
-                } catch {}
+                }
             }
 
             // --- PASS 4: Inheritance Parsing ---
-            // TS/JS: class Child extends Parent
-            // Python: class Child(Parent)
             const jsInheritance = /class\s+([a-zA-Z0-9_]+)\s+extends\s+([a-zA-Z0-9_.]+)/g;
             const pyInheritance = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_.]+)\s*\)/g;
 
-            for (let i = 0; i < files.length; i++) {
+            for (const [normalizedPath, data] of fileContents.entries()) {
                 if (signal.aborted) return;
-                if (i % 50 === 0) await new Promise(resolve => setTimeout(resolve, 0));
-                
-                try {
-                    const file = files[i];
-                    const ext = path.extname(file.fsPath).toLowerCase();
-                    const doc = await vscode.workspace.openTextDocument(file);
-                    const text = this.stripCommentsAndStrings(doc.getText());
 
-                    let match;
-                    const regex = (ext === '.py') ? pyInheritance : jsInheritance;
-                    
-                    // Reset regex state
-                    regex.lastIndex = 0;
+                const ext = path.extname(normalizedPath).toLowerCase();
+                const text = this.stripCommentsAndStrings(data.text);
 
-                    while ((match = regex.exec(text)) !== null) {
-                        const className = match[1];
-                        const parentName = match[2]; // Python captures Parent in group 2
-                        
-                        if (parentName && parentName !== 'object') {
-                            const childId = classNodeMap.get(className);
-                            // Try to find parent by name, might need more complex resolution in future
-                            const parentId = classNodeMap.get(parentName); 
-                            
-                            if (childId && parentId) {
-                                edges.push({
-                                    id: `edge_${edgeId++}`,
-                                    source: childId,
-                                    target: parentId,
-                                    label: 'inherits'
-                                });
-                            }
+                let match;
+                const regex = (ext === '.py') ? pyInheritance : jsInheritance;
+                regex.lastIndex = 0;
+
+                while ((match = regex.exec(text)) !== null) {
+                    const className = match[1];
+                    const parentName = match[2];
+
+                    if (parentName && parentName !== 'object') {
+                        const childId = classNodeMap.get(className);
+                        const parentId = classNodeMap.get(parentName); 
+
+                        if (childId && parentId) {
+                            edges.push({
+                                id: `edge_${edgeId++}`,
+                                source: childId,
+                                target: parentId,
+                                label: 'inherits'
+                            });
                         }
                     }
-                } catch {}
+                }
             }
 
             // --- PASS 5: Filter Isolated Nodes ---
@@ -819,10 +805,46 @@ export class CodeGraphManager {
             case 'external_library_graph':
                 diagram = this.generateExternalLibraryGraphMermaid();
                 break;
+            case 'hotspot_complexity_graph':
+                diagram = this.generateHotspotComplexityGraphMermaid();
+                break;
             default:
                 diagram = 'graph TD;\n  Empty["No graph selected"]';
         }
         return header + diagram;
+    }
+
+    private generateHotspotComplexityGraphMermaid(): string {
+        let out = 'graph TD\n';
+        let hasEdges = false;
+        const definedNodes = new Set<string>();
+
+        const defineNode = (nodeId: string) => {
+            if (!definedNodes.has(nodeId)) {
+                const node = this.graph.nodes.find(n => n.id === nodeId);
+                if (node) {
+                    const safeLabel = this.sanitizeMermaidLabel(node.label);
+                    const lines = node.linesCount || 50;
+                    out += `${this.sanitizeMermaidId(nodeId)}["${safeLabel} (${lines} LOC)"]\n`;
+                    definedNodes.add(nodeId);
+                }
+            }
+        };
+
+        for (const edge of this.graph.edges) {
+            if (edge.label === 'imports') {
+                defineNode(edge.source);
+                defineNode(edge.target);
+
+                const srcId = this.sanitizeMermaidId(edge.source);
+                const trgId = this.sanitizeMermaidId(edge.target);
+
+                out += `${srcId} --> ${trgId}\n`;
+                hasEdges = true;
+            }
+        }
+        if (!hasEdges) out += 'subgraph Empty\nDirection["No structure detected"]\nend';
+        return out;
     }
 
     private sanitizeMermaidMember(member: string): string {

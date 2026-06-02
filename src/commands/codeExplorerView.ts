@@ -76,29 +76,31 @@ Your only job is to translate a natural language query into a single valid SPARQ
 
 ### ONTOLOGY SPECIFICATION:
 Classes:
-- s:File (e.g. ?x type 'file')
-- s:Class (e.g. ?x type 'class')
-- s:Function (e.g. ?x type 'function')
-- s:Method (e.g. ?x type 'method')
-- s:Library (e.g. ?x type 'library')
+- s:File (e.g. ?x s:type s:File)
+- s:Class (e.g. ?x s:type s:Class)
+- s:Function (e.g. ?x s:type s:Function)
+- s:Method (e.g. ?x s:type s:Method)
+- s:Library (e.g. ?x s:type s:Library)
 
 Properties:
-- s:contains (e.g. ?x contains ?y)
-- s:imports (e.g. ?x imports ?y)
-- s:calls (e.g. ?x calls ?y)
-- s:inherits (e.g. ?x inherits ?y)
-- s:name (e.g. ?x name 'filename')
-- s:path (e.g. ?x path 'relative/path')
+- s:type (e.g. ?x s:type s:File)
+- s:name (e.g. ?x s:name 'filename')
+- s:path (e.g. ?x s:path 'relative/path')
+- s:contains (e.g. ?x s:contains ?y)
+- s:imports (e.g. ?x s:imports ?y)
+- s:calls (e.g. ?x s:calls ?y)
+- s:inherits (e.g. ?x s:inherits ?y)
 
 ### RULES:
 1. Output ONLY the SPARQL-lite query. No explanations, no markdown code blocks.
 2. If a specific name is mentioned, use single quotes (e.g. 'auth.py').
-3. Keep it simple.
+3. Always prefix types and properties with the 's:' namespace prefix.
+4. Keep it simple.
 
 ### EXAMPLES:
-- "find all files that import utils" -> SELECT ?x WHERE { ?x imports ?y . ?y name 'utils' }
-- "what calls main" -> SELECT ?x WHERE { ?x calls 'main' }
-- "all functions in auth" -> SELECT ?x WHERE { ?y name 'auth' . ?y contains ?x . ?x type 'function' }
+- "find all files that import utils" -> SELECT ?x WHERE { ?x s:imports ?y . ?y s:name 'utils' }
+- "what calls main" -> SELECT ?x WHERE { ?x s:calls 'main' }
+- "all functions in auth" -> SELECT ?x WHERE { ?y s:name 'auth' . ?y s:contains ?x . ?x s:type s:Function }
 
 Translate: "${msg.text}"`;
 
@@ -165,22 +167,43 @@ Translate: "${msg.text}"`;
             }
 
             if (msg.command === 'addToChat') {
-                const mermaid = this.graphManager.generateMermaid(msg.view);
-                const prompt = `Here is the current code structure for analysis:\n\n\`\`\`mermaid\n${mermaid}\n\`\`\``;
-                
-                vscode.commands.executeCommand('lollms-vs-coder.showChatTab');
+                const runAdd = async () => {
+                    let mermaidCode = this.graphManager.generateMermaid(msg.view);
 
-                if (ChatPanel.currentPanel) {
-                    ChatPanel.currentPanel.addMessageToDiscussion({
-                        role: 'user',
-                        content: prompt
-                    });
-                    ChatPanel.currentPanel._panel.reveal();
-                    vscode.window.showInformationMessage("Architecture graph added to active chat.");
-                } else {
-                    vscode.commands.executeCommand('lollms-vs-coder.newDiscussionFromClipboard', prompt);
-                    vscode.window.showInformationMessage("Starting new discussion with architecture graph.");
-                }
+                    const isEmpty = mermaidCode.includes('No structure detected') || 
+                                    mermaidCode.includes('No imports detected') || 
+                                    mermaidCode.includes('Empty') ||
+                                    this.graphManager.getGraphData().nodes.length <= 1;
+
+                    if (isEmpty) {
+                        await vscode.window.withProgress({
+                            location: vscode.ProgressLocation.Notification,
+                            title: "Lollms: Building full architecture map for chat context...",
+                            cancellable: false
+                        }, async () => {
+                            await this.graphManager.buildGraph(); // Force full project re-index
+                        });
+                        mermaidCode = this.graphManager.generateMermaid(msg.view);
+                    }
+
+                    const prompt = `Here is the current code structure for analysis:\n\n\`\`\`mermaid\n${mermaidCode}\n\`\`\``;
+
+                    vscode.commands.executeCommand('lollms-vs-coder.showChatTab');
+
+                    if (ChatPanel.currentPanel) {
+                        ChatPanel.currentPanel.addMessageToDiscussion({
+                            role: 'user',
+                            content: prompt
+                        });
+                        ChatPanel.currentPanel._panel.reveal();
+                        vscode.window.showInformationMessage("Architecture graph added to active chat.");
+                    } else {
+                        vscode.commands.executeCommand('lollms-vs-coder.newDiscussionFromClipboard', prompt);
+                        vscode.window.showInformationMessage("Starting new discussion with architecture graph.");
+                    }
+                };
+
+                runAdd();
             }
 
             if (msg.command === 'requestExport') {
@@ -282,15 +305,24 @@ Translate: "${msg.text}"`;
         background-color: var(--vscode-editorWidget-background);
         border-bottom: 1px solid var(--vscode-panel-border);
         display: flex;
-        gap: 10px;
+        gap: 12px;
         align-items: center;
         flex-shrink: 0;
         flex-wrap: wrap;
     }
     #content-area {
         flex: 1;
+        display: flex;
+        flex-direction: row;
+        overflow: hidden;
+        position: relative;
+    }
+    #graph-pane {
+        flex: 1;
         position: relative;
         overflow: hidden;
+        display: flex;
+        flex-direction: column;
     }
     #cy {
         width: 100%;
@@ -306,22 +338,55 @@ Translate: "${msg.text}"`;
         padding: 20px;
         box-sizing: border-box;
     }
-    select, button, input {
+    #sidebar-right {
+        width: 300px;
+        background-color: var(--vscode-sideBar-background);
+        border-left: 1px solid var(--vscode-panel-border);
+        display: flex;
+        flex-direction: column;
+        padding: 16px;
+        box-sizing: border-box;
+        gap: 16px;
+        overflow-y: auto;
+        flex-shrink: 0;
+    }
+    .sidebar-section {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        background-color: var(--vscode-editorWidget-background);
+        padding: 12px;
+        border-radius: 6px;
+        border: 1px solid var(--vscode-widget-border);
+    }
+    .sidebar-section h3 {
+        margin: 0 0 4px 0;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        opacity: 0.7;
+        color: var(--vscode-foreground);
+    }
+    select, button, input, textarea {
         background-color: var(--vscode-button-background);
         color: var(--vscode-button-foreground);
         border: none;
-        padding: 4px 10px;
+        padding: 6px 10px;
         border-radius: 2px;
         cursor: pointer;
         font-family: inherit;
+        font-size: 12px;
     }
-    input {
+    input, textarea {
         background-color: var(--vscode-input-background);
         color: var(--vscode-input-foreground);
         border: 1px solid var(--vscode-input-border);
         cursor: text;
-        flex: 1;
-        max-width: 300px;
+    }
+    textarea {
+        resize: vertical;
+        height: 80px;
+        font-family: var(--vscode-editor-font-family), monospace;
     }
     select {
         background-color: var(--vscode-dropdown-background);
@@ -331,15 +396,18 @@ Translate: "${msg.text}"`;
     button:hover {
         background-color: var(--vscode-button-hoverBackground);
     }
-    #run {
-        background-color: var(--vscode-charts-orange);
-        color: white;
-        font-weight: bold;
+    #status-box {
+        padding: 8px 12px;
+        background-color: var(--vscode-editor-inactiveSelectionBackground);
+        border: 1px solid var(--vscode-widget-border);
+        border-radius: 4px;
+        font-size: 11px;
+        line-height: 1.4;
+        word-break: break-all;
     }
-    #status {
-        margin-left: auto;
-        font-size: 0.9em;
-        opacity: 0.8;
+    .context-menu-item:hover {
+        background-color: var(--vscode-menu-selectionBackground) !important;
+        color: var(--vscode-menu-selectionForeground) !important;
     }
     .loading-overlay {
         position: absolute;
@@ -380,7 +448,7 @@ Translate: "${msg.text}"`;
 </head>
 <body>
     <div id="toolbar">
-        <select id="view">
+        <select id="view" title="Graph View Perspective">
             <option value="call_graph">Call Graph</option>
             <option value="import_graph">Import Graph</option>
             <option value="module_dependency_graph">Module/Folder Dependency Graph</option>
@@ -389,7 +457,7 @@ Translate: "${msg.text}"`;
             <option value="class_diagram">Inheritance Diagram</option>
             <option value="function_signatures">Function Signatures</option>
         </select>
-        
+
         <select id="layout-style" title="Arrangement Style">
             <option value="organic">Organic (Force-Directed)</option>
             <option value="hierarchical_ud">Hierarchical (Up-Down)</option>
@@ -408,35 +476,84 @@ Translate: "${msg.text}"`;
             <input type="checkbox" id="hide-orphans" style="width:auto; margin:0;" /> Hide Orphans
         </label>
 
-        <div style="position:relative; flex:1; display:flex; gap:5px; min-width:180px;">
-            <input type="text" id="symbol-search" list="symbols-list" placeholder="Search, SPARQL, or ask in plain English...">
-            <datalist id="symbols-list"></datalist>
-            <button id="run" title="Run manual query">Query</button>
-            <button id="ai-translate-btn" title="Translate plain English to SPARQL with AI" style="background-color: var(--vscode-charts-purple); color: white; display: ${this.lollmsApi ? 'inline-block' : 'none'};"><span class="codicon codicon-sparkle"></span> Translate</button>
-            <select id="sparql-examples" style="max-width:100px;">
-                <option value="">Examples</option>
-                <option value="SELECT ?x WHERE { ?x type 'class' }">All Classes</option>
-                <option value="SELECT ?x WHERE { ?x imports ?y . ?y name 'utils' }">Imports 'utils'</option>
-                <option value="SELECT ?target WHERE { 'main' calls ?target }">Called by Main</option>
-                <option value="SELECT ?method WHERE { ?class name 'authservice' . ?class contains ?method . ?method type 'method' }">AuthService Methods</option>
-                <option value="SELECT ?file WHERE { ?file imports ?lib . ?lib type 'library' }">Uses Ext Libraries</option>
-                <option value="SELECT ?child WHERE { ?child inherits ?parent . ?parent name 'base' }">Inherits from 'Base'</option>
-            </select>
-        </div>
+        <div style="flex:1"></div>
+
         <button id="rebuild" title="Update current view with new changes">Refresh</button>
-        <button id="regenerate" style="background-color: var(--vscode-charts-blue); color: white;" title="Wipe cache and force full project re-index">Regenerate</button>
-        <button id="stop">Stop</button>
-        <button id="add">Add to Chat</button>
-        <button id="export">Export</button>
-        <span id="status">Idle</span>
+        <button id="stop" style="display:none;">Stop</button>
+        
+        <select id="action-select" style="max-width:140px;" title="More Actions">
+            <option value="" disabled selected>More Actions...</option>
+            <option value="regenerate">⚡ Regenerate Cache</option>
+            <option value="add">💬 Add to Chat</option>
+            <option value="export">📤 Export Diagram</option>
+            <option value="isolate-connected">🔗 Isolate Connections</option>
+            <option value="isolate-neighbors">👥 Isolate Neighbors</option>
+        </select>
     </div>
     
     <div id="content-area">
-        <div id="cy"></div>
-        <div id="mermaid-container"></div>
-        <div id="loading" class="loading-overlay">
-            <div class="spinner"></div>
-            <span>Building Graph...</span>
+        <div id="graph-pane">
+            <div id="cy"></div>
+            <div id="mermaid-container"></div>
+            <div id="loading" class="loading-overlay">
+                <div class="spinner"></div>
+                <span>Building Graph...</span>
+            </div>
+        </div>
+
+        <div id="sidebar-right">
+            <!-- Section 1: Local Navigation/Search -->
+            <div class="sidebar-section">
+                <h3>🔍 Symbol Filter</h3>
+                <input type="text" id="symbol-search" list="symbols-list" placeholder="Filter nodes by name..." style="width:100%;">
+                <datalist id="symbols-list"></datalist>
+                <button id="clear-highlights" style="display:none; background-color: var(--vscode-charts-orange); color: white; width:100%; margin-top:8px;" title="Clear all active highlights and pathfinders">Clear Highlights</button>
+            </div>
+
+            <!-- Section 2: SPARQL Queries -->
+            <div class="sidebar-section">
+                <h3>⚡ SPARQL Query</h3>
+                <textarea id="sparql-query-input" placeholder="SELECT ?x WHERE { ?x type 'class' }"></textarea>
+
+                <div style="display:flex; gap:6px; margin-top:4px;">
+                    <button id="run-sparql-btn" style="background-color: var(--vscode-charts-orange); color: white; font-weight: bold; flex: 1;" title="Execute SPARQL-lite query on graph">Run SPARQL</button>
+                    <select id="sparql-examples" style="flex: 1;" title="Predefined SPARQL templates">
+                        <option value="">Examples</option>
+                        <option value="SELECT ?x WHERE { ?x type 'class' }">All Classes</option>
+                        <option value="SELECT ?x WHERE { ?x imports ?y . ?y name 'utils' }">Imports 'utils'</option>
+                        <option value="SELECT ?target WHERE { 'main' calls ?target }">Called by Main</option>
+                        <option value="SELECT ?method WHERE { ?class name 'authservice' . ?class contains ?method . ?method type 'method' }">AuthService Methods</option>
+                        <option value="SELECT ?file WHERE { ?file imports ?lib . ?lib type 'library' }">Uses Ext Libraries</option>
+                        <option value="SELECT ?child WHERE { ?child inherits ?parent . ?parent name 'base' }">Inherits from 'Base'</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Section 3: AI Natural Language Queries -->
+            <div class="sidebar-section">
+                <h3>🤖 AI Natural Language Query</h3>
+                <textarea id="ai-query-input" placeholder="Ask AI in plain English... (e.g. Where is sprite management?)"></textarea>
+
+                <div style="display:flex; gap:6px; margin-top:4px;">
+                    <button id="run-ai-btn" style="background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); font-weight: bold; flex: 1;" title="Ask AI to translate and run query">Ask AI</button>
+                    <select id="ai-examples" style="flex: 1;" title="Predefined Natural Language questions">
+                        <option value="">Examples</option>
+                        <option value="where is the sprite animation handled?">Sprite Animation</option>
+                        <option value="what is the main game loop flow?">Game Loop Flow</option>
+                        <option value="which files are connected to the player model?">Player Model Files</option>
+                        <option value="what external libraries are imported?">External Libraries</option>
+                        <option value="explain the class hierarchy of the entities">Entity Class Hierarchy</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Section 3: Status & Output -->
+            <div class="sidebar-section" style="flex:1; display:flex; flex-direction:column; min-height:100px;">
+                <h3>📊 System Status</h3>
+                <div id="status-box" style="flex:1; overflow-y:auto; font-family:monospace; font-size:10px;">
+                    <span id="status">Idle</span>
+                </div>
+            </div>
         </div>
     </div>
 

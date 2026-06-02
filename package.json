@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.75",
+  "version": "0.8.79",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1128,6 +1128,11 @@
           "default": "",
           "description": "Model used for long file processing and summarization. Leave empty to use the Chat Model."
         },
+        "lollmsVsCoder.graphModelName": {
+          "type": "string",
+          "default": "",
+          "description": "Model used for architecture graph queries. Leave empty to use the Chat Model."
+        },
         "lollmsVsCoder.requestTimeout": {
           "type": "number",
           "default": 600000,
@@ -1351,6 +1356,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically delete the temporary feature branch after merging it into the original branch."
+        },
+        "lollmsVsCoder.git.includeGitInfo": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include current Git branch, commit ID, and remote URL in the AI context."
         },
         "lollmsVsCoder.git.unstagedChangesBehavior": {
           "type": "string",

@@ -4,6 +4,12 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import Prism from 'prismjs';
+import cytoscape from 'cytoscape';
+import coseBilkent from 'cytoscape-cose-bilkent';
+import cytoscapeDagre from 'cytoscape-dagre';
+
+cytoscape.use(coseBilkent);
+cytoscape.use(cytoscapeDagre);
 import { renderWorkspaceMatrix } from './ui.js';
 
 // CodeMirror imports
@@ -372,10 +378,239 @@ function preprocessMermaid(code: string): string {
     }).join('\n');
 }
 
+function renderCytoscapeDiagram(data: any, container: HTMLElement) {
+    container.style.width = '100%';
+    container.style.height = '250px';
+    container.style.position = 'relative';
+    container.style.overflow = 'hidden';
+    container.style.background = 'var(--vscode-editor-background)';
+    container.style.borderRadius = '6px';
+    container.style.border = '1px solid var(--vscode-widget-border)';
+
+    const rawNodes = data.nodes || [];
+    const rawEdges = data.edges || [];
+    const elements: any[] = [];
+
+    const getEstDimensions = (label: string, type: string) => {
+        const cleanLabel = label.replace(/📁\s*/, '').trim();
+        const charCount = cleanLabel.length;
+
+        let width = Math.max(50, Math.min(180, charCount * 6.5 + 16));
+        let height = 25;
+
+        if (type === 'class' || type === 'function') {
+            width = Math.max(55, Math.min(200, charCount * 7 + 22));
+            height = 32;
+        }
+        return { width, height };
+    };
+
+    if (data.elements && Array.isArray(data.elements)) {
+        data.elements.forEach((ele: any) => {
+            if (ele.group === 'nodes' && !ele.data.isParent) {
+                const dims = getEstDimensions(ele.data.label || ele.data.id, ele.data.type);
+                ele.data.estWidth = dims.width;
+                ele.data.estHeight = dims.height;
+            }
+            elements.push(ele);
+        });
+    } else {
+        rawNodes.forEach((n: any) => {
+            const dims = getEstDimensions(n.label || n.name || n.id, n.type);
+            elements.push({
+                group: 'nodes',
+                data: {
+                    id: n.id,
+                    label: n.label || n.name || n.id,
+                    type: n.type || 'file',
+                    filePath: n.filePath || '',
+                    estWidth: dims.width,
+                    estHeight: dims.height
+                }
+            });
+        });
+
+        rawEdges.forEach((e: any) => {
+            elements.push({
+                group: 'edges',
+                data: {
+                    id: e.id || `${e.source}-${e.target}-${Math.random()}`,
+                    source: e.source,
+                    target: e.target,
+                    label: e.label || ''
+                }
+            });
+        });
+    }
+
+    const cyStyle: any[] = [
+        {
+            selector: 'node',
+            style: {
+                'label': 'data(label)',
+                'color': '#ffffff',
+                'font-family': 'var(--vscode-font-family), monospace',
+                'font-size': '8px',
+                'text-valign': 'center',
+                'text-halign': 'center',
+                'background-color': '#2d2d2d',
+                'border-width': '1px',
+                'border-color': '#555555',
+                'width': 'data(estWidth)',
+                'height': 'data(estHeight)',
+                'shape': 'round-rectangle',
+                'text-wrap': 'wrap',
+                'text-max-width': '100px'
+            }
+        },
+        {
+            selector: 'node[type="file"]',
+            style: {
+                'background-color': '#1f4e79',
+                'border-color': '#569cd6',
+                'shape': 'round-rectangle'
+            }
+        },
+        {
+            selector: 'node[type="class"]',
+            style: {
+                'background-color': '#2d6a4f',
+                'border-color': '#4ec9b0',
+                'shape': 'ellipse'
+            }
+        },
+        {
+            selector: 'node[type="function"]',
+            style: {
+                'background-color': '#8c7a1e',
+                'border-color': '#dcdcaa',
+                'shape': 'ellipse'
+            }
+        },
+        {
+            selector: 'node[type="library"]',
+            style: {
+                'background-color': '#8f5c2c',
+                'border-color': '#d19a66',
+                'shape': 'hexagon'
+            }
+        },
+        {
+            selector: 'node[type="folder"]',
+            style: {
+                'background-color': '#114b7a',
+                'border-color': '#ffffff',
+                'shape': 'round-rectangle'
+            }
+        },
+        {
+            selector: 'node:parent',
+            style: {
+                'background-color': '#000000',
+                'background-opacity': 0.25,
+                'border-color': '#555555',
+                'border-width': '1px',
+                'border-style': 'dashed',
+                'label': 'data(label)',
+                'text-valign': 'top',
+                'text-halign': 'center',
+                'color': '#aaaaaa',
+                'font-size': '8px',
+                'font-weight': 'bold',
+                'padding': '8px'
+            }
+        },
+        {
+            selector: 'edge',
+            style: {
+                'width': 1,
+                'line-color': '#555555',
+                'target-arrow-color': '#555555',
+                'target-arrow-shape': 'triangle',
+                'curve-style': 'bezier',
+                'arrow-scale': 0.6,
+                'font-size': '6px',
+                'color': '#888888',
+                'text-background-opacity': 0.8,
+                'text-background-color': '#1e1e1e',
+                'text-background-padding': '1px',
+                'text-background-shape': 'round-rectangle'
+            }
+        },
+        {
+            selector: 'edge[label]',
+            style: {
+                'label': 'data(label)'
+            }
+        },
+        {
+            selector: 'node:selected',
+            style: {
+                'border-color': '#ff9d00',
+                'border-width': '2px',
+                'background-color': '#ff9d00',
+                'color': '#000000'
+            }
+        }
+    ];
+
+    const layoutStyle = data.layout || 'cose-bilkent';
+    let layoutConfig = {
+            name: 'cose-bilkent',
+            animate: 'end',
+            animationEasing: 'ease-out-quad',
+            animationDuration: 1000,
+            randomize: true,
+            nodeDimensionsIncludeLabels: true, // Factor in text labels during overlap calculations
+            nodeRepulsion: 15000,             // Significantly increased repulsion to aggressively push dense clusters apart
+            idealEdgeLength: 160,             // Longer edges to allow clusters to breathe
+            edgeElasticity: 0.1,              // Softer edges so they can stretch much further
+            nestingFactor: 0.05,              // Reduced nesting constraint to let compounds expand
+            gravity: 0.05,                    // Greatly reduced gravity (center pull) to let repulsion spread the nodes
+            numIter: 5000,                    // More iterations to ensure a settled, overlap-free layout
+            tile: true
+        };
+
+    if (layoutStyle === 'dagre' || layoutStyle === 'hierarchical') {
+        layoutConfig = {
+            name: 'dagre',
+            nodeSep: 80,
+            rankSep: 100,
+            rankDir: 'TB'
+        };
+    } else if (layoutStyle === 'circle') {
+        layoutConfig = { name: 'circle', radius: 150 };
+    } else if (layoutStyle === 'grid') {
+        layoutConfig = { name: 'grid' };
+    }
+
+    const cy = cytoscape({
+        container: container,
+        elements: elements,
+        style: cyStyle,
+        layout: layoutConfig,
+        zoomingEnabled: true,
+        panningEnabled: true,
+        boxSelectionEnabled: false,
+        autounselectify: false
+    });
+
+    cy.on('dblclick', 'node', function(evt: any) {
+        const node = evt.target;
+        const nodeData = node.data();
+        if (nodeData && nodeData.filePath) {
+            vscode.postMessage({ 
+                command: 'openFile', 
+                path: nodeData.filePath 
+            });
+        }
+    });
+}
+
 function renderDiagram(codeElement: HTMLElement, language: string, container: HTMLElement) {
     const diagramContainer = document.createElement('div');
     diagramContainer.className = 'diagram-container';
-    
+
     const helpNote = document.createElement('div');
     helpNote.style.cssText = 'font-size: 10px; opacity: 0.6; margin-bottom: 5px; text-align: right;';
     helpNote.innerHTML = '<span class="codicon codicon-zoom-in" style="font-size:10px"></span> Scroll to Zoom | <span class="codicon codicon-move" style="font-size:10px"></span> Drag to Pan';
@@ -386,7 +621,7 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
         const id = `mermaid-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
         const rawText = codeElement.textContent || '';
         const sanitizedText = preprocessMermaid(rawText);
-        
+
         try {
             mermaid.render(id, sanitizedText).then((result: any) => {
                 const svg = typeof result === 'string' ? result : result.svg;
@@ -405,6 +640,17 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
     } else if (language === 'svg') {
         diagramContainer.innerHTML = sanitizer.sanitize(codeElement.textContent || '', { USE_PROFILES: { svg: true } });
         enablePanZoom(diagramContainer);
+    } else if (language === 'cytoscape' || language === 'json') {
+        const rawText = codeElement.textContent || '';
+        try {
+            const parsed = JSON.parse(rawText);
+            renderCytoscapeDiagram(parsed, diagramContainer);
+        } catch (e: any) {
+            diagramContainer.innerHTML = `
+                <div style="color:var(--vscode-errorForeground); padding:10px; font-size:11px; background:var(--vscode-inputValidation-errorBackground); border-radius:4px; border: 1px solid var(--vscode-errorForeground);">
+                    <strong>Cytoscape Error:</strong> ${sanitizer.sanitize(e.message)}
+                </div>`;
+        }
     }
 }
 
@@ -842,7 +1088,11 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
         const aiderMatches = [...codeText.matchAll(aiderRegex)];
         const isAider = aiderMatches.length > 0;
-        const isDiagram = language === 'mermaid' || language === 'svg';
+
+        // Auto-detect graph structures inside JSON code blocks
+        const isCytoscapeJson = language === 'json' && codeText.includes('"nodes"') && codeText.includes('"edges"');
+        const isDiagram = language === 'mermaid' || language === 'svg' || language === 'cytoscape' || isCytoscapeJson;
+
         const pathVal = isDiff ? diffFilePath : filePath;
 
         const details = document.createElement('details');
@@ -959,6 +1209,8 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             rz.className = 'diagram-render-zone';
             parent.insertBefore(rz, pre);
             renderDiagram(code, language, rz);
+            pre.remove();
+            return; // Exit early to prevent duplicate raw code rendering
         }
 
         // Assemble Header (Summary)

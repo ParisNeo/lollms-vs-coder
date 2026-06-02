@@ -76,6 +76,7 @@ export class ContextManager {
   private _isTreeDirty: boolean = true;
   private _fileTreeObject: any = null;
   private _fileContentCache!: Map<string, { content: string, state: ContextState }>;
+  private _cachedIsolatedTrees = new Map<string, string>(); // Caches the rendered tree per workspace folder
   private _cachedVisibleFiles: string[] | null = null;
   private static PROJECT_TOOLS_KEY = 'lollms_project_active_tools';
 
@@ -118,6 +119,7 @@ export class ContextManager {
     this._fileTreeObject = null;
     this._cachedTreeString = null;
     this._cachedVisibleFiles = null;
+    this._cachedIsolatedTrees.clear();
   }
 
   public isTreeDirty(): boolean {
@@ -141,6 +143,7 @@ export class ContextManager {
     this._cachedTreeString = null;
     this._isTreeDirty = true;
     this._fileContentCache?.clear();
+    this._cachedIsolatedTrees.clear();
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -250,6 +253,12 @@ export class ContextManager {
     signal?: AbortSignal,
     capabilities?: DiscussionCapabilities
   ): Promise<string> {
+    const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}`;
+    if (this._cachedIsolatedTrees.has(cacheKey) && !this._isTreeDirty) {
+        Logger.info(`[Librarian] Cache Hit: Using cached isolated tree for ${folder.name}`);
+        return this._cachedIsolatedTrees.get(cacheKey)!;
+    }
+
     const projectTreeObj: any = {};
 
     const injectPathIntoTree = (relPath: string) => {
@@ -349,6 +358,10 @@ export class ContextManager {
 
     treeString += render(projectTreeObj);
     treeString += '```\n';
+
+    if (!signal?.aborted) {
+        this._cachedIsolatedTrees.set(cacheKey, treeString);
+    }
     return treeString;
   }
 
@@ -570,6 +583,28 @@ export class ContextManager {
     result.text += `- **\`[C]\` (Content Loaded)**: The full source code of this file is available in the 'LOADED FILE CONTENTS' section below.\n`;
     result.text += `- **\`[D]\` (Definitions Only)**: Only the class/function signatures are loaded. High-level structure is known, but logic is hidden.\n`;
     result.text += `- **(No Marker)**: The file is visible in the structure, but its content is completely **HIDDEN** from your current memory.\n\n`;
+    
+    if (options?.capabilities?.includeGitInfo) {
+      let gitInfoText = "### 🐙 GIT ENVIRONMENT\n";
+      for (const folder of activeFolders) {
+        try {
+          const { stdout: inWorkTree } = await execAsync('git --no-pager rev-parse --is-inside-work-tree', { cwd: folder.uri.fsPath, timeout: 2000 });
+          if (inWorkTree.trim() === 'true') {
+            const { stdout: branch } = await execAsync('git --no-pager branch --show-current', { cwd: folder.uri.fsPath, timeout: 2000 });
+            const { stdout: hash } = await execAsync('git --no-pager rev-parse --short HEAD', { cwd: folder.uri.fsPath, timeout: 2000 });
+            let remote = '';
+            try {
+              const { stdout: remoteUrl } = await execAsync('git --no-pager config --get remote.origin.url', { cwd: folder.uri.fsPath, timeout: 2000 });
+              remote = remoteUrl.trim();
+            } catch {}
+            gitInfoText += `- **Project**: \`${folder.name}\`\n  - **Branch**: \`${branch.trim()}\`\n  - **Commit**: \`${hash.trim()}\`${remote ? `\n  - **Remote**: \`${remote}\`` : ''}\n`;
+          }
+        } catch (e) {}
+      }
+      if (gitInfoText !== "### 🐙 GIT ENVIRONMENT\n") {
+        result.text += gitInfoText + "\n";
+      }
+    }
 
     const discussionSkillIds = options?.importedSkillIds || [];
     const projectSkillIds = await this.getActiveProjectSkills();
@@ -663,7 +698,6 @@ export class ContextManager {
             continue; 
           }
 
-          filesInThisFolderCount++;
           const namespacedPath = fileEntry.path;
           const contextState = fileEntry.state;
           const fileUri = resolution.uri;
@@ -683,12 +717,14 @@ export class ContextManager {
 
             if (this.binaryExtensions.has(ext)) {
               projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n(Binary file content excluded)\n\`\`\`\n\n`;
+              filesInThisFolderCount++;
               continue;
             }
 
             if (contextState === 'definitions-only') {
               const definitions = await this.extractDefinitions(fileUri);
               projectContentBuffer += `\`\`\`${languageId}:${headerPath} (Definitions Only)\n${definitions}\n\`\`\`\n\n`;
+              filesInThisFolderCount++;
               continue;
             }
 
@@ -714,6 +750,7 @@ export class ContextManager {
               if (this.imageExtensions.has(ext)) {
                 if (!enableVision) {
                   projectContentBuffer += `### 🖼️ \`${headerPath}\` [IMAGE MUTED]\n> Vision is disabled in settings.\n\n`;
+                  filesInThisFolderCount++;
                   continue;
                 }
                 const base64Data = fileBuffer.toString('base64');
@@ -728,11 +765,13 @@ export class ContextManager {
                 projectContentBuffer += `> [MULTIMODAL STATUS]: IMAGE LOADED IN VISION BUFFER.\n`;
                 projectContentBuffer += `> [VISUAL CONTEXT INDEX]: ${imgIndex}\n`;
                 projectContentBuffer += `> You can see this image directly in your vision stream. Do NOT use 'analyze_image' for this file.\n\n`;
+                filesInThisFolderCount++;
                 continue;
               }
 
               if (this.isBinary(fileBuffer)) {
                 projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n(Binary content detected and excluded)\n\`\`\`\n\n`;
+                filesInThisFolderCount++;
                 continue;
               }
 
@@ -757,9 +796,11 @@ export class ContextManager {
             }
 
             projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${fileContent}\n\`\`\`\n\n`;
+            filesInThisFolderCount++;
 
           } catch (error) {
-            projectContentBuffer += `### ${headerPath}\n\n⚠️ **Error reading project file:** ${error}\n\n`;
+            // Silently log and do NOT append empty/error placeholder to projectContentBuffer
+            Logger.warn(`Skipping missing/unreadable file in context: ${headerPath}`, error);
           }
         }
 

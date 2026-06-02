@@ -196,6 +196,7 @@ export interface DiscussionCapabilities {
     herdCriticEnabled?: boolean;         // Optional critique step
     // ---------------------------
 
+    includeGitInfo?: boolean;
     workerType: 'discussion' | 'builder';
     agentMode: boolean;
     debugMode: boolean;

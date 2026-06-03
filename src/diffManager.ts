@@ -233,9 +233,32 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         try {
             const originalUri = vscode.Uri.file(originalFsPath);
             const content = generatedDoc.getText();
-            
+
+            let firstDiffLine = 0;
+            try {
+                const originalDoc = await vscode.workspace.openTextDocument(originalUri);
+                const originalText = originalDoc.getText();
+                const originalLines = originalText.split(/\r?\n/);
+                const generatedLines = content.split(/\r?\n/);
+
+                while (firstDiffLine < originalLines.length && firstDiffLine < generatedLines.length && originalLines[firstDiffLine] === generatedLines[firstDiffLine]) {
+                    firstDiffLine++;
+                }
+                if (firstDiffLine >= originalLines.length && firstDiffLine >= generatedLines.length) {
+                    firstDiffLine = 0; // Fallback if no differences found
+                }
+            } catch (err) {
+                console.error("Failed to calculate first difference line:", err);
+            }
+
             await vscode.workspace.fs.writeFile(originalUri, Buffer.from(content, 'utf8'));
-            
+
+            // Cache the position of the first difference line to scroll there after restoring the editor
+            this.lastPositions.set(originalUri.toString(), {
+                selection: new vscode.Selection(new vscode.Position(firstDiffLine, 0), new vscode.Position(firstDiffLine, 0)),
+                visibleRange: new vscode.Range(new vscode.Position(Math.max(0, firstDiffLine - 8), 0), new vscode.Position(firstDiffLine + 8, 0))
+            });
+
             vscode.window.showInformationMessage(`Changes applied to ${path.basename(originalFsPath)}`);
             return true;
         } catch (e: any) {

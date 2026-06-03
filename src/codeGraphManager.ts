@@ -95,8 +95,9 @@ export class CodeGraphManager {
     /**
      * Builds a graph. 
      * @param focusPath If provided, only builds a subgraph around this file to prevent UI freezing on large projects.
+     * @param onProgress Optional callback for real-time progress metrics.
      */
-    async buildGraph(focusPath?: string) {
+    async buildGraph(focusPath?: string, onProgress?: (p: { percentage: number, status: string }) => void) {
         // Cancel any existing operation
         this.cancel();
 
@@ -123,9 +124,8 @@ export class CodeGraphManager {
         try {
             if (signal.aborted) return;
 
-            // Aggressive exclusion pattern to improve performance on large repos
-            // Excludes standard build/dependency folders
-            const excludePattern = '**/{node_modules,venv,.venv,.git,dist,build,out,bin,obj,.vscode,.idea,.lollms,__pycache__,target,*.egg-info,vendor}/**';
+            // Ultra-aggressive exclusion pattern to guarantee we never touch build/dependency directories
+            const excludePattern = '**/{node_modules,venv,.venv,env,.env,.git,dist,build,out,bin,obj,.vscode,.idea,.lollms,__pycache__,target,*.egg-info,vendor,temp_scripts,web_cache,snapshots}/**';
 
             // Find code files only
             const files = await vscode.workspace.findFiles(
@@ -147,57 +147,84 @@ export class CodeGraphManager {
 
             const fileContents = new Map<string, { text: string, linesCount: number }>();
 
-            // --- PASS 1: Read Files & Create Nodes for Files (High Performance) ---
-            for (let i = 0; i < files.length; i++) {
+            // --- PASS 1: Batched Asynchronous Reading & Pre-flight Size Checks ---
+            const BATCH_SIZE = 25;
+            for (let i = 0; i < files.length; i += BATCH_SIZE) {
                 if (signal.aborted) return;
 
-                // Yield occasionally to keep the VS Code UI perfectly responsive
-                if (i % 10 === 0) {
-                    await new Promise(resolve => setTimeout(resolve, 5));
+                // Yield back to the main thread to keep UI completely responsive
+                await new Promise(resolve => setTimeout(resolve, 0));
+
+                const batch = files.slice(i, i + BATCH_SIZE);
+
+                if (onProgress) {
+                    const pct = Math.round((i / files.length) * 40); // Allocate up to 40% of bar to Pass 1
+                    const currentFileSample = batch[0] ? path.basename(batch[0].fsPath) : 'codebase';
+                    onProgress({ percentage: pct, status: `Pass 1: Reading ${currentFileSample}...` });
                 }
 
-                const file = files[i];
-                const relativePath = vscode.workspace.asRelativePath(file);
-                const normalizedPath = relativePath.replace(/\\/g, '/');
+                await Promise.all(batch.map(async (file) => {
+                    const relativePath = vscode.workspace.asRelativePath(file);
+                    const normalizedPath = relativePath.replace(/\\/g, '/');
 
-                let text = "";
-                let linesCount = 0;
-                try {
-                    // High-performance raw file read (bypasses editor & language server overhead)
-                    const fileBytes = await vscode.workspace.fs.readFile(file);
-                    text = Buffer.from(fileBytes).toString('utf8');
+                    try {
+                        // Pre-flight file size check: skip reading if size exceeds 200KB to save memory and CPU
+                        const stats = await vscode.workspace.fs.stat(file);
+                        if (stats.size > 200000) {
+                            return;
+                        }
 
-                    // Skip very large files (> 500KB) to prevent freezes during parsing
-                    if (text.length > 500000) continue;
+                        const fileBytes = await vscode.workspace.fs.readFile(file);
+                        const text = Buffer.from(fileBytes).toString('utf8');
+                        const linesCount = text.split('\n').length;
 
-                    linesCount = text.split('\n').length;
-                    fileContents.set(normalizedPath, { text, linesCount });
-                } catch (readError) {
-                    console.warn(`Error reading file ${file.fsPath}:`, readError);
-                    continue;
-                }
+                        fileContents.set(normalizedPath, { text, linesCount });
 
-                const fileNodeId = `file_${nodeId++}`;
-                nodes.push({
-                    id: fileNodeId,
-                    label: path.basename(relativePath),
-                    type: 'file',
-                    filePath: relativePath,
-                    startLine: 0,
-                    linesCount: linesCount
-                });
+                        const fileNodeId = `file_${nodeId++}`;
+                        nodes.push({
+                            id: fileNodeId,
+                            label: path.basename(relativePath),
+                            type: 'file',
+                            filePath: relativePath,
+                            startLine: 0,
+                            linesCount: linesCount
+                        });
 
-                fileNodeMap.set(normalizedPath, fileNodeId);
+                        fileNodeMap.set(normalizedPath, fileNodeId);
+                    } catch (readError) {
+                        console.warn(`Error reading file ${file.fsPath}:`, readError);
+                    }
+                }));
+            }
+
+            if (onProgress) {
+                onProgress({ percentage: 40, status: 'Pass 1 complete. Extracting file-level nodes...' });
             }
 
             const libraryNodeMap = new Map<string, string>();
 
             // --- PASS 2: Parse Content ---
+            let filesParsed = 0;
             for (const [normalizedPath, data] of fileContents.entries()) {
                 if (signal.aborted) return;
 
+                filesParsed++;
+                if (filesParsed % 15 === 0) {
+                    // Yield back to keep navigation snappy
+                    await new Promise(resolve => setTimeout(resolve, 1));
+                }
+
+                if (onProgress && filesParsed % 10 === 0) {
+                    const pct = 40 + Math.round((filesParsed / fileContents.size) * 30); // 40% to 70%
+                    onProgress({ percentage: pct, status: `Pass 2: Extracting classes/functions from ${path.basename(normalizedPath)}...` });
+                }
+
                 const fileNodeId = fileNodeMap.get(normalizedPath);
                 if (!fileNodeId) continue;
+
+                // Track nodes and edges generated ONLY from this file to populate cache
+                const localNodes: GraphNode[] = [];
+                const localEdges: GraphEdge[] = [];
 
                 try {
                     const text = data.text;
@@ -229,7 +256,9 @@ export class CodeGraphManager {
                                 type: 'function',
                                 filePath: normalizedPath,
                                 startLine: index,
-                                signature: `${name}(${args.trim()}) -> ${ret.trim()}`
+                                signature: `${name}(${args.trim()}) -> ${ret.trim()}`,
+                                params: args.trim(),
+                                returnType: ret.trim()
                             });
                             edges.push({ id: `edge_${edgeId++}`, source: fileNodeId, target: fnNodeId, label: 'contains' });
                         }
@@ -283,7 +312,9 @@ export class CodeGraphManager {
                                             type: 'method',
                                             filePath: normalizedPath,
                                             startLine: index,
-                                            signature: `${methodName}(${methodMatch[2].trim()}) -> ${methodMatch[3]?.trim() || 'None'}`
+                                            signature: `${methodName}(${methodMatch[2].trim()}) -> ${methodMatch[3]?.trim() || 'None'}`,
+                                            params: methodMatch[2].trim(),
+                                            returnType: methodMatch[3]?.trim() || 'None'
                                         });
                                         edges.push({ id: `edge_${edgeId++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
                                     }
@@ -299,7 +330,9 @@ export class CodeGraphManager {
                                             type: 'method',
                                             filePath: normalizedPath,
                                             startLine: index,
-                                            signature: `${methodName}(${methodMatch[2].trim()}) : ${methodMatch[3]?.trim() || 'any'}`
+                                            signature: `${methodName}(${methodMatch[2].trim()}) : ${methodMatch[3]?.trim() || 'any'}`,
+                                            params: methodMatch[2].trim(),
+                                            returnType: methodMatch[3]?.trim() || 'any'
                                         });
                                         edges.push({ id: `edge_${edgeId++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
                                     }
@@ -357,30 +390,97 @@ export class CodeGraphManager {
                 }
             }
 
-            // --- PASS 3: Function Calls & References (Links) ---
-            const allSymbols = nodes.filter(n => n.type === 'function' || n.type === 'class');
+            if (onProgress) {
+                onProgress({ percentage: 70, status: 'Pass 2 complete. Analyzing calls & references...' });
+            }
 
+            // --- PASS 3: Function Calls & References (Links) ---
+            const allSymbols = nodes.filter(n => n.type === 'function' || n.type === 'method' || n.type === 'class');
+
+            let filesLinked = 0;
             for (const [normalizedPath, data] of fileContents.entries()) {
                 if (signal.aborted) return;
+
+                filesLinked++;
+                if (filesLinked % 10 === 0) {
+                    // Yield back to keep thread fully responsive during complex reference matching
+                    await new Promise(resolve => setTimeout(resolve, 1));
+                }
+
+                if (onProgress && filesLinked % 15 === 0) {
+                    const pct = 70 + Math.round((filesLinked / fileContents.size) * 20); // 70% to 90%
+                    onProgress({ percentage: pct, status: `Pass 3: Linking references in ${path.basename(normalizedPath)}...` });
+                }
+
                 const fileNodeId = fileNodeMap.get(normalizedPath);
                 if (!fileNodeId) continue;
 
                 const text = data.text;
+                const lines = text.split('\n');
 
-                // For every known symbol in the project, check if this file calls it
-                for (const symbol of allSymbols) {
-                    if (symbol.filePath === normalizedPath) continue;
+                // Gather and sort all symbols defined in this file by line number
+                const fileSymbols = nodes
+                    .filter(n => n.filePath === normalizedPath && (n.type === 'function' || n.type === 'method' || n.type === 'class'))
+                    .sort((a, b) => (a.startLine || 0) - (b.startLine || 0));
 
-                    const callRegex = new RegExp(`\\b${symbol.label}\\s*\\(`, 'g');
-                    if (callRegex.test(text)) {
-                        edges.push({
-                            id: `call_${edgeId++}`,
-                            source: fileNodeId,
-                            target: symbol.id,
-                            label: 'calls'
-                        });
+                lines.forEach((line, index) => {
+                    // Identify the active caller context (enclosing symbol range)
+                    let currentCallerId = fileNodeId;
+                    for (let sIdx = fileSymbols.length - 1; sIdx >= 0; sIdx--) {
+                        const sym = fileSymbols[sIdx];
+                        if (sym.startLine !== undefined && index >= sym.startLine) {
+                            currentCallerId = sym.id;
+                            break;
+                        }
                     }
-                }
+
+                    // Check for relationships to any known symbol in the project (Upgraded Ontology)
+                    for (const symbol of allSymbols) {
+                        if (symbol.id === currentCallerId) continue;
+
+                        const symbolRegex = new RegExp(`\\b${symbol.label}\\b`);
+
+                        // Helper to safely add unique relationship edges
+                        const addEdgeOnce = (src: string, trg: string, relLabel: string) => {
+                            const edgeExists = edges.some(e => e.source === src && e.target === trg && e.label === relLabel);
+                            if (!edgeExists) {
+                                edges.push({
+                                    id: `edge_${edgeId++}`,
+                                    source: src,
+                                    target: trg,
+                                    label: relLabel
+                                });
+                            }
+                        };
+
+                        // 1. Check Signature for Input / Output Parameter Types (At definition line)
+                        const callerNode = nodes.find(n => n.id === currentCallerId);
+                        if (callerNode && index === callerNode.startLine) {
+                            if (callerNode.params && symbolRegex.test(callerNode.params)) {
+                                addEdgeOnce(currentCallerId, symbol.id, 'inputParam');
+                                continue;
+                            }
+                            if (callerNode.returnType && symbolRegex.test(callerNode.returnType)) {
+                                addEdgeOnce(currentCallerId, symbol.id, 'outputParam');
+                                continue;
+                            }
+                        }
+
+                        // 2. Check Line Content for Internal Calls & Local Variable Instantiation
+                        const callRegex = new RegExp(`\\b${symbol.label}\\s*\\(`, 'g');
+                        const instantiationRegex = new RegExp(`\\bnew\\s+${symbol.label}\\b|:\\s*${symbol.label}\\b|\\b${symbol.label}\\.`, 'g');
+
+                        if (callRegex.test(line)) {
+                            addEdgeOnce(currentCallerId, symbol.id, 'calls');
+                        } else if (instantiationRegex.test(line)) {
+                            addEdgeOnce(currentCallerId, symbol.id, 'localVariable');
+                        }
+                    }
+                });
+            }
+
+            if (onProgress) {
+                onProgress({ percentage: 90, status: 'Analyzing class inheritance...' });
             }
 
             // --- PASS 4: Inheritance Parsing ---
@@ -415,6 +515,10 @@ export class CodeGraphManager {
                         }
                     }
                 }
+            }
+
+            if (onProgress) {
+                onProgress({ percentage: 95, status: 'Finalizing architectural layout...' });
             }
 
             // --- PASS 5: Filter Isolated Nodes ---
@@ -536,6 +640,42 @@ export class CodeGraphManager {
     getGraphData(): GraphData { return this.graph; }
     getBuildState(): BuildState { return this.buildState; }
     getLastError(): string | undefined { return this.lastError; }
+
+    /**
+     * Serializes the current active graph into a high-density, machine-readable Cytoscape JSON structure.
+     * This is optimized for LLM comprehension and enables high-scale interactive rendering in the chat panel.
+     */
+    generateCytoscapeJson(): string {
+        const activeNodeIds = new Set(this.graph.nodes.map(n => n.id));
+
+        // Enforce strict integrity: only serialize edges that connect fully-possessed nodes
+        const validatedEdges = this.graph.edges.filter(e => 
+            activeNodeIds.has(e.source) && activeNodeIds.has(e.target)
+        );
+
+        const elements = {
+            nodes: this.graph.nodes.map(n => ({
+                data: {
+                    id: n.id,
+                    label: n.label,
+                    type: n.type,
+                    filePath: n.filePath || '',
+                    startLine: n.startLine || 0,
+                    linesCount: n.linesCount || 0,
+                    signature: n.signature || ''
+                }
+            })),
+            edges: validatedEdges.map(e => ({
+                data: {
+                    id: e.id,
+                    source: e.source,
+                    target: e.target,
+                    label: e.label
+                }
+            }))
+        };
+        return JSON.stringify(elements, null, 2);
+    }
     reset() {
         this.graph = { nodes: [], edges: [] };
         this.buildState = 'idle';

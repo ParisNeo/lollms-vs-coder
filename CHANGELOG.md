@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-06-03 23:18]
+
+- feat(lollms-vs-coder): Update version and enhance chat panel/code graph functionality
+
 ## [2026-06-02 00:40]
 
 - feat(skills): add ascii-colors skill suite and improve chat panel UX

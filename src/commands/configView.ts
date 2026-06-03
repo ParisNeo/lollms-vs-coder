@@ -118,7 +118,11 @@ export class SettingsPanel {
     remoteSlackSigningSecret: '',
     remoteAllowedUsers: [] as string[],
     remoteAdminUsers: [] as string[],
-    remoteAllowedChannels: [] as string[]
+    remoteAllowedChannels: [] as string[],
+
+    // Billing Settings
+    billingBudgetCap: 10.00,
+    billingRates: [] as any[]
   };
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, processManager: ProcessManager, personalityManager: PersonalityManager) {
@@ -242,6 +246,10 @@ export class SettingsPanel {
     this._pendingConfig.moltbookBotName = config.get<string>('moltbook.botName') || 'Lollms-VS-Bot';
     this._pendingConfig.moltbookBotPurpose = config.get<string>('moltbook.botPurpose') || 'An autonomous software engineering assistant integrated with VS Code.';
     this._pendingConfig.developerDebugTools = config.get<boolean>('developer.debugTools') || false;
+
+    // Billing Settings
+    this._pendingConfig.billingBudgetCap = config.get<number>('billing.budgetCap') ?? 10.00;
+    this._pendingConfig.billingRates = config.get<any[]>('billing.rates') || [];
 
     // Load Remote Configuration
     this._pendingConfig.remoteServerPort = config.get<number>('remote.server.port') || 3000;
@@ -628,6 +636,10 @@ export class SettingsPanel {
                   ['remote.allowedUsers', this._pendingConfig.remoteAllowedUsers],
                   ['remote.adminUsers', this._pendingConfig.remoteAdminUsers],
                   ['remote.allowedChannels', this._pendingConfig.remoteAllowedChannels],
+                  ['billing.enabled', this._pendingConfig.billingEnabled],
+                  ['billing.enableCapping', this._pendingConfig.billingEnableCapping],
+                  ['billing.budgetCap', this._pendingConfig.billingBudgetCap],
+                  ['billing.rates', this._pendingConfig.billingRates],
                   ['developer.debugTools', this._pendingConfig.developerDebugTools]
                   ];
 
@@ -960,6 +972,7 @@ personalities: this._personalityManager.getPersonalities()
               <button class="tab-link" onclick="openTab(event, 'TabContext')">🧠 Context</button>
               <button class="tab-link" onclick="openTab(event, 'TabAgent')">🤖 Agent & Tools</button>
               <button class="tab-link" onclick="openTab(event, 'TabRemote')">📡 Remote</button>
+              <button class="tab-link" onclick="openTab(event, 'TabBilling')">💲 Billing & Spend</button>
               <button class="tab-link" onclick="openTab(event, 'TabGit')">🐙 Git</button>
               <button class="tab-link" onclick="openTab(event, 'TabPersonas')">🎭 Personas</button>
               <button class="tab-link" onclick="openTab(event, 'TabUi')">🎨 UI & Graph</button>
@@ -1026,13 +1039,23 @@ personalities: this._personalityManager.getPersonalities()
         </div>
 
         <label for="apiKey">${t('config.apiKey.label', 'API Key')}</label>
-                <div class="input-group">
-                    <input type="password" id="apiKey" value="${apiKey}" placeholder="Enter your API key" autocomplete="off" style="flex:1;" />
-                    <button id="toggleApiKey" type="button" class="icon-btn" title="Show/Hide"><i class="codicon codicon-eye"></i></button>
-                    <button id="copyApiKey" type="button" class="icon-btn" title="Copy Key"><i class="codicon codicon-copy"></i></button>
-                </div>
+        <div class="input-group">
+            <input type="password" id="apiKey" value="${apiKey}" placeholder="Enter your API key" autocomplete="off" style="flex:1;" />
+            <button id="toggleApiKey" type="button" class="icon-btn" title="Show/Hide"><i class="codicon codicon-eye"></i></button>
+            <button id="copyApiKey" type="button" class="icon-btn" title="Copy Key"><i class="codicon codicon-copy"></i></button>
+        </div>
 
-                <label for="modelSelect">${t('config.modelName.label', 'Chat Model')}</label>
+        <div class="checkbox-container">
+            <input type="checkbox" id="disableSsl" ${disableSslVerification ? 'checked' : ''}>
+            <label for="disableSsl">${t('config.disableSslVerification.label', 'Disable SSL Verification')}</label>
+        </div>
+        <label for="sslCertPath">${t('config.sslCertPath.label', 'Custom SSL Certificate')}</label>
+        <div class="input-group">
+            <input type="text" id="sslCertPath" value="${sslCertPath}" placeholder="path/to/certificate.pem" />
+            <button id="browseCertPath" type="button" class="icon-btn" title="Browse"><i class="codicon codicon-folder-opened"></i></button>
+        </div>
+
+        <label for="modelSelect">${t('config.modelName.label', 'Chat Model')}</label>
                 <div class="input-group">
                     <select id="modelSelect" class="model-dropdown" style="flex:1;">
                         <option value="">Loading Models...</option>
@@ -1082,15 +1105,6 @@ personalities: this._personalityManager.getPersonalities()
                 </div>
                 <label for="requestTimeout">${t('config.requestTimeout.label', 'Request Timeout (ms)')}</label>
                 <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
-                <div class="checkbox-container">
-                    <input type="checkbox" id="disableSsl" ${disableSslVerification ? 'checked' : ''}>
-                    <label for="disableSsl">${t('config.disableSslVerification.label', 'Disable SSL Verification')}</label>
-                </div>
-                <label for="sslCertPath">${t('config.sslCertPath.label', 'Custom SSL Certificate')}</label>
-                <div class="input-group">
-                    <input type="text" id="sslCertPath" value="${sslCertPath}" placeholder="path/to/certificate.pem" />
-                    <button id="browseCertPath" type="button" class="icon-btn" title="Browse"><i class="codicon codicon-folder-opened"></i></button>
-                </div>
             </div>
 
             <!-- TabGeneral -->
@@ -1314,6 +1328,49 @@ personalities: this._personalityManager.getPersonalities()
                 
                 <label for="remoteAllowedChannels">Allowed Channels (Channel IDs, one per line)</label>
                 <textarea id="remoteAllowedChannels" rows="3" placeholder="C12345678">${remoteAllowedChannels.join('\n')}</textarea>
+            </div>
+
+            <!-- TabBilling -->
+            <div id="TabBilling" class="tab-content">
+                <h2>💲 Billing & Spending Control</h2>
+                <p class="help-text">Configure pricing rules and daily budget warnings to maintain control over API expenditures.</p>
+
+                <div class="checkbox-container">
+                    <input type="checkbox" id="billingEnabled">
+                    <label for="billingEnabled"><strong>Activate Dollar-Spending Tracking:</strong> Convert token consumption into real USD estimates.</label>
+                </div>
+
+                <div class="checkbox-container">
+                    <input type="checkbox" id="billingEnableCapping">
+                    <label for="billingEnableCapping"><strong>Enable Budget Capping:</strong> Warn when the daily expenditure threshold is crossed.</label>
+                </div>
+
+                <div id="billing-capping-container" style="display:none; padding-left:15px; border-left:2px solid var(--vscode-charts-orange); margin-top:10px;">
+                    <label for="billingBudgetCap">Daily Budget Cap (USD)</label>
+                    <input type="number" id="billingBudgetCap" step="0.5" min="0" style="width:120px;" />
+                    <p class="help-text">Lollms will warn you immediately when your accumulated daily spending exceeds this value.</p>
+                </div>
+
+                <h3>📊 Model Pricing Rates</h3>
+                <p class="help-text">Define cost rules (USD per 1 Million tokens) for specific models loaded from your active server/connection.</p>
+
+                <div style="display:flex; justify-content:flex-end; margin-bottom:12px;">
+                    <button id="addRateBtn" class="secondary-button"><i class="codicon codicon-add"></i> Add Model Rule</button>
+                </div>
+
+                <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+                    <thead>
+                        <tr style="border-bottom:2px solid var(--vscode-widget-border);">
+                            <th style="text-align:left; padding:8px;">Select Model</th>
+                            <th style="text-align:left; padding:8px;">Input Rate ($/1M)</th>
+                            <th style="text-align:left; padding:8px;">Output Rate ($/1M)</th>
+                            <th style="text-align:right; padding:8px; width:60px;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ratesTableBody">
+                        <!-- Dynamic Rate Rows -->
+                    </tbody>
+                </table>
             </div>
 
             <!-- TabGit -->
@@ -1553,13 +1610,96 @@ personalities: this._personalityManager.getPersonalities()
                 const event = el.type === 'checkbox' ? 'change' : 'input';
                 el.addEventListener(event, () => {
                     let val = el.type === 'checkbox' ? el.checked : el.value;
-                    if(el.type === 'number') val = parseInt(val);
+                    if(el.type === 'number') val = parseFloat(val); // Switched to float to preserve decimals
                     if(['contextFileExceptions', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].includes(key)) {
                         val = val.split('\\n').map(s=>s.trim()).filter(Boolean);
                     }
                     postTempUpdate(key, val);
                     if (connectionFields.includes(id)) checkReactivity();
                 });
+            };
+
+            function renderRatesTable() {
+                const body = document.getElementById('ratesTableBody');
+                if (!body) return;
+                body.innerHTML = '';
+
+                const rates = config.billingRates || [];
+                rates.forEach((rate, idx) => {
+                    const tr = document.createElement('tr');
+                    tr.style.borderBottom = '1px solid var(--vscode-widget-border)';
+                    
+                    // Build select list from loaded models
+                    const options = [
+                        new Option("-- Custom Model / Pattern --", "__custom__")
+                    ];
+                    loadedModels.forEach(m => {
+                        options.push(new Option(m.id, m.id));
+                    });
+
+                    const selectHtml = \`
+                        <select class="rate-model-select" data-idx="\${idx}" style="padding:4px; width:220px; display:\${options.some(o => o.value === rate.pattern) ? 'inline-block' : 'none'};">
+                            \${options.map(o => \`<option value="\${o.value}" \${o.value === rate.pattern ? 'selected' : ''}>\${o.text}</option>\`).join('')}
+                        </select>
+                        <input type="text" class="rate-pattern" data-idx="\${idx}" value="\${rate.pattern}" style="padding:4px; width:220px; display:\${options.some(o => o.value === rate.pattern) ? 'none' : 'inline-block'};" placeholder="e.g. gpt-4o">
+                    \`;
+
+                    tr.innerHTML = \`
+                        <td style="padding:8px;">\${selectHtml}</td>
+                        <td style="padding:8px;"><input type="number" step="0.01" class="rate-input" data-idx="\${idx}" value="\${rate.inputRate}" style="padding:4px; width:100px;"></td>
+                        <td style="padding:8px;"><input type="number" step="0.01" class="rate-output" data-idx="\${idx}" value="\${rate.outputRate}" style="padding:4px; width:100px;"></td>
+                        <td style="padding:8px; text-align:right;"><button class="icon-btn remove-btn delete-rate-btn" data-idx="\${idx}"><i class="codicon codicon-trash"></i></button></td>
+                    \`;
+                    body.appendChild(tr);
+                });
+
+                // Attach Table Input Listeners
+                body.querySelectorAll('input, select').forEach(input => {
+                    input.onchange = input.oninput = () => {
+                        const rawIdx = input.getAttribute('data-idx');
+                        const idx = parseInt(rawIdx || '0', 10);
+                        const rate = config.billingRates[idx];
+                        if (rate) {
+                            if (input.classList.contains('rate-model-select')) {
+                                if (input.value === '__custom__') {
+                                    input.style.display = 'none';
+                                    const textInp = input.nextElementSibling;
+                                    if (textInp) {
+                                        textInp.style.display = 'inline-block';
+                                        textInp.value = '';
+                                        textInp.focus();
+                                    }
+                                } else {
+                                    rate.pattern = input.value;
+                                }
+                            }
+                            if (input.classList.contains('rate-pattern')) rate.pattern = input.value;
+                            if (input.classList.contains('rate-input')) rate.inputRate = parseFloat(input.value) || 0.0;
+                            if (input.classList.contains('rate-output')) rate.outputRate = parseFloat(input.value) || 0.0;
+                            postTempUpdate('billingRates', config.billingRates);
+                        }
+                    };
+                });
+
+                // Attach Row Delete Listeners
+                body.querySelectorAll('.delete-rate-btn').forEach(btn => {
+                    btn.onclick = () => {
+                        const rawIdx = btn.getAttribute('data-idx');
+                        const idx = parseInt(rawIdx || '0', 10);
+                        if (config.billingRates && config.billingRates[idx]) {
+                            config.billingRates.splice(idx, 1);
+                            postTempUpdate('billingRates', config.billingRates);
+                            renderRatesTable();
+                        }
+                    };
+                });
+            }
+
+            document.getElementById('addRateBtn').onclick = () => {
+                if (!config.billingRates) config.billingRates = [];
+                config.billingRates.push({ pattern: 'new-model', inputRate: 1.0, outputRate: 3.0 });
+                postTempUpdate('billingRates', config.billingRates);
+                renderRatesTable();
             };
 
             function renderMcpServers() {
@@ -1681,7 +1821,24 @@ personalities: this._personalityManager.getPersonalities()
                 safeSet('remoteSlackSigningSecret', config.remoteSlackSigningSecret);
                 safeSet('developerDebugTools', config.developerDebugTools, true);
 
+                // Billing Initializers
+                safeSet('billingEnabled', config.billingEnabled, true);
+                safeSet('billingEnableCapping', config.billingEnableCapping, true);
+                safeSet('billingBudgetCap', config.billingBudgetCap);
+
+                const cappingCheck = document.getElementById('billingEnableCapping');
+                const cappingContainer = document.getElementById('billing-capping-container');
+                if (cappingCheck && cappingContainer) {
+                    const updateCappingVisibility = () => {
+                        cappingContainer.style.display = cappingCheck.checked ? 'block' : 'none';
+                    };
+                    cappingCheck.addEventListener('change', updateCappingVisibility);
+                    updateCappingVisibility();
+                }
+
                 if(config.contextFileExceptions) document.getElementById('contextFileExceptions').value = config.contextFileExceptions.join('\\n');
+
+                renderRatesTable();
                 if(config.remoteAllowedUsers) document.getElementById('remoteAllowedUsers').value = config.remoteAllowedUsers.join('\\n');
                 if(config.remoteAdminUsers) document.getElementById('remoteAdminUsers').value = config.remoteAdminUsers.join('\\n');
                 if(config.remoteAllowedChannels) document.getElementById('remoteAllowedChannels').value = config.remoteAllowedChannels.join('\\n');
@@ -1924,6 +2081,13 @@ personalities: this._personalityManager.getPersonalities()
             document.getElementById('importConfig').onclick = () => vscode.postMessage({ command: 'importConnectionConfig' });
             document.getElementById('exportConfig').onclick = () => vscode.postMessage({ command: 'exportConnectionConfig' });
 
+            const browseBtn = document.getElementById('browseCertPath');
+            if (browseBtn) {
+                browseBtn.onclick = () => {
+                    vscode.postMessage({ command: 'browseCertPath' });
+                };
+            }
+
             document.getElementById('connectionProfileSelect').onchange = (e) => {
                 const p = connectionProfiles[e.target.value];
                 if (!p) return;
@@ -1981,9 +2145,9 @@ personalities: this._personalityManager.getPersonalities()
             });
 
             // Bind inputs
-            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','halApiKey','scopusApiKey','clipboardInsertRole','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose','remoteServerPort','remoteDiscordToken','remoteSlackToken','remoteSlackSigningSecret'].forEach(k => bind(k, k));
-            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','includeGitInfo','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions'].forEach(id => {
-                const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'includeGitInfo': 'git.includeGitInfo', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo', 'agentUseRLM': 'agent.useRLM', 'deactivateConflictingExtensions': 'deactivateConflictingExtensions' };
+            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','halApiKey','scopusApiKey','clipboardInsertRole','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose','remoteServerPort','remoteDiscordToken','remoteSlackToken','remoteSlackSigningSecret','sslCertPath'].forEach(k => bind(k, k));
+            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','includeGitInfo','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions', 'billingEnabled', 'billingEnableCapping'].forEach(id => {
+                const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'includeGitInfo': 'git.includeGitInfo', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo', 'agentUseRLM': 'agent.useRLM', 'deactivateConflictingExtensions': 'deactivateConflictingExtensions', 'billingEnabled': 'billing.enabled', 'billingEnableCapping': 'billing.enableCapping' };
                 bind(id, map[id] || id);
             });
 
@@ -2047,10 +2211,18 @@ personalities: this._personalityManager.getPersonalities()
                     renderConnectionProfiles();
                 } else if (m.command === 'logData') {
                     document.getElementById('logContent').textContent = m.content;
+                } else if (m.command === 'updateCertPath') {
+                    const el = document.getElementById('sslCertPath');
+                    if (el) {
+                        el.value = m.path;
+                        postTempUpdate('sslCertPath', m.path);
+                        checkReactivity();
+                    }
                 }
             });
 
             initializeForm();
+            bind('billingBudgetCap', 'billingBudgetCap');
           </script>
         </body>
         </html>`;

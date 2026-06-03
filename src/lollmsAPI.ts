@@ -948,7 +948,7 @@ export class LollmsAPI {
             let fullResponse = '';
             let buffer = '';
             const decoder = new TextDecoder();
-            
+
             for await (const chunk of response.body) {
                 if (!firstTokenReceived) {
                     firstTokenReceived = true;
@@ -996,13 +996,37 @@ export class LollmsAPI {
                     }
                 }
             }
+
+            // Record transaction to billing database asynchronously
+            try {
+                const { TokenBillingManager } = require('./utils/tokenBillingManager');
+                const rawPrompt = messages.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
+                const estimatedInput = Math.ceil(rawPrompt.length / 3.5);
+                const estimatedOutput = Math.ceil(fullResponse.length / 3.5);
+                TokenBillingManager.logTransaction(model, estimatedInput, estimatedOutput, 'chat_stream');
+            } catch (billingErr) {
+                console.warn("Failed to record billing entry:", billingErr);
+            }
+
             return fullResponse;
         } else {
             const data = await response.json();
-            if (backend === 'ollama') return data.message?.content || '';
-            if (backend === 'anthropic') return data.content?.[0]?.text || '';
-            if (backend === 'google') return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-            return data.choices?.[0]?.message?.content || '';
+            let resultText = "";
+            if (backend === 'ollama') resultText = data.message?.content || '';
+            else if (backend === 'anthropic') resultText = data.content?.[0]?.text || '';
+            else if (backend === 'google') resultText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            else resultText = data.choices?.[0]?.message?.content || '';
+
+            // Record transaction to billing database
+            try {
+                const { TokenBillingManager } = require('./utils/tokenBillingManager');
+                const rawPrompt = messages.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
+                const estimatedInput = Math.ceil(rawPrompt.length / 3.5);
+                const estimatedOutput = Math.ceil(resultText.length / 3.5);
+                TokenBillingManager.logTransaction(model, estimatedInput, estimatedOutput, 'chat_unary');
+            } catch (billingErr) {}
+
+            return resultText;
         }
     } catch (error: any) {
         if (error.name === 'AbortError' || error.message === 'AbortError') {

@@ -5,10 +5,19 @@ export const contextExpansionPlugin: TagPlugin = {
     id: 'add_files_to_context',
     // Support <add_files_to_context paths='[...]'>Body</add_files_to_context>
     tagPattern: /<add_files_to_context\b([^>]*?)>([\s\S]*?)<\/add_files_to_context>/gi,
-    
+
     render: (match, context) => {
         const attrPart = match[1] || "";
-        const inner = match[2] || "";
+        let inner = match[2] || "";
+
+        // SELF-HEALING CARVER: If the regex matched from an conversational inline tag to the final closing tag,
+        // carve out the prefix prose and isolate only the actual execution block.
+        const lastOpenTagIdx = inner.lastIndexOf('<add_files_to_context>');
+        if (lastOpenTagIdx !== -1) {
+            // Slice to start immediately after the last duplicate opening tag
+            inner = inner.substring(lastOpenTagIdx + 22); 
+        }
+
         let paths: string[] = [];
 
         const attrMatch = attrPart.match(/paths=['"](\[.*?\])['"]/i);
@@ -17,7 +26,10 @@ export const contextExpansionPlugin: TagPlugin = {
         }
 
         if (paths.length === 0) {
-            paths = inner.split(/[\s\r\n,]+/).map(p => p.trim()).filter(p => p.length > 0 && p.includes('.'));
+            // Robust path splitter: parses files without extensions (e.g. LICENSE, Makefile) while ignoring stray XML brackets or dots
+            paths = inner.split(/[\s\r\n,]+/)
+                .map(p => p.trim().replace(/^['"]|['"]$/g, '')) // Strip accidentally outputted quotes
+                .filter(p => p.length > 0 && !p.startsWith('<') && !p.startsWith('/') && p !== '...');
         }
 
         if (paths.length === 0) return null;

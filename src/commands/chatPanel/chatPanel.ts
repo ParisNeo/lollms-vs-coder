@@ -825,14 +825,15 @@ export class ChatPanel {
     this._isTokenizing = true;
     const modelForTokenization = (this._currentDiscussion?.model || this._lollmsAPI.getModelName() || "default").trim();
 
+    let diagramText = ""; // Declare diagramText at the top-level of the method to ensure it's in scope for catch block
+    let briefingText = "";
+
     try {
         if (!this._contextManager || !this._currentDiscussion || !this._panel.webview) {
             this.log("updateContextAndTokens: Missing dependencies (contextManager or discussion)", 'WARN');
             this._panel.webview?.postMessage({ command: 'updateTokenProgress' });
             return;
         }
-
-        const modelForTokenization = (this._currentDiscussion?.model || this._lollmsAPI.getModelName() || "default").trim();
 
         if (!this._isDisposed) {
             const isRebuildNeeded = this._contextManager.isTreeDirty();
@@ -853,7 +854,6 @@ export class ChatPanel {
             }
         }
 
-        let briefingText = "";
         try {
             this.log("Fetching context content...");
             const importedIds = this._currentDiscussion?.importedSkills || [];
@@ -1067,6 +1067,13 @@ export class ChatPanel {
             // --- SYNC WITH MATRIX ---
             const filteredFilesText = await this._getFilteredFilesContent(context, folderSettings);
 
+            // Calculate Diagram Text for accurate tokenization
+            let diagramText = "";
+            if (context.diagrams && context.diagrams.length > 0) {
+                context.diagrams.forEach(d => {
+                    diagramText += `### ${d.type.replace('_', ' ').toUpperCase()}\n\`\`\`mermaid\n${d.mermaid}\n\`\`\`\n\n`;
+                });
+            }
 
             let results;
             try {
@@ -1077,6 +1084,7 @@ export class ChatPanel {
                     getTokenCount(context.skillsContent || ""),
                     getTokenCount(projectMemory || ""),
                     getTokenCount(briefingText || ""),
+                    getTokenCount(diagramText),
                     this._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
                         Logger.error(`[TokenStats] Context Size API critically failed: ${e.message}`);
                         return { context_size: 128000, isEstimation: true }; 
@@ -1090,7 +1098,7 @@ export class ChatPanel {
                 throw e; // Re-throw real errors
             }
 
-            const [systemRes, historyRes, treeRes, skillsRes, memoryRes, briefingRes, contextSizeRes] = results;
+            const [systemRes, historyRes, treeRes, skillsRes, memoryRes, briefingRes, diagramRes, contextSizeRes] = results;
 
             if (this._isDisposed || signal.aborted) return;
 
@@ -1127,6 +1135,7 @@ export class ChatPanel {
             const treeTokens = (treeRes as any).count;
             const memoryTokens = (memoryRes as any).count;
             const briefingTokens = (briefingRes as any).count;
+            const diagramTokens = (diagramRes as any).count;
 
             // ── AUTHORITATIVE MATHEMATICAL SYNCHRONIZATION ──
             // Calculate the total as the sum of parts to ensure the HUD bar matches the labels exactly.
@@ -1137,6 +1146,7 @@ export class ChatPanel {
                                 contentTokens + 
                                 skillTokens + 
                                 memoryTokens +
+                                diagramTokens +
                                 imageTokens;
 
 
@@ -1146,6 +1156,7 @@ export class ChatPanel {
                 tree: treeTokens,
                 skills: skillTokens,
                 memory: memoryTokens,
+                diagrams: diagramTokens,
                 files: contentTokens,
                 history: historyTokens,
                 images: imageTokens
@@ -1283,6 +1294,7 @@ export class ChatPanel {
                 const filesTokens = Math.ceil((context.selectedFilesContent?.length || 0) / 3.5);
                 const skillsTokens = Math.ceil((context.skillsContent?.length || 0) / 3.5);
                 const briefingTokens = Math.ceil((briefingText?.length || 0) / 3.5);
+                const diagramTokens = Math.ceil((diagramText?.length || 0) / 3.5);
 
                 // Fix: Fetch or default projectMemory for the fallback
                 const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
@@ -1291,7 +1303,7 @@ export class ChatPanel {
                 const memoryTokens = Math.ceil((projectMemory.length || 0) / 3.5);
 
                 // ── SYNCHRONIZED FALLBACK TOTAL ──
-                const totalTokens = systemTokens + historyTokens + treeTokens + filesTokens + skillsTokens + memoryTokens + briefingTokens;
+                const totalTokens = systemTokens + historyTokens + treeTokens + filesTokens + skillsTokens + memoryTokens + briefingTokens + diagramTokens;
 
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
@@ -1305,6 +1317,7 @@ export class ChatPanel {
                         tree: treeTokens,
                         skills: skillsTokens,
                         memory: memoryTokens,
+                        diagrams: diagramTokens,
                         files: filesTokens,
                         history: historyTokens,
                         images: 0
@@ -4823,6 +4836,8 @@ ${targetContent}
                     vscode.commands.executeCommand('lollms-vs-coder.saveContextSelection');
                 } else if (command === 'loadContext') {
                     vscode.commands.executeCommand('lollms-vs-coder.loadContextSelection');
+                } else if (command === 'addContext') {
+                    vscode.commands.executeCommand('lollms-vs-coder.addContextSelection');
                 } else if (command === 'synthesizeSearchResults') {
                     if (!this.agentManager.getIsActive()) {
                         this.agentManager.toggleAgentMode();

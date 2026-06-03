@@ -3,6 +3,50 @@ export function isScrolledToBottom(el: HTMLElement): boolean {
 }
 
 /**
+ * Collapses a details block while preserving its exact vertical position in the viewport.
+ * Prevents the scroll viewport from jumping disorientingly when height changes.
+ */
+export function collapseBlockWithScrollPreservation(blockEl: HTMLDetailsElement, messagesDiv: HTMLElement | null) {
+    if (!blockEl) return;
+    if (!messagesDiv) {
+        blockEl.open = false;
+        return;
+    }
+
+    const summary = blockEl.querySelector('summary') || blockEl;
+    const rectBefore = summary.getBoundingClientRect();
+
+    blockEl.open = false;
+
+    const rectAfter = summary.getBoundingClientRect();
+    const diffY = rectBefore.top - rectAfter.top;
+
+    if (diffY !== 0) {
+        messagesDiv.scrollTop += diffY;
+    }
+}
+
+/**
+ * Executes an action that modifies DOM height while anchoring the scrollbar 
+ * to a reference element so the viewport stays perfectly stationary.
+ */
+export function preserveScrollPosition(refElement: HTMLElement | null, container: HTMLElement | null, action: () => void) {
+    if (!refElement || !container) {
+        action();
+        return;
+    }
+    const rectBefore = refElement.getBoundingClientRect().top;
+
+    action();
+
+    const rectAfter = refElement.getBoundingClientRect().top;
+    const diffY = rectBefore - rectAfter;
+    if (diffY !== 0) {
+        container.scrollTop += diffY;
+    }
+}
+
+/**
  * Calculates a similarity score between two strings (0.0 to 1.0).
  * Uses a simple character-based overlap metric for fuzzy matching.
  */

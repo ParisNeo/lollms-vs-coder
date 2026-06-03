@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.79",
+  "version": "0.8.84",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -39,6 +39,10 @@
   ],
   "contributes": {
     "commands": [
+      {
+        "command": "lollms-vs-coder.triggerInlineSuggestion",
+        "title": "Lollms: Trigger Inline Completion Suggestion"
+      },
       {
         "command": "lollms-vs-coder.viewKnowledge",
         "title": "View Knowledge"
@@ -509,8 +513,13 @@
       },
       {
         "command": "lollms-vs-coder.loadContextSelection",
-        "title": "%command.loadContextSelection.title%",
+        "title": "Lollms: Load Context Selection (Replace)",
         "icon": "$(folder-opened)"
+      },
+      {
+        "command": "lollms-vs-coder.addContextSelection",
+        "title": "Lollms: Add Context Selection (Append)",
+        "icon": "$(folder-active)"
       },
       {
         "command": "lollms-vs-coder.resetContextSelection",
@@ -687,6 +696,12 @@
         "key": "ctrl+shift+l",
         "mac": "cmd+shift+l",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "lollms-vs-coder.triggerInlineSuggestion",
+        "key": "ctrl+alt+space",
+        "mac": "cmd+alt+space",
+        "when": "editorTextFocus && !editorReadonly"
       }
     ],
     "configuration": {
@@ -1037,7 +1052,7 @@
         "lollmsVsCoder.enableInlineSuggestions": {
           "type": "boolean",
           "default": false,
-          "description": "%config.enableInlineSuggestions.description%"
+          "description": "Enable automatic inline completion suggestions on every keystroke. Turn off to prevent high server load."
         },
         "lollmsVsCoder.disableSslVerification": {
           "type": "boolean",
@@ -1053,6 +1068,64 @@
           "type": "string",
           "default": "",
           "description": "%config.apiKey.description%"
+        },
+        "lollmsVsCoder.billing.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Activate or deactivate token tracking and spending calculations globally."
+        },
+        "lollmsVsCoder.billing.enableCapping": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable daily monetary budget capping. If disabled, usage is unlimited with no warnings."
+        },
+        "lollmsVsCoder.billing.budgetCap": {
+          "type": "number",
+          "default": 10.00,
+          "description": "Daily monetary budget cap in USD. Takes effect only if Budget Capping is enabled."
+        },
+        "lollmsVsCoder.billing.rates": {
+          "type": "array",
+          "description": "Customizable pricing rates (USD per 1 Million tokens) for different model families.",
+          "default": [
+            {
+              "pattern": "gpt-4o",
+              "inputRate": 2.50,
+              "outputRate": 10.00
+            },
+            {
+              "pattern": "claude-3-5",
+              "inputRate": 3.00,
+              "outputRate": 15.00
+            },
+            {
+              "pattern": "gemini",
+              "inputRate": 0.075,
+              "outputRate": 0.30
+            },
+            {
+              "pattern": "ollama",
+              "inputRate": 0.00,
+              "outputRate": 0.00
+            }
+          ],
+          "items": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "description": "Model ID substring match pattern (e.g. 'gpt-4o' or 'claude-3-5-sonnet')."
+              },
+              "inputRate": {
+                "type": "number",
+                "description": "Price per 1 Million input tokens in USD."
+              },
+              "outputRate": {
+                "type": "number",
+                "description": "Price per 1 Million output tokens in USD."
+              }
+            }
+          }
         },
         "lollmsVsCoder.apiUrl": {
           "type": "string",
@@ -1746,9 +1819,14 @@
           "group": "navigation@2"
         },
         {
-          "command": "lollms-vs-coder.resetContextSelection",
+          "command": "lollms-vs-coder.addContextSelection",
           "when": "view == lollmsFileTreeView",
           "group": "navigation@3"
+        },
+        {
+          "command": "lollms-vs-coder.resetContextSelection",
+          "when": "view == lollmsFileTreeView",
+          "group": "navigation@4"
         },
         {
           "command": "lollms-vs-coder.newDiscussion",

@@ -81,6 +81,9 @@ export async function activate(context: vscode.ExtensionContext) {
     }, context.globalState);
 
     // Initialize Managers
+    const { TokenBillingManager } = require('./utils/tokenBillingManager');
+    TokenBillingManager.initialize(context);
+
     const memoryManager = new MemoryManager(context.globalStorageUri);
     const contextManager = new ContextManager(context, lollmsAPI);
     const skillsManager = new SkillsManager(context.globalStorageUri); 
@@ -224,9 +227,34 @@ export async function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('*', new LollmsDebugAdapterTrackerFactory()));
 
+    const inlineCompletionProvider = new (require('./commands/inlineSuggestions').LollmsInlineCompletionProvider)(lollmsAPI);
+
     if (config.get<boolean>('enableInlineSuggestions')) {
-        context.subscriptions.push(vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, new (require('./commands/inlineSuggestions').LollmsInlineCompletionProvider)(lollmsAPI)));
+        context.subscriptions.push(vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, inlineCompletionProvider));
     }
+
+    // Register on-demand manual trigger command
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerInlineSuggestion', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) return;
+
+        const position = editor.selection.active;
+        const document = editor.document;
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Window,
+            title: "Lollms: Fetching completion..."
+        }, async () => {
+            const completion = await inlineCompletionProvider.triggerSuggestion(document, position);
+            if (completion) {
+                editor.edit(editBuilder => {
+                    editBuilder.insert(position, completion);
+                });
+            } else {
+                vscode.window.setStatusBarMessage("Lollms: No completion available.", 2000);
+            }
+        });
+    }));
 
     // Status Bar
     const statusBar = new LollmsStatusBar(context, lollmsAPI);

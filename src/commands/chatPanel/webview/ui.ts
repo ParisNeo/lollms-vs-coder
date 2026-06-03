@@ -1045,11 +1045,11 @@ export function openSovereignZoom(dataUri: string) {
     if (!overlay || !display) return;
 
     display.src = dataUri;
-    overlay.classList.add('active'); // Changed from 'visible' to match CSS
+    overlay.classList.add('active'); 
 
-    const close = (e) => {
+    const close = (e?: Event) => {
         if (e) e.stopPropagation();
-        overlay.classList.remove('active');
+        closeSovereignZoom();
     };
 
     overlay.onclick = close;
@@ -1064,6 +1064,25 @@ export function openSovereignZoom(dataUri: string) {
             copyBtn.innerHTML = '<i class="codicon codicon-check"></i> Copied Data';
             setTimeout(() => { copyBtn.innerHTML = '<i class="codicon codicon-copy"></i> Copy Image'; }, 2000);
         };
+    }
+
+    // Capture Escape key to close the overlay
+    const handleEsc = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+            closeSovereignZoom();
+            window.removeEventListener('keydown', handleEsc);
+        }
+    };
+    window.addEventListener('keydown', handleEsc);
+}
+
+/**
+ * Closes the sovereign zoom overlay and resets its state.
+ */
+export function closeSovereignZoom() {
+    const overlay = document.getElementById('image-zoom-overlay');
+    if (overlay) {
+        overlay.classList.remove('active');
     }
 }
 
@@ -3142,7 +3161,7 @@ export function updateProgressBar(container: HTMLElement | null, current: number
     if (segments && total > 0) {
         container.innerHTML = '';
         // Ordered array for visual consistency in the bar
-        const types = ['system', 'briefing', 'tree', 'skills', 'memory', 'files', 'history', 'images'];
+        const types = ['system', 'briefing', 'tree', 'skills', 'memory', 'diagrams', 'files', 'history', 'images'];
 
         types.forEach(type => {
             const count = segments[type] || 0;

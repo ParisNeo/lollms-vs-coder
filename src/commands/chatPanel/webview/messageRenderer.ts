@@ -1,5 +1,5 @@
 import { dom, vscode, state } from './dom.js';
-import { isScrolledToBottom } from './utils.js';
+import { isScrolledToBottom, collapseBlockWithScrollPreservation } from './utils.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
@@ -391,55 +391,86 @@ function renderCytoscapeDiagram(data: any, container: HTMLElement) {
     const rawEdges = data.edges || [];
     const elements: any[] = [];
 
-    const getEstDimensions = (label: string, type: string) => {
-        const cleanLabel = label.replace(/📁\s*/, '').trim();
+    const getEstDimensions = (label: any, type: string) => {
+        const safeLabel = typeof label === 'string' ? label : String(label || '');
+        const cleanLabel = safeLabel.replace(/📁\s*/, '').trim();
         const charCount = cleanLabel.length;
 
         let width = Math.max(50, Math.min(180, charCount * 6.5 + 16));
         let height = 25;
 
-        if (type === 'class' || type === 'function') {
+        if (type === 'class' || type === 'function' || type === 'method') {
             width = Math.max(55, Math.min(200, charCount * 7 + 22));
             height = 32;
         }
         return { width, height };
     };
 
+    const nodeIds = new Set<string>();
+
     if (data.elements && Array.isArray(data.elements)) {
         data.elements.forEach((ele: any) => {
-            if (ele.group === 'nodes' && !ele.data.isParent) {
-                const dims = getEstDimensions(ele.data.label || ele.data.id, ele.data.type);
-                ele.data.estWidth = dims.width;
-                ele.data.estHeight = dims.height;
+            if (ele.group === 'nodes' || (!ele.group && ele.data && !ele.data.source)) {
+                if (ele.data && ele.data.id) {
+                    nodeIds.add(ele.data.id);
+                    if (!ele.data.isParent) {
+                        const labelVal = ele.data.label || ele.data.name || ele.data.id || 'Node';
+                        const dims = getEstDimensions(labelVal, ele.data.type);
+                        ele.data.estWidth = dims.width;
+                        ele.data.estHeight = dims.height;
+                        ele.data.label = labelVal;
+                    }
+                }
             }
             elements.push(ele);
         });
     } else {
         rawNodes.forEach((n: any) => {
-            const dims = getEstDimensions(n.label || n.name || n.id, n.type);
-            elements.push({
-                group: 'nodes',
-                data: {
-                    id: n.id,
-                    label: n.label || n.name || n.id,
-                    type: n.type || 'file',
-                    filePath: n.filePath || '',
-                    estWidth: dims.width,
-                    estHeight: dims.height
-                }
-            });
+            if (n.id) {
+                nodeIds.add(n.id);
+                const labelVal = n.label || n.name || n.id || 'Node';
+                const dims = getEstDimensions(labelVal, n.type);
+                elements.push({
+                    group: 'nodes',
+                    data: {
+                        id: n.id,
+                        label: labelVal,
+                        type: n.type || 'file',
+                        filePath: n.filePath || '',
+                        estWidth: dims.width,
+                        estHeight: dims.height
+                    }
+                });
+            }
         });
 
+        // Defensive Sieve: Filter out any edges pointing to unrendered/missing nodes
         rawEdges.forEach((e: any) => {
-            elements.push({
-                group: 'edges',
-                data: {
-                    id: e.id || `${e.source}-${e.target}-${Math.random()}`,
-                    source: e.source,
-                    target: e.target,
-                    label: e.label || ''
-                }
-            });
+            if (e.source && e.target && nodeIds.has(e.source) && nodeIds.has(e.target)) {
+                elements.push({
+                    group: 'edges',
+                    data: {
+                        id: e.id || `${e.source}-${e.target}-${Math.random()}`,
+                        source: e.source,
+                        target: e.target,
+                        label: e.label || ''
+                    }
+                });
+            } else {
+                console.warn(`[Cytoscape Sieve] Stripped orphaned edge: ${e.source} -> ${e.target}`);
+            }
+        });
+    }
+
+    // Double-check element list for standard elements format as well
+    let securedElements = elements;
+    if (data.elements && Array.isArray(data.elements)) {
+        securedElements = elements.filter(ele => {
+            const isEdge = ele.group === 'edges' || (ele.data && ele.data.source);
+            if (isEdge) {
+                return nodeIds.has(ele.data.source) && nodeIds.has(ele.data.target);
+            }
+            return true;
         });
     }
 
@@ -586,7 +617,7 @@ function renderCytoscapeDiagram(data: any, container: HTMLElement) {
 
     const cy = cytoscape({
         container: container,
-        elements: elements,
+        elements: securedElements, // Pass the secured, orphaned-free elements list to Cytoscape
         style: cyStyle,
         layout: layoutConfig,
         zoomingEnabled: true,
@@ -1089,6 +1120,9 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         const aiderMatches = [...codeText.matchAll(aiderRegex)];
         const isAider = aiderMatches.length > 0;
 
+        const hasAiderMarkers = codeText.includes('<<<<<<< SEARCH') || codeText.includes('>>>>>>> REPLACE') || codeText.includes('=======');
+        const isMalformedAider = hasAiderMarkers && !isAider;
+
         // Auto-detect graph structures inside JSON code blocks
         const isCytoscapeJson = language === 'json' && codeText.includes('"nodes"') && codeText.includes('"edges"');
         const isDiagram = language === 'mermaid' || language === 'svg' || language === 'cytoscape' || isCytoscapeJson;
@@ -1096,14 +1130,14 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         const pathVal = isDiff ? diffFilePath : filePath;
 
         const details = document.createElement('details');
-        details.className = 'code-collapsible';
+        details.className = 'code-collapsible' + (isMalformedAider ? ' malformed' : '');
         details.open = true;
         details.dataset.rawCode = codeText;
         details.id = `block-${messageId}-${index}`;
 
         const summary = document.createElement('summary');
         summary.className = 'code-summary';
-        summary.innerHTML = `<div class="summary-lang-label"><span class="lang-badge" data-lang="${language.toLowerCase()}">${language}</span>${pathVal ? ` : <input type="text" class="path-editor-input" value="${pathVal}"><button class="code-action-btn goto-file-btn" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto: Open this file">Goto</button>` : ''}</div>`;
+        summary.innerHTML = `<div class="summary-lang-label"><span class="lang-badge" data-lang="${language.toLowerCase()}">${language}</span>${pathVal ? ` : <input type="text" class="path-editor-input" value="${pathVal}"><button class="code-action-btn goto-file-btn" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto: Open this file">Goto</button>` : ''}${isMalformedAider ? '<span class="malformed-badge">Malformed Patch</span>' : ''}</div>`;
 
         const actions = document.createElement('div');
         actions.className = 'code-actions';
@@ -1159,29 +1193,55 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             const appliedHunks = state.appliedState?.[currentMsgId]?.[blockIdx] || [];
             const isFullyApplied = appliedHunks.includes(-1);
 
-            const applyBtn = createButton(
-                isFullyApplied ? 'Re-apply' : 'Apply', 
-                isFullyApplied ? 'codicon-check' : (isAider ? 'codicon-arrow-swap' : 'codicon-tools'), 
-                () => {
-                    const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
-                    const cmd = isDiff ? 'applyPatchContent' : (isAider ? 'replaceCode' : 'applyFileContent');
+            if (isMalformedAider) {
+                // Safeguard: Never render a full-file apply button for malformed aider blocks!
+                // Instead, render an AI Repair button
+                const repairBtn = createButton(
+                    'Fix Patch', 
+                    'codicon-sparkle', 
+                    () => {
+                        repairBtn.disabled = true;
+                        repairBtn.innerHTML = '<div class="spinner"></div> Repairing...';
+                        vscode.postMessage({ 
+                            command: 'replaceCode', 
+                            filePath: pathVal, 
+                            content: "REPAIR_REQUESTED", 
+                            messageId: currentMsgId, 
+                            blockIndex: blockIdx,
+                            options: { silent: true }
+                        });
+                    }, 
+                    'code-action-btn apply-btn',
+                    'Ask Lollms to repair this malformed patch'
+                );
+                repairBtn.id = applyBtnId;
+                repairBtn.disabled = isDisabled;
+                actions.appendChild(repairBtn);
+            } else {
+                const applyBtn = createButton(
+                    isFullyApplied ? 'Re-apply' : 'Apply', 
+                    isFullyApplied ? 'codicon-check' : (isAider ? 'codicon-arrow-swap' : 'codicon-tools'), 
+                    () => {
+                        const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
+                        const cmd = isDiff ? 'applyPatchContent' : (isAider ? 'replaceCode' : 'applyFileContent');
 
-                    // Show spinner on the specific button
-                    applyBtn.innerHTML = '<div class="spinner"></div>';
+                        // Show spinner on the specific button
+                        applyBtn.innerHTML = '<div class="spinner"></div>';
 
-                    vscode.postMessage({ 
-                        command: cmd, 
-                        filePath: finalPath, 
-                        content: codeText, 
-                        messageId: currentMsgId, 
-                        blockIndex: blockIdx 
-                    });
-                }, 
-                `code-action-btn apply-btn ${isFullyApplied ? 'applied' : ''}`
-            );
-            applyBtn.id = applyBtnId;
-            applyBtn.disabled = isDisabled; // Only disabled if block is still streaming/unclosed
-            actions.appendChild(applyBtn);
+                        vscode.postMessage({ 
+                            command: cmd, 
+                            filePath: finalPath, 
+                            content: codeText, 
+                            messageId: currentMsgId, 
+                            blockIndex: blockIdx 
+                        });
+                    }, 
+                    `code-action-btn apply-btn ${isFullyApplied ? 'applied' : ''}`
+                );
+                applyBtn.id = applyBtnId;
+                applyBtn.disabled = isDisabled; // Only disabled if block is still streaming/unclosed
+                actions.appendChild(applyBtn);
+            }
         } else {
             // ADDED: Play button for code without path
             const runnableLangs = ['python', 'py', 'javascript', 'js', 'typescript', 'ts', 'bash', 'sh', 'powershell', 'pwsh'];
@@ -1841,7 +1901,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     }
 
     const forbidden: {start: number, end: number}[] = [];
-    const fenceRegex = /```[\s\S]*?(?:```|$)|`[^`]+`/g;
+    // Enforce that single backticks do NOT match across lines to prevent index drifting
+    const fenceRegex = /```[\s\S]*?(?:```|$)|`[^`\n\r]+`/g;
     let fMatch;
     while ((fMatch = fenceRegex.exec(sourceText)) !== null) {
         forbidden.push({ start: fMatch.index, end: fMatch.index + fMatch[0].length });
@@ -1857,13 +1918,18 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         while ((pMatch = plugin.tagPattern.exec(sourceText)) !== null) {
             const matchIndex = pMatch.index;
             const fullMatch = pMatch[0];
+
+            // 1. Code Fence Check (Skip if inside backticks)
             const isInside = forbidden.some(r => matchIndex >= r.start && matchIndex < r.end);
             if (isInside) continue;
 
-            const textBefore = sourceText.substring(0, matchIndex);
-            const lastNewline = textBefore.lastIndexOf('\n');
-            const linePrefix = lastNewline === -1 ? textBefore : textBefore.substring(lastNewline + 1);
-            if (linePrefix.trim().length > 0) continue;
+            // 2. Overlap Check (Skip if already claimed by another plugin to prevent rendering corruption)
+            const isOverlapping = segments.some(s => 
+                (matchIndex >= s.start && matchIndex < s.end) ||
+                (matchIndex + fullMatch.length > s.start && matchIndex + fullMatch.length <= s.end) ||
+                (s.start >= matchIndex && s.start < matchIndex + fullMatch.length)
+            );
+            if (isOverlapping) continue;
 
             const html = plugin.render(pMatch, ctx);
             if (html) {
@@ -2036,6 +2102,11 @@ function gatherChangesFromBlocks(messageId: string) {
 
     const blocks = wrapper.querySelectorAll('details.code-collapsible');
     blocks.forEach((block: any) => {
+        // SAFEGUARD: Never include malformed blocks in the bulk "Apply All" changes list
+        if (block.classList.contains('malformed')) {
+            return;
+        }
+
         const idParts = block.id.split('-');
         const blockIndex = parseInt(idParts[idParts.length - 1], 10);
         const codeText = block.dataset.rawCode || "";
@@ -2568,13 +2639,10 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                         <span class="role-name">Intelligence Context</span>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center;">
-                        <div style="display:flex; gap:4px; margin-right:8px; padding-right:8px; border-right:1px solid var(--vscode-widget-border);">
-                            <button id="hud-copy-markdown-btn" class="icon-btn" title="Copy Discussion as Markdown"><i class="codicon codicon-markdown"></i></button>
-                            <button id="hud-export-html-btn" class="icon-btn" title="Export Discussion as HTML"><i class="codicon codicon-cloud-download"></i></button>
-                        </div>
                         <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
                         <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
-                        <button id="load-context-btn" class="icon-btn" title="Load file selection" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
+                        <button id="load-context-btn" class="icon-btn" title="Load Context (Replace Selection)" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
+                        <button id="add-context-btn" class="icon-btn" title="Add Context (Append to Selection)" style="padding: 2px; color: var(--vscode-charts-green);"><i class="codicon codicon-folder-active"></i></button>
                         <button id="reset-context-bubble-btn" class="icon-btn" title="Full Context Reset" style="padding: 2px; color: var(--vscode-errorForeground);"><i class="codicon codicon-clear-all"></i></button>
                     </div>
                 </div>
@@ -2851,6 +2919,13 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     if (loadBtn) {
         loadBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'loadContext', params: {} } });
+        });
+    }
+
+    const addBtn = document.getElementById('add-context-btn');
+    if (addBtn) {
+        addBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'addContext', params: {} } });
         });
     }
 
@@ -3834,7 +3909,9 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
         applyAllBtn.style.backgroundColor = 'var(--vscode-charts-green)';
 
         // Also collapse the details if everything is finished to keep the view tidy
-        wrapper.querySelectorAll('details.code-collapsible').forEach(d => (d as HTMLDetailsElement).open = false);
+        wrapper.querySelectorAll('details.code-collapsible').forEach(d => {
+            collapseBlockWithScrollPreservation(d as HTMLDetailsElement, dom.messagesDiv);
+        });
     } else {
         applyAllBtn.classList.remove('applied');
         applyAllBtn.disabled = false;

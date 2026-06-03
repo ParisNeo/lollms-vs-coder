@@ -6,6 +6,7 @@ import { Logger } from '../logger';
 import { registerSelectModelCommand } from '../commands/selectModel';
 import { ProcessItem } from '../commands/treeItems';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
+import { BillingDashboardPanel } from '../commands/billingDashboardPanel';
 
 
 export function registerUICommands(context: vscode.ExtensionContext, services: LollmsServices) {
@@ -79,6 +80,16 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
 
     safeRegister('lollms-vs-coder.showChatTab', () => setTab('chat'));
     safeRegister('lollms-vs-coder.showLibrarianTab', () => setTab('librarian'));
+    safeRegister('lollms-vs-coder.showBillingTab', () => {
+        setTab('billing');
+        // Create or show the dedicated graphical dashboard view using the statically imported reference
+        BillingDashboardPanel.createOrShow(services.extensionUri);
+    });
+
+    // Add command for budget cap dialog link
+    safeRegister('lollms-vs-coder.openBillingDashboard', () => {
+        vscode.commands.executeCommand('lollms-vs-coder.showBillingTab');
+    });
     safeRegister('lollms-vs-coder.showPersonasTab', () => {
         setTab('personas');
         vscode.commands.executeCommand('lollms-vs-coder.managePersonalities');

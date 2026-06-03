@@ -2167,6 +2167,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .segment-tree    { background-color: var(--vscode-charts-yellow); } /* Gold/Yellow */
 .segment-skills  { background-color: #00bcd4; } /* Cyan/Teal */
 .segment-memory  { background-color: var(--vscode-charts-purple); } /* Purple for Project Memory */
+.segment-diagrams { background-color: #e84393; } /* Pink/Rose for Diagrams */
 .segment-files  { background-color: var(--vscode-charts-blue); }
 .segment-history { background-color: var(--vscode-charts-green); }
 .segment-images  { background-color: var(--vscode-charts-orange); }

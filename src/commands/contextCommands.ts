@@ -183,7 +183,21 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
             return;
         }
 
+        const folders = vscode.workspace.workspaceFolders;
+        let defaultUri: vscode.Uri | undefined = undefined;
+
+        if (folders && folders.length > 0) {
+            const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+            try {
+                await vscode.workspace.fs.createDirectory(selectionDir);
+                defaultUri = vscode.Uri.joinPath(selectionDir, 'context_selection.lollms-ctx');
+            } catch (e) {
+                Logger.warn("Failed to create .lollms/selection directory", e);
+            }
+        }
+
         const uri = await vscode.window.showSaveDialog({
+            defaultUri,
             filters: { 'Lollms Context': ['lollms-ctx'] },
             saveLabel: 'Save Context'
         });
@@ -200,10 +214,24 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.loadContextSelection', async () => {
+        const folders = vscode.workspace.workspaceFolders;
+        let defaultUri: vscode.Uri | undefined = undefined;
+
+        if (folders && folders.length > 0) {
+            const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+            try {
+                await vscode.workspace.fs.createDirectory(selectionDir);
+                defaultUri = selectionDir;
+            } catch (e) {
+                Logger.warn("Failed to create .lollms/selection directory", e);
+            }
+        }
+
         const uris = await vscode.window.showOpenDialog({
+            defaultUri,
             filters: { 'Lollms Context': ['lollms-ctx'] },
             canSelectMany: false,
-            openLabel: 'Load Context'
+            openLabel: 'Replace Context'
         });
 
         if (uris && uris[0]) {
@@ -211,13 +239,53 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                 const content = await vscode.workspace.fs.readFile(uris[0]);
                 const files = JSON.parse(Buffer.from(content).toString('utf8'));
                 if (Array.isArray(files)) {
+                    // REPLACE: Soft reset the selection first
+                    await services.contextManager.getContextStateProvider()?.softReset();
                     await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', files);
-                    vscode.window.showInformationMessage(`Loaded ${files.length} files into context.`);
+                    vscode.window.showInformationMessage(`Context selection replaced with ${files.length} files.`);
                 } else {
                     vscode.window.showErrorMessage("Invalid context file format.");
                 }
             } catch (e: any) {
                 vscode.window.showErrorMessage(`Failed to load context: ${e.message}`);
+            }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addContextSelection', async () => {
+        const folders = vscode.workspace.workspaceFolders;
+        let defaultUri: vscode.Uri | undefined = undefined;
+
+        if (folders && folders.length > 0) {
+            const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+            try {
+                await vscode.workspace.fs.createDirectory(selectionDir);
+                defaultUri = selectionDir;
+            } catch (e) {
+                Logger.warn("Failed to create .lollms/selection directory", e);
+            }
+        }
+
+        const uris = await vscode.window.showOpenDialog({
+            defaultUri,
+            filters: { 'Lollms Context': ['lollms-ctx'] },
+            canSelectMany: false,
+            openLabel: 'Append Context'
+        });
+
+        if (uris && uris[0]) {
+            try {
+                const content = await vscode.workspace.fs.readFile(uris[0]);
+                const files = JSON.parse(Buffer.from(content).toString('utf8'));
+                if (Array.isArray(files)) {
+                    // APPEND: Just add files without soft reset
+                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', files);
+                    vscode.window.showInformationMessage(`Appended ${files.length} files to context.`);
+                } else {
+                    vscode.window.showErrorMessage("Invalid context file format.");
+                }
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Failed to append context: ${e.message}`);
             }
         }
     }));
@@ -238,7 +306,21 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
             return;
         }
 
+        const folders = vscode.workspace.workspaceFolders;
+        let defaultUri: vscode.Uri | undefined = undefined;
+
+        if (folders && folders.length > 0) {
+            const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+            try {
+                await vscode.workspace.fs.createDirectory(selectionDir);
+                defaultUri = vscode.Uri.joinPath(selectionDir, 'custom_selection.lollms-ctx');
+            } catch (e) {
+                Logger.warn("Failed to create .lollms/selection directory", e);
+            }
+        }
+
         const uri = await vscode.window.showSaveDialog({
+            defaultUri,
             filters: { 'Lollms Context': ['lollms-ctx'] },
             saveLabel: 'Save Selection'
         });

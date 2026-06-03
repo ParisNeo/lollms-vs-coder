@@ -127,8 +127,7 @@ Translate: "${msg.text}"`;
                     : undefined;
 
                 if (this.graphManager.getGraphData().nodes.length === 0 && this.graphManager.getBuildState() === 'idle') {
-                    this.graphManager.buildGraph(focusPath).then(() => this.update());
-                    this.update();
+                    this.triggerGraphBuild(focusPath);
                 } else {
                     this.update();
                 }
@@ -149,16 +148,12 @@ Translate: "${msg.text}"`;
             }
 
             if (msg.command === 'rebuild') {
-                this.update(); 
-                this.graphManager.buildGraph().then(() => this.update());
-                this.update();
+                this.triggerGraphBuild();
             }
 
             if (msg.command === 'regenerate') {
                 this.graphManager.reset();
-                this.update();
-                this.graphManager.buildGraph().then(() => this.update());
-                this.update();
+                this.triggerGraphBuild();
             }
 
             if (msg.command === 'stop') {
@@ -168,12 +163,9 @@ Translate: "${msg.text}"`;
 
             if (msg.command === 'addToChat') {
                 const runAdd = async () => {
-                    let mermaidCode = this.graphManager.generateMermaid(msg.view);
-
-                    const isEmpty = mermaidCode.includes('No structure detected') || 
-                                    mermaidCode.includes('No imports detected') || 
-                                    mermaidCode.includes('Empty') ||
-                                    this.graphManager.getGraphData().nodes.length <= 1;
+                    // Check if graph needs building
+                    const graphData = this.graphManager.getGraphData();
+                    const isEmpty = graphData.nodes.length <= 1;
 
                     if (isEmpty) {
                         await vscode.window.withProgress({
@@ -183,10 +175,17 @@ Translate: "${msg.text}"`;
                         }, async () => {
                             await this.graphManager.buildGraph(); // Force full project re-index
                         });
-                        mermaidCode = this.graphManager.generateMermaid(msg.view);
                     }
 
-                    const prompt = `Here is the current code structure for analysis:\n\n\`\`\`mermaid\n${mermaidCode}\n\`\`\``;
+                    // Export as Cytoscape JSON (Machine-readable & renders interactively with no edge limits)
+                    const jsonGraph = this.graphManager.generateCytoscapeJson();
+
+                    const prompt = `Here is the current code structure representing the workspace architecture (files, classes, and function dependencies). 
+Analyze this graph structure to locate entry points or architectural components:
+
+\`\`\`cytoscape
+${jsonGraph}
+\`\`\``;
 
                     vscode.commands.executeCommand('lollms-vs-coder.showChatTab');
 
@@ -196,10 +195,10 @@ Translate: "${msg.text}"`;
                             content: prompt
                         });
                         ChatPanel.currentPanel._panel.reveal();
-                        vscode.window.showInformationMessage("Architecture graph added to active chat.");
+                        vscode.window.showInformationMessage("High-scale Cytoscape graph added to active chat.");
                     } else {
                         vscode.commands.executeCommand('lollms-vs-coder.newDiscussionFromClipboard', prompt);
-                        vscode.window.showInformationMessage("Starting new discussion with architecture graph.");
+                        vscode.window.showInformationMessage("Starting new discussion with Cytoscape graph.");
                     }
                 };
 
@@ -259,7 +258,27 @@ Translate: "${msg.text}"`;
         });
     }
 
-    private update() {
+    private async triggerGraphBuild(focusPath?: string) {
+        this.panel.webview.postMessage({ command: 'buildProgress', percentage: 5, status: 'Scanning workspace directory...' });
+
+        // Build graph with progressive updates
+        await this.graphManager.buildGraph(focusPath, (progress) => {
+            this.panel.webview.postMessage({
+                command: 'buildProgress',
+                percentage: progress.percentage,
+                status: progress.status
+            });
+
+            // Incremental Rendering: If Pass 1 is finished, push early file nodes to the webview
+            if (progress.percentage === 40) {
+                this.update(true); // Send intermediate file nodes
+            }
+        });
+
+        this.update();
+    }
+
+    private update(isIncremental: boolean = false) {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         this.panel.webview.postMessage({
             command: 'graph',
@@ -269,7 +288,7 @@ Translate: "${msg.text}"`;
                 zoomToCursor: config.get('graph.zoomToCursor', true)
             },
             graph: this.graphManager.getGraphData(),
-            state: this.graphManager.getBuildState(),
+            state: isIncremental ? 'building' : this.graphManager.getBuildState(),
             lastError: this.graphManager.getLastError(),
             classDiagram: this.graphManager.generateMermaid('class_diagram'),
             functionSignatures: this.graphManager.generateMermaid('function_signatures'),
@@ -291,6 +310,24 @@ Translate: "${msg.text}"`;
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Code Explorer</title>
 <style>
+    /* Real-time Progress Bar & Overlay */
+    .progress-bar-container {
+        width: 100%;
+        max-width: 320px;
+        height: 6px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 3px;
+        overflow: hidden;
+        margin-top: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+    }
+    .progress-bar-fill {
+        height: 100%;
+        background: var(--vscode-charts-blue);
+        width: 0%;
+        transition: width 0.3s ease-out;
+        box-shadow: 0 0 10px var(--vscode-charts-blue);
+    }
     body {
         margin: 0;
         height: 100vh;
@@ -412,14 +449,15 @@ Translate: "${msg.text}"`;
     .loading-overlay {
         position: absolute;
         top: 0; left: 0; right: 0; bottom: 0;
-        background: rgba(0,0,0,0.5);
+        background: rgba(0,0,0,0.75); /* Darken backplate for visual depth */
+        backdrop-filter: blur(4px);
         color: white;
         display: none;
         justify-content: center;
         align-items: center;
         z-index: 100;
         flex-direction: column;
-        gap: 10px;
+        gap: 8px;
     }
     .spinner {
         width: 40px; height: 40px;
@@ -472,6 +510,13 @@ Translate: "${msg.text}"`;
             <option value="type">Group by Type</option>
         </select>
 
+        <select id="detail-level" title="Ontological Filter Level">
+            <option value="all">Full Ontology (All Relations)</option>
+            <option value="calls_only">Direct Calls Only (Invocations)</option>
+            <option value="params_only">Signature Types (Parameters/Returns)</option>
+            <option value="variables_only">Local Variables & Instantiations</option>
+        </select>
+
         <label style="display:flex; align-items:center; gap:4px; font-size:11px; cursor:pointer; user-select:none;">
             <input type="checkbox" id="hide-orphans" style="width:auto; margin:0;" /> Hide Orphans
         </label>
@@ -497,7 +542,10 @@ Translate: "${msg.text}"`;
             <div id="mermaid-container"></div>
             <div id="loading" class="loading-overlay">
                 <div class="spinner"></div>
-                <span>Building Graph...</span>
+                <span id="loading-status" style="font-weight: 600; letter-spacing: 0.5px; font-size: 11px;">Building Graph...</span>
+                <div class="progress-bar-container">
+                    <div id="loading-progress" class="progress-bar-fill"></div>
+                </div>
             </div>
         </div>
 
@@ -519,12 +567,17 @@ Translate: "${msg.text}"`;
                     <button id="run-sparql-btn" style="background-color: var(--vscode-charts-orange); color: white; font-weight: bold; flex: 1;" title="Execute SPARQL-lite query on graph">Run SPARQL</button>
                     <select id="sparql-examples" style="flex: 1;" title="Predefined SPARQL templates">
                         <option value="">Examples</option>
-                        <option value="SELECT ?x WHERE { ?x type 'class' }">All Classes</option>
-                        <option value="SELECT ?x WHERE { ?x imports ?y . ?y name 'utils' }">Imports 'utils'</option>
-                        <option value="SELECT ?target WHERE { 'main' calls ?target }">Called by Main</option>
-                        <option value="SELECT ?method WHERE { ?class name 'authservice' . ?class contains ?method . ?method type 'method' }">AuthService Methods</option>
-                        <option value="SELECT ?file WHERE { ?file imports ?lib . ?lib type 'library' }">Uses Ext Libraries</option>
-                        <option value="SELECT ?child WHERE { ?child inherits ?parent . ?parent name 'base' }">Inherits from 'Base'</option>
+                        <option value="SELECT ?class WHERE { ?class s:type s:Class }">All Classes</option>
+                        <option value="SELECT ?func WHERE { ?func s:type s:Function }">All Global Functions</option>
+                        <option value="SELECT ?file WHERE { ?file s:imports ?lib . ?lib s:type s:Library }">Files using External Libraries</option>
+                        <option value="SELECT ?caller ?callee WHERE { ?caller s:calls ?callee }">All Invocations (Caller -> Callee)</option>
+                        <option value="SELECT ?method WHERE { ?class s:name 'Player' . ?class s:contains ?method . ?method s:type s:Method }">Methods of 'Player' Class</option>
+                        <option value="SELECT ?target WHERE { ?caller s:name 'start_game' . ?caller s:calls ?target }">Symbols Called by 'start_game'</option>
+                        <option value="SELECT ?class WHERE { ?func s:name 'load_enemy_sprite_sheets' . ?func s:localVariable ?class . ?class s:type s:Class }">Classes Instantiated in 'load_enemy_sprite_sheets'</option>
+                        <option value="SELECT ?type WHERE { ?method s:name '_play_story_sound' . ?method s:inputParam ?type }">Parameter Types of '_play_story_sound'</option>
+                        <option value="SELECT ?type WHERE { ?func s:name 'get_frame_count' . ?func s:outputParam ?type }">Return Type of 'get_frame_count'</option>
+                        <option value="SELECT ?child WHERE { ?child s:inherits ?parent . ?parent s:name 'Sprite' }">Classes Inheriting from 'Sprite'</option>
+                        <option value="SELECT ?file WHERE { ?file s:imports ?target . ?target s:name 'constants.py' }">Files Importing 'constants.py'</option>
                     </select>
                 </div>
             </div>
@@ -538,11 +591,15 @@ Translate: "${msg.text}"`;
                     <button id="run-ai-btn" style="background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); font-weight: bold; flex: 1;" title="Ask AI to translate and run query">Ask AI</button>
                     <select id="ai-examples" style="flex: 1;" title="Predefined Natural Language questions">
                         <option value="">Examples</option>
+                        <option value="which function is the main entry point of the game?">Main Entry Point</option>
                         <option value="where is the sprite animation handled?">Sprite Animation</option>
                         <option value="what is the main game loop flow?">Game Loop Flow</option>
-                        <option value="which files are connected to the player model?">Player Model Files</option>
-                        <option value="what external libraries are imported?">External Libraries</option>
-                        <option value="explain the class hierarchy of the entities">Entity Class Hierarchy</option>
+                        <option value="find all classes that inherit from Sprite or Character">Sprite Class Hierarchy</option>
+                        <option value="what methods does the Player class contain?">Player Class Methods</option>
+                        <option value="which files import pygame or other external game engines?">External Library Imports</option>
+                        <option value="what functions instantiate or use the Dungeon class?">Dungeon Instantiations</option>
+                        <option value="where is the audio or sound play logic defined?">Sound & Audio Logic</option>
+                        <option value="what are the input parameters for start_game?">start_game Parameters</option>
                     </select>
                 </div>
             </div>

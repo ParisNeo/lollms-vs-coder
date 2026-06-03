@@ -1407,20 +1407,20 @@ export function initEventHandlers() {
         vscode.postMessage({ command: 'stopTokenCalculation' });
     });
     // --- 🖼️ SOVEREIGN IMAGE ZOOM DELEGATION ---
-    dom.messagesContainer?.addEventListener('click', (e) => {
+    dom.messagesDiv?.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
-        if (target.tagName === 'IMG' && !target.closest('.no-zoom')) {
+        if (target.tagName === 'IMG' && !target.closest('.no-zoom') && !target.closest('.staged-image-card')) {
             const img = target as HTMLImageElement;
             // Prevent zooming on tiny icons or avatars
-            if (img.naturalWidth > 50 || img.naturalHeight > 50) {
-                import('./ui.js').then(ui => ui.openImageZoom(img.src));
+            if (img.naturalWidth > 50 || img.naturalHeight > 50 || img.src.startsWith('data:')) {
+                import('./ui.js').then(ui => ui.openSovereignZoom(img.src));
             }
         }
     });
 
     // Close zoom on overlay click
     document.getElementById('image-zoom-overlay')?.addEventListener('click', () => {
-        import('./ui.js').then(ui => ui.closeImageZoom());
+        import('./ui.js').then(ui => ui.closeSovereignZoom());
     });
     window.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'f') {

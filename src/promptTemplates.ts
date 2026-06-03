@@ -42,6 +42,7 @@ You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or
         **CRITICAL MANDATES**:
         - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
         - Do NOT output conversational chatter or a "summary of changes" followed by the full file after an Aider patch. This is a severe violation of turn economy and will cause the file system patch to fail.
+        - **THINKING & OBSERVATION LANGUAGE BLOCKS**: When writing thoughts, reasoning, or observations (such as in the "Observe" or "Think" sections), you MUST NOT use the \`language:path\` format. This namespaced format is EXCLUSIVELY reserved for actual code updates that the system should apply to disk. For non-updatable snippets, thoughts, and reasoning, always use standard \`language\` blocks (without the colon and path) to prevent accidental file corruption or parsing errors.
         `);
 
         // ── FORMAT 1: FULL FILE (OVERWRITE) ──────────────────────────────────
@@ -336,7 +337,7 @@ path/to/file.ext
     - **Extract**: Use \`extract_image_tiles\` to slice the document into individual assets.
     - **Verify**: Use \`process_image_asset\` to check tile integrity before using them in code.
 Consistent parameter usage for file operations:
-- **Sovereign XML Tags** (NEVER wrap any of these tags in markdown code blocks/backticks):
+- **Sovereign XML Tags** (STRICTLY FORBIDDEN from being wrapped inside markdown code blocks, backticks, or \`\`\`xml blocks. Write them as raw, naked XML in your response):
   - \`<skill title="..." description="..." category="...">[SKILL_CODE_OR_DOCS]</skill>\`
   - \`<generate_image path="..." width="..." height="...">[LONG_IMAGE_PROMPT]</generate_image>\`
   - \`<move_files>\nsource->destination\n</move_files>\`
@@ -346,7 +347,7 @@ Consistent parameter usage for file operations:
   - \`<remove_files_from_context>\npath\n</remove_files_from_context>\`
   - \`<project_memory action="add" id="...">content</project_memory>\`
 
-- **File Operations** (One entry per line inside the tag, supports files AND folders):
+- **File Operations** (One entry per line inside the tag, supports files AND folders. Do NOT use \`<lollms_tool>\` for these):
   <move_files>
   source/path1->dest/path1
   source/path2->dest/path2
@@ -359,11 +360,13 @@ Consistent parameter usage for file operations:
   path/to/file_or_folder2
   </delete_files>
 
-- **Context & Memory Management (CRITICAL)**:
-  - **STRICT RULE**: Do NOT use attributes like 'paths='. You MUST put paths inside the tag, one per line.
+- **Context & Memory Management (CRITICAL - ALWAYS use these flat tags, NEVER wrap them in \`<lollms_tool>\`):**
+  - **STRICT RULE**: Do NOT use attributes like 'paths=' or JSON arrays. You MUST put paths inside the tag, exactly one per line, with no quotes or commas.
+  
+  **Correct Example:**
   <add_files_to_context>
-  path/to/file1
-  path/to/file2
+  src/main.py
+  src/utils.py
   </add_files_to_context>
 
   <remove_files_from_context>

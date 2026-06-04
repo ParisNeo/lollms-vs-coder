@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.84",
+  "version": "0.8.85",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1208,7 +1208,7 @@
         },
         "lollmsVsCoder.requestTimeout": {
           "type": "number",
-          "default": 600000,
+          "default": 1200000,
           "description": "%config.requestTimeout.description%"
         },
         "lollmsVsCoder.agentMaxRetries": {

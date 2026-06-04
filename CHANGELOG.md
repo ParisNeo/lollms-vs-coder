@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-06-04 00:34]
+
+- feat: Release version 0.8.85 and adjust request timeout configuration
+
 ## [2026-06-03 23:18]
 
 - feat(lollms-vs-coder): Update version and enhance chat panel/code graph functionality

@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-06-05 09:12]
+
+- feat(extension): Release v0.8.86 and implement core graph manager refinements
+
 ## [2026-06-04 00:34]
 
 - feat: Release version 0.8.85 and adjust request timeout configuration

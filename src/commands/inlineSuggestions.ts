@@ -17,45 +17,8 @@ export class LollmsInlineCompletionProvider implements vscode.InlineCompletionIt
         context: vscode.InlineCompletionContext,
         token: vscode.CancellationToken
     ): Promise<vscode.InlineCompletionItem[] | undefined> {
-
-        if (this.debounceTimer) {
-            clearTimeout(this.debounceTimer);
-        }
-
-        if (this.lastRequestController) {
-            this.lastRequestController.abort();
-        }
-        this.lastRequestController = new AbortController();
-        const signal = this.lastRequestController.signal;
-
-        return new Promise((resolve) => {
-            this.debounceTimer = setTimeout(() => {
-                if (token.isCancellationRequested || signal.aborted) {
-                    resolve(undefined);
-                    return;
-                }
-
-                const lineText = document.lineAt(position.line).text;
-                if (!lineText.trim()) {
-                    resolve(undefined);
-                    return;
-                }
-                
-                this.getCompletion(document, position, signal)
-                    .then(completion => {
-                        if (completion) {
-                            const lineEnd = document.lineAt(position.line).range.end;
-                            const rangeToReplace = new vscode.Range(position, lineEnd);
-                            resolve([new vscode.InlineCompletionItem(completion, rangeToReplace)]);
-                        } else {
-                            resolve(undefined);
-                        }
-                    })
-                    .catch(() => {
-                        resolve(undefined);
-                    });
-            }, 500);
-        });
+        // Automatic triggering is disabled to save tokens. Use manual trigger command only.
+        return undefined;
     }
 
     public async triggerSuggestion(document: vscode.TextDocument, position: vscode.Position): Promise<string | undefined> {

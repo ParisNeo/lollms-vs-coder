@@ -229,10 +229,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const inlineCompletionProvider = new (require('./commands/inlineSuggestions').LollmsInlineCompletionProvider)(lollmsAPI);
 
-    if (config.get<boolean>('enableInlineSuggestions')) {
-        context.subscriptions.push(vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, inlineCompletionProvider));
-    }
-
     // Register on-demand manual trigger command
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerInlineSuggestion', async () => {
         const editor = vscode.window.activeTextEditor;

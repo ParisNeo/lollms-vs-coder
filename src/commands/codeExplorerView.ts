@@ -533,6 +533,7 @@ ${jsonGraph}
             <option value="export">📤 Export Diagram</option>
             <option value="isolate-connected">🔗 Isolate Connections</option>
             <option value="isolate-neighbors">👥 Isolate Neighbors</option>
+            <option value="isolate-sparql">🔍 Isolate SPARQL Subgraph</option>
         </select>
     </div>
     
@@ -578,6 +579,8 @@ ${jsonGraph}
                         <option value="SELECT ?type WHERE { ?func s:name 'get_frame_count' . ?func s:outputParam ?type }">Return Type of 'get_frame_count'</option>
                         <option value="SELECT ?child WHERE { ?child s:inherits ?parent . ?parent s:name 'Sprite' }">Classes Inheriting from 'Sprite'</option>
                         <option value="SELECT ?file WHERE { ?file s:imports ?target . ?target s:name 'constants.py' }">Files Importing 'constants.py'</option>
+                        <option value="SELECT ?file WHERE { ?file s:contains ?c1 . ?c1 s:name 'Player' . ?file s:contains ?c2 . ?c2 s:name 'Enemy' }">Files Containing Both Player & Enemy Classes</option>
+                        <option value="SELECT ?a ?b ?c WHERE { ?a s:calls ?b . ?b s:calls ?c }">Deep Call Paths (A -> B -> C)</option>
                     </select>
                 </div>
             </div>

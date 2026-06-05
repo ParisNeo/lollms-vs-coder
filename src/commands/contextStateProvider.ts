@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { minimatch } from 'minimatch';
 import { Logger } from '../logger';
 
@@ -245,9 +246,19 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     public getStateForUri(uri: vscode.Uri): ContextState {
+        // Direct physical existence check on disk
+        if (!fs.existsSync(uri.fsPath)) {
+            return 'fully-excluded';
+        }
+
+        // Overrule with strict ignore rules (heavy folders, globs, etc.)
+        if (this.isStrictlyIgnored(uri)) {
+            return 'fully-excluded';
+        }
+
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
         const relativePath = this.normalize(vscode.workspace.asRelativePath(uri, false));
-        
+
         // 1. Check exact match
         if (workspaceState[relativePath]) {
             return workspaceState[relativePath];
@@ -258,11 +269,11 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         while (currentPath.includes('/')) {
             const lastSlash = currentPath.lastIndexOf('/');
             currentPath = currentPath.substring(0, lastSlash);
-            
+
             const parentState = workspaceState[currentPath];
             if (parentState === 'fully-excluded') return 'fully-excluded';
             if (parentState === 'collapsed') return 'collapsed';
-            
+
             // Also check default collapsed folders and dot-folders for parents
             const parentBasename = path.basename(currentPath);
             if (this.defaultCollapsedFolders.has(parentBasename) || parentBasename.startsWith('.')) {
@@ -277,28 +288,31 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         // DEFAULT BEHAVIOR: If it's not ignored or collapsed, it's visible in the tree.
         return 'tree-only';
-        }
+    }
 
         /**
         * Checks if a URI should be strictly hidden from the tree (e.g. build artifacts, internal caches)
         */
         public isStrictlyIgnored(uri: vscode.Uri): boolean {
-        const relativePath = this.normalize(vscode.workspace.asRelativePath(uri, false));
-        const basename = path.basename(uri.fsPath);
+            const relativePath = this.normalize(vscode.workspace.asRelativePath(uri, false));
+            const basename = path.basename(uri.fsPath);
 
-        // Standard heavy folders
-        if (['node_modules', '.git', '__pycache__', 'venv', '.venv', 'dist', 'build', 'bin', 'obj'].includes(basename)) {
-            return true;
-        }
+            // Standard heavy folders
+            if (['node_modules', '.git', '__pycache__', 'venv', '.venv', 'dist', 'build', 'bin', 'obj'].includes(basename)) {
+                return true;
+            }
 
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const exceptions = config.get<string[]>('contextFileExceptions') || [];
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const exceptions = config.get<string[]>('contextFileExceptions') || [];
 
-        // Block if matches glob OR if explicitly tagged as excluded in workspace state
-        const isGlobIgnored = exceptions.some(pattern => minimatch(relativePath, pattern, { dot: true }));
-        const isManuallyExcluded = this.getStateForUri(uri) === 'fully-excluded';
+            // Block if matches glob
+            const isGlobIgnored = exceptions.some(pattern => minimatch(relativePath, pattern, { dot: true }));
 
-        return isGlobIgnored || isManuallyExcluded;
+            // Direct workspaceState check to prevent recursive infinite loops
+            const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+            const isManuallyExcluded = workspaceState[relativePath] === 'fully-excluded';
+
+            return isGlobIgnored || isManuallyExcluded;
         }
 
     public async setStateForUris(uris: vscode.Uri[], state: ContextState) {
@@ -547,10 +561,24 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
         if (!workspaceState) return [];
 
+        const workspaceFolder = this.workspaceFolder || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
+        if (!workspaceFolder) return [];
+
         return Object.entries(workspaceState)
             .filter(([key, state]) => {
                 if (!key || typeof key !== 'string') return false;
                 if (state !== 'included' && state !== 'definitions-only') return false;
+
+                // 1. Fast physical existence check on disk
+                const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, key);
+                if (!fs.existsSync(fileUri.fsPath)) {
+                    return false;
+                }
+
+                // 2. Strict ignore check (heavy folders, glob exclusions, etc.)
+                if (this.isStrictlyIgnored(fileUri)) {
+                    return false;
+                }
 
                 // Effective State Check: Ensure no parent is 'collapsed' or 'fully-excluded'
                 // which would override this specific file's inclusion.
@@ -560,6 +588,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                     currentPath = currentPath.substring(0, lastSlash);
                     const parentState = workspaceState[currentPath];
                     if (parentState === 'collapsed' || parentState === 'fully-excluded') return false;
+
+                    const parentUri = vscode.Uri.joinPath(workspaceFolder.uri, currentPath);
+                    if (this.isStrictlyIgnored(parentUri)) return false;
                 }
                 return true;
             })

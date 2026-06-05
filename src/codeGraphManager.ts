@@ -136,6 +136,14 @@ export class CodeGraphManager {
 
             if (signal.aborted) return;
 
+            // Cap the maximum number of files to process to prevent locking up in extremely large codebases
+            const MAX_FILES_LIMIT = 400;
+            let filesToProcess = files;
+            if (files.length > MAX_FILES_LIMIT) {
+                console.warn(`[Lollms Graph] Codebase exceeds maximum file limit (${files.length} > ${MAX_FILES_LIMIT}). Truncating to keep the extension host fully responsive.`);
+                filesToProcess = files.slice(0, MAX_FILES_LIMIT);
+            }
+
             const nodes: GraphNode[] = [];
             const edges: GraphEdge[] = [];
 
@@ -149,16 +157,16 @@ export class CodeGraphManager {
 
             // --- PASS 1: Batched Asynchronous Reading & Pre-flight Size Checks ---
             const BATCH_SIZE = 25;
-            for (let i = 0; i < files.length; i += BATCH_SIZE) {
+            for (let i = 0; i < filesToProcess.length; i += BATCH_SIZE) {
                 if (signal.aborted) return;
 
                 // Yield back to the main thread to keep UI completely responsive
-                await new Promise(resolve => setTimeout(resolve, 0));
+                await new Promise(resolve => setTimeout(resolve, 1));
 
-                const batch = files.slice(i, i + BATCH_SIZE);
+                const batch = filesToProcess.slice(i, i + BATCH_SIZE);
 
                 if (onProgress) {
-                    const pct = Math.round((i / files.length) * 40); // Allocate up to 40% of bar to Pass 1
+                    const pct = Math.round((i / filesToProcess.length) * 40); // Allocate up to 40% of bar to Pass 1
                     const currentFileSample = batch[0] ? path.basename(batch[0].fsPath) : 'codebase';
                     onProgress({ percentage: pct, status: `Pass 1: Reading ${currentFileSample}...` });
                 }
@@ -209,8 +217,8 @@ export class CodeGraphManager {
                 if (signal.aborted) return;
 
                 filesParsed++;
-                if (filesParsed % 15 === 0) {
-                    // Yield back to keep navigation snappy
+                // Yield back more frequently to keep the main thread fully responsive
+                if (filesParsed % 3 === 0) {
                     await new Promise(resolve => setTimeout(resolve, 1));
                 }
 
@@ -402,12 +410,10 @@ export class CodeGraphManager {
                 if (signal.aborted) return;
 
                 filesLinked++;
-                if (filesLinked % 10 === 0) {
-                    // Yield back to keep thread fully responsive during complex reference matching
-                    await new Promise(resolve => setTimeout(resolve, 1));
-                }
+                // Yield back on EVERY file to ensure the event loop stays responsive, keeping VS Code responsive
+                await new Promise(resolve => setTimeout(resolve, 0));
 
-                if (onProgress && filesLinked % 15 === 0) {
+                if (onProgress && filesLinked % 5 === 0) {
                     const pct = 70 + Math.round((filesLinked / fileContents.size) * 20); // 70% to 90%
                     onProgress({ percentage: pct, status: `Pass 3: Linking references in ${path.basename(normalizedPath)}...` });
                 }
@@ -423,7 +429,14 @@ export class CodeGraphManager {
                     .filter(n => n.filePath === normalizedPath && (n.type === 'function' || n.type === 'method' || n.type === 'class'))
                     .sort((a, b) => (a.startLine || 0) - (b.startLine || 0));
 
-                lines.forEach((line, index) => {
+                for (let index = 0; index < lines.length; index++) {
+                    const line = lines[index];
+
+                    // Yield occasionally within large files
+                    if (index % 100 === 0) {
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                    }
+
                     // Identify the active caller context (enclosing symbol range)
                     let currentCallerId = fileNodeId;
                     for (let sIdx = fileSymbols.length - 1; sIdx >= 0; sIdx--) {
@@ -434,9 +447,15 @@ export class CodeGraphManager {
                         }
                     }
 
+                    const callerNode = nodes.find(n => n.id === currentCallerId);
+                    const isAtDefinitionLine = callerNode && index === callerNode.startLine;
+
                     // Check for relationships to any known symbol in the project (Upgraded Ontology)
                     for (const symbol of allSymbols) {
                         if (symbol.id === currentCallerId) continue;
+
+                        // CRITICAL PERFORMANCE BOOST: Quick substring check to bypass RegExp compilation entirely
+                        if (!line.includes(symbol.label)) continue;
 
                         const symbolRegex = new RegExp(`\\b${symbol.label}\\b`);
 
@@ -454,14 +473,13 @@ export class CodeGraphManager {
                         };
 
                         // 1. Check Signature for Input / Output Parameter Types (At definition line)
-                        const callerNode = nodes.find(n => n.id === currentCallerId);
-                        if (callerNode && index === callerNode.startLine) {
+                        if (isAtDefinitionLine) {
                             if (callerNode.params && symbolRegex.test(callerNode.params)) {
-                                addEdgeOnce(currentCallerId, symbol.id, 'inputParam');
+                                  addEdgeOnce(currentCallerId, symbol.id, 'inputParam');
                                 continue;
                             }
                             if (callerNode.returnType && symbolRegex.test(callerNode.returnType)) {
-                                addEdgeOnce(currentCallerId, symbol.id, 'outputParam');
+                                  addEdgeOnce(currentCallerId, symbol.id, 'outputParam');
                                 continue;
                             }
                         }
@@ -476,7 +494,7 @@ export class CodeGraphManager {
                             addEdgeOnce(currentCallerId, symbol.id, 'localVariable');
                         }
                     }
-                });
+                }
             }
 
             if (onProgress) {

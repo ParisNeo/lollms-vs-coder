@@ -266,19 +266,17 @@ if (detailLevelSelect) {
 }
 
 /**
- * Executes a SPARQL-lite query locally and animates the resulting subgraph.
- * Custom Matcher: Normalizes namespace syntax and handles case-insensitivity.
+ * Helper to collect all matched node IDs based on the backtracking solver over currentGraphData.
  */
-function executeSparqlQuery(query: string) {
-    if (!cyInstance || !currentGraphData) return;
+function getMatchedNodeIds(query: string): Set<string> {
+    const matchedNodeIds = new Set<string>();
+    if (!currentGraphData) return matchedNodeIds;
 
     const cleanQuery = query.replace(/#.*/g, '').trim();
     const selectMatch = cleanQuery.match(/SELECT\s+([\?\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
 
     if (!selectMatch) {
-        statusLabel.textContent = "SPARQL-lite Error: Invalid query format.";
-        statusLabel.style.color = 'var(--vscode-errorForeground)';
-        return;
+        return matchedNodeIds;
     }
 
     const selectVars = selectMatch[1].trim().split(/\s+/).map(v => v.trim());
@@ -299,7 +297,7 @@ function executeSparqlQuery(query: string) {
         }
     }
 
-    if (triples.length === 0) return;
+    if (triples.length === 0) return matchedNodeIds;
 
     const variables = new Set<string>();
     for (const t of triples) {
@@ -366,13 +364,6 @@ function executeSparqlQuery(query: string) {
 
     solve(0, {});
 
-    if (results.length === 0) {
-        statusLabel.textContent = "SPARQL-lite: No matching subgraphs found.";
-        statusLabel.style.color = 'var(--vscode-charts-orange)';
-        return;
-    }
-
-    const matchedNodeIds = new Set<string>();
     results.forEach(row => {
         selectVars.forEach(v => {
             const val = row[v];
@@ -381,6 +372,23 @@ function executeSparqlQuery(query: string) {
             }
         });
     });
+
+    return matchedNodeIds;
+}
+
+/**
+ * Executes a SPARQL-lite query locally and highlights the resulting nodes and edges.
+ */
+function executeSparqlQuery(query: string) {
+    if (!cyInstance || !currentGraphData) return;
+
+    const matchedNodeIds = getMatchedNodeIds(query);
+
+    if (matchedNodeIds.size === 0) {
+        statusLabel.textContent = "SPARQL-lite: No matching subgraphs found.";
+        statusLabel.style.color = 'var(--vscode-charts-orange)';
+        return;
+    }
 
     if (cyInstance) {
         cyInstance.elements().removeClass('dimmed matched path-node path-edge');
@@ -401,8 +409,65 @@ function executeSparqlQuery(query: string) {
         }
     }
 
-    statusLabel.textContent = `SPARQL-lite: Isolated ${matchedNodeIds.size} nodes`;
+    statusLabel.textContent = `SPARQL-lite: Highlighted ${matchedNodeIds.size} nodes`;
     statusLabel.style.color = 'var(--vscode-charts-green)';
+}
+
+/**
+ * Executes a SPARQL-lite query locally and renders an isolated sub-graph containing only the matching elements.
+ */
+function isolateSparqlSubgraph(query: string) {
+    if (!cyInstance || !currentGraphData) return;
+
+    const matchedNodeIds = getMatchedNodeIds(query);
+
+    if (matchedNodeIds.size === 0) {
+        statusLabel.textContent = "SPARQL-lite: No matching subgraphs found to isolate.";
+        statusLabel.style.color = 'var(--vscode-charts-orange)';
+        return;
+    }
+
+    const matchedSelector = Array.from(matchedNodeIds).map(id => `#${id}`).join(', ');
+    const matchedNodes = cyInstance.$(matchedSelector);
+    const matchedEdges = matchedNodes.edgesWith(matchedNodes);
+
+    // Isolate matched nodes, their ancestors/parent groups, and the connecting edges
+    const keptElements = matchedNodes.union(matchedNodes.ancestors()).union(matchedEdges);
+    const removedElements = cyInstance.elements().difference(keptElements);
+
+    // Remove unmatched elements from the active canvas
+    cyInstance.remove(removedElements);
+
+    // Re-run the active layout to arrange the isolated subgraph beautifully
+    const layoutStyle = layoutStyleSelect ? layoutStyleSelect.value : 'organic';
+    let layoutConfig: any = { name: 'cose' };
+    if (layoutStyle === 'organic') {
+        layoutConfig = {
+            name: 'cose-bilkent',
+            animate: 'end',
+            randomize: false,
+            nodeDimensionsIncludeLabels: true,
+            nodeRepulsion: 15000,
+            idealEdgeLength: 100,
+            numIter: 1000
+        };
+    } else if (layoutStyle === 'hierarchical_ud') {
+        layoutConfig = { name: 'dagre', rankDir: 'TB' };
+    } else if (layoutStyle === 'hierarchical_lr') {
+        layoutConfig = { name: 'dagre', rankDir: 'LR' };
+    } else if (layoutStyle === 'circular') {
+        layoutConfig = { name: 'circle' };
+    } else if (layoutStyle === 'grid') {
+        layoutConfig = { name: 'grid' };
+    }
+
+    cyInstance.layout(layoutConfig).run();
+
+    statusLabel.textContent = `SPARQL-lite: Isolated sub-graph with ${matchedNodeIds.size} nodes. Click 'Refresh' to restore full view.`;
+    statusLabel.style.color = 'var(--vscode-charts-green)';
+    if (clearHighlightsBtn) {
+        clearHighlightsBtn.style.display = 'inline-block';
+    }
 }
 
 async function handleFocusNode(label: string, type: string) {
@@ -480,6 +545,13 @@ if (actionSelect) {
                 isolateDirectNeighbors(selected);
             } else {
                 vscode.postMessage({ command: 'showError', message: 'Please select a node first.' });
+            }
+        } else if (action === 'isolate-sparql') {
+            const query = sparqlQueryInput ? sparqlQueryInput.value.trim() : "";
+            if (query) {
+                isolateSparqlSubgraph(query);
+            } else {
+                vscode.postMessage({ command: 'showError', message: 'Please enter a SPARQL query first.' });
             }
         }
     });

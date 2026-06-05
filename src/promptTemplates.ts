@@ -138,6 +138,46 @@ ${context.files || ''}
 
         const formatting = this.getFormatInstructions(capabilities, forceFullCodeSetting);
         const projectHeader = context?.projectName ? `# 📂 WORKING ON PROJECT: ${context.projectName.toUpperCase()}\n\n` : '';
+
+        const sparqlOntologyInstruction = `
+### 🧊 LOLLMS SOURCE CODE ONTOLOGY & SPARQL-LITE
+When tasked with exploring the architecture, tracing relationships, or answering questions about how different parts of the code interact, you MUST use the \`query_architecture\` tool with \`query_type: "sparql"\`.
+You MUST structure your SPARQL-lite query according to this ontology:
+
+**Classes (Types):**
+- \`s:File\`: A source file on disk.
+- \`s:Class\`: An object-oriented class or interface definition.
+- \`s:Function\`: A standalone global function.
+- \`s:Method\`: An object-oriented method nested inside a class.
+- \`s:Library\`: An external imported package or module.
+
+**Properties (Relationships):**
+- \`s:type\`: Declares the class/type of a resource. (e.g., \`?x s:type s:Class\`)
+- \`s:name\`: The literal name of the resource. (e.g., \`?x s:name 'Player'\`)
+- \`s:path\`: The relative workspace file path. (e.g., \`?x s:path 'src/player.py'\`)
+- \`s:contains\`: File or Class contains a nested symbol. (e.g., \`?file s:contains ?class\`)
+- \`s:imports\`: File imports another file or external library. (e.g., \`?file s:imports ?lib\`)
+- \`s:calls\`: A function/method calls another function/method. (e.g., \`?func s:calls ?target\`)
+- \`s:inherits\`: A class inherits from another class. (e.g., \`?class s:inherits ?parent\`)
+
+**🔥 POWERFUL SPARQL-LITE EXAMPLES (CRITICAL GROUNDING):**
+- *Find all classes defined in 'player.py'*:
+  \`SELECT ?class WHERE { ?file s:name 'player.py' . ?file s:contains ?class . ?class s:type s:Class }\`
+- *Find what functions/methods call 'load_assets'*:
+  \`SELECT ?caller WHERE { ?caller s:calls ?callee . ?callee s:name 'load_assets' }\`
+- *Find files importing the 'pygame' library*:
+  \`SELECT ?file WHERE { ?file s:imports ?lib . ?lib s:name 'pygame' . ?lib s:type s:Library }\`
+- *Find methods inside any class inheriting from 'Sprite'*:
+  \`SELECT ?method WHERE { ?class s:inherits ?parent . ?parent s:name 'Sprite' . ?class s:contains ?method . ?method s:type s:Method }\`
+- *Find functions that instantiate/reference the 'Dungeon' class*:
+  \`SELECT ?func WHERE { ?class s:name 'Dungeon' . ?func s:localVariable ?class . ?func s:type s:Function }\`
+- *Find files that have both a 'Player' and 'Enemy' class defined*:
+  \`SELECT ?file WHERE { ?file s:contains ?c1 . ?c1 s:name 'Player' . ?file s:contains ?c2 . ?c2 s:name 'Enemy' }\`
+- *Find call paths: A calling B, and B calling C*:
+  \`SELECT ?a ?b ?c WHERE { ?a s:calls ?b . ?b s:calls ?c }\`
+
+Use these queries dynamically to gather precise structural evidence and answer code-related questions correctly!
+`;
         const activeProfileId = capabilities?.responseProfileId || 'balanced';
         const activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId) || SYSTEM_RESPONSE_PROFILES[0];
         const envInfo = ""; 
@@ -258,7 +298,7 @@ You are a vision-capable engineer. You can generate, look at, and edit images.
         }
 
         // Default prompt
-        return `${projectHeader}${activeProfile.prefix || ''}# 🎭 ROLE & PERSONA
+        return `${projectHeader}${activeProfile.prefix || ''}${sparqlOntologyInstruction}\n\n# 🎭 ROLE & PERSONA
         ${persona}
 
         # 🏢 SOVEREIGN WORKSPACE AWARENESS

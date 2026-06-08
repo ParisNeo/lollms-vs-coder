@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsServices } from '../lollmsContext';
-import { applyDiff, applySearchReplace } from '../utils';
+import { applyDiff, applySearchReplace, stripThinkingTags } from '../utils';
 import { normalizeToDocument } from '../utils/promptUtils';
 import { Logger } from '../logger';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
@@ -504,9 +504,155 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const folders = vscode.workspace.workspaceFolders || [];
 
         // Handle "REPAIR_REQUESTED" signal from UI
-        if (content === "REPAIR_REQUESTED" && (!options || options.hunkIndex === undefined)) {
-            Logger.warn("ReplaceCode called with REPAIR signal but no hunk index. Aborting.");
-            return { success: false, error: "Invalid repair context" };
+        if (content === "REPAIR_REQUESTED") {
+            if (!panel || !messageId || options?.blockIndex === undefined) {
+                Logger.warn("ReplaceCode called with REPAIR signal but missing panel, messageId, or blockIndex.");
+                return { success: false, error: "Invalid repair context" };
+            }
+            const discussion = panel.getCurrentDiscussion();
+            if (!discussion) {
+                Logger.warn("ReplaceCode called with REPAIR signal but discussion not found.");
+                return { success: false, error: "Discussion not found" };
+            }
+            const message = discussion.messages.find((m: any) => m.id === messageId);
+            if (!message) {
+                Logger.warn("ReplaceCode called with REPAIR signal but message not found.");
+                return { success: false, error: "Message not found" };
+            }
+
+            let messageText = "";
+            if (typeof message.content === 'string') {
+                messageText = message.content;
+            } else if (Array.isArray(message.content)) {
+                messageText = message.content.map((c: any) => c.type === 'text' ? c.text : '').join('\n');
+            }
+
+            const blockMatches = [...messageText.matchAll(/```(?:[^\n]*)\n([\s\S]*?)\n```/g)];
+            if (!blockMatches[options.blockIndex]) {
+                Logger.warn(`ReplaceCode: Code block at index ${options.blockIndex} not found in message ${messageId}.`);
+                return { success: false, error: "Code block not found" };
+            }
+
+            const originalBlockContent = blockMatches[options.blockIndex][1];
+            const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+            const matches = [...originalBlockContent.matchAll(aiderRegex)];
+
+            let failingHunk = originalBlockContent;
+            if (options.hunkIndex !== undefined && matches[options.hunkIndex]) {
+                failingHunk = matches[options.hunkIndex][0];
+            }
+
+            // Resolve file path to get original content for the prompt
+            const resolution = await services.contextManager.resolveWorkspaceFromPath(sanitizedFilePath);
+            if (!resolution) {
+                Logger.error(`Resolution failed for path: ${sanitizedFilePath}`);
+                return { success: false, error: "Invalid path" };
+            }
+
+            let originalFileContent = "";
+            try {
+                const document = await vscode.workspace.openTextDocument(resolution.uri);
+                originalFileContent = document.getText();
+            } catch (e: any) {
+                Logger.error(`Could not read original file for repair: ${e.message}`);
+                return { success: false, error: "Could not read original file" };
+            }
+
+            // Perform AI Repair
+            return await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: `Lollms: Repairing block for ${sanitizedFilePath}...`,
+                cancellable: true
+            }, async (progress, token) => {
+                const abortController = new AbortController();
+                token.onCancellationRequested(() => abortController.abort());
+
+                // Find the failure error from the last completed action history or use a generic one
+                let lastError = "Indentation mismatch or search block not found in original file.";
+                const agent = panel.agentManager;
+                if (agent) {
+                    const recentFailures = (agent as any).failureMemory?.failures || [];
+                    if (recentFailures.length > 0) {
+                        lastError = recentFailures[recentFailures.length - 1].errorOutput;
+                    }
+                }
+
+                const repairPrompt = `### 🛑 SEARCH/REPLACE FAILURE REPORT
+The following block failed to apply to \`${sanitizedFilePath}\`.
+
+**CRITICAL ERROR:** 
+"${lastError}"
+
+**YOUR PREVIOUS ATTEMPT:**
+\`\`\`
+${failingHunk}
+\`\`\`
+
+**ACTUAL FILE CONTENT (REFERENCE):**
+\`\`\`
+${originalFileContent}
+\`\`\`
+
+**INSTRUCTIONS FOR REPAIR:**
+1. Your SEARCH block was NOT a literal, character-for-character match of the file content.
+2. Check for **indentation differences** (spaces vs tabs) and **trailing whitespace**.
+3. Provide the CORRECTED block. Include 2-3 lines of unchanged context in the SEARCH section to ensure a unique match.
+4. Output **ONLY** the corrected \`<<<<<<< SEARCH ... >>>>>>> REPLACE\` block. Do not wrap it in other code blocks.
+`;
+
+                try {
+                    const model = discussion.model || services.lollmsAPI.getModelName();
+                    const response = await panel._lollmsAPI.sendChat([
+                        { role: 'system', content: "You are a surgical code repair engine. You only output valid Aider-style Search/Replace blocks." },
+                        { role: 'user', content: repairPrompt }
+                    ], null, abortController.signal, model);
+
+                    if (token.isCancellationRequested) return { success: false, error: "Cancelled" };
+
+                    const cleanResponse = stripThinkingTags(response);
+
+                    // Extract the fixed block from the response
+                    let fixedBlock = "";
+                    const startTag = "<<<<<<< SEARCH";
+                    const endTag = ">>>>>>> REPLACE";
+                    const startIdx = cleanResponse.indexOf(startTag);
+                    const endIdx = cleanResponse.indexOf(endTag);
+
+                    if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+                        fixedBlock = cleanResponse.substring(startIdx, endIdx + endTag.length);
+                    } else {
+                        // Fallback: search for first code block or raw response
+                        const match = cleanResponse.match(/```(?:\w+)?\n([\s\S]*?)\n```/);
+                        fixedBlock = match ? match[1].trim() : cleanResponse.trim();
+                    }
+
+                    if (fixedBlock && fixedBlock.includes("<<<<<<< SEARCH")) {
+                        // Update the message content in the UI
+                        if (discussion) {
+                            const msg = discussion.messages.find((m: any) => m.id === messageId);
+                            if (msg && typeof msg.content === 'string') {
+                                const updatedContent = msg.content.replace(failingHunk, fixedBlock);
+                                await panel.updateMessageContent(messageId, updatedContent);
+                            }
+                        }
+
+                        if (token.isCancellationRequested) return { success: false, error: "Cancelled" };
+
+                        vscode.window.showInformationMessage("Block repaired. Retrying apply...");
+                        return await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', sanitizedFilePath, fixedBlock, panel, messageId, { 
+                            ...options, 
+                            silent: true,
+                            undo: false 
+                        });
+                    } else {
+                        vscode.window.showWarningMessage("Lollms: The AI suggested a fix but the response format was unrecognizable.");
+                        return { success: false, error: "AI repair produced invalid format" };
+                    }
+                } catch (err: any) {
+                    vscode.window.showErrorMessage(`Repair failed: ${err.message}`);
+                    return { success: false, error: `Repair failed: ${err.message}` };
+                }
+            });
         }
 
         // Multi-root aware resolution

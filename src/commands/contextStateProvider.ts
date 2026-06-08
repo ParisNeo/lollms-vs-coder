@@ -607,8 +607,12 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         for (const file of files) {
             let targetUri: vscode.Uri | undefined;
-            const normalizedPath = this.normalize(file).trim().replace(/^\/+/, '');
+            // Clean paths aggressively by stripping both leading AND trailing slashes
+            const normalizedPath = this.normalize(file).trim().replace(/^\/+/, '').replace(/\/+$/, '');
+            if (!normalizedPath) continue;
+
             const segments = normalizedPath.split('/');
+            const fileName = segments[segments.length - 1];
 
             // 1. SOVEREIGN NAMESPACE CHECK: Does the first segment match a project name?
             const projectFolder = folders.find(f => f.name === segments[0]);
@@ -630,9 +634,8 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 }
             }
 
-            // 3. HEURISTIC FALLBACK: Try partial segment matching (e.g. LLM says "lollms_discussion/_mixin.py" instead of "src/...")
-            if (!targetUri) {
-                const fileName = segments[segments.length - 1];
+            // 3. HEURISTIC FALLBACK: Try partial segment matching (only if filename is valid)
+            if (!targetUri && fileName && fileName.trim().length > 0 && fileName !== '.' && fileName !== '..') {
                 const foundFiles = await vscode.workspace.findFiles(`**/${fileName}`, '**/node_modules/**', 10);
                 if (foundFiles.length > 0) {
                     // Score them by how many segments from the end match

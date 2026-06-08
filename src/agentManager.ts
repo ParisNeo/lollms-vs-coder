@@ -1997,18 +1997,44 @@ Please provide a clear, concise final response to the user summarizing the outco
         if (!this.currentDiscussion?.capabilities?.selectedFolders || this.currentDiscussion.capabilities.selectedFolders.length === 0) {
             return { allowed: true };
         }
-        
+
         if (this.currentDiscussion.capabilities.selectedFolders.includes('__none__')) {
             if (filePath.startsWith('.lollms/sandbox')) return { allowed: true };
             return { allowed: false, message: "Permission Denied: Discussion is in Sandbox mode. AI can only access .lollms/sandbox." };
         }
 
-        const normalizedPath = path.resolve(this.currentWorkspaceFolder!.uri.fsPath, filePath);
-        const allowedRoots = (vscode.workspace.workspaceFolders || [])
+        const folders = vscode.workspace.workspaceFolders || [];
+        const normalized = filePath.replace(/\\/g, '/').trim();
+        const segments = normalized.split('/');
+
+        // Explicitly block path traversal attempts
+        if (normalized.includes('../') || normalized.includes('..\\')) {
+            return { allowed: false, message: "Permission Denied: Path traversal detected." };
+        }
+
+        let resolvedPath = normalized;
+        if (!path.isAbsolute(resolvedPath)) {
+            // Namespace resolution: check if the first segment matches an open workspace folder name
+            const projectFolder = folders.find(f => f.name === segments[0]);
+            if (projectFolder && segments.length > 1) {
+                resolvedPath = path.resolve(projectFolder.uri.fsPath, segments.slice(1).join('/'));
+            } else {
+                const base = this.currentWorkspaceFolder?.uri.fsPath || folders[0]?.uri.fsPath || "";
+                resolvedPath = path.resolve(base, resolvedPath);
+            }
+        } else {
+            resolvedPath = path.resolve(resolvedPath);
+        }
+
+        const normalizedPath = resolvedPath;
+        const allowedRoots = folders
             .filter(f => this.currentDiscussion!.capabilities!.selectedFolders!.includes(f.uri.toString()))
             .map(f => f.uri.fsPath);
 
-        const isAllowed = allowedRoots.some(root => normalizedPath.startsWith(root));
+        const isAllowed = allowedRoots.some(root => {
+            const resolvedRoot = path.resolve(root);
+            return normalizedPath === resolvedRoot || normalizedPath.startsWith(resolvedRoot + path.sep);
+        });
         return isAllowed 
             ? { allowed: true } 
             : { allowed: false, message: `Permission Denied: Access to ${filePath} is outside the selected workspace scope.` };

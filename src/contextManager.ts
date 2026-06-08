@@ -189,59 +189,40 @@ export class ContextManager {
     const normalized = namespacedPath.replace(/\\/g, '/').trim();
     const segments = normalized.split('/');
 
-    if (path.isAbsolute(normalized)) {
-      const uri = vscode.Uri.file(normalized);
-      return { folder: vscode.workspace.getWorkspaceFolder(uri), relativePath: normalized, uri };
+    // 1. Path Traversal Blocking
+    if (normalized.includes('../') || normalized.includes('..\\')) {
+      Logger.warn(`Blocked traversal attempt: ${namespacedPath}`);
+      return null;
     }
 
-    if (folders.length > 1) {
+    let resolvedPath = normalized;
+    if (!path.isAbsolute(resolvedPath)) {
+      // Check if the first segment matches an open workspace folder
       const projectFolder = folders.find(f => f.name === segments[0]);
-      if (projectFolder) {
-        const relativeToRoot = segments.slice(1).join('/');
-        const uri = vscode.Uri.joinPath(projectFolder.uri, relativeToRoot);
-        try {
-          await vscode.workspace.fs.stat(uri);
-          return { folder: projectFolder, relativePath: relativeToRoot, uri };
-        } catch {
-          const uriWithSegment = vscode.Uri.joinPath(projectFolder.uri, normalized);
-          try {
-            await vscode.workspace.fs.stat(uriWithSegment);
-            return { folder: projectFolder, relativePath: normalized, uri: uriWithSegment };
-          } catch {}
-        }
+      if (projectFolder && segments.length > 1) {
+        resolvedPath = path.resolve(projectFolder.uri.fsPath, segments.slice(1).join('/'));
+      } else {
+        const base = folders[0]?.uri.fsPath || "";
+        resolvedPath = path.resolve(base, resolvedPath);
       }
-      for (const folder of folders) {
-        const testUri = vscode.Uri.joinPath(folder.uri, normalized);
-        try {
-          await vscode.workspace.fs.stat(testUri);
-          return { folder, relativePath: normalized, uri: testUri };
-        } catch {}
-      }
+    } else {
+      resolvedPath = path.resolve(resolvedPath);
     }
 
-    const activeFolder = folders[0];
-    if (activeFolder) {
-      const uriDirect = vscode.Uri.joinPath(activeFolder.uri, normalized);
-      try {
-        await vscode.workspace.fs.stat(uriDirect);
-        return { folder: activeFolder, relativePath: normalized, uri: uriDirect };
-      } catch {
-        if (segments[0] === activeFolder.name && segments.length > 1) {
-          const relStripped = segments.slice(1).join('/');
-          const uriStripped = vscode.Uri.joinPath(activeFolder.uri, relStripped);
-          try {
-            await vscode.workspace.fs.stat(uriStripped);
-            return { folder: activeFolder, relativePath: relStripped, uri: uriStripped };
-          } catch {}
-        }
-      }
-      let finalRel = normalized;
-      if (segments[0] === activeFolder.name && segments.length > 1) {
-        finalRel = segments.slice(1).join('/');
-      }
-      return { folder: activeFolder, relativePath: finalRel, uri: vscode.Uri.joinPath(activeFolder.uri, finalRel) };
+    // 2. Strict Boundary Check: Verify resolved path resides inside an open workspace folder
+    const ownerFolder = folders.find(folder => {
+      const folderPath = path.resolve(folder.uri.fsPath);
+      return resolvedPath.startsWith(folderPath + path.sep) || resolvedPath === folderPath;
+    });
+
+    if (!ownerFolder) {
+      Logger.warn(`Blocked out-of-bounds path resolution: ${namespacedPath}`);
+      return null;
     }
-    return null;
+
+    const relativePath = path.relative(ownerFolder.uri.fsPath, resolvedPath).replace(/\\/g, '/');
+    const uri = vscode.Uri.file(resolvedPath);
+    return { folder: ownerFolder, relativePath, uri };
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1152,6 +1133,48 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
     } catch (e) { return content; }
   }
 
+  private async isUnsafeUrl(urlStr: string): Promise<boolean> {
+    try {
+      const parsed = new URL(urlStr);
+      const hostname = parsed.hostname.toLowerCase();
+
+      if (hostname === 'localhost' || hostname === 'localhost.localdomain') return true;
+
+      // Strict checks for loopbacks, private networks (RFC 1918), and link-locals
+      if (hostname.startsWith('127.') || hostname === '0.0.0.0') return true;
+      if (hostname.startsWith('10.')) return true;
+      if (hostname.startsWith('192.168.')) return true;
+      if (hostname.startsWith('169.254.')) return true;
+      if (hostname === '::1') return true;
+
+      // Class B Private: 172.16.0.0 - 172.31.255.255
+      const match172 = hostname.match(/^172\.(1[6-9]|2[0-9]|3[0-1])\./);
+      if (match172) return true;
+
+      // Resolve DNS to prevent DNS rebinding SSRF
+      const dns = require('dns').promises;
+      try {
+        const lookup = await dns.lookup(hostname);
+        const ip = lookup.address;
+
+        if (ip === '127.0.0.1' || ip === '::1' || ip === '0.0.0.0') return true;
+        if (ip.startsWith('10.')) return true;
+        if (ip.startsWith('192.168.')) return true;
+        if (ip.startsWith('169.254.')) return true;
+        const matchIp172 = ip.match(/^172\.(1[6-9]|2[0-9]|3[0-1])\./);
+        if (matchIp172) return true;
+        if (ip.startsWith('fe80:') || ip.startsWith('fc00:') || ip.startsWith('fd00:')) return true;
+      } catch (dnsErr) {
+        // If DNS lookup fails, treat it as unsafe to prevent unverified domain accesses
+        return true;
+      }
+
+      return false;
+    } catch {
+      return true; // Block unparsable or malformed URLs
+    }
+  }
+
   public async processUrl(
     url: string,
     languageCode: string = 'en',
@@ -1162,6 +1185,10 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
   ): Promise<{ filename: string, content: string, summary: string }> {
     if (visited.has(url) || depth < 0) return { filename: '', content: '', summary: '' };
     visited.add(url);
+
+    if (await this.isUnsafeUrl(url)) {
+      throw new Error("Security Violation: Access to local/private network resources is blocked.");
+    }
 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) throw new Error("No workspace folder open.");

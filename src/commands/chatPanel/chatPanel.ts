@@ -35,7 +35,8 @@ export class ChatPanel {
   public static activeAgents: Map<string, AgentManager> = new Map();
   // Static registry for standard chat generations
   public static activeGenerations: Map<string, ActiveGeneration> = new Map();
-  
+  public static _tokenCountCache: Map<string, number> = new Map();
+
   public static currentPanel: ChatPanel | undefined;
   public readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
@@ -810,11 +811,61 @@ export class ChatPanel {
 
     const isBackground = options?.isBackgroundSync === true;
 
+    // --- IMMEDIATE INSTANT HYDRATION / REACTION ---
+    if (!isBackground && this._panel && this._panel.webview) {
+        try {
+            const provider = this._contextManager.getContextStateProvider();
+            const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
+
+            if (includedFiles.length === 0) {
+                // Instantly clear the list and reset segments in the UI with zero delay
+                this._panel.webview.postMessage({ 
+                    command: 'updateContext', 
+                    files: [],
+                    skills: [],
+                    tools: [],
+                    diagrams: [],
+                    briefing: ""
+                });
+
+                const oldMetrics = this._currentDiscussion?.lastTokenMetrics;
+                const fallbackSize = oldMetrics?.contextSize || 128000;
+                const fallbackSegments = {
+                    system: oldMetrics?.segments?.system || 0,
+                    briefing: 0,
+                    tree: oldMetrics?.segments?.tree || 0,
+                    skills: 0,
+                    memory: oldMetrics?.segments?.memory || 0,
+                    diagrams: 0,
+                    files: 0,
+                    history: oldMetrics?.segments?.history || 0,
+                    images: 0
+                };
+
+                this._panel.webview.postMessage({
+                    command: 'updateTokenProgress',
+                    totalTokens: Object.values(fallbackSegments).reduce((a, b) => a + b, 0),
+                    contextSize: fallbackSize,
+                    isApproximate: false,
+                    segments: fallbackSegments
+                });
+            } else {
+                // Send a fast path partial update with just the files list so the checks sync instantly
+                this._panel.webview.postMessage({ 
+                    command: 'updateContext', 
+                    files: includedFiles
+                });
+            }
+        } catch (e) {
+            Logger.warn("Failed to apply instant UI hydration");
+        }
+    }
+
     // Concurrency Lock: If already tokenizing, cancel previous and restart
     if (this._tokenAbortController) {
         this._tokenAbortController.abort();
     }
-    
+
     this._tokenAbortController = new AbortController();
     const signal = this._tokenAbortController.signal;
 
@@ -1001,11 +1052,28 @@ export class ChatPanel {
                     }
                 });
             }
-            // 🛡️ INDEPENDENT TOKENIZATION (Soft-Fail Protocol)
+            // 🛡️ INDEPENDENT TOKENIZATION (Soft-Fail Protocol with High-Performance Cache)
             // We run each part independently so one failure doesn't crash the HUD
+            const getFastHash = (str: string): string => {
+                let hash = 0;
+                for (let i = 0; i < str.length; i++) {
+                    hash = (hash << 5) - hash + str.charCodeAt(i);
+                    hash |= 0;
+                }
+                return `${str.length}_${hash}`;
+            };
+
             const getTokenCount = async (text: string) => {
+                if (!text) return { count: 0, isEstimation: false };
+
+                const cacheKey = `${modelForTokenization}_${getFastHash(text)}`;
+                if (ChatPanel._tokenCountCache.has(cacheKey)) {
+                    return { count: ChatPanel._tokenCountCache.get(cacheKey)!, isEstimation: false };
+                }
+
                 try {
                     const res = await this._lollmsAPI.tokenize(text, modelForTokenization);
+                    ChatPanel._tokenCountCache.set(cacheKey, res.count);
                     return { count: res.count, isEstimation: !!res.isEstimation };
                 } catch (e) {
                     // Fallback to heuristic immediately on error
@@ -4791,6 +4859,8 @@ ${targetContent}
             case 'updateDiscussionModel':
                 if (this._currentDiscussion) {
                     this._currentDiscussion.model = message.model || undefined;
+                    // Clear the token cache since the tokenization logic will differ for the new model
+                    ChatPanel._tokenCountCache.clear();
                     // Provide immediate feedback to the webview header
                     const effectiveModel = message.model || this._lollmsAPI.getModelName();
                     this._panel.webview.postMessage({ command: 'updateModelNameOnly', modelName: effectiveModel });

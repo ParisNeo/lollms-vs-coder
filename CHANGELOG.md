@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-06-08 00:56]
+
+- feat(agent/context): Refine agent management and code graph linking
+
 ## [2026-06-05 09:12]
 
 - feat(extension): Release v0.8.86 and implement core graph manager refinements

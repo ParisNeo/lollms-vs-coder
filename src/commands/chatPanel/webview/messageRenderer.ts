@@ -1120,8 +1120,15 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         const aiderMatches = [...codeText.matchAll(aiderRegex)];
         const isAider = aiderMatches.length > 0;
 
-        const hasAiderMarkers = codeText.includes('<<<<<<< SEARCH') || codeText.includes('>>>>>>> REPLACE') || codeText.includes('=======');
-        const isMalformedAider = hasAiderMarkers && !isAider;
+        const hasAiderMarkers = codeText.includes('<<<<<<< SEARCH') && codeText.includes('>>>>>>> REPLACE') && codeText.includes('=======');
+
+        // A block is only "malformed" if the AI's intent was to write a patch (type 'replace' or no header) but the markers are broken
+        let isMalformedAider = false;
+        if (hasAiderMarkers && !isAider) {
+            if (!info || info.type === 'replace') {
+                isMalformedAider = true;
+            }
+        }
 
         // Auto-detect graph structures inside JSON code blocks
         const isCytoscapeJson = language === 'json' && codeText.includes('"nodes"') && codeText.includes('"edges"');

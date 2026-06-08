@@ -299,10 +299,15 @@ export class DiscussionManager {
                 type !== vscode.FileType.Directory && name.endsWith('.json')
             );
 
-            for (const [name] of jsonFiles) {
+            // Read all discussion JSON files in parallel to prevent sequential blocking of the event loop
+            const promises = jsonFiles.map(async ([name]) => {
                 const id = path.parse(name).name;
-                const discussion = await this.getDiscussion(id);
-                if (discussion) results.push(discussion);
+                return this.getDiscussion(id);
+            });
+
+            const resolvedDiscussions = await Promise.all(promises);
+            for (const d of resolvedDiscussions) {
+                if (d) results.push(d);
             }
         } catch (error) {
             // Directory doesn't exist yet

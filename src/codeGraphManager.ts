@@ -405,6 +405,22 @@ export class CodeGraphManager {
             // --- PASS 3: Function Calls & References (Links) ---
             const allSymbols = nodes.filter(n => n.type === 'function' || n.type === 'method' || n.type === 'class');
 
+            // Pre-compile the regexes for all symbols once to avoid rebuilding them inside nested loops
+            const symbolRegexes = new Map<string, {
+                bound: RegExp;
+                call: RegExp;
+                instantiation: RegExp;
+            }>();
+
+            allSymbols.forEach(symbol => {
+                const escapedLabel = symbol.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                symbolRegexes.set(symbol.id, {
+                    bound: new RegExp(`\\b${escapedLabel}\\b`),
+                    call: new RegExp(`\\b${escapedLabel}\\s*\\(`, 'g'),
+                    instantiation: new RegExp(`\\bnew\\s+${escapedLabel}\\b|:\\s*${escapedLabel}\\b|\\b${escapedLabel}\\.`, 'g')
+                });
+            });
+
             let filesLinked = 0;
             for (const [normalizedPath, data] of fileContents.entries()) {
                 if (signal.aborted) return;
@@ -457,7 +473,8 @@ export class CodeGraphManager {
                         // CRITICAL PERFORMANCE BOOST: Quick substring check to bypass RegExp compilation entirely
                         if (!line.includes(symbol.label)) continue;
 
-                        const symbolRegex = new RegExp(`\\b${symbol.label}\\b`);
+                        const regexes = symbolRegexes.get(symbol.id);
+                        if (!regexes) continue;
 
                         // Helper to safely add unique relationship edges
                         const addEdgeOnce = (src: string, trg: string, relLabel: string) => {
@@ -474,23 +491,20 @@ export class CodeGraphManager {
 
                         // 1. Check Signature for Input / Output Parameter Types (At definition line)
                         if (isAtDefinitionLine) {
-                            if (callerNode.params && symbolRegex.test(callerNode.params)) {
+                            if (callerNode.params && regexes.bound.test(callerNode.params)) {
                                   addEdgeOnce(currentCallerId, symbol.id, 'inputParam');
                                 continue;
                             }
-                            if (callerNode.returnType && symbolRegex.test(callerNode.returnType)) {
+                            if (callerNode.returnType && regexes.bound.test(callerNode.returnType)) {
                                   addEdgeOnce(currentCallerId, symbol.id, 'outputParam');
                                 continue;
                             }
                         }
 
                         // 2. Check Line Content for Internal Calls & Local Variable Instantiation
-                        const callRegex = new RegExp(`\\b${symbol.label}\\s*\\(`, 'g');
-                        const instantiationRegex = new RegExp(`\\bnew\\s+${symbol.label}\\b|:\\s*${symbol.label}\\b|\\b${symbol.label}\\.`, 'g');
-
-                        if (callRegex.test(line)) {
+                        if (regexes.call.test(line)) {
                             addEdgeOnce(currentCallerId, symbol.id, 'calls');
-                        } else if (instantiationRegex.test(line)) {
+                        } else if (regexes.instantiation.test(line)) {
                             addEdgeOnce(currentCallerId, symbol.id, 'localVariable');
                         }
                     }

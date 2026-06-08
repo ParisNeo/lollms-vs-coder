@@ -141,15 +141,6 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         }
     }));
     /**
-     * Intelligent Workspace Resolver.
-     * Maps namespaced paths (Folder/path) to URIs.
-     * Falls back to "The Old Way" if no workspace is open.
-     */
-        /**
-     * Intelligent Workspace Resolver.
-     * Maps namespaced paths (Folder/path) to URIs.
-     */
-    /**
      * Strict Namespace Resolver for Multi-Root Workspaces.
      * Enforces that paths must start with the Project Name if multiple roots exist.
      */
@@ -158,74 +149,40 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const normalized = namespacedPath.replace(/\\/g, '/').trim();
         const segments = normalized.split('/');
 
-        if (path.isAbsolute(normalized)) {
-            const uri = vscode.Uri.file(normalized);
-            return { folder: vscode.workspace.getWorkspaceFolder(uri), relativePath: normalized, uri };
+        // 1. Path Traversal Blocking
+        if (normalized.includes('../') || normalized.includes('..\\')) {
+            Logger.warn(`Blocked traversal attempt: ${namespacedPath}`);
+            return null;
         }
 
-        // --- MULTI-ROOT NAMESPACE ENFORCEMENT ---
-        // Priority 1: Exact Namespace Match (ProjectName/path)
-        const projectFolder = folders.find(f => f.name === segments[0]);
-        if (projectFolder && segments.length > 1) {
-            const relativeToRoot = segments.slice(1).join('/');
-            const uri = vscode.Uri.joinPath(projectFolder.uri, relativeToRoot);
-            // Verify existence for namespaced path
-            try {
-                await vscode.workspace.fs.stat(uri);
-                return { folder: projectFolder, relativePath: relativeToRoot, uri };
-            } catch {
-                // If it doesn't exist at the namespaced path, it might be a new file 
-                // we are intending to create. Return the resolved info.
-                return { folder: projectFolder, relativePath: relativeToRoot, uri };
+        let resolvedPath = normalized;
+        if (!path.isAbsolute(resolvedPath)) {
+            // Check if the first segment matches an open workspace folder
+            const projectFolder = folders.find(f => f.name === segments[0]);
+            if (projectFolder && segments.length > 1) {
+                resolvedPath = path.resolve(projectFolder.uri.fsPath, segments.slice(1).join('/'));
+            } else {
+                const base = folders[0]?.uri.fsPath || "";
+                resolvedPath = path.resolve(base, resolvedPath);
             }
+        } else {
+            resolvedPath = path.resolve(resolvedPath);
         }
 
-        // Priority 2: Relative path existence check across all roots
-        for (const folder of folders) {
-            const testUri = vscode.Uri.joinPath(folder.uri, normalized);
-            try {
-                await vscode.workspace.fs.stat(testUri);
-                return { folder, relativePath: normalized, uri: testUri };
-            } catch {}
+        // 2. Strict Boundary Check: Verify resolved path resides inside an open workspace folder
+        const ownerFolder = folders.find(folder => {
+            const folderPath = path.resolve(folder.uri.fsPath);
+            return resolvedPath.startsWith(folderPath + path.sep) || resolvedPath === folderPath;
+        });
+
+        if (!ownerFolder) {
+            Logger.warn(`Blocked out-of-bounds path resolution: ${namespacedPath}`);
+            return null;
         }
 
-        // --- SINGLE ROOT FLEXIBLE RESOLUTION ---
-        const activeFolder = getActiveWorkspace() || folders[0];
-        if (activeFolder) {
-            // 1. Try absolute match (folder/path)
-            const uriDirect = vscode.Uri.joinPath(activeFolder.uri, normalized);
-            try {
-                await vscode.workspace.fs.stat(uriDirect);
-                return { folder: activeFolder, relativePath: normalized, uri: uriDirect };
-            } catch {
-                // 2. Try stripped match if namespaced (ProjectName/path -> path)
-                if ((segments[0] === activeFolder.name || segments[0] === activeFolder.uri.fsPath.split(/[\\\/]/).pop()) && segments.length > 1) {
-                    const relStripped = segments.slice(1).join('/');
-                    const uriStripped = vscode.Uri.joinPath(activeFolder.uri, relStripped);
-                    try {
-                        await vscode.workspace.fs.stat(uriStripped);
-                        return { folder: activeFolder, relativePath: relStripped, uri: uriStripped };
-                    } catch { 
-                        // Even if it doesn't exist yet (new file), if the first segment matches the project name, 
-                        // we should treat the rest as the relative path to avoid doubling.
-                        return { folder: activeFolder, relativePath: relStripped, uri: uriStripped };
-                    }
-                }
-            }
-
-            // 3. Fallback for new files: Use the most logical relative path
-            let finalRel = normalized;
-            if (segments[0] === activeFolder.name && segments.length > 1) {
-                finalRel = segments.slice(1).join('/');
-            }
-            return { 
-                folder: activeFolder, 
-                relativePath: finalRel, 
-                uri: vscode.Uri.joinPath(activeFolder.uri, finalRel) 
-            };
-        }
-
-        return null;
+        const relativePath = path.relative(ownerFolder.uri.fsPath, resolvedPath).replace(/\\/g, '/');
+        const uri = vscode.Uri.file(resolvedPath);
+        return { folder: ownerFolder, relativePath, uri };
     }
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean, autoSave?: boolean }) => {

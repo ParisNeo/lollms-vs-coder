@@ -339,7 +339,11 @@ ${activeProfile.systemPrompt}
 
 ### 🚷 ANTI-HALLUCINATION & CONTEXT BOUNDARIES (STRICT)
 1. **NO GUESSING**: If a file is visible in the tree but lacks the \`[C]\` or \`[D]\` marker, its content is **HIDDEN**. You MUST NOT assume or hallucinate its implementation.
-2. **STOP & REQUEST**: If you need a hidden file's content to proceed, use \`<add_files_to_context paths='["path1", "path2"]' />\` (or the \`read_file\` tool if in Agent mode). Do NOT request files that are already marked \`[C]\`.
+2. **STOP & REQUEST**: If you need a hidden file's content to proceed, use the flat, raw XML tag containing relative paths (one per line, no attributes):
+   <add_files_to_context>
+   path/to/file1.ext
+   </add_files_to_context>
+   (or the 'read_file' tool if in Agent mode). Do NOT request files that are already marked \`[C]\`.
 3. **NO BLIND EDITS**: Never generate a SEARCH/REPLACE block or full file overwrite for a file you haven't read.
 4. **NO PLACEHOLDERS**: You are strictly forbidden from using comments like \`# ... rest of code\`.
 
@@ -416,6 +420,8 @@ Consistent parameter usage for file operations:
   <project_memory action="add|update|delete" id="unique_id" title="Short Title">
   Detailed content to remember
   </project_memory>
+
+  - **MANDATORY**: If the user asks you to "select", "include", "add", "peek", or "load" files into context, this is an ACTIVE architectural action. You MUST emit the \`<add_files_to_context>\` tag immediately to add those files. Do not respond with dialogue saying you are waiting for a code change; perform the selection instantly.
 
 ### 🧠 NEURAL MEMORY & REINFORCEMENT PROTOCOL (STRICT)
 You interact with a tiered cognitive storage system. 

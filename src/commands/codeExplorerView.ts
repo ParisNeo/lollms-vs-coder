@@ -3,6 +3,7 @@ import * as path from 'path';
 import { CodeGraphManager } from '../codeGraphManager';
 import { ChatPanel } from './chatPanel/chatPanel';
 import { LollmsAPI } from '../lollmsAPI';
+import { stripThinkingTags } from '../utils';
 
 export class CodeExplorerPanel {
     public static currentPanel: CodeExplorerPanel | undefined;
@@ -10,6 +11,7 @@ export class CodeExplorerPanel {
     private readonly extensionUri: vscode.Uri;
     private readonly graphManager: CodeGraphManager;
     private readonly lollmsApi?: LollmsAPI;
+    private aiTranslationAbortController?: AbortController;
 
     static createOrShow(extensionUri: vscode.Uri, graphManager: CodeGraphManager, lollmsApi?: LollmsAPI) {
         const column = vscode.window.activeTextEditor?.viewColumn;
@@ -71,6 +73,12 @@ export class CodeExplorerPanel {
                     return;
                 }
 
+                if (this.aiTranslationAbortController) {
+                    this.aiTranslationAbortController.abort();
+                }
+                this.aiTranslationAbortController = new AbortController();
+                const signal = this.aiTranslationAbortController.signal;
+
                 const systemPrompt = `You are a SPARQL-lite Translation Expert.
 Your only job is to translate a natural language query into a single valid SPARQL-lite query based on the LoLLMs Source Code Ontology.
 
@@ -83,7 +91,7 @@ Classes:
 - s:Library (e.g. ?x s:type s:Library)
 
 Properties:
-- s:type (e.g. ?x s:type s:File)
+- s:type (e.g. ?x s:type s:Class)
 - s:name (e.g. ?x s:name 'filename')
 - s:path (e.g. ?x s:path 'relative/path')
 - s:contains (e.g. ?x s:contains ?y)
@@ -107,11 +115,71 @@ Translate: "${msg.text}"`;
                 try {
                     const response = await this.lollmsApi.sendChat([
                         { role: 'system', content: systemPrompt }
-                    ]);
-                    const query = response.trim().replace(/```sparql|```/g, '').trim();
-                    this.panel.webview.postMessage({ command: 'nlTranslationResult', query });
+                    ], null, signal);
+
+                    // Scrub all reasoning/thinking blocks to ensure we have a clean query string
+                    const cleanResponse = stripThinkingTags(response).trim();
+                    const query = cleanResponse.replace(/```sparql|```/g, '').trim();
+
+                    this.panel.webview.postMessage({ command: 'nlTranslationResult', query, originalQuestion: msg.text });
                 } catch(e: any) {
-                    this.panel.webview.postMessage({ command: 'nlTranslationResult', error: e.message });
+                    if (e.name !== 'AbortError') {
+                        this.panel.webview.postMessage({ command: 'nlTranslationResult', error: e.message });
+                    }
+                } finally {
+                    this.aiTranslationAbortController = undefined;
+                }
+            }
+
+            if (msg.command === 'cancelTranslation') {
+                if (this.aiTranslationAbortController) {
+                    this.aiTranslationAbortController.abort();
+                    this.aiTranslationAbortController = undefined;
+                }
+            }
+
+            if (msg.command === 'interpretGraphQuery') {
+                if (!this.lollmsApi) return;
+
+                if (this.aiTranslationAbortController) {
+                    this.aiTranslationAbortController.abort();
+                }
+                this.aiTranslationAbortController = new AbortController();
+                const signal = this.aiTranslationAbortController.signal;
+
+                const interpreterPrompt = `You are a Senior Software Architect and Graph Interpreter. 
+Analyze the provided SPARQL query and its results over our code graph to answer the user's question.
+- State the answer clearly based on the provided results.
+- Refer to specific file paths or symbol names.
+- Output your answer in clean, readable Markdown (bullet points, bold text).`;
+
+                const queryContext = `### USER QUESTION
+"${msg.question}"
+
+### EXECUTED SPARQL QUERY
+\`\`\`sparql
+${msg.query}
+\`\`\`
+
+### RAW GRAPH RESULTS (MATCHED TRIPLES)
+${JSON.stringify(msg.results, null, 2)}
+
+Please provide the final technical answer:`;
+
+                try {
+                    const response = await this.lollmsApi.sendChat([
+                        { role: 'system', content: interpreterPrompt },
+                        { role: 'user', content: queryContext }
+                    ], null, signal);
+
+                    const cleanAnswer = stripThinkingTags(response).trim();
+                    this.panel.webview.postMessage({ command: 'graphInterpretationResult', answer: cleanAnswer });
+                } catch (e: any) {
+                    if (e.name !== 'AbortError') {
+                        this.panel.webview.postMessage({ command: 'graphInterpretationResult', error: e.message });
+                    }
+                } finally {
+                    this.aiTranslationAbortController = undefined;
                 }
             }
 
@@ -306,9 +374,11 @@ ${jsonGraph}
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="${csp}">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource} 'unsafe-inline' https://cdn.jsdelivr.net; style-src ${webview.cspSource} 'unsafe-inline'; connect-src 'none'; img-src data:; font-src ${webview.cspSource};">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Code Explorer</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@5.1.1/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js"></script>
 <style>
     /* Real-time Progress Bar & Overlay */
     .progress-bar-container {
@@ -376,7 +446,7 @@ ${jsonGraph}
         box-sizing: border-box;
     }
     #sidebar-right {
-        width: 300px;
+        width: 390px; /* Expanded further to accommodate wide query inputs and dropdown selects */
         background-color: var(--vscode-sideBar-background);
         border-left: 1px solid var(--vscode-panel-border);
         display: flex;
@@ -386,6 +456,14 @@ ${jsonGraph}
         gap: 16px;
         overflow-y: auto;
         flex-shrink: 0;
+        transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1), padding 0.2s ease, opacity 0.2s ease;
+    }
+    #sidebar-right.collapsed {
+        width: 0;
+        padding: 0;
+        opacity: 0;
+        border-left: none;
+        overflow: hidden;
     }
     .sidebar-section {
         display: flex;
@@ -434,14 +512,18 @@ ${jsonGraph}
         background-color: var(--vscode-button-hoverBackground);
     }
     #status-box {
-        padding: 8px 12px;
-        background-color: var(--vscode-editor-inactiveSelectionBackground);
+        padding: 12px;
+        background-color: var(--vscode-editor-background);
         border: 1px solid var(--vscode-widget-border);
-        border-radius: 4px;
-        font-size: 11px;
-        line-height: 1.4;
-        word-break: break-all;
+        border-radius: 6px;
+        font-size: 12px;
+        line-height: 1.5;
+        overflow-y: auto;
     }
+    #status-box p { margin: 0 0 8px 0; }
+    #status-box p:last-child { margin-bottom: 0; }
+    #status-box code { font-family: monospace; background: rgba(0,0,0,0.2); padding: 2px 4px; border-radius: 3px; }
+    #status-box pre { background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; overflow-x: auto; margin: 8px 0; }
     .context-menu-item:hover {
         background-color: var(--vscode-menu-selectionBackground) !important;
         color: var(--vscode-menu-selectionForeground) !important;
@@ -467,12 +549,28 @@ ${jsonGraph}
         animation: spin 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
         box-shadow: 0 0 15px var(--vscode-button-background);
     }
+    .graph-mini-spinner {
+        width: 12px !important;
+        height: 12px !important;
+        border: 2px solid rgba(255, 255, 255, 0.2) !important;
+        border-top-color: #ffffff !important;
+        border-radius: 50% !important;
+        display: inline-block !important;
+        animation: graph-spin 0.6s linear infinite !important;
+        vertical-align: middle !important;
+        margin-right: 6px !important;
+        box-shadow: none !important;
+        box-sizing: border-box !important;
+    }
     #loading span {
         font-weight: 600;
-        letter-spacing: 1px;
-        text-transform: uppercase;
+        letter-spacing: 0.5px;
         font-size: 11px;
-        margin-top: 15px;
+    }
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+    @keyframes graph-spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
     }
     @keyframes spin { 100% { transform: rotate(360deg); } }
     
@@ -487,6 +585,7 @@ ${jsonGraph}
 <body>
     <div id="toolbar">
         <select id="view" title="Graph View Perspective">
+            <option value="full_ontology_graph">Complete Ontological Graph (Full Workspace Map)</option>
             <option value="call_graph">Call Graph</option>
             <option value="import_graph">Import Graph</option>
             <option value="module_dependency_graph">Module/Folder Dependency Graph</option>
@@ -525,7 +624,7 @@ ${jsonGraph}
 
         <button id="rebuild" title="Update current view with new changes">Refresh</button>
         <button id="stop" style="display:none;">Stop</button>
-        
+
         <select id="action-select" style="max-width:140px;" title="More Actions">
             <option value="" disabled selected>More Actions...</option>
             <option value="regenerate">⚡ Regenerate Cache</option>
@@ -535,6 +634,10 @@ ${jsonGraph}
             <option value="isolate-neighbors">👥 Isolate Neighbors</option>
             <option value="isolate-sparql">🔍 Isolate SPARQL Subgraph</option>
         </select>
+
+        <button id="toggle-sidebar" title="Toggle Sidebar Panel" style="background: transparent; color: var(--vscode-foreground); border: 1px solid var(--vscode-panel-border); padding: 4px 8px; display: flex; align-items: center; justify-content: center; height: 28px; width: 32px;">
+            <i class="codicon codicon-layout-sidebar-right"></i>
+        </button>
     </div>
     
     <div id="content-area">
@@ -568,19 +671,27 @@ ${jsonGraph}
                     <button id="run-sparql-btn" style="background-color: var(--vscode-charts-orange); color: white; font-weight: bold; flex: 1;" title="Execute SPARQL-lite query on graph">Run SPARQL</button>
                     <select id="sparql-examples" style="flex: 1;" title="Predefined SPARQL templates">
                         <option value="">Examples</option>
-                        <option value="SELECT ?class WHERE { ?class s:type s:Class }">All Classes</option>
-                        <option value="SELECT ?func WHERE { ?func s:type s:Function }">All Global Functions</option>
-                        <option value="SELECT ?file WHERE { ?file s:imports ?lib . ?lib s:type s:Library }">Files using External Libraries</option>
-                        <option value="SELECT ?caller ?callee WHERE { ?caller s:calls ?callee }">All Invocations (Caller -> Callee)</option>
-                        <option value="SELECT ?method WHERE { ?class s:name 'Player' . ?class s:contains ?method . ?method s:type s:Method }">Methods of 'Player' Class</option>
-                        <option value="SELECT ?target WHERE { ?caller s:name 'start_game' . ?caller s:calls ?target }">Symbols Called by 'start_game'</option>
-                        <option value="SELECT ?class WHERE { ?func s:name 'load_enemy_sprite_sheets' . ?func s:localVariable ?class . ?class s:type s:Class }">Classes Instantiated in 'load_enemy_sprite_sheets'</option>
-                        <option value="SELECT ?type WHERE { ?method s:name '_play_story_sound' . ?method s:inputParam ?type }">Parameter Types of '_play_story_sound'</option>
-                        <option value="SELECT ?type WHERE { ?func s:name 'get_frame_count' . ?func s:outputParam ?type }">Return Type of 'get_frame_count'</option>
-                        <option value="SELECT ?child WHERE { ?child s:inherits ?parent . ?parent s:name 'Sprite' }">Classes Inheriting from 'Sprite'</option>
-                        <option value="SELECT ?file WHERE { ?file s:imports ?target . ?target s:name 'constants.py' }">Files Importing 'constants.py'</option>
-                        <option value="SELECT ?file WHERE { ?file s:contains ?c1 . ?c1 s:name 'Player' . ?file s:contains ?c2 . ?c2 s:name 'Enemy' }">Files Containing Both Player & Enemy Classes</option>
-                        <option value="SELECT ?a ?b ?c WHERE { ?a s:calls ?b . ?b s:calls ?c }">Deep Call Paths (A -> B -> C)</option>
+                        <optgroup label="SELECT Queries">
+                            <option value="SELECT ?class WHERE { ?class s:type s:Class }">All Classes</option>
+                            <option value="SELECT ?func WHERE { ?func s:type s:Function }">All Global Functions</option>
+                            <option value="SELECT ?file WHERE { ?file s:imports ?lib . ?lib s:type s:Library }">Files using External Libraries</option>
+                            <option value="SELECT ?caller ?callee WHERE { ?caller s:calls ?callee }">All Invocations (Caller -> Callee)</option>
+                            <option value="SELECT ?method WHERE { ?class s:name 'Player' . ?class s:contains ?method . ?method s:type s:Method }">Methods of 'Player' Class</option>
+                            <option value="SELECT ?target WHERE { ?caller s:name 'start_game' . ?caller s:calls ?target }">Symbols Called by 'start_game'</option>
+                            <option value="SELECT ?class WHERE { ?func s:name 'load_enemy_sprite_sheets' . ?func s:localVariable ?class . ?class s:type s:Class }">Classes Instantiated in 'load_enemy_sprite_sheets'</option>
+                            <option value="SELECT ?type WHERE { ?method s:name '_play_story_sound' . ?method s:inputParam ?type }">Parameter Types of '_play_story_sound'</option>
+                            <option value="SELECT ?type WHERE { ?func s:name 'get_frame_count' . ?func s:outputParam ?type }">Return Type of 'get_frame_count'</option>
+                            <option value="SELECT ?child WHERE { ?child s:inherits ?parent . ?parent s:name 'Sprite' }">Classes Inheriting from 'Sprite'</option>
+                            <option value="SELECT ?file WHERE { ?file s:imports ?target . ?target s:name 'constants.py' }">Files Importing 'constants.py'</option>
+                            <option value="SELECT ?file WHERE { ?file s:contains ?c1 . ?c1 s:name 'Player' . ?file s:contains ?c2 . ?c2 s:name 'Enemy' }">Files Containing Both Player & Enemy Classes</option>
+                            <option value="SELECT ?a ?b ?c WHERE { ?a s:calls ?b . ?b s:calls ?c }">Deep Call Paths (A -> B -> C)</option>
+                        </optgroup>
+                        <optgroup label="CONSTRUCT Subgraphs">
+                            <option value="CONSTRUCT { ?caller s:calls ?callee } WHERE { ?caller s:type s:Function . ?callee s:type s:Function . ?caller s:calls ?callee }">Construct: Pure Function Call Graph</option>
+                            <option value="CONSTRUCT { ?class s:inherits ?parent . ?class s:contains ?method } WHERE { ?class s:inherits ?parent . ?class s:contains ?method . ?method s:type s:Method }">Construct: Inheritance & Methods Subgraph</option>
+                            <option value="CONSTRUCT { ?file s:imports ?imported } WHERE { ?file s:type s:File . ?file s:imports ?imported . ?imported s:type s:File }">Construct: File Imports Hierarchy</option>
+                            <option value="CONSTRUCT { ?caller s:localVariable ?class } WHERE { ?caller s:localVariable ?class . ?class s:type s:Class }">Construct: Local Variable Instantiations</option>
+                        </optgroup>
                     </select>
                 </div>
             </div>

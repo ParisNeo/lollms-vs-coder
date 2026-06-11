@@ -126,39 +126,49 @@ export class QuickEditManager {
 
             prompt += `Please respond with markdown. If you provide code, use code blocks.`;
 
-            // --- SURGICAL INTELLIGENCE: GRAPH-BASED GROUNDING ---
+            // --- FOCUS GROUNDING: READ CURRENT FILE ONLY ---
+            const currentFileCode = document.getText();
+            const currentFileBlock = `### 📄 ACTIVE FILE: ${relativePath}\n\`\`\`${languageId}\n${currentFileCode}\n\`\`\`\n`;
+
+            // --- SOVEREIGN SUB-GRAPH EXTRACTION ---
+            // Construct a highly focused architectural snapshot representing all links
+            // (both incoming usages and outgoing dependencies) of the current file.
             const graph = this.contextManager['codeGraphManager'];
-            let dependencyContext = "";
+            let localGraphSummary = "";
+            let dependencyContent = "";
 
             if (graph) {
-                if (graph.getBuildState() !== 'ready') await graph.buildGraph();
+                if (graph.getBuildState() !== 'ready') {
+                    await graph.buildGraph();
+                }
 
                 const targetNode = graph.getGraphData().nodes.find(n => n.filePath === relativePath);
                 if (targetNode) {
+                    // Extract all imported/dependent files
                     const depFiles = graph.getGraphData().edges
                         .filter(e => e.source === targetNode.id && e.label === 'imports')
                         .map(e => graph.getGraphData().nodes.find(n => n.id === e.target)?.filePath)
                         .filter((path): path is string => !!path);
 
                     if (depFiles.length > 0) {
-                        dependencyContext = await this.contextManager.readSpecificFiles(depFiles);
+                        dependencyContent = await this.contextManager.readSpecificFiles(depFiles);
                     }
                 }
+
+                // Query the graph for relations
+                const deps = graph.getArchitectureAnalysis(relativePath, 'dependencies');
+                const usages = graph.getArchitectureAnalysis(relativePath, 'usages');
+                localGraphSummary = `### 🗺️ LOCAL ARCHITECTURAL SUB-GRAPH (RELATIONS FOR ${relativePath})\n${deps}\n${usages}\n`;
             }
 
-            const globalContext = await this.contextManager.getContextContent({
-                modelName: this.lollmsAPI.getModelName()
-            });
-
             const contextData = {
-                tree: globalContext.projectTree,
-                files: globalContext.selectedFilesContent + "\n\n### SURGICAL DEPENDENCIES (GRAPH GROUNDED)\n" + dependencyContext,
-                skills: globalContext.skillsContent,
-                projectName: globalContext.projectName
+                tree: localGraphSummary, // Limit tree context strictly to the local sub-graph connections!
+                files: currentFileBlock + "\n\n### SURGICAL DEPENDENCIES (GROUNDED)\n" + dependencyContent,
+                skills: "", // Keep companion light, fast, and token-efficient
+                projectName: vscode.workspace.workspaceFolders?.[0]?.name || "Project"
             };
 
             let systemPromptContent = await getProcessedSystemPrompt('chat', undefined, undefined, this.memoryManager, false, contextData);
-
             if (isNotebook) {
                 // Since systemPromptContent is now structured, appending might break structure or just append to Instructions section.
                 // The structure ends with Instructions. So appending is safe, it just adds to instructions.
@@ -188,9 +198,14 @@ You are an expert Jupyter Notebook assistant.
                 { role: 'user', content: prompt }
             ];
 
-            // Add any image context if present in global context
-            if (globalContext.images && globalContext.images.length > 0) {
-                const imageContent = globalContext.images.map(img => ({
+            // Resolve any active images in a lightweight background pass
+            const imageContext = await this.contextManager.getContextContent({ 
+                includeTree: false,
+                modelName: this.lollmsAPI.getModelName()
+            }).catch(() => ({ images: [] }));
+
+            if (imageContext.images && imageContext.images.length > 0) {
+                const imageContent = imageContext.images.map((img: any) => ({
                     type: 'image_url',
                     image_url: { url: `data:image/jpeg;base64,${img.data}` }
                 }));
@@ -203,10 +218,31 @@ You are an expert Jupyter Notebook assistant.
             
             const controller = new AbortController(); 
 
+            // Clear the panel first before starting the generation stream
+            panel._panel.webview.postMessage({ command: 'clearResponse' });
+
             while (toolCallLimit > 0) {
-                const response = await this.lollmsAPI.sendChat(messages, null, controller.signal);
-                
-                const { content: cleanedResponse, memory } = extractAndStripMemory(stripThinkingTags(response));
+                let currentChunkBuffer = "";
+                let firstToken = false;
+
+                const response = await this.lollmsAPI.sendChat(messages, (chunk) => {
+                    if (!firstToken) {
+                        firstToken = true;
+                    }
+                    currentChunkBuffer += chunk;
+
+                    // Stream clean chunks to the Webview in real-time
+                    // We strip any thinking tags from the active stream before dispatching
+                    const cleanChunk = stripThinkingTags(currentChunkBuffer);
+                    const lastToken = cleanChunk.substring(finalResponse.length);
+
+                    if (lastToken) {
+                        finalResponse = cleanChunk;
+                        panel._panel.webview.postMessage({ command: 'appendChunk', text: lastToken });
+                    }
+                }, controller.signal);
+
+                const { content: cleanedResponse, memory = null } = extractAndStripMemory(stripThinkingTags(response));
                 if (memory) {
                     await this.memoryManager.updateMemory(memory);
                 }
@@ -240,6 +276,7 @@ You are an expert Jupyter Notebook assistant.
                 break;
             }
 
+            // Sync with history drawer and set final completed layout with copy/insert/replace controls
             panel.addHistory(instruction, finalResponse); 
 
         } catch (error: any) {

@@ -205,11 +205,14 @@ export class DiscussionManager {
     createNewDiscussion(groupId: string | null = null): Discussion {
         const id = Date.now().toString() + Math.random().toString(36).substring(2);
         const caps = this.getLastCapabilities();
-        
+
         // Force standard mode for new discussions to prevent agent mode bleeding from global state
         if (caps) {
             caps.agentMode = false;
         }
+
+        // Project-wide personality persistence lookup
+        const activePersonality = this.context.workspaceState.get<string>('lollms_project_active_personality_id', 'default_coder');
 
         return {
             id,
@@ -219,7 +222,7 @@ export class DiscussionManager {
             groupId,
             plan: null,
             capabilities: caps,
-            personalityId: 'default_coder',
+            personalityId: activePersonality,
             importedSkills:[]
         };
     }
@@ -470,8 +473,27 @@ Output ONLY the JSON.`
                 { role: 'user', content: `Generate a title for a discussion starting with: "${contentSnippet}"` }
             ], null, undefined, titlingModel);
 
-            const cleanResponse = stripThinkingTags(rawResponse).trim();
-            
+            let cleanResponse = stripThinkingTags(rawResponse).trim();
+
+            // --- TITLE RECOVERY FALLBACK ---
+            // If the model wrote the JSON inside the thought block
+            if (cleanResponse.length < 3 && rawResponse.trim().length > 10) {
+                const jsonInRaw = rawResponse.match(/\{[\s\S]*\}/);
+                if (jsonInRaw) {
+                    try {
+                        const parsed = JSON.parse(jsonInRaw[0]);
+                        if (parsed.title) return parsed.title.trim().replace(/["']/g, '');
+                    } catch (e) {}
+                }
+
+                // Text fallback: take the last clean line inside thoughts
+                const rawLines = rawResponse.split('\n').map(l => l.trim());
+                const cleanLines = rawLines.filter(l => l.length > 0 && !l.startsWith('<') && !l.startsWith('/') && !l.startsWith('</'));
+                if (cleanLines.length > 0) {
+                    cleanResponse = cleanLines[cleanLines.length - 1];
+                }
+            }
+
             const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 try {

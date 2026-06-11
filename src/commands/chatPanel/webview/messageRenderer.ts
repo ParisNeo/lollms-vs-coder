@@ -38,6 +38,7 @@ import { imageGenPlugin } from './plugins/imageGenPlugin.js';
 import { imageResultPlugin } from './plugins/imageResultPlugin.js';
 import { planStatusPlugin } from './plugins/planStatusPlugin.js';
 import { toolPlugin } from './plugins/toolPlugin.js';
+import { sparqlPlugin } from './plugins/sparqlPlugin.js';
 
 function initPlugins() {
     pluginRegistry.length = 0; 
@@ -53,6 +54,7 @@ function initPlugins() {
     registerPlugin(imageResultPlugin);
     registerPlugin(planStatusPlugin);
     registerPlugin(toolPlugin);
+    registerPlugin(sparqlPlugin);
 }
 
 initPlugins();
@@ -1116,7 +1118,7 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
 
         // Improved Regex: More permissive with line endings and prevents eating into the 
         // replacement code if it starts with leading newlines.
-        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
         const aiderMatches = [...codeText.matchAll(aiderRegex)];
         const isAider = aiderMatches.length > 0;
 
@@ -1326,8 +1328,8 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
                 pane.className = `hunk-tab-content hunk-pane-${hIdx}`;
                 pane.id = `pane-${currentMsgId}-${blockIdx}-${hIdx}`;
 
-                const sLines = m[1].replace(/\r\n/g, '\n').split('\n');
-                const rLines = m[2].replace(/\r\n/g, '\n').split('\n');
+                const sLines = (m[1] || "").replace(/\r\n/g, '\n').split('\n');
+                const rLines = (m[2] || "").replace(/\r\n/g, '\n').split('\n');
                 let pref = 0;
                 while (pref < sLines.length && pref < rLines.length && sLines[pref] === rLines[pref]) pref++;
                 let suff = 0;
@@ -1432,17 +1434,69 @@ function enhanceWithCommandButtons(container: HTMLElement) {
     content.innerHTML = newHtml;
 }
 
-export function processThinkTags(content: string): { thoughts: { tag: string, content: string }[], processedContent: string } {
+export interface ParsedThought {
+    tag: string;
+    content: string;
+    closed: boolean;
+}
+
+export function processThinkTags(content: string): { thoughts: ParsedThought[], processedContent: string } {
     // Expose to window so that artifacts inside Agent Cards can use it during dynamic rendering
     if (!(window as any).processThinkTags) {
         (window as any).processThinkTags = processThinkTags;
     }
-    const thoughts: { tag: string, content: string }[] = [];
+    const thoughts: ParsedThought[] = [];
     if (typeof content !== 'string') return { thoughts, processedContent: '' };
-    
-    const thinkRegex = /<(think|thinking|analysis)>([\s\S]*?)<\/\1>/g;
-    const processedContent = content.replace(thinkRegex, (match, tag, thoughtContent) => {
-        thoughts.push({ tag, content: thoughtContent });
+
+    let workingContent = content;
+
+    // --- HEURISTIC: DANGLING CLOSURE INFERENCE ---
+    const closeTags = ['</think>', '</thinking>', '</analysis>', '</reasoning>'];
+    for (const closeTag of closeTags) {
+        const closeIdx = workingContent.indexOf(closeTag);
+        if (closeIdx !== -1) {
+            const beforeClose = workingContent.substring(0, closeIdx);
+            const openTag = closeTag.replace('/', '');
+
+            if (!beforeClose.includes(openTag)) {
+                thoughts.push({ 
+                    tag: openTag.replace(/[<>]/g, ''), 
+                    content: beforeClose.trim(),
+                    closed: true
+                });
+                workingContent = workingContent.substring(closeIdx + closeTag.length).trim();
+                break; // Process only the first dangling closure as the leading thought
+            }
+        }
+    }
+
+    // --- UNCLOSED ACTIVE THOUGHTS DETECTOR (STREAM-AWARE) ---
+    // Look for an opening tag where no matching closing tag has arrived yet
+    const openTags = ['<think>', '<thinking>', '<analysis>', '<reasoning>'];
+    for (const openTag of openTags) {
+        const openIdx = workingContent.indexOf(openTag);
+        if (openIdx !== -1) {
+            const closeTag = openTag.replace('<', '</');
+            const closeIdx = workingContent.indexOf(closeTag, openIdx);
+
+            if (closeIdx === -1) {
+                // Thought block is currently unclosed (active streaming)
+                const thoughtText = workingContent.substring(openIdx + openTag.length);
+                thoughts.push({
+                    tag: openTag.replace(/[<>]/g, ''),
+                    content: thoughtText,
+                    closed: false
+                });
+                // Remove the unclosed thought block entirely from the main markdown display
+                workingContent = workingContent.substring(0, openIdx).trim();
+                break;
+            }
+        }
+    }
+
+    const thinkRegex = /<(think|thinking|analysis|reasoning)>([\s\S]*?)<\/\1>/g;
+    const processedContent = workingContent.replace(thinkRegex, (match, tag, thoughtContent) => {
+        thoughts.push({ tag, content: thoughtContent, closed: true });
         return '';
     });
     return { thoughts, processedContent: processedContent.trim() };
@@ -1638,12 +1692,12 @@ function renderAiderDiff(pre: HTMLElement, rawCode: string, filePath: string, me
     hunkGroup.className = 'aider-hunk-group';
 
     // IMPROVED REGEX: More permissive with line endings to ensure no hunks are missed
-    const aiderRegex = /<<<<<<< SEARCH\s*[\r\n]+([\s\S]*?)[\r\n]+=======[\r\n]+([\s\S]*?)[\r\n]+>>>>>>> REPLACE/g;
+    const aiderRegex = /<<<<<<< SEARCH\s*[\r\n]+([\s\S]*?)[\r\n]+=======(?:[\r\n]+(?!>>>>>>> REPLACE)([\s\S]*?))?[\r\n]+>>>>>>> REPLACE/g;
     const matches = [...rawCode.matchAll(aiderRegex)];
 
     matches.forEach((match, hIdx) => {
-        const searchPart = match[1];
-        const replacePart = match[2];
+        const searchPart = match[1] || "";
+        const replacePart = match[2] || "";
 
         const hunkBubble = document.createElement('div');
         hunkBubble.className = 'aider-hunk-bubble';
@@ -1887,34 +1941,45 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     if (Array.isArray(rawContent)) {
         sourceText = rawContent.filter(p => p.type === 'text').map(p => p.text).join('\n');
-
-        // --- MULTIMODAL IMAGE RENDERING ---
-        const imageParts = rawContent.filter(p => p.type === 'image_url');
-        if (imageParts.length > 0) {
-            imagesHtml = `<div class="message-images-gallery" style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;">`;
-            imageParts.forEach(p => {
-                const url = p.image_url?.url || "";
-                if (url) {
-                    imagesHtml += `
-                        <div class="message-image-container" style="position: relative; width: 200px; height: 150px; border-radius: 6px; overflow: hidden; border: 1px solid var(--vscode-widget-border); background: #000;">
-                            <img src="${url}" style="width: 100%; height: 100%; object-fit: contain; cursor: zoom-in;" onclick="if(window.openImageZoom) window.openImageZoom('${url}')">
-                        </div>`;
-                }
-            });
-            imagesHtml += `</div>`;
-        }
     } else {
         sourceText = String(rawContent || "");
     }
 
+    // 1. EXTRACT AND PACKAGE COHERENT REASONING BLOCKS (THOUGHTS)
+    const thinkResult = processThinkTags(sourceText);
+    sourceText = thinkResult.processedContent;
+
+    let thoughtsHtml = "";
+    if (thinkResult.thoughts.length > 0) {
+        thinkResult.thoughts.forEach(t => {
+            const iconHtml = t.closed 
+                ? '<span class="codicon codicon-circuit-board" style="animation: pulse-border 2s infinite;"></span>' 
+                : '<span class="spinner" style="width:10px; height:10px; border-width:2px; margin-right:6px; color: var(--thinking-color);"></span>';
+
+            thoughtsHtml += `
+                <div class="plan-scratchpad" style="margin-top:0; margin-bottom: 12px; border-left: 3px solid var(--thinking-color);">
+                    <details ${!t.closed ? 'open' : ''}>
+                        <summary class="scratchpad-header" style="color: var(--thinking-color); display: flex; align-items: center; gap: 6px;">
+                            ${iconHtml} 
+                            <span>Thought (Reasoning)${!t.closed ? '...' : ''}</span>
+                        </summary>
+                        <div class="scratchpad-content markdown-body" style="padding: 10px 15px; font-size:11px; opacity:0.9; background:rgba(0,0,0,0.05); border-radius:0 0 6px 6px;">
+                            ${DOMPurify.sanitize(marked.parse(t.content || "*AI is contemplating...*"))}
+                        </div>
+                    </details>
+                </div>`;
+        });
+    }
+
+    // 2. EXCLUDE BACKTICK CODE FENCES FROM PLUGIN PARSING
     const forbidden: {start: number, end: number}[] = [];
-    // Enforce that single backticks do NOT match across lines to prevent index drifting
     const fenceRegex = /```[\s\S]*?(?:```|$)|`[^`\n\r]+`/g;
     let fMatch;
     while ((fMatch = fenceRegex.exec(sourceText)) !== null) {
         forbidden.push({ start: fMatch.index, end: fMatch.index + fMatch[0].length });
     }
 
+    // 3. EXTRACT VALID LINE-START ACTIVE PLUGINS (WIDGETS)
     const segments: MessageSegment[] = [];
     const ctx: PluginContext = { messageId, isFinal, capabilities: state.capabilities, vscode };
 
@@ -1926,11 +1991,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const matchIndex = pMatch.index;
             const fullMatch = pMatch[0];
 
-            // 1. Code Fence Check (Skip if inside backticks)
             const isInside = forbidden.some(r => matchIndex >= r.start && matchIndex < r.end);
             if (isInside) continue;
 
-            // 2. Overlap Check (Skip if already claimed by another plugin to prevent rendering corruption)
             const isOverlapping = segments.some(s => 
                 (matchIndex >= s.start && matchIndex < s.end) ||
                 (matchIndex + fullMatch.length > s.start && matchIndex + fullMatch.length <= s.end) ||
@@ -1979,8 +2042,24 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         });
     }
 
-    // --- UNIFIED TOOL DISPATCHER (AGENT MODE SUPPORT) ---
-    // Look for JSON blocks in markdown segments and let plugins render them if they match toolName
+    // 4. CLEAN AND ESCAPE REMAINING INLINE CONVERSATIONAL TAGS
+    // Since active line-start widgets have been extracted and replaced with segments,
+    // any remaining occurrences in the markdown segments are *by definition* inline references.
+    finalSegments.forEach(seg => {
+        if (seg.type === 'markdown') {
+            const inlineTagRegex = /<(add_files_to_context|query_architecture|project_memory|lollms_tool|move_files|copy_files|delete_files|remove_files_from_context|skill)\b([^>]*?)>([\s\S]*?)<\/\1>/gi;
+            seg.content = seg.content.replace(inlineTagRegex, (match, tag, attrs, body) => {
+                return `\`<${tag}${attrs}>${body}</${tag}>\``;
+            });
+
+            const inlineSelfClosingRegex = /<(lollms_tool|generate_image|edit_image_asset|milestone|plan_status)\s+([^>]*?)\s*\/>/gi;
+            seg.content = seg.content.replace(inlineSelfClosingRegex, (match, tag, attrs) => {
+                return `\`<${tag} ${attrs} />\``;
+            });
+        }
+    });
+
+    // 5. UNIFIED TOOL DISPATCHER (AGENT MODE SUPPORT)
     finalSegments.forEach(seg => {
         if (seg.type === 'markdown') {
             const jsonRegex = /```json[\r\n]+([\s\S]+?)[\r\n]+```/g;
@@ -2002,6 +2081,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         }
     });
 
+    // 6. BUILD FINAL HTML STREAM
     let finalHtml = "";
     finalSegments.forEach(seg => {
         if (seg.type === 'plugin') {
@@ -2032,8 +2112,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     }
 
 
-    // Append images to the end of the content
-    const totalHtml = finalHtml + imagesHtml;
+    // Append thoughts, parsed HTML and images into a single unified stream
+    const totalHtml = thoughtsHtml + finalHtml + imagesHtml;
 
     contentDiv.innerHTML = DOMPurify.sanitize(totalHtml, SANITIZE_CONFIG);
     enhanceCodeBlocks(contentDiv, messageId, rawContent, isFinal);

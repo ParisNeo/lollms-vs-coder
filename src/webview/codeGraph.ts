@@ -33,6 +33,7 @@ const exampleSelect = document.getElementById('sparql-examples') as HTMLSelectEl
 const rebuildBtn = document.getElementById('rebuild') as HTMLButtonElement;
 const actionSelect = document.getElementById('action-select') as HTMLSelectElement;
 const stopBtn = document.getElementById('stop') as HTMLButtonElement;
+const toggleSidebarBtn = document.getElementById('toggle-sidebar') as HTMLButtonElement | null;
 const statusLabel = document.getElementById('status') as HTMLSpanElement;
 const loadingOverlay = document.getElementById('loading') as HTMLDivElement;
 const clearHighlightsBtn = document.getElementById('clear-highlights') as HTMLButtonElement;
@@ -146,19 +147,54 @@ window.addEventListener('message', event => {
     } else if (message.command === 'triggerExport') {
         exportVisualGraph(message.format, message.view);
     } else if (message.command === 'nlTranslationResult') {
-        if (runAiBtn) {
-            runAiBtn.disabled = false;
-        }
         if (message.error) {
+            isAiTranslating = false;
+            if (runAiBtn) {
+                runAiBtn.innerHTML = 'Ask AI';
+                runAiBtn.style.backgroundColor = '';
+                runAiBtn.style.color = '';
+            }
             statusLabel.textContent = `AI Error: ${message.error}`;
             statusLabel.style.color = 'var(--vscode-errorForeground)';
         } else if (message.query) {
             if (sparqlQueryInput) {
                 sparqlQueryInput.value = message.query;
             }
-            statusLabel.textContent = `Translated: ${message.query}`;
-            statusLabel.style.color = 'var(--vscode-charts-green)';
+
+            // 1. Run & Highlight Graph locally
             executeSparqlQuery(message.query);
+
+            // 2. Extract raw results for AI interpretation
+            const res = evaluateSparql(message.query);
+            const rawTriples = res.triples || [];
+
+            // 3. Keep the button in "Thinking" mode and trigger interpreter
+            statusLabel.innerHTML = '<span class="graph-mini-spinner" style="border-top-color: var(--vscode-charts-blue) !important; border-color: rgba(0, 122, 204, 0.2) !important;"></span> Interpreting graph results...';
+            statusLabel.style.color = 'var(--vscode-charts-blue)';
+
+            vscode.postMessage({
+                command: 'interpretGraphQuery',
+                question: message.originalQuestion,
+                query: message.query,
+                results: rawTriples.length > 0 ? rawTriples : Array.from(res.nodes)
+            });
+        }
+    } else if (message.command === 'graphInterpretationResult') {
+        isAiTranslating = false;
+        if (runAiBtn) {
+            runAiBtn.innerHTML = 'Ask AI';
+            runAiBtn.style.backgroundColor = '';
+            runAiBtn.style.color = '';
+        }
+
+        if (message.error) {
+            statusLabel.textContent = `Interpretation failed: ${message.error}`;
+            statusLabel.style.color = 'var(--vscode-errorForeground)';
+        } else if (message.answer) {
+            // Render beautiful Markdown directly inside the Status Box
+            statusLabel.style.color = 'inherit';
+            const cleanHtml = (window as any).DOMPurify.sanitize((window as any).marked.parse(message.answer));
+            statusLabel.innerHTML = cleanHtml;
         }
     }
 });
@@ -171,12 +207,32 @@ if (runSparqlBtn) {
     });
 }
 
+let isAiTranslating = false;
+
 if (runAiBtn) {
     runAiBtn.addEventListener('click', () => {
+        if (isAiTranslating) {
+            // Cancel pending request
+            isAiTranslating = false;
+            runAiBtn.innerHTML = 'Ask AI';
+            runAiBtn.style.backgroundColor = '';
+            runAiBtn.style.color = '';
+            statusLabel.textContent = "Query translation cancelled by user.";
+            statusLabel.style.color = 'var(--vscode-charts-orange)';
+            vscode.postMessage({ command: 'cancelTranslation' });
+            return;
+        }
+
         const query = aiQueryInput ? aiQueryInput.value.trim() : "";
         if (!query) return;
 
-        if (runAiBtn) runAiBtn.disabled = true;
+        isAiTranslating = true;
+
+        // Visual feedback - turn button into a red 'Stop' button with a spinner
+        runAiBtn.innerHTML = '<span class="graph-mini-spinner"></span> Stop';
+        runAiBtn.style.backgroundColor = 'var(--vscode-charts-red)';
+        runAiBtn.style.color = 'white';
+
         statusLabel.textContent = "Asking AI to translate and execute...";
         statusLabel.style.color = 'var(--vscode-charts-blue)';
         vscode.postMessage({ command: 'translateNLQuery', text: query });
@@ -265,25 +321,36 @@ if (detailLevelSelect) {
     });
 }
 
+interface SparqlResult {
+    type: 'select' | 'construct';
+    nodes: Set<string>;
+    edges: Set<string>; // set of constructed edge IDs
+    triples?: { s: string, p: string, o: string }[];
+}
+
 /**
- * Helper to collect all matched node IDs based on the backtracking solver over currentGraphData.
+ * Stateful evaluation engine supporting both SELECT table mapping and CONSTRUCT sub-graphs
  */
-function getMatchedNodeIds(query: string): Set<string> {
-    const matchedNodeIds = new Set<string>();
-    if (!currentGraphData) return matchedNodeIds;
+function evaluateSparql(query: string): SparqlResult {
+    const res: SparqlResult = { type: 'select', nodes: new Set<string>(), edges: new Set<string>(), triples: [] };
+    if (!currentGraphData) return res;
 
     const cleanQuery = query.replace(/#.*/g, '').trim();
     const selectMatch = cleanQuery.match(/SELECT\s+([\?\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
+    const constructMatch = cleanQuery.match(/CONSTRUCT\s*\{([\s\S]+?)\}\s*WHERE\s*\{([\s\S]+?)\}/i);
 
-    if (!selectMatch) {
-        return matchedNodeIds;
+    if (!selectMatch && !constructMatch) {
+        return res;
     }
 
-    const selectVars = selectMatch[1].trim().split(/\s+/).map(v => v.trim());
-    const body = selectMatch[2].trim();
+    res.type = constructMatch ? 'construct' : 'select';
 
+    const whereClause = selectMatch ? selectMatch[2].trim() : constructMatch![2].trim();
+    const constructTemplate = constructMatch ? constructMatch[1].trim() : "";
+
+    // Parse WHERE Triple Patterns
     const triples: { s: string, p: string, o: string }[] = [];
-    const lines = body.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/);
+    const lines = whereClause.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/);
     for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
@@ -297,7 +364,7 @@ function getMatchedNodeIds(query: string): Set<string> {
         }
     }
 
-    if (triples.length === 0) return matchedNodeIds;
+    if (triples.length === 0) return res;
 
     const variables = new Set<string>();
     for (const t of triples) {
@@ -364,16 +431,61 @@ function getMatchedNodeIds(query: string): Set<string> {
 
     solve(0, {});
 
-    results.forEach(row => {
-        selectVars.forEach(v => {
-            const val = row[v];
-            if (val && !val.startsWith('s:')) {
-                matchedNodeIds.add(val);
-            }
+    if (res.type === 'select') {
+        const selectVars = selectMatch![1].trim().split(/\s+/).map(v => v.trim());
+        results.forEach(row => {
+            selectVars.forEach(v => {
+                const val = row[v];
+                if (val && !val.startsWith('s:')) {
+                    res.nodes.add(val);
+                }
+            });
         });
-    });
+    } else {
+        // CONSTRUCT MODE: Parse construct template triples
+        const templateTriples: { s: string, p: string, o: string }[] = [];
+        const templateLines = constructTemplate.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/);
+        for (const line of templateLines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            const parts = trimmed.split(/\s+/);
+            if (parts.length >= 3) {
+                templateTriples.push({
+                    s: parts[0],
+                    p: parts[1],
+                    o: parts.slice(2).join(' ')
+                });
+            }
+        }
 
-    return matchedNodeIds;
+        results.forEach(row => {
+            templateTriples.forEach(t => {
+                const sVal = t.s.startsWith('?') ? row[t.s] : t.s;
+                const pVal = t.p.startsWith('?') ? row[t.p] : t.p;
+                const oVal = t.o.startsWith('?') ? row[t.o] : t.o;
+
+                if (sVal && pVal && oVal) {
+                    const cleanS = sVal.replace(/^s:/i, '');
+                    const cleanP = pVal.replace(/^s:/i, '');
+                    const cleanO = oVal.replace(/^s:/i, '');
+
+                    res.nodes.add(cleanS);
+                    res.nodes.add(cleanO);
+
+                    // Match concrete edges in current graph matching this constructed relation
+                    currentGraphData.edges.forEach((edge: any) => {
+                        if (edge.source === cleanS && edge.target === cleanO && edge.label === cleanP) {
+                            res.edges.add(edge.id);
+                        }
+                    });
+
+                    res.triples!.push({ s: cleanS, p: cleanP, o: cleanO });
+                }
+            });
+        });
+    }
+
+    return res;
 }
 
 /**
@@ -382,9 +494,9 @@ function getMatchedNodeIds(query: string): Set<string> {
 function executeSparqlQuery(query: string) {
     if (!cyInstance || !currentGraphData) return;
 
-    const matchedNodeIds = getMatchedNodeIds(query);
+    const res = evaluateSparql(query);
 
-    if (matchedNodeIds.size === 0) {
+    if (res.nodes.size === 0) {
         statusLabel.textContent = "SPARQL-lite: No matching subgraphs found.";
         statusLabel.style.color = 'var(--vscode-charts-orange)';
         return;
@@ -392,16 +504,34 @@ function executeSparqlQuery(query: string) {
 
     if (cyInstance) {
         cyInstance.elements().removeClass('dimmed matched path-node path-edge');
+        cyInstance.elements().addClass('dimmed');
 
-        const matchedSelector = Array.from(matchedNodeIds).map(id => `#${id}`).join(', ');
+        const matchedSelector = Array.from(res.nodes).map(id => `#${id}`).join(', ');
         if (matchedSelector) {
             const matchedNodes = cyInstance.$(matchedSelector);
-            const matchedEdges = matchedNodes.edgesWith(matchedNodes);
+            matchedNodes.removeClass('dimmed');
 
-            cyInstance.elements().addClass('dimmed');
-            matchedNodes.removeClass('dimmed').addClass('matched');
-            matchedEdges.removeClass('dimmed').addClass('matched');
-            matchedNodes.ancestors().removeClass('dimmed');
+            if (res.type === 'select') {
+                const matchedEdges = matchedNodes.edgesWith(matchedNodes);
+                matchedNodes.addClass('matched');
+                matchedEdges.removeClass('dimmed').addClass('matched');
+                matchedNodes.ancestors().removeClass('dimmed');
+
+                statusLabel.textContent = `SPARQL SELECT: Highlighted ${res.nodes.size} nodes`;
+            } else {
+                // CONSTRUCT MODE
+                const edgeSelector = Array.from(res.edges).map(id => `edge[id="${id}"], #${id}`).join(', ');
+                const matchedEdges = cyInstance.$(edgeSelector);
+
+                // Highlight constructed graph using the distinct neon-blue path styles
+                matchedNodes.addClass('path-node');
+                matchedEdges.removeClass('dimmed').addClass('path-edge');
+                matchedNodes.ancestors().removeClass('dimmed');
+
+                const sampleTriples = res.triples!.slice(0, 4).map(t => `${t.s} -[${t.p}]-> ${t.o}`).join(', ');
+                const suffix = res.triples!.length > 4 ? '...' : '';
+                statusLabel.textContent = `SPARQL CONSTRUCT: Built ${res.triples!.length} triples [${sampleTriples}${suffix}]. Use "Isolate SPARQL Subgraph" to view.`;
+            }
 
             if (clearHighlightsBtn) {
                 clearHighlightsBtn.style.display = 'inline-block';
@@ -409,7 +539,6 @@ function executeSparqlQuery(query: string) {
         }
     }
 
-    statusLabel.textContent = `SPARQL-lite: Highlighted ${matchedNodeIds.size} nodes`;
     statusLabel.style.color = 'var(--vscode-charts-green)';
 }
 
@@ -419,17 +548,24 @@ function executeSparqlQuery(query: string) {
 function isolateSparqlSubgraph(query: string) {
     if (!cyInstance || !currentGraphData) return;
 
-    const matchedNodeIds = getMatchedNodeIds(query);
+    const res = evaluateSparql(query);
 
-    if (matchedNodeIds.size === 0) {
+    if (res.nodes.size === 0) {
         statusLabel.textContent = "SPARQL-lite: No matching subgraphs found to isolate.";
         statusLabel.style.color = 'var(--vscode-charts-orange)';
         return;
     }
 
-    const matchedSelector = Array.from(matchedNodeIds).map(id => `#${id}`).join(', ');
+    const matchedSelector = Array.from(res.nodes).map(id => `#${id}`).join(', ');
     const matchedNodes = cyInstance.$(matchedSelector);
-    const matchedEdges = matchedNodes.edgesWith(matchedNodes);
+
+    let matchedEdges;
+    if (res.type === 'select') {
+        matchedEdges = matchedNodes.edgesWith(matchedNodes);
+    } else {
+        const edgeSelector = Array.from(res.edges).map(id => `edge[id="${id}"], #${id}`).join(', ');
+        matchedEdges = cyInstance.$(edgeSelector);
+    }
 
     // Isolate matched nodes, their ancestors/parent groups, and the connecting edges
     const keptElements = matchedNodes.union(matchedNodes.ancestors()).union(matchedEdges);
@@ -463,7 +599,8 @@ function isolateSparqlSubgraph(query: string) {
 
     cyInstance.layout(layoutConfig).run();
 
-    statusLabel.textContent = `SPARQL-lite: Isolated sub-graph with ${matchedNodeIds.size} nodes. Click 'Refresh' to restore full view.`;
+    const resultLabel = res.type === 'construct' ? `Constructed ${res.triples!.length} triples` : `Isolated ${res.nodes.size} nodes`;
+    statusLabel.textContent = `SPARQL-lite: ${resultLabel}. Click 'Refresh' to restore full view.`;
     statusLabel.style.color = 'var(--vscode-charts-green)';
     if (clearHighlightsBtn) {
         clearHighlightsBtn.style.display = 'inline-block';
@@ -512,6 +649,31 @@ async function handleFocusNode(label: string, type: string) {
 if (rebuildBtn) {
     rebuildBtn.addEventListener('click', () => {
         vscode.postMessage({ command: 'rebuild' });
+    });
+}
+
+if (toggleSidebarBtn) {
+    toggleSidebarBtn.addEventListener('click', () => {
+        const sidebar = document.getElementById('sidebar-right');
+        if (sidebar) {
+            const isCollapsed = sidebar.classList.toggle('collapsed');
+
+            // Toggle icon visual states
+            const icon = toggleSidebarBtn.querySelector('.codicon');
+            if (icon) {
+                icon.className = isCollapsed 
+                    ? 'codicon codicon-layout-sidebar-right-off' 
+                    : 'codicon codicon-layout-sidebar-right';
+            }
+
+            // Force Cytoscape viewport realignment
+            if (cyInstance) {
+                setTimeout(() => {
+                    cyInstance.resize();
+                    cyInstance.fit();
+                }, 250); // Wait for CSS transition to settle
+            }
+        }
     });
 }
 
@@ -971,10 +1133,12 @@ function renderCytoscapeView(viewType: string) {
         });
 
     } else {
-        // Fallback for default views (Call/Import/Signatures Graphs)
+        // Fallback for default views (Call/Import/Signatures/Complete Graphs)
         currentGraphData.edges.forEach((e: any) => {
             let include = false;
-            if (viewType === 'call_graph') {
+            if (viewType === 'full_ontology_graph') {
+                include = true; // Include all edge relationships for the complete map
+            } else if (viewType === 'call_graph') {
                 if (e.label === 'calls' && (detailLevel === 'all' || detailLevel === 'calls_only')) include = true;
                 else if (e.label === 'inputParam' && (detailLevel === 'all' || detailLevel === 'params_only')) include = true;
                 else if (e.label === 'outputParam' && (detailLevel === 'all' || detailLevel === 'params_only')) include = true;
@@ -997,19 +1161,22 @@ function renderCytoscapeView(viewType: string) {
         });
 
         currentGraphData.nodes.forEach((n: any) => {
-            // For import graph, strictly filter out internal symbols (only allow files and libraries)
-            if (viewType === 'import_graph' && n.type !== 'file' && n.type !== 'library') {
-                return;
-            }
+            // Check filters unless we are rendering the complete ontological map
+            if (viewType !== 'full_ontology_graph') {
+                // For import graph, strictly filter out internal symbols (only allow files and libraries)
+                if (viewType === 'import_graph' && n.type !== 'file' && n.type !== 'library') {
+                    return;
+                }
 
-            // For call graph, filter out standalone file and library nodes to prevent orphans/clutter (focusing purely on call flows)
-            if (viewType === 'call_graph' && (n.type === 'file' || n.type === 'library')) {
-                return;
-            }
+                // For call graph, filter out standalone file and library nodes to prevent orphans/clutter (focusing purely on call flows)
+                if (viewType === 'call_graph' && (n.type === 'file' || n.type === 'library')) {
+                    return;
+                }
 
-            // For signatures view, filter out external libraries
-            if (viewType === 'function_signatures' && n.type === 'library') {
-                return;
+                // For signatures view, filter out external libraries
+                if (viewType === 'function_signatures' && n.type === 'library') {
+                    return;
+                }
             }
 
             let nodeGroup: string | undefined = undefined;
@@ -1236,6 +1403,15 @@ function renderCytoscapeView(viewType: string) {
                 'text-background-color': '#1e1e1e',
                 'text-background-padding': '2px',
                 'text-background-shape': 'round-rectangle'
+            }
+        },
+        {
+            selector: 'edge[label="contains"]',
+            style: {
+                'line-style': 'dashed',
+                'line-color': '#7f8c8d',
+                'target-arrow-color': '#7f8c8d',
+                'opacity': 0.5
             }
         },
         {

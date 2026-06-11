@@ -446,7 +446,41 @@ export class GitIntegration {
   }
 
   private parseCommitMessage(rawResponse: string): string {
-      const stripped = stripThinkingTags(rawResponse).trim();
+      let stripped = stripThinkingTags(rawResponse).trim();
+
+      // --- POCKET PROTECTION: COG RECOVERY FALLBACK ---
+      // If stripping the thoughts leaves nothing, it means the eager thinking model
+      // wrote the actual commit message INSIDE the <think> tags!
+      if (stripped.length < 3 && rawResponse.trim().length > 10) {
+          const rawLines = rawResponse.split('\n').map(l => l.trim());
+          const conventionalRegex = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([\w-]+\))?:/i;
+
+          const matchInThoughts = rawLines.find(line => conventionalRegex.test(line));
+          if (matchInThoughts) {
+              stripped = matchInThoughts;
+          } else {
+              // Fallback: take the last non-tag, non-empty line from the thought block
+              const cleanLines = rawLines.filter(l => l.length > 0 && !l.startsWith('<') && !l.startsWith('/') && !l.startsWith('</'));
+              if (cleanLines.length > 0) {
+                  stripped = cleanLines[cleanLines.length - 1];
+              }
+          }
+      }
+
+      // 1. Try JSON parsing in case the model wraps the output in JSON due to system history
+      try {
+          const parsed = JSON.parse(stripped);
+          if (parsed && typeof parsed === 'object') {
+              const message = parsed.message || parsed.title || parsed.response || 
+                              (parsed.params?.response) || (parsed.params?.message);
+              if (message && typeof message === 'string') {
+                  return message.trim();
+              }
+          }
+      } catch (e) {
+          // Not JSON, continue with standard parsing
+      }
+
       const codeBlockMatch = stripped.match(/```(?:[^\n]*)\s+([\s\S]+?)\s*```/);
       if (codeBlockMatch && codeBlockMatch[1]) {
           return codeBlockMatch[1].trim();

@@ -303,11 +303,11 @@ function calculateLineSimilarity(line1: string, line2: string): number {
 export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string } {
     const isCrlf = content.includes('\r\n');
     const normalizedContent = content.replace(/\r\n/g, '\n');
-    
+
     // CRITICAL: We DO NOT trimEnd() here because trailing newlines 
     // are often used as anchors in AIDER blocks.
-    let normalizedSearch = searchBlock.replace(/\r\n/g, '\n');
-    let normalizedReplace = replaceBlock.replace(/\r\n/g, '\n');
+    let normalizedSearch = (searchBlock || "").replace(/\r\n/g, '\n');
+    let normalizedReplace = (replaceBlock || "").replace(/\r\n/g, '\n');
 
     // 1. Handle Empty Search (Prepend/Append logic)
     if (normalizedSearch.trim() === "") {
@@ -610,11 +610,16 @@ export async function getProcessedSystemPrompt(
     context?: { tree: string, files: string, skills: string, memory?: string, projectName?: string },
     workingMemory?: string
 ): Promise<string> {
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+
+    if (promptType === 'commit') {
+        const finalPersona = config.get<string>('commitMessagePersona') || "You are an expert AI assistant that writes conventional git commit messages.";
+        return PromptTemplates.build('commit', finalPersona, "", [], undefined, false, undefined);
+    }
+
     const memory = memoryManager ? await memoryManager.getMemory() : "";
     let finalPersona = customPersonaContent || "";
-    
-    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-    
+
     // Fallback if no custom persona
     if (!finalPersona) {
         const key = promptType === 'chat' ? 'chatPersona' :
@@ -815,6 +820,8 @@ export function estimateImageTokens(modelName: string, width?: number, height?: 
     }
 
 export function stripThinkingTags(responseText: string): string {
+    if (typeof responseText !== 'string') return '';
+
     // Fence-aware thinking tag stripper:
     // Only strip tags if they are NOT inside a backtick code fence.
     const fenceRegex = /(`{1,3})[\s\S]*?\1/g;
@@ -824,8 +831,29 @@ export function stripThinkingTags(responseText: string): string {
         matches.push({ start: m.index, end: m.index + m[0].length });
     }
 
+    let working = responseText;
+
+    // --- HEURISTIC: DANGLING CLOSURE STRIPPER ---
+    // If there is a dangling closing tag with no preceding opening tag,
+    // we strip everything from the start up to the closing tag.
+    const closeTags = ['</think>', '</thinking>', '</analysis>', '</reasoning>'];
+    for (const closeTag of closeTags) {
+        const closeIdx = working.indexOf(closeTag);
+        if (closeIdx !== -1) {
+            const isProtected = matches.some(range => closeIdx >= range.start && closeIdx < range.end);
+            if (!isProtected) {
+                const beforeClose = working.substring(0, closeIdx);
+                const openTag = closeTag.replace('/', '');
+                if (!beforeClose.includes(openTag)) {
+                    working = working.substring(closeIdx + closeTag.length);
+                    break;
+                }
+            }
+        }
+    }
+
     const thinkRegex = /<(think|thinking|analysis|reasoning)>([\s\S]*?)(?:<\/\1>|$)/gi;
-    return responseText.replace(thinkRegex, (match, tag, inner, offset) => {
+    return working.replace(thinkRegex, (match, tag, inner, offset) => {
         // If the match is inside a code block, preserve it as literal text
         const isProtected = matches.some(range => offset >= range.start && offset < range.end);
         return isProtected ? match : "";

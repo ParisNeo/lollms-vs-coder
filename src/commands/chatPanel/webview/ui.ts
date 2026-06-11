@@ -2912,7 +2912,7 @@ export function openRawCodeModal(messageId: string, blockIndex: number, filePath
     display.dataset.blockIndex = String(blockIndex);
 
     // Extract all hunks
-    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
     const matches = [...rawCode.matchAll(aiderRegex)];
 
     tabBar.innerHTML = '';
@@ -3092,12 +3092,12 @@ function renderSplitDiff(oldText: string, patch: string) {
 
     // 1. Calculate the final state as intended by the patch
     let newText = oldText;
-    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
     const matches = [...patch.matchAll(aiderRegex)];
 
     if (matches.length > 0) {
         for (const match of matches) {
-            const res = applySearchReplace(newText, match[1], match[2]);
+            const res = applySearchReplace(newText, match[1] || "", match[2] || "");
             if (res.success) newText = res.result;
         }
     } else {

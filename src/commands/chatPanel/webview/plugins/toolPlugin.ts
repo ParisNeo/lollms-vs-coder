@@ -4,7 +4,7 @@ import DOMPurify from 'dompurify';
 export const toolPlugin: TagPlugin = {
     id: 'lollms_tool',
     // Matches <lollms_tool name="tool_name" params='{"key": "val"}' />
-    tagPattern: /<lollms_tool\s+([^>]*?)\s*\/>/gi,
+    tagPattern: /^[ \t]*<lollms_tool\s+([^>]*?)\s*\/>/gim,
 
     render: (match, context) => {
         const attrStr = match[1];
@@ -24,9 +24,34 @@ export const toolPlugin: TagPlugin = {
         if (!toolName) return null;
 
         let params: any = {};
+        let paramsStr = attrs.params;
+
+        // Failsafe JSON extractor using brace counting if attribute parser got truncated by single quotes
+        if (!paramsStr && attrStr.includes('params=')) {
+            const startIdx = attrStr.indexOf('params=');
+            const firstBrace = attrStr.indexOf('{', startIdx);
+            if (firstBrace !== -1) {
+                let braceCount = 0;
+                let endIdx = -1;
+                for (let i = firstBrace; i < attrStr.length; i++) {
+                    if (attrStr[i] === '{') braceCount++;
+                    else if (attrStr[i] === '}') {
+                        braceCount--;
+                        if (braceCount === 0) {
+                            endIdx = i;
+                            break;
+                        }
+                    }
+                }
+                if (endIdx !== -1) {
+                    paramsStr = attrStr.substring(firstBrace, endIdx + 1);
+                }
+            }
+        }
+
         try {
             // Unescape common XML entities before parsing JSON
-            const cleanJson = attrs.params ? attrs.params.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>') : '{}';
+            const cleanJson = paramsStr ? paramsStr.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>') : '{}';
             params = JSON.parse(cleanJson);
         } catch (e) {
             console.error("Failed to parse tool params", e);
@@ -34,7 +59,7 @@ export const toolPlugin: TagPlugin = {
         }
 
         const blockId = `tool-req-${context.messageId}-${Math.random().toString(36).substring(7)}`;
-        
+
         // Structure the parameters into a human-readable list
         // --- DYNAMIC UI LOGIC ---
         let icon = "wrench";
@@ -50,13 +75,21 @@ export const toolPlugin: TagPlugin = {
             icon = "file-code"; color = "var(--vscode-charts-green)"; groupLabel = "FILE SYSTEM";
         }
 
-        const paramsHtml = Object.entries(params || {}).map(([k, v]) => `
+        const paramsHtml = Object.entries(params || {}).map(([k, v]) => {
+            const isLongText = typeof v === 'string' && (v.length > 60 || v.includes('\n') || ['target', 'query', 'command', 'instructions', 'code', 'script'].includes(k));
+            const inputElement = isLongText 
+                ? `<textarea class="tool-param-input" data-key="${k}" rows="5"
+                       style="width: 100%; background:rgba(0,0,0,0.1); border: 1px solid var(--vscode-widget-border); padding:6px 10px; border-radius:4px; font-family:var(--vscode-editor-font-family); font-size:12px; color: var(--vscode-foreground); outline: none; resize: vertical;">${v}</textarea>`
+                : `<input type="text" class="tool-param-input" data-key="${k}" value="${typeof v === 'string' ? v : JSON.stringify(v)}" 
+                       style="width: 100%; background:rgba(0,0,0,0.1); border: 1px solid var(--vscode-widget-border); padding:6px 10px; border-radius:4px; font-family:var(--vscode-editor-font-family); font-size:12px; color: var(--vscode-foreground); outline: none;">`;
+
+            return `
             <div style="margin-bottom:4px;">
                 <span style="font-size:9px; font-weight:900; opacity:0.6; text-transform:uppercase;">${k}</span>
-                <input type="text" class="tool-param-input" data-key="${k}" value="${typeof v === 'string' ? v : JSON.stringify(v)}" 
-                       style="width: 100%; background:rgba(0,0,0,0.1); border: 1px solid var(--vscode-widget-border); padding:6px 10px; border-radius:4px; font-family:var(--vscode-editor-font-family); font-size:12px; color: var(--vscode-foreground); outline: none;">
+                ${inputElement}
             </div>
-        `).join('');
+            `;
+        }).join('');
 
         return `
         <div class="generation-block" style="border: 1px solid ${color}; border-left: 5px solid ${color};">

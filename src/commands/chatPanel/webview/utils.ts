@@ -106,8 +106,8 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     const normalizedContent = content.replace(/\r\n/g, '\n');
     const contentLines = normalizedContent.split('\n');
 
-    let normalizedSearch = searchBlock.replace(/\r\n/g, '\n');
-    let normalizedReplace = replaceBlock.replace(/\r\n/g, '\n');
+    let normalizedSearch = (searchBlock || "").replace(/\r\n/g, '\n');
+    let normalizedReplace = (replaceBlock || "").replace(/\r\n/g, '\n');
     const replaceLines = normalizedReplace.split('\n');
 
     if (normalizedSearch.trim() === "") {

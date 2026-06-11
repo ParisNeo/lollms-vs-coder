@@ -2,7 +2,7 @@ import { TagPlugin } from '../pluginSystem';
 
 export const projectMemoryPlugin: TagPlugin = {
     id: 'project_memory',
-    tagPattern: /<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gi,
+    tagPattern: /^[ \t]*<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gim,
     render: (match, context) => {
         const attrStr = match[1];
         const content = match[2].trim();

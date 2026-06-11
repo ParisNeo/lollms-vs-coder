@@ -225,13 +225,13 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             } catch {
                 const parentDir = vscode.Uri.joinPath(fileUri, '..');
                 await vscode.workspace.fs.createDirectory(parentDir);
-                
+
                 const edit = new vscode.WorkspaceEdit();
                 edit.createFile(fileUri, { ignoreIfExists: true });
                 edit.insert(fileUri, new vscode.Position(0, 0), content);
-                
+
                 await vscode.workspace.applyEdit(edit);
-                
+
                 try {
                     await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [filePath]);
                 } catch (e) {
@@ -243,6 +243,28 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     await vscode.window.showTextDocument(doc);
                 }
                 return { success: true, alreadyApplied: false };
+            }
+
+            // --- SOVEREIGN PROTECTION SHIELD: AUTOMATED WRITE INTERRUPT ---
+            if (fileExists && options?.autoSave) {
+                const sizeRatio = content.length / (originalContent.length || 1);
+                const isSubstantialShrink = sizeRatio < 0.4 && originalContent.length > 500;
+
+                if (isSubstantialShrink) {
+                    const warningMsg = `An automated "Apply All" or "Auto Apply" operation is attempting to apply modifications that reduce this file to ${Math.round(sizeRatio * 100)}% of its original size (losing ${originalContent.length - content.length} characters). This might destroy critical code!`;
+
+                    const choices = ["Apply Changes Anyway", "Halt & Protect File"];
+                    const result = await vscode.window.showWarningMessage(
+                        `⚠️ SOVEREIGN PROTECTION SHIELD: Code Loss Prevented in ${relativePath}`,
+                        { modal: true },
+                        ...choices
+                    );
+
+                    if (result !== "Apply Changes Anyway") {
+                        Logger.warn(`Sovereign Shield: Interrupted automated file write for ${relativePath} to prevent potential code destruction.`);
+                        return { success: false, error: "Blocked by Sovereign Shield: Substantial code shrink detected." };
+                    }
+                }
             }
 
             // --- PLACEHOLDER & SIZE SAFETY CHECK ---
@@ -688,7 +710,7 @@ ${originalFileContent}
         // Improved Regex: Allows for optional spaces before markers and handles \r?\n more gracefully
         // Also supports blocks that might have been accidentally double-wrapped
         const normalizedContent = content.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
-        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
         let matches = [...normalizedContent.matchAll(aiderRegex)];
 
         if (matches.length === 0) {
@@ -737,8 +759,8 @@ ${originalFileContent}
             for (let i = 0; i < matches.length; i++) {
                 const match = matches[i];
                 // SWAP logic for Undo
-                const searchCode = isUndo ? match[2] : match[1];
-                const replaceCode = isUndo ? match[1] : match[2];
+                const searchCode = (isUndo ? match[2] : match[1]) || "";
+                const replaceCode = (isUndo ? match[1] : match[2]) || "";
 
                 // Capture the location of the FIRST match for scrolling
                 if (i === 0 && !options?.silent) {

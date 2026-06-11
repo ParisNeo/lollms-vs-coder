@@ -60,6 +60,14 @@ export class CodeGraphManager {
     private contextSetter?: ContextSetter;
     private abortController?: AbortController;
 
+    // Preserved index state for progressive and incremental background builds
+    private nextNodeIdNum: number = 0;
+    private nextEdgeIdNum: number = 0;
+    private fileNodeMap = new Map<string, string>();
+    private classNodeMap = new Map<string, string>();
+    private libraryNodeMap = new Map<string, string>();
+    private fileContents = new Map<string, { text: string, linesCount: number }>();
+
     constructor(workspaceRoot?: vscode.Uri) {
         if (workspaceRoot) {
             this.workspaceRoot = workspaceRoot;
@@ -147,13 +155,13 @@ export class CodeGraphManager {
             const nodes: GraphNode[] = [];
             const edges: GraphEdge[] = [];
 
-            const fileNodeMap = new Map<string, string>();
-            const classNodeMap = new Map<string, string>();
+            this.fileNodeMap.clear();
+            this.classNodeMap.clear();
+            this.libraryNodeMap.clear();
+            this.fileContents.clear();
 
-            let nodeId = 0;
-            let edgeId = 0;
-
-            const fileContents = new Map<string, { text: string, linesCount: number }>();
+            this.nextNodeIdNum = 0;
+            this.nextEdgeIdNum = 0;
 
             // --- PASS 1: Batched Asynchronous Reading & Pre-flight Size Checks ---
             const BATCH_SIZE = 25;
@@ -186,9 +194,9 @@ export class CodeGraphManager {
                         const text = Buffer.from(fileBytes).toString('utf8');
                         const linesCount = text.split('\n').length;
 
-                        fileContents.set(normalizedPath, { text, linesCount });
+                        this.fileContents.set(normalizedPath, { text, linesCount });
 
-                        const fileNodeId = `file_${nodeId++}`;
+                        const fileNodeId = `file_${this.nextNodeIdNum++}`;
                         nodes.push({
                             id: fileNodeId,
                             label: path.basename(relativePath),
@@ -198,7 +206,7 @@ export class CodeGraphManager {
                             linesCount: linesCount
                         });
 
-                        fileNodeMap.set(normalizedPath, fileNodeId);
+                        this.fileNodeMap.set(normalizedPath, fileNodeId);
                     } catch (readError) {
                         console.warn(`Error reading file ${file.fsPath}:`, readError);
                     }
@@ -209,11 +217,9 @@ export class CodeGraphManager {
                 onProgress({ percentage: 40, status: 'Pass 1 complete. Extracting file-level nodes...' });
             }
 
-            const libraryNodeMap = new Map<string, string>();
-
             // --- PASS 2: Parse Content ---
             let filesParsed = 0;
-            for (const [normalizedPath, data] of fileContents.entries()) {
+            for (const [normalizedPath, data] of this.fileContents.entries()) {
                 if (signal.aborted) return;
 
                 filesParsed++;
@@ -223,11 +229,11 @@ export class CodeGraphManager {
                 }
 
                 if (onProgress && filesParsed % 10 === 0) {
-                    const pct = 40 + Math.round((filesParsed / fileContents.size) * 30); // 40% to 70%
+                    const pct = 40 + Math.round((filesParsed / this.fileContents.size) * 30); // 40% to 70%
                     onProgress({ percentage: pct, status: `Pass 2: Extracting classes/functions from ${path.basename(normalizedPath)}...` });
                 }
 
-                const fileNodeId = fileNodeMap.get(normalizedPath);
+                const fileNodeId = this.fileNodeMap.get(normalizedPath);
                 if (!fileNodeId) continue;
 
                 // Track nodes and edges generated ONLY from this file to populate cache
@@ -257,7 +263,7 @@ export class CodeGraphManager {
                             const args = fnMatch ? fnMatch[2] : pyMatch![2];
                             const ret = fnMatch ? (fnMatch[3] || 'any') : (pyMatch![3] || 'None');
 
-                            const fnNodeId = `fn_${nodeId++}`;
+                            const fnNodeId = `fn_${this.nextNodeIdNum++}`;
                             nodes.push({
                                 id: fnNodeId,
                                 label: name,
@@ -268,13 +274,13 @@ export class CodeGraphManager {
                                 params: args.trim(),
                                 returnType: ret.trim()
                             });
-                            edges.push({ id: `edge_${edgeId++}`, source: fileNodeId, target: fnNodeId, label: 'contains' });
+                            edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: fnNodeId, label: 'contains' });
                         }
 
                         const classMatch = line.match(/class\s+([a-zA-Z0-9_]+)/);
                         if (classMatch) {
                             const className = classMatch[1];
-                            const classNodeId = `class_${nodeId++}`;
+                            const classNodeId = `class_${this.nextNodeIdNum++}`;
 
                             currentClass = {
                                 id: classNodeId,
@@ -288,8 +294,8 @@ export class CodeGraphManager {
                             currentClassIndent = indent;
 
                             nodes.push(currentClass);
-                            classNodeMap.set(className, classNodeId);
-                            edges.push({ id: `edge_${edgeId++}`, source: fileNodeId, target: classNodeId, label: 'contains' });
+                            this.classNodeMap.set(className, classNodeId);
+                            edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: classNodeId, label: 'contains' });
                             return;
                         }
 
@@ -313,7 +319,7 @@ export class CodeGraphManager {
                                     methodMatch = line.match(/^\s+def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?\s*:/);
                                     if (methodMatch) {
                                         const methodName = methodMatch[1];
-                                        const methodNodeId = `method_${nodeId++}`;
+                                        const methodNodeId = `method_${this.nextNodeIdNum++}`;
                                         nodes.push({
                                             id: methodNodeId,
                                             label: methodName,
@@ -324,14 +330,14 @@ export class CodeGraphManager {
                                             params: methodMatch[2].trim(),
                                             returnType: methodMatch[3]?.trim() || 'None'
                                         });
-                                        edges.push({ id: `edge_${edgeId++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
+                                        edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
                                     }
                                 } else {
                                     // Capture TS/JS method signature
                                     methodMatch = line.match(/(?:public|private|protected|static|async|\s)*\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^\{]+))?/);
                                     if (methodMatch && !['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
                                         const methodName = methodMatch[1];
-                                        const methodNodeId = `method_${nodeId++}`;
+                                        const methodNodeId = `method_${this.nextNodeIdNum++}`;
                                         nodes.push({
                                             id: methodNodeId,
                                             label: methodName,
@@ -342,7 +348,7 @@ export class CodeGraphManager {
                                             params: methodMatch[2].trim(),
                                             returnType: methodMatch[3]?.trim() || 'any'
                                         });
-                                        edges.push({ id: `edge_${edgeId++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
+                                        edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
                                     }
                                 }
 
@@ -362,31 +368,31 @@ export class CodeGraphManager {
 
                     const rawImports = this.extractImports(cleanText, ext);
                     for (const importStr of rawImports) {
-                        const targetPath = this.resolveImport(importStr, normalizedPath, fileNodeMap);
+                        const targetPath = this.resolveImport(importStr, normalizedPath, this.fileNodeMap);
 
                         if (targetPath) {
                             // Local File Import
-                            const targetId = fileNodeMap.get(targetPath);
+                            const targetId = this.fileNodeMap.get(targetPath);
                             if (targetId && targetId !== fileNodeId) {
-                                edges.push({ id: `edge_${edgeId++}`, source: fileNodeId, target: targetId, label: 'imports' });
+                                edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: targetId, label: 'imports' });
                             }
                         } else if (!importStr.startsWith('.')) {
                             // External Library Detection
                             const libName = importStr.split('/')[0];
-                            let libId = libraryNodeMap.get(libName);
+                            let libId = this.libraryNodeMap.get(libName);
 
                             if (!libId) {
-                                libId = `lib_${nodeId++}`;
+                                libId = `lib_${this.nextNodeIdNum++}`;
                                 nodes.push({
                                     id: libId,
                                     label: libName,
                                     type: 'library'
                                 });
-                                libraryNodeMap.set(libName, libId);
+                                this.libraryNodeMap.set(libName, libId);
                             }
 
                             edges.push({
-                                id: `edge_${edgeId++}`,
+                                id: `edge_${this.nextEdgeIdNum++}`,
                                 source: fileNodeId,
                                 target: libId,
                                 label: 'imports'
@@ -422,7 +428,7 @@ export class CodeGraphManager {
             });
 
             let filesLinked = 0;
-            for (const [normalizedPath, data] of fileContents.entries()) {
+            for (const [normalizedPath, data] of this.fileContents.entries()) {
                 if (signal.aborted) return;
 
                 filesLinked++;
@@ -430,11 +436,11 @@ export class CodeGraphManager {
                 await new Promise(resolve => setTimeout(resolve, 0));
 
                 if (onProgress && filesLinked % 5 === 0) {
-                    const pct = 70 + Math.round((filesLinked / fileContents.size) * 20); // 70% to 90%
+                    const pct = 70 + Math.round((filesLinked / this.fileContents.size) * 20); // 70% to 90%
                     onProgress({ percentage: pct, status: `Pass 3: Linking references in ${path.basename(normalizedPath)}...` });
                 }
 
-                const fileNodeId = fileNodeMap.get(normalizedPath);
+                const fileNodeId = this.fileNodeMap.get(normalizedPath);
                 if (!fileNodeId) continue;
 
                 const text = data.text;
@@ -481,7 +487,7 @@ export class CodeGraphManager {
                             const edgeExists = edges.some(e => e.source === src && e.target === trg && e.label === relLabel);
                             if (!edgeExists) {
                                 edges.push({
-                                    id: `edge_${edgeId++}`,
+                                    id: `edge_${this.nextEdgeIdNum++}`,
                                     source: src,
                                     target: trg,
                                     label: relLabel
@@ -519,7 +525,7 @@ export class CodeGraphManager {
             const jsInheritance = /class\s+([a-zA-Z0-9_]+)\s+extends\s+([a-zA-Z0-9_.]+)/g;
             const pyInheritance = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_.]+)\s*\)/g;
 
-            for (const [normalizedPath, data] of fileContents.entries()) {
+            for (const [normalizedPath, data] of this.fileContents.entries()) {
                 if (signal.aborted) return;
 
                 const ext = path.extname(normalizedPath).toLowerCase();
@@ -534,12 +540,12 @@ export class CodeGraphManager {
                     const parentName = match[2];
 
                     if (parentName && parentName !== 'object') {
-                        const childId = classNodeMap.get(className);
-                        const parentId = classNodeMap.get(parentName); 
+                        const childId = this.classNodeMap.get(className);
+                        const parentId = this.classNodeMap.get(parentName); 
 
                         if (childId && parentId) {
                             edges.push({
-                                id: `edge_${edgeId++}`,
+                                id: `edge_${this.nextEdgeIdNum++}`,
                                 source: childId,
                                 target: parentId,
                                 label: 'inherits'
@@ -568,7 +574,7 @@ export class CodeGraphManager {
 
             if (focusPath) {
                 const normalizedFocus = focusPath.replace(/\\/g, '/');
-                const focusId = fileNodeMap.get(normalizedFocus);
+                const focusId = this.fileNodeMap.get(normalizedFocus);
                 if (focusId) {
                     const neighborIds = new Set<string>([focusId]);
                     edges.forEach(e => {
@@ -708,6 +714,378 @@ export class CodeGraphManager {
         };
         return JSON.stringify(elements, null, 2);
     }
+    public removeFileFromGraph(fileUri: vscode.Uri) {
+        if (!this.workspaceRoot) return;
+        const relativePath = vscode.workspace.asRelativePath(fileUri);
+        const normalizedPath = relativePath.replace(/\\/g, '/');
+
+        // Find all nodes belonging to this file
+        const nodesToRemove = this.graph.nodes.filter(n => n.filePath === normalizedPath);
+        const nodeIdsToRemove = new Set(nodesToRemove.map(n => n.id));
+
+        const fileNodeId = this.fileNodeMap.get(normalizedPath);
+        if (fileNodeId) {
+            nodeIdsToRemove.add(fileNodeId);
+        }
+
+        if (nodeIdsToRemove.size === 0) return;
+
+        // Remove nodes
+        this.graph.nodes = this.graph.nodes.filter(n => !nodeIdsToRemove.has(n.id));
+
+        // Remove edges connected to those nodes
+        this.graph.edges = this.graph.edges.filter(e => !nodeIdsToRemove.has(e.source) && !nodeIdsToRemove.has(e.target));
+
+        // Clean up state maps
+        this.fileNodeMap.delete(normalizedPath);
+        this.fileContents.delete(normalizedPath);
+
+        // Remove class entries
+        nodesToRemove.forEach(n => {
+            if (n.type === 'class') {
+                this.classNodeMap.delete(n.label);
+            }
+        });
+    }
+
+    public async updateFileInGraph(fileUri: vscode.Uri) {
+        if (!this.workspaceRoot) return;
+        const relativePath = vscode.workspace.asRelativePath(fileUri);
+        const normalizedPath = relativePath.replace(/\\/g, '/');
+
+        // 1. Remove old nodes and edges
+        this.removeFileFromGraph(fileUri);
+
+        try {
+            // Pre-flight file size check: skip reading if size exceeds 200KB
+            const stats = await vscode.workspace.fs.stat(fileUri);
+            if (stats.size > 200000) return;
+
+            const fileBytes = await vscode.workspace.fs.readFile(fileUri);
+            const text = Buffer.from(fileBytes).toString('utf8');
+            const linesCount = text.split('\n').length;
+
+            this.fileContents.set(normalizedPath, { text, linesCount });
+
+            // Create File Node
+            const fileNodeId = `file_${this.nextNodeIdNum++}`;
+            this.fileNodeMap.set(normalizedPath, fileNodeId);
+
+            const fileNode: GraphNode = {
+                id: fileNodeId,
+                label: path.basename(relativePath),
+                type: 'file',
+                filePath: normalizedPath,
+                startLine: 0,
+                linesCount: linesCount
+            };
+            this.graph.nodes.push(fileNode);
+
+            // Parse content
+            const cleanText = this.stripCommentsAndStrings(text);
+            const lines = cleanText.split('\n');
+            const ext = path.extname(normalizedPath).toLowerCase().replace('.', '');
+
+            let currentClass: GraphNode | null = null;
+            let currentClassIndent = 0;
+
+            lines.forEach((line, index) => {
+                const trimmed = line.trim();
+                if (!trimmed) return;
+                const indent = line.search(/\S/);
+
+                const fnMatch = line.match(/(?:async\s+)?function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^\{]+))?/);
+                const pyMatch = line.match(/^\s*def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?\s*:/);
+
+                if ((fnMatch || pyMatch) && !currentClass) {
+                    const name = fnMatch ? fnMatch[1] : pyMatch![1];
+                    const args = fnMatch ? fnMatch[2] : pyMatch![2];
+                    const ret = fnMatch ? (fnMatch[3] || 'any') : (pyMatch![3] || 'None');
+
+                    const fnNodeId = `fn_${this.nextNodeIdNum++}`;
+                    const fnNode: GraphNode = {
+                        id: fnNodeId,
+                        label: name,
+                        type: 'function',
+                        filePath: normalizedPath,
+                        startLine: index,
+                        signature: `${name}(${args.trim()}) -> ${ret.trim()}`,
+                        params: args.trim(),
+                        returnType: ret.trim()
+                    };
+                    this.graph.nodes.push(fnNode);
+                    this.graph.edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: fnNodeId, label: 'contains' });
+                }
+
+                const classMatch = line.match(/class\s+([a-zA-Z0-9_]+)/);
+                if (classMatch) {
+                    const className = classMatch[1];
+                    const classNodeId = `class_${this.nextNodeIdNum++}`;
+
+                    currentClass = {
+                        id: classNodeId,
+                        label: className,
+                        type: 'class',
+                        filePath: normalizedPath,
+                        startLine: index,
+                        methods: [],
+                        attributes: []
+                    };
+                    currentClassIndent = indent;
+
+                    this.graph.nodes.push(currentClass);
+                    this.classNodeMap.set(className, classNodeId);
+                    this.graph.edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: classNodeId, label: 'contains' });
+                    return;
+                }
+
+                if (currentClass) {
+                    if (ext === 'py') {
+                        if (indent <= currentClassIndent && !trimmed.startsWith('def') && !trimmed.startsWith('class') && !trimmed.startsWith('@')) {
+                            if (!trimmed.startsWith('#') && trimmed.length > 0) {
+                                currentClass = null;
+                            }
+                        }
+                    } else {
+                        if (line.match(/^}/) && indent === currentClassIndent) {
+                              currentClass = null;
+                        }
+                    }
+
+                    if (currentClass) {
+                        let methodMatch;
+                        if (ext === 'py') {
+                            methodMatch = line.match(/^\s+def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?\s*:/);
+                            if (methodMatch) {
+                                const methodName = methodMatch[1];
+                                const methodNodeId = `method_${this.nextNodeIdNum++}`;
+                                this.graph.nodes.push({
+                                    id: methodNodeId,
+                                    label: methodName,
+                                    type: 'method',
+                                    filePath: normalizedPath,
+                                    startLine: index,
+                                    signature: `${methodName}(${methodMatch[2].trim()}) -> ${methodMatch[3]?.trim() || 'None'}`,
+                                    params: methodMatch[2].trim(),
+                                    returnType: methodMatch[3]?.trim() || 'None'
+                                });
+                                this.graph.edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
+                            }
+                        } else {
+                            methodMatch = line.match(/(?:public|private|protected|static|async|\s)*\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^\{]+))?/);
+                            if (methodMatch && !['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
+                                const methodName = methodMatch[1];
+                                const methodNodeId = `method_${this.nextNodeIdNum++}`;
+                                this.graph.nodes.push({
+                                    id: methodNodeId,
+                                    label: methodName,
+                                    type: 'method',
+                                    filePath: normalizedPath,
+                                    startLine: index,
+                                    signature: `${methodName}(${methodMatch[2].trim()}) : ${methodMatch[3]?.trim() || 'any'}`,
+                                    params: methodMatch[2].trim(),
+                                    returnType: methodMatch[3]?.trim() || 'any'
+                                });
+                                this.graph.edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
+                            }
+                        }
+
+                        let attrMatch;
+                        if (ext === 'py') {
+                            attrMatch = line.match(/self\.([a-zA-Z0-9_]+)\s*=/);
+                        } else {
+                            attrMatch = line.match(/(?:public|private|protected|\s)*\s*([a-zA-Z0-9_]+)\s*(?::\s*[a-zA-Z0-9_<>\[\]]+)?\s*=/);
+                        }
+
+                        if (attrMatch) {
+                            currentClass.attributes?.push(attrMatch[1]);
+                        }
+                    }
+                }
+            });
+
+            // Import resolution
+            const rawImports = this.extractImports(cleanText, ext);
+            for (const importStr of rawImports) {
+                const targetPath = this.resolveImport(importStr, normalizedPath, this.fileNodeMap);
+
+                if (targetPath) {
+                    const targetId = this.fileNodeMap.get(targetPath);
+                    if (targetId && targetId !== fileNodeId) {
+                        this.graph.edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: targetId, label: 'imports' });
+                    }
+                } else if (!importStr.startsWith('.')) {
+                    const libName = importStr.split('/')[0];
+                    let libId = this.libraryNodeMap.get(libName);
+
+                    if (!libId) {
+                        libId = `lib_${this.nextNodeIdNum++}`;
+                        this.graph.nodes.push({
+                            id: libId,
+                            label: libName,
+                            type: 'library'
+                        });
+                        this.libraryNodeMap.set(libName, libId);
+                    }
+
+                    this.graph.edges.push({
+                        id: `edge_${this.nextEdgeIdNum++}`,
+                        source: fileNodeId,
+                        target: libId,
+                        label: 'imports'
+                    });
+                }
+            }
+
+            // Linking pass for just the updated file (and linking others to it)
+            const allSymbols = this.graph.nodes.filter(n => n.type === 'function' || n.type === 'method' || n.type === 'class');
+            const fileSymbols = this.graph.nodes
+                .filter(n => n.filePath === normalizedPath && (n.type === 'function' || n.type === 'method' || n.type === 'class'))
+                .sort((a, b) => (a.startLine || 0) - (b.startLine || 0));
+
+            const symbolRegexes = new Map<string, { bound: RegExp; call: RegExp; instantiation: RegExp }>();
+            allSymbols.forEach(symbol => {
+                const escapedLabel = symbol.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                symbolRegexes.set(symbol.id, {
+                    bound: new RegExp(`\\b${escapedLabel}\\b`),
+                    call: new RegExp(`\\b${escapedLabel}\\s*\\(`, 'g'),
+                    instantiation: new RegExp(`\\bnew\\s+${escapedLabel}\\b|:\\s*${escapedLabel}\\b|\\b${escapedLabel}\\.`, 'g')
+                });
+            });
+
+            const addEdgeOnce = (src: string, trg: string, relLabel: string) => {
+                const edgeExists = this.graph.edges.some(e => e.source === src && e.target === trg && e.label === relLabel);
+                if (!edgeExists) {
+                    this.graph.edges.push({
+                        id: `edge_${this.nextEdgeIdNum++}`,
+                        source: src,
+                        target: trg,
+                        label: relLabel
+                    });
+                }
+            };
+
+            // Part A: Link this file's lines to other project symbols
+            for (let index = 0; index < lines.length; index++) {
+                const line = lines[index];
+                let currentCallerId = fileNodeId;
+                for (let sIdx = fileSymbols.length - 1; sIdx >= 0; sIdx--) {
+                    const sym = fileSymbols[sIdx];
+                    if (sym.startLine !== undefined && index >= sym.startLine) {
+                        currentCallerId = sym.id;
+                        break;
+                    }
+                }
+
+                const callerNode = this.graph.nodes.find(n => n.id === currentCallerId);
+                const isAtDefinitionLine = callerNode && index === callerNode.startLine;
+
+                for (const symbol of allSymbols) {
+                    if (symbol.id === currentCallerId) continue;
+                    if (!line.includes(symbol.label)) continue;
+
+                    const regexes = symbolRegexes.get(symbol.id);
+                    if (!regexes) continue;
+
+                    if (isAtDefinitionLine) {
+                        if (callerNode.params && regexes.bound.test(callerNode.params)) {
+                            addEdgeOnce(currentCallerId, symbol.id, 'inputParam');
+                            continue;
+                        }
+                        if (callerNode.returnType && regexes.bound.test(callerNode.returnType)) {
+                            addEdgeOnce(currentCallerId, symbol.id, 'outputParam');
+                            continue;
+                        }
+                    }
+
+                    if (regexes.call.test(line)) {
+                        addEdgeOnce(currentCallerId, symbol.id, 'calls');
+                    } else if (regexes.instantiation.test(line)) {
+                        addEdgeOnce(currentCallerId, symbol.id, 'localVariable');
+                    }
+                }
+            }
+
+            // Part B: Link other files' lines to this file's newly defined symbols
+            if (fileSymbols.length > 0) {
+                for (const [otherPath, otherData] of this.fileContents.entries()) {
+                    if (otherPath === normalizedPath) continue;
+                    const otherLines = otherData.text.split('\n');
+                    const otherFileNodeId = this.fileNodeMap.get(otherPath);
+                    if (!otherFileNodeId) continue;
+
+                    const otherSymbols = this.graph.nodes
+                        .filter(n => n.filePath === otherPath && (n.type === 'function' || n.type === 'method' || n.type === 'class'))
+                        .sort((a, b) => (a.startLine || 0) - (b.startLine || 0));
+
+                    for (let index = 0; index < otherLines.length; index++) {
+                        const line = otherLines[index];
+                        let currentCallerId = otherFileNodeId;
+                        for (let sIdx = otherSymbols.length - 1; sIdx >= 0; sIdx--) {
+                            const sym = otherSymbols[sIdx];
+                            if (sym.startLine !== undefined && index >= sym.startLine) {
+                                currentCallerId = sym.id;
+                                break;
+                            }
+                        }
+
+                        const callerNode = this.graph.nodes.find(n => n.id === currentCallerId);
+                        const isAtDefinitionLine = callerNode && index === callerNode.startLine;
+
+                        for (const symbol of fileSymbols) {
+                            if (!line.includes(symbol.label)) continue;
+
+                            const regexes = symbolRegexes.get(symbol.id);
+                            if (!regexes) continue;
+
+                            if (isAtDefinitionLine) {
+                                if (callerNode.params && regexes.bound.test(callerNode.params)) {
+                                    addEdgeOnce(currentCallerId, symbol.id, 'inputParam');
+                                    continue;
+                                }
+                                if (callerNode.returnType && regexes.bound.test(callerNode.returnType)) {
+                                    addEdgeOnce(currentCallerId, symbol.id, 'outputParam');
+                                    continue;
+                                }
+                            }
+
+                            if (regexes.call.test(line)) {
+                                addEdgeOnce(currentCallerId, symbol.id, 'calls');
+                            } else if (regexes.instantiation.test(line)) {
+                                addEdgeOnce(currentCallerId, symbol.id, 'localVariable');
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Handle Inheritance
+            const jsInheritance = /class\s+([a-zA-Z0-9_]+)\s+extends\s+([a-zA-Z0-9_.]+)/g;
+            const pyInheritance = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_.]+)\s*\)/g;
+            const regex = (ext === 'py') ? pyInheritance : jsInheritance;
+            regex.lastIndex = 0;
+
+            let match;
+            while ((match = regex.exec(cleanText)) !== null) {
+                const className = match[1];
+                const parentName = match[2];
+
+                if (parentName && parentName !== 'object') {
+                    const childId = this.classNodeMap.get(className);
+                    const parentId = this.classNodeMap.get(parentName);
+
+                    if (childId && parentId) {
+                        addEdgeOnce(childId, parentId, 'inherits');
+                    }
+                }
+            }
+
+            this.contextSetter?.('codeGraph.ready', true);
+        } catch (err: any) {
+            console.warn(`[Incremental Graph Update] Error updating ${normalizedPath}:`, err);
+        }
+    }
+
     reset() {
         this.graph = { nodes: [], edges: [] };
         this.buildState = 'idle';
@@ -797,16 +1175,19 @@ export class CodeGraphManager {
         // Clean query comments and whitespace
         const cleanQuery = query.replace(/#.*/g, '').trim();
         const selectMatch = cleanQuery.match(/SELECT\s+([\?\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
-        if (!selectMatch) {
-            return "SPARQL-lite Error: Invalid query format. Expected: SELECT ?var1 ?var2 WHERE { ... }";
+        const constructMatch = cleanQuery.match(/CONSTRUCT\s*\{([\s\S]+?)\}\s*WHERE\s*\{([\s\S]+?)\}/i);
+
+        if (!selectMatch && !constructMatch) {
+            return "SPARQL-lite Error: Invalid query format. Expected SELECT ?var WHERE { ... } or CONSTRUCT { ... } WHERE { ... }";
         }
 
-        const selectVars = selectMatch[1].trim().split(/\s+/).map(v => v.trim());
-        const body = selectMatch[2].trim();
-        
-        // Parse Triple Patterns
+        const isConstruct = !selectMatch;
+        const whereClause = selectMatch ? selectMatch[2].trim() : constructMatch![2].trim();
+        const constructTemplate = isConstruct ? constructMatch![1].trim() : "";
+
+        // Parse WHERE Triple Patterns
         const triples: { s: string, p: string, o: string }[] = [];
-        const lines = body.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/); // Split by dot outside quotes
+        const lines = whereClause.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/); // Split by dot outside quotes
         for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed) continue;
@@ -851,6 +1232,13 @@ export class CodeGraphManager {
         const varList = Array.from(variables);
         const results: Record<string, string>[] = [];
 
+        const matchValue = (factVal: string, queryVal: string): boolean => {
+            if (!factVal || !queryVal) return false;
+            const cleanFact = factVal.replace(/^s:/i, '').toLowerCase().replace(/['"]/g, '').trim();
+            const cleanQuery = queryVal.replace(/^s:/i, '').toLowerCase().replace(/['"]/g, '').trim();
+            return cleanFact === cleanQuery;
+        };
+
         // Backtracking Search Graph Matcher
         const solve = (varIdx: number, bindings: Record<string, string>) => {
             if (varIdx === varList.length) {
@@ -861,7 +1249,7 @@ export class CodeGraphManager {
                     const oVal = t.o.startsWith('?') ? bindings[t.o] : t.o;
 
                     const match = facts.some(f => {
-                        return f.s === sVal && f.p === pVal && f.o.toLowerCase() === oVal.toLowerCase();
+                        return matchValue(f.s, sVal) && matchValue(f.p, pVal) && matchValue(f.o, oVal);
                     });
 
                     if (!match) {
@@ -907,26 +1295,77 @@ export class CodeGraphManager {
             return "SPARQL-lite Result: No matching subgraphs found.";
         }
 
-        // Format into a Markdown table
-        let out = `### 🔍 SPARQL-lite Query Results\n\n`;
-        out += `| ${selectVars.join(' | ')} |\n`;
-        out += `| ${selectVars.map(() => '---').join(' | ')} |\n`;
-
         const idToLabel = new Map<string, string>();
         this.graph.nodes.forEach(n => idToLabel.set(n.id, n.label));
 
-        results.forEach(row => {
-            const line = selectVars.map(v => {
-                const rawVal = row[v] || "";
-                if (idToLabel.has(rawVal)) {
-                    return `**${idToLabel.get(rawVal)}** (\`${rawVal}\`)`;
-                }
-                return rawVal.replace(/^"|"$/g, '');
-            }).join(' | ');
-            out += `| ${line} |\n`;
-        });
+        if (!isConstruct) {
+            const selectVars = selectMatch![1].trim().split(/\s+/).map(v => v.trim());
+            // Format into a Markdown table
+            let out = `### 🔍 SPARQL-lite Query Results\n\n`;
+            out += `| ${selectVars.join(' | ')} |\n`;
+            out += `| ${selectVars.map(() => '---').join(' | ')} |\n`;
 
-        return out;
+            results.forEach(row => {
+                const line = selectVars.map(v => {
+                    const rawVal = row[v] || "";
+                    if (idToLabel.has(rawVal)) {
+                        return `**${idToLabel.get(rawVal)}** (\`${rawVal}\`)`;
+                    }
+                    return rawVal.replace(/^"|"$/g, '');
+                }).join(' | ');
+                out += `| ${line} |\n`;
+            });
+
+            return out;
+        } else {
+            // CONSTRUCT MODE
+            const templateTriples: { s: string, p: string, o: string }[] = [];
+            const templateLines = constructTemplate.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/);
+            for (const line of templateLines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                const parts = trimmed.split(/\s+/);
+                if (parts.length >= 3) {
+                    templateTriples.push({
+                        s: parts[0],
+                        p: parts[1],
+                        o: parts.slice(2).join(' ')
+                    });
+                }
+            }
+
+            let out = `### 🧱 Constructed Subgraph Triples (RDF)\n\n`;
+            out += `| Subject | Predicate | Object |\n`;
+            out += `| --- | --- | --- |\n`;
+
+            const constructedTriplesSet = new Set<string>();
+
+            results.forEach(row => {
+                templateTriples.forEach(t => {
+                    const sVal = t.s.startsWith('?') ? row[t.s] : t.s;
+                    const pVal = t.p.startsWith('?') ? row[t.p] : t.p;
+                    const oVal = t.o.startsWith('?') ? row[t.o] : t.o;
+
+                    if (sVal && pVal && oVal) {
+                        const cleanS = sVal.replace(/^s:/i, '');
+                        const cleanP = pVal.replace(/^s:/i, '');
+                        const cleanO = oVal.replace(/^s:/i, '');
+
+                        const tripleKey = `${cleanS}|${cleanP}|${cleanO}`;
+                        if (!constructedTriplesSet.has(tripleKey)) {
+                            constructedTriplesSet.add(tripleKey);
+
+                            const sLabel = idToLabel.get(cleanS) || cleanS;
+                            const oLabel = idToLabel.get(cleanO) || cleanO;
+
+                            out += `| **${sLabel}** (\`${cleanS}\`) | \`s:${cleanP}\` | **${oLabel}** (\`${cleanO}\`) |\n`;
+                        }
+                    }
+                });
+            });
+
+            return out;
+        }
     }
 
     generateTextSummary(): string {

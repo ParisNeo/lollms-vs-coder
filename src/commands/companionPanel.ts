@@ -82,7 +82,7 @@ export class CompanionPanel {
         }, null, this._disposables);
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
-        
+
         this._panel.webview.onDidReceiveMessage(
             message => {
                 switch (message.command) {
@@ -90,6 +90,7 @@ export class CompanionPanel {
                         // Send initial state
                         this.setContextInfo(this._contextInfo);
                         this._panel.webview.postMessage({ command: 'updateAttachState', isAttached: this._isAttached });
+                        this.updateHistoryList();
                         break;
                     case 'submitPrompt':
                         this._onDidSubmit.fire(message.text);
@@ -113,7 +114,8 @@ export class CompanionPanel {
                     case 'clearHistory':
                         this._history = [];
                         this._currentHistoryIndex = -1;
-                        this.updateView("", "", true);
+                        this._panel.webview.postMessage({ command: 'clearResponse' });
+                        this.updateHistoryList();
                         return;
                     case 'openTools':
                         this.handleOpenTools();
@@ -126,7 +128,8 @@ export class CompanionPanel {
             null,
             []
         );
-        this.updateView("", "");
+        // Load the HTML once on initialization
+        this._panel.webview.html = this._getHtmlForWebview();
     }
 
     public getActiveEditor(): vscode.TextEditor | undefined {
@@ -233,6 +236,10 @@ export class CompanionPanel {
         }
     }
 
+    public updateHistoryList() {
+        this._panel.webview.postMessage({ command: 'updateHistory', history: this._history });
+    }
+
     public addHistory(prompt: string, response: string) {
         const newItem: HistoryItem = {
             id: Date.now().toString(),
@@ -241,11 +248,12 @@ export class CompanionPanel {
             timestamp: Date.now()
         };
         this._history.unshift(newItem); 
-        this.updateView(response, prompt);
+        this.updateHistoryList();
+        this._panel.webview.postMessage({ command: 'renderResponse', text: response, prompt: prompt });
     }
 
     public updateContent(content: string, prompt: string) {
-        this.updateView(content, prompt);
+        this._panel.webview.postMessage({ command: 'renderResponse', text: content, prompt: prompt });
     }
 
     public updateTitle(title: string) {
@@ -257,21 +265,18 @@ export class CompanionPanel {
         if (index !== -1) {
             this._currentHistoryIndex = index;
             const item = this._history[index];
-            this.updateView(item.response, item.prompt);
+            this._panel.webview.postMessage({ command: 'renderResponse', text: item.response, prompt: item.prompt });
         }
     }
 
     private deleteHistoryItem(id: string) {
         this._history = this._history.filter(h => h.id !== id);
+        this.updateHistoryList();
         if (this._history.length > 0) {
             this.loadHistoryItem(this._history[0].id);
         } else {
-            this.updateView("", "", true);
+            this._panel.webview.postMessage({ command: 'clearResponse' });
         }
-    }
-
-    private updateView(content: string, prompt: string, isEmpty: boolean = false) {
-        this._panel.webview.html = this._getHtmlForWebview(content, prompt, isEmpty);
     }
 
     public dispose() {
@@ -312,26 +317,12 @@ export class CompanionPanel {
         }
     }
 
-    private _getHtmlForWebview(content: string, prompt: string, isEmpty: boolean): string {
+    private _getHtmlForWebview(): string {
         const markedUri = "https://cdn.jsdelivr.net/npm/marked@5.1.1/marked.min.js";
         const domPurifyUri = "https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js";
         const prismJsUri = "https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js";
         const prismCssUri = "https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css";
         const codiconUri = this._panel.webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
-
-        const historyHtml = this._history.map(h => `
-            <div class="history-item ${h.prompt === prompt ? 'active' : ''}" onclick="loadHistory('${h.id}')">
-                <div class="history-prompt">${h.prompt.substring(0, 50)}${h.prompt.length > 50 ? '...' : ''}</div>
-                <div class="history-actions">
-                    <span class="history-time">${new Date(h.timestamp).toLocaleTimeString()}</span>
-                    <button class="delete-btn" onclick="deleteHistory(event, '${h.id}')">×</button>
-                </div>
-            </div>
-        `).join('');
-
-        const jsonContent = JSON.stringify(content);
-        const initialContextInfo = this._contextInfo;
-        const initialAttachState = this._isAttached;
 
         return `<!DOCTYPE html>
         <html lang="en">
@@ -352,7 +343,7 @@ export class CompanionPanel {
                     padding: 0; margin: 0;
                     display: flex; height: 100vh; overflow: hidden;
                 }
-                
+
                 .sidebar {
                     width: 300px;
                     border-right: 1px solid var(--vscode-panel-border);
@@ -368,7 +359,7 @@ export class CompanionPanel {
                 .sidebar.open {
                     transform: translateX(0);
                 }
-                
+
                 .sidebar-overlay {
                     display: none;
                     position: fixed;
@@ -386,7 +377,7 @@ export class CompanionPanel {
                 }
                 .clear-btn { background: none; border: none; color: var(--vscode-errorForeground); cursor: pointer; }
                 .close-sidebar-btn { background: none; border: none; color: var(--vscode-foreground); cursor: pointer; font-size: 1.2em; }
-                
+
                 .history-list {
                     flex: 1; overflow-y: auto;
                 }
@@ -415,11 +406,11 @@ export class CompanionPanel {
                 }
                 .header-left { display: flex; align-items: center; gap: 10px; }
                 .title { font-weight: 600; }
-                
+
                 .content {
                     flex: 1; padding: 20px; overflow-y: auto; line-height: 1.6;
                 }
-                
+
                 .input-area {
                     border-top: 1px solid var(--vscode-widget-border);
                     padding: 15px;
@@ -449,7 +440,7 @@ export class CompanionPanel {
                     font-family: var(--vscode-font-family);
                 }
                 textarea:focus { border-color: var(--vscode-focusBorder); outline: none; }
-                
+
                 button {
                     background-color: var(--vscode-button-background);
                     color: var(--vscode-button-foreground);
@@ -469,7 +460,7 @@ export class CompanionPanel {
                 }
                 .icon-btn:hover { color: var(--vscode-foreground); background-color: var(--vscode-toolbar-hoverBackground); }
                 .icon-btn.attached { color: var(--vscode-textLink-foreground); background-color: var(--vscode-editor-inactiveSelectionBackground); } 
-                
+
                 code { font-family: var(--vscode-editor-font-family); background-color: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 3px; }
                 pre { background-color: var(--vscode-textCodeBlock-background); padding: 16px; border-radius: 5px; overflow-x: auto; position: relative; }
                 pre button.copy-code { position: absolute; top: 5px; right: 5px; opacity: 0.7; }
@@ -481,7 +472,7 @@ export class CompanionPanel {
         </head>
         <body>
             <div class="sidebar-overlay" onclick="toggleHistory()"></div>
-            
+
             <div class="sidebar" id="sidebar">
                 <div class="sidebar-header">
                     <span>History</span>
@@ -490,8 +481,8 @@ export class CompanionPanel {
                         <button class="close-sidebar-btn" onclick="toggleHistory()" title="Close">✕</button>
                     </div>
                 </div>
-                <div class="history-list">
-                    ${historyHtml}
+                <div class="history-list" id="history-list">
+                    <!-- Populated dynamically via updateHistory -->
                 </div>
             </div>
 
@@ -510,19 +501,19 @@ export class CompanionPanel {
                         <button class="secondary" onclick="copyFullResponse()" title="Copy Markdown"><span class="codicon codicon-copy"></span></button>
                     </div>
                 </div>
-                
+
                 <div class="content" id="markdown-content"></div>
 
                 <div class="input-area">
                     <div class="context-info">
-                        <button id="attach-btn" class="icon-btn ${initialAttachState ? 'attached' : ''}" onclick="toggleAttach()" title="${initialAttachState ? 'Detach from context' : 'Attach to current context'}">
+                        <button id="attach-btn" class="icon-btn" onclick="toggleAttach()">
                             <span class="codicon codicon-pin"></span>
                         </button>
                         <span class="codicon codicon-target"></span>
-                        <span id="context-info-text">${initialContextInfo}</span>
+                        <span id="context-info-text">Syncing...</span>
                     </div>
                     <div class="input-container">
-                        <textarea id="prompt-input" placeholder="Ask a question or request a change (e.g., 'Refactor this')...">${prompt && !content ? prompt : ''}</textarea>
+                        <textarea id="prompt-input" placeholder="Ask a question or request a change (e.g., 'Refactor this')..."></textarea>
                         <button onclick="submitPrompt()" id="send-btn" style="height: fit-content; align-self: flex-end;">
                             <span class="codicon codicon-send"></span> Send
                         </button>
@@ -532,9 +523,9 @@ export class CompanionPanel {
 
             <script>
                 const vscode = acquireVsCodeApi();
-                const content = ${isEmpty ? '""' : jsonContent};
                 const container = document.getElementById('markdown-content');
                 const promptInput = document.getElementById('prompt-input');
+                let activeContentBuffer = "";
 
                 // Notify extension that webview is ready
                 vscode.postMessage({ command: 'webview-ready' });
@@ -552,17 +543,18 @@ export class CompanionPanel {
                     vscode.postMessage({ command: 'toggleAttach' });
                 }
 
-                function render() {
-                    if (!content) {
+                function renderResponse(text, prompt) {
+                    activeContentBuffer = text;
+                    if (!text) {
                         container.innerHTML = '<div style="color: var(--vscode-descriptionForeground); text-align: center; margin-top: 40px;"><h3>👋 Lollms Companion</h3><p>Select code or place your cursor, then type below.</p></div>';
                         return;
                     }
-                    container.innerHTML = DOMPurify.sanitize(marked.parse(content));
-                    
+                    container.innerHTML = DOMPurify.sanitize(marked.parse(text));
+
                     document.querySelectorAll('pre code').forEach((block) => {
                         const pre = block.parentElement;
                         const code = block.textContent;
-                        
+
                         // Copy Button
                         const copyBtn = document.createElement('button');
                         copyBtn.className = 'copy-code secondary';
@@ -573,7 +565,7 @@ export class CompanionPanel {
                         // Actions
                         const actionsDiv = document.createElement('div');
                         actionsDiv.style.marginTop = '8px'; actionsDiv.style.display = 'flex'; actionsDiv.style.gap = '8px';
-                        
+
                         const insertBtn = document.createElement('button');
                         insertBtn.innerHTML = '<span class="codicon codicon-arrow-right"></span> Insert';
                         insertBtn.onclick = () => vscode.postMessage({ command: 'insertAtCursor', text: code });
@@ -586,24 +578,32 @@ export class CompanionPanel {
                         actionsDiv.appendChild(replaceBtn);
                         pre.insertAdjacentElement('afterend', actionsDiv);
                     });
-                    
+
                     Prism.highlightAll();
                     container.scrollTop = container.scrollHeight;
                 }
 
-                render();
+                function appendChunk(chunk) {
+                    activeContentBuffer += chunk;
+                    // Render in real-time
+                    container.innerHTML = DOMPurify.sanitize(marked.parse(activeContentBuffer));
+                    Prism.highlightAllUnder(container);
+                    container.scrollTop = container.scrollHeight;
+                }
 
-                function copyFullResponse() { vscode.postMessage({ command: 'copyToClipboard', text: content }); }
+                function copyFullResponse() { vscode.postMessage({ command: 'copyToClipboard', text: activeContentBuffer }); }
                 function loadHistory(id) { 
                     vscode.postMessage({ command: 'loadHistory', id: id }); 
                     toggleHistory(); // Close drawer on selection
                 }
+
                 function deleteHistory(e, id) { 
                     e.stopPropagation();
                     vscode.postMessage({ command: 'deleteHistory', id: id }); 
                 }
+
                 function clearHistory() { vscode.postMessage({ command: 'clearHistory' }); }
-                
+
                 function submitPrompt() {
                     const text = promptInput.value.trim();
                     if (!text) return;
@@ -617,36 +617,60 @@ export class CompanionPanel {
                         submitPrompt();
                     }
                 });
-                
+
                 // Auto-focus input
                 promptInput.focus();
 
                 window.addEventListener('message', event => {
                     const message = event.data;
-                    if (message.command === 'updateContextInfo') {
-                        document.getElementById('context-info-text').textContent = message.text;
-                    }
-                    if (message.command === 'updateAttachState') {
-                        const btn = document.getElementById('attach-btn');
-                        if (message.isAttached) {
-                            btn.classList.add('attached');
-                            btn.title = "Detach from context";
-                        } else {
-                            btn.classList.remove('attached');
-                            btn.title = "Attach to current context";
-                        }
-                    }
-                    if (message.command === 'setLoading') {
-                        const btn = document.getElementById('send-btn');
-                        if (message.isLoading) {
-                            btn.disabled = true;
-                            btn.innerHTML = '<span class="codicon codicon-sync spin"></span>';
-                        } else {
-                            btn.disabled = false;
-                            btn.innerHTML = '<span class="codicon codicon-send"></span> Send';
-                            // Re-focus input after generation
-                            promptInput.focus();
-                        }
+                    switch (message.command) {
+                        case 'updateContextInfo':
+                            document.getElementById('context-info-text').textContent = message.text;
+                            break;
+                        case 'updateAttachState':
+                            const btn = document.getElementById('attach-btn');
+                            if (message.isAttached) {
+                                btn.classList.add('attached');
+                                btn.title = "Detach from context";
+                            } else {
+                                btn.classList.remove('attached');
+                                btn.title = "Attach to current context";
+                            }
+                            break;
+                        case 'setLoading':
+                            const sendBtn = document.getElementById('send-btn');
+                            if (message.isLoading) {
+                                sendBtn.disabled = true;
+                                sendBtn.innerHTML = '<span class="codicon codicon-sync spin"></span>';
+                            } else {
+                                sendBtn.disabled = false;
+                                sendBtn.innerHTML = '<span class="codicon codicon-send"></span> Send';
+                                promptInput.focus();
+                            }
+                            break;
+                        case 'appendChunk':
+                            appendChunk(message.text);
+                            break;
+                        case 'renderResponse':
+                            renderResponse(message.text, message.prompt);
+                            break;
+                        case 'clearResponse':
+                            renderResponse("", "");
+                            break;
+                        case 'updateHistory':
+                            const list = document.getElementById('history-list');
+                            if (list) {
+                                list.innerHTML = (message.history || []).map(h => \`
+                                    <div class="history-item" onclick="loadHistory('\${h.id}')">
+                                        <div class="history-prompt" title="\${h.prompt}">\${h.prompt.substring(0, 50)}\${h.prompt.length > 50 ? '...' : ''}</div>
+                                        <div class="history-actions">
+                                            <span class="history-time">\${new Date(h.timestamp).toLocaleTimeString()}</span>
+                                            <button class="delete-btn" onclick="deleteHistory(event, '\${h.id}')">×</button>
+                                        </div>
+                                    </div>
+                                \`).join('');
+                            }
+                            break;
                     }
                 });
             </script>

@@ -277,11 +277,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
         contextManager.refreshFileInCache(uri);
         contextManager.updateTreeStructure(uri, 'change');
-        codeGraphManager.reset();
+
+        // Incremental graph update
+        codeGraphManager.updateFileInGraph(uri);
 
         // 🚀 REACTIVE HUD SYNC
-        // We clear the cache so the NEXT JIT sync (on send) uses the new content.
-        // We trigger a background sync to update the file count (234 -> 235) in the HUD.
         const provider = contextManager.getContextStateProvider();
         if (provider) {
             const state = provider.getStateForUri(uri);
@@ -293,7 +293,7 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         }
     });
-    
+
     watcher.onDidCreate(uri => {
         if (isIgnored(uri)) return;
         if (uri.fsPath.includes('skills')) {
@@ -301,9 +301,11 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
         }
         contextManager.updateTreeStructure(uri, 'create');
-        codeGraphManager.reset();
+
+        // Incremental graph addition
+        codeGraphManager.updateFileInGraph(uri);
     });
-    
+
     watcher.onDidDelete(uri => {
         if (isIgnored(uri)) return;
         if (uri.fsPath.includes('skills')) {
@@ -312,7 +314,9 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         contextManager.refreshFileInCache(uri);
         contextManager.updateTreeStructure(uri, 'delete');
-        codeGraphManager.reset();
+
+        // Incremental graph subtraction
+        codeGraphManager.removeFileFromGraph(uri);
     });
 
     context.subscriptions.push(watcher);
@@ -403,6 +407,11 @@ export async function activate(context: vscode.ExtensionContext) {
         // Critical: Set context and sync graph manager root before anything else
         vscode.commands.executeCommand('setContext', 'lollms:hasWorkspace', true);
         codeGraphManager.setWorkspaceRoot(folders[0].uri);
+
+        // Build the complete graph once silently in the background on startup
+        codeGraphManager.buildGraph(undefined, undefined).catch(err => {
+            Logger.warn(`Initial background code-graph build failed: ${err.message}`);
+        });
 
         const initial = activeWorkspaceFolder 
             ? (folders.find(f => f.uri.toString() === activeWorkspaceFolder!.uri.toString()) || folders[0]) 

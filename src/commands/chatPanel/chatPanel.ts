@@ -1765,8 +1765,8 @@ export class ChatPanel {
                 result = applyDiffToString(originalFileText, block.content);
             } else {
                 // Handle multiple SEARCH/REPLACE blocks within the same content
-                const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
-                const matches =[...block.content.matchAll(aiderRegex)];
+                const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
+                const matches =[...blockContent.matchAll(aiderRegex)];
                 
                 if (matches.length > 0) {
                     let currentFileState = originalFileText;
@@ -1774,8 +1774,8 @@ export class ChatPanel {
                     let firstError = "";
 
                     for (const match of matches) {
-                        const searchPart = match[1];
-                        const replacePart = match[2];
+                        const searchPart = match[1] || "";
+                        const replacePart = match[2] || "";
                         const srResult = applySearchReplace(currentFileState, searchPart, replacePart);
                         
                         if (srResult.success) {
@@ -4896,6 +4896,18 @@ ${targetContent}
                 if (command === 'search-add-context-btn') {
                     // Send message back to webview to open the modal
                     webview.postMessage({ command: 'showFileSearchModal' });
+                } else if (command === 'lollms-vs-coder.runSparqlQueryDirectly') {
+                    const result = this.agentManager.codeGraphManager.executeSparql(params.query);
+                    webview.postMessage({
+                        command: 'applyAllResult',
+                        messageId: params.messageId,
+                        blockIndex: params.blockId,
+                        success: true
+                    });
+                    if (params.reprompt) {
+                        const responsePrompt = `### 🧱 SPARQL QUERY RESULT\nQuery executed on the complete ontology graph:\n\`\`\`sparql\n${params.query}\n\`\`\`\n\n**Result:**\n${result}\n\nAnalyze these results and proceed with the mission.`;
+                        this.sendMessage({ role: 'user', content: responsePrompt });
+                    }
                 } else if (command === 'createNotebook') {
                     vscode.commands.executeCommand('lollms-vs-coder.createNotebook', params.path, params.cellContent);
                 } else if (command === 'gitCommit') {
@@ -5501,9 +5513,13 @@ Task:
             case 'updateDiscussionPersonality':
                 if (this._currentDiscussion) {
                     this._currentDiscussion.personalityId = message.personalityId;
+
+                    // Persist selected personality over the entire project workspace
+                    await this._discussionManager.context.workspaceState.update('lollms_project_active_personality_id', message.personalityId);
+
                     const persona = this._personalityManager?.getPersonality(message.personalityId);
                     if (persona) {
-                        this.log(`Personality switched to: ${persona.name}`);
+                        this.log(`Personality switched and persisted project-wide: ${persona.name}`);
                     }
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);

@@ -61,12 +61,12 @@ Stop relying on the AI's "hallucination-prone" general knowledge. **Lollms Skill
 ### 3. 🛡️ The "Guardian" Protocol (Self-Healing Code)
 Lollms doesn't just write code and hope it works. When the **Architect** applies changes, the **Guardian** immediately scans for functional errors using the VS Code engine. If an error is found, the AI spawns a **Repair Mission** autonomously, fixing logic or "ghost" imports *before* you even review the result.
 
-### 2. 📊 Structural Intelligence (The HUD & The Graph)
-Stop navigating blindly. Lollms provides two layers of structural vision:
-- **The Visual Graph**: A full-project map with SPARQL query support to analyze deep dependencies.
+### 2. 📊 Structural Intelligence (The HUD, Incremental Graph & SPARQL CONSTRUCT)
+Stop navigating blindly. Lollms provides three layers of high-performance, real-time architectural vision:
+- **Sovereign Background & Incremental Code Graph**: The complete workspace structure is parsed once silently in the background on startup. When you save, create, or delete files, Lollms performs ultra-fast, local incremental updates on only the affected nodes and edges—preventing full rebuild freezes and keeping the workspace model instantly fresh.
+- **Upgraded SPARQL-lite & CONSTRUCT Engine**: Run expressive queries (e.g. `SELECT ?x WHERE { ?x imports 'auth.ts' }`) or construct customized relational subgraphs using `CONSTRUCT` queries!
+- **Surgical Subgraph Isolation & Visualization**: Executing a `CONSTRUCT` query highlights the matched sub-architectures (like a pure function call graph or inheritance trees) with a distinctive, glowing neon-cyan layout (`path-node` and `path-edge` styles). You can instantly isolate and render only this constructed graph with one click from the Actions menu.
 - **The Surgical HUD**: A high-speed, inline analyzer. Click the ✨ **Lollms HUD** button above any function to instantly see its architectural risks and potential bugs without leaving the code.
-- **SPARQL Queries**: Run queries like `SELECT ?x WHERE { ?x imports 'auth.ts' }` to understand impact.
-- **Isolate View**: One click to hide everything except the file you're refactoring and its direct neighbors.
 
 ### 3. 🎯 Mission Briefing (Prime Directive)
 Standard AI chat suffers from "context drift." Lollms introduces the **Mission Briefing**. Pin specific constraints (e.g., *"Must use Python 3.12, No external libraries"*) to a dedicated briefing zone. These rules are treated as the **Prime Directive**, remaining the AI's highest priority regardless of how long the chat becomes.
@@ -136,7 +136,7 @@ Lollms provides two distinct ways to work. Choose the one that fits your current
 | **Infrastructure Circuit Breaker**|  Automatically detects and blacklists broken extension tools to prevent infinite loops and protect your token budget.| 
 | **Surgical Intelligence**      | Both the Quick Companion (Ctrl+Shift+L) and File Inspector automatically use the **Architecture Graph** to pull in direct dependencies for context. If the AI needs more info, it can perform a "Second Run" escalation using keyword search.      |
 
-| 📊 **Architecture Graph**  | Visualize your project structure with interactive call graphs and class diagrams. Supports SPARQL queries for deep dependency analysis.                               |
+| 📊 **Architecture Graph**  | Visualize your project structure with interactive call graphs and class diagrams. Features a background-managed, incremental index and a SPARQL `CONSTRUCT` sub-graph visualizer with glowing path isolation. |
 | 🛡️ **Guardian Audit**       | Background self-healing loop. The AI automatically detects and repairs linting or import errors in generated code before finalizing tasks.                             |
 | ⚡ **Quick Edit Companion**  | A lightweight, floating window for fast code edits, explanations, or questions without leaving your current context (Ctrl+Shift+L).                                     |
 | 🧠 **Smart Context**         | A sidebar file tree lets you precisely control which files the AI can "see." Includes **🔍 Definitions-Only** mode to save tokens while keeping API visibility. |

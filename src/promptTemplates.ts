@@ -182,20 +182,27 @@ Use these queries dynamically to gather precise structural evidence and answer c
         const activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId) || SYSTEM_RESPONSE_PROFILES[0];
         const envInfo = ""; 
 
-        const skillsAuthority = (context?.skills || capabilities?.hasSkills) ? `
-### 📖 SKILLS AUTHORITY PROTOCOL
-You have active skills/protocols in this project.
-1. API ACCURACY: You MUST use the exact parameters and methods defined in the skills.
-2. OVERRIDE: Skill documentation overrides your general training data.
-` : '';
+        const skillsAuthority = (context?.skills || capabilities?.hasSkills) ? `\n### 📖 SKILLS AUTHORITY PROTOCOL\nYou have active skills/protocols in this project.\n1. API ACCURACY: You MUST use the exact parameters and methods defined in the skills.\n2. OVERRIDE: Skill documentation overrides your general training data.\n` : '';
 
         // Special roles
+        if (promptType === 'commit') {
+            return `# 🎭 ROLE: CONVENTIONAL COMMIT GENERATOR
+${persona}
+
+### 📝 COMMIT PROTOCOL
+- Analyze the provided Git diff or file list.
+- Generate a concise, conventional commit message following the **Conventional Commits** specification (e.g., \`feat(auth): add JWT validation\` or \`fix(db): resolve race condition in connection pool\`).
+- **NO PREAMBLES / CHATTER**: Do NOT include any introductions, explanations, thoughts, or markdown formatting blocks.
+- **NO WRAPPERS**: Do NOT wrap your response in JSON, markdown code blocks, or XML tags.
+- Output **ONLY** the raw conventional commit message text.
+`;
+    }
+
         if (promptType === 'surgical_agent' && persona.includes('Technical Writer')) {
             return `${activeProfile.prefix || ''}# 🎭 ROLE: SENIOR TECHNICAL WRITER
 You MUST update physical files (README.md, etc.) before using memory tags. Outputting only memory tags is strictly forbidden.
 `;
         }
-
         if (promptType === 'verifier') {
             return `${activeProfile.prefix || ''}# 🎭 ROLE: SENIOR QUALITY VERIFIER (THE GUARDIAN)
 
@@ -390,6 +397,9 @@ Consistent parameter usage for file operations:
   - \`<add_files_to_context>\npath\n</add_files_to_context>\`
   - \`<remove_files_from_context>\npath\n</remove_files_from_context>\`
   - \`<project_memory action="add" id="...">content</project_memory>\`
+  - \`<query_architecture>\nSELECT ?class WHERE { ?class s:type s:Class }\n</query_architecture>\`
+
+- **STRICT NEW-LINE RULE**: All active orchestration XML tags (including those above) MUST start on a **new line** (spaces/tabs before are allowed) to trigger automation. If you write them inline inside a sentence (e.g., "I will use <add_files_to_context> to..."), they will be treated as inert text. Always place each tag on its own line.
 
 - **File Operations** (One entry per line inside the tag, supports files AND folders. Do NOT use \`<lollms_tool>\` for these):
   <move_files>

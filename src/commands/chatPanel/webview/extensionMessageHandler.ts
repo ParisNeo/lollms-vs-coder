@@ -1398,6 +1398,20 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             iconEl.innerHTML = '<span class="codicon codicon-close" style="color:var(--vscode-charts-red)" title="' + (message.error || 'Failed') + '"></span>';
                         }
 
+                        // Append the clean, highly visible failure reason right next to the file path label in the list
+                        const pathEl = row.querySelector('.row-path');
+                        if (pathEl && message.error) {
+                            let shortReason = message.error;
+                            if (shortReason.includes("Blocked by Sovereign Shield") || shortReason.includes("Sovereign Shield")) {
+                                shortReason = "Sovereign Shield: Prevented Code Loss";
+                            } else if (shortReason.includes("SEARCH block was not found") || shortReason.includes("Matching failed")) {
+                                shortReason = "Patch match mismatch";
+                            } else {
+                                shortReason = "Failed to apply";
+                            }
+                            pathEl.innerHTML = `${pathEl.textContent} <span class="failure-badge-inline" style="color:var(--vscode-errorForeground); font-size:10px; margin-left:8px; opacity:0.85; font-weight:bold;">(${shortReason})</span>`;
+                        }
+
                         if (actionsEl) {
                             actionsEl.style.display = 'flex';
                             actionsEl.innerHTML = `

@@ -2,7 +2,7 @@ import { TagPlugin } from '../pluginSystem';
 
 export const fileOpPlugin: TagPlugin = {
     id: 'file_operations',
-    tagPattern: /<(move_files|copy_files|delete_files|remove_files_from_context)>([\s\S]*?)<\/\1>/gi,
+    tagPattern: /^[ \t]*<(move_files|copy_files|delete_files|remove_files_from_context)>([\s\S]*?)<\/\1>/gim,
     render: (match) => {
         const type = match[1];
         const inner = match[2].trim();

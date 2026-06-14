@@ -232,11 +232,10 @@ export class ContextManager {
   public async generateIsolatedProjectTree(
     folder: vscode.WorkspaceFolder,
     signal?: AbortSignal,
-    capabilities?: DiscussionCapabilities
+    capabilities?: any
   ): Promise<string> {
     const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}`;
     if (this._cachedIsolatedTrees.has(cacheKey) && !this._isTreeDirty) {
-        Logger.info(`[Librarian] Cache Hit: Using cached isolated tree for ${folder.name}`);
         return this._cachedIsolatedTrees.get(cacheKey)!;
     }
 
@@ -660,144 +659,139 @@ export class ContextManager {
         let projectContentBuffer = "";
         let filesInThisFolderCount = 0;
 
-        const totalFiles = contextFiles.length;
-        let filesProcessed = 0;
+      const totalFiles = contextFiles.length;
+      let filesProcessed = 0;
 
-        for (const fileEntry of contextFiles) {
-          if (signal?.aborted) throw new Error("Operation cancelled");
-          if (!fileEntry || !fileEntry.path) continue;
+      for (const fileEntry of contextFiles) {
+        if (signal?.aborted) throw new Error("Operation cancelled");
+        if (!fileEntry || !fileEntry.path) continue;
 
-          filesProcessed++;
-          if (options?.onProgress) {
-              const pct = Math.round((filesProcessed / totalFiles) * 100);
-              options.onProgress(pct);
-          }
+        filesProcessed++;
+        if (options?.onProgress) {
+            const pct = Math.round((filesProcessed / totalFiles) * 100);
+            options.onProgress(pct);
+        }
 
-          const resolution = await this.resolveWorkspaceFromPath(fileEntry.path);
+        const resolution = await this.resolveWorkspaceFromPath(fileEntry.path);
 
-          if (!resolution || !resolution.folder || resolution.folder.uri.toString() !== folder.uri.toString()) {
-            continue; 
-          }
+        if (!resolution || !resolution.folder || resolution.folder.uri.toString() !== folder.uri.toString()) {
+          continue; 
+        }
 
-          const namespacedPath = fileEntry.path;
-          const contextState = fileEntry.state;
-          const fileUri = resolution.uri;
-          const relativePath = resolution.relativePath;
+        const namespacedPath = fileEntry.path;
+        const contextState = fileEntry.state;
+        const fileUri = resolution.uri;
+        const relativePath = resolution.relativePath;
 
-          const headerPath = activeFolders.length > 1 ? `${folder.name}/${relativePath}` : relativePath;
+        const headerPath = activeFolders.length > 1 ? `${folder.name}/${relativePath}` : relativePath;
 
-          if (this.contextStateProvider.isStrictlyIgnored(fileUri)) continue;
+        if (this.contextStateProvider.isStrictlyIgnored(fileUri)) continue;
 
-          try {
-            const stat = await vscode.workspace.fs.stat(fileUri);
-            if (stat.type !== vscode.FileType.File) continue;
+        try {
+          const languageId = this.getLanguageId(relativePath);
+          const ext = path.extname(relativePath).toLowerCase();
+          const cacheKey = headerPath;
 
-            const languageId = this.getLanguageId(relativePath);
-            const ext = path.extname(relativePath).toLowerCase();
-            const cacheKey = headerPath;
-
-            if (this.binaryExtensions.has(ext)) {
-              projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n(Binary file content excluded)\n\`\`\`\n\n`;
+          const cached = this._fileContentCache.get(cacheKey);
+          if (cached && cached.state === contextState) {
+              projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${cached.content}\n\`\`\`\n\n`;
               filesInThisFolderCount++;
               continue;
-            }
+          }
 
-            if (contextState === 'definitions-only') {
-              const definitions = await this.extractDefinitions(fileUri);
-              projectContentBuffer += `\`\`\`${languageId}:${headerPath} (Definitions Only)\n${definitions}\n\`\`\`\n\n`;
-              filesInThisFolderCount++;
-              continue;
-            }
+          const stat = await vscode.workspace.fs.stat(fileUri);
+          if (stat.type !== vscode.FileType.File) continue;
 
-            let fileContent = '';
-            // Use case-insensitive fsPath comparison to avoid drive-letter casing mismatch on Windows
-            const openDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath.toLowerCase() === fileUri.fsPath.toLowerCase());
-            const cached = this._fileContentCache.get(cacheKey);
-
-            if (openDoc) {
-                fileContent = openDoc.getText();
-                this._fileContentCache.set(cacheKey, { content: fileContent, state: contextState });
-            } else if (cached && cached.state === contextState) {
-                fileContent = cached.content;
-            } else {
-              let fileBuffer: Buffer;
-              if (openDoc) {
-                fileBuffer = Buffer.from(openDoc.getText(), 'utf8');
-              } else {
-                const fileBytes = await vscode.workspace.fs.readFile(fileUri);
-                fileBuffer = Buffer.from(fileBytes);
-              }
-
-              if (this.imageExtensions.has(ext)) {
-                if (!enableVision) {
-                  projectContentBuffer += `### 🖼️ \`${headerPath}\` [IMAGE MUTED]\n> Vision is disabled in settings.\n\n`;
-                  filesInThisFolderCount++;
-                  continue;
-                }
-                const base64Data = fileBuffer.toString('base64');
-                let mime = ext.substring(1).replace('jpg', 'jpeg');
-                if (ext === '.svg') mime = 'svg+xml';
-
-                const dataUri = `data:image/${mime};base64,${base64Data}`;
-                const imgIndex = result.images.length;
-                result.images.push({ filePath: headerPath, data: dataUri });
-
-                projectContentBuffer += `### 🖼️ \`${headerPath}\` [C]\n`;
-                projectContentBuffer += `> [MULTIMODAL STATUS]: IMAGE LOADED IN VISION BUFFER.\n`;
-                projectContentBuffer += `> [VISUAL CONTEXT INDEX]: ${imgIndex}\n`;
-                projectContentBuffer += `> You can see this image directly in your vision stream. Do NOT use 'analyze_image' for this file.\n\n`;
-                filesInThisFolderCount++;
-                continue;
-              }
-
-              if (this.isBinary(fileBuffer)) {
-                projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n(Binary content detected and excluded)\n\`\`\`\n\n`;
-                filesInThisFolderCount++;
-                continue;
-              }
-
-              if (this.docExtensions.has(ext)) {
-                fileContent = await this.processFile(relativePath, fileBuffer.toString('base64'), result.images);
-              } else if (ext === '.ipynb') {
-                const notebookJson = JSON.parse(fileBuffer.toString('utf8'));
-                if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
-                    notebookJson.cells.forEach((cell: any, index: number) => {
-                        const source = Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');
-                        if (cell.cell_type === 'code') fileContent += `--- Cell ${index + 1} (code) ---\n\`\`\`python\n${source}\n\`\`\`\n\n`;
-                        else if (cell.cell_type === 'markdown') fileContent += `--- Cell ${index + 1} (markdown) ---\n${source}\n\n`;
-                    });
-                }
-              } else {
-                fileContent = fileBuffer.toString('utf8');
-              }
-
-              if (fileContent.length < 500000) {
-                this._fileContentCache.set(cacheKey, { content: fileContent, state: contextState });
-              }
-            }
-
-            projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${fileContent}\n\`\`\`\n\n`;
+          if (this.binaryExtensions.has(ext)) {
+            projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n(Binary file content excluded)\n\`\`\`\n\n`;
             filesInThisFolderCount++;
-
-          } catch (error) {
-            // Silently log and do NOT append empty/error placeholder to projectContentBuffer
-            Logger.warn(`Skipping missing/unreadable file in context: ${headerPath}`, error);
+            continue;
           }
-        }
 
-        if (filesInThisFolderCount === 0) {
-          result.text += `*(No file contents currently loaded for ${projectName}.)*\n\n`;
-        } else {
-          result.text += projectContentBuffer;
-          result.selectedFilesContent += `## Project: ${projectName}\n${projectContentBuffer}`;
+          if (contextState === 'definitions-only') {
+            const definitions = await this.extractDefinitions(fileUri);
+            projectContentBuffer += `\`\`\`${languageId}:${headerPath} (Definitions Only)\n${definitions}\n\`\`\`\n\n`;
+            filesInThisFolderCount++;
+            continue;
+          }
+
+          let fileContent = '';
+          const openDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath.toLowerCase() === fileUri.fsPath.toLowerCase());
+
+          if (openDoc) {
+              fileContent = openDoc.getText();
+          } else {
+            let fileBuffer: Buffer;
+            const fileBytes = await vscode.workspace.fs.readFile(fileUri);
+            fileBuffer = Buffer.from(fileBytes);
+
+            if (this.imageExtensions.has(ext)) {
+              if (!enableVision) {
+                projectContentBuffer += `### 🖼️ \`${headerPath}\` [IMAGE MUTED]\n> Vision is disabled in settings.\n\n`;
+                filesInThisFolderCount++;
+                continue;
+              }
+              const base64Data = fileBuffer.toString('base64');
+              let mime = ext.substring(1).replace('jpg', 'jpeg');
+              if (ext === '.svg') mime = 'svg+xml';
+
+              const dataUri = `data:image/${mime};base64,${base64Data}`;
+              const imgIndex = result.images.length;
+              result.images.push({ filePath: headerPath, data: dataUri });
+
+              projectContentBuffer += `### 🖼️ \`${headerPath}\` [C]\n`;
+              projectContentBuffer += `> [MULTIMODAL STATUS]: IMAGE LOADED IN VISION BUFFER.\n`;
+              projectContentBuffer += `> [VISUAL CONTEXT INDEX]: ${imgIndex}\n`;
+              projectContentBuffer += `> You can see this image directly in your vision stream. Do NOT use 'analyze_image' for this file.\n\n`;
+              filesInThisFolderCount++;
+              continue;
+            }
+
+            if (this.isBinary(fileBuffer)) {
+              projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n(Binary content detected and excluded)\n\`\`\`\n\n`;
+              filesInThisFolderCount++;
+              continue;
+            }
+
+            if (this.docExtensions.has(ext)) {
+              fileContent = await this.processFile(relativePath, fileBuffer.toString('base64'), result.images);
+            } else if (ext === '.ipynb') {
+              const notebookJson = JSON.parse(fileBuffer.toString('utf8'));
+              if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
+                  notebookJson.cells.forEach((cell: any, index: number) => {
+                      const source = Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');
+                      if (cell.cell_type === 'code') fileContent += `--- Cell ${index + 1} (code) ---\n\`\`\`python\n${source}\n\`\`\`\n\n`;
+                      if (cell.cell_type === 'markdown') fileContent += `--- Cell ${index + 1} (markdown) ---\n${source}\n\n`;
+                  });
+              }
+            } else {
+              fileContent = fileBuffer.toString('utf8');
+            }
+          }
+
+          if (fileContent.length < 500000) {
+            this._fileContentCache.set(cacheKey, { content: fileContent, state: contextState });
+          }
+
+          projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${fileContent}\n\`\`\`\n\n`;
+          filesInThisFolderCount++;
+
+        } catch (error) {
+          Logger.warn(`Skipping missing/unreadable file in context: ${headerPath}`, error);
         }
+      }
+
+      // Append the collected file contents for this folder to the final context results
+      if (projectContentBuffer) {
+        result.text += projectContentBuffer;
+        result.selectedFilesContent += projectContentBuffer;
       }
     }
 
     this._lastContext = result;
     return result;
   }
-
+  }
   // ─────────────────────────────────────────────────────────────
   // FILE OPERATIONS
   // ─────────────────────────────────────────────────────────────
@@ -1255,6 +1249,24 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
 
     const relativePath = path.join('.lollms', 'web_cache', filename);
     await this.contextStateProvider?.addFilesToContext([relativePath]);
+
+    // --- AUTOMATIC GRAPH INGESTION ---
+    // Safely index the scraped webpage as a structured s:Document inside our Knowledge Graph
+    if (this.agentManager?.projectMemoryManager) {
+        try {
+            const docTitle = safeName.replace(/_/g, ' ').toUpperCase();
+            await this.agentManager.projectMemoryManager.ingestResearchDocument(
+                safeName,
+                docTitle,
+                processedContent,
+                urlObj.hostname,
+                "Web Scrape"
+            );
+            Logger.info(`[Librarian] Webpage '${url}' successfully ingested into Ontological Knowledge Graph.`);
+        } catch (err: any) {
+            Logger.warn("Failed to ingest scraped page into Graph", err);
+        }
+    }
 
     if (depth > 0) {
       const linkRegex = /href=["'](https?:\/\/[^"']+)["']/g;

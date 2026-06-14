@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.90",
+  "version": "0.8.92",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1081,7 +1081,7 @@
         },
         "lollmsVsCoder.billing.budgetCap": {
           "type": "number",
-          "default": 10.00,
+          "default": 10,
           "description": "Daily monetary budget cap in USD. Takes effect only if Budget Capping is enabled."
         },
         "lollmsVsCoder.billing.rates": {
@@ -1090,23 +1090,23 @@
           "default": [
             {
               "pattern": "gpt-4o",
-              "inputRate": 2.50,
-              "outputRate": 10.00
+              "inputRate": 2.5,
+              "outputRate": 10
             },
             {
               "pattern": "claude-3-5",
-              "inputRate": 3.00,
-              "outputRate": 15.00
+              "inputRate": 3,
+              "outputRate": 15
             },
             {
               "pattern": "gemini",
               "inputRate": 0.075,
-              "outputRate": 0.30
+              "outputRate": 0.3
             },
             {
               "pattern": "ollama",
-              "inputRate": 0.00,
-              "outputRate": 0.00
+              "inputRate": 0,
+              "outputRate": 0
             }
           ],
           "items": {
@@ -1545,9 +1545,9 @@
           "default": false,
           "description": "Automatically detect and disable competing extensions (like GitHub Copilot or Microsoft Copilot) to prevent redundant completions and optimize performance."
         }
-        }
-        },
-        "viewsContainers": {
+      }
+    },
+    "viewsContainers": {
       "activitybar": [
         {
           "id": "lollms",
@@ -2108,7 +2108,7 @@
     "@types/vscode": "1.74.0",
     "@vscode/vsce": "^2.26.0",
     "cpx2": "^4.2.0",
-    "esbuild": "^0.25.10",
+    "esbuild": "^0.28.1",
     "rimraf": "^5.0.5",
     "typescript": "5.9.2"
   },

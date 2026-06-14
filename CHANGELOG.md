@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-06-12 01:54]
+
+- feat(core): Update package versions and enhance agent/command flow
+
 ## [2026-06-11 05:15]
 
 - feat(chat-panel): Implement code graph management and enhance guardian protocol

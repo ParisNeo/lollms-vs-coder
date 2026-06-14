@@ -4,6 +4,11 @@ import { Logger } from './logger';
 
 export type MemoryTier = 0 | 1 | 2 | 3;
 
+export interface MemoryPredicate {
+    verb: string;       // e.g. "depends_on", "implements", "part_of", "has_tag"
+    targetId: string;   // The ID of another memory node
+}
+
 export interface MemoryEntry {
     id: string;
     title: string;
@@ -15,6 +20,16 @@ export interface MemoryEntry {
     tier: MemoryTier;
     scope: 'local' | 'global';
     origin?: 'architect' | 'agent' | 'user'; // Track who created the engram
+    predicates?: MemoryPredicate[]; // Upgraded Graph Relationship links
+    
+    // --- MULTIMODAL RESEARCH METADATA ---
+    metadata?: {
+        sourceDocId?: string;  // ID of s:Document parent
+        author?: string;       // Author of article
+        chunkIndex?: number;   // Sequence order
+        domain?: string;       // e.g. "Security", "ML"
+        tags?: string[];       // Associated hashtags
+    };
 }
 
 export interface AffectiveMatrix {
@@ -47,7 +62,38 @@ export class ProjectMemoryManager {
         try {
             const content = await vscode.workspace.fs.readFile(memoryPath);
             const data = JSON.parse(Buffer.from(content).toString('utf8'));
-            this._cache = Array.isArray(data) ? data : [];
+            let rawEntries = Array.isArray(data) ? data : [];
+            
+            // --- 🛡️ RESILIENT PURGE: ONLY CLEAN AUTOMATED SKILLS ---
+            // Tag nodes and user-added memories are now protected from deletion!
+            const originalLength = rawEntries.length;
+            rawEntries = rawEntries.filter(m => {
+                const id = String(m.id || '');
+                return !id.startsWith('skill_'); // ONLY remove virtual skills, preserve tags & engrams!
+            });
+
+            if (rawEntries.length !== originalLength) {
+                Logger.warn(`[Memory Leak Purge] Cleaned ${originalLength - rawEntries.length} virtual skill nodes from database.`);
+            }
+
+            let migrated = false;
+            
+            // 1. Structural Migration
+            rawEntries.forEach(m => {
+                if (!m.predicates) {
+                    m.predicates = [];
+                    if (m.category) {
+                        m.predicates.push({ verb: "categorized_under", targetId: `cat_${m.category}` });
+                    }
+                    migrated = true;
+                }
+            });
+
+            this._cache = rawEntries;
+
+            if (migrated || rawEntries.length !== originalLength) {
+                await this.saveEngrams(this._cache);
+            }
         } catch (error) {
             this._cache = [];
         }
@@ -55,23 +101,36 @@ export class ProjectMemoryManager {
         return this._cache;
     }
 
-    public async updateMemory(action: 'add' | 'update' | 'delete', id: string, title?: string, content?: string, category: string = "general", importance?: number) {
+    public async updateMemory(
+        action: 'add' | 'update' | 'delete', 
+        id: string, 
+        title?: string, 
+        content?: string, 
+        category: string = "general", 
+        importance?: number,
+        predicates?: MemoryPredicate[]
+    ) {
         await this.getMemories();
 
         // --- IMPORTANCE NORMALIZATION ---
-        // AI agents often use a 0.0 - 5.0 scale. The manager uses 0 - 100.
         let finalImportance = importance;
         if (finalImportance !== undefined && finalImportance <= 5.0 && finalImportance > 0) {
-            finalImportance = finalImportance * 20; // Scale 2.0 -> 40%
+            finalImportance = finalImportance * 20; 
         }
 
         if (action === 'delete') {
             this._cache = this._cache.filter(m => m.id !== id);
+            // Cascading deletion of orphan relations
+            this._cache.forEach(m => {
+                if (m.predicates) {
+                    m.predicates = m.predicates.filter(p => p.targetId !== id);
+                }
+            });
         } else {
             const index = this._cache.findIndex(m => m.id === id);
 
             if (index === -1) {
-                // ADD or UPSERT (if update was called on non-existent ID)
+                // ADD or UPSERT
                 this._cache.push({
                     id,
                     title: title || id,
@@ -81,18 +140,19 @@ export class ProjectMemoryManager {
                     lastUsed: Date.now(),
                     category: category,
                     tier: 1,
-                    scope: 'local'
+                    scope: 'local',
+                    predicates: predicates || []
                 });
             } else {
                 // UPDATE
                 const entry = this._cache[index];
                 if (title) entry.title = title;
                 if (content) entry.content = content;
+                if (predicates) entry.predicates = predicates;
 
                 if (finalImportance !== undefined) {
                     entry.importance = Math.max(0, Math.min(100, finalImportance));
                 } else {
-                    // Implicit reinforcement
                     entry.importance = Math.min(100, (entry.importance || 0) + 10);
                 }
 
@@ -101,27 +161,14 @@ export class ProjectMemoryManager {
             }
         }
 
-        // 2. Persist
-        const folders = vscode.workspace.workspaceFolders ||[];
-        for (const folder of folders) {
-            const localPath = vscode.Uri.joinPath(folder.uri, '.lollms', 'project_memory.json');
-            try {
-                const dir = vscode.Uri.joinPath(localPath, '..');
-                await vscode.workspace.fs.createDirectory(dir);
-                const buffer = Buffer.from(JSON.stringify(this._cache, null, 2), 'utf8');
-                await vscode.workspace.fs.writeFile(localPath, buffer);
-            } catch (e) {
-                console.error(`Failed to save project memory to ${folder.name}`, e);
-            }
-        }
+        // 2. Persist to storage
+        await this.saveEngrams(this._cache);
 
-        // 3. Notify UI (Both Sidebar Tree and Webview Panel)
+        // 3. Notify UI
         this._onDidChange.fire();
-        
-        // Force the Webview to update if it's open
+
         const { ProjectMemoryPanel } = require('./commands/projectMemoryPanel');
         if (ProjectMemoryPanel.currentPanel) {
-            // This is a hacky but effective way to trigger the private _update in the currentPanel
             (ProjectMemoryPanel.currentPanel as any)._update();
         }
     }
@@ -164,15 +211,240 @@ export class ProjectMemoryManager {
     }
 
     /**
-     * TIERED NEURAL MEMORY RECOVERY
-     * Injects memory based on the Neural System Specification (Tier 0-2).
-     * Tier 3 remains hidden unless explicitly searched.
+     * CONTEXT-AWARE SEMANTIC OVERLAP ENGINE
+     * Dynamically calculates Jaccard overlap between the prompt keywords 
+     * and memory engrams to score relevance and hydrate deep memory on-demand.
      */
-    public async getFormattedMemoryBlock(): Promise<string> {
+    public calculateRelevanceScore(engram: MemoryEntry, keywords: string[]): number {
+        if (keywords.length === 0) return 0;
+        const text = `${engram.title} ${engram.content} ${engram.category}`.toLowerCase();
+        let matches = 0;
+        keywords.forEach(kw => {
+            if (text.includes(kw)) matches++;
+        });
+        return (matches / keywords.length) * 100;
+    }
+
+    /**
+     * TIERED NEURAL MEMORY RECOVERY (UPGRADED)
+     * Injects memory based on context-aware relevance.
+     * Deep Memory is automatically searched and matching nodes are promoted 
+     * to Tier 1 (Working Memory) on-demand.
+     */
+    /**
+     * DOCUMENT CHUNKING ENGINE
+     * Surgically splits a long document into attributed chunks and
+     * links them to the parent s:Document node to prevent cross-document pollution.
+     */
+    public async ingestResearchDocument(
+        docId: string, 
+        title: string, 
+        content: string, 
+        author?: string, 
+        domain?: string
+    ): Promise<void> {
+        await this.getMemories();
+
+        // 1. Create the parent Document Node
+        const cleanDocId = `doc_${docId.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+
+        // Extract tags from the document body to link the parent to global topics
+        const tagRegex = /#([\w_]+)/g;
+        let match;
+        const documentTags = new Set<string>();
+        while ((match = tagRegex.exec(content)) !== null) {
+            documentTags.add(match[1].toLowerCase());
+        }
+
+        const docPredicates: MemoryPredicate[] = Array.from(documentTags).map(t => ({
+            verb: "has_tag",
+            targetId: `tag_${t}`
+        }));
+
+        this._cache = this._cache.filter(m => m.id !== cleanDocId && m.metadata?.sourceDocId !== cleanDocId);
+
+        this._cache.push({
+            id: cleanDocId,
+            title,
+            content: `Document Summary: ${title} by ${author || 'Unknown'}. Domain: ${domain || 'General'}. Topics: ${Array.from(documentTags).join(', ')}`,
+            timestamp: Date.now(),
+            importance: 30, // Latent Tier 2
+            lastUsed: Date.now(),
+            category: 'document',
+            scope: 'local',
+            predicates: docPredicates,
+            metadata: {
+                author,
+                domain,
+                tags: Array.from(documentTags)
+            }
+        });
+
+        // 2. Split into structured, attributed chunks (Approx 1000 chars per chunk)
+        const CHUNK_SIZE = 1000;
+        const OVERLAP = 150;
+        let chunkIdx = 0;
+
+        for (let i = 0; i < content.length; i += (CHUNK_SIZE - OVERLAP)) {
+            const chunkContent = content.substring(i, i + CHUNK_SIZE);
+            const chunkId = `${cleanDocId}_chunk_${chunkIdx}`;
+
+            const chunkPredicates: MemoryPredicate[] = [
+                { verb: "part_of", targetId: cleanDocId }
+            ];
+
+            // Extract tags inside the specific chunk to link it to localized topics
+            const chunkTags = new Set<string>();
+            let chunkMatch;
+            while ((chunkMatch = tagRegex.exec(chunkContent)) !== null) {
+                chunkTags.add(chunkMatch[1].toLowerCase());
+            }
+            chunkTags.forEach(t => chunkPredicates.push({ verb: "has_tag", targetId: `tag_${t}` }));
+
+            this._cache.push({
+                id: chunkId,
+                title: `${title} (Part ${chunkIdx + 1})`,
+                content: chunkContent,
+                timestamp: Date.now(),
+                importance: 20, // Keep in Latent Deep Storage
+                lastUsed: Date.now(),
+                category: 'chunk',
+                scope: 'local',
+                predicates: chunkPredicates,
+                metadata: {
+                    sourceDocId: cleanDocId,
+                    chunkIndex: chunkIdx,
+                    author,
+                    domain,
+                    tags: Array.from(chunkTags)
+                }
+            });
+
+            chunkIdx++;
+            if (i + CHUNK_SIZE >= content.length) break;
+        }
+
+        await this.saveEngrams(this._cache);
+        this._onDidChange.fire();
+    }
+    /**
+     * VIRTUAL SKILL PROJECTION ENGINE
+     * Imports all active skills from SkillsManager and projects them
+     * as Virtual Memory Nodes inside our Knowledge Graph with on-the-fly
+     * hashtag-to-node association.
+     */
+    public async getProjectedGraph(skillsManager?: any): Promise<MemoryEntry[]> {
+        const engrams = await this.getMemories();
+
+        // Deep copy core engrams to ensure the dynamic projection has zero write-back leakage
+        const projected = JSON.parse(JSON.stringify(engrams));
+
+        // 1. Project Hashtags from Core Engrams (VOLATILE RUNTIME-ONLY PROJECTION)
+        projected.forEach(m => {
+            const tagRegex = /#([\w_]+)/g;
+            let match;
+            const foundTags = new Set<string>();
+
+            while ((match = tagRegex.exec(m.content)) !== null) {
+                foundTags.add(match[1].toLowerCase());
+            }
+
+            foundTags.forEach(tagId => {
+                const fullTagId = `tag_${tagId}`;
+                const exists = projected.some(x => x.id === fullTagId);
+                if (!exists) {
+                    projected.push({
+                        id: fullTagId,
+                        title: `#${tagId}`,
+                        content: `Shared semantic hub for #${tagId} relationships.`,
+                        timestamp: Date.now(),
+                        importance: 10,
+                        lastUsed: Date.now(),
+                        category: 'tag',
+                        scope: 'local',
+                        predicates: []
+                    });
+                }
+
+                if (!m.predicates) m.predicates = [];
+                const hasLink = m.predicates.some(p => p.verb === 'has_tag' && p.targetId === fullTagId);
+                if (!hasLink) {
+                    m.predicates.push({ verb: 'has_tag', targetId: fullTagId });
+                }
+            });
+        });
+
+        if (!skillsManager) return projected;
+
+        // 2. Project Skills from SkillsManager (VOLATILE RUNTIME-ONLY PROJECTION)
+        try {
+            const skills = await skillsManager.getSkills();
+            skills.forEach((s: any) => {
+                const virtId = `skill_${s.id}`;
+
+                const tagRegex = /#([\w_]+)/g;
+                let match;
+                const predicates: MemoryPredicate[] = [];
+
+                while ((match = tagRegex.exec(s.content)) !== null) {
+                    const tagId = `tag_${match[1].toLowerCase()}`;
+                    predicates.push({ verb: "has_tag", targetId: tagId });
+
+                    if (!projected.some(x => x.id === tagId)) {
+                        projected.push({
+                            id: tagId,
+                            title: `#${match[1]}`,
+                            content: `Shared semantic hub for #${match[1]} relationships.`,
+                            timestamp: Date.now(),
+                            importance: 10,
+                            lastUsed: Date.now(),
+                            category: 'tag',
+                            scope: 'local',
+                            predicates: []
+                        });
+                    }
+                }
+
+                if (s.category) {
+                    predicates.push({ verb: "categorized_under", targetId: `cat_${s.category}` });
+                }
+
+                projected.push({
+                    id: virtId,
+                    title: s.name,
+                    content: s.content,
+                    timestamp: s.timestamp || Date.now(),
+                    importance: 20, 
+                    lastUsed: s.timestamp || Date.now(),
+                    category: s.category || 'skills',
+                    scope: s.scope || 'global',
+                    predicates: predicates
+                });
+            });
+        } catch (e) {
+            Logger.warn("[Memory] Failed to project skills into Knowledge Graph", e);
+        }
+
+        return projected;
+    }
+
+    /**
+     * TIERED NEURAL MEMORY RECOVERY (UPGRADED)
+     * Injects memory based on context-aware relevance.
+     * Both Deep Memories are searched and promoted on-demand.
+     * Strictly enforces a budget cap to protect attention maps from bloat.
+     */
+    public async getFormattedMemoryBlock(userPrompt?: string, skillsManager?: any): Promise<string> {
+        // Fetch raw memories (excluding projected skills to prevent massive duplicate bloat)
         const engrams = await this.getMemories();
         const affective = await this.getAffectiveMatrix();
-        
-        let block = `\n# 🧠 NEURAL MEMORY SYSTEM (TIERED RLM)\n`;
+
+        // Extract lowercase keywords for semantic matching
+        const keywords = userPrompt 
+            ? userPrompt.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 3)
+            : [];
+
+        let block = `\n# 🧠 NEURAL MEMORY SYSTEM (KNOWLEDGE GRAPH)\n`;
         block += `[AFFECTIVE MATRIX]: Relationship state is "${affective.label}" (${affective.relationshipScore}/100).\n`;
 
         // Tier 0: Immutable ROM (Hardcoded Specs)
@@ -180,33 +452,93 @@ export class ProjectMemoryManager {
         block += `- Hub Purpose: Sovereign Local Engineering\n`;
         block += `- Protocol: LCP (LoLLMs Communication Protocol) Active\n`;
 
-        // Tier 1: Working Memory (Active Engrams >= 25%)
-        const tier1 = engrams.filter(e => e.importance >= this.TIER_THRESHOLD);
-        if (tier1.length > 0) {
-            block += `\n## TIER 1: WORKING MEMORY (ACTIVE)\n`;
-            tier1.forEach(e => {
-                block += `### [${e.category.toUpperCase()}] ${e.title}\n${e.content}\n`;
+        // Dynamic Hydration Pass with Scope Protection
+        const hydratedEngrams: MemoryEntry[] = [];
+        const latentHandles: MemoryEntry[] = [];
+
+        // --- SCOPE PROTECTION SEARCH ---
+        let isolatedDocId: string | null = null;
+        for (const e of engrams) {
+            if (e.category === 'document') {
+                const wordsInTitle = e.title.toLowerCase().split(/\s+/);
+                const hasOverlap = wordsInTitle.some(w => w.length > 3 && keywords.includes(w));
+                if (hasOverlap) {
+                    isolatedDocId = e.id;
+                    break;
+                }
+            }
+        }
+
+        engrams.forEach(e => {
+            if (isolatedDocId && e.category === 'chunk' && e.metadata?.sourceDocId !== isolatedDocId) {
+                latentHandles.push(e);
+                return;
+            }
+
+            const isBaseLive = e.importance >= this.TIER_THRESHOLD;
+            const semanticScore = this.calculateRelevanceScore(e, keywords);
+            const isSemanticallyRelevant = semanticScore > 35;
+
+            if (isBaseLive || isSemanticallyRelevant) {
+                hydratedEngrams.push(e);
+            } else {
+                latentHandles.push(e);
+            }
+        });
+
+        // --- COGNITIVE BUDGET CAP ---
+        // Hard-cap on active working memory size.
+        // Sort hydrated entries so highly relevant/important ones are prioritized first.
+        const sortedHydrated = hydratedEngrams.sort((a, b) => {
+            const scoreA = this.calculateRelevanceScore(a, keywords) + (a.importance || 0);
+            const scoreB = this.calculateRelevanceScore(b, keywords) + (b.importance || 0);
+            return scoreB - scoreA;
+        });
+
+        const BUDGET_LIMIT_CHARACTERS = 8000; // ~2,000 tokens limit for active memory injection
+        let currentSize = 0;
+        const activeEngrams: MemoryEntry[] = [];
+
+        for (const e of sortedHydrated) {
+            const entrySize = e.content.length + e.title.length;
+            if (currentSize + entrySize < BUDGET_LIMIT_CHARACTERS) {
+                activeEngrams.push(e);
+                currentSize += entrySize;
+            } else {
+                // Demote over-budget items to latent storage handles
+                latentHandles.push(e);
+            }
+        }
+
+        if (activeEngrams.length > 0) {
+            block += `\n## TIER 1: ACTIVE WORKING SUBGRAPH\n`;
+            activeEngrams.forEach(e => {
+                block += `### [${e.category.toUpperCase()}] ${e.title} (${e.id})\n`;
+                block += `${e.content}\n`;
+                if (e.predicates && e.predicates.length > 0) {
+                    block += `**Relationships**:\n`;
+                    e.predicates.forEach(p => {
+                        const target = engrams.find(x => x.id === p.targetId);
+                        block += `- s:${e.id} s:${p.verb} s:${p.targetId} ("${target ? target.title : p.targetId}")\n`;
+                    });
+                }
+                block += `\n`;
             });
         }
 
-        // Tier 2: Latent Handles (1% - 24%)
-        // These are injected as an index so the agent knows what it can "remember"
-        const tier2 = engrams.filter(e => e.importance > 0 && e.importance < this.TIER_THRESHOLD);
-        if (tier2.length > 0) {
-            block += `\n## TIER 2: LATENT HANDLES (DEEP MEMORY)\n`;
-            block += `The following IDs exist in your deep storage. Use 'search_deep_memory' to retrieve full content if relevant.\n`;
+        if (latentHandles.length > 0) {
+            block += `\n## TIER 2: DEEP STORAGE HANDLES (LATENT GRAPH)\n`;
+            block += `The following nodes exist in your deep storage. Use 'query_architecture' with SPARQL to extract full content when needed:\n`;
 
-            // Group by category for cleaner index
-            const categories = [...new Set(tier2.map(e => e.category))];
+            const categories = [...new Set(latentHandles.map(e => e.category))];
             categories.forEach(cat => {
-                const items = tier2.filter(e => e.category === cat);
-                block += `- ${cat}/: [${items.map(i => i.id).join(', ')}]\n`;
+                const items = latentHandles.filter(e => e.category === cat);
+                block += `- s:${cat}/: [${items.map(i => `s:${i.id}`).join(', ')}]\n`;
             });
         }
 
         return block;
     }
-
     public async getAffectiveMatrix(): Promise<AffectiveMatrix> {
         const score = this.context.globalState.get<number>('lollms_affective_score', 50);
         let label = "Neutral/Professional";

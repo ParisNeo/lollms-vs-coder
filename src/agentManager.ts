@@ -854,13 +854,39 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
             const remainingSteps = maxSteps - stepCount;
             let budgetBlock = `### ⏳ MISSION BUDGET\n- **Current Step**: ${stepCount} of ${maxSteps}\n- **Remaining Turns**: ${remainingSteps}\n`;
-            
+
             if (remainingSteps <= 3) {
                 budgetBlock += `\n**🚨 CRITICAL WARNING: LOW BUDGET**\nYou are about to run out of turns. You are FORBIDDEN from starting new deep research, long tests, or complex refactors. You MUST use your remaining turns to:\n1. Wrap up your current work safely.\n2. Use the \`submit_response\` tool to explain to the user what you accomplished and what remains to be done before you are forcefully terminated.\n`;
             }
 
+            // --- COGNITIVE RESET PATTERN (REPETITION GUARD) ---
+            let repetitionNudge = "";
+            const recentHistoryLength = this.completedActionsHistory.length;
+            if (recentHistoryLength >= 2) {
+                const lastLog = this.completedActionsHistory[recentHistoryLength - 1];
+                const prevLog = this.completedActionsHistory[recentHistoryLength - 2];
+
+                // Detect if the agent is repeating tools or is stuck in an error loop
+                const isRepetitiveTool = lastLog.includes("STATUS: ❌ FAILURE") && prevLog.includes("STATUS: ❌ FAILURE");
+                const isStuckInLoop = lastLog.includes("WARNING: You already executed") || lastLog.includes("ERROR: Tool failed");
+
+                if (isRepetitiveTool || isStuckInLoop) {
+                    repetitionNudge = `
+### 🚨 COGNITIVE RESET: UNSTUCK MANDATE
+You are stuck in a thought loop or are repeating failing actions. 
+Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the faliing command or using the same parameters.
+
+**DIRECTIONS TO BREAK THE LOOP:**
+1. **Explore with SPARQL**: Use \`query_architecture\` with \`query_type: "sparql"\` and \`target: "SELECT ?file ?path WHERE { ?file s:type s:File . ?file s:path ?path }"\` to discover exactly what files exist.
+2. **Read the Main file**: If you know a file exists, use \`read_file\` with \`path: "freedom_search/enhancer.py"\` (or any other path shown in the tree) to inspect its code.
+3. **Change Parameters**: Do NOT search for the same pattern or run the same shell command again.
+4. **Output ONE tool call**: Output exactly one valid JSON block. Multiple JSON blocks in a single response are forbidden and cause parser failure.
+`;
+                }
+            }
+
             const visionParts: any[] = [];
-            visionParts.push({ type: 'text', text: `${historyContext}${structuralNudge}\n\n${budgetBlock}\n\n**OBJECTIVE:** ${objective}\n\nWhat is your next technical action? Output JSON only.` });
+            visionParts.push({ type: 'text', text: `${historyContext}${structuralNudge}${repetitionNudge}\n\n${budgetBlock}\n\n**OBJECTIVE:** ${objective}\n\nWhat is your next technical action? Output JSON only.` });
 
             const ensureDataUri = (data: string) => {
                 if (!data) return "";
@@ -1339,7 +1365,6 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 executionLog += `  Result: ${truncatedResult}\n`;
             }
         });
-
         const prompt = `You are the Lead Architect. You have just finished executing an automated plan for the user.
 
 **User's Original Request:** "${originalObjective}"
@@ -1589,11 +1614,20 @@ Please provide a clear, concise final response to the user summarizing the outco
             const pastTasks = this.currentPlan.tasks.filter(t => t.id !== task.id && (t.status === 'completed' || t.status === 'failed'));
 
             const recentTasks = pastTasks.slice(-10);
-            let redundantSuccess = recentTasks.find(t => 
-                t.status === 'completed' && 
-                t.action === task.action && 
-                JSON.stringify(t.parameters) === JSON.stringify(resolvedParams)
-            );
+
+            // Clean/normalize parameters using FailureMemory helper so synonymous formats are caught
+            const cleanParamsHelper = (p: any) => {
+                if (!this.failureMemory) return p;
+                return (this.failureMemory as any).cleanParams(p);
+            };
+
+            const targetNormalizedStr = JSON.stringify(cleanParamsHelper(resolvedParams));
+
+            let redundantSuccess = recentTasks.find(t => {
+                if (t.status !== 'completed' || t.action !== task.action) return false;
+                const otherNormalizedStr = JSON.stringify(cleanParamsHelper(t.parameters));
+                return otherNormalizedStr === targetNormalizedStr;
+            });
 
             if (redundantSuccess && (task.action === 'read_file' || task.action === 'read_files')) {
                 const checkPath = (resolvedParams.path || resolvedParams.file || (resolvedParams.paths && resolvedParams.paths[0]) || "").replace(/\\/g, '/');

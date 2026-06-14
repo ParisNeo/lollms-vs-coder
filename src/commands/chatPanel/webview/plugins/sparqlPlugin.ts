@@ -3,12 +3,13 @@ import DOMPurify from 'dompurify';
 
 export const sparqlPlugin: TagPlugin = {
     id: 'query_architecture',
-    tagPattern: /^[ \t]*<query_architecture>([\s\S]*?)<\/query_architecture>/gim,
+    tagPattern: /<query_architecture>([\s\S]*?)<\/query_architecture>/gi,
     render: (match, context) => {
         const queryText = match[1].trim();
         const blockId = `sparql-req-${context.messageId}-${Math.random().toString(36).substring(7)}`;
 
         const isAuto = context.capabilities?.autoApply === true;
+        const escapedQuery = queryText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
         return `
         <div class="generation-block sparql-block" id="${blockId}" data-query="${encodeURIComponent(queryText)}">
@@ -27,7 +28,7 @@ export const sparqlPlugin: TagPlugin = {
                 </div>
             </div>
             <div class="generation-body" style="padding: 12px; background: var(--vscode-editor-background);">
-                <pre style="margin: 0; padding: 10px; background: rgba(0,0,0,0.15); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-family: monospace; font-size: 11px; white-space: pre-wrap; overflow-x: auto;">${DOMPurify.sanitize(queryText)}</pre>
+                <pre style="margin: 0; padding: 10px; background: rgba(0,0,0,0.15); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-family: monospace; font-size: 11px; white-space: pre-wrap; overflow-x: auto;">${escapedQuery}</pre>
                 ${isAuto ? `<div style="font-size: 10px; color: var(--vscode-charts-green); margin-top: 8px;"><i class="codicon codicon-sync spin"></i> Auto-Apply Active: Querying complete ontology graph...</div>` : ''}
             </div>
         </div>`;

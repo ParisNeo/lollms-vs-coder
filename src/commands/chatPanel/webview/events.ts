@@ -359,17 +359,19 @@ export function initEventHandlers() {
         });
     }
 
-    // This handler is now the single source of truth for both the + File button
-    // and the Drag & Drop functionality.
+    // Integrated File Import: reads the UI parsing strategy before submitting
     const handleFileImport = (files: FileList | null) => {
         if (!files || files.length === 0) return;
-        
+
         setGeneratingState(true, "Importing data...");
-        
+
+        const strategyRadio = document.querySelector('input[name="pdf-parse-strategy"]:checked') as HTMLInputElement;
+        const parseStrategy = strategyRadio ? strategyRadio.value : 'text';
+
         for (const file of Array.from(files)) {
             const reader = new FileReader();
             const isImage = file.type.startsWith('image/');
-            
+
             reader.onload = (event) => {
                 const content = event.target?.result as string;
                 if (isImage) {
@@ -377,11 +379,15 @@ export function initEventHandlers() {
                     renderPendingImages();
                     setGeneratingState(false);
                 } else {
-                    // This message triggers _handleFileAttachment in the extension
-                    // which creates the "Imported Data" bubble in the chat.
+                    // Pass the user-selected parse strategy to the backend
                     vscode.postMessage({
                         command: 'loadFile',
-                        file: { name: file.name, content: content, isImage: false }
+                        file: { 
+                            name: file.name, 
+                            content: content, 
+                            isImage: false,
+                            mode: parseStrategy 
+                        }
                     });
                 }
             };
@@ -408,7 +414,7 @@ export function initEventHandlers() {
         });
     }
 
-    // Web Discovery Modal
+    // --- GROUNDING & INGESTION CENTER EVENTS ---
     if (dom.webContextBtn) {
         dom.webContextBtn.addEventListener('click', () => {
             dom.webModal.classList.add('visible');
@@ -427,7 +433,9 @@ export function initEventHandlers() {
             dom.webTabBtns.forEach(b => b.classList.remove('active'));
             dom.webTabContents.forEach(c => c.classList.remove('active'));
             btn.classList.add('active');
-            document.getElementById(target!)?.classList.add('active');
+
+            const targetEl = document.getElementById(target!);
+            if (targetEl) targetEl.classList.add('active');
         });
     });
 
@@ -437,43 +445,78 @@ export function initEventHandlers() {
             const container = (btn as HTMLElement).closest('.web-tab-content');
             let params: any = {};
 
-            if (action === 'scrape' || action === 'youtube') {
-                // Direct actions still close the modal
-                if (action === 'scrape') {
-                    params = {
-                        url: (document.getElementById('web-url-input') as HTMLInputElement).value,
-                        depth: parseInt((document.getElementById('web-url-depth') as HTMLInputElement).value, 10)
-                    };
-                } else {
-                    params = {
-                        url: (document.getElementById('web-yt-url') as HTMLInputElement).value,
-                        language: (document.getElementById('web-yt-lang') as HTMLInputElement).value
-                    };
-                }
+            if (action === 'scrape') {
+                params = {
+                    url: (document.getElementById('web-url-input') as HTMLInputElement).value,
+                    depth: parseInt((document.getElementById('web-url-depth') as HTMLInputElement).value, 10)
+                };
                 vscode.postMessage({ command: 'requestWebAction', action, params });
                 dom.webModal.classList.remove('visible');
-            } else {
-                // Search actions display results in the tab instead of closing
-                const input = container?.querySelector('input[type="text"]') as HTMLInputElement;
-                if (!input || !input.value.trim()) {
+            } else if (action === 'search_provider') {
+                const queryInp = document.getElementById('web-search-query') as HTMLInputElement;
+                const providerSelect = document.getElementById('web-search-provider') as HTMLSelectElement;
+
+                if (!queryInp.value.trim()) {
                     vscode.postMessage({ command: 'showError', message: 'Please enter a search query.' });
                     return;
                 }
 
-                let limit = 5;
-                if (action === 'arxiv') {
-                    const limitInp = document.getElementById('web-arxiv-limit') as HTMLInputElement;
-                    limit = parseInt(limitInp.value, 10) || 5;
+                btn.innerHTML = '<div class="spinner"></div>';
+                btn.disabled = true;
+
+                vscode.postMessage({ 
+                    command: 'requestWebAction', 
+                    action: providerSelect.value, 
+                    params: { query: queryInp.value, limit: 5 } 
+                });
+            } else if (action === 'academic_provider') {
+                const queryInp = document.getElementById('web-arxiv-input') as HTMLInputElement;
+                const providerSelect = document.getElementById('web-academic-provider') as HTMLSelectElement;
+                const limitInp = document.getElementById('web-arxiv-limit') as HTMLInputElement;
+
+                if (!queryInp.value.trim()) {
+                    vscode.postMessage({ command: 'showError', message: 'Please enter a scholarly search query.' });
+                    return;
                 }
 
-                const button = btn as HTMLButtonElement;
-                button.innerHTML = '<div class="spinner"></div>';
-                button.style.width = '80px'; // Maintain layout
-                button.disabled = true;
-                vscode.postMessage({ command: 'requestWebAction', action, params: { query: input.value, limit: limit } });
+                btn.innerHTML = '<div class="spinner"></div>';
+                btn.disabled = true;
+
+                vscode.postMessage({ 
+                    command: 'requestWebAction', 
+                    action: providerSelect.value, 
+                    params: { 
+                        query: queryInp.value, 
+                        limit: parseInt(limitInp.value, 10) || 5 
+                    } 
+                });
             }
         });
     });
+
+    // Integrated Drag & Drop Zone for Local Files Ingestion
+    const dragDropZone = document.getElementById('drag-drop-zone');
+    if (dragDropZone) {
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dragDropZone.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                dragDropZone.classList.add('drag-over');
+            });
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dragDropZone.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                dragDropZone.classList.remove('drag-over');
+            });
+        });
+
+        dragDropZone.addEventListener('drop', (e: DragEvent) => {
+            handleFileImport(e.dataTransfer?.files || null);
+        });
+    }
 
     if (dom.fileSearchInput) {
         let searchTimeout: any;

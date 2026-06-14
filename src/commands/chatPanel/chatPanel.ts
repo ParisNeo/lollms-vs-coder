@@ -102,6 +102,8 @@ export class ChatPanel {
     return newPanel;
   }
 
+  private _codeGraphManager!: CodeGraphManager;
+
   private constructor(panel: vscode.WebviewPanel, services: LollmsServices, discussionId: string) {
     this._panel = panel;
     this._extensionUri = services.extensionUri;
@@ -111,6 +113,7 @@ export class ChatPanel {
     this._gitIntegration = services.gitIntegration;
     this._skillsManager = services.skillsManager;
     this._toolManager = services.toolManager;
+    this._codeGraphManager = services.codeGraphManager;
 
     this._discussionCapabilities = this._discussionManager.getLastCapabilities();
 
@@ -161,7 +164,7 @@ export class ChatPanel {
               this._gitIntegration,
               this._discussionManager,
               this._extensionUri,
-              undefined, 
+              this._codeGraphManager, 
               this._skillsManager,
               this._toolManager
           );
@@ -1008,7 +1011,7 @@ export class ChatPanel {
 
             // --- MOVED: Extract Project Memory early for tokenization ---
             const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
-                ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock()
+                ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, this._skillsManager)
                 : "";
 
             const rawBriefing = this._currentDiscussion?.discussion_data_zone || "";
@@ -1364,9 +1367,9 @@ export class ChatPanel {
                 const briefingTokens = Math.ceil((briefingText?.length || 0) / 3.5);
                 const diagramTokens = Math.ceil((diagramText?.length || 0) / 3.5);
 
-                // Fix: Fetch or default projectMemory for the fallback
+                // Fix: Fetch or default projectMemory for the fallback with prompt grounding and skill projection
                 const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
-                    ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock()
+                    ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, this._skillsManager)
                     : "";
                 const memoryTokens = Math.ceil((projectMemory.length || 0) / 3.5);
 
@@ -2657,7 +2660,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         }
     }
     const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager.projectMemoryManager)
-    ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock()
+    ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(typeof message.content === 'string' ? message.content : '', this._skillsManager)
     : "";
 
     const context = { 
@@ -4664,24 +4667,6 @@ ${targetContent}
                             const result = await this._contextManager.processUrl(targetUrl, lang, undefined, undefined, depth);
                             await this.updateMessageContent(loadingMsgId, `✅ **Web Content Added:** ${targetUrl}\nSaved as: \`${result.filename}\`\n\nPreview:\n> ${result.summary}`);
                             this.updateContextAndTokens();
-                        } else if (['wiki', 'arxiv', 'google', 'ddg', 'so'].includes(action)) {
-                            const query = params.query;
-                            const results = await this._contextManager.searchWebInfo(action, query);
-                            webview.postMessage({ command: 'webSearchResults', action, results, query });
-                        } else if (action === 'scrape') {
-                            const targetUrl = params.url;
-                            const lang = params.language || 'en';
-                            const depth = params.depth || 0;
-
-                            await this.addMessageToDiscussion({
-                                id: loadingMsgId,
-                                role: 'system', 
-                                content: `🌐 Processing ${action}: ${targetUrl}...`
-                            });
-
-                            const result = await this._contextManager.processUrl(targetUrl, lang, undefined, undefined, depth);
-                            await this.updateMessageContent(loadingMsgId, `✅ **Web Content Added:** ${targetUrl}\nSaved as: \`${result.filename}\`\n\nPreview:\n> ${result.summary}`);
-                            this.updateContextAndTokens();
                         } else if (['wiki', 'arxiv', 'google', 'ddg', 'so', 'hal', 'scopus', 'patent'].includes(action)) {
                             const query = params.query;
                             const limit = params.limit || 5;
@@ -4691,9 +4676,7 @@ ${targetContent}
                     } catch (e: any) {
                         vscode.window.showErrorMessage(`Web action failed: ${e.message}`);
                         // CRITICAL: Tell the UI to stop spinning even on error
-                        if (['wiki', 'arxiv', 'google', 'ddg', 'so'].includes(action)) {
-                            webview.postMessage({ command: 'webSearchResults', action, results: [], query: params.query });
-                        }
+                        webview.postMessage({ command: 'webSearchResults', action, results: [], query: params.query });
                     }
                 }
                 break;
@@ -7137,156 +7120,122 @@ Task:
             </div>
         </div>
 
-        <!-- Web Discovery Modal -->
+        <!-- 🚀 UNIFIED GROUNDING & INGESTION CENTER -->
         <div id="web-modal" class="modal">
-            <div class="modal-content" style="max-width: 700px; width: 90%;">
-                <div class="modal-header">
-                    <h2>Web Discovery</h2>
+            <div class="modal-content" style="max-width: 850px; width: 95%; height: 85vh;">
+                <div class="modal-header" style="border-bottom: 1px solid var(--vscode-widget-border);">
+                    <h2 style="margin:0; display:flex; align-items:center; gap:10px;"><i class="codicon codicon-cloud-upload"></i> Sovereign Grounding Center</h2>
                     <span class="close-btn" id="web-modal-close-btn">&times;</span>
                 </div>
                 <div class="web-tabs-nav">
-                    <button class="web-tab-btn active" data-tab="tab-url">URL / Scrape</button>
-                    <button class="web-tab-btn" data-tab="tab-google">Google</button>
-                    <button class="web-tab-btn" data-tab="tab-ddg">DuckDuckGo</button>
-                    <button class="web-tab-btn" data-tab="tab-wiki">Wikipedia</button>
-                    <button class="web-tab-btn" data-tab="tab-arxiv">ArXiv</button>
-                    <button class="web-tab-btn" data-tab="tab-hal">HAL</button>
-                    <button class="web-tab-btn" data-tab="tab-scopus">Scopus</button>
-                    <button class="web-tab-btn" data-tab="tab-patent">Patents</button>
-                    <button class="web-tab-btn" data-tab="tab-so">StackOverflow</button>
-                    <button class="web-tab-btn" data-tab="tab-github">GitHub</button>
+                    <button class="web-tab-btn active" data-tab="tab-local-upload">📂 Local Document Ingestion</button>
+                    <button class="web-tab-btn" data-tab="tab-url">🌐 Web Scraper</button>
+                    <button class="web-tab-btn" data-tab="tab-search">🔍 Web Search Engines</button>
+                    <button class="web-tab-btn" data-tab="tab-arxiv">🎓 Academic Databases</button>
                 </div>
-                <div class="modal-body">
-                    <!-- URL Tab -->
-                    <div id="tab-url" class="web-tab-content active">
+                <div class="modal-body" style="flex:1; overflow-y:auto; padding: 20px;">
+
+                    <!-- Tab 1: Local Document Ingestion -->
+                    <div id="tab-local-upload" class="web-tab-content active">
+                        <div class="ingestion-drag-zone" id="drag-drop-zone">
+                            <i class="codicon codicon-cloud-upload" style="font-size:40px; color:var(--vscode-textLink-foreground);"></i>
+                            <h3>Drag & Drop Ingestion</h3>
+                            <p style="font-size:11px; opacity:0.7; margin:0 0 10px 0;">Supports PDF, DOCX, Markdown, Notebooks, and Images.</p>
+                            <button class="code-action-btn apply-btn" onclick="document.getElementById('fileInput').click()">Browse Local Storage</button>
+                        </div>
+
+                        <div class="ingestion-strategy-card" style="margin-top:20px;">
+                            <h4>Configure Parsing Strategy</h4>
+                            <p class="help-text">Define how non-text files (PDF/Office) should be mapped into the Knowledge Graph.</p>
+                            <div class="ingestion-strategy-grid">
+                                <label class="strategy-option-card">
+                                    <input type="radio" name="pdf-parse-strategy" value="text" checked>
+                                    <div class="strategy-details">
+                                        <strong>📝 Standard Extraction</strong>
+                                        <span>Highly efficient text-only extraction with layout preservation.</span>
+                                    </div>
+                                </label>
+                                <label class="strategy-option-card">
+                                    <input type="radio" name="pdf-parse-strategy" value="mixed">
+                                    <div class="strategy-details">
+                                        <strong>📷 Mixed Vision</strong>
+                                        <span>Extracts text and copies high-res diagrams into the Vision Stream.</span>
+                                    </div>
+                                </label>
+                                <label class="strategy-option-card">
+                                    <input type="radio" name="pdf-parse-strategy" value="images">
+                                    <div class="strategy-details">
+                                        <strong>🖼️ Full Multimodal</strong>
+                                        <span>Converts entire PDF pages into images. Best for charts and slides.</span>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab 2: Web Scraper -->
+                    <div id="tab-url" class="web-tab-content">
                         <div class="web-form-group">
-                            <label>URL to Scrape</label>
-                            <input type="text" id="web-url-input" placeholder="https://example.com/docs">
+                            <label>Target URL to Ingest</label>
+                            <input type="text" id="web-url-input" placeholder="https://example.com/api/docs">
                         </div>
                         <div class="web-form-group">
                             <label>Crawl Depth</label>
-                            <div class="web-form-row">
-                                <input type="number" id="web-url-depth" value="0" min="0" max="3" style="width: 60px;">
-                                <span class="help-text">0 = this page only. Max 3.</span>
+                            <div class="web-form-row" style="gap:10px;">
+                                <input type="number" id="web-url-depth" value="0" min="0" max="3" style="width: 80px;">
+                                <span class="help-text">0 = target page only. Depth > 0 triggers recursive domain indexing.</span>
                             </div>
                         </div>
-                        <button class="code-action-btn apply-btn web-submit-btn" data-action="scrape">Scrape Content</button>
+                        <button class="code-action-btn apply-btn web-submit-btn" data-action="scrape" style="width:100%; justify-content:center; height:32px;">Start Ingestion & Graph Indexing</button>
                     </div>
 
-                    <!-- YouTube Tab -->
-                    <div id="tab-youtube" class="web-tab-content">
+                    <!-- Tab 3: Web Search Engines -->
+                    <div id="tab-search" class="web-tab-content">
                         <div class="web-form-group">
-                            <label>Video URL</label>
-                            <input type="text" id="web-yt-url" placeholder="https://youtube.com/watch?v=...">
-                        </div>
-                        <div class="web-form-group">
-                            <label>Transcript Language</label>
-                            <input type="text" id="web-yt-lang" value="en" placeholder="en, fr, es..." style="width: 80px;">
-                        </div>
-                        <button class="code-action-btn apply-btn web-submit-btn" data-action="youtube">Extract Transcript</button>
-                    </div>
-
-                    <!-- Wikipedia Tab -->
-                    <div id="tab-wiki" class="web-tab-content">
-                        <div class="web-form-group">
-                            <label>Topic / Concept</label>
+                            <label>Query Search Stream</label>
                             <div class="web-form-row">
-                                <input type="text" id="web-wiki-input" placeholder="e.g. Quantum Computing" style="flex:1;">
-                                <button class="code-action-btn secondary-btn web-submit-btn" data-action="wiki" style="width: 80px;">Search</button>
+                                <input type="text" id="web-search-query" placeholder="e.g. latest changes in React Server Components 2026" style="flex:1;">
+                                <select id="web-search-provider" style="width:140px; margin:0;">
+                                    <option value="ddg">DuckDuckGo</option>
+                                    <option value="google">Google Custom</option>
+                                    <option value="so">StackOverflow</option>
+                                </select>
+                                <button class="code-action-btn apply-btn web-submit-btn" data-action="search_provider" style="width:90px; justify-content:center;">Query</button>
                             </div>
                         </div>
-                        <div id="web-wiki-results" class="web-search-results"></div>
-                        <button class="code-action-btn apply-btn" id="web-wiki-add-btn" style="display:none;">Add Selected Page</button>
+                        <div id="web-search-results" class="web-search-results" style="max-height:280px; overflow-y:auto; border: 1px solid var(--vscode-widget-border); border-radius:4px; margin-top:10px;">
+                            <div style="padding:20px; opacity:0.5; text-align:center;">Results stream will populate here. Select pages to index.</div>
+                        </div>
                     </div>
 
-                    <!-- ArXiv Tab -->
+                    <!-- Tab 4: Academic Databases -->
                     <div id="tab-arxiv" class="web-tab-content">
-                        <label>Search Query or Article ID/Link</label>
-                        <div style="display:flex; gap:8px; flex-direction: column;">
-                            <div style="display:flex; gap:8px;">
-                                <input type="text" id="web-arxiv-input" placeholder="e.g. 2401.00001 or LLM Safety" style="flex:1;">
-                                <button class="code-action-btn secondary-btn web-submit-btn" data-action="arxiv">Search</button>
-                            </div>
+                        <div class="web-form-group">
+                            <label>Scholarly Search Query (ArXiv/HAL)</label>
                             <div class="web-form-row">
-                                <label style="margin:0; font-size:10px;">Results Limit:</label>
-                                <input type="number" id="web-arxiv-limit" value="5" min="1" max="50" style="width: 50px;">
+                                <input type="text" id="web-arxiv-input" placeholder="e.g. GraphRAG entity extraction" style="flex:1;">
+                                <select id="web-academic-provider" style="width:120px; margin:0;">
+                                    <option value="arxiv">ArXiv</option>
+                                    <option value="hal">HAL Archive</option>
+                                </select>
+                                <button class="code-action-btn apply-btn web-submit-btn" data-action="academic_provider" style="width:90px; justify-content:center;">Search</button>
                             </div>
                         </div>
-                        <div id="web-arxiv-results" class="web-search-results"></div>
-                        <div class="checkbox-container">
-                            <input type="radio" name="arxiv-mode" id="arxiv-abstract" value="abstract" checked>
-                            <label for="arxiv-abstract">Abstract Only</label>
-                            <input type="radio" name="arxiv-mode" id="arxiv-full" value="full">
-                            <label for="arxiv-full">Full Text (Experimental)</label>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+                            <div class="radio-group" style="flex-direction:row; gap:15px; display:flex;">
+                                <label class="radio-option"><input type="radio" name="arxiv-mode" id="arxiv-abstract" value="abstract" checked> <span>Abstract only (Fast)</span></label>
+                                <label class="radio-option"><input type="radio" name="arxiv-mode" id="arxiv-full" value="full"> <span>Retrieve full PDF (Deep Analysis)</span></label>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:6px;">
+                                <label style="margin:0; font-size:10px;">Limit:</label>
+                                <input type="number" id="web-arxiv-limit" value="5" min="1" max="25" style="width:50px;">
+                            </div>
                         </div>
-                        <button class="code-action-btn apply-btn" id="web-arxiv-add-btn" style="width:100%; margin-top:15px; display:none;">Add Selected Article</button>
-                    </div>
-
-                    <!-- HAL Tab -->
-                    <div id="tab-hal" class="web-tab-content">
-                        <label>HAL Open Archive Search</label>
-                        <div style="display:flex; gap:8px;">
-                            <input type="text" id="web-hal-input" placeholder="e.g. Deep Learning Physics" style="flex:1;">
-                            <button class="code-action-btn secondary-btn web-submit-btn" data-action="hal">Search</button>
-                        </div>
-                        <div class="web-search-results"></div>
-                    </div>
-
-                    <!-- Scopus Tab -->
-                    <div id="tab-scopus" class="web-tab-content">
-                        <label>Elsevier Scopus Search</label>
-                        <div style="display:flex; gap:8px;">
-                            <input type="text" id="web-scopus-input" placeholder="Search Scopus database..." style="flex:1;">
-                            <button class="code-action-btn secondary-btn web-submit-btn" data-action="scopus">Search</button>
-                        </div>
-                        <p class="help-text">Requires Scopus API Key in Settings.</p>
-                        <div class="web-search-results"></div>
-                    </div>
-
-                    <!-- Patents Tab -->
-                    <div id="tab-patent" class="web-tab-content">
-                        <label>Patent Search (Google Patents)</label>
-                        <div style="display:flex; gap:8px;">
-                            <input type="text" id="web-patent-input" placeholder="e.g. 'lithium battery' 2023" style="flex:1;">
-                            <button class="code-action-btn secondary-btn web-submit-btn" data-action="patent">Search</button>
-                        </div>
-                        <div class="web-search-results"></div>
-                    </div>
-
-                    <!-- Google Tab -->
-                    <div id="tab-google" class="web-tab-content">
-                        <label>Google Search Query</label>
-                        <div style="display:flex; gap:8px; align-items: center;">
-                            <input type="text" id="web-google-input" placeholder="e.g. latest news on LoLLMs" style="flex:1;">
-                            <button class="code-action-btn apply-btn web-submit-btn" style="width: 100px;" data-action="google">Search</button>
-                        </div>
-                        <p class="help-text">Requires Google Custom Search API Key in Settings.</p>
-                    </div>
-
-                    <!-- DuckDuckGo Tab -->
-                    <div id="tab-ddg" class="web-tab-content">
-                        <label>DuckDuckGo Query</label>
-                        <div style="display:flex; gap:8px; align-items: center;">
-                            <input type="text" id="web-ddg-input" placeholder="e.g. rust programming best practices" style="flex:1;">
-                            <button class="code-action-btn apply-btn web-submit-btn" style="width: 100px;" data-action="ddg">Search</button>
+                        <div id="web-arxiv-results" class="web-search-results" style="max-height:240px; overflow-y:auto; border: 1px solid var(--vscode-widget-border); border-radius:4px; margin-top:10px;">
+                            <div style="padding:20px; opacity:0.5; text-align:center;">Search publications...</div>
                         </div>
                     </div>
 
-                    <!-- SO Tab -->
-                    <div id="tab-so" class="web-tab-content">
-                        <label>Search Query</label>
-                        <input type="text" id="web-so-input" placeholder="e.g. Python list comprehension performance">
-                        <button class="code-action-btn apply-btn web-submit-btn" style="width:100%; margin-top:15px;" data-action="so">Search & Add Results</button>
-                    </div>
-
-                    <!-- GitHub Tab -->
-                    <div id="tab-github" class="web-tab-content">
-                        <label>Repository URL or Search</label>
-                        <div style="display:flex; gap:8px;">
-                            <input type="text" id="web-github-input" placeholder="e.g. parisneo/lollms-webui" style="flex:1;">
-                            <button class="code-action-btn apply-btn web-submit-btn" data-action="github">Search</button>
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>

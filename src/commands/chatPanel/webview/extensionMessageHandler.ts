@@ -1203,6 +1203,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         const targetBlockId = `block-${message.messageId}-${message.blockIndex}`;
                         const blockEl = document.getElementById(targetBlockId) as HTMLDetailsElement;
 
+                        // Support SPARQL block spinner resolution
+                        const sparqlBlock = document.getElementById(message.blockIndex) as HTMLElement;
+                        if (sparqlBlock && sparqlBlock.classList.contains('sparql-block')) {
+                            const sparqlBtn = sparqlBlock.querySelector('.run-sparql-btn') as HTMLButtonElement;
+                            if (sparqlBtn) {
+                                sparqlBtn.disabled = false;
+                                sparqlBtn.innerHTML = '<i class="codicon codicon-play"></i> Run & Reprompt';
+                            }
+                        }
 
                         if (blockEl && message.success) {
                             const isUndo = message.options?.undo === true;
@@ -1568,7 +1577,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                         // We use a custom configuration for the sanitizer to allow data-uri images in the preview
                         const previewHtml = (window as any).marked.parse(content);
-                        dom.contextViewerDisplay.innerHTML = sanitizer.sanitize(previewHtml, {
+                        dom.contextViewerDisplay.innerHTML = (window as any).DOMPurify.sanitize(previewHtml, {
                             ADD_TAGS: ['img', 'span', 'i'],
                             ADD_ATTR: ['src', 'style', 'class'],
                             ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|ftp|tel|file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i // Default

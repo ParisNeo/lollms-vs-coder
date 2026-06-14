@@ -16,16 +16,57 @@ export class FailureMemory {
 
     private cleanParams(params: any): any {
         if (!params || typeof params !== 'object') return params;
+
+        // 1. Shallow copy & strip internal/reasoning noise
         const p = { ...params };
-        // Remove reasoning fields that might change slightly while the core action remains identical
         delete p.thought;
         delete p.scratchpad;
-        return p;
+        delete p.reason;
+        delete p.explanation;
+
+        // 2. Normalize Synonymous Parameter Keys
+        const normalized: any = {};
+        for (const [key, value] of Object.entries(p)) {
+            const lowerKey = key.toLowerCase();
+            let normKey = key;
+
+            if (lowerKey === 'file_paths' || lowerKey === 'filepaths') {
+                normKey = 'paths';
+            } else if (lowerKey === 'file_path' || lowerKey === 'filepath' || lowerKey === 'file' || lowerKey === 'target') {
+                normKey = 'path';
+            }
+
+            // Normalize path string values (strip leading ./ and clean separators)
+            if (normKey === 'path' && typeof value === 'string') {
+                normalized[normKey] = value.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+            } else if (normKey === 'paths' && Array.isArray(value)) {
+                normalized[normKey] = value
+                    .map(v => typeof v === 'string' ? v.replace(/\\/g, '/').replace(/^\.\//, '').trim() : v)
+                    .sort(); // Sort arrays alphabetically so order doesn't bypass checks
+            } else {
+                normalized[normKey] = value;
+            }
+        }
+
+        // 3. Sort keys of the object alphabetically to ensure consistent stringification
+        const sortedKeys = Object.keys(normalized).sort();
+        const sortedObj: any = {};
+        sortedKeys.forEach(k => {
+            sortedObj[k] = normalized[k];
+        });
+
+        return sortedObj;
     }
 
     public hasFailedBefore(toolName: string, params: any): boolean {
-        const paramStr = JSON.stringify(this.cleanParams(params));
-        return this.failures.some(f => f.toolName === toolName && JSON.stringify(this.cleanParams(f.parameters)) === paramStr);
+        const cleanedTarget = this.cleanParams(params);
+        const paramStr = JSON.stringify(cleanedTarget);
+
+        return this.failures.some(f => {
+            if (f.toolName !== toolName) return false;
+            const cleanedFailure = this.cleanParams(f.parameters);
+            return JSON.stringify(cleanedFailure) === paramStr;
+        });
     }
 
     public getMemoryContext(): string {

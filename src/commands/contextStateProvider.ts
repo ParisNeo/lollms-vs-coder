@@ -564,13 +564,23 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const workspaceFolder = this.workspaceFolder || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
         if (!workspaceFolder) return [];
 
+        const folders = vscode.workspace.workspaceFolders || [];
+
         return Object.entries(workspaceState)
             .filter(([key, state]) => {
                 if (!key || typeof key !== 'string') return false;
                 if (state !== 'included' && state !== 'definitions-only') return false;
 
                 // 1. Fast physical existence check on disk
-                const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, key);
+                let fileUri: vscode.Uri;
+                const segments = key.split('/');
+                const projectFolder = folders.find(f => f.name === segments[0]);
+                if (projectFolder && segments.length > 1) {
+                    fileUri = vscode.Uri.joinPath(projectFolder.uri, segments.slice(1).join('/'));
+                } else {
+                    fileUri = vscode.Uri.joinPath(workspaceFolder.uri, key);
+                }
+
                 if (!fs.existsSync(fileUri.fsPath)) {
                     return false;
                 }
@@ -589,7 +599,15 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                     const parentState = workspaceState[currentPath];
                     if (parentState === 'collapsed' || parentState === 'fully-excluded') return false;
 
-                    const parentUri = vscode.Uri.joinPath(workspaceFolder.uri, currentPath);
+                    let parentUri: vscode.Uri;
+                    const parentSegments = currentPath.split('/');
+                    const parentFolder = folders.find(f => f.name === parentSegments[0]);
+                    if (parentFolder && parentSegments.length > 1) {
+                        parentUri = vscode.Uri.joinPath(parentFolder.uri, parentSegments.slice(1).join('/'));
+                    } else {
+                        parentUri = vscode.Uri.joinPath(workspaceFolder.uri, currentPath);
+                    }
+
                     if (this.isStrictlyIgnored(parentUri)) return false;
                 }
                 return true;

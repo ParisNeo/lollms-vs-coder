@@ -620,7 +620,6 @@ export async function getProcessedSystemPrompt(
     const memory = memoryManager ? await memoryManager.getMemory() : "";
     let finalPersona = customPersonaContent || "";
 
-    // Fallback if no custom persona
     if (!finalPersona) {
         const key = promptType === 'chat' ? 'chatPersona' :
                     promptType === 'agent' ? 'agentPersona' :
@@ -631,8 +630,6 @@ export async function getProcessedSystemPrompt(
     if (workingMemory) {
         finalPersona = `### 🧠 LIBRARIAN'S CONTEXT ANALYSIS\n${workingMemory}\n\n${finalPersona}`;
     }
-
-    // Logic moved to dynamic system message for 'chat' and 'agent' types
 
     const shells = await getAvailableShells();
     const envAwareness = await getEnvironmentAwarenessBlock();
@@ -655,47 +652,31 @@ export async function getProcessedSystemPrompt(
     let operationalMandate = "";
 
     if (promptType === 'surgical_agent') {
-        // Surgical agents are strictly text-to-code modifiers and must not have any tools or system prompts about tools
         operationalMandate = "\n### 🚫 STRICT OPERATIONAL RULE\nYou are a single-file refactoring engine. You are FORBIDDEN from using, referencing, or outputting any JSON tool calls, XML tags, or external commands. Your only authorized action is to output the SEARCH/REPLACE block modifying the code.\n";
     } else if (isAutonomous || isBuilder) {
-        // Builders and Agents have full tool access
         operationalMandate = "\n### 🦾 OPERATIONAL AUTHORITY: ACTIVE\nYou have permission to use JSON tool calls to interact with the filesystem, terminal, and vision systems directly.\n";
     } else {
         // --- DISCUSSION MODE: SCOPE-AWARE FILTERING ---
         // Only show tools that the user has explicitly equipped in the HUD
         const allTools = (context as any)?.toolManager?.getEnabledTools() || [];
         const HUD_SAFE_LIST = ['generate_image', 'edit_image_asset', 'add_files_to_context', 'record_milestone', 'record_discovery'];
-
-        // Filter: Show only if in HUD safe list OR if explicitly passed in context (Equipped)
         const activeTools = allTools.filter((t: any) => HUD_SAFE_LIST.includes(t.name));
 
         operationalMandate = `
-    ### 🛡️ DISCUSSION MODE: USER-VALIDATED TOOLS
-    You are currently in 'Discussion Mode'. You cannot execute code autonomously. To perform actions, you MUST request user approval by outputting specific XML tags.
-
-    **STRICT RULES**: 
-    1. **NO JSON**: Do NOT output \`{"tool": "..."}\` JSON blocks. They will be ignored.
-    2. **TAGS ONLY**: You MUST use the \`<lollms_tool />\` or specialized tags listed below.
-    3. **ONE AT A TIME**: Request exactly one action per turn.
-
-    ### 🛠️ EQUIPPED CAPABILITIES (USE THESE TAGS)
-    ${activeTools.map((t: any) => `- **${t.name}**: ${t.description}\n  Tag: \`${t.manualTagFormat || `<lollms_tool name="${t.name}" params='{...}' />`}\``).join('\n')}
-    2. **JSON PARAMS**: The \`params\` attribute MUST be a single-line, valid JSON string.
-    3. **WAIT FOR OUTPUT**: Once you output the tag, the UI will present an 'Execute' button to the user. Do not assume the action is finished until the user clicks it and provides the output in the next turn.
+    ### 🛡️ DISCUSSION MODE: ACTIONS
+    You are currently in 'Discussion Mode'. You cannot execute code or shell commands autonomously.
+    You can request user execution of certain tools by using XML tags on a new line:
+    - \`<add_files_to_context>\`: Add files from project workspace.
+    - \`<project_memory>\`: Save an architectural fact or coding standard.
+    - \`<lollms_tool name="tool_name" params='{...}' />\`: Request execution of other specialized tools.
 
     **AUTHORIZED TAGS:**
-    - \`<add_files_to_context>\`: To expand your vision.
-    - \`<lollms_tool>\`: For any equipped tool (e.g. execute_command, scrape_website).
-    - \`<project_memory>\`: To save technical discoveries.
-
-    **STRICT RULE**: You are FORBIDDEN from outputting raw JSON tool calls. Use the \`<lollms_tool />\` tag format only.
+    ${activeTools.map((t: any) => `- **${t.name}**: \`<lollms_tool name="${t.name}" params='{...}' />\``).join('\n')}
     `;
     }
 
-    // SANITIZATION: If NOT autonomous, we do not append the tool descriptions usually 
-    // added by the AgentManager.
     return basePrompt + operationalMandate + "\n" + envAwareness;
-    }
+}
 
 export function stripAnsiCodes(text: string): string {
     // eslint-disable-next-line no-control-regex

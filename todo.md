@@ -49,8 +49,9 @@ UI problems in the modify with lollms ui
 When there are images in the prompt, it is not rendered in the bubble.
 When a hunk is applied its content disapears and we can't bring it back (it needs to be uncollapsible)
 
+# New stuff
 - SPARQL queries might block the whole project
-- dream must tag audited memories and must not audit the tags. tags shouldn't have values that can be decayed.
+- Dream must tag audited memories and must not audit the tags. tags shouldn't have values that can be decayed.
 
 # IMPORTANT
 When the llm executes the same tool with the same parameters more than once, it gets rejected. This is not good. For example testing/fixing cycle is done by executing the same test over and over again.

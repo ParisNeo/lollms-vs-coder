@@ -8,6 +8,9 @@
 
 Now available in **English, French, Spanish, German, Arabic, and Chinese (Simplified)**! 🌍
 
+<img width="1024" height="1536" alt="image" src="https://github.com/user-attachments/assets/33e7223a-14e9-413a-99d0-756b01171968" />
+
+
 ---
 
 ## 🏗️ Choose Your Pathway

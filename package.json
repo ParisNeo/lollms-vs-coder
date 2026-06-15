@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.92",
+  "version": "0.8.97",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -26,8 +26,6 @@
     "onDebug",
     "onView:lollmsTabsView",
     "onView:lollmsDiscussionsView",
-    "onView:lollmsFileTreeView",
-    "onView:lollmsSkillsView",
     "onView:lollmsProjectMemoryView",
     "onView:lollmsCodeExplorerView",
     "onView:lollmsPersonalitiesView",
@@ -722,8 +720,8 @@
             {
               "id": "structured",
               "name": "Structured (Analytical)",
-              "description": "Formal Observe/Think/Act breakdown.",
-              "systemPrompt": "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why.\n  3. **Act**: Provide the actual implementation, code, or tool call.",
+              "description": "Formal Observe/Think/Act/Reflect breakdown.",
+              "systemPrompt": "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this four-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why. No code updates (Aider blocks or full files) are allowed in this stage.\n  3. **Act**: Provide the actual implementation, code updates, or tool calls. All Aider patches or full files MUST reside exclusively in this section.\n  4. **Reflect**: Evaluate assumptions, check edge cases, or validate performance.",
               "prefix": ""
             },
             {
@@ -1176,6 +1174,11 @@
           "default": "",
           "description": "The model used for Text-to-Image (TTI) generation. Leave empty to let the server autoselect."
         },
+        "lollmsVsCoder.dreamModelName": {
+          "type": "string",
+          "default": "",
+          "description": "The model used for background Memory Dream Cycles and synaptic fusions. Leave empty to use the Chat Model."
+        },
         "lollmsVsCoder.architectModelName": {
           "type": "string",
           "default": "",
@@ -1574,14 +1577,9 @@
           "when": "lollms:activeTab == chat && workspaceFolderCount > 0"
         },
         {
-          "id": "lollmsFileTreeView",
-          "name": "Project Files (Context)",
-          "when": "lollms:activeTab == librarian && workspaceFolderCount > 0"
-        },
-        {
           "id": "lollmsSkillsView",
           "name": "Skills Library",
-          "when": "lollms:activeTab == librarian && workspaceFolderCount > 0"
+          "when": "lollms:activeTab == chat && workspaceFolderCount > 0"
         },
         {
           "id": "lollmsProjectMemoryView",
@@ -2106,7 +2104,7 @@
     "@types/pdf-parse": "^1.1.1",
     "@types/prismjs": "^1.26.4",
     "@types/vscode": "1.74.0",
-    "@vscode/vsce": "^2.26.0",
+    "@vscode/vsce": "^3.9.2",
     "cpx2": "^4.2.0",
     "esbuild": "^0.28.1",
     "rimraf": "^5.0.5",

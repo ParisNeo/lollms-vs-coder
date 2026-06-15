@@ -158,7 +158,9 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         let resolvedPath = normalized;
         if (!path.isAbsolute(resolvedPath)) {
             // Check if the first segment matches an open workspace folder
-            const projectFolder = folders.find(f => f.name === segments[0]);
+            const projectFolder = folders.length > 1
+                ? folders.find(f => f.name === segments[0])
+                : undefined;
             if (projectFolder && segments.length > 1) {
                 resolvedPath = path.resolve(projectFolder.uri.fsPath, segments.slice(1).join('/'));
             } else {

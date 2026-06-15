@@ -352,6 +352,18 @@ document.getElementById('ttsButton')?.addEventListener('click', () => {
 
             // Notify extension that webview is ready
             vscode.postMessage({ command: 'webview-ready' });
+
+            // High-frequency live timer updater for active thinking engrams
+            setInterval(() => {
+                const liveThinkingElements = document.querySelectorAll('.live-thinking');
+                liveThinkingElements.forEach((el: any) => {
+                    const startTime = parseInt(el.dataset.startTime || '0', 10);
+                    if (startTime > 0) {
+                        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                        el.textContent = `thinking... (${elapsed}s)`;
+                    }
+                });
+            }, 100);
         });
 
     } catch (e: any) {

@@ -47,10 +47,11 @@ export function initEventHandlers() {
     }
 
     if (dom.sendButton) dom.sendButton.addEventListener('click', () => {
+        if (state.isGenerating) return; // Prevent sending another message while processing
         const text = dom.messageInput.value.trim();
         if (text || state.pendingImages.length > 0) {
             let content: any = text;
-            
+
             // If we have images, wrap in multipart format
             if (state.pendingImages.length > 0) {
                 const parts: any[] = [];
@@ -65,7 +66,7 @@ export function initEventHandlers() {
                 command: 'sendMessage', 
                 message: { role: 'user', content: content } 
             });
-            
+
             // Reset
             dom.messageInput.value = '';
             dom.messageInput.style.height = 'auto';
@@ -199,7 +200,9 @@ export function initEventHandlers() {
         dom.messageInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                dom.sendButton.click();
+                if (!state.isGenerating) {
+                    dom.sendButton.click();
+                }
             }
         });
         dom.messageInput.addEventListener('input', () => {
@@ -695,9 +698,6 @@ export function initEventHandlers() {
     bindChange(dom.agentModeCheckbox, (e) => {
         vscode.postMessage({ command: 'toggleAgentMode' });
     });
-    bindChange(dom.autoContextCheckbox, (e) => {
-        vscode.postMessage({ command: 'toggleAutoContext', enabled: (e.target as HTMLInputElement).checked });
-    });
     bindChange(dom.herdModeCheckbox, (e) => {
         vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: (e.target as HTMLInputElement).checked } });
     });
@@ -926,6 +926,7 @@ export function initEventHandlers() {
                 projectMemoryEnabled: dom.capProjectMemory?.checked ?? true,
                 tokenEconomyMode: (document.getElementById('cap-tokenEconomyMode') as HTMLInputElement)?.checked ?? false,
                 clipboardInsertRole: dom.capClipboardRole?.value || 'user',
+                monitoredLogPaths: (document.getElementById('cap-monitoredLogPaths') as HTMLInputElement)?.value.split('\n').map(p => p.trim()).filter(p => p),
                 autoFix: dom.capAutoFix?.checked ?? true,
                 addPedagogicalInstruction: dom.capAddPedagogicalInstruction?.checked ?? false,
                 forceFullCodePath: dom.capForceFullCodePath?.checked ?? false,
@@ -1875,13 +1876,13 @@ export function initEventHandlers() {
             e.stopPropagation();
             const command = fileOpBtn.dataset.command;
             const payloadRaw = fileOpBtn.dataset.payload || '{}';
-            
+
             try {
                 const payload = JSON.parse(payloadRaw);
                 vscode.postMessage({ command, ...payload });
-                
+
                 fileOpBtn.disabled = true;
-                fileOpBtn.innerHTML = '<span class="codicon codicon-check"></span> Applied';
+                fileOpBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying changes...';
             } catch (err) {
                 console.error("Failed to parse file operation payload:", err);
             }

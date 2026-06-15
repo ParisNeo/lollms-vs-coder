@@ -30,10 +30,13 @@ export class ContextItem extends vscode.TreeItem {
             this.iconPath = new vscode.ThemeIcon('folder-opened', new vscode.ThemeColor('descriptionForeground'));
             this.description = " (Collapsed - Hidden)";
             this.tooltip = "Folder exists but content is hidden from AI context to save tokens.";
-            this.label = `[C] ${this.label}`;
+            this.label = `[H] ${this.label}`; // Changed from [C] to [H] (Hidden)
         } else if (state === 'definitions-only') {
             this.description = " (Definitions)";
             this.tooltip = "Only structure (classes, functions signatures) is sent to AI.";
+            this.label = `[D] ${this.label}`; // Added [D] prefix
+        } else if (state === 'included') {
+            this.label = `[C] ${this.label}`; // Added [C] prefix for Content Loaded
         }
     }
 }
@@ -224,20 +227,18 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         if (!workspaceFolder) {
             return false;
         }
-        
-        const relativePath = this.normalize(path.relative(workspaceFolder.uri.fsPath, uri.fsPath));
-        const segments = relativePath.split('/');
 
-        // Always exclude __pycache__ anywhere in path. 
-        // Note: .lollms and other dot-folders are no longer hard-excluded here 
-        // so that they can be visible in the tree via the collapsed logic.
-        if (segments.includes('__pycache__')) {
+        const relativePath = this.normalize(path.relative(workspaceFolder.uri.fsPath, uri.fsPath));
+        const segments = relativePath.split('/').map(s => s.toLowerCase());
+
+        // Unconditionally exclude internal system directories and python caches
+        if (segments.includes('__pycache__') || segments.includes('.lollms')) {
             return true;
         }
-    
+
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const exceptions = config.get<string[]>('contextFileExceptions') || [];
-    
+
         if (relativePath === '') {
             return false;
         }
@@ -295,7 +296,13 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         */
         public isStrictlyIgnored(uri: vscode.Uri): boolean {
             const relativePath = this.normalize(vscode.workspace.asRelativePath(uri, false));
-            const basename = path.basename(uri.fsPath);
+            const basename = path.basename(uri.fsPath).toLowerCase();
+            const segments = relativePath.split('/').map(s => s.toLowerCase());
+
+            // Unconditionally block .lollms from entering any visible indexing state
+            if (segments.includes('.lollms') || basename === '.lollms') {
+                return true;
+            }
 
             // Standard heavy folders
             if (['node_modules', '.git', '__pycache__', 'venv', '.venv', 'dist', 'build', 'bin', 'obj'].includes(basename)) {
@@ -480,55 +487,49 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         return descendants;
     }
 
-    public async getAllVisibleFiles(signal?: AbortSignal): Promise<string[]> {
-        const workspaceFolder = this.workspaceFolder;
-        if (!workspaceFolder) return [];
+    public async triggerFullScan(onProgress?: (pct: number, status: string) => void): Promise<string[]> {
+        const folder = this.workspaceFolder || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
+        if (!folder) return [];
+
+        this._isTreeDirty = true;
+        this._cachedVisibleFiles = null;
+
+        if (onProgress) onProgress(10, "Librarian: Compiling ignore-patterns...");
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const exceptions = config.get<string[]>('contextFileExceptions') || [];
 
         const standardExcludes = [
             '**/__pycache__/**', '**/*.pyc', '**/*.pyo', '**/*.pyd',
-            '**/*.obj', '**/*.bin', '**/.DS_Store', '**/node_modules/**', '**/venv/**', '**/.venv/**'
+            '**/*.obj', '**/*.bin', '**/.DS_Store', '**/node_modules/**', '**/venv/**', '**/.venv/**', '**/env/**', '**/.git/**'
         ];
 
         const combinedExcludes = Array.from(new Set([...exceptions, ...standardExcludes]));
         const excludePattern = combinedExcludes.length > 1 ? `{${combinedExcludes.join(',')}}` : (combinedExcludes[0] || "");
 
-        // --- FAST PATH DISCOVERY ---
-        if (this._cachedVisibleFiles && !this._isTreeDirty) {
-            return this._cachedVisibleFiles;
-        }
-
-        Logger.info(`Librarian: Attempting native findFiles scan...`);
+        if (onProgress) onProgress(30, "Librarian: Indexing files (ripgrep scan)...");
 
         let files: vscode.Uri[] = [];
         try {
-            // Optimization: Filter by common code extensions first to reduce array size
             files = await vscode.workspace.findFiles(
-                new vscode.RelativePattern(workspaceFolder, '**/*'),
+                new vscode.RelativePattern(folder, '**/*'),
                 excludePattern,
-                15000 // Slightly lower cap for snappier start
+                20000 // Large cap for big projects
             );
-        } catch (e) {
+        } catch (e: any) {
             Logger.error(`Native findFiles failed: ${e}`);
         }
 
-        // --- FALLBACK: MANUAL DIRECTORY CRAWL ---
-        // If findFiles yields nothing (often on large network drives or restricted workspaces)
-        // we perform a manual crawl of the first 3 levels to prove the workspace isn't empty.
         if (files.length === 0) {
-            Logger.info(`Librarian: findFiles returned 0. Triggering manual crawl fallback...`);
+            if (onProgress) onProgress(50, "Librarian: Scanning folders manually...");
             const fallbackFiles: vscode.Uri[] = [];
-
             const walk = async (uri: vscode.Uri, depth: number) => {
-                if (depth > 4 || (signal && signal.aborted)) return;
+                if (depth > 4) return;
                 try {
                     const entries = await vscode.workspace.fs.readDirectory(uri);
                     for (const [name, type] of entries) {
                         const entryUri = vscode.Uri.joinPath(uri, name);
                         if (this.isExcluded(entryUri)) continue;
-
                         if (type === vscode.FileType.File) {
                             fallbackFiles.push(entryUri);
                         } else if (type === vscode.FileType.Directory) {
@@ -537,12 +538,11 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                     }
                 } catch (e) {}
             };
-
-            await walk(workspaceFolder.uri, 0);
+            await walk(folder.uri, 0);
             files = fallbackFiles;
         }
 
-        if (signal?.aborted) return [];
+        if (onProgress) onProgress(75, "Librarian: Constructing semantic model...");
 
         const visibleFiles: string[] = [];
         for (const file of files) {
@@ -553,8 +553,36 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             }
         }
 
-        Logger.info(`Librarian: Discovery complete. Found ${visibleFiles.length} files.`);
+        this._cachedVisibleFiles = visibleFiles;
+        this._isTreeDirty = false;
+
+        if (onProgress) onProgress(100, "Librarian: Indexing complete.");
+
         return visibleFiles;
+    }
+
+    public async getAllVisibleFiles(signal?: AbortSignal): Promise<string[]> {
+        if (this._cachedVisibleFiles && !this._isTreeDirty) {
+            return this._cachedVisibleFiles;
+        }
+        return this.triggerFullScan();
+    }
+
+    public addFileToCache(relativeFilePath: string) {
+        if (!this._cachedVisibleFiles) return;
+        const normalized = this.normalize(relativeFilePath);
+        if (!this._cachedVisibleFiles.includes(normalized)) {
+            this._cachedVisibleFiles.push(normalized);
+            this._cachedVisibleFiles.sort();
+            this._onDidChangeTreeData.fire();
+        }
+    }
+
+    public removeFileFromCache(relativeFilePath: string) {
+        if (!this._cachedVisibleFiles) return;
+        const normalized = this.normalize(relativeFilePath);
+        this._cachedVisibleFiles = this._cachedVisibleFiles.filter(f => f !== normalized);
+        this._onDidChangeTreeData.fire();
     }
     
     public getIncludedFiles(): { path: string, state: ContextState }[] {
@@ -574,7 +602,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 // 1. Fast physical existence check on disk
                 let fileUri: vscode.Uri;
                 const segments = key.split('/');
-                const projectFolder = folders.find(f => f.name === segments[0]);
+                const projectFolder = folders.length > 1
+                    ? folders.find(f => f.name.toLowerCase() === segments[0].toLowerCase())
+                    : undefined;
                 if (projectFolder && segments.length > 1) {
                     fileUri = vscode.Uri.joinPath(projectFolder.uri, segments.slice(1).join('/'));
                 } else {
@@ -601,7 +631,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
                     let parentUri: vscode.Uri;
                     const parentSegments = currentPath.split('/');
-                    const parentFolder = folders.find(f => f.name === parentSegments[0]);
+                    const parentFolder = folders.length > 1
+                        ? folders.find(f => f.name.toLowerCase() === parentSegments[0].toLowerCase())
+                        : undefined;
                     if (parentFolder && parentSegments.length > 1) {
                         parentUri = vscode.Uri.joinPath(parentFolder.uri, parentSegments.slice(1).join('/'));
                     } else {

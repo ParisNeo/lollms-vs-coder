@@ -17,8 +17,8 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
     {
         id: "structured",
         name: "Structured (Analytical)",
-        description: "Formal Observe/Think/Act breakdown.",
-        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why.\n  3. **Act**: Provide the actual implementation, code, or tool call.",
+        description: "Formal Observe/Think/Act/Reflect breakdown.",
+        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this four-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why. No code updates (Aider blocks or full files) are allowed in this stage.\n  3. **Act**: Provide the actual implementation, code updates, or tool calls. All Aider patches or full files MUST reside exclusively in this section.\n  4. **Reflect**: Evaluate assumptions, check edge cases, or validate performance.",
         prefix: ""
     },
     {

@@ -103,10 +103,12 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
             } catch (error) {}
         }
         
-        const relTempPath = path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
+        const relTempPath = isWin
+            ? path.relative(workspaceRoot, tempFilePath)
+            : path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
         
         if (isWin) {
-            fullCommand = `& '${pythonExecutable}' -u '${relTempPath}'`;
+            fullCommand = `"${pythonExecutable}" -u "${relTempPath}"`;
             targetShell = 'powershell';
         } else {
             fullCommand = `"${pythonExecutable}" -u "${relTempPath}"`;
@@ -119,16 +121,20 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
         fileExtension = '.js';
         tempFilePath = `${tempFileBase}${fileExtension}`;
         fs.writeFileSync(tempFilePath, currentCode);
-        const relJsPath = path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
-        fullCommand = `node '${relJsPath}'`;
+        const relJsPath = isWin
+            ? path.relative(workspaceRoot, tempFilePath)
+            : path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
+        fullCommand = isWin ? `node "${relJsPath}"` : `node '${relJsPath}'`;
         break;
       case 'typescript':
       case 'ts':
         fileExtension = '.ts';
         tempFilePath = `${tempFileBase}${fileExtension}`;
         fs.writeFileSync(tempFilePath, currentCode);
-        const relTsPath = path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
-        fullCommand = `npx ts-node '${relTsPath}'`;
+        const relTsPath = isWin
+            ? path.relative(workspaceRoot, tempFilePath)
+            : path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
+        fullCommand = isWin ? `npx ts-node "${relTsPath}"` : `npx ts-node '${relTsPath}'`;
         break;
       case 'bash':
       case 'sh':
@@ -138,13 +144,15 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
         fileExtension = '.sh';
         tempFilePath = `${tempFileBase}${fileExtension}`;
         fs.writeFileSync(tempFilePath, currentCode);
-        const relShPath = path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
+        const relShPath = isWin
+            ? path.relative(workspaceRoot, tempFilePath)
+            : path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
         
         const requestedShell = (currentLang === 'zsh' || currentLang === 'fish') ? currentLang : 'bash';
         const shellToUse = availableShells.includes(requestedShell) ? requestedShell : (isWin ? 'bash' : 'sh');
         
         if (isWin) {
-            fullCommand = `${shellToUse} '${relShPath}'`;
+            fullCommand = `${shellToUse} "${relShPath}"`;
             targetShell = 'bash';
         } else {
             fullCommand = `${shellToUse} "${relShPath}"`;
@@ -156,10 +164,12 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
         fileExtension = '.ps1';
         tempFilePath = `${tempFileBase}${fileExtension}`;
         fs.writeFileSync(tempFilePath, currentCode);
-        const relPsPath = path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
+        const relPsPath = isWin
+            ? path.relative(workspaceRoot, tempFilePath)
+            : path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
         
         if (isWin) {
-            fullCommand = `powershell -ExecutionPolicy Bypass -File '${relPsPath}'`;
+            fullCommand = `powershell -ExecutionPolicy Bypass -File "${relPsPath}"`;
             targetShell = 'powershell';
         } else {
             fullCommand = `pwsh -File "${relPsPath}"`;

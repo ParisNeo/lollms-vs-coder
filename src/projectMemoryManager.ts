@@ -1,6 +1,30 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as os from 'os';
 import { Logger } from './logger';
+
+export function isValidSemanticTag(tag: string): boolean {
+    const clean = tag.replace('#', '').trim().toLowerCase();
+    
+    // 1. Must be at least 2 characters
+    if (clean.length < 2) return false;
+    
+    // 2. Block purely numeric tags (e.g. 10, 12, 15)
+    if (/^\d+$/.test(clean)) return false;
+    
+    // 3. Block hexadecimal color codes (3, 4, 6, or 8 digits)
+    if (/^[0-9a-f]{3}$/i.test(clean) || 
+        /^[0-9a-f]{4}$/i.test(clean) || 
+        /^[0-9a-f]{6}$/i.test(clean) || 
+        /^[0-9a-f]{8}$/i.test(clean)) {
+        return false;
+    }
+    
+    // 4. Block other common short meaningless alphanumeric patterns
+    if (clean.length === 2 && /\d/.test(clean)) return false;
+
+    return true;
+}
 
 export type MemoryTier = 0 | 1 | 2 | 3;
 
@@ -44,7 +68,7 @@ export class ProjectMemoryManager {
     private _onDidChange = new vscode.EventEmitter<void>();
     public readonly onDidChange = this._onDidChange.event;
 
-    constructor(private context: vscode.ExtensionContext) {}
+    constructor(private context: vscode.ExtensionContext, public lollmsAPI?: any) {}
 
     public async switchWorkspace(folder: vscode.Uri) {
         // We now handle all workspace folders dynamically
@@ -52,50 +76,208 @@ export class ProjectMemoryManager {
         this._onDidChange.fire();
     }
 
-    private _cache: MemoryEntry[] =[];
+    private _cache: MemoryEntry[] = [];
+
+    private getGlobalMemoryPath(): vscode.Uri {
+        return vscode.Uri.joinPath(vscode.Uri.file(os.homedir()), '.lollms', 'global_memory.json');
+    }
+
+    private getBootstrapOntology(): MemoryEntry[] {
+        const timestamp = Date.now();
+        return [
+            {
+                id: "concept_template_engram",
+                title: "Engram",
+                content: "Represents an individual unit of captured project knowledge, such as an architectural decision, technical fact, or lesson learned.",
+                timestamp,
+                importance: 80,
+                lastUsed: timestamp,
+                category: "concept",
+                tier: 1,
+                scope: "local",
+                predicates: [
+                    { verb: "has_tag", targetId: "concept_template_tag" },
+                    { verb: "part_of", targetId: "concept_template_document" },
+                    { verb: "enforces", targetId: "concept_template_rule" }
+                ]
+            },
+            {
+                id: "concept_template_tag",
+                title: "Tag",
+                content: "Represents a semantic hub or hashtag used to index and group related units of knowledge.",
+                timestamp,
+                importance: 80,
+                lastUsed: timestamp,
+                category: "concept",
+                tier: 1,
+                scope: "local",
+                predicates: [
+                    { verb: "associates_with", targetId: "concept_template_tag" }
+                ]
+            },
+            {
+                id: "concept_template_document",
+                title: "Document",
+                content: "Represents an external reference document, web scrape, or research source from which knowledge was extracted.",
+                timestamp,
+                importance: 80,
+                lastUsed: timestamp,
+                category: "concept",
+                tier: 1,
+                scope: "local",
+                predicates: [
+                    { verb: "contains", targetId: "concept_template_engram" }
+                ]
+            },
+            {
+                id: "concept_template_rule",
+                title: "Rule",
+                content: "Represents an active project constraint, standard, or 'Sovereign Rule' that must be strictly enforced during engineering.",
+                timestamp,
+                importance: 80,
+                lastUsed: timestamp,
+                category: "concept",
+                tier: 1,
+                scope: "local",
+                predicates: [
+                    { verb: "supersedes", targetId: "concept_template_rule" }
+                ]
+            },
+            {
+                id: "concept_template_skill",
+                title: "Skill",
+                content: "Represents a projected technical capability or Action Protocol imported from the Skills Library.",
+                timestamp,
+                importance: 80,
+                lastUsed: timestamp,
+                category: "concept",
+                tier: 1,
+                scope: "local",
+                predicates: [
+                    { verb: "enforces", targetId: "concept_template_rule" }
+                ]
+            }
+        ];
+    }
+
+    public async resetToDefaultOntology(): Promise<void> {
+        const { getLollmsStorageUri } = require('./utils');
+        const storageRoot = getLollmsStorageUri(this.context);
+        const projectMemoryPath = vscode.Uri.joinPath(storageRoot, 'project_memory.json');
+
+        try {
+            const dir = vscode.Uri.joinPath(projectMemoryPath, '..');
+            await vscode.workspace.fs.createDirectory(dir);
+            // Complete Wipeout: Write empty array to completely clear ABox
+            await vscode.workspace.fs.writeFile(projectMemoryPath, Buffer.from('[]', 'utf8'));
+            this._cache = []; // Clear in-memory engrams cache
+            this._onDidChange.fire(); // Notify listeners to refresh the tree provider
+        } catch (e: any) {
+            Logger.error("Failed to clear memory vault", e);
+            throw e;
+        }
+    }
 
     public async getMemories(): Promise<MemoryEntry[]> {
         const { getLollmsStorageUri } = require('./utils');
         const storageRoot = getLollmsStorageUri(this.context);
-        const memoryPath = vscode.Uri.joinPath(storageRoot, 'project_memory.json');
+        const projectMemoryPath = vscode.Uri.joinPath(storageRoot, 'project_memory.json');
+        const globalMemoryPath = this.getGlobalMemoryPath();
 
+        let projectEntries: MemoryEntry[] = [];
+        let globalEntries: MemoryEntry[] = [];
+
+        // 1. Read Project-specific Memories
         try {
-            const content = await vscode.workspace.fs.readFile(memoryPath);
+            const content = await vscode.workspace.fs.readFile(projectMemoryPath);
             const data = JSON.parse(Buffer.from(content).toString('utf8'));
-            let rawEntries = Array.isArray(data) ? data : [];
-            
-            // --- 🛡️ RESILIENT PURGE: ONLY CLEAN AUTOMATED SKILLS ---
-            // Tag nodes and user-added memories are now protected from deletion!
-            const originalLength = rawEntries.length;
-            rawEntries = rawEntries.filter(m => {
-                const id = String(m.id || '');
-                return !id.startsWith('skill_'); // ONLY remove virtual skills, preserve tags & engrams!
-            });
-
-            if (rawEntries.length !== originalLength) {
-                Logger.warn(`[Memory Leak Purge] Cleaned ${originalLength - rawEntries.length} virtual skill nodes from database.`);
-            }
-
-            let migrated = false;
-            
-            // 1. Structural Migration
-            rawEntries.forEach(m => {
-                if (!m.predicates) {
-                    m.predicates = [];
-                    if (m.category) {
-                        m.predicates.push({ verb: "categorized_under", targetId: `cat_${m.category}` });
-                    }
-                    migrated = true;
-                }
-            });
-
-            this._cache = rawEntries;
-
-            if (migrated || rawEntries.length !== originalLength) {
-                await this.saveEngrams(this._cache);
-            }
+            projectEntries = Array.isArray(data) ? data : [];
+            projectEntries.forEach(e => e.scope = 'local');
         } catch (error) {
-            this._cache = [];
+            projectEntries = [];
+        }
+
+        if (projectEntries.length === 0) {
+            projectEntries = this.getBootstrapOntology();
+            try {
+                const dir = vscode.Uri.joinPath(projectMemoryPath, '..');
+                await vscode.workspace.fs.createDirectory(dir);
+                await vscode.workspace.fs.writeFile(projectMemoryPath, Buffer.from(JSON.stringify(projectEntries, null, 2), 'utf8'));
+            } catch (e) {
+                Logger.error("Failed to bootstrap default ontology", e);
+            }
+        }
+
+        // 2. Read Global Cross-project Memories
+        try {
+            const content = await vscode.workspace.fs.readFile(globalMemoryPath);
+            const data = JSON.parse(Buffer.from(content).toString('utf8'));
+            globalEntries = Array.isArray(data) ? data : [];
+            globalEntries.forEach(e => e.scope = 'global');
+        } catch (error) {
+            globalEntries = [];
+        }
+
+        let combined = [...projectEntries, ...globalEntries];
+
+        // --- 🛡️ RESILIENT PURGE: ONLY CLEAN AUTOMATED SKILLS, MEANINGLESS TAGS & OLD ONTOLOGY NODES ---
+        const originalLength = combined.length;
+        const oldConceptTemplates = [
+            'concept_template_file',
+            'concept_template_class',
+            'concept_template_function',
+            'concept_template_method',
+            'concept_template_library'
+        ];
+        combined = combined.filter(m => {
+            const id = String(m.id || '');
+            if (oldConceptTemplates.includes(id)) {
+                return false; // Purge old code ontology nodes from the memory graph
+            }
+            if (id.startsWith('tag_')) {
+                const tagLabel = id.substring(4);
+                return isValidSemanticTag(tagLabel);
+            }
+            return !id.startsWith('skill_') && !id.startsWith('cat_');
+        });
+
+        // Self-healing: Strip purely numeric/meaningless/color tags and relations from old memory storage
+        combined.forEach(m => {
+            if (m.predicates) {
+                m.predicates = m.predicates.filter(p => {
+                    if (p.verb === 'has_tag' && p.targetId.startsWith('tag_')) {
+                        const tagLabel = p.targetId.substring(4);
+                        return isValidSemanticTag(tagLabel);
+                    }
+                    return true;
+                });
+            }
+            if (m.content) {
+                m.content = m.content.replace(/#([\w_]+)/g, (match, tag) => {
+                    return isValidSemanticTag(tag) ? match : '';
+                }).trim();
+            }
+        });
+
+        let migrated = false;
+        combined.forEach(m => {
+            if (!m.scope) {
+                m.scope = m.id.startsWith('global_') || ['user', 'global'].includes(m.category) ? 'global' : 'local';
+                migrated = true;
+            }
+            if (!m.predicates) {
+                m.predicates = [];
+                if (m.category) {
+                    m.predicates.push({ verb: "categorized_under", targetId: `cat_${m.category}` });
+                }
+                migrated = true;
+            }
+        });
+
+        this._cache = combined;
+
+        if (migrated || combined.length !== originalLength) {
+            await this.saveEngrams(this._cache);
         }
 
         return this._cache;
@@ -108,7 +290,8 @@ export class ProjectMemoryManager {
         content?: string, 
         category: string = "general", 
         importance?: number,
-        predicates?: MemoryPredicate[]
+        predicates?: MemoryPredicate[],
+        scope?: 'global' | 'local'
     ) {
         await this.getMemories();
 
@@ -128,27 +311,70 @@ export class ProjectMemoryManager {
             });
         } else {
             const index = this._cache.findIndex(m => m.id === id);
+            const targetContent = content || "";
+            let targetPredicates = predicates || [];
+
+            // --- ⚙️ AUTO-WIRING HASHTAG RELATIONS ---
+            const tagRegex = /#([\w_]+)/g;
+            let match;
+            const extractedTags = new Set<string>();
+            while ((match = tagRegex.exec(targetContent)) !== null) {
+                const tag = match[1].toLowerCase();
+                // Enforce meaningful non-numeric tags
+                if (isValidSemanticTag(tag)) {
+                    extractedTags.add(tag);
+                }
+            }
+
+            targetPredicates.forEach(p => {
+                if (p.verb === 'has_tag' && p.targetId.startsWith('tag_')) {
+                    const tagLabel = p.targetId.substring(4).toLowerCase();
+                    if (isValidSemanticTag(tagLabel)) {
+                        extractedTags.add(tagLabel);
+                    }
+                }
+            });
+
+            // Strip invalid predicates
+            targetPredicates = targetPredicates.filter(p => {
+                if (p.verb === 'has_tag' && p.targetId.startsWith('tag_')) {
+                    const tagLabel = p.targetId.substring(4);
+                    return isValidSemanticTag(tagLabel);
+                }
+                return true;
+            });
+
+            extractedTags.forEach(tag => {
+                const tagNodeId = `tag_${tag}`;
+                if (!targetPredicates.some(p => p.verb === 'has_tag' && p.targetId === tagNodeId)) {
+                    targetPredicates.push({ verb: 'has_tag', targetId: tagNodeId });
+                }
+            });
+
+            // Infer scope: default to global if category is user/global or explicitly requested
+            const finalScope = scope || (id.startsWith('global_') || ['user', 'global'].includes(category) ? 'global' : 'local');
 
             if (index === -1) {
                 // ADD or UPSERT
                 this._cache.push({
                     id,
                     title: title || id,
-                    content: content || "",
+                    content: targetContent,
                     timestamp: Date.now(),
                     importance: finalImportance !== undefined ? Math.max(0, Math.min(100, finalImportance)) : 50,
                     lastUsed: Date.now(),
                     category: category,
                     tier: 1,
-                    scope: 'local',
-                    predicates: predicates || []
+                    scope: finalScope,
+                    predicates: targetPredicates
                 });
             } else {
                 // UPDATE
                 const entry = this._cache[index];
                 if (title) entry.title = title;
-                if (content) entry.content = content;
-                if (predicates) entry.predicates = predicates;
+                entry.content = targetContent;
+                entry.predicates = targetPredicates;
+                entry.scope = finalScope;
 
                 if (finalImportance !== undefined) {
                     entry.importance = Math.max(0, Math.min(100, finalImportance));
@@ -159,6 +385,26 @@ export class ProjectMemoryManager {
                 entry.timestamp = Date.now();
                 entry.lastUsed = Date.now();
             }
+
+            // Create tag nodes in the same scope
+            extractedTags.forEach(tag => {
+                const tagNodeId = `tag_${tag}`;
+                const tagExists = this._cache.some(m => m.id === tagNodeId);
+                if (!tagExists) {
+                    this._cache.push({
+                        id: tagNodeId,
+                        title: `#${tag}`,
+                        content: `Shared semantic hub for #${tag} relationships.`,
+                        timestamp: Date.now(),
+                        importance: 15,
+                        lastUsed: Date.now(),
+                        category: 'tag',
+                        tier: 2,
+                        scope: finalScope,
+                        predicates: []
+                    });
+                }
+            });
         }
 
         // 2. Persist to storage
@@ -226,12 +472,6 @@ export class ProjectMemoryManager {
     }
 
     /**
-     * TIERED NEURAL MEMORY RECOVERY (UPGRADED)
-     * Injects memory based on context-aware relevance.
-     * Deep Memory is automatically searched and matching nodes are promoted 
-     * to Tier 1 (Working Memory) on-demand.
-     */
-    /**
      * DOCUMENT CHUNKING ENGINE
      * Surgically splits a long document into attributed chunks and
      * links them to the parent s:Document node to prevent cross-document pollution.
@@ -253,7 +493,10 @@ export class ProjectMemoryManager {
         let match;
         const documentTags = new Set<string>();
         while ((match = tagRegex.exec(content)) !== null) {
-            documentTags.add(match[1].toLowerCase());
+            const tag = match[1].toLowerCase();
+            if (isValidSemanticTag(tag)) {
+                documentTags.add(tag);
+            }
         }
 
         const docPredicates: MemoryPredicate[] = Array.from(documentTags).map(t => ({
@@ -266,7 +509,7 @@ export class ProjectMemoryManager {
         this._cache.push({
             id: cleanDocId,
             title,
-            content: `Document Summary: ${title} by ${author || 'Unknown'}. Domain: ${domain || 'General'}. Topics: ${Array.from(documentTags).join(', ')}`,
+            content: `Document Summary: ${title} by ${author || 'Unknown'}. Domain: ${domain || 'General'}. Topics: ${Array.from(documentTags).map(t => `#${t}`).join(', ')}`,
             timestamp: Date.now(),
             importance: 30, // Latent Tier 2
             lastUsed: Date.now(),
@@ -297,7 +540,10 @@ export class ProjectMemoryManager {
             const chunkTags = new Set<string>();
             let chunkMatch;
             while ((chunkMatch = tagRegex.exec(chunkContent)) !== null) {
-                chunkTags.add(chunkMatch[1].toLowerCase());
+                const tag = chunkMatch[1].toLowerCase();
+                if (isValidSemanticTag(tag)) {
+                    chunkTags.add(tag);
+                }
             }
             chunkTags.forEach(t => chunkPredicates.push({ verb: "has_tag", targetId: `tag_${t}` }));
 
@@ -327,59 +573,64 @@ export class ProjectMemoryManager {
         await this.saveEngrams(this._cache);
         this._onDidChange.fire();
     }
+
     /**
      * VIRTUAL SKILL PROJECTION ENGINE
      * Imports all active skills from SkillsManager and projects them
      * as Virtual Memory Nodes inside our Knowledge Graph with on-the-fly
      * hashtag-to-node association.
      */
-    public async getProjectedGraph(skillsManager?: any): Promise<MemoryEntry[]> {
+    public async getProjectedGraph(skillsManager?: any, activeSkillIds?: string[]): Promise<MemoryEntry[]> {
         const engrams = await this.getMemories();
 
         // Deep copy core engrams to ensure the dynamic projection has zero write-back leakage
         const projected = JSON.parse(JSON.stringify(engrams));
 
-        // 1. Project Hashtags from Core Engrams (VOLATILE RUNTIME-ONLY PROJECTION)
-        projected.forEach(m => {
-            const tagRegex = /#([\w_]+)/g;
-            let match;
-            const foundTags = new Set<string>();
-
-            while ((match = tagRegex.exec(m.content)) !== null) {
-                foundTags.add(match[1].toLowerCase());
+        // --- SELF-HEALING TAG PROJECTION ---
+        // Scan all engrams for has_tag predicates and project any missing tag nodes dynamically
+        const uniqueTags = new Set<string>();
+        projected.forEach((m: any) => {
+            if (m.predicates && Array.isArray(m.predicates)) {
+                m.predicates.forEach((p: any) => {
+                    if (p.verb === 'has_tag' && p.targetId.startsWith('tag_')) {
+                        const targetId = p.targetId;
+                        const tagLabel = targetId.substring(4);
+                        if (isValidSemanticTag(tagLabel)) {
+                            const exists = projected.some((x: any) => x.id === targetId);
+                            if (!exists && !uniqueTags.has(targetId)) {
+                                uniqueTags.add(targetId);
+                            }
+                        }
+                    }
+                });
             }
+        });
 
-            foundTags.forEach(tagId => {
-                const fullTagId = `tag_${tagId}`;
-                const exists = projected.some(x => x.id === fullTagId);
-                if (!exists) {
-                    projected.push({
-                        id: fullTagId,
-                        title: `#${tagId}`,
-                        content: `Shared semantic hub for #${tagId} relationships.`,
-                        timestamp: Date.now(),
-                        importance: 10,
-                        lastUsed: Date.now(),
-                        category: 'tag',
-                        scope: 'local',
-                        predicates: []
-                    });
-                }
-
-                if (!m.predicates) m.predicates = [];
-                const hasLink = m.predicates.some(p => p.verb === 'has_tag' && p.targetId === fullTagId);
-                if (!hasLink) {
-                    m.predicates.push({ verb: 'has_tag', targetId: fullTagId });
-                }
+        uniqueTags.forEach(tagId => {
+            const tagLabel = tagId.substring(4);
+            projected.push({
+                id: tagId,
+                title: `#${tagLabel}`,
+                content: `Dynamic semantic hub for #${tagLabel} relationships.`,
+                timestamp: Date.now(),
+                importance: 15,
+                lastUsed: Date.now(),
+                category: 'tag',
+                scope: 'local',
+                predicates: []
             });
         });
 
         if (!skillsManager) return projected;
 
-        // 2. Project Skills from SkillsManager (VOLATILE RUNTIME-ONLY PROJECTION)
+        // Project Skills from SkillsManager (VOLATILE RUNTIME-ONLY PROJECTION)
         try {
             const skills = await skillsManager.getSkills();
-            skills.forEach((s: any) => {
+            // Filter skills so that only the explicitly selected/active ones are projected
+            const activeIds = activeSkillIds || [];
+            const filteredSkills = skills.filter((s: any) => activeIds.includes(s.id));
+
+            filteredSkills.forEach((s: any) => {
                 const virtId = `skill_${s.id}`;
 
                 const tagRegex = /#([\w_]+)/g;
@@ -387,21 +638,25 @@ export class ProjectMemoryManager {
                 const predicates: MemoryPredicate[] = [];
 
                 while ((match = tagRegex.exec(s.content)) !== null) {
-                    const tagId = `tag_${match[1].toLowerCase()}`;
-                    predicates.push({ verb: "has_tag", targetId: tagId });
+                    const tag = match[1].toLowerCase();
+                    // Enforce meaningful non-numeric tags for skills too
+                    if (isValidSemanticTag(tag)) {
+                        const tagId = `tag_${tag}`;
+                        predicates.push({ verb: "has_tag", targetId: tagId });
 
-                    if (!projected.some(x => x.id === tagId)) {
-                        projected.push({
-                            id: tagId,
-                            title: `#${match[1]}`,
-                            content: `Shared semantic hub for #${match[1]} relationships.`,
-                            timestamp: Date.now(),
-                            importance: 10,
-                            lastUsed: Date.now(),
-                            category: 'tag',
-                            scope: 'local',
-                            predicates: []
-                        });
+                        if (!projected.some(x => x.id === tagId)) {
+                            projected.push({
+                                id: tagId,
+                                title: `#${tag}`,
+                                content: `Shared semantic hub for #${tag} relationships.`,
+                                timestamp: Date.now(),
+                                importance: 15,
+                                lastUsed: Date.now(),
+                                category: 'tag',
+                                scope: 'local',
+                                predicates: []
+                            });
+                        }
                     }
                 }
 
@@ -429,89 +684,116 @@ export class ProjectMemoryManager {
     }
 
     /**
-     * TIERED NEURAL MEMORY RECOVERY (UPGRADED)
-     * Injects memory based on context-aware relevance.
-     * Both Deep Memories are searched and promoted on-demand.
-     * Strictly enforces a budget cap to protect attention maps from bloat.
+     * TIERED NEURAL MEMORY RECOVERY & HYDRO-COGNITIVE PRE-CALCULATION
+     * Hydrates memories using a multi-factorial relevance calculation:
+     * S_total = S_keyword + S_spatial + S_temporal + S_recency + S_importance
      */
     public async getFormattedMemoryBlock(userPrompt?: string, skillsManager?: any): Promise<string> {
-        // Fetch raw memories (excluding projected skills to prevent massive duplicate bloat)
+        // Fetch core engrams
         const engrams = await this.getMemories();
         const affective = await this.getAffectiveMatrix();
 
-        // Extract lowercase keywords for semantic matching
-        const keywords = userPrompt 
-            ? userPrompt.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 3)
+        // Extract active concepts and relationship verbs for agent awareness
+        const activeConcepts = new Set<string>();
+        const activeVerbs = new Set<string>();
+        engrams.forEach(e => {
+            if (e.category && e.category !== 'tag' && e.category !== 'chunk' && e.category !== 'document') {
+                activeConcepts.add(e.category);
+            }
+            if (e.predicates && Array.isArray(e.predicates)) {
+                e.predicates.forEach(p => activeVerbs.add(p.verb));
+            }
+        });
+
+        const conceptsList = Array.from(activeConcepts).map(c => `s:${c.toUpperCase()}`).join(', ') || 's:GENERAL';
+        const verbsList = Array.from(activeVerbs).map(v => `s:${v}`).join(', ') || 's:has_tag';
+
+        // 1. FACTORIAL 1: Temporal / Prompt Keywords (Stemmed lookup)
+        const promptKeywords = userPrompt 
+            ? userPrompt.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 3)
             : [];
 
+        // 2. FACTORIAL 2: Spatial / Active Files in Context
+        const activeFiles = this.context.workspaceState.get<any[]>('lollms_active_context_files', []) || [];
+        const activePaths = activeFiles.map(f => String(f.path || '').toLowerCase());
+
+        const scoreFactors = engrams.map(e => {
+            const cleanContent = e.content.toLowerCase();
+            const cleanTitle = e.title.toLowerCase();
+
+            // Factor A: Jaccard Keyword Overlap
+            let semanticScore = 0;
+            if (promptKeywords.length > 0) {
+                const matches = promptKeywords.filter(kw => cleanContent.includes(kw) || cleanTitle.includes(kw)).length;
+                semanticScore = (matches / promptKeywords.length) * 45; // Max 45 points
+            }
+
+            // Factor B: Spatial File Association
+            let spatialScore = 0;
+            if (activePaths.length > 0 && e.id) {
+                const idClean = e.id.toLowerCase().replace(/_rules|_protocol|_std/g, '');
+                const hasPathMatch = activePaths.some(p => p.includes(idClean) || idClean.includes(path.basename(p)));
+                if (hasPathMatch) spatialScore = 30; // Max 30 points
+            }
+
+            // Factor C: Recency weighting (Preventing long-idle memory bloat)
+            const ageDays = (Date.now() - e.lastUsed) / (1000 * 60 * 60 * 24);
+            const recencyScore = Math.max(0, 15 - ageDays); // Max 15 points
+
+            // Factor D: Base Retentiveness Weight
+            const importanceScore = (e.importance / 100) * 10; // Max 10 points
+
+            const totalScore = semanticScore + spatialScore + recencyScore + importanceScore;
+
+            return { engram: e, score: totalScore };
+        });
+
+        // Filter and sort by calculated multi-factorial score
+        const sortedEngrams = scoreFactors
+            .filter(f => f.score >= 20 || f.engram.importance >= 80) // Safety baseline
+            .sort((a, b) => b.score - a.score)
+            .map(f => f.engram);
+
+        // Core formatting buffer
         let block = `\n# 🧠 NEURAL MEMORY SYSTEM (KNOWLEDGE GRAPH)\n`;
         block += `[AFFECTIVE MATRIX]: Relationship state is "${affective.label}" (${affective.relationshipScore}/100).\n`;
 
-        // Tier 0: Immutable ROM (Hardcoded Specs)
+        block += `\n## 🧊 ACTIVE ONTOLOGY SCHEMA (METADATA CONTEXT)\n`;
+        block += `- **Concepts (Classes)**: [ ${conceptsList} ]\n`;
+        block += `- **Relationship Verbs (Properties)**: [ ${verbsList} ]\n\n`;
+        block += `**AGENT MANDATE**: When recording new architectural engrams or lessons, you MUST align them with the schema above. Categorize under one of the active Concepts, and link related nodes using the available Relationship Verbs. Use this XML format:\n`;
+        block += `\`<project_memory action="add" id="unique_id" title="Title" category="concept_name" predicates='[{"verb": "verb_name", "targetId": "target_id"}]'>Fact content...</project_memory>\`\n`;
+
+        // Tier 0: Immutable ROM (Self-Protection & Tool Hygiene)
         block += `\n## TIER 0: IMMUTABLE ROM\n`;
         block += `- Hub Purpose: Sovereign Local Engineering\n`;
         block += `- Protocol: LCP (LoLLMs Communication Protocol) Active\n`;
 
-        // Dynamic Hydration Pass with Scope Protection
-        const hydratedEngrams: MemoryEntry[] = [];
-        const latentHandles: MemoryEntry[] = [];
-
-        // --- SCOPE PROTECTION SEARCH ---
-        let isolatedDocId: string | null = null;
-        for (const e of engrams) {
-            if (e.category === 'document') {
-                const wordsInTitle = e.title.toLowerCase().split(/\s+/);
-                const hasOverlap = wordsInTitle.some(w => w.length > 3 && keywords.includes(w));
-                if (hasOverlap) {
-                    isolatedDocId = e.id;
-                    break;
-                }
-            }
-        }
-
-        engrams.forEach(e => {
-            if (isolatedDocId && e.category === 'chunk' && e.metadata?.sourceDocId !== isolatedDocId) {
-                latentHandles.push(e);
-                return;
-            }
-
-            const isBaseLive = e.importance >= this.TIER_THRESHOLD;
-            const semanticScore = this.calculateRelevanceScore(e, keywords);
-            const isSemanticallyRelevant = semanticScore > 35;
-
-            if (isBaseLive || isSemanticallyRelevant) {
-                hydratedEngrams.push(e);
-            } else {
-                latentHandles.push(e);
-            }
-        });
-
-        // --- COGNITIVE BUDGET CAP ---
-        // Hard-cap on active working memory size.
-        // Sort hydrated entries so highly relevant/important ones are prioritized first.
-        const sortedHydrated = hydratedEngrams.sort((a, b) => {
-            const scoreA = this.calculateRelevanceScore(a, keywords) + (a.importance || 0);
-            const scoreB = this.calculateRelevanceScore(b, keywords) + (b.importance || 0);
-            return scoreB - scoreA;
-        });
-
-        const BUDGET_LIMIT_CHARACTERS = 8000; // ~2,000 tokens limit for active memory injection
+        // Cognitive budget constraint (Max 2000 tokens / 8000 chars)
+        const BUDGET_LIMIT_CHARACTERS = 8000;
         let currentSize = 0;
         const activeEngrams: MemoryEntry[] = [];
+        const latentHandles: MemoryEntry[] = [];
 
-        for (const e of sortedHydrated) {
-            const entrySize = e.content.length + e.title.length;
-            if (currentSize + entrySize < BUDGET_LIMIT_CHARACTERS) {
+        sortedEngrams.forEach(e => {
+            const size = e.content.length + e.title.length;
+            if (currentSize + size < BUDGET_LIMIT_CHARACTERS) {
                 activeEngrams.push(e);
-                currentSize += entrySize;
+                currentSize += size;
             } else {
-                // Demote over-budget items to latent storage handles
                 latentHandles.push(e);
             }
-        }
+        });
+
+        // Add remaining non-matched engrams as latent handles
+        engrams.forEach(e => {
+            if (!activeEngrams.some(x => x.id === e.id) && !latentHandles.some(x => x.id === e.id)) {
+                latentHandles.push(e);
+            }
+        });
 
         if (activeEngrams.length > 0) {
-            block += `\n## TIER 1: ACTIVE WORKING SUBGRAPH\n`;
+            block += `\n## TIER 1: ACTIVE WORKING SUBGRAPH (HYDRATED MEMORIES)\n`;
             activeEngrams.forEach(e => {
                 block += `### [${e.category.toUpperCase()}] ${e.title} (${e.id})\n`;
                 block += `${e.content}\n`;
@@ -526,15 +808,35 @@ export class ProjectMemoryManager {
             });
         }
 
+        // --- THE HINT LAYER (LATENT GRAPHS PREVENTING BLIND SPARQLS) ---
         if (latentHandles.length > 0) {
-            block += `\n## TIER 2: DEEP STORAGE HANDLES (LATENT GRAPH)\n`;
-            block += `The following nodes exist in your deep storage. Use 'query_architecture' with SPARQL to extract full content when needed:\n`;
+            block += `\n## TIER 2: DEEP STORAGE INDEX HANDLES (LATENT GRAPH)\n`;
+            block += `Do NOT make blind SPARQL queries. The following specific tags and memory categories exist in deep storage.\n`;
+            block += `If you need to query these, write a targeted SPARQL on \`query_architecture\` matching these precise identifiers:\n\n`;
 
-            const categories = [...new Set(latentHandles.map(e => e.category))];
-            categories.forEach(cat => {
-                const items = latentHandles.filter(e => e.category === cat);
-                block += `- s:${cat}/: [${items.map(i => `s:${i.id}`).join(', ')}]\n`;
+            const tagsList = latentHandles
+                .filter(e => e.category === 'tag')
+                .map(e => `#${e.title.replace('#', '')}`)
+                .join(', ');
+
+            const categoriesMap = new Map<string, string[]>();
+            latentHandles.forEach(e => {
+                if (e.category !== 'tag') {
+                    if (!categoriesMap.has(e.category)) categoriesMap.set(e.category, []);
+                    categoriesMap.get(e.category)!.push(e.id);
+                }
             });
+
+            if (tagsList) {
+                block += `**Available Latent Tags**: [ ${tagsList} ]\n`;
+            }
+
+            if (categoriesMap.size > 0) {
+                block += `**Available Latent Categories**:\n`;
+                for (const [cat, ids] of categoriesMap.entries()) {
+                    block += `- **${cat.toUpperCase()}**: [ ${ids.map(id => `s:${id}`).join(', ')} ]\n`;
+                }
+            }
         }
 
         return block;
@@ -558,44 +860,117 @@ export class ProjectMemoryManager {
     /**
      * THE DREAM CYCLE: Reorganizes and consolidates neural connections.
      * 1. Decay: Reduces importance of all engrams.
-     * 2. Consolidation: Refreshed engrams stay in T1, others move to T2.
-     * 3. Forgetting: Importance 0 is deleted.
+     * 2. Semantic Clean: Detects and prunes useless process noise.
+     * 3. Auto-Tag: Generates connecting hashtags for orphaned engrams.
+     * 4. Consolidation: Refreshed engrams stay in T1, others move to T2.
+     * 5. Forgetting: Importance 0 is deleted.
      */
     public async performDreamCycle(onProgress?: (event: { type: 'decay' | 'reinforce' | 'archive' | 'forget' | 'fuse' | 'summary', id?: string, title?: string, value?: number, data?: any }) => void): Promise<void> {
         const engrams = await this.getMemories();
+
+        // --- 🧹 INSTANT SEMANTIC HYGIENE PASS ---
+        // Strip purely numeric/meaningless tag nodes, tags in text, and relations before starting
+        engrams.forEach(e => {
+            if (e.predicates) {
+                e.predicates = e.predicates.filter(p => {
+                    if (p.verb === 'has_tag' && p.targetId.startsWith('tag_')) {
+                        const tagLabel = p.targetId.substring(4);
+                        return isValidSemanticTag(tagLabel);
+                    }
+                    return true;
+                });
+            }
+            if (e.content) {
+                e.content = e.content.replace(/#([\w_]+)/g, (match, tag) => {
+                    return isValidSemanticTag(tag) ? match : '';
+                }).trim();
+            }
+        });
+
+        // --- 📊 DYNAMIC TBox SCHEMA EXTRACTION ---
+        // Assemble the user's active concept categories and relationship verbs from the graph
+        const activeConcepts = new Set<string>(['engram', 'tag', 'document', 'rule', 'skill']);
+        const activeRelationships = new Map<string, { verb: string, source: string, target: string }>();
+
+        const addRel = (verb: string, source: string, target: string) => {
+            activeRelationships.set(`${source}-${verb}-${target}`, { verb, source, target });
+        };
+        addRel('has_tag', 's:Engram', 's:Tag');
+        addRel('part_of', 's:Engram', 's:Document');
+        addRel('enforces', 's:Engram', 's:Rule');
+        addRel('enforces', 's:Skill', 's:Rule');
+        addRel('supersedes', 's:Rule', 's:Rule');
+        addRel('contains', 's:Document', 's:Engram');
+
+        engrams.forEach(e => {
+            const id = String(e.id || '');
+            if (id.startsWith('concept_template_')) {
+                const conceptName = id.replace('concept_template_', '');
+                activeConcepts.add(conceptName);
+
+                if (e.predicates) {
+                    e.predicates.forEach((p: any) => {
+                        const targetConcept = p.targetId.startsWith('concept_template_')
+                            ? p.targetId.replace('concept_template_', '')
+                            : p.targetId.replace('tag_', 'tag');
+
+                        const srcLabel = `s:${conceptName.charAt(0).toUpperCase() + conceptName.slice(1)}`;
+                        const trgLabel = `s:${targetConcept.charAt(0).toUpperCase() + targetConcept.slice(1)}`;
+                        addRel(p.verb, srcLabel, trgLabel);
+                    });
+                }
+            } else {
+                if (e.category && e.category !== 'tag' && e.category !== 'chunk' && e.category !== 'document') {
+                    activeConcepts.add(e.category);
+                }
+                if (e.predicates) {
+                    e.predicates.forEach((p: any) => {
+                        const targetNode = engrams.find(x => x.id === p.targetId);
+                        const targetCat = targetNode?.category || 'general';
+
+                        const srcLabel = `s:${(e.category || 'general').charAt(0).toUpperCase() + (e.category || 'general').slice(1)}`;
+                        const trgLabel = `s:${targetCat.charAt(0).toUpperCase() + targetCat.slice(1)}`;
+                        addRel(p.verb, srcLabel, trgLabel);
+                    });
+                }
+            }
+        });
+
+        const conceptsList = Array.from(activeConcepts).map(c => `- \`s:${c.charAt(0).toUpperCase() + c.slice(1)}\``).join('\n');
+        const relationshipsList = Array.from(activeRelationships.values()).map(r => `- \`s:${r.verb}\` (Subject: \`${r.source}\` | Object: \`${r.target}\`)`).join('\n');
+
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const lollms = (this as any).lollmsAPI || this.context.extension.exports?.lollmsAPI;
+
+        // Select custom dream model or fall back to main model
+        const dreamModel = config.get<string>('dreamModelName') || undefined;
+
         let decayed = 0, consolidated = 0, forgotten = 0, fused = 0;
         const logs: string[] = [];
-
         const updatedEngrams: MemoryEntry[] = [];
 
+        // --- PHASE 1: SYSTEMATIC DECAY & SECURITY PURGE ---
         for (const e of engrams) {
             const oldImp = e.importance;
-            // 🛡️ ANTI-POISONING PROTOCOL
             let decayPenalty = this.DECAY_STEP;
 
-            // 1. Identify Process Noise (Self-generated failure loops)
+            // Identify transient Process Noise (failure logs/step trackers)
             const isFailureLesson = e.content.toLowerCase().includes('previous attempt') || 
                                    e.content.toLowerCase().includes('failed because') ||
                                    e.title.toLowerCase().includes('lesson');
 
-            // 2. Identify Meta-Noise (Agent talking about its own tags)
             const isMetaNoise = e.content.includes('<project_memory') || e.content.includes('<milestone');
 
             if (isFailureLesson || isMetaNoise) {
-                // Decay these 5x faster. Failure context is only useful for 1-2 turns.
                 decayPenalty = this.DECAY_STEP * 5;
-
-                // If it's very old or importance is already low, drop it to zero immediately
-                if (oldImp < 40) decayPenalty = 100; 
+                if (oldImp < 40) decayPenalty = 100; // Immediate purge
             }
 
-            // 3. Persistent Facts (User provided or high importance)
-            if (e.importance >= 90) decayPenalty = 0.1; // Rule-tier engrams are nearly permanent
+            if (e.importance >= 90) decayPenalty = 0.1; // Rules/Standards are protected
 
             const newImp = Math.max(0, oldImp - decayPenalty);
 
             if (onProgress) {
-                // Determine action for animation
                 if (newImp === 0) {
                     onProgress({ type: 'forget', id: e.id, title: e.title });
                     forgotten++;
@@ -606,8 +981,7 @@ export class ProjectMemoryManager {
                     onProgress({ type: 'decay', id: e.id, title: e.title, value: newImp });
                     decayed++;
                 }
-                // Simulate neural processing time for cool visual flow
-                await new Promise(r => setTimeout(r, 150));
+                await new Promise(r => setTimeout(r, 120));
             }
 
             if (newImp > 0) {
@@ -615,56 +989,193 @@ export class ProjectMemoryManager {
             }
         }
 
-        // 🧬 NEW PHASE: SYNAPTIC FUSION (AI CONSOLIDATION)
-        // Find "Lessons" that can be merged
+        // --- PHASE 2: SEMANTIC AUDIT, TITLE RECONSTRUCTION & AUTO-TAGGING FOR ORPHANS/OLD MEMORIES ---
+        if (lollms && updatedEngrams.length > 0) {
+            const { stripThinkingTags } = require('./utils');
+
+            for (let i = 0; i < updatedEngrams.length; i++) {
+                const e = updatedEngrams[i];
+                if (e.category === 'tag') continue;
+
+                const hasTagLink = e.predicates && e.predicates.some(p => p.verb === 'has_tag');
+                const wordsCount = e.title ? e.title.split(/\s+/).length : 0;
+
+                // Triggers audit if the engram lacks tags, OR has an excessively long/verbose title (> 4 words), OR is grammatically incomplete
+                const isTooLong = wordsCount > 4 || e.title.length > 25;
+                const needsAudit = !hasTagLink || isTooLong || e.title.toLowerCase().endsWith('have') || e.title.includes('(');
+
+                if (needsAudit) {
+                    if (onProgress) {
+                        onProgress({ type: 'decay', id: e.id, title: `Auditing engram: "${e.title}"...` });
+                    }
+
+                    const systemPrompt = `You are the Neural Synaptic Auditor and Ontologist for the Lollms Memory Vault.
+Your goal is to maintain the semantic integrity of the knowledge graph by auditing engram nodes according to our **Sovereign Memory Ontology (TBox)**.
+
+### 🧊 SOVEREIGN MEMORY ONTOLOGY (TBox Schema)
+Classes (Concepts):
+- \`s:Engram\`: Represents an individual unit of captured project knowledge, such as an architectural decision, technical fact, or lesson learned.
+- \`s:Tag\`: Represents a semantic hub or hashtag used to index and group related units of knowledge.
+- \`s:Document\`: Represents an external reference document, web scrape, or research source.
+- \`s:Rule\`: Represents an active project constraint, standard, or 'Sovereign Rule' that must be strictly enforced.
+- \`s:Skill\`: Represents a projected technical capability or Action Protocol.
+
+Properties (Relationship Predicates):
+- \`s:has_tag\` (Subject: \`s:Engram\` | Object: \`s:Tag\`): Links an engram to a semantic hashtag.
+- \`s:part_of\` (Subject: \`s:Engram\` | Object: \`s:Document\`): Indicates an engram was extracted from a document.
+- \`s:contains\` (Subject: \`s:Document\` | Object: \`s:Engram\`): Indicates a document contains a nested engram.
+- \`s:enforces\` (Subject: \`s:Engram\` or \`s:Skill\` | Object: \`s:Rule\`): Indicates an engram or skill enforces a rule.
+- \`s:supersedes\` (Subject: \`s:Rule\` | Object: \`s:Rule\`): Links a new rule replacing an older one.
+- \`s:associates_with\` (Subject: \`s:Tag\` | Object: \`s:Tag\`): Connects related topics.
+
+### 🧹 AUDIT & SANITIZATION RULES (CRITICAL)
+1. **TAG HYGIENE (STRICT)**: You are STRICTLY FORBIDDEN from using purely numeric, hexadecimal, or meaningless short tags (e.g. #10, #333, #e05, #1a1a2e). 
+   - Replace any numeric/meaningless tags with descriptive, actual semantic terms (e.g., #styling, #theme_color, #animation).
+   - If a tag is completely unrelated to the engram, remove/sever the relationship.
+2. **ONTOLOGICAL ALIGNMENT**: Classify the node category strictly as one of the active TBox Concepts (lowercase: 'concept', 'tag', 'document', 'rules', 'skills').
+3. **TITLE CONDENSATION**: Reconstruct verbose/long titles into professional complete titles of 2 to 4 words.
+
+Output ONLY valid JSON matching this format:
+{
+  "action": "keep" | "delete",
+  "new_title": "condensed complete title...",
+  "reason": "explanation of decision...",
+  "tags": ["#tag1", "#tag2"]
+}`;
+
+                    const auditPrompt = `Analyze this memory engram from our project knowledge graph:
+ID: "${e.id}"
+Title: "${e.title}"
+Content: "${e.content}"
+
+Provide your audit verdict based on the TBox schema and sanitization rules.`;
+
+                    try {
+                        const response = await lollms.sendChat([
+                            { role: 'system', content: systemPrompt },
+                            { role: 'user', content: auditPrompt }
+                        ], null, undefined, dreamModel, { thinking: false });
+
+                        // Clean and parse thinking tags safely
+                        const cleanJson = stripThinkingTags(response).trim().replace(/```json|```/g, '').trim();
+                        const verdict = JSON.parse(cleanJson);
+
+                        if (verdict.action === 'delete') {
+                            updatedEngrams.splice(i, 1);
+                            i--; // Adjust index
+                            forgotten++;
+                            if (onProgress) onProgress({ type: 'forget', id: e.id, title: `Pruned noise: "${e.title}"` });
+                        } else if (verdict.action === 'keep') {
+                            // Update title if improved title returned
+                            if (verdict.new_title && verdict.new_title.trim().length > 0) {
+                                e.title = verdict.new_title.trim();
+                            }
+
+                            if (Array.isArray(verdict.tags) && verdict.tags.length > 0) {
+                                // Filter out purely numeric or meaningless tags from the LLM response
+                                const validTags = verdict.tags.filter((t: string) => {
+                                    const clean = t.replace('#', '').trim().toLowerCase();
+                                    return isValidSemanticTag(clean);
+                                });
+
+                                if (validTags.length > 0) {
+                                    // Remove old numeric hashtags from content
+                                    let targetContent = e.content.replace(/#\d+\b/g, '').trim();
+                                    targetContent = targetContent + " " + validTags.join(' ');
+                                    e.content = targetContent;
+
+                                    if (!e.predicates) e.predicates = [];
+                                    // Remove old numeric predicates
+                                    e.predicates = e.predicates.filter(p => {
+                                        if (p.verb === 'has_tag' && p.targetId.startsWith('tag_')) {
+                                            const tagLabel = p.targetId.substring(4);
+                                            return !/^\d+$/.test(tagLabel);
+                                        }
+                                        return true;
+                                    });
+
+                                    validTags.forEach((tag: string) => {
+                                        const cleanTag = tag.replace('#', '').toLowerCase().trim();
+                                        const tagNodeId = `tag_${cleanTag}`;
+
+                                        if (!e.predicates!.some(p => p.verb === 'has_tag' && p.targetId === tagNodeId)) {
+                                            e.predicates!.push({ verb: 'has_tag', targetId: tagNodeId });
+                                        }
+
+                                        // Inject tag hub if missing
+                                        const tagExists = updatedEngrams.some(x => x.id === tagNodeId);
+                                        if (!tagExists) {
+                                            updatedEngrams.push({
+                                                id: tagNodeId,
+                                                title: `#${cleanTag}`,
+                                                content: `Shared semantic hub for #${cleanTag} relationships.`,
+                                                timestamp: Date.now(),
+                                                importance: 15,
+                                                lastUsed: Date.now(),
+                                                category: 'tag',
+                                                tier: 2,
+                                                scope: e.scope,
+                                                predicates: []
+                                            });
+                                        }
+                                    });
+                                    if (onProgress) onProgress({ type: 'decay', id: e.id, title: `Wired tags to "${e.title}": [${validTags.join(', ')}]` });
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        Logger.warn(`Surgical Dream Audit failed for ${e.id}:`, err);
+                    }
+                }
+            }
+        }
+
+        // --- PHASE 3: SYNAPTIC FUSION (AI CONSOLIDATION) ---
         const lessons = updatedEngrams.filter(e => e.title.toLowerCase().includes('lesson') || e.content.toLowerCase().includes('failed because'));
 
-        if (lessons.length >= 2) {
+        if (lollms && lessons.length >= 2) {
             if (onProgress) onProgress({ type: 'fuse', title: "Consolidating Failure Patterns..." });
 
-            const lollms = (this as any).lollmsAPI || (vscode.extensions.getExtension('parisneo.lollms-vs-coder')?.exports?.lollmsAPI);
+            const fusionPrompt = `You are the Neural Architect. Consolidate these redundant technical lessons into a single, high-density "Sovereign Rule". 
+            - Strip all narrative fluff ("Previous attempt failed", "The model should").
+            - Use clear, imperative technical language.
+            - Keep the importance high.
 
-            if (lollms) {
-                const fusionPrompt = `You are the Neural Architect. Consolidate these redundant technical lessons into a single, high-density "Sovereign Rule". 
-                - Strip all narrative fluff ("Previous attempt failed", "The model should").
-                - Use clear, imperative technical language.
-                - Keep the importance high.
+            LESSONS TO MERGE:
+            ${lessons.map(l => `- [${l.title}]: ${l.content}`).join('\n')}
 
-                LESSONS TO MERGE:
-                ${lessons.map(l => `- [${l.title}]: ${l.content}`).join('\n')}
+            OUTPUT FORMAT: JSON only: {"title": "Sovereign Rule: [Topic]", "content": "..."}`;
 
-                OUTPUT FORMAT: JSON only: {"title": "Sovereign Rule: [Topic]", "content": "..."}`;
+            try {
+                const response = await lollms.sendChat([
+                    { role: 'system', content: "You are a JSON-only synaptic organizer. Output only JSON." }
+                ], null, undefined, dreamModel, { thinking: false });
 
-                try {
-                    const response = await lollms.sendChat([{ role: 'system', content: fusionPrompt }]);
-                    const result = JSON.parse(response.replace(/```json|```/g, ''));
+                const result = JSON.parse(stripThinkingTags(response).replace(/```json|```/g, ''));
 
-                    // Create the new "Fused" memory
-                    const newId = 'rule_' + Date.now();
-                    updatedEngrams.push({
-                        id: newId,
-                        title: result.title,
-                        content: result.content,
-                        timestamp: Date.now(),
-                        importance: 95, // High initial power
-                        lastUsed: Date.now(),
-                        category: "rules",
-                        tier: 1,
-                        scope: 'local',
-                        origin: 'architect'
-                    });
+                const newId = 'rule_' + Date.now();
+                updatedEngrams.push({
+                    id: newId,
+                    title: result.title,
+                    content: result.content,
+                    timestamp: Date.now(),
+                    importance: 95, 
+                    lastUsed: Date.now(),
+                    category: "rules",
+                    tier: 1,
+                    scope: 'local',
+                    origin: 'architect'
+                });
 
-                    // Remove the old source lessons
-                    lessons.forEach(l => {
-                        const idx = updatedEngrams.findIndex(ue => ue.id === l.id);
-                        if (idx !== -1) updatedEngrams.splice(idx, 1);
-                    });
+                lessons.forEach(l => {
+                    const idx = updatedEngrams.findIndex(ue => ue.id === l.id);
+                    if (idx !== -1) updatedEngrams.splice(idx, 1);
+                });
 
-                    fused = lessons.length;
-                    if (onProgress) onProgress({ type: 'fuse', title: `Fused ${fused} lessons into 1 Rule: "${result.title}"` });
-                } catch (err) {
-                    console.error("Fusion failed", err);
-                }
+                fused = lessons.length;
+                if (onProgress) onProgress({ type: 'fuse', title: `Fused ${fused} lessons into 1 Rule: "${result.title}"` });
+            } catch (err) {
+                console.error("Fusion failed", err);
             }
         }
 
@@ -674,7 +1185,6 @@ export class ProjectMemoryManager {
         const summary = { decayed, consolidated, forgotten, fused, total: updatedEngrams.length };
         if (onProgress) onProgress({ type: 'summary', data: summary });
 
-        // Store maintenance log
         await this.context.workspaceState.update('lollms_dream_log', {
             timestamp: Date.now(),
             events: logs
@@ -684,15 +1194,31 @@ export class ProjectMemoryManager {
     private async saveEngrams(engrams: MemoryEntry[]) {
         const { getLollmsStorageUri } = require('./utils');
         const storageRoot = getLollmsStorageUri(this.context);
-        const memoryPath = vscode.Uri.joinPath(storageRoot, 'project_memory.json');
-        const buffer = Buffer.from(JSON.stringify(engrams, null, 2), 'utf8');
+        const projectMemoryPath = vscode.Uri.joinPath(storageRoot, 'project_memory.json');
+        const globalMemoryPath = this.getGlobalMemoryPath();
 
+        // Partition engrams by scope
+        const projectEngrams = engrams.filter(e => e.scope !== 'global');
+        const globalEngrams = engrams.filter(e => e.scope === 'global');
+
+        // 1. Save Project-specific Memories
         try {
-            const dir = vscode.Uri.joinPath(memoryPath, '..');
+            const projectBuffer = Buffer.from(JSON.stringify(projectEngrams, null, 2), 'utf8');
+            const dir = vscode.Uri.joinPath(projectMemoryPath, '..');
             await vscode.workspace.fs.createDirectory(dir);
-            await vscode.workspace.fs.writeFile(memoryPath, buffer);
+            await vscode.workspace.fs.writeFile(projectMemoryPath, projectBuffer);
         } catch (e) {
-            Logger.error("Failed to save neural engrams", e);
+            Logger.error("Failed to save project neural engrams", e);
+        }
+
+        // 2. Save Global Cross-project Memories
+        try {
+            const globalBuffer = Buffer.from(JSON.stringify(globalEngrams, null, 2), 'utf8');
+            const dir = vscode.Uri.joinPath(globalMemoryPath, '..');
+            await vscode.workspace.fs.createDirectory(dir);
+            await vscode.workspace.fs.writeFile(globalMemoryPath, globalBuffer);
+        } catch (e) {
+            Logger.error("Failed to save global neural engrams", e);
         }
     }
 
@@ -723,17 +1249,37 @@ export class ProjectMemoryManager {
             const attrStr = match[1];
             const memoryContent = match[2].trim();
             const attrs: any = {};
-            
+
             const attrRegex = /(\w+)\s*=\s*["']([^"']*)["']/g;
             let m;
             while ((m = attrRegex.exec(attrStr)) !== null) {
                 attrs[m[1]] = m[2];
             }
 
-            const { action, id, title, importance } = attrs;
+            const { action, id, title, importance, category, predicates } = attrs;
             if (action && id) {
                 const imp = importance ? parseFloat(importance) : 1.0;
-                await this.updateMemory(action as any, id, title || id, memoryContent, "general", imp);
+
+                let parsedPreds = undefined;
+                if (predicates) {
+                    try {
+                        // Unescape any XML quotes before parsing JSON
+                        const cleanJson = predicates.replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+                        parsedPreds = JSON.parse(cleanJson);
+                    } catch (e) {
+                        Logger.warn("Failed to parse predicates from project_memory tag", e);
+                    }
+                }
+
+                await this.updateMemory(
+                    action as any, 
+                    id, 
+                    title || id, 
+                    memoryContent, 
+                    category || "general", 
+                    imp,
+                    parsedPreds
+                );
             }
         }
     }

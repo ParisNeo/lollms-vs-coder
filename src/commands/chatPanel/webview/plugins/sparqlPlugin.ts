@@ -17,52 +17,79 @@ export const sparqlPlugin: TagPlugin = {
                 <span class="summary-lang-label" style="color: var(--vscode-charts-purple); font-weight: 800;">
                     <i class="codicon codicon-graph"></i> SPARQL-lite Query Request
                 </span>
-                <div class="code-actions">
-                    <button class="code-action-btn apply-btn run-sparql-btn" 
-                            id="btn-${blockId}"
+                <div class="code-actions" style="display:flex; gap:6px;">
+                    <button class="code-action-btn secondary-btn run-local-sparql-btn" 
+                            id="btn-local-${blockId}"
+                            data-query="${encodeURIComponent(queryText)}"
+                            data-block-id="${blockId}"
+                            title="Execute locally and display results inside this card without reprompting">
+                        <i class="codicon codicon-terminal"></i> Run
+                    </button>
+                    <button class="code-action-btn apply-btn run-reprompt-sparql-btn" 
+                            id="btn-reprompt-${blockId}"
                             style="background-color: var(--vscode-charts-purple) !important; color: white !important;"
                             data-query="${encodeURIComponent(queryText)}"
-                            data-block-id="${blockId}">
+                            data-block-id="${blockId}"
+                            title="Execute and automatically feed the results back to the AI chat">
                         <i class="codicon codicon-play"></i> Run & Reprompt
                     </button>
                 </div>
             </div>
-            <div class="generation-body" style="padding: 12px; background: var(--vscode-editor-background);">
+            <div class="generation-body" style="padding: 12px; background: var(--vscode-editor-background); display:flex; flex-direction:column; gap:8px;">
                 <pre style="margin: 0; padding: 10px; background: rgba(0,0,0,0.15); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-family: monospace; font-size: 11px; white-space: pre-wrap; overflow-x: auto;">${escapedQuery}</pre>
-                ${isAuto ? `<div style="font-size: 10px; color: var(--vscode-charts-green); margin-top: 8px;"><i class="codicon codicon-sync spin"></i> Auto-Apply Active: Querying complete ontology graph...</div>` : ''}
+                ${isAuto ? `<div style="font-size: 10px; color: var(--vscode-charts-green);"><i class="codicon codicon-sync spin"></i> Auto-Apply Active: Querying complete ontology graph...</div>` : ''}
+                <div class="sparql-results-render-area" style="display:none; max-height:250px; overflow-y:auto; border-top: 1px solid var(--vscode-widget-border); padding-top:8px;"></div>
             </div>
         </div>`;
     },
     initialize: (container, context) => {
-        container.querySelectorAll('.run-sparql-btn').forEach(btn => {
-            const button = btn as HTMLButtonElement;
-            const block = button.closest('.sparql-block') as HTMLElement;
-            const query = decodeURIComponent(button.dataset.query || '');
+        const block = container.querySelector('.sparql-block') as HTMLElement;
+        if (!block) return;
 
-            const run = (autoReprompt: boolean) => {
-                button.innerHTML = '<div class="spinner"></div> Running...';
-                button.disabled = true;
+        const query = decodeURIComponent(block.dataset.query || '');
 
-                context.vscode.postMessage({
-                    command: 'executeLollmsCommand',
-                    details: {
-                        command: 'lollms-vs-coder.runSparqlQueryDirectly',
-                        params: { 
-                            query: query,
-                            messageId: context.messageId,
-                            blockId: button.dataset.blockId,
-                            reprompt: autoReprompt
-                        }
+        const runQuery = (button: HTMLButtonElement, autoReprompt: boolean) => {
+            // Lock both buttons
+            block.querySelectorAll('.run-local-sparql-btn, .run-reprompt-sparql-btn').forEach((btn: any) => {
+                btn.disabled = true;
+                btn.style.opacity = '0.5';
+            });
+
+            button.innerHTML = '<div class="spinner"></div> Running...';
+
+            context.vscode.postMessage({
+                command: 'executeLollmsCommand',
+                details: {
+                    command: 'lollms-vs-coder.runSparqlQueryDirectly',
+                    params: { 
+                        query: query,
+                        messageId: context.messageId,
+                        blockId: block.id,
+                        reprompt: autoReprompt
                     }
-                });
+                }
+            });
+        };
+
+        const localBtn = block.querySelector('.run-local-sparql-btn') as HTMLButtonElement;
+        if (localBtn) {
+            localBtn.onclick = (e) => {
+                e.stopPropagation();
+                runQuery(localBtn, false);
             };
+        }
 
-            button.onclick = () => run(true);
+        const repromptBtn = block.querySelector('.run-reprompt-sparql-btn') as HTMLButtonElement;
+        if (repromptBtn) {
+            repromptBtn.onclick = (e) => {
+                e.stopPropagation();
+                runQuery(repromptBtn, true);
+            };
+        }
 
-            // AUTO-APPLY: If autoApply is active, execute instantly!
-            if (context.capabilities?.autoApply === true && !button.disabled) {
-                setTimeout(() => run(true), 100);
-            }
-        });
+        // AUTO-APPLY: If autoApply is active, execute and reprompt instantly!
+        if (context.capabilities?.autoApply === true && repromptBtn && !repromptBtn.disabled) {
+            setTimeout(() => runQuery(repromptBtn, true), 100);
+        }
     }
 };

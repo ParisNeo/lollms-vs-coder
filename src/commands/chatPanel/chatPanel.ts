@@ -306,10 +306,6 @@ export class ChatPanel {
     public setAgentManager(agent: AgentManager) {
         this.agentManager = agent;
         ChatPanel.activeAgents.set(this.discussionId, agent);
-        // Only show agent UI if workerType is actually agent
-        if (this._discussionCapabilities.workerType === 'builder') {
-             this.updateAgentMode(false);
-        }
     }
 
   
@@ -528,7 +524,30 @@ export class ChatPanel {
 
               this._currentDiscussion = discussion;
               this._panel.title = this._currentDiscussion.title;
-              
+
+              // --- INTERACTIVE ONBOARDING WIZARD ---
+              // If the discussion is newly created, present the Onboarding Form immediately
+              if (this._currentDiscussion.messages.length === 0) {
+                  const onboardingForm = `
+<lollms_form id="onboarding_wizard" title="Choose Your Destiny — Lollms Onboarding">
+    <label>Select your project workflow profile:</label>
+    <input type="radio" name="destiny" label="🤠 Vibe Coding (Spontaneous prototyping, intuition-led, loose constraints)" value="vibe" checked="true" />
+    <input type="radio" name="destiny" label="🧠 Agentic Engineering (Rigorous architecture, TDD, YOLO mode, security audits)" value="agentic" />
+
+    <label>Tell me about your project's main code ideas, goals, and standards:</label>
+    <input type="text" name="instructions" placeholder="e.g., A Pygame retro RPG using modular sprites, or a FastAPI backend with PostgreSQL..." />
+
+    <submit label="Initialize Workspace" />
+</lollms_form>`.trim();
+
+                  this._currentDiscussion.messages.push({
+                      id: 'onboarding_form_msg',
+                      role: 'system',
+                      content: `### 🚀 Welcome to Lollms VS Coder!\nTo get started, please choose your workspace profile and enter your project instructions:\n\n${onboardingForm}`,
+                      timestamp: Date.now()
+                  });
+              }
+
               // Ensure AgentManager internal state matches the discussion's saved capability
               if (this.agentManager) {
                   const savedAgentMode = !!this._discussionCapabilities.agentMode;
@@ -809,10 +828,26 @@ export class ChatPanel {
     }
   }
 
-  public async updateContextAndTokens(options?: { isBackgroundSync?: boolean }) {
+  public async updateContextAndTokens(options?: { isBackgroundSync?: boolean, forceFullScan?: boolean }) {
     if (this._isDisposed) return;
 
     const isBackground = options?.isBackgroundSync === true;
+    const forceFull = options?.forceFullScan === true;
+
+    if (forceFull && this.contextStateProvider) {
+        this._panel.webview.postMessage({ command: 'showProjectLoader', projectName: this._currentDiscussion?.title || "Workspace" });
+        this._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Librarian: Indexing files. Please stand by...' });
+
+        await this.contextStateProvider.triggerFullScan((pct, status) => {
+            this._panel.webview.postMessage({ 
+                command: 'updateLoaderStatus', 
+                status: `${status} Please stand by...`,
+                stats: { files: pct, tokens: -1 }
+            });
+        });
+        
+        this._panel.webview.postMessage({ command: 'hideProjectLoader' });
+    }
 
     // --- IMMEDIATE INSTANT HYDRATION / REACTION ---
     if (!isBackground && this._panel && this._panel.webview) {
@@ -1089,6 +1124,16 @@ export class ChatPanel {
             const activeFolders = vscode.workspace.workspaceFolders || [];
             const folderSettings = this._discussionCapabilities.folderSettings || {};
             const statsPromises: Promise<void>[] = [];
+
+            // Sync active files list to workspaceState for multi-factorial memory pre-calculation
+            if (this._contextManager) {
+                try {
+                    const provider = this._contextManager.getContextStateProvider();
+                    const rawFiles = provider ? provider.getIncludedFiles() : [];
+                    const activeFilesList = rawFiles.filter(f => f && f.path);
+                    await this._discussionManager.context.workspaceState.update('lollms_active_context_files', activeFilesList);
+                } catch (e) {}
+            }
 
             activeFolders.forEach(folder => {
                 const uriKey = folder.uri.toString();
@@ -2193,6 +2238,108 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         timestamp: Date.now()
     };
 
+    // --- INTERACTIVE ONBOARDING WIZARD SUBMISSION INTERCEPTOR ---
+    if (typeof userMessage.content === 'string' && userMessage.content.startsWith('FORM_SUBMISSION:')) {
+        try {
+            const data = JSON.parse(userMessage.content.substring(16));
+
+            // A. Handle Wizard Completion
+            if (data.destiny) {
+                const profile = data.destiny as 'vibe' | 'agentic';
+                await this.updateCapabilities({ 
+                    profileType: profile,
+                    agentMode: profile === 'agentic' // Auto-activate Agent Mode for Agentic Engineering
+                });
+
+                // Engrave core instructions into Project DNA (Memory Vault)
+                const rawInstructions = data.instructions || "General development";
+                if (this.agentManager?.projectMemoryManager) {
+                    const dnaText = `## 🧬 PROJECT DNA (Sovereign Standards)\n- Core Objective: ${rawInstructions}\n- Destiny Selected: ${profile.toUpperCase()}\n- Indentation Standard: 4 spaces\n`;
+                    await this.agentManager.projectMemoryManager.updateMemory('add', 'project_dna', 'Project DNA & Standards', dnaText);
+                }
+
+                let responseText = "";
+                if (profile === 'vibe') {
+                    responseText = `### 🤠 Vibe Coding Destiny Initialized!
+Welcome! Your workspace is now configured for **high-velocity, intuition-led prototyping**. 
+
+**Main Ideas Configured in Project DNA:**
+> "${rawInstructions}"
+
+Feel free to play around, draft spontaneous interfaces, and experiment! *Warning: Spontaneous vibes are fun, but protect your code by committing often.*
+
+What are we building today?`;
+                } else {
+                    responseText = `### 🧠 Agentic Engineering Destiny Initialized!
+Welcome, Team Architect! Your workspace is hardened and secured under **Andrej Karpathy's Software 3.0** protocols. 
+
+**Main Code Ideas Engraved in Project DNA:**
+> "${rawInstructions}"
+
+*To escape the Theresa Torres "Doom Loop" and prevent desynchronization, coding must come later. We must establish a clean baseline first.*
+
+Please choose your starting pathway:
+1. **📐 Path A: Design the Architecture (PRD)**: Outline the MVC models, user flows, and security parameters in text before any code is generated.
+2. **🔍 Path B: Codebase Reconnaissance**: Scan and build the full code graph to ground the AI's spatial model.
+
+<lollms_form id="pathway_selection" title="Select Your Starting Pathway">
+    <input type="radio" name="pathway" label="📐 Path A: Design the Architecture (Draft PRD)" value="prd" checked="true" />
+    <input type="radio" name="pathway" label="🔍 Path B: Scan and Ground Existing Code" value="scan" />
+    <submit label="Confirm Starting Pathway" />
+</lollms_form>`;
+                }
+
+                await this.addMessageToDiscussion({
+                    id: 'onboarding_init_' + Date.now(),
+                    role: 'assistant',
+                    content: responseText,
+                    model: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
+                });
+
+                await this.loadDiscussion();
+                return;
+            }
+
+            // B. Handle Pathway Choice Completion
+            if (data.pathway) {
+                if (data.pathway === 'prd') {
+                    const prdPrompt = `Let's draft our **Product Requirements Document (PRD)**.
+1. Outline the System Architecture (Model-View-Controller splits).
+2. Detail the critical User Flows.
+3. Establish the core security parameters (No custom auth, sanitize every input, handle exceptions generically).
+
+*Remember: Coding comes later once the architecture is locked.*`;
+
+                    await this.addMessageToDiscussion({
+                        id: 'pathway_init_user_' + Date.now(),
+                        role: 'user',
+                        content: prdPrompt
+                    });
+                    await this.sendMessage({ role: 'user', content: prdPrompt });
+                } else if (data.pathway === 'scan') {
+                    const scanPrompt = `Let's perform a **Codebase Reconnaissance** scan.
+Analyze the complete project structure, identify the key entry points, and summarize the existing code relationships so we have a firm, grounded starting point before any changes are proposed.`;
+
+                    await this.addMessageToDiscussion({
+                        id: 'pathway_init_user_' + Date.now(),
+                        role: 'user',
+                        content: scanPrompt
+                    });
+
+                    // Build graph before sending so ontology facts are active
+                    if (this._codeGraphManager) {
+                        await this._codeGraphManager.buildGraph();
+                    }
+                    await this.sendMessage({ role: 'user', content: scanPrompt });
+                }
+                return;
+            }
+
+        } catch (e) {
+            Logger.error("Failed to parse onboarding wizard form data", e);
+        }
+    }
+
     if (this._inputResolver) {
         let rawText = (typeof userMessage.content === 'string') ? userMessage.content : "User provided input.";
 
@@ -2229,13 +2376,13 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         this._currentDiscussion && 
         !this._currentDiscussion.id.startsWith('temp-') && 
         isUntitled) {
-        
+
         const userMessages = this._currentDiscussion.messages.filter(m => m.role === 'user');
         // Only generate title on the first user message to avoid redundant API calls
         if (userMessages.length === 1) {
             setTimeout(() => {
                 if (this._isDisposed || !this._currentDiscussion || !this.processManager) return;
-                
+
                 // Register title generation as a process
                 const { id: titleProcId } = this.processManager.register(this.discussionId, vscode.l10n.t("Generating discussion title..."));
                 // We DON'T call updateGeneratingState() here to avoid flickering the UI
@@ -2247,7 +2394,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
                         this._currentDiscussion.title = newTitle;
                         this._panel.title = newTitle;
                         this._discussionManager.saveDiscussion(this._currentDiscussion);
-                        
+
                         // Internal refresh of the data provider
                         vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
                         // Force VS Code to repaint the specific tree view with safety guard
@@ -2258,105 +2405,24 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
             }, 2000); 
         }
     }
-    // --- BUILDER MODE UNIFICATION ---
-    if (this._discussionCapabilities.workerType === 'builder' && message.role === 'user') {
-        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Initializing Focused Mind...');
-        this.updateGeneratingState();
 
-        try {
-            const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder mission...";
+    // --- AGENT MODE ROUTER (Sovereign Loop) ---
+    if (this.agentManager && this._discussionCapabilities.agentMode && message.role === 'user') {
+        const textContent = (typeof message.content === 'string') ? message.content : "Executing agent mission...";
+        const workspace = vscode.workspace.workspaceFolders?.[0];
 
-            // 🟢 EMMIT SYSTEM BUBBLE IMMEDIATELY
-            const builderReportId = 'builder_report_' + Date.now();
-            await this.addMessageToDiscussion({
-                id: builderReportId,
-                role: 'system', 
-                content: `<builder_report><objective>${textContent}</objective><briefing>Initializing Focused Mind...</briefing><timeline><div class="timeline-item active"><div class="timeline-dot"><div class="spinner"></div></div><div class="step">Booting implementation engine...</div></div></timeline></builder_report>`,
-                skipInPrompt: true
-            });
-
-            await this._contextManager.runContextAgent(
-                textContent,
-                model,
-                builderCtrl.signal,
-                (newContent) => {
-                    // Update the specific bubble created above
-                    this.updateMessageContent(builderReportId, newContent);
-                },
-                (status) => {
-                    this.processManager.updateDescription(builderProcId, `Builder: ${status}`);
-                    this.updateGeneratingState();
-                },
-                undefined,
-                'builder', 
-                this._currentDiscussion,
-                this._currentDiscussion.messages
+        if (workspace) {
+            // Delegate completely to AgentManager to start planning
+            await this.agentManager.handleUserMessage(
+                textContent, 
+                this._currentDiscussion, 
+                workspace
             );
-
-            this.processManager.unregister(builderProcId);
-            this.updateGeneratingState();
-            this.updateContextAndTokens();
-            return; 
-        } catch (e: any) {
-            this.processManager.unregister(builderProcId);
-            this.updateGeneratingState();
-            if (e.name !== 'AbortError') throw e;
-            return;
+        } else {
+            vscode.window.showErrorMessage("Agent Mode requires an active workspace folder.");
         }
-    }
-
-    // --- BUILDER FUSION: LIBRARIAN WITH WRITE POWER ---
-    if (this._discussionCapabilities.workerType === 'builder' && message.role === 'user') {
-        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Initializing Focused Mind...');
-        this.updateGeneratingState();
-
-        try {
-            const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder mission...";
-
-            // We use a System message role with raw XML to trigger the rich dashboard immediately
-            const builderReportId = 'builder_report_' + Date.now();
-            await this.addMessageToDiscussion({
-                id: builderReportId,
-                role: 'system', 
-                content: `<builder_report><objective>${textContent}</objective><briefing>Initializing Focused Mind...</briefing><timeline><div class="timeline-item active"><div class="timeline-dot"><div class="spinner"></div></div><div class="step">Booting implementation engine...</div></div></timeline></builder_report>`,
-                skipInPrompt: true
-            });
-
-            // Re-use the LIBRARIAN code with 'builder' mode enabled
-            await this._contextManager.runContextAgent(
-                textContent,
-                model,
-                builderCtrl.signal,
-                (newContent) => {
-                    this.updateMessageContent(builderReportId, newContent);
-                },
-                (status) => {
-                    this.processManager.updateDescription(builderProcId, `Builder: ${status}`);
-                    this.updateGeneratingState();
-                },
-                undefined,
-                'builder', // This flag enables implementation tools in the loop
-                this._currentDiscussion,
-                this._currentDiscussion.messages
-            );
-
-            this.processManager.unregister(builderProcId);
-            this.updateGeneratingState();
-            await this.updateContextAndTokens();
-            return; // DONE: Standard chat loop is never reached
-        } catch (e: any) {
-            this.processManager.unregister(builderProcId);
-            this.updateGeneratingState();
-            if (e.name !== 'AbortError') throw e;
-            return;
-        }
-    }
-
-    // Standard Agent Mode (Leader Architect)
-    if (this.agentManager && this._discussionCapabilities.agentMode) {
-        // ... (rest of standard agent logic)
+        this.updateContextAndTokens();
+        return; // DONE: Standard chat loop is bypassed entirely
     }
 
     const { id: processId, controller } = this.processManager.register(this.discussionId, 'Synchronizing Context...');
@@ -2366,187 +2432,8 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     // This is where we do the heavy lifting only once the user is ready to send.
     await this.updateContextAndTokens();
 
-    // Strictly check if AutoContext is enabled AND not muted
-    // CRITICAL: Skip automated agents if the message is a 'system' role.
-    // This prevents "Auto-Resume" nudges from triggering a second Librarian run (recursion loop).
-    const isAutoContext = (!!this._discussionCapabilities.autoContextMode || autoContextMode) && message.role !== 'system';
-
-    // --- BUILDER FUSION: LIBRARIAN WITH WRITE POWER ---
-    if (this._discussionCapabilities.workerType === 'builder' && message.role === 'user') {
-        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Initializing Focused Mind...');
-        this.updateGeneratingState();
-
-        try {
-            const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder mission...";
-
-            // We use a System message role with raw XML to trigger the rich dashboard immediately
-            const builderReportId = 'builder_report_' + Date.now();
-            await this.addMessageToDiscussion({
-                id: builderReportId,
-                role: 'system', 
-                content: `<builder_report><objective>${textContent}</objective><briefing>Initializing Focused Mind...</briefing><timeline><div class="timeline-item active"><div class="timeline-dot"><div class="spinner"></div></div><div class="step">Booting implementation engine...</div></div></timeline></builder_report>`,
-                skipInPrompt: true
-            });
-
-            // Re-use the LIBRARIAN code with 'builder' mode enabled
-            await this._contextManager.runContextAgent(
-                textContent,
-                model,
-                builderCtrl.signal,
-                (newContent) => {
-                    this.updateMessageContent(builderReportId, newContent);
-                },
-                (status) => {
-                    this.processManager.updateDescription(builderProcId, `Builder: ${status}`);
-                    this.updateGeneratingState();
-                },
-                undefined,
-                'builder', // This flag enables implementation tools in the loop
-                this._currentDiscussion,
-                this._currentDiscussion.messages
-            );
-
-            this.processManager.unregister(builderProcId);
-            this.updateGeneratingState();
-            await this.updateContextAndTokens();
-            return; // DONE: Standard chat loop is never reached
-        } catch (e: any) {
-            this.processManager.unregister(builderProcId);
-            this.updateGeneratingState();
-            if (e.name !== 'AbortError') throw e;
-            return;
-        }
-    }
-
-    // --- AUTO SKILL SELECTION ---
-    if (this._discussionCapabilities.autoSkillMode && !this._discussionCapabilities.disableProjectContext && message.role !== 'system') {
-        this.processManager.updateDescription(processId, "Selecting skills...");
-        this.updateGeneratingState();
-
-        const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
-        let userPromptText = "User request";
-        if (typeof message.content === 'string') {
-            userPromptText = message.content;
-        } else if (Array.isArray(message.content)) {
-            const textPart = message.content.find((p: any) => p.type === 'text');
-            if (textPart && textPart.text) userPromptText = textPart.text;
-        }
-        const autoSkillMsgId = 'auto_skill_agent_' + Date.now();
-
-        try {
-            this.processManager.updateDescription(processId, "💡 Selecting skills...");
-
-            // NEW: Add the actual UI bubble immediately so the user sees thoughts in real-time
-            await this.addMessageToDiscussion({
-                id: autoSkillMsgId,
-                role: 'system',
-                content: `**💡 Auto-Skill Agent**\n\n*Analyzing request...*`,
-                skipInPrompt: true 
-            });
-
-            const newSkills = await this._contextManager.runSkillSelectionAgent(
-                userPromptText, 
-                model, 
-                controller.signal, 
-                this._currentDiscussion.importedSkills || [],
-                (newContent) => {
-                    if (!this._isDisposed) {
-                        this._panel.webview.postMessage({ 
-                            command: 'updateMessage', 
-                            messageId: autoSkillMsgId, 
-                            newContent: newContent 
-                        });
-                    }
-                },
-                this._currentDiscussion
-            );
-            
-            if (this._currentDiscussion && JSON.stringify(newSkills) !== JSON.stringify(this._currentDiscussion.importedSkills)) {
-                this._currentDiscussion.importedSkills = newSkills;
-                if (!this._currentDiscussion.id.startsWith('temp-')) {
-                    await this._discussionManager.saveDiscussion(this._currentDiscussion);
-                }
-                this.updateContextAndTokens();
-                await this.updateMessageContent(autoSkillMsgId, `**💡 Auto-Skill Agent**\n*Optimized context with ${newSkills.length} active skills.*`);
-            } else {
-                // If no changes, we can either keep the log or update it to be very subtle
-                await this.updateMessageContent(autoSkillMsgId, `**💡 Auto-Skill Agent**\n*Current skills are already optimal for this request.*`);
-            }
-        } catch (e) {
-            this.log("Auto-skill failed", 'WARN');
-            await this.updateMessageContent(autoSkillMsgId, `**💡 Auto-Skill Agent**\n*Analysis skipped or failed.*`);
-        }
-    }
-
-    // --- SYNERGY: LIBRARIAN & BUILDER LOOP ---
-    let librarianAnalysis = "";
+    // Code Graph is used to resolve context on-demand; legacy non-unified Librarian/AutoSkill agents removed.
     const hasWorkspace = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0;
-
-
-    if (isAutoContext && !this._discussionCapabilities.disableProjectContext && hasWorkspace) {
-        this.processManager.updateDescription(processId, "Librarian is searching...");
-        this.updateGeneratingState();
-
-        const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
-        let userPromptText = "User request";
-        if (typeof message.content === 'string') {
-            userPromptText = message.content;
-        } else if (Array.isArray(message.content)) {
-            const textPart = message.content.find((p: any) => p.type === 'text');
-            if (textPart && textPart.text) userPromptText = textPart.text;
-        }
-        const logId = 'ctx_agent_' + Date.now();
-
-        await this.addMessageToDiscussion({
-            id: logId,
-            role: 'system', 
-            content: `**🧠 Auto-Context Agent**\n*Searching for relevant files...*\n\n`, 
-            skipInPrompt: false 
-        });
-
-        try {
-            const history = [...this._currentDiscussion.messages];
-
-            // TRIGGER LIBRARIAN
-            const result = await this._contextManager.runContextAgent(
-                userPromptText,
-                model,
-                controller.signal,
-                (newContent) => this.updateMessageContent(logId, newContent),
-                (status) => {
-                    if (!this._isDisposed && this.processManager) {
-                        this.processManager.updateDescription(processId, `Librarian: ${status}`);
-                        this.updateGeneratingState();
-                    }
-                },
-                undefined,
-                'collaborative',
-                this._currentDiscussion,
-                history
-            );
-
-            // 🛑 STOP CHECK: If the user clicked Stop during discovery, exit the entire workflow
-            if (controller.signal.aborted) {
-                this.processManager.unregister(processId);
-                this.updateGeneratingState();
-                return;
-            }
-
-            librarianAnalysis = result.analysis;
-
-            if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
-                await this._discussionManager.saveDiscussion(this._currentDiscussion);
-            }
-        } catch (e: any) {
-            if (e.name === 'AbortError' || controller.signal.aborted) {
-                this.processManager.unregister(processId);
-                this.updateGeneratingState();
-                return; // 🛑 EXIT WORKFLOW
-            }
-            this.log(`Sovereign Loop failed: ${e.message}`, 'ERROR');
-        }
-        }
 
     // --- WEB RESEARCH AGENT ---
     if (this._discussionCapabilities.webSearch) {
@@ -4856,7 +4743,7 @@ ${targetContent}
                 await this._fetchAndSetModels(true);
                 break;
             case 'calculateTokens':
-                this.updateContextAndTokens();
+                this.updateContextAndTokens({ forceFullScan: message.force === true });
                 break;
             case 'markHunkApplied':
                 await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex, message.undo === true);
@@ -4880,12 +4767,43 @@ ${targetContent}
                     // Send message back to webview to open the modal
                     webview.postMessage({ command: 'showFileSearchModal' });
                 } else if (command === 'lollms-vs-coder.runSparqlQueryDirectly') {
-                    const result = this.agentManager.codeGraphManager.executeSparql(params.query);
+                    // Smart Routing: Identify if query targets memory/skills TBox concepts
+                    const isMemoryQuery = params.query.includes('s:Engram') || 
+                                          params.query.includes('s:Tag') || 
+                                          params.query.includes('s:Rule') || 
+                                          params.query.includes('s:Skill') || 
+                                          params.query.includes('s:Document');
+
+                    let result = "";
+                    if (isMemoryQuery && this.agentManager?.projectMemoryManager) {
+                        const skillsManager = this.agentManager.skillsManager;
+                        const activeSkills = this._currentDiscussion?.importedSkills || [];
+
+                        // Extract fully projected engram/skill graph from memory manager
+                        const projected = await this.agentManager.projectMemoryManager.getProjectedGraph(skillsManager, activeSkills);
+
+                        const customNodes = projected.filter((el: any) => el.group === 'nodes').map((el: any) => ({
+                            id: el.data.id,
+                            type: el.data.category || 'general',
+                            label: el.data.label
+                        }));
+                        const customEdges = projected.filter((el: any) => el.group === 'edges').map((el: any) => ({
+                            source: el.data.source,
+                            target: el.data.target,
+                            label: el.data.label
+                        }));
+
+                        result = this.agentManager.codeGraphManager.executeSparql(params.query, customNodes, customEdges);
+                    } else {
+                        result = this.agentManager.codeGraphManager.executeSparql(params.query);
+                    }
+
                     webview.postMessage({
                         command: 'applyAllResult',
                         messageId: params.messageId,
                         blockIndex: params.blockId,
-                        success: true
+                        success: true,
+                        sparqlResult: result
                     });
                     if (params.reprompt) {
                         const responsePrompt = `### 🧱 SPARQL QUERY RESULT\nQuery executed on the complete ontology graph:\n\`\`\`sparql\n${params.query}\n\`\`\`\n\n**Result:**\n${result}\n\nAnalyze these results and proceed with the mission.`;
@@ -5369,6 +5287,9 @@ Task:
                 }
                 break;
             }
+            case 'runAndMonitorApp':
+                vscode.commands.executeCommand('lollms-vs-coder.runAndMonitorApp', this, message.messageId);
+                break;
             case 'openSettings':
                 vscode.commands.executeCommand('lollms-vs-coder.showConfigView');
                 break;
@@ -6833,7 +6754,14 @@ Task:
                             <label for="cap-forceFullCodePath">Strict <code>\`\`\`lang:path</code> blocks</label>
                         </div>
                     </div>
-
+                    <div class="modal-section">
+                        <h3>📋 Monitored Log Paths</h3>
+                        <div class="form-group">
+                            <label style="font-size: 11px; font-weight: bold;">Custom Log Files (one per line)</label>
+                            <textarea id="cap-monitoredLogPaths" class="commit-textarea" style="height: 60px; font-family: monospace; font-size: 11px; margin-top: 4px;" placeholder="e.g. logs/app.log&#10;debug.log"></textarea>
+                            <p class="help-text" style="font-size: 10px; opacity: 0.7; margin-top: 4px;">These files will be analyzed and summarized alongside stdout/stderr when clicking 'Run App & Monitor Logs'.</p>
+                        </div>
+                    </div>
                     <div class="modal-section">
                         <h3>📋 Clipboard Management</h3>
                         <div class="form-group">

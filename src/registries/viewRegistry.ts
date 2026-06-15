@@ -32,7 +32,6 @@ export class TabsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
             new TabItem("Workflow Studio", "studio", "type-hierarchy", activeTab === 'studio'),
             new TabItem("Skills Library", "skills", "lightbulb", activeTab === 'skills'),
             new TabItem("Project Memory (Graph)", "memory", "chip", activeTab === 'memory'),
-            new TabItem("Librarian (Knowledge)", "librarian", "library", activeTab === 'librarian'),
             new TabItem("Workspace Repair", "fix", "zap", activeTab === 'fix'),
             new TabItem("MCP Tools", "mcp", "plug", activeTab === 'mcp'),
             new TabItem("Environment", "env", "symbol-variable", activeTab === 'env'),

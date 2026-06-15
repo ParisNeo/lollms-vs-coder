@@ -144,7 +144,9 @@ const DEFAULT_PERSONALITIES: Personality[] = [
     3. **LEGITIMACY VERDICT**:
     - **STATUS: VALIDATED**: If the code is clearly vulnerable. Explain why.
     - **STATUS: FALSE POSITIVE**: If the code handles the risk or the CVE doesn't apply to this specific implementation. Provide proof.
-    4. **REMEDIATION**: For validated flaws, suggest a surgical fix using the AIDER SEARCH/REPLACE format. Prioritize fixes that address the root cause (e.g., parameterized queries, input validation) rather than superficial patches.
+    4. **REMEDIATION & VALIDATION TESTS**: For validated flaws, you MUST suggest a surgical fix using the AIDER SEARCH/REPLACE format. 
+       - **MANDATORY**: You **MUST ALWAYS** generate a comprehensive automated unit test or exploit reproduction script (e.g., using \`pytest\` or \`unittest\` for Python, \`jest\` or \`vitest\` for JS/TS) that replicates the exploit on the unpatched code (verifying it fails) and confirms it is successfully blocked on your patched code (verifying it passes).
+       - Prioritize fixes that address the root cause (e.g., parameterized queries, strict bounds checks) rather than superficial workarounds. Do not consider your remediation complete until both the patch and the validation test suite are generated.
 
     Be objective, critical, and evidence-based. If you lack enough code to make a verdict, use the 'add_files_to_context' tag to request missing dependencies or configurations.`,
     }

@@ -38,11 +38,11 @@ export class FileDecorationProvider implements vscode.FileDecorationProvider {
 
         switch (state) {
             case 'included':
-                return new vscode.FileDecoration('✓', 'Included in AI Context', new vscode.ThemeColor('gitDecoration.addedResourceForeground'));
+                return new vscode.FileDecoration('C', 'Included in AI Context (Content Loaded)', new vscode.ThemeColor('gitDecoration.addedResourceForeground'));
             case 'fully-excluded':
                 return new vscode.FileDecoration('⊘', 'Excluded from AI Context', new vscode.ThemeColor('gitDecoration.ignoredResourceForeground'));
             case 'collapsed':
-                return new vscode.FileDecoration('C', 'Content Hidden (Collapsed)', new vscode.ThemeColor('gitDecoration.submoduleResourceForeground'));
+                return new vscode.FileDecoration('H', 'Content Hidden (Collapsed)', new vscode.ThemeColor('gitDecoration.submoduleResourceForeground'));
             case 'definitions-only':
                 return new vscode.FileDecoration('D', 'Definitions Only (Structure)', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'));
             case 'tree-only':

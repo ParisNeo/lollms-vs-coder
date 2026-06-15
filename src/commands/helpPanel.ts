@@ -170,6 +170,7 @@ export class HelpPanel {
                     <div class="nav-item" onclick="showSection('profiles')"><i class="codicon codicon-settings-gear"></i> Response Styles</div>
                     <div class="nav-item" onclick="showSection('memory')"><i class="codicon codicon-chip"></i> Project Memory</div>
                     <div class="nav-item" onclick="showSection('skills')"><i class="codicon codicon-lightbulb"></i> Skills & Library</div>
+                    <div class="nav-item" onclick="showSection('run-monitor')"><i class="codicon codicon-play"></i> Run & Monitor</div>
                 </div>
             </div>
 
@@ -199,6 +200,32 @@ export class HelpPanel {
     </nav>
 
     <main id="main-content">
+        <!-- RUN & MONITOR -->
+        <section id="run-monitor">
+            <h1>🚀 Run & Monitor Application</h1>
+            <p>Lollms features an integrated, intelligent execution and log analysis suite. This allows you to launch your application, monitor standard output/error, analyze custom log files, and automatically feed cleaned diagnostics back to the LLM for self-repair.</p>
+
+            <div class="card">
+                <h3>How to Use</h3>
+                <p>On any assistant message containing code modifications or suggestions, look for the **Play** (<i class="codicon codicon-play" style="color:var(--vscode-charts-green)"></i>) icon in the message card's actions toolbar.</p>
+                <ul>
+                    <li><strong>Autonomous Launch</strong>: Clicking the button starts your application in the background (using your configured entrypoint/launch file).</li>
+                    <li><strong>Sovereign Log Ingestion</strong>: The manager monitors standard output, standard error, and any configured custom log paths (such as <code>logs/app.log</code>).</li>
+                    <li><strong>Intelligent Cleaning</strong>: Logs are instantly stripped of ANSI escape codes, and repetitive/redundant log lines are automatically deduplicated to keep the context clean and save tokens.</li>
+                    <li><strong>Automated Reprompting</strong>: Once execution completes or crashes, the refined diagnostic log report is sent directly back to the discussion as a new prompt for the LLM to inspect.</li>
+                </ul>
+            </div>
+
+            <h2>📋 Custom Log File Configuration</h2>
+            <p>You can configure the exact files Lollms should monitor during execution:</p>
+            <ol>
+                <li>Open <strong>Discussion Settings (⚙️)</strong> in the chat input toolbar.</li>
+                <li>Scroll down to the <strong>📋 Monitored Log Paths</strong> section.</li>
+                <li>Enter the relative paths to your log files (one per line, e.g., <code>logs/app.log</code> or <code>debug.log</code>) and click <strong>Apply</strong>.</li>
+            </ol>
+            <p>The Intelligent Log Analyzer will automatically read and merge these files alongside the standard terminal outputs during your next run.</p>
+        </section>
+
         <!-- MODES COMPARISON -->
         <section id="modes">
             <h1>⚖️ Discussion vs. Agent Mode</h1>

@@ -586,6 +586,7 @@ ${jsonGraph}
     <div id="toolbar">
         <select id="view" title="Graph View Perspective">
             <option value="full_ontology_graph">Complete Ontological Graph (Full Workspace Map)</option>
+            <option value="abstract_ontology_schema">Abstract Ontology Schema (TBox Model)</option>
             <option value="call_graph">Call Graph</option>
             <option value="import_graph">Import Graph</option>
             <option value="module_dependency_graph">Module/Folder Dependency Graph</option>
@@ -611,6 +612,7 @@ ${jsonGraph}
 
         <select id="detail-level" title="Ontological Filter Level">
             <option value="all">Full Ontology (All Relations)</option>
+            <option value="skeleton_only">Skeleton Only (Files, Classes, Libraries)</option>
             <option value="calls_only">Direct Calls Only (Invocations)</option>
             <option value="params_only">Signature Types (Parameters/Returns)</option>
             <option value="variables_only">Local Variables & Instantiations</option>

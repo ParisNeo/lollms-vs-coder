@@ -21,6 +21,7 @@ export class SettingsPanel {
     useLollmsExtensions: true,
     modelName: '',
     ttiModelName: '',
+    dreamModelName: '',
     architectModelName: '',
     titlingModelName: '',
     gitCommitModelName: '',
@@ -160,6 +161,7 @@ export class SettingsPanel {
     this._pendingConfig.useLollmsExtensions = config.get<boolean>('useLollmsExtensions') ?? true;
     this._pendingConfig.modelName = config.get<string>('modelName') || '';
     this._pendingConfig.ttiModelName = config.get<string>('ttiModelName') || '';
+    this._pendingConfig.dreamModelName = config.get<string>('dreamModelName') || '';
     this._pendingConfig.architectModelName = config.get<string>('architectModelName') || '';
     this._pendingConfig.titlingModelName = config.get<string>('titlingModelName') || '';
     this._pendingConfig.gitCommitModelName = config.get<string>('gitCommitModelName') || '';
@@ -560,6 +562,7 @@ export class SettingsPanel {
                   ['useLollmsExtensions', this._pendingConfig.useLollmsExtensions],
                   ['modelName', this._pendingConfig.modelName],
                   ['ttiModelName', this._pendingConfig.ttiModelName],
+                  ['dreamModelName', this._pendingConfig.dreamModelName],
                   ['architectModelName', this._pendingConfig.architectModelName],
                   ['titlingModelName', this._pendingConfig.titlingModelName],
                   ['gitCommitModelName', this._pendingConfig.gitCommitModelName],
@@ -804,14 +807,14 @@ export class SettingsPanel {
     const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, verifyAndCorrectCodeBlocks, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, forceFullCode, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentScreenCapture, agentWebTesting, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
-    
+
     const personalities = this._personalityManager.getPersonalities();
-    
+
     const stateData = {
 config: config,
 personalities: this._personalityManager.getPersonalities()
     };
-    
+
     const jsonState = JSON.stringify(stateData).replace(/</g, '\\u003c');
 
     return `<!DOCTYPE html>
@@ -1075,6 +1078,14 @@ personalities: this._personalityManager.getPersonalities()
                     </select>
                 </div>
                 <span class="help-text">Leave as "Automatic" to let Lollms select the best active TTI binding.</span>
+
+                <label for="dreamModelSelect">Memory Dream Cycle Model</label>
+                <div class="input-group">
+                    <select id="dreamModelSelect" class="model-dropdown" style="flex:1;">
+                        <option value="">Loading Models...</option>
+                    </select>
+                </div>
+                <span class="help-text">Used for background memory consolidation, hashtag generation, and engram pruning.</span>
 
                 <label for="architectModelSelect">Architect/Planner Model (Agent Mode)</label>
                 <div class="input-group">
@@ -1852,6 +1863,7 @@ personalities: this._personalityManager.getPersonalities()
                 bind('graphModelSelect', 'graphModelName');
                 bind('modelSelect', 'modelName');
                 bind('ttiModelSelect', 'ttiModelName');
+                bind('dreamModelSelect', 'dreamModelName');
                 bind('architectModelSelect', 'architectModelName');
                 bind('inspectorModelName', 'inspectorModelName');
                 bind('titlingModelSelect', 'titlingModelName');
@@ -2172,7 +2184,7 @@ personalities: this._personalityManager.getPersonalities()
 
                     // Update all relevant dropdowns
                     const targets = [
-                        'modelSelect', 'ttiModelSelect', 'architectModelSelect', 'inspectorModelName', 
+                        'modelSelect', 'ttiModelSelect', 'dreamModelSelect', 'architectModelSelect', 'inspectorModelName', 
                         'titlingModelSelect', 'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect', 'graphModelSelect'
                     ];
                     targets.forEach(id => {
@@ -2180,6 +2192,7 @@ personalities: this._personalityManager.getPersonalities()
                         if (el) {
                             let valToRestore = currentChatModel;
                             if (id === 'ttiModelSelect') valToRestore = config.ttiModelName;
+                            if (id === 'dreamModelSelect') valToRestore = config.dreamModelName;
                             if (id === 'architectModelSelect') valToRestore = currentArchModel;
                             if (id === 'inspectorModelName') valToRestore = currentInspModel;
                             if (id === 'titlingModelSelect') valToRestore = config.titlingModelName;

@@ -967,13 +967,20 @@ function renderCytoscapeView(viewType: string) {
     if (mermaidContainer) mermaidContainer.style.display = 'none';
     if (cyContainer) cyContainer.style.display = 'block';
 
-    if (!currentGraphData) return;
+    if (!currentGraphData && viewType !== 'abstract_ontology_schema') return;
 
     const elements: any[] = [];
     const hideOrphans = hideOrphansCheckbox ? hideOrphansCheckbox.checked : false;
     const groupingMode = groupingModeSelect ? groupingModeSelect.value : 'none';
     const layoutStyle = layoutStyleSelect ? layoutStyleSelect.value : 'organic';
     const detailLevel = (document.getElementById('detail-level') as HTMLSelectElement)?.value || 'all';
+
+    const totalNodesCount = currentGraphData ? currentGraphData.nodes.length : 0;
+    const isHighScale = totalNodesCount > 80;
+    // Automatic Level of Detail (LOD) degradation for large graphs to prevent cognitive overload
+    const activeDetailLevel = (detailLevel === 'all' && isHighScale && viewType === 'full_ontology_graph') 
+        ? 'skeleton_only' 
+        : detailLevel;
 
     const parentIds = new Set<string>();
 
@@ -995,7 +1002,53 @@ function renderCytoscapeView(viewType: string) {
     };
 
     // 1. Process specific Graph / Topology views
-    if (viewType === 'module_dependency_graph') {
+    if (viewType === 'abstract_ontology_schema') {
+        const schemaNodes = [
+            { id: 's_File', label: 's:File', type: 'schema_class' },
+            { id: 's_Class', label: 's:Class', type: 'schema_class' },
+            { id: 's_Function', label: 's:Function', type: 'schema_class' },
+            { id: 's_Method', label: 's:Method', type: 'schema_class' },
+            { id: 's_Library', label: 's:Library', type: 'schema_class' }
+        ];
+
+        const schemaEdges = [
+            { id: 'e_contains_class', source: 's_File', target: 's_Class', label: 's:contains' },
+            { id: 'e_contains_func', source: 's_File', target: 's_Function', label: 's:contains' },
+            { id: 'e_contains_method', source: 's_Class', target: 's_Method', label: 's:contains' },
+            { id: 'e_imports_file', source: 's_File', target: 's_File', label: 's:imports' },
+            { id: 'e_imports_lib', source: 's_File', target: 's_Library', label: 's:imports' },
+            { id: 'e_calls_func_func', source: 's_Function', target: 's_Function', label: 's:calls' },
+            { id: 'e_calls_func_method', source: 's_Function', target: 's_Method', label: 's:calls' },
+            { id: 'e_calls_method_method', source: 's_Method', target: 's_Method', label: 's:calls' },
+            { id: 'e_calls_method_func', source: 's_Method', target: 's_Function', label: 's:calls' },
+            { id: 'e_inherits_class', source: 's_Class', target: 's_Class', label: 's:inherits' }
+        ];
+
+        schemaNodes.forEach(n => {
+            elements.push({
+                group: 'nodes',
+                data: {
+                    id: n.id,
+                    label: n.label,
+                    type: n.type,
+                    estWidth: 100,
+                    estHeight: 100
+                }
+            });
+        });
+
+        schemaEdges.forEach(e => {
+            elements.push({
+                group: 'edges',
+                data: {
+                    id: e.id,
+                    source: e.source,
+                    target: e.target,
+                    label: e.label
+                }
+            });
+        });
+    } else if (viewType === 'module_dependency_graph') {
         const folderNodesMap = new Map<string, any>();
         const folderEdgesSet = new Set<string>();
 
@@ -1137,7 +1190,14 @@ function renderCytoscapeView(viewType: string) {
         currentGraphData.edges.forEach((e: any) => {
             let include = false;
             if (viewType === 'full_ontology_graph') {
-                include = true; // Include all edge relationships for the complete map
+                // If skeleton only is active, only include imports and inherits to avoid cluttering the visual path
+                if (activeDetailLevel === 'skeleton_only') {
+                    if (e.label === 'imports' || e.label === 'inherits') {
+                        include = true;
+                    }
+                } else {
+                    include = true;
+                }
             } else if (viewType === 'call_graph') {
                 if (e.label === 'calls' && (detailLevel === 'all' || detailLevel === 'calls_only')) include = true;
                 else if (e.label === 'inputParam' && (detailLevel === 'all' || detailLevel === 'params_only')) include = true;
@@ -1161,6 +1221,13 @@ function renderCytoscapeView(viewType: string) {
         });
 
         currentGraphData.nodes.forEach((n: any) => {
+            // Apply skeletal filter to keep the graph readable and responsive
+            if (activeDetailLevel === 'skeleton_only') {
+                if (n.type !== 'file' && n.type !== 'class' && n.type !== 'library') {
+                    return;
+                }
+            }
+
             // Check filters unless we are rendering the complete ontological map
             if (viewType !== 'full_ontology_graph') {
                 // For import graph, strictly filter out internal symbols (only allow files and libraries)
@@ -1372,6 +1439,18 @@ function renderCytoscapeView(viewType: string) {
             }
         },
         {
+            selector: 'node[type="schema_class"]',
+            style: {
+                'background-color': '#9b59b6', // Vivid Amethyst Purple for Schema
+                'border-color': '#9b59b6',
+                'color': '#ffffff',
+                'shape': 'hexagon',
+                'font-weight': 'bold',
+                'width': 85,
+                'height': 85
+            }
+        },
+        {
             selector: 'node:parent',
             style: {
                 'background-color': '#000000',
@@ -1412,6 +1491,35 @@ function renderCytoscapeView(viewType: string) {
                 'line-color': '#7f8c8d',
                 'target-arrow-color': '#7f8c8d',
                 'opacity': 0.5
+            }
+        },
+        {
+            selector: 'edge[label="s:contains"]',
+            style: {
+                'line-style': 'dashed',
+                'line-color': '#3498db',
+                'target-arrow-color': '#3498db'
+            }
+        },
+        {
+            selector: 'edge[label="s:imports"]',
+            style: {
+                'line-color': '#e67e22',
+                'target-arrow-color': '#e67e22'
+            }
+        },
+        {
+            selector: 'edge[label="s:calls"]',
+            style: {
+                'line-color': '#e74c3c',
+                'target-arrow-color': '#e74c3c'
+            }
+        },
+        {
+            selector: 'edge[label="s:inherits"]',
+            style: {
+                'line-color': '#2ecc71',
+                'target-arrow-color': '#2ecc71'
             }
         },
         {
@@ -1574,10 +1682,8 @@ function renderCytoscapeView(viewType: string) {
         autounselectify: false
     });
 
-    if (isLarge && statusLabel) {
-        if (!statusLabel.textContent.includes('LOD Optimization Active')) {
-            statusLabel.textContent += ' (LOD Optimization Active)';
-        }
+    if (activeDetailLevel === 'skeleton_only' && isHighScale && statusLabel) {
+        statusLabel.textContent = `LOD Optimization Active: Hidden fine-grained symbols to prevent clutter (${totalNodesCount} nodes total). Change 'Filter Level' to 'Full' to force show.`;
         statusLabel.style.color = 'var(--vscode-charts-orange)';
     }
 

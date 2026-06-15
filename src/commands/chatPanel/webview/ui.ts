@@ -678,7 +678,8 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
     }
 
     if (dom.messageInput) {
-        dom.messageInput.disabled = isGenerating;
+        // Keep editable during generation so the user can prepare the next prompt
+        dom.messageInput.disabled = false;
     }
 
     // --- GLOBAL BUTTON LOCKDOWN ---
@@ -696,6 +697,18 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
         }
     });
 
+    if (dom.sendButton) {
+        if (isGenerating) {
+            dom.sendButton.style.opacity = '0.4';
+            dom.sendButton.style.cursor = 'not-allowed';
+            dom.sendButton.title = 'Generation in progress...';
+        } else {
+            dom.sendButton.style.opacity = '';
+            dom.sendButton.style.cursor = '';
+            dom.sendButton.title = 'Send Message';
+        }
+    }
+
     if(dom.agentModeCheckbox) dom.agentModeCheckbox.disabled = isGenerating;
     if(dom.autoContextCheckbox) dom.autoContextCheckbox.disabled = isGenerating;
 
@@ -706,7 +719,7 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
     if(dom.debugRestartButton) dom.debugRestartButton.disabled = isGenerating;
 
     if (dom.inputAreaWrapper) {
-        dom.inputAreaWrapper.style.display = isGenerating ? 'none' : 'block';
+        dom.inputAreaWrapper.style.display = 'block'; // Always keep input area visible
     }
 
     if (dom.generatingOverlay) {
@@ -783,14 +796,14 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
         } else {
             dom.scrollToBottomBtn.style.display = 'none';
         }
-        
+
         if (dom.messageInput) {
             dom.messageInput.disabled = false;
             dom.messageInput.focus();
         }
     } else {
         dom.scrollToBottomBtn.style.display = 'none';
-        if (dom.inputArea) dom.inputArea.classList.add('disabled');
+        if (dom.inputArea) dom.inputArea.classList.remove('disabled'); // Keep active during generation
     }
 }
 
@@ -984,29 +997,22 @@ export function syncExpansionBlocks() {
     const globalState = (window as any).state;
     const globalFiles = globalState?.lastContextData?.files || [];
 
-    // Normalize global list: remove slashes and force lowercase
-    const normalizedGlobal = globalFiles.map((f: string) => f.replace(/\\/g, '/').toLowerCase());
+    // Helper for robust path matching
+    const isPathMatch = (pathA: string, pathB: string): boolean => {
+        if (!pathA || !pathB) return false;
+        const cleanA = pathA.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
+        const cleanB = pathB.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
+        return cleanA === cleanB || cleanA.endsWith('/' + cleanB) || cleanB.endsWith('/' + cleanA);
+    };
 
     const items = document.querySelectorAll('.expansion-file-item');
-    console.log(`[UI:Sync] Syncing ${items.length} UI items against ${normalizedGlobal.length} context files.`);
+    console.log(`[UI:Sync] Syncing ${items.length} UI items against ${globalFiles.length} context files.`);
 
     items.forEach((item: any) => {
         const pathAttr = item.getAttribute('data-path');
         if (!pathAttr) return;
 
-        // Clean and normalize the UI path (from the XML tag)
-        const cleanPath = pathAttr.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
-
-        // GREEDY MATCH: Check for structural equality
-        const isIncluded = normalizedGlobal.some(gf => {
-            const cleanGf = gf.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
-            
-            return cleanGf === cleanPath || 
-                   cleanGf.endsWith('/' + cleanPath) || 
-                   cleanPath.endsWith('/' + cleanGf) ||
-                   // Exact match without leading slashes
-                   cleanGf === cleanPath;
-        });
+        const isIncluded = globalFiles.some((cf: string) => isPathMatch(cf, pathAttr));
 
         if (isIncluded) {
             const icon = item.querySelector('.codicon');
@@ -1020,11 +1026,11 @@ export function syncExpansionBlocks() {
         }
     });
 
-    // Also update buttons
+    // Also update buttons with the same robust matching logic
     document.querySelectorAll('.context-expansion-block').forEach((block: any) => {
         const files = JSON.parse(block.dataset.files || '[]');
         const allIncluded = files.every((f: string) => 
-            globalFiles.some((cf: string) => cf.replace(/\\/g, '/') === f.replace(/\\/g, '/'))
+            globalFiles.some((cf: string) => isPathMatch(cf, f))
         );
 
         const addBtn = block.querySelector('.add-btn') as HTMLButtonElement;
@@ -1032,6 +1038,13 @@ export function syncExpansionBlocks() {
             addBtn.innerHTML = '<span class="codicon codicon-check"></span> Added to Context';
             addBtn.className = 'code-action-btn applied';
             addBtn.disabled = true;
+        }
+
+        const repromptBtn = block.querySelector('.add-reprompt-btn') as HTMLButtonElement;
+        if (repromptBtn && allIncluded) {
+            repromptBtn.innerHTML = '<span class="codicon codicon-play"></span> Reprompt AI';
+            repromptBtn.className = 'code-action-btn apply-btn';
+            repromptBtn.disabled = false;
         }
     });
 }
@@ -1102,8 +1115,16 @@ export function updateBadges() {
 
     const isAgentMode = caps.agentMode === true;
 
+    const isAgentActive = caps.agentMode === true;
+
     // Set high-level presence on body for HUD-aware styling
-    document.body.classList.toggle('agent-mode-active', isAgentMode);
+    document.body.classList.toggle('agent-mode-active', isAgentActive);
+
+    // Hide or display the standard Chat HUD in Agent Mode to prevent clutter
+    const chatHud = document.getElementById('fused-context-dashboard');
+    if (chatHud) {
+        chatHud.style.display = isAgentActive ? 'none' : 'block';
+    }
 
     // --- GROUP A: INFRASTRUCTURE ---
     if (true) {
@@ -1613,11 +1634,10 @@ export function updateBadges() {
         if (memBadge) memPopup.appendChild(memBadge);
     }
 
-    // --- THEME: KNOWLEDGE (Librarian/Skills/Tools) ---
+    // --- THEME: KNOWLEDGE (Unified Ontological Sub-system) ---
     const isBuilderMode = caps.workerType === 'builder';
-    const hasActiveTools = (state.lastContextData?.tools?.length || 0) > 0;
 
-    if (!isAgentMode && !isBuilderMode && (guiState.autoContextBadge || guiState.autoSkillBadge !== false || hasActiveTools)) {
+    if (!isAgentMode && !isBuilderMode) {
         const knowledgeGroup = document.createElement('div');
         knowledgeGroup.className = 'badge-group hud-options-parent';
         container.appendChild(knowledgeGroup);
@@ -1632,35 +1652,44 @@ export function updateBadges() {
         knPopup.className = 'hud-options-popup';
         knowledgeGroup.appendChild(knPopup);
 
-        const ctxBadge = createToggleBadge(
-            '🧠 Librarian (AutoContext)',
-            'autocontext',
-            guiState.autoContextBadge,
-            caps.autoContextMode,
-            () => {
-                vscode.postMessage({ command: 'toggleAutoContext', enabled: !caps.autoContextMode });
-            },
-            () => {
-                const prompt = dom.messageInput ? dom.messageInput.value : "";
-                vscode.postMessage({ command: 'runAutoContext', prompt: prompt });
-            }
-        );
-        if (ctxBadge) knPopup.appendChild(ctxBadge);
+        // A. SPARQL-lite Query Engine Launcher
+        const queryBadge = document.createElement('span');
+        queryBadge.className = 'mode-badge active clickable';
+        queryBadge.style.backgroundColor = 'var(--vscode-charts-purple)';
+        queryBadge.style.color = 'white';
+        queryBadge.title = "Execute SPARQL-lite pattern matching on the active codebase or memory graph.";
+        queryBadge.innerHTML = `<span class="codicon codicon-search"></span> <span class="badge-label">Query Ontology</span>`;
+        queryBadge.onclick = (e) => {
+            e.stopPropagation();
+            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.searchDiscussions' } });
+        };
+        knPopup.appendChild(queryBadge);
 
-        const skillBadge = createToggleBadge(
-            '💡 AutoSkill (Optimization)',
-            'autoskill',
-            guiState.autoSkillBadge !== false,
-            caps.autoSkillMode,
-            () => {
-                vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { autoSkillMode: !caps.autoSkillMode } });
-            },
-            () => {
-                const prompt = dom.messageInput ? dom.messageInput.value : "";
-                vscode.postMessage({ command: 'runAutoSkill', prompt: prompt });
-            }
-        );
-        if (skillBadge) knPopup.appendChild(skillBadge);
+        // B. Memory Vault (Project Engrams)
+        const memBadge = document.createElement('span');
+        memBadge.className = 'mode-badge active clickable';
+        memBadge.style.backgroundColor = 'var(--vscode-charts-blue)';
+        memBadge.style.color = 'white';
+        memBadge.title = "View, edit, and inspect project engrams.";
+        memBadge.innerHTML = `<span class="codicon codicon-chip"></span> <span class="badge-label">Memory Vault</span>`;
+        memBadge.onclick = (e) => {
+            e.stopPropagation();
+            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.manageProjectMemory' } });
+        };
+        knPopup.appendChild(memBadge);
+
+        // C. Skills Library
+        const skillsBadge = document.createElement('span');
+        skillsBadge.className = 'mode-badge active clickable';
+        skillsBadge.style.backgroundColor = 'var(--vscode-charts-green)';
+        skillsBadge.style.color = 'white';
+        skillsBadge.title = "Import or edit specialized technical skills.";
+        skillsBadge.innerHTML = `<span class="codicon codicon-lightbulb"></span> <span class="badge-label">Skills Library</span>`;
+        skillsBadge.onclick = (e) => {
+            e.stopPropagation();
+            vscode.postMessage({ command: 'importSkills' });
+        };
+        knPopup.appendChild(skillsBadge);
     }
 
     // --- THEME: RESEARCH (Web Search) ---

@@ -87,9 +87,10 @@ export interface DiscussionCapabilities {
     interTokenTimeout: number;
     contextGovernorThreshold: number;
     selectedFolders?: string[];
-    folderSettings?: Record<string, { tree: boolean, content: boolean }>;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     clipboardInsertRole: 'user' | 'assistant';
+    monitoredLogPaths?: string[]; // Custom log files to monitor
+    profileType?: 'vibe' | 'agentic';
     guiState?: {
         agentBadge: boolean;
         debugBadge: boolean;
@@ -166,8 +167,6 @@ export const dom = {
     get fileInput() { return document.getElementById('fileInput') as HTMLInputElement; },
     
     get agentModeCheckbox() { return document.getElementById('agentModeCheckbox') as HTMLInputElement; },
-    get autoContextCheckbox() { return document.getElementById('autoContextCheckbox') as HTMLInputElement; },
-    get autoSkillCheckbox() { return document.getElementById('autoSkillCheckbox') as HTMLInputElement; },
     get testModeCheckbox() { return document.getElementById('testModeCheckbox') as HTMLInputElement; },
     get docsModeCheckbox() { return document.getElementById('docsModeCheckbox') as HTMLInputElement; },
     get contextAggressionSelect() { return document.getElementById('modal-context-aggression') as HTMLSelectElement; },

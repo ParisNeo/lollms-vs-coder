@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-06-14 06:27]
+
+- refactor(ui): improve path matching logic for synchronization and expansion blocks
+
 ## [2026-06-12 01:54]
 
 - feat(core): Update package versions and enhance agent/command flow

@@ -197,8 +197,10 @@ export class ContextManager {
 
     let resolvedPath = normalized;
     if (!path.isAbsolute(resolvedPath)) {
-      // Check if the first segment matches an open workspace folder
-      const projectFolder = folders.find(f => f.name === segments[0]);
+      // Check if the first segment matches an open workspace folder (case-insensitive)
+      const projectFolder = folders.length > 1
+        ? folders.find(f => f.name.toLowerCase() === segments[0].toLowerCase())
+        : undefined;
       if (projectFolder && segments.length > 1) {
         resolvedPath = path.resolve(projectFolder.uri.fsPath, segments.slice(1).join('/'));
       } else {
@@ -230,271 +232,253 @@ export class ContextManager {
   // ─────────────────────────────────────────────────────────────
 
   public async generateIsolatedProjectTree(
-    folder: vscode.WorkspaceFolder,
-    signal?: AbortSignal,
-    capabilities?: any
+      folder: vscode.WorkspaceFolder,
+      signal?: AbortSignal,
+      capabilities?: any
   ): Promise<string> {
-    const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}`;
-    if (this._cachedIsolatedTrees.has(cacheKey) && !this._isTreeDirty) {
-        return this._cachedIsolatedTrees.get(cacheKey)!;
-    }
-
-    const projectTreeObj: any = {};
-
-    const injectPathIntoTree = (relPath: string) => {
-      const normalizedPath = relPath.replace(/\\/g, '/');
-      const parts = normalizedPath.split('/').filter(p => p.length > 0 && p !== '.' && p !== '..');
-      if (parts.length === 0) return;
-
-      let current: any = projectTreeObj;
-      let checkUri = folder.uri;
-
-      for (let i = 0; i < parts.length; i++) {
-        const part = parts[i];
-        const isLast = i === parts.length - 1;
-        checkUri = vscode.Uri.joinPath(checkUri, part);
-
-        const state = this.contextStateProvider?.getStateForUri(checkUri);
-        if (this.contextStateProvider?.isStrictlyIgnored(checkUri) || state === 'fully-excluded') {
-          return;
-        }
-
-        if (!current[part]) {
-          current[part] = isLast ? null : {};
-        } else if (!isLast && current[part] === null) {
-          current[part] = {};
-        }
-
-        if (current[part] !== null) current = current[part];
+      const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}`;
+      if (this._cachedIsolatedTrees.has(cacheKey) && !this._isTreeDirty) {
+          return this._cachedIsolatedTrees.get(cacheKey)!;
       }
-    };
 
-    const walk = async (dirUri: vscode.Uri, depth: number) => {
-      if (depth > 8 || (signal && signal.aborted)) return;
-      try {
-        const entries = await vscode.workspace.fs.readDirectory(dirUri);
-        for (const [name, type] of entries) {
-          const entryUri = vscode.Uri.joinPath(dirUri, name);
-          const state = this.contextStateProvider?.getStateForUri(entryUri);
+      const projectTreeObj: any = {};
 
-          if (this.contextStateProvider?.isStrictlyIgnored(entryUri) || state === 'fully-excluded') continue;
-
-          const relPath = this.normalize(path.relative(folder.uri.fsPath, entryUri.fsPath));
-          if (relPath && relPath !== '.') injectPathIntoTree(relPath);
-
-          if (type === vscode.FileType.Directory && state !== 'collapsed') {
-            await walk(entryUri, depth + 1);
-          }
-        }
-      } catch (e) {
-        Logger.error(`Tree walk failed for ${dirUri.fsPath}: ${e}`);
-      }
-    };
-
-    await walk(folder.uri, 0);
-
-    let treeString = '```text\n';
-    const render = (obj: any, prefix: string = '', currentLocalPath: string = ''): string => {
-      if (!obj || typeof obj !== 'object') return '';
-      let out = '';
-      const keys = Object.keys(obj).sort((a, b) => {
-        const aIsDir = obj[a] !== null;
-        const bIsDir = obj[b] !== null;
-        if (aIsDir && !bIsDir) return -1;
-        if (!aIsDir && bIsDir) return 1;
-        return a.localeCompare(b);
-      });
-
-      keys.forEach((key, index) => {
-        const isLast = index === keys.length - 1;
-        const connector = isLast ? '└── ' : '├── ';
-        const isDirectory = obj[key] !== null;
-        const localPath = currentLocalPath ? currentLocalPath + '/' + key : key;
-        const uri = vscode.Uri.joinPath(folder.uri, localPath);
-        const state = this.contextStateProvider?.getStateForUri(uri);
-
-        let suffix = "";
-        let isCollapsed = false;
-
-        if (state === 'collapsed') {
-          isCollapsed = true;
-          suffix = " (Collapsed)";
-        } else if (state === 'included') {
-          suffix = " [C]";
-        } else if (state === 'definitions-only') {
-          suffix = " [D]";
-        }
-
-        out += prefix + connector + key + (isDirectory ? '/' : '') + (suffix ? ` ${suffix}` : '') + '\n';
-
-        if (isDirectory && !isCollapsed) {
-          out += render(obj[key], prefix + (isLast ? '    ' : '│   '), localPath);
-        } else if (isDirectory && isCollapsed) {
-          out += prefix + (isLast ? '    ' : '│   ') + '└── ⚠️[COLLAPSED: Use add_files if you need contents]\n';
-        }
-      });
-      return out;
-    };
-
-    treeString += render(projectTreeObj);
-    treeString += '```\n';
-
-    if (!signal?.aborted) {
-        this._cachedIsolatedTrees.set(cacheKey, treeString);
-    }
-    return treeString;
-  }
-
-  public async generateProjectTree(
-    signal?: AbortSignal,
-    onProgress?: (percentage: number) => void,
-    capabilities?: DiscussionCapabilities
-  ): Promise<string> {
-    if (!this.contextStateProvider || !vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
-      return '## 🌳 PROJECT STRUCTURE\n\n*No project structure available - no workspace folder found.*\n';
-    }
-
-    const folderSettings = capabilities?.folderSettings || {};
-    const folders = vscode.workspace.workspaceFolders.filter(f => {
-      const settings = folderSettings[f.uri.toString()];
-      return !settings || settings.tree !== false;
-    });
-
-    if (folders.length === 0) {
-      return '## 🌳 PROJECT STRUCTURE\n(All project structures hidden by user settings)\n';
-    }
-
-    const contextFiles = this.contextStateProvider.getIncludedFiles();
-
-    if (this._isTreeDirty || !this._fileTreeObject) {
-      if (onProgress) onProgress(10);
-      this._fileTreeObject = {};
-
-      const injectPath = (relPath: string, rootFolderName?: string) => {
-        if (!relPath || relPath.includes('Malformed Block') || relPath.includes('<<<<<<< SEARCH')) return;
-        let normalizedPath = relPath.replace(/\\/g, '/');
-        if (folders.length > 1 && rootFolderName && normalizedPath.startsWith(rootFolderName + '/')) {
-          normalizedPath = normalizedPath.substring(rootFolderName.length + 1);
-        }
+      const injectPathIntoTree = (relPath: string) => {
+        const normalizedPath = relPath.replace(/\\/g, '/');
         const parts = normalizedPath.split('/').filter(p => p.length > 0 && p !== '.' && p !== '..');
         if (parts.length === 0) return;
 
-        let current = this._fileTreeObject;
-        if (folders.length > 1 && rootFolderName) {
-          if (!current[rootFolderName]) current[rootFolderName] = {};
-          current = current[rootFolderName];
-        }
+        let current: any = projectTreeObj;
+        let checkUri = folder.uri;
 
-        parts.forEach((part, index) => {
-          const isLast = index === parts.length - 1;
+        for (let i = 0; i < parts.length; i++) {
+          const part = parts[i];
+          const isLast = i === parts.length - 1;
+          checkUri = vscode.Uri.joinPath(checkUri, part);
+
+          const state = this.contextStateProvider?.getStateForUri(checkUri);
+          if (this.contextStateProvider?.isStrictlyIgnored(checkUri) || state === 'fully-excluded') {
+            return;
+          }
+
           if (!current[part]) {
             current[part] = isLast ? null : {};
           } else if (!isLast && current[part] === null) {
             current[part] = {};
           }
+
           if (current[part] !== null) current = current[part];
-        });
+        }
       };
 
-      for (const file of contextFiles) {
-        const root = folders.find(f => {
-          try { fs.statSync(path.join(f.uri.fsPath, file.path)); return true; } catch { return false; }
-        });
-        injectPath(file.path, root?.name);
-      }
-
-      const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
-      for (const filePath of allVisibleFiles) {
-        const root = folders.find(f =>
-          filePath.startsWith(f.name + '/') ||
-          this.normalize(vscode.workspace.asRelativePath(vscode.Uri.joinPath(f.uri, filePath), false)) === filePath
-        );
-        injectPath(filePath, root?.name);
-      }
-
-      const walkSync = async (dirUri: vscode.Uri, rootName: string, depth: number) => {
-        if (depth > 5 || (signal && signal.aborted)) return;
-        try {
-          const entries = await vscode.workspace.fs.readDirectory(dirUri);
-          for (const [name, type] of entries) {
-            const entryUri = vscode.Uri.joinPath(dirUri, name);
-            const relPath = this.normalize(vscode.workspace.asRelativePath(entryUri, false));
-            if (['.DS_Store', 'node_modules', '__pycache__'].includes(name)) continue;
-            injectPath(relPath, rootName);
-            if (type === vscode.FileType.Directory) {
-              const state = this.contextStateProvider?.getStateForUri(entryUri);
-              if (state !== 'collapsed' && !name.startsWith('.')) {
-                await walkSync(entryUri, rootName, depth + 1);
+      // --- HIGH-PERFORMANCE RIPGREP PATH SCANNER ---
+      if (this.contextStateProvider) {
+          const visibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
+          for (const file of visibleFiles) {
+              if (signal?.aborted) return "";
+              const resolution = await this.resolveWorkspaceFromPath(file);
+              if (resolution && resolution.folder?.uri.toString() === folder.uri.toString()) {
+                  injectPathIntoTree(resolution.relativePath);
               }
-            }
           }
-        } catch (e) {}
+      }
+
+      let treeString = '```text\n';
+      const render = (obj: any, prefix: string = '', currentLocalPath: string = '', depth: number = 0): string => {
+        if (!obj || typeof obj !== 'object') return '';
+        let out = '';
+        const keys = Object.keys(obj).sort((a, b) => {
+          const aIsDir = obj[a] !== null;
+          const bIsDir = obj[b] !== null;
+          if (aIsDir && !bIsDir) return -1;
+          if (!aIsDir && bIsDir) return 1;
+          return a.localeCompare(b);
+        });
+
+        // --- DEPTH GOVERNOR FOR LARGE WORKSPACES ---
+        const isBigProject = (this.contextStateProvider as any)._cachedVisibleFiles && (this.contextStateProvider as any)._cachedVisibleFiles.length > 300;
+        const depthLimit = isBigProject ? 3 : 8;
+
+        if (depth >= depthLimit) {
+            return prefix + '└── ... (deep hierarchy truncated to save tokens)\n';
+        }
+
+        keys.forEach((key, index) => {
+          const isLast = index === keys.length - 1;
+          const connector = isLast ? '└── ' : '├── ';
+          const isDirectory = obj[key] !== null;
+          const localPath = currentLocalPath ? currentLocalPath + '/' + key : key;
+          const uri = vscode.Uri.joinPath(folder.uri, localPath);
+          const state = this.contextStateProvider?.getStateForUri(uri);
+
+          let suffix = "";
+          let isCollapsed = false;
+
+          if (state === 'collapsed') {
+            isCollapsed = true;
+            suffix = " (Collapsed)";
+          } else if (state === 'included') {
+            suffix = " [C]";
+          } else if (state === 'definitions-only') {
+            suffix = " [D]";
+          }
+
+          out += prefix + connector + key + (isDirectory ? '/' : '') + (suffix ? ` ${suffix}` : '') + '\n';
+
+          if (isDirectory && !isCollapsed) {
+            out += render(obj[key], prefix + (isLast ? '    ' : '│   '), localPath, depth + 1);
+          } else if (isDirectory && isCollapsed) {
+            out += prefix + (isLast ? '    ' : '│   ') + '└── ⚠️[COLLAPSED: Use add_files if you need contents]\n';
+          }
+        });
+        return out;
       };
 
-      for (const folder of folders) {
-        await walkSync(folder.uri, folder.name, 0);
+      treeString += render(projectTreeObj);
+      treeString += '```\n';
+
+      if (!signal?.aborted) {
+          this._cachedIsolatedTrees.set(cacheKey, treeString);
       }
-      this._isTreeDirty = false;
-    }
+      return treeString;
+  }
 
-    let treeString = '## 🌳 PROJECT STRUCTURE\n\n```text\n';
+  public async generateProjectTree(
+      signal?: AbortSignal,
+      onProgress?: (percentage: number) => void,
+      capabilities?: DiscussionCapabilities
+  ): Promise<string> {
+      if (!this.contextStateProvider || !vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+        return '## 🌳 PROJECT STRUCTURE\n\n*No project structure available - no workspace folder found.*\n';
+      }
 
-    const render = (obj: any, prefix: string = '', currentPath: string = '', rootFolder?: vscode.WorkspaceFolder): string => {
-      if (!obj || typeof obj !== 'object') return '';
-      let out = '';
-      const keys = Object.keys(obj).sort((a, b) => {
-        const aIsDir = obj[a] !== null;
-        const bIsDir = obj[b] !== null;
-        if (aIsDir && !bIsDir) return -1;
-        if (!aIsDir && bIsDir) return 1;
-        return a.localeCompare(b);
+      const folderSettings = capabilities?.folderSettings || {};
+      const folders = vscode.workspace.workspaceFolders.filter(f => {
+        const settings = folderSettings[f.uri.toString()];
+        return !settings || settings.tree !== false;
       });
 
-      keys.forEach((key, index) => {
-        const isLast = index === keys.length - 1;
-        const connector = isLast ? '└── ' : '├── ';
-        const isDirectory = obj[key] !== null;
+      if (folders.length === 0) {
+        return '## 🌳 PROJECT STRUCTURE\n(All project structures hidden by user settings)\n';
+      }
 
-        let activeRoot = rootFolder;
-        if (folders.length > 1 && !rootFolder) activeRoot = folders.find(f => f.name === key);
-        else if (folders.length === 1) activeRoot = folders[0];
+      const contextFiles = this.contextStateProvider.getIncludedFiles();
 
-        if (activeRoot && !rootFolder) {
-          const settings = folderSettings[activeRoot.uri.toString()];
-          if (settings && settings.tree === false) return;
+      if (this._isTreeDirty || !this._fileTreeObject) {
+        if (onProgress) onProgress(10);
+        this._fileTreeObject = {};
+
+        const injectPath = (relPath: string, rootFolderName?: string) => {
+          if (!relPath || relPath.includes('Malformed Block') || relPath.includes('<<<<<<< SEARCH')) return;
+          let normalizedPath = relPath.replace(/\\/g, '/');
+          if (folders.length > 1 && rootFolderName && normalizedPath.startsWith(rootFolderName + '/')) {
+            normalizedPath = normalizedPath.substring(rootFolderName.length + 1);
+          }
+          const parts = normalizedPath.split('/').filter(p => p.length > 0 && p !== '.' && p !== '..');
+          if (parts.length === 0) return;
+
+          let current = this._fileTreeObject;
+          if (folders.length > 1 && rootFolderName) {
+            if (!current[rootFolderName]) current[rootFolderName] = {};
+            current = current[rootFolderName];
+          }
+
+          parts.forEach((part, index) => {
+            const isLast = index === parts.length - 1;
+            if (!current[part]) {
+              current[part] = isLast ? null : {};
+            } else if (!isLast && current[part] === null) {
+              current[part] = {};
+            }
+            if (current[part] !== null) current = current[part];
+          });
+        };
+
+        for (const file of contextFiles) {
+          const root = folders.find(f => {
+            try { fs.statSync(path.join(f.uri.fsPath, file.path)); return true; } catch { return false; }
+          });
+          injectPath(file.path, root?.name);
         }
 
-        const isTopLevelProjectName = folders.length > 1 && !rootFolder;
-        let subPath = folders.length > 1
-          ? (currentPath ? currentPath + '/' + key : (rootFolder ? key : ''))
-          : (currentPath ? currentPath + '/' + key : key);
-
-        let suffix = "";
-        let isCollapsed = false;
-
-        if (this.contextStateProvider && activeRoot && !isTopLevelProjectName) {
-          const uri = vscode.Uri.joinPath(activeRoot.uri, subPath || '.');
-          const state = this.contextStateProvider.getStateForUri(uri);
-          if (state === 'fully-excluded') return;
-          if (state === 'collapsed') { isCollapsed = true; suffix = " (Collapsed)"; }
-          else if (state === 'included') suffix = " [C]";
-          else if (state === 'definitions-only') suffix = " [D]";
+        const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
+        for (const filePath of allVisibleFiles) {
+          const root = folders.find(f =>
+            filePath.startsWith(f.name + '/') ||
+            this.normalize(vscode.workspace.asRelativePath(vscode.Uri.joinPath(f.uri, filePath), false)) === filePath
+          );
+          injectPath(filePath, root?.name);
         }
 
-        out += prefix + connector + key + (isDirectory ? '/' : '') + (suffix ? ` ${suffix}` : '') + '\n';
+        this._isTreeDirty = false;
+      }
 
-        if (isDirectory && !isCollapsed) {
-          out += render(obj[key], prefix + (isLast ? '    ' : '│   '), subPath || key, activeRoot);
-        } else if (isDirectory && isCollapsed) {
-          out += prefix + (isLast ? '    ' : '│   ') + '└── ... (contents truncated)\n';
+      let treeString = '## 🌳 PROJECT STRUCTURE\n\n```text\n';
+
+      const render = (obj: any, prefix: string = '', currentPath: string = '', rootFolder?: vscode.WorkspaceFolder, depth: number = 0): string => {
+        if (!obj || typeof obj !== 'object') return '';
+        let out = '';
+        const keys = Object.keys(obj).sort((a, b) => {
+          const aIsDir = obj[a] !== null;
+          const bIsDir = obj[b] !== null;
+          if (aIsDir && !bIsDir) return -1;
+          if (!aIsDir && bIsDir) return 1;
+          return a.localeCompare(b);
+        });
+
+        // --- DEPTH GOVERNOR FOR LARGE WORKSPACES ---
+        const isBigProject = (this.contextStateProvider as any)._cachedVisibleFiles && (this.contextStateProvider as any)._cachedVisibleFiles.length > 300;
+        const depthLimit = isBigProject ? 3 : 8;
+
+        if (depth >= depthLimit) {
+            return prefix + '└── ... (deep hierarchy truncated)\n';
         }
-      });
-      return out;
-    };
 
-    treeString += render(this._fileTreeObject);
-    treeString += '```\n';
-    return treeString;
+        keys.forEach((key, index) => {
+          const isLast = index === keys.length - 1;
+          const connector = isLast ? '└── ' : '├── ';
+          const isDirectory = obj[key] !== null;
+
+          let activeRoot = rootFolder;
+          if (folders.length > 1 && !rootFolder) activeRoot = folders.find(f => f.name === key);
+          else if (folders.length === 1) activeRoot = folders[0];
+
+          if (activeRoot && !rootFolder) {
+            const settings = folderSettings[activeRoot.uri.toString()];
+            if (settings && settings.tree === false) return;
+          }
+
+          const isTopLevelProjectName = folders.length > 1 && !rootFolder;
+          let subPath = folders.length > 1
+            ? (currentPath ? currentPath + '/' + key : (rootFolder ? key : ''))
+            : (currentPath ? currentPath + '/' + key : key);
+
+          let suffix = "";
+          let isCollapsed = false;
+
+          if (this.contextStateProvider && activeRoot && !isTopLevelProjectName) {
+            const uri = vscode.Uri.joinPath(activeRoot.uri, subPath || '.');
+            const state = this.contextStateProvider.getStateForUri(uri);
+            if (state === 'fully-excluded') return;
+            if (state === 'collapsed') { isCollapsed = true; suffix = " (Collapsed)"; }
+            else if (state === 'included') suffix = " [C]";
+            else if (state === 'definitions-only') suffix = " [D]";
+          }
+
+          out += prefix + connector + key + (isDirectory ? '/' : '') + (suffix ? ` ${suffix}` : '') + '\n';
+
+          if (isDirectory && !isCollapsed) {
+            out += render(obj[key], prefix + (isLast ? '    ' : '│   '), subPath || key, activeRoot, depth + 1);
+          } else if (isDirectory && isCollapsed) {
+            out += prefix + (isLast ? '    ' : '│   ') + '└── ... (contents truncated)\n';
+          }
+        });
+        return out;
+      };
+
+      treeString += render(this._fileTreeObject);
+      treeString += '```\n';
+      return treeString;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -674,7 +658,7 @@ export class ContextManager {
 
         const resolution = await this.resolveWorkspaceFromPath(fileEntry.path);
 
-        if (!resolution || !resolution.folder || resolution.folder.uri.toString() !== folder.uri.toString()) {
+        if (!resolution || !resolution.folder || resolution.folder.uri.toString().toLowerCase() !== folder.uri.toString().toLowerCase()) {
           continue; 
         }
 
@@ -693,14 +677,22 @@ export class ContextManager {
           const cacheKey = headerPath;
 
           const cached = this._fileContentCache.get(cacheKey);
-          if (cached && cached.state === contextState) {
-              projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${cached.content}\n\`\`\`\n\n`;
-              filesInThisFolderCount++;
-              continue;
-          }
+          const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
+          if (!stat || stat.type !== vscode.FileType.File) continue;
 
-          const stat = await vscode.workspace.fs.stat(fileUri);
-          if (stat.type !== vscode.FileType.File) continue;
+          if (cached && cached.state === contextState) {
+              // --- CACHE CORRUPTION GUARD ---
+              // If the cache contains an empty string but the file on disk has bytes,
+              // force-delete the corrupted cache entry and trigger a fresh read.
+              if (stat.size > 0 && (!cached.content || cached.content.trim() === "")) {
+                  this._fileContentCache.delete(cacheKey);
+                  Logger.warn(`[Cache Guard] Cleared corrupted empty cache entry for: ${cacheKey}`);
+              } else {
+                  projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${cached.content}\n\`\`\`\n\n`;
+                  filesInThisFolderCount++;
+                  continue;
+              }
+          }
 
           if (this.binaryExtensions.has(ext)) {
             projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n(Binary file content excluded)\n\`\`\`\n\n`;

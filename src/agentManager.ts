@@ -192,7 +192,6 @@ Keep it strictly technical and extremely concise.`
     
     public getEnabledTools(): ToolDefinition[] {
         const policies = this.currentDiscussion?.capabilities?.toolPolicies || {};
-        const isBuilderMode = this.currentDiscussion?.capabilities?.workerType === 'builder';
         const isAgentMode = this.isActive; 
 
         const discussionTools = this.currentDiscussion?.importedTools || [];
@@ -1070,40 +1069,6 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                 continue; 
             }
 
-            await this.ui.addMessageToDiscussion({
-                id: `agent_task_${task.id}`,
-                role: 'assistant',
-                content: `<agent_task id="${task.id}" />`,
-                skipInPrompt: true 
-            });
-
-            this.processManager?.updateDescription(processId, `Genie: Executing ${task.action}...`);
-            this.ui.updateGeneratingState();
-
-            if (task.action === 'submit_response') {
-                task.status = 'completed';
-                task.result = "Response submitted to chat.";
-                this.completedActionsHistory.push(`[MISSION COMPLETE]\n- ACTION: submit_response\n- RESPONSE: ${task.parameters.response.substring(0, 100)}...`);
-                await this.displayPlan(this.currentPlan);
-
-                const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, task.parameters);
-                if (reflectionPrompt && this.projectMemoryManager) {
-                    const evolutionResponse = await this.lollmsApi.sendChat([
-                        { role: 'system', content: "You are the Genie's Reflexive Memory. Analyze the success and update Project Memory." },
-                        { role: 'user', content: reflectionPrompt }
-                    ], null, signal, model);
-                    await this.projectMemoryManager.processTags(evolutionResponse);
-                }
-
-                await this.ui.addMessageToDiscussion({
-                    id: `agent_final_${Date.now()}`,
-                    role: 'assistant',
-                    content: task.parameters.response,
-                    model: model
-                });
-                break;
-            }
-
             const toolPolicies = this.currentDiscussion?.capabilities?.toolPolicies || {};
             const toolDef = this.toolManager.getTool(task.action);
 
@@ -1124,6 +1089,43 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                 this.ui.updateAgentMode(false);
                 break; 
             }
+
+            // Expose the intent and details of the tool before running to maximize live transparency
+            await this.ui.addMessageToDiscussion({
+                id: `agent_task_${task.id}`,
+                role: 'assistant',
+                content: `### 🛠️ Step ${task.id}: Executing Tool \`${task.action}\`\n` +
+                         `**Intent:** *${task.description}*\n` +
+                         `**Arguments:**\n\`\`\`json\n${JSON.stringify(task.parameters, null, 2)}\n\`\`\`\n` +
+                         `*Running tool in secure workspace sandbox...*`
+            });
+
+            this.processManager?.updateDescription(processId, `Genie: Executing ${task.action}...`);
+            this.ui.updateGeneratingState();
+
+            if (task.action === 'submit_response') {
+                task.status = 'completed';
+                task.result = "Response submitted to chat.";
+                this.completedActionsHistory.push(`[MISSION COMPLETE]\n- ACTION: submit_response\n- RESPONSE: ${task.parameters.response.substring(0, 100)}...`);
+                await this.displayPlan(this.currentPlan);
+
+                const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, task.parameters);
+                if (reflectionPrompt && this.projectMemoryManager) {
+                    const evolutionResponse = await this.lollmsAPI.sendChat([
+                        { role: 'system', content: "You are the Genie's Reflexive Memory. Analyze the success and update Project Memory." },
+                        { role: 'user', content: reflectionPrompt }
+                    ], null, signal, model);
+                    await this.projectMemoryManager.processTags(evolutionResponse);
+                }
+
+                await this.ui.addMessageToDiscussion({
+                    id: `agent_final_${Date.now()}`,
+                    role: 'assistant',
+                    content: task.parameters.response,
+                    model: model
+                });
+                break;
+            }
             
             task.status = 'in_progress';
             (task as any).needsApproval = false; 
@@ -1139,7 +1141,19 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                 result = await Promise.race([resultPromise, timeoutPromise]);
 
                 if (this.ui.updateMessageContent) {
-                    await this.ui.updateMessageContent(`agent_task_${task.id}`, `<agent_task id="${task.id}" />`);
+                    const statusIcon = result.success ? '✅' : '❌';
+                    const summaryLabel = result.success ? 'Success' : 'Failure';
+                    const outputPreview = result.output.length > 1500 
+                        ? result.output.substring(0, 1500) + "\n\n... [Output truncated for chat readability]" 
+                        : result.output;
+
+                    await this.ui.updateMessageContent(
+                        `agent_task_${task.id}`, 
+                        `### ${statusIcon} Step ${task.id}: Executing Tool \`${task.action}\` (${summaryLabel})\n` +
+                        `**Intent:** *${task.description}*\n` +
+                        `**Arguments:**\n\`\`\`json\n${JSON.stringify(task.parameters, null, 2)}\n\`\`\`\n` +
+                        `**Observation Output:**\n\`\`\`text\n${outputPreview || '[No output returned]'}\n\`\`\``
+                    );
                 }
 
                 const isEditAction = ['edit_code', 'generate_code', 'markdown_coding'].includes(task.action);
@@ -2049,7 +2063,9 @@ Please provide a clear, concise final response to the user summarizing the outco
         let resolvedPath = normalized;
         if (!path.isAbsolute(resolvedPath)) {
             // Namespace resolution: check if the first segment matches an open workspace folder name
-            const projectFolder = folders.find(f => f.name === segments[0]);
+            const projectFolder = folders.length > 1
+                ? folders.find(f => f.name === segments[0])
+                : undefined;
             if (projectFolder && segments.length > 1) {
                 resolvedPath = path.resolve(projectFolder.uri.fsPath, segments.slice(1).join('/'));
             } else {
@@ -2210,6 +2226,32 @@ Please provide a clear, concise final response to the user summarizing the outco
 
         const assetDir = vscode.Uri.joinPath(this.currentWorkspaceFolder!.uri, '.lollms', 'assets', this.currentDiscussion!.id);
 
+        // --- HIGH-PERFORMANCE SEMANTIC MEMORY SHARING FILTER ---
+        // Dynamically extract and share only relevant memory engrams with the specialist
+        let sharedMemorySegment = "";
+        if (this.projectMemoryManager) {
+            try {
+                const engrams = await this.projectMemoryManager.getMemories();
+                const specialistAura = `${taskPersona || ''} ${taskSkills?.join(' ') || ''} ${taskFiles?.join(' ') || ''} ${JSON.stringify(params)}`.toLowerCase();
+
+                // Extract keywords from the specialist's target description Aura
+                const keywords = specialistAura.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 3);
+
+                const matchedEngrams = engrams.filter(e => {
+                    const score = this.projectMemoryManager.calculateRelevanceScore(e, keywords);
+                    // Core rules/protocols are always shared
+                    return score > 35 || e.importance >= 90;
+                });
+
+                if (matchedEngrams.length > 0) {
+                    sharedMemorySegment = matchedEngrams.map(e => `### [${e.category.toUpperCase()}] ${e.title} (${e.id})\n${e.content}`).join('\n\n');
+                    Logger.info(`[Memory Share] Injected ${matchedEngrams.length} highly relevant engrams into specialist '${action}' session.`);
+                }
+            } catch (err) {
+                Logger.warn("Failed to apply inter-agent memory filter", err);
+            }
+        }
+
         const env: ToolExecutionEnv = overrideEnv || {
             workspaceRoot: this.currentWorkspaceFolder,
             lollmsApi: this.lollmsApi,
@@ -2222,7 +2264,7 @@ Please provide a clear, concise final response to the user summarizing the outco
             discussionId: this.currentDiscussion?.id,
             assetDirectory: assetDir, 
             taskModel: taskModel,
-            taskPersona: taskPersona,
+            taskPersona: taskPersona ? `${taskPersona}\n\n### 🧠 SHARED MEMORY SEGMENT (TASK CONTEXT)\n${sharedMemorySegment}` : undefined,
             taskSkills: taskSkills,
             taskFiles: taskFiles
         };

@@ -626,6 +626,130 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runAndMonitorApp', async (panel: ChatPanel, messageId: string) => {
+        const workspaceFolder = getActiveWorkspace();
+        if (!workspaceFolder) {
+            vscode.window.showErrorMessage("Active workspace required to run and monitor app.");
+            return;
+        }
+
+        const disc = panel.getCurrentDiscussion();
+        if (!disc) return;
+
+        const monitoredLogPaths = disc.capabilities?.monitoredLogPaths || [];
+
+        // 1. Get project launch entry point
+        let entryPoint = "main.py"; // default
+        try {
+            const launchPath = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', 'launch.json');
+            const bytes = await vscode.workspace.fs.readFile(launchPath);
+            const launch = JSON.parse(Buffer.from(bytes).toString('utf8'));
+            if (launch?.configurations?.[0]?.program) {
+                entryPoint = vscode.workspace.asRelativePath(launch.configurations[0].program);
+            }
+        } catch {}
+
+        const ext = path.extname(entryPoint).toLowerCase();
+        let cmd = "";
+        if (ext === '.py') {
+            cmd = `python -u "${entryPoint}"`;
+        } else if (ext === '.js') {
+            cmd = `node "${entryPoint}"`;
+        } else if (ext === '.ts') {
+            cmd = `npx ts-node "${entryPoint}"`;
+        } else {
+            cmd = `npm start`;
+        }
+
+        const { id: procId, controller } = services.processManager.register(disc.id, "Monitoring App Outputs...");
+        panel.updateGeneratingState();
+
+        panel.addMessageToDiscussion({
+            role: 'system',
+            content: `⏳ **Launching Application:** running \`${cmd}\` in stealth mode...`
+        });
+
+        try {
+            // Run in background stealth mode (capturing stdout/stderr)
+            const result = await services.scriptRunner['pythonExtApi'] ? 
+                await runCommandInTerminal(cmd, workspaceFolder.uri.fsPath, "App Monitor", controller.signal, { stealth: true }) :
+                await runCommandInTerminal(cmd, workspaceFolder.uri.fsPath, "App Monitor", controller.signal, { stealth: true });
+
+            let output = result.output || "";
+
+            // Check and read custom monitored log files
+            let extraLogs = "";
+            for (const logPath of monitoredLogPaths) {
+                try {
+                    const logUri = vscode.Uri.joinPath(workspaceFolder.uri, logPath);
+                    const logBytes = await vscode.workspace.fs.readFile(logUri);
+                    const logText = Buffer.from(logBytes).toString('utf8');
+                    if (logText.trim().length > 0) {
+                        extraLogs += `\n\n--- MONITORED LOG FILE: ${logPath} ---\n${logText}`;
+                    }
+                } catch {}
+            }
+
+            if (extraLogs) {
+                output += extraLogs;
+            }
+
+            // --- INTELLIGENT LOG CLEANER & DEDUPLICATOR ---
+            const cleanAndDeduplicateLogs = (text: string): string => {
+                const { stripAnsiCodes } = require('../utils');
+                const cleanText = stripAnsiCodes(text);
+                const lines = cleanText.split(/\r?\n/);
+                const uniqueLines: string[] = [];
+                const counts: Record<string, number> = {};
+
+                for (const line of lines) {
+                    // Normalize line to find structural duplicates (ignore timestamps/hashes)
+                    const normalizedLine = line
+                        .replace(/\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}(,\d{3})?/, '')
+                        .replace(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/, '')
+                        .trim();
+
+                    if (!normalizedLine) continue;
+
+                    counts[normalizedLine] = (counts[normalizedLine] || 0) + 1;
+                    if (counts[normalizedLine] <= 3) {
+                        uniqueLines.push(line);
+                    } else if (counts[normalizedLine] === 4) {
+                        uniqueLines.push(`... [repeated ${counts[normalizedLine]} times] ...`);
+                    }
+                }
+
+                const finalOutput = uniqueLines.join('\n');
+                const CAP_LIMIT = 4000;
+                if (finalOutput.length > CAP_LIMIT) {
+                    return finalOutput.substring(0, CAP_LIMIT) + `\n\n... [Log tail truncated to save tokens. Total: ${finalOutput.length} characters]`;
+                }
+                return finalOutput;
+            };
+
+            const processedLogs = cleanAndDeduplicateLogs(output);
+
+            const statusEmoji = result.success ? '✅' : '❌';
+            const logHeader = result.success ? "App executed successfully." : "App crashed or exited with error.";
+
+            const finalPrompt = `### 📋 APPLICATION MONITORING REPORT\n${statusEmoji} **${logHeader}**\n\n**CLEANED DIAGNOSTIC LOGS:**\n\`\`\`\n${processedLogs || '[No output or log updates detected]'}\n\`\`\`\n\nAnalyze the logs above. If there is a crash or incorrect behavior, please propose a fix.`;
+
+            services.processManager.unregister(procId);
+            panel.updateGeneratingState();
+
+            // Automatically send the cleaned logs back to the LLM
+            await panel.sendMessage({
+                role: 'user',
+                content: finalPrompt
+            });
+
+        } catch (e: any) {
+            services.processManager.unregister(procId);
+            panel.updateGeneratingState();
+            vscode.window.showErrorMessage("Failed to run and monitor app: " + e.message);
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runFile', async (filePath: string) => {
         const workspaceFolder = getActiveWorkspace();
         if (!workspaceFolder) return;

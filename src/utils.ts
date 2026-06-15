@@ -124,8 +124,8 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
     {
         id: "structured",
         name: "Structured (Analytical)",
-        description: "Formal Observe/Think/Act breakdown.",
-        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why.\n  3. **Act**: Provide the actual implementation, code, or tool call.\n\n- **STRICT FORMATTING**: Use standard Markdown (bolding, lists) for these sections. Do NOT wrap these text sections in triple backticks.\n- **ACT SECTION**: The Act section MUST contain the functional XML tags (like <edit_image_asset>) or JSON tool calls. Do NOT just output text description of the action in the Act section.\n- **AUTONOMOUS ACTIONS**: If you need to use a tool or save a memory, do so at the END of your 'Act' section. Tags like <project_memory> are mandatory for persistence.",
+        description: "Formal Observe/Think/Act/Reflect breakdown.",
+        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this four-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why. No code updates (Aider blocks or full files) are allowed in this stage.\n  3. **Act**: Provide the actual implementation, code updates, or tool calls. All Aider patches or full files MUST reside exclusively in this section.\n  4. **Reflect**: Evaluate assumptions, check edge cases, or validate performance.\n\n- **STRICT FORMATTING**: Use standard Markdown (bolding, lists) for these sections. Do NOT wrap these text sections in triple backticks.\n- **ACT SECTION**: The Act section MUST contain the functional XML tags (like <edit_image_asset>) or JSON tool calls. Do NOT just output text description of the action in the Act section.\n- **AUTONOMOUS ACTIONS**: If you need to use a tool or save a memory, do so at the END of your 'Act' section. Tags like <project_memory> are mandatory for persistence.",
         prefix: ""
     },
     {
@@ -185,7 +185,7 @@ export interface DiscussionCapabilities {
     };
     gitWorkflow: boolean;
     gitCommit?: boolean;
-    
+
     // --- UPDATED HERD CONFIG ---
     herdMode: boolean;
     herdParallelGeneration: boolean;
@@ -197,7 +197,6 @@ export interface DiscussionCapabilities {
     // ---------------------------
 
     includeGitInfo?: boolean;
-    workerType: 'discussion' | 'builder';
     agentMode: boolean;
     debugMode: boolean;
     verifierMode: boolean;
@@ -205,12 +204,8 @@ export interface DiscussionCapabilities {
     documentationMode: boolean;
     gitAutoWorkflow: boolean;
     maxDebugSteps: number;
-    autoContextMode: boolean;
     toolPolicies?: Record<string, 'disabled' | 'manual' | 'autonomous'>;
     selectedFolders?: string[];
-    folderSettings?: Record<string, { tree: boolean, content: boolean }>;
-    autoSkillMode: boolean;
-    autoToolMode: boolean; // For future agentic auto-selection
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     tokenEconomyMode: boolean;
     projectMemoryEnabled: boolean;
@@ -220,10 +215,8 @@ export interface DiscussionCapabilities {
     contextGovernorThreshold: number; // Percentage (0-100)
     guiState?: {
         agentBadge: boolean;
-        autoContextBadge: boolean;
         herdBadge: boolean;
         webSearchBadge?: boolean;
-        autoSkillBadge?: boolean;
         testBadge?: boolean;
         docsBadge?: boolean;
     };
@@ -645,6 +638,37 @@ export async function getProcessedSystemPrompt(
         context
     );
 
+    // --- WORKFLOW PROFILE DIRECTIVES (THE DESTINY DECISION) ---
+    let destinyDirectives = "";
+    if (capabilities?.profileType === 'vibe') {
+        destinyDirectives = `
+### 🤠 VIBE CODING PROFILE: ACTIVE (SOFTWARE 3.0 SPONTANEITY)
+- **Velocity Over Rigor**: Your primary goal is rapid, intuition-led prototyping.
+- **Fluid Iteration**: You are authorized to write spontaneous code blocks. Focus on getting the visual design and "game feel" right!
+- **Constraint**: Maintain clean conversational turn-economy but do not force heavy formal test-driven architectures unless explicitly requested.
+`;
+    } else if (capabilities?.profileType === 'agentic' || promptType === 'agent') {
+        destinyDirectives = `
+### 🧠 AGENTIC ENGINEERING PROFILE: ACTIVE (SOFTWARE 3.0 RIGOR)
+You are operating under strict **Agentic Engineering** constraints to prevent Theresa Torres's "Doom Loop" desynchronizations and visual-only "Context Bleed" saturations.
+
+**STRICT COMPLIANCE DIRECTIVES:**
+1. **PRODUCT REQUIREMENTS DOCUMENT (PRD) LOCK**: 
+   - Never write code before the architecture is locked. Every edit must trace directly to a spec inside the 'Mission Briefing' (Our locked PRD).
+   - If the user asks for a feature that breaks the MVC/Database models defined in the PRD, request a PRD amendment first.
+2. **YOLO MODE / TEST-DRIVEN DEVELOPMENT (TDD) ON STEROIDS**:
+   - You are STRICTLY FORBIDDEN from writing function logic blindly.
+   - You MUST write a strict automated test (using \`pytest\`, \`unittest\`, \`jest\`, or \`vitest\`) FIRST, run it to verify it fails, and only then write/edit the code to make it pass.
+   - Iterate autonomously (YOLO Mode) in a fast run-test-fix loop until all tests are green.
+3. **KASPERSKY 45% SECURITY SHIELD (CRITICAL)**:
+   - Nearly half of AI-generated code contains security vulnerabilities. You must actively defend the project.
+   - **No Custom Auth**: Never roll your own login or session system. Only use validated solutions (NextAuth, Clerk, Supabase Auth).
+   - **Sanitize Every Input**: Treat all user-facing forms, inputs, and search bars as malicious injection boundaries. Scrub all strings.
+   - **Generic Exception Handling**: Wrap code in try/except blocks. Display generic "Oops" messages to users while logging specific diagnostics internally. Prevent verbose stack dumps.
+4. **THE DIFF REVIEW MANDATE**: Keep your SEARCH blocks minimal (1-5 lines) and review changes line-by-line to prevent accidental code deletion.
+`;
+    }
+
     // 🛡️ PROTOCOL GATE: Mode-Specific Operational Constraints
     const isAutonomous = capabilities?.agentMode === true || promptType === 'agent';
     const isBuilder = capabilities?.workerType === 'builder';
@@ -675,7 +699,7 @@ export async function getProcessedSystemPrompt(
     `;
     }
 
-    return basePrompt + operationalMandate + "\n" + envAwareness;
+    return basePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness;
 }
 
 export function stripAnsiCodes(text: string): string {

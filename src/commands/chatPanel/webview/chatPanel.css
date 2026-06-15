@@ -51,11 +51,36 @@ body {
 }
 
 #agent-plan-zone {
-    display: none !important; /* Force hide sidebar for unified stream */
+    display: none;
+    width: 380px;
+    height: 100%;
+    background-color: var(--vscode-sideBar-background);
+    border-left: 1px solid var(--vscode-widget-border);
+    flex-shrink: 0;
+    overflow-y: auto;
+    box-sizing: border-box;
 }
 
 #plan-resizer {
-    display: none !important;
+    display: none;
+    width: 4px;
+    background-color: var(--vscode-widget-border);
+    cursor: col-resize;
+    z-index: 10;
+    flex-shrink: 0;
+}
+
+#plan-resizer:hover, #plan-resizer.resizing {
+    background-color: var(--vscode-focusBorder);
+}
+
+body.agent-mode-active #agent-plan-zone {
+    display: flex !important;
+    flex-direction: column;
+}
+
+body.agent-mode-active #plan-resizer {
+    display: block !important;
 }
 
 /* NEW: Prominent Sticky Toolbar for Agent Actions */
@@ -3206,6 +3231,10 @@ mark.current-match {
     line-height: 1.4;
     opacity: 0.9;
 }
+#status-label, .status-label, #status-text {
+    display: none !important;
+}
+
 .status-line {
     display: flex;
     align-items: center;

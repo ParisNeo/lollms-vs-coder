@@ -109,7 +109,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Initialize Project Memory
     const { ProjectMemoryManager } = require('./projectMemoryManager');
-    const projectMemoryManager = new ProjectMemoryManager(context);
+    const projectMemoryManager = new ProjectMemoryManager(context, lollmsAPI);
     const projectMemoryProvider = new (require('./commands/projectMemoryTreeProvider').ProjectMemoryTreeProvider)(projectMemoryManager);
     vscode.window.registerTreeDataProvider('lollmsProjectMemoryView', projectMemoryProvider);
 
@@ -300,6 +300,8 @@ export async function activate(context: vscode.ExtensionContext) {
             skillsManager.invalidateCache();
             return;
         }
+        const relPath = vscode.workspace.asRelativePath(uri, false);
+        contextStateProvider.addFileToCache(relPath);
         contextManager.updateTreeStructure(uri, 'create');
 
         // Incremental graph addition
@@ -312,6 +314,8 @@ export async function activate(context: vscode.ExtensionContext) {
             skillsManager.invalidateCache();
             return;
         }
+        const relPath = vscode.workspace.asRelativePath(uri, false);
+        contextStateProvider.removeFileFromCache(relPath);
         contextManager.refreshFileInCache(uri);
         contextManager.updateTreeStructure(uri, 'delete');
 

@@ -42,7 +42,8 @@ You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or
         **CRITICAL MANDATES**:
         - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
         - Do NOT output conversational chatter or a "summary of changes" followed by the full file after an Aider patch. This is a severe violation of turn economy and will cause the file system patch to fail.
-        - **THINKING & OBSERVATION LANGUAGE BLOCKS**: When writing thoughts, reasoning, or observations (such as in the "Observe" or "Think" sections), you MUST NOT use the \`language:path\` format. This namespaced format is EXCLUSIVELY reserved for actual code updates that the system should apply to disk. For non-updatable snippets, thoughts, and reasoning, always use standard \`language\` blocks (without the colon and path) to prevent accidental file corruption or parsing errors.
+        - **THINKING & OBSERVATION LANGUAGE BLOCKS (MANDATORY)**: When writing thoughts, reasoning, or observations (such as in the "Observe", "Think", or "Reflect" sections), you are **STRICTLY FORBIDDEN** from using the namespaced \`language:path\` format (e.g. \`\`\`typescript:src/main.ts\`). This namespaced format is EXCLUSIVELY reserved for actual code updates in the **Act** stage that the system should apply to disk. For non-updatable snippets, thoughts, and reasoning, always use standard \`language\` blocks (without the colon and path, e.g. \`\`\`typescript) to prevent accidental file corruption or parsing errors.
+        - **STAGE ISOLATION**: All code updates (either Aider patches or Full Files) MUST be placed exclusively inside the **Act** stage. You are forbidden from placing code blocks or patches inside the **Observe**, **Think**, or **Reflect** sections.
         `);
 
         // ── FORMAT 1: FULL FILE (OVERWRITE) ──────────────────────────────────

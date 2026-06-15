@@ -1167,8 +1167,8 @@ export class CodeGraphManager {
      * - Classes: s:File, s:Class, s:Function, s:Method, s:Library
      * - Properties: s:contains, s:imports, s:calls, s:inherits, s:type, s:name, s:path
      */
-    public executeSparql(query: string): string {
-        if (this.buildState !== 'ready') {
+    public executeSparql(query: string, customNodes?: any[], customEdges?: any[]): string {
+        if (!customNodes && this.buildState !== 'ready') {
             return "Error: Code graph is not built yet. Please run update_code_graph first.";
         }
 
@@ -1213,20 +1213,33 @@ export class CodeGraphManager {
             if (t.o.startsWith('?')) variables.add(t.o);
         }
 
-        // Generate knowledge triples/facts from internal graph
+        // Generate knowledge triples/facts from internal or custom graph
         const facts: { s: string, p: string, o: string }[] = [];
-        for (const node of this.graph.nodes) {
-            const typeUri = `s:${node.type.charAt(0).toUpperCase() + node.type.slice(1)}`;
-            facts.push({ s: node.id, p: 's:type', o: typeUri });
-            facts.push({ s: node.id, p: 's:name', o: `"${node.label}"` });
-            if (node.filePath) {
-                facts.push({ s: node.id, p: 's:path', o: `"${node.filePath}"` });
-            }
-        }
 
-        for (const edge of this.graph.edges) {
-            const relUri = `s:${edge.label}`;
-            facts.push({ s: edge.source, p: relUri, o: edge.target });
+        if (customNodes && customEdges) {
+            // Build facts from the custom projected memory/skills graph
+            customNodes.forEach(node => {
+                const typeUri = `s:${(node.type || 'engram').charAt(0).toUpperCase() + (node.type || 'engram').slice(1)}`;
+                facts.push({ s: node.id, p: 's:type', o: typeUri });
+                facts.push({ s: node.id, p: 's:name', o: `"${node.label}"` });
+            });
+            customEdges.forEach(edge => {
+                facts.push({ s: edge.source, p: `s:${edge.label}`, o: edge.target });
+            });
+        } else {
+            // Build facts from static codebase graph
+            for (const node of this.graph.nodes) {
+                const typeUri = `s:${node.type.charAt(0).toUpperCase() + node.type.slice(1)}`;
+                facts.push({ s: node.id, p: 's:type', o: typeUri });
+                facts.push({ s: node.id, p: 's:name', o: `"${node.label}"` });
+                if (node.filePath) {
+                    facts.push({ s: node.id, p: 's:path', o: `"${node.filePath}"` });
+                }
+            }
+            for (const edge of this.graph.edges) {
+                const relUri = `s:${edge.label}`;
+                facts.push({ s: edge.source, p: relUri, o: edge.target });
+            }
         }
 
         const varList = Array.from(variables);
@@ -1239,8 +1252,63 @@ export class CodeGraphManager {
             return cleanFact === cleanQuery;
         };
 
+        let iterations = 0;
+        const maxIterations = 15000;
+
+        // Dynamic domain filtering based on local query constraints
+        const getFilteredDomain = (variable: string, currentBindings: Record<string, string>): Set<string> => {
+            const domain = new Set<string>();
+            let hasConstraint = false;
+
+            for (const t of triples) {
+                const sIsVar = t.s === variable;
+                const pIsVar = t.p === variable;
+                const oIsVar = t.o === variable;
+
+                if (!sIsVar && !pIsVar && !oIsVar) continue;
+
+                const sVal = t.s.startsWith('?') ? currentBindings[t.s] : t.s;
+                const pVal = t.p.startsWith('?') ? currentBindings[t.p] : t.p;
+                const oVal = t.o.startsWith('?') ? currentBindings[t.o] : t.o;
+
+                const sIsConst = sVal !== undefined && !sVal.startsWith('?');
+                const pIsConst = pVal !== undefined && !pVal.startsWith('?');
+                const oIsConst = oVal !== undefined && !oVal.startsWith('?');
+
+                if (sIsConst || pIsConst || oIsConst) {
+                    hasConstraint = true;
+                    facts.forEach(f => {
+                        const sMatch = !sIsConst || matchValue(f.s, sVal);
+                        const pMatch = !pIsConst || matchValue(f.p, pVal);
+                        const oMatch = !oIsConst || matchValue(f.o, oVal);
+
+                        if (sMatch && pMatch && oMatch) {
+                            if (sIsVar) domain.add(f.s);
+                            if (pIsVar) domain.add(f.p);
+                            if (oIsVar) domain.add(f.o);
+                        }
+                    });
+                }
+            }
+
+            if (!hasConstraint) {
+                for (const t of triples) {
+                    if (t.s === variable) facts.forEach(f => domain.add(f.s));
+                    if (t.p === variable) facts.forEach(f => domain.add(f.p));
+                    if (t.o === variable) facts.forEach(f => domain.add(f.o));
+                }
+            }
+
+            return domain;
+        };
+
         // Backtracking Search Graph Matcher
         const solve = (varIdx: number, bindings: Record<string, string>) => {
+            iterations++;
+            if (iterations > maxIterations) {
+                throw new Error(`SPARQL-lite Complexity Limit Exceeded: The query evaluated too many combinations (${maxIterations}+ iterations). Please refine your query with more constraints (e.g. specifying concrete names or s:type s:Class).`);
+            }
+
             if (varIdx === varList.length) {
                 let valid = true;
                 for (const t of triples) {
@@ -1269,18 +1337,7 @@ export class CodeGraphManager {
             }
 
             const currentVar = varList[varIdx];
-            const domain = new Set<string>();
-            for (const t of triples) {
-                if (t.s === currentVar) {
-                    facts.forEach(f => domain.add(f.s));
-                }
-                if (t.p === currentVar) {
-                    facts.forEach(f => domain.add(f.p));
-                }
-                if (t.o === currentVar) {
-                    facts.forEach(f => domain.add(f.o));
-                }
-            }
+            const domain = getFilteredDomain(currentVar, bindings);
 
             for (const val of domain) {
                 bindings[currentVar] = val;
@@ -1289,7 +1346,11 @@ export class CodeGraphManager {
             }
         };
 
-        solve(0, {});
+        try {
+            solve(0, {});
+        } catch (e: any) {
+            return `SPARQL-lite Query Error: ${e.message}`;
+        }
 
         if (results.length === 0) {
             return "SPARQL-lite Result: No matching subgraphs found.";

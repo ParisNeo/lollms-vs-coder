@@ -79,7 +79,6 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
     };
 
     safeRegister('lollms-vs-coder.showChatTab', () => setTab('chat'));
-    safeRegister('lollms-vs-coder.showLibrarianTab', () => setTab('librarian'));
     safeRegister('lollms-vs-coder.showBillingTab', () => {
         setTab('billing');
         // Create or show the dedicated graphical dashboard view using the statically imported reference

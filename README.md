@@ -141,6 +141,7 @@ Lollms provides two distinct ways to work. Choose the one that fits your current
 | ⚡ **Quick Edit Companion**  | A lightweight, floating window for fast code edits, explanations, or questions without leaving your current context (Ctrl+Shift+L).                                     |
 | 🧠 **Smart Context**         | A sidebar file tree lets you precisely control which files the AI can "see." Includes **🔍 Definitions-Only** mode to save tokens while keeping API visibility. |
 | 📝 **Smart Edits**           | Apply AI-generated code directly to your files with a single click, supporting both full-file updates and Aider-style SEARCH/REPLACE patching.                        |
+| 🚀 **Run & Monitor**      | Execute your application in the background with one click from any assistant message. Intelligently parses, sanitizes, and deduplicates outputs and custom log files, then automatically reprompts the LLM. |
 | 🕵️ **Commit Inspector**      | Analyze git commits for security vulnerabilities, bugs, and code quality issues with a single click.                                                                    |
 | 📓 **Jupyter Integration**   | Enhance your data science workflow with tools to generate, explain, visualize, and fix notebook cells.                                                                  |
 

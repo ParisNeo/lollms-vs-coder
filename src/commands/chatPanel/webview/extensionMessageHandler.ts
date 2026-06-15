@@ -57,6 +57,18 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
                     }
                     stream.buffer += message.chunk;
+
+                    // Track thinking start/end timestamps for duration calculation
+                    const containsOpenTag = stream.buffer.includes('<think') || stream.buffer.includes('<thinking') || stream.buffer.includes('<analysis') || stream.buffer.includes('<reasoning');
+                    const containsCloseTag = stream.buffer.includes('</think>') || stream.buffer.includes('</thinking>') || stream.buffer.includes('</analysis>') || stream.buffer.includes('</reasoning>');
+
+                    if (containsOpenTag && !wrapper.dataset.thinkStartTime) {
+                        wrapper.dataset.thinkStartTime = String(Date.now());
+                    }
+                    if (containsCloseTag && !wrapper.dataset.thinkEndTime) {
+                        wrapper.dataset.thinkEndTime = String(Date.now());
+                    }
+
                     const messageDiv = wrapper.querySelector('.message') as HTMLElement;
                     if(messageDiv) {
                         messageDiv.dataset.originalContent = JSON.stringify(stream.buffer);
@@ -79,11 +91,17 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     // Update header with final TPS
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`) as HTMLElement;
-                    if (wrapper && message.tps) {
-                        const header = wrapper.querySelector('.message-header');
-                        const stats = header?.querySelector('.generation-stats');
-                        if (stats) {
-                            stats.textContent = stats.textContent?.replace(')', ` | TPS: ${message.tps} t/s)`);
+                    if (wrapper) {
+                        if (message.tps) {
+                            const header = wrapper.querySelector('.message-header');
+                            const stats = header?.querySelector('.generation-stats');
+                            if (stats) {
+                                stats.textContent = stats.textContent?.replace(')', ` | TPS: ${message.tps} t/s)`);
+                            }
+                        }
+                        // Lock the final think duration
+                        if (wrapper.dataset.thinkStartTime && !wrapper.dataset.thinkEndTime) {
+                            wrapper.dataset.thinkEndTime = String(Date.now());
                         }
                     }
 
@@ -414,7 +432,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (dom.testModeCheckbox) dom.testModeCheckbox.checked = !!caps.testMode;
                     if (dom.docsModeCheckbox) dom.docsModeCheckbox.checked = !!caps.documentationMode;
                     if (dom.capClipboardRole) dom.capClipboardRole.value = caps.clipboardInsertRole || 'user';
-
+                    const logPathsInput = document.getElementById('cap-monitoredLogPaths') as HTMLTextAreaElement;
+                    if (logPathsInput) {
+                        logPathsInput.value = (caps.monitoredLogPaths || []).join('\n');
+                    }
+                    
                     // Synchronize the generating overlay state if it exists
                     if (dom.generatingOverlay) {
                         dom.generatingOverlay.style.display = state.isGenerating ? 'flex' : 'none';
@@ -1170,12 +1192,25 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'applyAllStart': {
                 const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
                 const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
-                const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`);
+                const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`) as HTMLElement;
                 if (row) {
                     const iconEl = row.querySelector('.status-icon');
                     if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-loading spin"></span>';
                     row.style.background = 'rgba(255, 255, 255, 0.05)';
                     row.style.opacity = '0.7';
+
+                    const pathEl = row.querySelector('.row-path');
+                    if (pathEl && !pathEl.innerHTML.includes('status-label-inline')) {
+                        const labelText = pathEl.textContent || '';
+                        pathEl.innerHTML = `${labelText} <span class="status-label-inline" style="color:var(--vscode-charts-orange); font-size:10px; margin-left:8px; opacity:0.85; font-weight:bold;">(Writing to disk...)</span>`;
+                    }
+                }
+
+                // Update Main Action Button Status Label
+                const mainBtn = document.getElementById(`apply-all-${message.messageId}`) as HTMLButtonElement;
+                if (mainBtn) {
+                    mainBtn.disabled = true;
+                    mainBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Applying [${message.currentIndex + 1}/${message.totalCount}] — Writing files...`;
                 }
 
                 // Update Progress Bar
@@ -1195,165 +1230,171 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
                     if (!wrapper) break;
 
-                    const { preserveScrollPosition } = require('./utils.js');
+                    // 1. Update the individual code block UI (even if it wasn't part of an "Apply All" run)
+                    const targetBlockId = `block-${message.messageId}-${message.blockIndex}`;
+                    const blockEl = document.getElementById(targetBlockId) as HTMLDetailsElement;
 
-                    // Bind all updates inside a scroll-preservation transaction anchored to this specific message card
-                    preserveScrollPosition(wrapper, dom.messagesDiv, () => {
-                        // 1. Update the individual code block UI (even if it wasn't part of an "Apply All" run)
-                        const targetBlockId = `block-${message.messageId}-${message.blockIndex}`;
-                        const blockEl = document.getElementById(targetBlockId) as HTMLDetailsElement;
+                    // Support SPARQL block spinner and results rendering resolution
+                    const sparqlBlock = document.getElementById(message.blockIndex) as HTMLElement;
+                    if (sparqlBlock && sparqlBlock.classList.contains('sparql-block')) {
+                        // Unlock all action buttons
+                        sparqlBlock.querySelectorAll('.run-local-sparql-btn, .run-reprompt-sparql-btn').forEach((btn: any) => {
+                            btn.disabled = false;
+                            btn.style.opacity = '1';
+                        });
 
-                        // Support SPARQL block spinner resolution
-                        const sparqlBlock = document.getElementById(message.blockIndex) as HTMLElement;
-                        if (sparqlBlock && sparqlBlock.classList.contains('sparql-block')) {
-                            const sparqlBtn = sparqlBlock.querySelector('.run-sparql-btn') as HTMLButtonElement;
-                            if (sparqlBtn) {
-                                sparqlBtn.disabled = false;
-                                sparqlBtn.innerHTML = '<i class="codicon codicon-play"></i> Run & Reprompt';
+                        const localBtn = sparqlBlock.querySelector('.run-local-sparql-btn') as HTMLButtonElement;
+                        if (localBtn) {
+                            localBtn.innerHTML = '<i class="codicon codicon-terminal"></i> Run';
+                        }
+
+                        const repromptBtn = sparqlBlock.querySelector('.run-reprompt-sparql-btn') as HTMLButtonElement;
+                        if (repromptBtn) {
+                            repromptBtn.innerHTML = '<i class="codicon codicon-play"></i> Run & Reprompt';
+                        }
+
+                        // Display the compiled SPARQL table directly in the card body if returned
+                        if (message.sparqlResult) {
+                            const renderArea = sparqlBlock.querySelector('.sparql-results-render-area') as HTMLElement;
+                            if (renderArea) {
+                                renderArea.style.display = 'block';
+                                const cleanHtml = (window as any).DOMPurify.sanitize((window as any).marked.parse(message.sparqlResult));
+                                renderArea.innerHTML = cleanHtml;
+                            }
+                        }
+                    }
+
+                    if (blockEl && message.success) {
+                        const isUndo = message.options?.undo === true;
+
+                        if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
+                        if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
+
+                        const hunkVal = message.hunkIndex !== undefined ? message.hunkIndex : -1;
+                        if (isUndo) {
+                            state.appliedState[message.messageId][message.blockIndex] = state.appliedState[message.messageId][message.blockIndex].filter(v => v !== hunkVal);
+                            if (hunkVal === -1) state.appliedState[message.messageId][message.blockIndex] = [];
+                        } else {
+                            if (!state.appliedState[message.messageId][message.blockIndex].includes(hunkVal)) {
+                                state.appliedState[message.messageId][message.blockIndex].push(hunkVal);
                             }
                         }
 
-                        if (blockEl && message.success) {
-                            const isUndo = message.options?.undo === true;
+                        const restoreBtn = (btn: HTMLButtonElement) => {
+                            if (!btn) return;
+                            const bubble = btn.closest('.aider-hunk-bubble, .code-collapsible');
+                            const undoBtn = bubble?.querySelector('.undo-hunk-btn') as HTMLElement;
 
-                            if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
-                            if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
+                            btn.disabled = false; // ALWAYS keep enabled for re-apply
 
-                            const hunkVal = message.hunkIndex !== undefined ? message.hunkIndex : -1;
                             if (isUndo) {
-                                state.appliedState[message.messageId][message.blockIndex] = state.appliedState[message.messageId][message.blockIndex].filter(v => v !== hunkVal);
-                                if (hunkVal === -1) state.appliedState[message.messageId][message.blockIndex] = [];
+                                btn.classList.remove('applied');
+                                const isAider = bubble?.classList.contains('aider-diff-container') || bubble?.querySelector('.aider-hunk-group');
+                                const icon = btn.classList.contains('apply-all-btn') ? 'codicon-tools' : (isAider ? 'codicon-arrow-swap' : 'codicon-tools');
+                                btn.innerHTML = `<i class="codicon ${icon}"></i>`;
+                                if (undoBtn) undoBtn.style.display = 'none';
                             } else {
-                                if (!state.appliedState[message.messageId][message.blockIndex].includes(hunkVal)) {
-                                    state.appliedState[message.messageId][message.blockIndex].push(hunkVal);
+                                btn.classList.add('applied');
+                                btn.innerHTML = '<i class="codicon codicon-check"></i>';
+                                btn.title = "Successfully applied. Click to apply again.";
+                                if (undoBtn) {
+                                    undoBtn.style.display = 'flex';
+                                    undoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
                                 }
                             }
+                        };
 
-                            const restoreBtn = (btn: HTMLButtonElement) => {
-                                if (!btn) return;
-                                const bubble = btn.closest('.aider-hunk-bubble, .code-collapsible');
-                                const undoBtn = bubble?.querySelector('.undo-hunk-btn') as HTMLElement;
+                        // Update specific Apply button for this block
+                        const mainBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
+                        if (mainBtn) restoreBtn(mainBtn);
 
-                                btn.disabled = false; // ALWAYS keep enabled for re-apply
+                        if (message.hunkIndex !== undefined) {
+                            // TAB SYNC: Find the specific tab and pane
+                            const tab = blockEl.querySelector(`.hunk-tab-${message.hunkIndex}`) as HTMLElement;
+                            const pane = blockEl.querySelector(`.hunk-pane-${message.hunkIndex}`) as HTMLElement;
 
-                                if (isUndo) {
-                                    btn.classList.remove('applied');
-                                    const isAider = bubble?.classList.contains('aider-diff-container') || bubble?.querySelector('.aider-hunk-group');
-                                    const icon = btn.classList.contains('apply-all-btn') ? 'codicon-tools' : (isAider ? 'codicon-arrow-swap' : 'codicon-tools');
-                                    btn.innerHTML = `<i class="codicon ${icon}"></i>`;
-                                    if (undoBtn) undoBtn.style.display = 'none';
-                                } else {
-                                    btn.classList.add('applied');
-                                    btn.innerHTML = '<i class="codicon codicon-check"></i>';
-                                    btn.title = "Successfully applied. Click to apply again.";
-                                    if (undoBtn) {
-                                        undoBtn.style.display = 'flex';
-                                        undoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
+                            if (tab) {
+                                tab.classList.add('status-completed');
+                                tab.querySelector('.hunk-status-icon i')!.className = 'codicon codicon-check';
+                            }
+
+                            if (pane) {
+                                const hunkBtn = pane.querySelector('.apply-btn') as HTMLButtonElement;
+                                if (hunkBtn) restoreBtn(hunkBtn);
+                            }
+                        } else {
+                            if (mainApplyBtn) restoreBtn(mainApplyBtn);
+
+                            blockEl.querySelectorAll('.aider-hunk-actions .apply-btn').forEach(restoreBtn);
+
+                            // Ensure checkmark icon is updated without hiding the code content
+                            blockEl.querySelectorAll('.aider-hunk-bubble').forEach(h => {
+                                const icon = h.querySelector('.hunk-toggle-icon');
+                                if (icon) icon.className = 'codicon codicon-chevron-right hunk-toggle-icon';
+                            });
+                        }
+
+                        // RE-SYNC main button state for the entire message
+                        checkAndSyncMessageAppliedState(message.messageId);
+
+
+                    } else if (blockEl && !message.success) {
+                        // 1. STOP THE SPINNER
+                        if (mainApplyBtn) {
+                            mainApplyBtn.disabled = false;
+                            // Restore original icon (Tools or Aider swap)
+                            const isAider = blockEl.dataset.rawCode?.includes('<<<<<<< SEARCH');
+                            mainApplyBtn.innerHTML = `<span class="codicon ${isAider ? 'codicon-arrow-swap' : 'codicon-tools'}"></span>`;
+                        }
+
+                        // TAB SYNC: Highlight the failing tab
+                        if (message.hunkIndex !== undefined) {
+                            const tab = blockEl.querySelector(`.hunk-tab-${message.hunkIndex}`) as HTMLElement;
+                            if (tab) {
+                                tab.classList.add('status-failed');
+                                tab.classList.add('active');
+                                tab.querySelector('.hunk-status-icon i')!.className = 'codicon codicon-error';
+
+                                // Auto-switch to the failing pane
+                                blockEl.querySelectorAll('.hunk-tab, .hunk-tab-content').forEach(el => {
+                                    if (el !== tab && !el.classList.contains(`hunk-pane-${message.hunkIndex}`)) {
+                                        el.classList.remove('active');
                                     }
-                                }
-                            };
-
-                            // Update specific Apply button for this block
-                            const mainBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
-                            if (mainBtn) restoreBtn(mainBtn);
-
-                            if (message.hunkIndex !== undefined) {
-                                // TAB SYNC: Find the specific tab and pane
-                                const tab = blockEl.querySelector(`.hunk-tab-${message.hunkIndex}`) as HTMLElement;
-                                const pane = blockEl.querySelector(`.hunk-pane-${message.hunkIndex}`) as HTMLElement;
-                                const hunkBubbles = blockEl.querySelectorAll('.aider-hunk-bubble');
-
-                                if (tab) {
-                                    tab.classList.add('status-completed');
-                                    tab.querySelector('.hunk-status-icon i')!.className = 'codicon codicon-check';
-                                }
-
-                                if (pane) {
-                                    const hunkBtn = pane.querySelector('.apply-btn') as HTMLButtonElement;
-                                    if (hunkBtn) restoreBtn(hunkBtn);
-                                }
-
-                                // If this was the last pending hunk, collapse the main container and let subsequent content reflow naturally
-                                const totalHunks = hunkBubbles.length;
-                                const appliedHunks = state.appliedState[message.messageId][message.blockIndex] || [];
-                                const allHunksApplied = appliedHunks.length === totalHunks || appliedHunks.includes(-1);
-                                if (allHunksApplied) {
-                                    collapseBlockWithScrollPreservation(blockEl, dom.messagesDiv);
-                                }
-                            } else {
-                                if (mainApplyBtn) restoreBtn(mainApplyBtn);
-
-                                blockEl.querySelectorAll('.aider-hunk-actions .apply-btn').forEach(restoreBtn);
-
-                                // Ensure checkmark icon is updated without hiding the code content
-                                blockEl.querySelectorAll('.aider-hunk-bubble').forEach(h => {
-                                    const icon = h.querySelector('.hunk-toggle-icon');
-                                    if (icon) icon.className = 'codicon codicon-chevron-right hunk-toggle-icon';
                                 });
-
-                                collapseBlockWithScrollPreservation(blockEl, dom.messagesDiv);
-                            }
-
-                            // RE-SYNC main button state for the entire message
-                            checkAndSyncMessageAppliedState(message.messageId);
-
-
-                        } else if (blockEl && !message.success) {
-                            // 1. STOP THE SPINNER
-                            if (mainApplyBtn) {
-                                mainApplyBtn.disabled = false;
-                                // Restore original icon (Tools or Aider swap)
-                                const isAider = blockEl.dataset.rawCode?.includes('<<<<<<< SEARCH');
-                                mainApplyBtn.innerHTML = `<span class="codicon ${isAider ? 'codicon-arrow-swap' : 'codicon-tools'}"></span>`;
-                            }
-
-                            // TAB SYNC: Highlight the failing tab
-                            if (message.hunkIndex !== undefined) {
-                                const tab = blockEl.querySelector(`.hunk-tab-${message.hunkIndex}`) as HTMLElement;
-                                if (tab) {
-                                    tab.classList.add('status-failed');
-                                    tab.classList.add('active');
-                                    tab.querySelector('.hunk-status-icon i')!.className = 'codicon codicon-error';
-
-                                    // Auto-switch to the failing pane
-                                    blockEl.querySelectorAll('.hunk-tab, .hunk-tab-content').forEach(el => {
-                                        if (el !== tab && !el.classList.contains(`hunk-pane-${message.hunkIndex}`)) {
-                                            el.classList.remove('active');
-                                        }
-                                    });
-                                    blockEl.querySelector(`.hunk-pane-${message.hunkIndex}`)?.classList.add('active');
-                                }
-                            }
-
-                            // VISUAL RED ALERT: Set state to error
-                            blockEl.classList.add('malformed');
-                            blockEl.style.borderColor = 'var(--vscode-errorForeground)';
-
-                            // FAILURE CASE: Restore the button so the user can try again
-                            if (mainApplyBtn && mainApplyBtn.dataset.originalHtml) {
-                                mainApplyBtn.disabled = false;
-                                mainApplyBtn.innerHTML = mainApplyBtn.dataset.originalHtml;
-                            }
-
-                            // AUTOMATIC REDIRECTION to the NEW Tabbed Raw Code Modal
-                            // We trigger this immediately so the user can see the raw code and the search failure
-                            if (!message.repaired && !message.alreadyApplied) {
-                                const codeText = blockEl.dataset.rawCode || "";
-                                // Small timeout to allow the "Apply" button to finish its spinner animation
-                                setTimeout(() => {
-                                    import('./ui.js').then(ui => {
-                                        ui.openRawCodeModal(
-                                            message.messageId, 
-                                            message.blockIndex, 
-                                            message.filePath, 
-                                            codeText, 
-                                            message.hunkIndex !== undefined ? message.hunkIndex : 0
-                                        );
-                                    });
-                                }, 100);
+                                blockEl.querySelector(`.hunk-pane-${message.hunkIndex}`)?.classList.add('active');
                             }
                         }
-                    });
+
+                        // VISUAL RED ALERT: Set state to error
+                        blockEl.classList.add('malformed');
+                        blockEl.style.borderColor = 'var(--vscode-errorForeground)';
+
+                        // FAILURE CASE: Restore the button so the user can try again
+                        if (mainApplyBtn && mainApplyBtn.dataset.originalHtml) {
+                            mainApplyBtn.disabled = false;
+                            mainApplyBtn.innerHTML = mainApplyBtn.dataset.originalHtml;
+                        }
+
+                        // AUTOMATIC REDIRECTION to the NEW Tabbed Raw Code Modal
+                        // We trigger this immediately so the user can see the raw code and the search failure
+                        if (!message.repaired && !message.alreadyApplied) {
+                            const codeText = blockEl.dataset.rawCode || "";
+                            // Small timeout to allow the "Apply" button to finish its spinner animation
+                            setTimeout(() => {
+                                import('./ui.js').then(ui => {
+                                    ui.openRawCodeModal(
+                                        message.messageId, 
+                                        message.blockIndex, 
+                                        message.filePath, 
+                                        codeText, 
+                                        message.hunkIndex !== undefined ? message.hunkIndex : 0
+                                    );
+                                });
+                            }, 100);
+                        }
+                    
+                    }
+                    
 
                     // 2. Update the "Apply All" list row if it exists
                     const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
@@ -1363,6 +1404,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         row.classList.add('status-success');
                         const iconEl = row.querySelector('.status-icon');
                         const actionsEl = row.querySelector('.row-actions') as HTMLElement;
+
+                        // Clean up temporary "Writing to disk" status label
+                        const pathEl = row.querySelector('.row-path');
+                        if (pathEl) {
+                            const badgeSpan = pathEl.querySelector('.status-label-inline');
+                            if (badgeSpan) badgeSpan.remove();
+                        }
 
                         if (message.alreadyApplied) {
                             row.style.opacity = '0.7';
@@ -1403,12 +1451,18 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         const iconEl = row.querySelector('.status-icon');
                         const actionsEl = row.querySelector('.row-actions') as HTMLElement;
 
+                        // Clean up temporary "Writing to disk" status label
+                        const pathEl = row.querySelector('.row-path');
+                        if (pathEl) {
+                            const badgeSpan = pathEl.querySelector('.status-label-inline');
+                            if (badgeSpan) badgeSpan.remove();
+                        }
+
                         if (iconEl) {
                             iconEl.innerHTML = '<span class="codicon codicon-close" style="color:var(--vscode-charts-red)" title="' + (message.error || 'Failed') + '"></span>';
                         }
 
                         // Append the clean, highly visible failure reason right next to the file path label in the list
-                        const pathEl = row.querySelector('.row-path');
                         if (pathEl && message.error) {
                             let shortReason = message.error;
                             if (shortReason.includes("Blocked by Sovereign Shield") || shortReason.includes("Sovereign Shield")) {

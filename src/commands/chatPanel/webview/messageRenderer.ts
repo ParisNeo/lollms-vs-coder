@@ -1951,17 +1951,41 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     let thoughtsHtml = "";
     if (thinkResult.thoughts.length > 0) {
-        thinkResult.thoughts.forEach(t => {
-            const iconHtml = t.closed 
-                ? '<span class="codicon codicon-circuit-board" style="animation: pulse-border 2s infinite;"></span>' 
+        thinkResult.thoughts.forEach((t, idx) => {
+            const isClosed = t.closed || isFinal;
+            const iconHtml = isClosed 
+                ? '<span class="codicon codicon-circuit-board"></span>' 
                 : '<span class="spinner" style="width:10px; height:10px; border-width:2px; margin-right:6px; color: var(--thinking-color);"></span>';
 
+            // Calculate thinking duration if timestamps exist
+            let durationHtml = "";
+            const tStart = wrapper.getAttribute('data-think-start-time');
+            const tEnd = wrapper.getAttribute('data-think-end-time');
+            
+            if (tStart && tEnd) {
+                const elapsed = ((parseInt(tEnd, 10) - parseInt(tStart, 10)) / 1000).toFixed(1);
+                durationHtml = `<span class="think-duration" style="font-size: 10px; opacity: 0.6; font-weight: normal; margin-left: auto; padding-right: 12px;">thought for ${elapsed}s</span>`;
+            } else if (tStart && !isClosed) {
+                // Live ticking elapsed timer for active thinking
+                const elapsedLive = ((Date.now() - parseInt(tStart, 10)) / 1000).toFixed(1);
+                durationHtml = `<span class="think-duration live-thinking" data-start-time="${tStart}" style="font-size: 10px; color: var(--thinking-color); font-weight: bold; margin-left: auto; padding-right: 12px; animation: lollms-pulse 1.5s infinite;">thinking... (${elapsedLive}s)</span>`;
+            } else if (!isClosed) {
+                durationHtml = `<span class="think-duration" style="font-size: 10px; opacity: 0.6; font-weight: normal; margin-left: auto; padding-right: 12px; animation: lollms-pulse 1.5s infinite;">thinking...</span>`;
+            }
+
+            // Check if there was a previously rendered details block for this index to preserve user toggle state
+            const prevDetails = contentDiv.querySelector(`.plan-scratchpad[data-idx="${idx}"] details`) as HTMLDetailsElement;
+            const isUserCollapsed = prevDetails ? !prevDetails.open : false;
+
             thoughtsHtml += `
-                <div class="plan-scratchpad" style="margin-top:0; margin-bottom: 12px; border-left: 3px solid var(--thinking-color);">
-                    <details ${!t.closed ? 'open' : ''}>
-                        <summary class="scratchpad-header" style="color: var(--thinking-color); display: flex; align-items: center; gap: 6px;">
-                            ${iconHtml} 
-                            <span>Thought (Reasoning)${!t.closed ? '...' : ''}</span>
+                <div class="plan-scratchpad" data-idx="${idx}" style="margin-top:0; margin-bottom: 12px; border-left: 3px solid var(--thinking-color); box-sizing: border-box;">
+                    <details ${(!isClosed && !isUserCollapsed) ? 'open' : ''} style="border: none; background: transparent; margin: 0; box-shadow: none;">
+                        <summary class="scratchpad-header" style="color: var(--thinking-color); display: flex; align-items: center; justify-content: space-between; width: 100%; box-sizing: border-box; padding: 6px 12px; list-style: none;">
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                ${iconHtml} 
+                                <span style="font-weight: bold;">Thought (Reasoning)${!isClosed ? '...' : ''}</span>
+                            </div>
+                            ${durationHtml}
                         </summary>
                         <div class="scratchpad-content markdown-body" style="padding: 10px 15px; font-size:11px; opacity:0.9; background:rgba(0,0,0,0.05); border-radius:0 0 6px 6px;">
                             ${DOMPurify.sanitize(marked.parse(t.content || "*AI is contemplating...*"))}
@@ -1970,7 +1994,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 </div>`;
         });
     }
-
     // 2. EXCLUDE BACKTICK CODE FENCES FROM PLUGIN PARSING
     const forbidden: {start: number, end: number}[] = [];
     const fenceRegex = /```[\s\S]*?(?:```|$)|`[^`\n\r]+`/g;
@@ -2458,10 +2481,13 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
     }
 
     if (role === 'assistant') {
+        actions.appendChild(createButton('', 'codicon-play', () => {
+            vscode.postMessage({ command: 'runAndMonitorApp', messageId: id });
+        }, 'msg-action-btn run-monitor-btn', 'Run App & Monitor Logs'));
         actions.appendChild(createButton('', 'codicon-save', () => vscode.postMessage({ command: 'saveMessageAsPrompt', content: textForClipboard }), 'msg-action-btn', 'Save as Prompt'));
         actions.appendChild(createButton('', 'codicon-book', () => vscode.postMessage({ command: 'requestLog' }), 'msg-action-btn', 'Show Debug Log'));
     }
-    
+
     actions.appendChild(createButton('', 'codicon-trash', () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: id }), 'msg-action-btn', 'Delete Message'));
 
     // CRITICAL: Inject HUD as the ABSOLUTE FIRST child of the body.
@@ -2836,7 +2862,10 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
         </details>
     </div>`;
     
-    const hasMetadata = (files && files.length > 0) || (skills && skills.length > 0) || (diagrams && diagrams.length > 0) || (tools && tools.length > 0);
+    // Always render the HUD shell in Discussion Mode so the toolbar remains visible to add files
+    dom.contextContainer.innerHTML = innerHTML;
+
+    const markdownView = dom.contextContainer.querySelector('.markdown-context-view');
     dom.contextContainer.innerHTML = (contextText || hasMetadata) ? innerHTML : '';
 
     // 2. RESTORE EXPANSION STATE
@@ -2847,7 +2876,6 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
         }
     });
 
-    const markdownView = dom.contextContainer.querySelector('.markdown-context-view');
     if (markdownView) {
         enhanceCodeBlocks(markdownView as HTMLElement, messageId, contextText, true);
     }
@@ -3726,94 +3754,26 @@ let lastTaskCount = 0;
 let lastTaskStates = "";
 
 export function displayPlan(plan: any) {
-    // Capture current scroll state before modifying the DOM
-    const oldScroll = dom.agentPlanZone ? dom.agentPlanZone.scrollTop : 0;
-
-    // Redirection: The Plan now renders as a Pinned Dashboard at the TOP of the chat
-    let dashboard = document.getElementById('agent-sovereign-dashboard');
+    if (!dom.agentPlanZone) return;
 
     if (!plan) {
-        if (dashboard) dashboard.remove();
+        dom.agentPlanZone.innerHTML = '';
         return;
     }
 
-    if (!dashboard) {
-        dashboard = document.createElement('div');
-        dashboard.id = 'agent-sovereign-dashboard';
-        dashboard.className = 'message-wrapper pinned-dashboard';
-        dom.chatMessagesContainer.prepend(dashboard);
-    }
-
-    const now = Date.now();
-    const isStreaming = plan?.status === 'active' && state.isGenerating;
+    const oldScroll = dom.agentPlanZone.scrollTop;
     (window as any).lastPlan = plan;
 
-    // --- 🛡️ JSON SUPPRESSION LOGIC ---
     let displayThought = plan.scratchpad || "Standing by...";
     try {
-        // Attempt to extract JSON from markdown fences or raw string
         const jsonMatch = displayThought.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0]);
-            // Prioritize human-readable remarks over structural JSON
-            displayThought = parsed.new_remark || parsed.thought || parsed.reasoning || "Analyzing project structure and planning next steps...";
+            displayThought = parsed.new_remark || parsed.thought || parsed.reasoning || "Planning next steps...";
         }
-    } catch (e) {
-        // Not JSON, or malformed JSON during streaming - keep as is (Markdown)
-    }
+    } catch (e) {}
 
-    // 1. DASHBOARD HEADER (OBJECTIVE)
-    let html = `
-        <div class="message assistant-message agent-mode-message" style="border-bottom: 2px solid var(--vscode-charts-orange); margin-bottom: 20px;">
-            <div class="message-avatar">
-                <div class="agent-active-indicator">
-                    <div class="genie-orb-portal" style="transform: scale(0.6);">
-                        <div class="orb-ring-outer"></div>
-                        <div class="orb-ring-inner"></div>
-                        <div class="orb-core"></div>
-                    </div>
-                </div>
-            </div>
-            <div class="message-body">
-                <div class="message-header"><span class="role-name">MISSION CONTROL</span></div>
-                <div class="message-content">
-                    <div style="font-weight:bold; font-size: 14px; margin-bottom: 10px; color: var(--vscode-charts-orange);">🎯 ${sanitizer.sanitize(plan.objective)}</div>
-                    <div class="live-thought-box" style="margin-bottom: 15px; font-style: italic; color: var(--vscode-descriptionForeground); line-height: 1.5;">
-                        ${sanitizer.sanitize(displayThought)}
-                    </div>
-
-                    <div style="display:flex; justify-content: space-between; align-items:center; margin-top:10px; padding-top:10px; border-top: 1px solid var(--vscode-widget-border);">
-                         <div style="display:flex; gap:8px;">
-                            <button class="code-action-btn secondary-btn export-audit-md-btn" title="Export Audit Trail (Markdown)">
-                                <i class="codicon codicon-markdown"></i> MD
-                            </button>
-                            <button class="code-action-btn secondary-btn export-audit-html-btn" title="Export Interactive Report (HTML)">
-                                <i class="codicon codicon-cloud-download"></i> HTML Report
-                            </button>
-                         </div>
-                         <span style="font-size: 10px; opacity: 0.5;">Status: ${plan.status?.toUpperCase()}</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-
-    dashboard.innerHTML = html;
-
-    // Restore scroll position to prevent the "jump"
-    requestAnimationFrame(() => {
-        if (dom.agentPlanZone) dom.agentPlanZone.scrollTop = oldScroll;
-    });
-    if (!plan) {
-        dom.agentPlanZone.classList.remove('visible');
-        dom.planResizer.classList.remove('visible');
-        return;
-    }
-
-    dom.agentPlanZone.classList.add('visible');
-    dom.planResizer.classList.add('visible');
-
-    // 2. CONSOLIDATED HUD (Brain Bar)
+    let brainBarHtml = '';
     if (plan.metrics) {
         const m = plan.metrics;
         const total = Math.max(m.total, 1);
@@ -3821,94 +3781,105 @@ export function displayPlan(plan: any) {
         const pMem = (m.memory / total) * 100;
         const pHist = (m.history / total) * 100;
 
-        const hud = document.createElement('div');
-        hud.className = 'brain-bar-container';
-        hud.innerHTML = `
-            <div class="brain-bar-label">
-                <span>Agent Cognitive Load</span>
-                <span>${(m.total / 1024).toFixed(1)} KB</span>
-            </div>
-            <div class="brain-bar">
-                <div class="brain-segment segment-scratchpad" data-type="scratchpad" style="width: ${pScratch}%" title="Thoughts: ${m.scratchpad} chars"></div>
-                <div class="brain-segment segment-memory" data-type="memory" style="width: ${pMem}%" title="Working Memory: ${m.memory} chars"></div>
-                <div class="brain-segment segment-history" data-type="history" style="width: ${pHist}%" title="Mission History: ${m.history} chars"></div>
-            </div>
-            <div class="brain-legend">
-                <div class="legend-item" data-type="scratchpad">
-                    <div class="dot segment-scratchpad"></div> Thoughts
+        brainBarHtml = `
+            <div class="brain-bar-container">
+                <div class="brain-bar-label">
+                    <span>Agent Cognitive Load</span>
+                    <span>${(m.total / 1024).toFixed(1)} KB</span>
                 </div>
-                <div class="legend-item" data-type="memory">
-                    <div class="dot segment-memory"></div> Memory
+                <div class="brain-bar">
+                    <div class="brain-segment segment-scratchpad" data-type="scratchpad" style="width: ${pScratch}%" title="Thoughts: ${m.scratchpad} chars"></div>
+                    <div class="brain-segment segment-memory" data-type="memory" style="width: ${pMem}%" title="Working Memory: ${m.memory} chars"></div>
+                    <div class="brain-segment segment-history" data-type="history" style="width: ${pHist}%" title="Mission History: ${m.history} chars"></div>
                 </div>
-                <div class="legend-item" data-type="history">
-                    <div class="dot segment-history"></div> History
+                <div class="brain-legend">
+                    <div class="legend-item" data-type="scratchpad">
+                        <div class="dot segment-scratchpad"></div> Thoughts
+                    </div>
+                    <div class="legend-item" data-type="memory">
+                        <div class="dot segment-memory"></div> Memory
+                    </div>
+                    <div class="legend-item" data-type="history">
+                        <div class="dot segment-history"></div> History
+                    </div>
                 </div>
             </div>
         `;
-        // Listeners are now handled via global delegation in events.ts
-
-        dom.agentPlanZone.appendChild(hud);
     }
 
-    // 3. PROGRESS TRACKER (Checklist)
+    let milestonesHtml = '';
     if (plan.milestones && plan.milestones.length > 0) {
-        const tracker = document.createElement('div');
-        tracker.className = 'agent-progress-tracker';
-        tracker.innerHTML = plan.milestones.map((m: any) => {
-            const icon = m.status === 'completed' ? 'pass-filled' : (m.status === 'active' ? 'play' : 'circle-outline');
-            return `
-                <div class="milestone-item ${m.status}">
-                    <span class="milestone-icon"><i class="codicon codicon-${icon}"></i></span>
-                    <span class="milestone-label">${m.label}</span>
-                </div>
-            `;
-        }).join('');
-        dom.agentPlanZone.appendChild(tracker);
+        milestonesHtml = `
+            <div class="agent-progress-tracker">
+                ${plan.milestones.map((m: any) => {
+                    const icon = m.status === 'completed' ? 'pass-filled' : (m.status === 'active' ? 'play' : 'circle-outline');
+                    return `
+                        <div class="milestone-item ${m.status}">
+                            <span class="milestone-icon"><i class="codicon codicon-${icon}"></i></span>
+                            <span class="milestone-label">${m.label}</span>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `;
     }
 
-    // 1. CREATE THE STICKY TOOLBAR FIRST
-    const globalActions = document.createElement('div');
-    globalActions.className = 'plan-global-actions';
-    globalActions.style.gap = '8px';
+    let globalActionsHtml = `
+        <div class="plan-global-actions" style="gap: 8px;">
+            <button class="code-action-btn copy-log-btn" id="copy-log-btn-panel" style="flex: 1;">
+                <span class="codicon codicon-copy"></span> <span class="btn-text">Copy Experience Log</span>
+            </button>
+        </div>
+    `;
 
-    const exportBtn = createButton('Export Report', 'codicon-export', () => {
-        vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.exportAgentTimeline' } });
-    }, 'code-action-btn');
-    globalActions.appendChild(exportBtn);
+    // Construct the overall sidebar inner content
+    let sidebarHtml = `
+        <div class="plan-block active">
+            <div class="plan-header" style="background: var(--vscode-sideBarSectionHeader-background); padding: 12px; font-weight: bold; font-size: 13px;">
+                <span class="codicon codicon-target" style="margin-right: 8px; color: var(--vscode-charts-orange);"></span>
+                <span>MISSION: ${sanitizer.sanitize(plan.objective)}</span>
+            </div>
+            <div class="plan-content" style="padding: 12px;">
+                <div class="live-thought-box" style="margin-bottom: 15px; font-style: italic; color: var(--vscode-descriptionForeground); line-height: 1.5;">
+                    ${sanitizer.sanitize(displayThought)}
+                </div>
+            </div>
+        </div>
+        ${brainBarHtml}
+        ${milestonesHtml}
+        ${globalActionsHtml}
+        <div class="plan-wrapper">
+    `;
 
-    const copyLogBtn = createButton('Copy Log', 'codicon-copy', () => {
-        const text = formatPlanForCopy(plan);
-        vscode.postMessage({ command: 'copyToClipboard', text: text });
-        
-        copyLogBtn.innerHTML = '<span class="codicon codicon-check"></span> <span class="btn-text">Experience Log Copied!</span>';
-        copyLogBtn.style.backgroundColor = 'var(--vscode-charts-green)';
-        
-        setTimeout(() => {
-            copyLogBtn.innerHTML = '<span class="codicon codicon-copy"></span> <span class="btn-text">Copy Full Experience Log</span>';
-            copyLogBtn.style.backgroundColor = '';
-        }, 2000);
-    }, 'code-action-btn copy-log-btn');
-    
-    globalActions.appendChild(copyLogBtn);
-    
-    // Add the toolbar to the zone
-    dom.agentPlanZone.appendChild(globalActions);
-
-    // 2. CREATE SCROLLABLE WRAPPER FOR THE CONTENT
-    const wrapper = document.createElement('div');
-    wrapper.className = 'plan-wrapper';
-
-    // Render History (Blocks of Experience)
     if (plan.attempts && plan.attempts.length > 0) {
         plan.attempts.forEach((oldPlan: any) => {
-            wrapper.appendChild(renderPlanAttempt(oldPlan, true));
+            sidebarHtml += renderPlanAttempt(oldPlan, true).outerHTML;
         });
     }
 
-    // Render Current Active Plan
-    wrapper.appendChild(renderPlanAttempt(plan, false));
+    const tempDiv = renderPlanAttempt(plan, false);
+    sidebarHtml += tempDiv.outerHTML;
+    sidebarHtml += `</div>`;
 
-    dom.agentPlanZone.appendChild(wrapper);
+    dom.agentPlanZone.innerHTML = sidebarHtml;
+
+    // Attach Log Copy listener dynamically inside the panel
+    const copyBtn = document.getElementById('copy-log-btn-panel');
+    if (copyBtn) {
+        copyBtn.onclick = () => {
+            const text = formatPlanForCopy(plan);
+            vscode.postMessage({ command: 'copyToClipboard', text: text });
+            copyBtn.innerHTML = '<span class="codicon codicon-check"></span> <span class="btn-text">Copied!</span>';
+            setTimeout(() => {
+                copyBtn.innerHTML = '<span class="codicon codicon-copy"></span> <span class="btn-text">Copy Experience Log</span>';
+            }, 2000);
+        };
+    }
+
+    // Restore scroll position safely
+    requestAnimationFrame(() => {
+        if (dom.agentPlanZone) dom.agentPlanZone.scrollTop = oldScroll;
+    });
 }
 
 export function insertNewMessageEditor(role: 'user' | 'assistant') {

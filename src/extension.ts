@@ -165,6 +165,12 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(recreateClientDisposable);
 
+    // Onboarding Panel Command
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showOnboardingWizard', (folder: vscode.WorkspaceFolder) => {
+        const { OnboardingPanel } = require('./commands/onboardingPanel');
+        OnboardingPanel.createOrShow(context.extensionUri, services, folder);
+    }));
+
     // Code Graph Panel Command
     const showCodeGraphPanelCommand = vscode.commands.registerCommand('lollms-vs-coder.showCodeGraphPanel', () => {
         if (services.codeGraphManager) {
@@ -229,28 +235,32 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const inlineCompletionProvider = new (require('./commands/inlineSuggestions').LollmsInlineCompletionProvider)(lollmsAPI);
 
-    // Register on-demand manual trigger command
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerInlineSuggestion', async () => {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) return;
+    // Register on-demand manual trigger command with a safety guard to prevent duplicate registration warnings
+    try {
+        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerInlineSuggestion', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) return;
 
-        const position = editor.selection.active;
-        const document = editor.document;
+            const position = editor.selection.active;
+            const document = editor.document;
 
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Window,
-            title: "Lollms: Fetching completion..."
-        }, async () => {
-            const completion = await inlineCompletionProvider.triggerSuggestion(document, position);
-            if (completion) {
-                editor.edit(editBuilder => {
-                    editBuilder.insert(position, completion);
-                });
-            } else {
-                vscode.window.setStatusBarMessage("Lollms: No completion available.", 2000);
-            }
-        });
-    }));
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Window,
+                title: "Lollms: Fetching completion..."
+            }, async () => {
+                const completion = await inlineCompletionProvider.triggerSuggestion(document, position);
+                if (completion) {
+                    editor.edit(editBuilder => {
+                        editBuilder.insert(position, completion);
+                    });
+                } else {
+                    vscode.window.setStatusBarMessage("Lollms: No completion available.", 2000);
+                }
+            });
+        }));
+    } catch (e) {
+        Logger.warn("Command 'lollms-vs-coder.triggerInlineSuggestion' registration skipped: already registered.");
+    }
 
     // Status Bar
     const statusBar = new LollmsStatusBar(context, lollmsAPI);
@@ -397,6 +407,12 @@ export async function activate(context: vscode.ExtensionContext) {
                 }
             });
             vscode.window.showInformationMessage(`Lollms workspace switched to '${folder.name}'.`);
+        }
+
+        // Trigger One-Time Project Onboarding automatically if missing
+        const wasOnboarded = context.workspaceState.get<boolean>('lollms_workspace_onboarded', false);
+        if (!wasOnboarded) {
+            vscode.commands.executeCommand('lollms-vs-coder.showOnboardingWizard', folder);
         }
     }
 

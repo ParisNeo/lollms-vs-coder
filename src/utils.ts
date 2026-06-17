@@ -198,6 +198,7 @@ export interface DiscussionCapabilities {
 
     includeGitInfo?: boolean;
     agentMode: boolean;
+    dynamicMode?: boolean; // Added for live in-chat multi-turn tools loop
     debugMode: boolean;
     verifierMode: boolean;
     testMode: boolean;
@@ -215,6 +216,7 @@ export interface DiscussionCapabilities {
     contextGovernorThreshold: number; // Percentage (0-100)
     guiState?: {
         agentBadge: boolean;
+        dynamicBadge?: boolean;
         herdBadge: boolean;
         webSearchBadge?: boolean;
         testBadge?: boolean;
@@ -672,6 +674,7 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
     // 🛡️ PROTOCOL GATE: Mode-Specific Operational Constraints
     const isAutonomous = capabilities?.agentMode === true || promptType === 'agent';
     const isBuilder = capabilities?.workerType === 'builder';
+    const isDynamic = capabilities?.dynamicMode === true;
 
     let operationalMandate = "";
 
@@ -679,6 +682,32 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
         operationalMandate = "\n### 🚫 STRICT OPERATIONAL RULE\nYou are a single-file refactoring engine. You are FORBIDDEN from using, referencing, or outputting any JSON tool calls, XML tags, or external commands. Your only authorized action is to output the SEARCH/REPLACE block modifying the code.\n";
     } else if (isAutonomous || isBuilder) {
         operationalMandate = "\n### 🦾 OPERATIONAL AUTHORITY: ACTIVE\nYou have permission to use JSON tool calls to interact with the filesystem, terminal, and vision systems directly.\n";
+    } else if (isDynamic) {
+        const allTools = (context as any)?.toolManager?.getAllTools() || [];
+        operationalMandate = `
+    ### 🧠 DYNAMIC MODE PROTOCOL (ACTIVE)
+    You are operating under **Dynamic Mode (Multi-Turn Chat loop)**.
+    This means you can call tools, receive results, and iterate *inside this single chat turn* without waiting for user interaction!
+
+    **STRICT OPERATIONAL RULES:**
+    1. **INTERCEPTED EXECUTION**: When you output an XML tool tag (like \`<add_files_to_context>\`, \`<query_architecture>\`, or \`<lollms_tool>\`), the system will instantly intercept your stream, run the tool, and prompt you to continue.
+    2. **ONE TOOL AT A TIME**: Output exactly one tool call per message, and immediately STOP writing. Do not output multiple tools or trailing prose after the closing tag of your tool.
+    3. **NO PROJECT-WIDE ADDITIONS**: You are **STRICTLY FORBIDDEN** from importing or reading the entire project directory (\`.\` or the workspace root). 
+       - If you need code context, you must target specific subfolders (e.g. \`src/auth/\`) or individual files. 
+       - Adding too many files will bloat your memory and result in a token-cap rejection.
+    4. **TOKEN BUDGET LIMIT**: If your active context exceeds **85%** of the model's limit, the system will reject your tool call and force you to prune. Use \`remove_files\` to selectively remove files before requesting more.
+    5. **TEMPORARY SELECTION**: You can use \`add_files_to_context\` or \`remove_files_from_context\` to temporarily load or prune files from your memory to focus better on the task. Once your final answer is compiled, the system will automatically restore the user's original context matrix.
+    6. **WEB DISCOVERY**: If your context lacks the required information, use the web search tools (\`search_web\`, \`search_wikipedia\`) to fetch recent documentation. Do NOT hallucinate.
+    7. **NO AUTO-APPLY**: While you have full autonomy to read files, run searches, or query SPARQL, you are **FORBIDDEN** from modifying files. Any code updates you suggest must be presented to the user to review and apply manually.
+
+    **AUTHORIZED TOOLS (OUTPUT XML TAGS VERBATIM):**
+    - \`<add_files_to_context>\npath/to/file\n</add_files_to_context>\`
+    - \`<query_architecture>\nSELECT ?x WHERE { ?x s:type s:Class }\n</query_architecture>\`
+    - \`<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>\`
+    
+    *Available Tools for the <lollms_tool> JSON name parameter:*
+    ${allTools.filter((t: any) => t.name !== 'execute_command' && t.name !== 'edit_code').map((t: any) => `- \`${t.name}\`: ${t.description.split('.')[0]}`).join('\n    ')}
+    `;
     } else {
         // --- DISCUSSION MODE: SCOPE-AWARE FILTERING ---
         // Only show tools that the user has explicitly equipped in the HUD
@@ -695,8 +724,8 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
     - \`<lollms_tool name="tool_name" params='{...}' />\`: Request execution of other specialized tools.
 
     **AUTHORIZED TAGS:**
-    ${activeTools.map((t: any) => `- **${t.name}**: \`<lollms_tool name="${t.name}" params='{...}' />\``).join('\n')}
     `;
+    operationalMandate += activeTools.map((t: any) => `- **${t.name}**: \`<lollms_tool name="${t.name}" params='{...}' />\``).join('\n')
     }
 
     return basePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness;

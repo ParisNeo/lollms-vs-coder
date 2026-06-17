@@ -167,6 +167,7 @@ export const dom = {
     get fileInput() { return document.getElementById('fileInput') as HTMLInputElement; },
     
     get agentModeCheckbox() { return document.getElementById('agentModeCheckbox') as HTMLInputElement; },
+    get dynamicModeCheckbox() { return document.getElementById('dynamicModeCheckbox') as HTMLInputElement; },
     get testModeCheckbox() { return document.getElementById('testModeCheckbox') as HTMLInputElement; },
     get docsModeCheckbox() { return document.getElementById('docsModeCheckbox') as HTMLInputElement; },
     get contextAggressionSelect() { return document.getElementById('modal-context-aggression') as HTMLSelectElement; },

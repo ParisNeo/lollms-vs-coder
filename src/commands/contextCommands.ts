@@ -213,6 +213,24 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.loadContextSelectionDirect', async (fileName: string) => {
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) return;
+
+        const fileUri = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection', fileName);
+        try {
+            const content = await vscode.workspace.fs.readFile(fileUri);
+            const files = JSON.parse(Buffer.from(content).toString('utf8'));
+            if (Array.isArray(files)) {
+                await services.contextManager.getContextStateProvider()?.softReset();
+                await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', files);
+                vscode.window.showInformationMessage(`Context switched to: ${fileName.replace('.lollms-ctx', '')}`);
+            }
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Failed to load context ${fileName}: ${e.message}`);
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.loadContextSelection', async () => {
         const folders = vscode.workspace.workspaceFolders;
         let defaultUri: vscode.Uri | undefined = undefined;

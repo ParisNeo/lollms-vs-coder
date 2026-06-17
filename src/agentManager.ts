@@ -654,6 +654,9 @@ Keep it strictly technical and extremely concise.`
             this.sessionState.secureCredentials = {};
         }
 
+        // Explicitly engage Active Agent Mode state when this method is invoked
+        this.isActive = true;
+
         if (!this.currentPlan) {
             this.failureMemory.clear();
             this.consecutiveTaskFailures.clear();
@@ -661,8 +664,6 @@ Keep it strictly technical and extremely concise.`
                 this.sessionState.isSafetyCheckPassed = false;
             }
         } else {
-            this.isActive = true; 
-
             const lastLog = this.completedActionsHistory[this.completedActionsHistory.length - 1];
             const newLog = `[USER INTERVENTION]\n- FEEDBACK: "${content}"\n- ACTION: Adjusting strategy based on user input.`;
 
@@ -670,8 +671,8 @@ Keep it strictly technical and extremely concise.`
                 this.completedActionsHistory.push(newLog);
                 this.ui.addMessageToDiscussion({ role: 'system', content: '🔄 **Integrating feedback...** Resuming mission.' });
             }
-            this.ui.updateAgentMode(true);
         }
+        this.ui.updateAgentMode(true);
 
         if (isDebugActive && workspaceFolder) {
             const isRepo = await this.gitIntegration.isGitRepo(workspaceFolder);

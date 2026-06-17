@@ -27,12 +27,17 @@ export function performSearch() {
     const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(`(${escapedQuery})`, 'gi');
 
+    // Select all message wrappers to search across the entire discussion pane
     document.querySelectorAll('.message-content').forEach(content => {
         const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, {
             acceptNode: node => {
                 let parent = node.parentElement;
                 while (parent) {
-                    if (['CODE', 'PRE', 'SCRIPT', 'STYLE'].includes(parent.tagName)) {
+                    // Ignore search inside inputs, textareas, active editor components, and script elements
+                    const isInputContainer = ['INPUT', 'TEXTAREA', 'SCRIPT', 'STYLE'].includes(parent.tagName) || 
+                                             parent.classList.contains('cm-editor') ||
+                                             parent.classList.contains('message-actions');
+                    if (isInputContainer) {
                         return NodeFilter.FILTER_REJECT;
                     }
                     parent = parent.parentElement;
@@ -49,7 +54,7 @@ export function performSearch() {
                     const fragment = document.createDocumentFragment();
                     for (let i = 0; i < fragments.length; i++) {
                         if (i % 2 === 0) {
-                            if(fragments[i]) fragment.appendChild(document.createTextNode(fragments[i]));
+                            if (fragments[i]) fragment.appendChild(document.createTextNode(fragments[i]));
                         } else {
                             const mark = document.createElement('mark');
                             mark.appendChild(document.createTextNode(fragments[i]));
@@ -64,26 +69,32 @@ export function performSearch() {
     });
 
     if (state.searchMatches.length > 0) {
-        navigateSearch(1);
+        state.currentMatchIndex = 0;
+        updateMatchState();
     }
     updateSearchCount();
+}
+
+/**
+ * Updates active highlighting and handles smooth scrolling to current search match
+ */
+function updateMatchState() {
+    state.searchMatches.forEach(m => m.classList.remove('current-match'));
+    if (state.currentMatchIndex >= 0 && state.currentMatchIndex < state.searchMatches.length) {
+        const current = state.searchMatches[state.currentMatchIndex];
+        current.classList.add('current-match');
+        current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
 }
 
 export function navigateSearch(direction: number) {
     if (state.searchMatches.length === 0) return;
 
-    if (state.currentMatchIndex >= 0) {
-        state.searchMatches[state.currentMatchIndex].classList.remove('current-match');
-    }
-
     state.currentMatchIndex += direction;
     if (state.currentMatchIndex >= state.searchMatches.length) state.currentMatchIndex = 0;
     if (state.currentMatchIndex < 0) state.currentMatchIndex = state.searchMatches.length - 1;
 
-    const currentMatch = state.searchMatches[state.currentMatchIndex];
-    currentMatch.classList.add('current-match');
-    currentMatch.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
+    updateMatchState();
     updateSearchCount();
 }
 

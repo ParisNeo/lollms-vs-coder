@@ -1387,220 +1387,259 @@ export function updateBadges() {
     }
     }
 
-    // --- GROUP B: TASK (Workflow & Modes) ---
-    if (guiState.agentBadge || (!isAgentMode && (guiState.debugBadge || caps.herdMode || caps.testMode))) {
-        const workerGroup = document.createElement('div');
-        workerGroup.className = 'badge-group';
-        container.appendChild(workerGroup);
+    // --- GROUP B: SOVEREIGN OPERATIONAL MODE (Mutually Exclusive) ---
+    const modeGroup = document.createElement('div');
+    modeGroup.className = 'badge-group';
+    container.appendChild(modeGroup);
 
-        const isBuilder = caps.workerType === 'builder';
-        const workerBadge = createToggleBadge(
-            isBuilder ? '👷 Builder' : '💬 Discuss',
-            'autocontext', 
-            true,
-            true,
-            () => {
-                vscode.postMessage({ 
-                    command: 'updateDiscussionCapabilitiesPartial', 
-                    partial: { 
-                        workerType: isBuilder ? 'discussion' : 'builder'
-                    } 
-                });
-            }
-        );
-        if (workerBadge) {
-            workerBadge.title = "Discussion Mode: Iterative Q&A with manual patches.";
-            workerGroup.appendChild(workerBadge);
+    const isAgent = caps.agentMode === true;
+    const isDynamic = caps.dynamicMode === true && !isAgent;
+    const isAssistant = !isAgent && !isDynamic;
+
+    // A. Assistant Mode (Fully Manual)
+    const assistantBadge = createToggleBadge(
+        '👤 Assistant',
+        'autocontext',
+        true,
+        isAssistant,
+        () => {
+            vscode.postMessage({ 
+                command: 'updateDiscussionCapabilitiesPartial', 
+                partial: { agentMode: false, dynamicMode: false } 
+            });
         }
-        // --- NEW: AGENT MISSION PROFILE SELECTOR (Now standalone) ---
-        if (isAgentMode && state.agentProfiles && state.agentProfiles.length > 0) {
-            const currentProfileId = state.capabilities?.activeAgentProfileId || 'software_architect';
-            const currentProfile = state.agentProfiles.find(p => p.id === currentProfileId) || state.agentProfiles[0];
+    );
+    if (assistantBadge) {
+        assistantBadge.title = "Assistant Mode: Fully manual execution. AI provides code; you apply and run manually.";
+        modeGroup.appendChild(assistantBadge);
+    }
 
-            if (currentProfile) {
-                const wrapper = document.createElement('div');
-                wrapper.className = 'badge-wrapper';
-                wrapper.style.position = 'relative';
+    // B. Dynamic Mode (Semi-Automated In-Chat Loop)
+    const dynamicBadge = createToggleBadge(
+        '🧠 Dynamic',
+        'thinking',
+        true,
+        isDynamic,
+        () => {
+            vscode.postMessage({ 
+                command: 'updateDiscussionCapabilitiesPartial', 
+                partial: { agentMode: false, dynamicMode: true } 
+            });
+        }
+    );
+    if (dynamicBadge) {
+        dynamicBadge.title = "Dynamic Mode: Semi-automated. AI runs context updates, research, and queries dynamically inside your chat bubble.";
+        if (isDynamic) {
+            dynamicBadge.style.backgroundColor = 'var(--vscode-charts-orange)';
+            dynamicBadge.style.color = 'white';
+        }
+        modeGroup.appendChild(dynamicBadge);
+    }
 
-                const genieBadge = document.createElement('span');
-                genieBadge.className = 'mode-badge active clickable';
-                genieBadge.style.backgroundColor = 'var(--vscode-charts-orange)';
-                genieBadge.style.color = 'white';
-                genieBadge.title = `Genie Mission: ${currentProfile.name}. Click to change protocol.`;
-                genieBadge.innerHTML = `<span class="codicon codicon-target"></span> <span class="badge-label">${currentProfile.name}</span>`;
+    // C. Agent Mode (Fully Automated Sidebar)
+    const agentBadge = createToggleBadge(
+        '🤖 Agent',
+        'agent',
+        true,
+        isAgent,
+        () => {
+            vscode.postMessage({ 
+                command: 'updateDiscussionCapabilitiesPartial', 
+                partial: { agentMode: true, dynamicMode: false } 
+            });
+        }
+    );
+    if (agentBadge) {
+        agentBadge.title = "Agent Mode: Fully autonomous sidebar operator. Plans, writes files, and runs terminal commands.";
+        if (isAgent) {
+            agentBadge.style.backgroundColor = 'var(--vscode-charts-red)';
+            agentBadge.style.color = 'white';
+        }
+        modeGroup.appendChild(agentBadge);
+    }
 
-                const menu = document.createElement('div');
-                menu.className = 'custom-menu';
-                menu.id = 'genie-profile-menu';
+    // --- GROUP C: AUXILIARY PROTOCOLS (Separate Layers) ---
+    const protocolGroup = document.createElement('div');
+    protocolGroup.className = 'badge-group hud-options-parent';
+    container.appendChild(protocolGroup);
 
-                state.agentProfiles.forEach(p => {
-                    const item = document.createElement('div');
-                    item.className = 'custom-menu-item';
-                    const icon = (p.id === currentProfileId) ? 'codicon-check' : 'codicon-symbol-property';
-                    item.innerHTML = `<span class="codicon ${icon}"></span> ${p.name}`;
+    const protoRoot = document.createElement('span');
+    protoRoot.className = 'mode-badge active clickable';
+    protoRoot.style.background = 'var(--vscode-editorWidget-background)';
+    protoRoot.innerHTML = `<span class="codicon codicon-settings-gear"></span> <span class="badge-label">PROTOCOLS</span>`;
+    protocolGroup.appendChild(protoRoot);
 
-                    if (p.id === currentProfileId) {
-                        item.style.fontWeight = 'bold';
-                        item.style.color = 'var(--vscode-textLink-foreground)';
-                    }
+    const protoPopup = document.createElement('div');
+    protoPopup.className = 'hud-options-popup';
+    protocolGroup.appendChild(protoPopup);
 
-                    item.onclick = (e) => {
-                        e.stopPropagation();
-                        vscode.postMessage({ 
-                            command: 'updateDiscussionCapabilitiesPartial', 
-                            partial: { activeAgentProfileId: p.id } 
-                        });
-                        menu.classList.remove('visible');
-                    };
-                    menu.appendChild(item);
-                });
+    // 1. Debug Protocol
+    const debugBadge = createToggleBadge(
+        '🐞 Debug', 
+        'thinking', 
+        true, 
+        caps.debugMode, 
+        () => {
+            vscode.postMessage({ 
+                command: 'updateDiscussionCapabilitiesPartial', 
+                partial: { debugMode: !caps.debugMode } 
+            });
+        },
+        () => {
+            const prompt = dom.messageInput ? dom.messageInput.value : "";
+            vscode.postMessage({ command: 'runDebugAgent', prompt: prompt });
+        }
+    );
+    if (debugBadge) {
+        if (caps.debugMode) {
+            debugBadge.style.backgroundColor = 'var(--vscode-charts-red)';
+            debugBadge.style.color = 'white';
+        }
+        protoPopup.appendChild(debugBadge);
+    }
 
-                genieBadge.onclick = (e) => {
+    // 2. Verifier Protocol
+    const verifierBadge = createToggleBadge(
+        '🛡️ Verifier',
+        'verifier',
+        true, 
+        caps.verifierMode,
+        () => {
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { verifierMode: !caps.verifierMode }
+            });
+        }
+    );
+    if (verifierBadge) protoPopup.appendChild(verifierBadge);
+
+    // 3. Test Protocol
+    const testBadge = createToggleBadge(
+        '🧪 Test',
+        'test',
+        true,
+        caps.testMode,
+        () => {
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { testMode: !caps.testMode }
+            });
+        }
+    );
+    if (testBadge) {
+        if (caps.testMode) {
+            testBadge.style.backgroundColor = '#e84393';
+            testBadge.style.color = 'white';
+        }
+        protoPopup.appendChild(testBadge);
+    }
+
+    // 4. Docs Protocol
+    const docsBadge = createToggleBadge(
+        '📖 Docs',
+        'docs',
+        true,
+        caps.documentationMode,
+        () => {
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { documentationMode: !caps.documentationMode }
+            });
+        }
+    );
+    if (docsBadge) {
+        if (caps.documentationMode) {
+            docsBadge.style.backgroundColor = '#00b894';
+            docsBadge.style.color = 'white';
+        }
+        protoPopup.appendChild(docsBadge);
+    }
+
+    // 5. Git Protocol
+    const gitWorkflowBadge = createToggleBadge(
+        '🐙 Git',
+        'git',
+        true,
+        caps.gitAutoWorkflow,
+        () => {
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { gitAutoWorkflow: !caps.gitAutoWorkflow }
+            });
+        }
+    );
+    if (gitWorkflowBadge) {
+        if (caps.gitAutoWorkflow) {
+            gitWorkflowBadge.style.backgroundColor = 'var(--vscode-gitDecoration-modifiedResourceForeground)';
+            gitWorkflowBadge.style.color = 'white';
+        }
+        protoPopup.appendChild(gitWorkflowBadge);
+    }
+
+    // 6. Multi-Agent (Herd) Protocol
+    const herdBadge = createToggleBadge('🐂 Multi-Agent', 'herd', true, caps.herdMode, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
+    });
+    if (herdBadge) protoPopup.appendChild(herdBadge);
+
+    // --- AGENT MISSION PROFILE SELECTOR (Only in Agent Mode) ---
+    if (isAgent && state.agentProfiles && state.agentProfiles.length > 0) {
+        const currentProfileId = state.capabilities?.activeAgentProfileId || 'software_architect';
+        const currentProfile = state.agentProfiles.find(p => p.id === currentProfileId) || state.agentProfiles[0];
+
+        if (currentProfile) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'badge-wrapper';
+            wrapper.style.position = 'relative';
+
+            const genieBadge = document.createElement('span');
+            genieBadge.className = 'mode-badge active clickable';
+            genieBadge.style.backgroundColor = 'var(--vscode-charts-orange)';
+            genieBadge.style.color = 'white';
+            genieBadge.title = `Genie Mission: ${currentProfile.name}. Click to change protocol.`;
+            genieBadge.innerHTML = `<span class="codicon codicon-target"></span> <span class="badge-label">${currentProfile.name}</span>`;
+
+            const menu = document.createElement('div');
+            menu.className = 'custom-menu';
+            menu.id = 'genie-profile-menu';
+
+            state.agentProfiles.forEach(p => {
+                const item = document.createElement('div');
+                item.className = 'custom-menu-item';
+                const icon = (p.id === currentProfileId) ? 'codicon-check' : 'codicon-symbol-property';
+                item.innerHTML = `<span class="codicon ${icon}"></span> ${p.name}`;
+
+                if (p.id === currentProfileId) {
+                    item.style.fontWeight = 'bold';
+                    item.style.color = 'var(--vscode-textLink-foreground)';
+                }
+
+                item.onclick = (e) => {
                     e.stopPropagation();
-                    const isOpening = !menu.classList.contains('visible');
-                    document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
-
-                    if (isOpening) {
-                        adjustMenuPosition(genieBadge, menu);
-                        menu.classList.add('visible');
-                    }
+                    vscode.postMessage({ 
+                        command: 'updateDiscussionCapabilitiesPartial', 
+                        partial: { activeAgentProfileId: p.id } 
+                    });
+                    menu.classList.remove('visible');
                 };
+                menu.appendChild(item);
+            });
 
-                wrapper.appendChild(genieBadge);
-                wrapper.appendChild(menu);
-                container.appendChild(wrapper); // Add directly to main container
-            }
+            genieBadge.onclick = (e) => {
+                e.stopPropagation();
+                const isOpening = !menu.classList.contains('visible');
+                document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+
+                if (isOpening) {
+                    adjustMenuPosition(genieBadge, menu);
+                    menu.classList.add('visible');
+                }
+            };
+
+            wrapper.appendChild(genieBadge);
+            wrapper.appendChild(menu);
+            container.appendChild(wrapper);
         }
-
-        const taskGroup = document.createElement('div');
-        taskGroup.className = 'badge-group hud-options-parent';
-        container.appendChild(taskGroup);
-
-        // 1. CREATE THE SIMPLER TOGGLE BADGE
-        const optionsBadge = document.createElement('span');
-        optionsBadge.className = 'mode-badge active clickable';
-        optionsBadge.style.background = 'var(--vscode-editorWidget-background)';
-        optionsBadge.innerHTML = `<span class="codicon codicon-settings-gear"></span> <span class="badge-label">PROTOCOL</span>`;
-        taskGroup.appendChild(optionsBadge);
-
-        // 2. CREATE THE HIDDEN CONTAINER
-        const optionsPopup = document.createElement('div');
-        optionsPopup.className = 'hud-options-popup';
-        taskGroup.appendChild(optionsPopup);
-
-        const agentBadge = createToggleBadge(
-            '🤖 Agent',
-            'agent',
-            guiState.agentBadge,
-            caps.agentMode,
-            () => {
-                vscode.postMessage({ command: 'toggleAgentMode' });
-            }
-        );
-        if (agentBadge) optionsPopup.appendChild(agentBadge);
-
-        const debugBadge = createToggleBadge(
-            '🐞 Debug', 
-            'thinking', 
-            guiState.debugBadge, 
-            caps.debugMode, 
-            () => {
-                vscode.postMessage({ 
-                    command: 'updateDiscussionCapabilitiesPartial', 
-                    partial: { debugMode: !caps.debugMode } 
-                });
-            },
-            () => {
-                const prompt = dom.messageInput ? dom.messageInput.value : "";
-                vscode.postMessage({ command: 'runDebugAgent', prompt: prompt });
-            }
-        );
-        if (debugBadge) {
-            if (caps.debugMode) {
-                debugBadge.style.backgroundColor = 'var(--vscode-charts-red)';
-                debugBadge.style.color = 'white';
-            }
-            optionsPopup.appendChild(debugBadge);
-        }
-
-        const verifierBadge = createToggleBadge(
-            '🛡️ Verifier',
-            'verifier',
-            true, 
-            caps.verifierMode,
-            () => {
-                vscode.postMessage({
-                    command: 'updateDiscussionCapabilitiesPartial',
-                    partial: { verifierMode: !caps.verifierMode }
-                });
-            }
-        );
-        if (verifierBadge) optionsPopup.appendChild(verifierBadge);
-
-        const testBadge = createToggleBadge(
-            '🧪 Test',
-            'test',
-            guiState.testBadge !== false,
-            caps.testMode,
-            () => {
-                vscode.postMessage({
-                    command: 'updateDiscussionCapabilitiesPartial',
-                    partial: { testMode: !caps.testMode }
-                });
-            }
-        );
-        if (testBadge) {
-            if (caps.testMode) {
-                testBadge.style.backgroundColor = '#e84393';
-                testBadge.style.color = 'white';
-            }
-            optionsPopup.appendChild(testBadge);
-        }
-
-        const docsBadge = createToggleBadge(
-            '📖 Docs',
-            'docs',
-            guiState.docsBadge !== false,
-            caps.documentationMode,
-            () => {
-                vscode.postMessage({
-                    command: 'updateDiscussionCapabilitiesPartial',
-                    partial: { documentationMode: !caps.documentationMode }
-                });
-            }
-        );
-
-        const gitWorkflowBadge = createToggleBadge(
-            '🐙 Git',
-            'git',
-            true,
-            caps.gitAutoWorkflow,
-            () => {
-                vscode.postMessage({
-                    command: 'updateDiscussionCapabilitiesPartial',
-                    partial: { gitAutoWorkflow: !caps.gitAutoWorkflow }
-                });
-            }
-        );
-        if (gitWorkflowBadge) {
-            if (caps.gitAutoWorkflow) {
-                gitWorkflowBadge.style.backgroundColor = 'var(--vscode-gitDecoration-modifiedResourceForeground)';
-                gitWorkflowBadge.style.color = 'white';
-            }
-            optionsPopup.appendChild(gitWorkflowBadge);
-        }
-        if (docsBadge) {
-            if (caps.documentationMode) {
-                docsBadge.style.backgroundColor = '#00b894';
-                docsBadge.style.color = 'white';
-            }
-            optionsPopup.appendChild(docsBadge);
-        }
-
-        const herdBadge = createToggleBadge('🐂 Multi-Agent', 'herd', guiState.herdBadge, caps.herdMode, () => {
-            vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
-        });
-        if (herdBadge) optionsPopup.appendChild(herdBadge);
     }
 
     // --- THEME: DNA & MEMORY ---

@@ -144,11 +144,11 @@ export class CodeGraphManager {
 
             if (signal.aborted) return;
 
-            // Cap the maximum number of files to process to prevent locking up in extremely large codebases
-            const MAX_FILES_LIMIT = 400;
+            // High-Scale Limit: comfortably handles 500+ files under the new fast-index algorithm
+            const MAX_FILES_LIMIT = 500;
             let filesToProcess = files;
             if (files.length > MAX_FILES_LIMIT) {
-                console.warn(`[Lollms Graph] Codebase exceeds maximum file limit (${files.length} > ${MAX_FILES_LIMIT}). Truncating to keep the extension host fully responsive.`);
+                console.warn(`[Lollms Graph] Codebase exceeds limit. Truncating to ${MAX_FILES_LIMIT} files for performance.`);
                 filesToProcess = files.slice(0, MAX_FILES_LIMIT);
             }
 
@@ -164,17 +164,16 @@ export class CodeGraphManager {
             this.nextEdgeIdNum = 0;
 
             // --- PASS 1: Batched Asynchronous Reading & Pre-flight Size Checks ---
-            const BATCH_SIZE = 25;
+            const BATCH_SIZE = 40;
             for (let i = 0; i < filesToProcess.length; i += BATCH_SIZE) {
                 if (signal.aborted) return;
 
-                // Yield back to the main thread to keep UI completely responsive
                 await new Promise(resolve => setTimeout(resolve, 1));
 
                 const batch = filesToProcess.slice(i, i + BATCH_SIZE);
 
                 if (onProgress) {
-                    const pct = Math.round((i / filesToProcess.length) * 40); // Allocate up to 40% of bar to Pass 1
+                    const pct = Math.round((i / filesToProcess.length) * 40);
                     const currentFileSample = batch[0] ? path.basename(batch[0].fsPath) : 'codebase';
                     onProgress({ percentage: pct, status: `Pass 1: Reading ${currentFileSample}...` });
                 }
@@ -184,7 +183,7 @@ export class CodeGraphManager {
                     const normalizedPath = relativePath.replace(/\\/g, '/');
 
                     try {
-                        // Pre-flight file size check: skip reading if size exceeds 200KB to save memory and CPU
+                        // Pre-flight file size check: Allow up to 200KB for maximum project visibility
                         const stats = await vscode.workspace.fs.stat(file);
                         if (stats.size > 200000) {
                             return;
@@ -408,35 +407,38 @@ export class CodeGraphManager {
                 onProgress({ percentage: 70, status: 'Pass 2 complete. Analyzing calls & references...' });
             }
 
-            // --- PASS 3: Function Calls & References (Links) ---
+            // --- PASS 3: Function Calls & References (Fast Token Indexing) ---
             const allSymbols = nodes.filter(n => n.type === 'function' || n.type === 'method' || n.type === 'class');
 
-            // Pre-compile the regexes for all symbols once to avoid rebuilding them inside nested loops
-            const symbolRegexes = new Map<string, {
-                bound: RegExp;
-                call: RegExp;
-                instantiation: RegExp;
-            }>();
-
-            allSymbols.forEach(symbol => {
-                const escapedLabel = symbol.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                symbolRegexes.set(symbol.id, {
-                    bound: new RegExp(`\\b${escapedLabel}\\b`),
-                    call: new RegExp(`\\b${escapedLabel}\\s*\\(`, 'g'),
-                    instantiation: new RegExp(`\\bnew\\s+${escapedLabel}\\b|:\\s*${escapedLabel}\\b|\\b${escapedLabel}\\.`, 'g')
-                });
+            // Build index: Map symbol label -> Symbol nodes
+            const symbolIndex = new Map<string, GraphNode[]>();
+            allSymbols.forEach(sym => {
+                const list = symbolIndex.get(sym.label) || [];
+                list.push(sym);
+                symbolIndex.set(sym.label, list);
             });
+
+            const addEdgeOnce = (src: string, trg: string, relLabel: string) => {
+                const edgeExists = edges.some(e => e.source === src && e.target === trg && e.label === relLabel);
+                if (!edgeExists) {
+                    edges.push({
+                        id: `edge_${this.nextEdgeIdNum++}`,
+                        source: src,
+                        target: trg,
+                        label: relLabel
+                    });
+                }
+            };
 
             let filesLinked = 0;
             for (const [normalizedPath, data] of this.fileContents.entries()) {
                 if (signal.aborted) return;
 
                 filesLinked++;
-                // Yield back on EVERY file to ensure the event loop stays responsive, keeping VS Code responsive
                 await new Promise(resolve => setTimeout(resolve, 0));
 
-                if (onProgress && filesLinked % 5 === 0) {
-                    const pct = 70 + Math.round((filesLinked / this.fileContents.size) * 20); // 70% to 90%
+                if (onProgress && filesLinked % 10 === 0) {
+                    const pct = 70 + Math.round((filesLinked / this.fileContents.size) * 20);
                     onProgress({ percentage: pct, status: `Pass 3: Linking references in ${path.basename(normalizedPath)}...` });
                 }
 
@@ -446,20 +448,14 @@ export class CodeGraphManager {
                 const text = data.text;
                 const lines = text.split('\n');
 
-                // Gather and sort all symbols defined in this file by line number
                 const fileSymbols = nodes
                     .filter(n => n.filePath === normalizedPath && (n.type === 'function' || n.type === 'method' || n.type === 'class'))
                     .sort((a, b) => (a.startLine || 0) - (b.startLine || 0));
 
                 for (let index = 0; index < lines.length; index++) {
-                    const line = lines[index];
+                    const line = lines[index].trim();
+                    if (!line) continue;
 
-                    // Yield occasionally within large files
-                    if (index % 100 === 0) {
-                        await new Promise(resolve => setTimeout(resolve, 0));
-                    }
-
-                    // Identify the active caller context (enclosing symbol range)
                     let currentCallerId = fileNodeId;
                     for (let sIdx = fileSymbols.length - 1; sIdx >= 0; sIdx--) {
                         const sym = fileSymbols[sIdx];
@@ -472,46 +468,39 @@ export class CodeGraphManager {
                     const callerNode = nodes.find(n => n.id === currentCallerId);
                     const isAtDefinitionLine = callerNode && index === callerNode.startLine;
 
-                    // Check for relationships to any known symbol in the project (Upgraded Ontology)
-                    for (const symbol of allSymbols) {
-                        if (symbol.id === currentCallerId) continue;
+                    // Extract all words from the current line using a single regex execution
+                    const words = line.match(/[\w_]+/g);
+                    if (!words) continue;
 
-                        // CRITICAL PERFORMANCE BOOST: Quick substring check to bypass RegExp compilation entirely
-                        if (!line.includes(symbol.label)) continue;
+                    // Remove duplicates inside the line to prevent redundant indexing checks
+                    const uniqueWords = new Set(words);
 
-                        const regexes = symbolRegexes.get(symbol.id);
-                        if (!regexes) continue;
+                    for (const word of uniqueWords) {
+                        const matchedSymbols = symbolIndex.get(word);
+                        if (!matchedSymbols) continue;
 
-                        // Helper to safely add unique relationship edges
-                        const addEdgeOnce = (src: string, trg: string, relLabel: string) => {
-                            const edgeExists = edges.some(e => e.source === src && e.target === trg && e.label === relLabel);
-                            if (!edgeExists) {
-                                edges.push({
-                                    id: `edge_${this.nextEdgeIdNum++}`,
-                                    source: src,
-                                    target: trg,
-                                    label: relLabel
-                                });
+                        for (const symbol of matchedSymbols) {
+                            if (symbol.id === currentCallerId) continue;
+
+                            // 1. Definition Line checks
+                            if (isAtDefinitionLine && callerNode) {
+                                if (callerNode.params && callerNode.params.includes(word)) {
+                                    addEdgeOnce(currentCallerId, symbol.id, 'inputParam');
+                                }
+                                if (callerNode.returnType && callerNode.returnType.includes(word)) {
+                                    addEdgeOnce(currentCallerId, symbol.id, 'outputParam');
+                                }
                             }
-                        };
 
-                        // 1. Check Signature for Input / Output Parameter Types (At definition line)
-                        if (isAtDefinitionLine) {
-                            if (callerNode.params && regexes.bound.test(callerNode.params)) {
-                                  addEdgeOnce(currentCallerId, symbol.id, 'inputParam');
-                                continue;
-                            }
-                            if (callerNode.returnType && regexes.bound.test(callerNode.returnType)) {
-                                  addEdgeOnce(currentCallerId, symbol.id, 'outputParam');
-                                continue;
-                            }
-                        }
+                            // 2. Structural/Call Checks
+                            const charIdx = line.indexOf(word);
+                            const nextChar = line.charAt(charIdx + word.length);
 
-                        // 2. Check Line Content for Internal Calls & Local Variable Instantiation
-                        if (regexes.call.test(line)) {
-                            addEdgeOnce(currentCallerId, symbol.id, 'calls');
-                        } else if (regexes.instantiation.test(line)) {
-                            addEdgeOnce(currentCallerId, symbol.id, 'localVariable');
+                            if (nextChar === '(') {
+                                addEdgeOnce(currentCallerId, symbol.id, 'calls');
+                            } else {
+                                addEdgeOnce(currentCallerId, symbol.id, 'localVariable');
+                            }
                         }
                     }
                 }
@@ -1253,7 +1242,7 @@ export class CodeGraphManager {
         };
 
         let iterations = 0;
-        const maxIterations = 15000;
+        const maxIterations = 100000; // Increased to support larger joins
 
         // Dynamic domain filtering based on local query constraints
         const getFilteredDomain = (variable: string, currentBindings: Record<string, string>): Set<string> => {
@@ -1309,29 +1298,29 @@ export class CodeGraphManager {
                 throw new Error(`SPARQL-lite Complexity Limit Exceeded: The query evaluated too many combinations (${maxIterations}+ iterations). Please refine your query with more constraints (e.g. specifying concrete names or s:type s:Class).`);
             }
 
-            if (varIdx === varList.length) {
-                let valid = true;
-                for (const t of triples) {
-                    const sVal = t.s.startsWith('?') ? bindings[t.s] : t.s;
-                    const pVal = t.p.startsWith('?') ? bindings[t.p] : t.p;
-                    const oVal = t.o.startsWith('?') ? bindings[t.o] : t.o;
+            // --- FAIL-FAST PRUNING ENHANCEMENT ---
+            // Verify partial bindings as we go to prevent traversing dead branches
+            for (const t of triples) {
+                const sVal = t.s.startsWith('?') ? bindings[t.s] : t.s;
+                const pVal = t.p.startsWith('?') ? bindings[t.p] : t.p;
+                const oVal = t.o.startsWith('?') ? bindings[t.o] : t.o;
 
-                    const match = facts.some(f => {
-                        return matchValue(f.s, sVal) && matchValue(f.p, pVal) && matchValue(f.o, oVal);
-                    });
+                const isBound = (v: string) => v !== undefined && !v.startsWith('?');
 
-                    if (!match) {
-                        valid = false;
-                        break;
-                    }
+                if (isBound(sVal) && isBound(pVal) && isBound(oVal)) {
+                    const match = facts.some(f => 
+                        matchValue(f.s, sVal) && matchValue(f.p, pVal) && matchValue(f.o, oVal)
+                    );
+                    if (!match) return; // Prune this entire subtree immediately
                 }
-                if (valid) {
-                    const isDup = results.some(r => {
-                        return varList.every(v => r[v] === bindings[v]);
-                    });
-                    if (!isDup) {
-                        results.push({ ...bindings });
-                    }
+            }
+
+            if (varIdx === varList.length) {
+                const isDup = results.some(r => {
+                    return varList.every(v => r[v] === bindings[v]);
+                });
+                if (!isDup) {
+                    results.push({ ...bindings });
                 }
                 return;
             }

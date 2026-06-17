@@ -2406,136 +2406,79 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
     if (model) messageWrapper.dataset.model = model;
     if (personalityName) messageWrapper.dataset.personalityName = personalityName;
 
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${role}-message ${isTechnical ? 'technical-event' : ''}`;
-    messageDiv.dataset.originalContent = JSON.stringify(rawContent);
+    // Import specialized renderers dynamically to keep compilation light and clean
+    import('./renderers/assistant_message_renderer.js').then(assistant => {
+    import('./renderers/dynamic_message_renderer.js').then(dynamic => {
+    import('./renderers/agent_message_renderer.js').then(agent => {
 
-    const avatarDiv = document.createElement('div');
-    avatarDiv.className = 'message-avatar';
-    
-    if (role === 'user') {
-        avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
-    } else if (role === 'assistant') {
-        // Avatar is handled by CSS background-image
-    } else {
-        avatarDiv.innerHTML = '<span class="codicon codicon-gear"></span>';
-    }
-    
-    messageDiv.appendChild(avatarDiv);
+        const caps = state.capabilities || { agentMode: false, dynamicMode: false };
+        const isAgent = state.capabilities?.agentMode && role === 'assistant';
+        const isDynamic = caps.dynamicMode === true && !isAgent;
+        const isAssistant = !isAgent && !isDynamic;
 
-    const bodyDiv = document.createElement('div');
-    bodyDiv.className = 'message-body';
-    messageDiv.appendChild(bodyDiv);
+        let modeClass = "";
+        if (role === 'assistant') {
+            if (isAgent) modeClass = "agent-mode-message";
+            else if (isDynamic) modeClass = "dynamic-mode-message";
+            else modeClass = "assistant-mode-message";
+        }
 
-     // 1. Create Floating HUD Toolbar
-    const actions = document.createElement('div');
-    actions.className = 'message-actions';
-    
-    const isMultipart = Array.isArray(rawContent);
-    const textForClipboard = isMultipart 
-        ? (rawContent.find((p: any) => p.type === 'text')?.text || '') 
-        : (typeof rawContent === 'string' ? rawContent : '');
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${role}-message ${modeClass} ${isTechnical ? 'technical-event' : ''}`;
+        messageDiv.dataset.originalContent = JSON.stringify(rawContent);
 
-    if (role !== 'system') {
-        actions.appendChild(createButton('', 'codicon-edit', () => startEdit(messageDiv, id, role), 'msg-action-btn', 'Edit Message'));
-        
+        const avatarDiv = document.createElement('div');
+        avatarDiv.className = 'message-avatar';
+
         if (role === 'user') {
-            actions.appendChild(createButton('', 'codicon-sync', () => vscode.postMessage({ command: 'regenerateFromMessage', messageId: id }), 'msg-action-btn', 'Regenerate Response'));
+            avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
         }
-    }
-    
-    const copyBtn = createButton('', 'codicon-copy', () => {
-        // Ensure we are sending a clean string, even from multipart messages
-        let clipboardText = "";
-        try {
-            const raw = JSON.parse(messageDiv.dataset.originalContent || '""');
-            if (Array.isArray(raw)) {
-                clipboardText = raw.filter(p => p.type === 'text').map(p => p.text).join('\n');
+
+        messageDiv.appendChild(avatarDiv);
+
+        const bodyDiv = document.createElement('div');
+        bodyDiv.className = 'message-body';
+        messageDiv.appendChild(bodyDiv);
+
+        messageWrapper.appendChild(messageDiv);
+
+        const insertionControls = document.getElementById('message-insertion-controls');
+        if (insertionControls) {
+            dom.chatMessagesContainer.insertBefore(messageWrapper, insertionControls);
+        } else {
+            dom.chatMessagesContainer.appendChild(messageWrapper);
+        }
+
+        let isWaiting = false;
+        // Centralized Stream Registration: Ensure we always capture incoming text tokens
+        const isEmptyContent = !rawContent || (typeof rawContent === 'string' && rawContent.trim() === '');
+        if (role === 'assistant' && isEmptyContent) {
+            state.streamingMessages[id] = { buffer: '', timer: null };
+            isWaiting = true;
+        }
+
+        // Delegate to specialized renderer depending on active discussion layout and mode
+        if (role !== 'assistant') {
+            assistant.renderAssistantMessage(id, rawContent, isFinal);
+        } else {
+            if (isAgent) {
+                agent.renderAgentMessage(id, rawContent, isFinal);
+            } else if (isDynamic) {
+                dynamic.renderDynamicMessage(id, rawContent, isFinal);
             } else {
-                clipboardText = String(raw);
+                assistant.renderAssistantMessage(id, rawContent, isFinal);
             }
-        } catch (e) {
-            clipboardText = textForClipboard;
         }
 
-        vscode.postMessage({ command: 'copyToClipboard', text: clipboardText });
-
-        const iconEl = copyBtn.querySelector('.codicon');
-        if(iconEl) {
-            iconEl.classList.replace('codicon-copy', 'codicon-check');
-            setTimeout(() => { if (iconEl) iconEl.classList.replace('codicon-check', 'codicon-copy'); }, 2000);
-        }
-    }, 'msg-action-btn', 'Copy Message');
-    actions.appendChild(copyBtn);
-
-    // Only add megaphone if TTS is enabled
-    if (state.capabilities?.enableTTS) {
-        const speakBtn = createButton('', 'codicon-megaphone', (e) => {
-            const textToRead = sanitizeForTTS(textForClipboard);
-            if (typeof (window as any).halSpeak === 'function') {
-                const btn = (e.currentTarget as HTMLElement);
-                (window as any).halSpeak(textToRead, true, btn);
+        if (isWaiting && role === 'assistant') {
+            const contentDiv = messageDiv.querySelector('.message-content');
+            if (contentDiv) {
+                contentDiv.innerHTML = `<div class="waiting-animation"><div class="lollms-spinner"></div><span class="thinking-text">Thinking...</span></div>`;
             }
-        }, 'msg-action-btn', 'Read Explanation');
-        actions.appendChild(speakBtn);
-    }
-
-    if (role === 'assistant') {
-        actions.appendChild(createButton('', 'codicon-play', () => {
-            vscode.postMessage({ command: 'runAndMonitorApp', messageId: id });
-        }, 'msg-action-btn run-monitor-btn', 'Run App & Monitor Logs'));
-        actions.appendChild(createButton('', 'codicon-save', () => vscode.postMessage({ command: 'saveMessageAsPrompt', content: textForClipboard }), 'msg-action-btn', 'Save as Prompt'));
-        actions.appendChild(createButton('', 'codicon-book', () => vscode.postMessage({ command: 'requestLog' }), 'msg-action-btn', 'Show Debug Log'));
-    }
-
-    actions.appendChild(createButton('', 'codicon-trash', () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: id }), 'msg-action-btn', 'Delete Message'));
-
-    // CRITICAL: Inject HUD as the ABSOLUTE FIRST child of the body.
-    // In block layout, the first child being sticky+floated will correctly track the viewport.
-    bodyDiv.innerHTML = ''; // Clear for fresh injection
-    bodyDiv.appendChild(actions);
-
-    const isAgent = state.capabilities?.agentMode && role === 'assistant';
-    if (isAgent) {
-        messageDiv.classList.add('agent-mode-message');
-    }
-
-    const headerDiv = document.createElement('div');
-    headerDiv.className = 'message-header';
-    let roleDisplay = 'System';
-    if (role === 'user') roleDisplay = 'You';
-    else if (role === 'assistant') {
-        roleDisplay = isAgent ? '🛰️ Leader Architect' : (personalityName || message.personalityName || 'Lollms');
-    }
-    
-    headerDiv.innerHTML = `<span class="role-name">${roleDisplay}</span>`;
-    bodyDiv.appendChild(headerDiv);
-
-    const contentDiv = document.createElement('div');
-    contentDiv.className = 'message-content';
-    contentDiv.id = `content-${id}`;
-    
-    let isWaiting = false;
-    if (role === 'assistant' && !rawContent && startTime) {
-        contentDiv.innerHTML = `<div class="waiting-animation"><div class="lollms-spinner"></div><span class="thinking-text">Thinking...</span></div>`;
-        state.streamingMessages[id] = { buffer: '', timer: null };
-        isWaiting = true;
-    }
-    
-    bodyDiv.appendChild(contentDiv);
-
-    messageWrapper.appendChild(messageDiv);
-    
-    const insertionControls = document.getElementById('message-insertion-controls');
-    if (insertionControls) {
-        dom.chatMessagesContainer.insertBefore(messageWrapper, insertionControls);
-    } else {
-        dom.chatMessagesContainer.appendChild(messageWrapper);
-    }
-
-    if (!isWaiting) {
-        renderMessageContent(id, rawContent, isFinal);
-    }
+        }
+    });
+    });
+    });
 }
 
 const renderDataBriefing = (briefing: string) => {
@@ -2553,7 +2496,7 @@ const renderDataBriefing = (briefing: string) => {
     } catch { return raw; }
 };
 
-export function updateContext(contextText?: string, files?: string[], skills?: any[], tools?: any[], diagrams?: any[], briefing?: string) {
+export function updateContext(contextText?: string, files?: string[], skills?: any[], tools?: any[], diagrams?: any[], briefing?: string, selections?: string[]) {
     if(!dom.contextContainer) return;
 
     // 0. CAPTURE CURRENT EXPANSION STATE
@@ -2564,7 +2507,7 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     });
 
     // 1. MERGE WITH EXISTING STATE (Partial updates)
-    const prev = state.lastContextData || { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "" };
+    const prev = state.lastContextData || { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "", selections: [] };
 
     state.lastContextData = {
         context: contextText !== undefined ? contextText : prev.context,
@@ -2572,12 +2515,20 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
         skills: skills !== undefined ? skills : prev.skills,
         tools: tools !== undefined ? tools : prev.tools,
         diagrams: diagrams !== undefined ? diagrams : prev.diagrams,
-        briefing: briefing !== undefined ? briefing : prev.briefing
+        briefing: briefing !== undefined ? briefing : prev.briefing,
+        selections: selections !== undefined ? selections : (prev as any).selections
     };
 
     const finalFiles = state.lastContextData.files;
     const finalTools = state.lastContextData.tools;
     const finalSkills = state.lastContextData.skills;
+    const finalSelections = (state.lastContextData as any).selections || [];
+
+    const hasMetadata = (finalFiles && finalFiles.length > 0) || 
+                        (finalTools && finalTools.length > 0) || 
+                        (finalSkills && finalSkills.length > 0) || 
+                        (diagrams && diagrams.length > 0) || 
+                        (briefing && briefing.trim().length > 0);
 
     // Detection for Welcome Message integration
     const isNewDiscussion = !document.querySelector('.message-wrapper:not(.context-message)');
@@ -2752,6 +2703,12 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                         <span class="role-name">Intelligence Context</span>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center;">
+                        ${finalSelections.length > 0 ? `
+                        <select id="hud-selections-dropdown" style="background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); font-size: 11px; padding: 2px 4px; border-radius: 4px; cursor: pointer; height: 22px; max-width: 140px;">
+                            <option value="">-- Switch Selection --</option>
+                            ${finalSelections.map((s: string) => `<option value="${s}">${s.replace('.lollms-ctx', '')}</option>`).join('')}
+                        </select>
+                        ` : ''}
                         <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
                         <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
                         <button id="load-context-btn" class="icon-btn" title="Load Context (Replace Selection)" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>

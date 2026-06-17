@@ -45,7 +45,8 @@ export interface MemoryEntry {
     scope: 'local' | 'global';
     origin?: 'architect' | 'agent' | 'user'; // Track who created the engram
     predicates?: MemoryPredicate[]; // Upgraded Graph Relationship links
-    
+    lastAudited?: number; // Timestamp of last successful AI semantic audit
+
     // --- MULTIMODAL RESEARCH METADATA ---
     metadata?: {
         sourceDocId?: string;  // ID of s:Document parent
@@ -198,13 +199,13 @@ export class ProjectMemoryManager {
         }
 
         if (projectEntries.length === 0) {
-            projectEntries = this.getBootstrapOntology();
             try {
                 const dir = vscode.Uri.joinPath(projectMemoryPath, '..');
                 await vscode.workspace.fs.createDirectory(dir);
-                await vscode.workspace.fs.writeFile(projectMemoryPath, Buffer.from(JSON.stringify(projectEntries, null, 2), 'utf8'));
+                // Initialize with a clean, empty ABox instance array
+                await vscode.workspace.fs.writeFile(projectMemoryPath, Buffer.from('[]', 'utf8'));
             } catch (e) {
-                Logger.error("Failed to bootstrap default ontology", e);
+                Logger.error("Failed to initialize empty memory vault", e);
             }
         }
 
@@ -220,19 +221,13 @@ export class ProjectMemoryManager {
 
         let combined = [...projectEntries, ...globalEntries];
 
-        // --- 🛡️ RESILIENT PURGE: ONLY CLEAN AUTOMATED SKILLS, MEANINGLESS TAGS & OLD ONTOLOGY NODES ---
+        // --- 🛡️ RESILIENT PURGE: ONLY CLEAN AUTOMATED SKILLS, MEANINGLESS TAGS & ALL ONTOLOGY NODES ---
         const originalLength = combined.length;
-        const oldConceptTemplates = [
-            'concept_template_file',
-            'concept_template_class',
-            'concept_template_function',
-            'concept_template_method',
-            'concept_template_library'
-        ];
         combined = combined.filter(m => {
             const id = String(m.id || '');
-            if (oldConceptTemplates.includes(id)) {
-                return false; // Purge old code ontology nodes from the memory graph
+            // Strictly exclude all schema concept templates from the physical ABox instance context
+            if (id.startsWith('concept_template_') || id.startsWith('schema_triplet_')) {
+                return false; 
             }
             if (id.startsWith('tag_')) {
                 const tagLabel = id.substring(4);
@@ -240,6 +235,29 @@ export class ProjectMemoryManager {
             }
             return !id.startsWith('skill_') && !id.startsWith('cat_');
         });
+
+        // --- 🧹 ORPHAN TAG PURGE (RESILIENT) ---
+        // Identify all tag IDs that are actually referenced by at least one other active node
+        const referencedTagIds = new Set<string>();
+        combined.forEach(m => {
+            if (m.predicates && Array.isArray(m.predicates)) {
+                m.predicates.forEach(p => {
+                    if (p.targetId && p.targetId.toLowerCase().startsWith('tag_')) {
+                        referencedTagIds.add(p.targetId.toLowerCase());
+                    }
+                });
+            }
+        });
+
+        // Filter out any tag node that is not referenced by anything (case-insensitive check)
+        combined = combined.filter(m => {
+            const lowerId = String(m.id || '').toLowerCase();
+            if (lowerId.startsWith('tag_') || m.category === 'tag') {
+                return referencedTagIds.has(lowerId);
+            }
+            return true;
+        });
+
 
         // Self-healing: Strip purely numeric/meaningless/color tags and relations from old memory storage
         combined.forEach(m => {
@@ -586,6 +604,17 @@ export class ProjectMemoryManager {
         // Deep copy core engrams to ensure the dynamic projection has zero write-back leakage
         const projected = JSON.parse(JSON.stringify(engrams));
 
+        // --- DYNAMIC TBOX ONTOLOGY PROJECTION ---
+        // Project the static TBox concepts (schema templates) dynamically so they appear 
+        // in the Ontology View but are never written or saved to the physical project memory file.
+        const ontologyConcepts = this.getBootstrapOntology();
+        ontologyConcepts.forEach(c => {
+            const exists = projected.some((x: any) => x.id === c.id);
+            if (!exists) {
+                projected.push(c);
+            }
+        });
+
         // --- SELF-HEALING TAG PROJECTION ---
         // Scan all engrams for has_tag predicates and project any missing tag nodes dynamically
         const uniqueTags = new Set<string>();
@@ -616,9 +645,38 @@ export class ProjectMemoryManager {
                 importance: 15,
                 lastUsed: Date.now(),
                 category: 'tag',
+                tier: 2,
                 scope: 'local',
                 predicates: []
             });
+        });
+
+        // --- SELF-HEALING CATEGORY PROJECTION ---
+        // Scan all engrams and project missing category nodes dynamically to resolve parent/folder links
+        const uniqueCategories = new Set<string>();
+        projected.forEach((m: any) => {
+            if (m.category && m.category !== 'tag' && m.category !== 'chunk' && m.category !== 'document' && m.category !== 'concept') {
+                uniqueCategories.add(m.category);
+            }
+        });
+
+        uniqueCategories.forEach(cat => {
+            const catNodeId = `cat_${cat}`;
+            const exists = projected.some((x: any) => x.id === catNodeId);
+            if (!exists) {
+                projected.push({
+                    id: catNodeId,
+                    title: cat.toUpperCase(),
+                    content: `Category folder for ${cat} engrams.`,
+                    timestamp: Date.now(),
+                    importance: 15,
+                    lastUsed: Date.now(),
+                    category: 'concept', // Style as a TBox concept node
+                    tier: 2,
+                    scope: 'local',
+                    predicates: []
+                });
+            }
         });
 
         if (!skillsManager) return projected;
@@ -854,12 +912,6 @@ export class ProjectMemoryManager {
     /**
      * THE DREAM CYCLE: Reorganizes and consolidates neural connections.
      * 1. Decay: Reduces importance of all engrams.
-     * 2. Consolidation: Refreshed engrams stay in T1, others move to T2.
-     * 3. Forgetting: Importance 0 is deleted.
-     */
-    /**
-     * THE DREAM CYCLE: Reorganizes and consolidates neural connections.
-     * 1. Decay: Reduces importance of all engrams.
      * 2. Semantic Clean: Detects and prunes useless process noise.
      * 3. Auto-Tag: Generates connecting hashtags for orphaned engrams.
      * 4. Consolidation: Refreshed engrams stay in T1, others move to T2.
@@ -887,65 +939,13 @@ export class ProjectMemoryManager {
             }
         });
 
-        // --- 📊 DYNAMIC TBox SCHEMA EXTRACTION ---
-        // Assemble the user's active concept categories and relationship verbs from the graph
-        const activeConcepts = new Set<string>(['engram', 'tag', 'document', 'rule', 'skill']);
-        const activeRelationships = new Map<string, { verb: string, source: string, target: string }>();
-
-        const addRel = (verb: string, source: string, target: string) => {
-            activeRelationships.set(`${source}-${verb}-${target}`, { verb, source, target });
-        };
-        addRel('has_tag', 's:Engram', 's:Tag');
-        addRel('part_of', 's:Engram', 's:Document');
-        addRel('enforces', 's:Engram', 's:Rule');
-        addRel('enforces', 's:Skill', 's:Rule');
-        addRel('supersedes', 's:Rule', 's:Rule');
-        addRel('contains', 's:Document', 's:Engram');
-
-        engrams.forEach(e => {
-            const id = String(e.id || '');
-            if (id.startsWith('concept_template_')) {
-                const conceptName = id.replace('concept_template_', '');
-                activeConcepts.add(conceptName);
-
-                if (e.predicates) {
-                    e.predicates.forEach((p: any) => {
-                        const targetConcept = p.targetId.startsWith('concept_template_')
-                            ? p.targetId.replace('concept_template_', '')
-                            : p.targetId.replace('tag_', 'tag');
-
-                        const srcLabel = `s:${conceptName.charAt(0).toUpperCase() + conceptName.slice(1)}`;
-                        const trgLabel = `s:${targetConcept.charAt(0).toUpperCase() + targetConcept.slice(1)}`;
-                        addRel(p.verb, srcLabel, trgLabel);
-                    });
-                }
-            } else {
-                if (e.category && e.category !== 'tag' && e.category !== 'chunk' && e.category !== 'document') {
-                    activeConcepts.add(e.category);
-                }
-                if (e.predicates) {
-                    e.predicates.forEach((p: any) => {
-                        const targetNode = engrams.find(x => x.id === p.targetId);
-                        const targetCat = targetNode?.category || 'general';
-
-                        const srcLabel = `s:${(e.category || 'general').charAt(0).toUpperCase() + (e.category || 'general').slice(1)}`;
-                        const trgLabel = `s:${targetCat.charAt(0).toUpperCase() + targetCat.slice(1)}`;
-                        addRel(p.verb, srcLabel, trgLabel);
-                    });
-                }
-            }
-        });
-
-        const conceptsList = Array.from(activeConcepts).map(c => `- \`s:${c.charAt(0).toUpperCase() + c.slice(1)}\``).join('\n');
-        const relationshipsList = Array.from(activeRelationships.values()).map(r => `- \`s:${r.verb}\` (Subject: \`${r.source}\` | Object: \`${r.target}\`)`).join('\n');
-
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const lollms = (this as any).lollmsAPI || this.context.extension.exports?.lollmsAPI;
 
         // Select custom dream model or fall back to main model
         const dreamModel = config.get<string>('dreamModelName') || undefined;
 
-        let decayed = 0, consolidated = 0, forgotten = 0, fused = 0;
+        let decayed = 0, consolidated = 0, forgotten = 0, fused = 0, audited = 0;
         const logs: string[] = [];
         const updatedEngrams: MemoryEntry[] = [];
 
@@ -970,6 +970,16 @@ export class ProjectMemoryManager {
 
             const newImp = Math.max(0, oldImp - decayPenalty);
 
+            // Determine if this engram is going to be audited in Phase 2
+            const wordsCount = e.title ? e.title.split(/\s+/).length : 0;
+            const isTooLong = wordsCount > 4 || e.title.length > 25;
+            const hasTagLink = e.predicates && e.predicates.some(p => p.verb === 'has_tag');
+            const needsAudit = e.category !== 'tag' && (!hasTagLink || isTooLong || e.title.toLowerCase().endsWith('have') || e.title.includes('('));
+
+            // Skip auditing if it was successfully audited within the last 7 days (prevents redundant API calls)
+            const wasAuditedRecently = e.lastAudited && (Date.now() - e.lastAudited < 7 * 24 * 60 * 60 * 1000);
+            const willBeAudited = needsAudit && !wasAuditedRecently && lollms;
+
             if (onProgress) {
                 if (newImp === 0) {
                     onProgress({ type: 'forget', id: e.id, title: e.title });
@@ -977,11 +987,12 @@ export class ProjectMemoryManager {
                 } else if (newImp < this.TIER_THRESHOLD && oldImp >= this.TIER_THRESHOLD) {
                     onProgress({ type: 'archive', id: e.id, title: e.title, value: newImp });
                     consolidated++;
-                } else {
+                } else if (!willBeAudited) {
+                    // Only log as decayed if it is NOT going to be actively refined/audited by the AI this cycle
                     onProgress({ type: 'decay', id: e.id, title: e.title, value: newImp });
                     decayed++;
                 }
-                await new Promise(r => setTimeout(r, 120));
+                await new Promise(r => setTimeout(r, 60)); // Faster step timing
             }
 
             if (newImp > 0) {
@@ -1004,7 +1015,10 @@ export class ProjectMemoryManager {
                 const isTooLong = wordsCount > 4 || e.title.length > 25;
                 const needsAudit = !hasTagLink || isTooLong || e.title.toLowerCase().endsWith('have') || e.title.includes('(');
 
-                if (needsAudit) {
+                // Prevent redundant auditing: Skip if audited recently
+                const wasAuditedRecently = e.lastAudited && (Date.now() - e.lastAudited < 7 * 24 * 60 * 60 * 1000);
+
+                if (needsAudit && !wasAuditedRecently) {
                     if (onProgress) {
                         onProgress({ type: 'decay', id: e.id, title: `Auditing engram: "${e.title}"...` });
                     }
@@ -1066,6 +1080,10 @@ Provide your audit verdict based on the TBox schema and sanitization rules.`;
                             forgotten++;
                             if (onProgress) onProgress({ type: 'forget', id: e.id, title: `Pruned noise: "${e.title}"` });
                         } else if (verdict.action === 'keep') {
+                            // Tag as successfully audited to prevent re-auditing on every cycle
+                            e.lastAudited = Date.now();
+                            audited++;
+
                             // Update title if improved title returned
                             if (verdict.new_title && verdict.new_title.trim().length > 0) {
                                 e.title = verdict.new_title.trim();
@@ -1119,7 +1137,7 @@ Provide your audit verdict based on the TBox schema and sanitization rules.`;
                                             });
                                         }
                                     });
-                                    if (onProgress) onProgress({ type: 'decay', id: e.id, title: `Wired tags to "${e.title}": [${validTags.join(', ')}]` });
+                                    if (onProgress) onProgress({ type: 'decay', id: e.id, title: `Audited & Wired tags: "${e.title}" [${validTags.join(', ')}]` });
                                 }
                             }
                         }
@@ -1179,10 +1197,33 @@ Provide your audit verdict based on the TBox schema and sanitization rules.`;
             }
         }
 
-        // Save back
-        await this.saveEngrams(updatedEngrams);
+        // --- ORPHANED TAG PURGER ---
+        // Find all tags actually referenced by active engrams in the final array
+        const referencedTagIdsInDream = new Set<string>();
+        updatedEngrams.forEach(m => {
+            if (m.predicates && Array.isArray(m.predicates)) {
+                m.predicates.forEach(p => {
+                    if (p.verb === 'has_tag' && p.targetId.startsWith('tag_')) {
+                        referencedTagIdsInDream.add(p.targetId.toLowerCase());
+                    }
+                });
+            }
+        });
 
-        const summary = { decayed, consolidated, forgotten, fused, total: updatedEngrams.length };
+        // Filter out any tag node that is completely orphaned (no incoming has_tag relationships)
+        const finalCleanedEngrams = updatedEngrams.filter(m => {
+            const lowerId = String(m.id || '').toLowerCase();
+            if (lowerId.startsWith('tag_') || m.category === 'tag') {
+                return referencedTagIdsInDream.has(lowerId);
+            }
+            return true;
+        });
+
+        // Save back and instantly update active in-memory cache
+        await this.saveEngrams(finalCleanedEngrams);
+        this._cache = finalCleanedEngrams;
+
+        const summary = { decayed, consolidated, forgotten, fused, audited, total: finalCleanedEngrams.length };
         if (onProgress) onProgress({ type: 'summary', data: summary });
 
         await this.context.workspaceState.update('lollms_dream_log', {

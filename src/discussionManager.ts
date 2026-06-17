@@ -142,6 +142,7 @@ export class DiscussionManager {
             herdParticipantModels: [],
             herdCriticEnabled: false,
             agentMode: false,
+            dynamicMode: false, // Default off
             debugMode: false,
             verifierMode: false,
             testMode: config.get<boolean>('testMode') ?? false,
@@ -169,6 +170,7 @@ export class DiscussionManager {
             forceFullCodePath: false,
             guiState: {
                 agentBadge: true,
+                dynamicBadge: true, // Visible in HUD
                 debugBadge: true,
                 autoContextBadge: true,
                 herdBadge: true,

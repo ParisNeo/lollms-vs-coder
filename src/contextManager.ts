@@ -761,7 +761,14 @@ export class ContextManager {
             }
           }
 
-          if (fileContent.length < 500000) {
+          if (fileContent.length < 200000) { // Lower limit for caching individual files to 200KB
+            // --- LRU CACHE EVICTION ---
+            if (this._fileContentCache.size >= 30) {
+              const oldestKey = this._fileContentCache.keys().next().value;
+              if (oldestKey !== undefined) {
+                this._fileContentCache.delete(oldestKey);
+              }
+            }
             this._fileContentCache.set(cacheKey, { content: fileContent, state: contextState });
           }
 

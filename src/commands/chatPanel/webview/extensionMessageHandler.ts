@@ -417,8 +417,37 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds || 2;
 
                     const guiState = caps.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
-                    
+
                     if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
+                    if (dom.dynamicModeCheckbox) dom.dynamicModeCheckbox.checked = !!caps.dynamicMode;
+
+                    const isAgent = caps.agentMode === true;
+                    const isDynamic = caps.dynamicMode === true && !isAgent;
+                    const isAssistant = !isAgent && !isDynamic;
+
+                    const assistRadio = document.getElementById('modeAssistantRadio') as HTMLInputElement;
+                    const dynRadio = document.getElementById('modeDynamicRadio') as HTMLInputElement;
+                    const agRadio = document.getElementById('modeAgentRadio') as HTMLInputElement;
+
+                    if (assistRadio) assistRadio.checked = isAssistant;
+                    if (dynRadio) dynRadio.checked = isDynamic;
+                    if (agRadio) agRadio.checked = isAgent;
+
+                    // Sync separate protocol checkboxes
+                    const debugCheck = document.getElementById('protoDebugCheckbox') as HTMLInputElement;
+                    const verifierCheck = document.getElementById('protoVerifierCheckbox') as HTMLInputElement;
+                    const testCheck = document.getElementById('protoTestCheckbox') as HTMLInputElement;
+                    const docsCheck = document.getElementById('protoDocsCheckbox') as HTMLInputElement;
+                    const gitCheck = document.getElementById('protoGitCheckbox') as HTMLInputElement;
+                    const herdCheck = document.getElementById('protoHerdCheckbox') as HTMLInputElement;
+
+                    if (debugCheck) debugCheck.checked = !!caps.debugMode;
+                    if (verifierCheck) verifierCheck.checked = !!caps.verifierMode;
+                    if (testCheck) testCheck.checked = !!caps.testMode;
+                    if (docsCheck) docsCheck.checked = !!caps.documentationMode;
+                    if (gitCheck) gitCheck.checked = !!caps.gitAutoWorkflow;
+                    if (herdCheck) herdCheck.checked = !!caps.herdMode;
+
                     if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
 
                     if (dom.tempSlider) {
@@ -1307,7 +1336,6 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         // Update specific Apply button for this block
                         const mainBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
                         if (mainBtn) restoreBtn(mainBtn);
-
                         if (message.hunkIndex !== undefined) {
                             // TAB SYNC: Find the specific tab and pane
                             const tab = blockEl.querySelector(`.hunk-tab-${message.hunkIndex}`) as HTMLElement;
@@ -1334,7 +1362,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             });
                         }
 
-                        // RE-SYNC main button state for the entire message
+                        // Re-sync main button state for the entire message
                         checkAndSyncMessageAppliedState(message.messageId);
 
 
@@ -1395,168 +1423,6 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     
                     }
                     
-
-                    // 2. Update the "Apply All" list row if it exists
-                    const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
-                    const row = wrapper.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`) as HTMLElement;
-
-                    if (row && message.success) {
-                        row.classList.add('status-success');
-                        const iconEl = row.querySelector('.status-icon');
-                        const actionsEl = row.querySelector('.row-actions') as HTMLElement;
-
-                        // Clean up temporary "Writing to disk" status label
-                        const pathEl = row.querySelector('.row-path');
-                        if (pathEl) {
-                            const badgeSpan = pathEl.querySelector('.status-label-inline');
-                            if (badgeSpan) badgeSpan.remove();
-                        }
-
-                        if (message.alreadyApplied) {
-                            row.style.opacity = '0.7';
-                            if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check-all" style="color:var(--vscode-charts-green)" title="Already applied to disk"></span>';
-                        } else {
-                            row.style.opacity = '1';
-                            if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)" title="Applied successfully"></span>';
-                        }
-
-                        if (actionsEl) {
-                            actionsEl.style.display = 'flex';
-                            actionsEl.innerHTML = `
-                                <button class="icon-btn view-diff-row-btn" title="View Changes (Diff)" style="height:20px; width:20px;"><i class="codicon codicon-diff"></i></button>
-                                <button class="code-action-btn secondary-btn post-apply-inspect-btn" title="Guardian: Audit this file for indentation/imports" style="height:20px; font-size:9px; padding: 0 6px;">Inspect</button>
-                            `;
-                            const diffBtn = actionsEl.querySelector('.view-diff-row-btn') as HTMLElement;
-                            diffBtn.onclick = (e) => {
-                                e.stopPropagation();
-                                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.showDiff', params: message.filePath }});
-                            };
-
-                            const inspectBtn = actionsEl.querySelector('.post-apply-inspect-btn') as HTMLElement;
-                            inspectBtn.onclick = (e) => {
-                                e.stopPropagation();
-                                vscode.postMessage({ 
-                                    command: 'inspectPatch', 
-                                    filePath: message.filePath, 
-                                    content: "", // Content will be read from disk
-                                    messageId: message.messageId,
-                                    blockIndex: message.blockIndex,
-                                    type: 'replace',
-                                    isApplied: true
-                                });
-                            };
-                        }
-                    } else if (row) {
-                        row.classList.add('status-failed');
-                        const iconEl = row.querySelector('.status-icon');
-                        const actionsEl = row.querySelector('.row-actions') as HTMLElement;
-
-                        // Clean up temporary "Writing to disk" status label
-                        const pathEl = row.querySelector('.row-path');
-                        if (pathEl) {
-                            const badgeSpan = pathEl.querySelector('.status-label-inline');
-                            if (badgeSpan) badgeSpan.remove();
-                        }
-
-                        if (iconEl) {
-                            iconEl.innerHTML = '<span class="codicon codicon-close" style="color:var(--vscode-charts-red)" title="' + (message.error || 'Failed') + '"></span>';
-                        }
-
-                        // Append the clean, highly visible failure reason right next to the file path label in the list
-                        if (pathEl && message.error) {
-                            let shortReason = message.error;
-                            if (shortReason.includes("Blocked by Sovereign Shield") || shortReason.includes("Sovereign Shield")) {
-                                shortReason = "Sovereign Shield: Prevented Code Loss";
-                            } else if (shortReason.includes("SEARCH block was not found") || shortReason.includes("Matching failed")) {
-                                shortReason = "Patch match mismatch";
-                            } else {
-                                shortReason = "Failed to apply";
-                            }
-                            pathEl.innerHTML = `${pathEl.textContent} <span class="failure-badge-inline" style="color:var(--vscode-errorForeground); font-size:10px; margin-left:8px; opacity:0.85; font-weight:bold;">(${shortReason})</span>`;
-                        }
-
-                        if (actionsEl) {
-                            actionsEl.style.display = 'flex';
-                            actionsEl.innerHTML = `
-                                <div class="failure-controls">
-                                    <button class="code-action-btn apply-btn ai-fix-btn" style="height:20px; font-size:9px;" title="Ask AI to fix indentation/matching">AI Repair</button>
-                                    <button class="code-action-btn secondary-button manual-fix-btn" style="height:20px; font-size:9px;" title="View raw block for manual paste">Manual</button>
-                                    <button class="icon-btn ignore-fix-btn" style="height:20px; width:20px;" title="Skip this change"><i class="codicon codicon-circle-slash"></i></button>
-                                </div>
-                            `;
-
-                            const aiBtn = actionsEl.querySelector('.ai-fix-btn') as HTMLButtonElement;
-                            const manualBtn = actionsEl.querySelector('.manual-fix-btn') as HTMLButtonElement;
-                            const ignoreBtn = actionsEl.querySelector('.ignore-fix-btn') as HTMLButtonElement;
-
-                            // AUTOMATIC REDIRECTION: If any apply fails, pop the raw code modal immediately.
-                            // We trigger this for both single hunk failures and full block failures.
-                            if (!message.repaired && !message.alreadyApplied) {
-                                // We call the UI function directly instead of clicking the button to ensure reliability
-                                const targetBlock = document.getElementById(`block-${message.messageId}-${message.blockIndex}`);
-                                if (targetBlock) {
-                                    const codeText = (targetBlock as any).dataset.rawCode || "";
-                                    import('./ui.js').then(ui => {
-                                        ui.openRawCodeModal(
-                                            message.messageId, 
-                                            message.blockIndex, 
-                                            message.filePath, 
-                                            codeText, 
-                                            message.hunkIndex !== undefined ? message.hunkIndex : 0
-                                        );
-                                    });
-                                }
-                            }
-
-                            aiBtn.onclick = (e) => {
-                                e.stopPropagation();
-                                aiBtn.disabled = true;
-                                aiBtn.innerHTML = '<div class="spinner"></div> Repairing...';
-                                vscode.postMessage({ 
-                                    command: 'replaceCode', 
-                                    filePath: message.filePath, 
-                                    content: "REPAIR_REQUESTED", 
-                                    messageId: message.messageId,
-                                    blockIndex: message.blockIndex,
-                                    hunkIndex: message.hunkIndex,
-                                    options: { silent: true }
-                                });
-                            };
-
-                            manualBtn.onclick = (e) => {
-                                e.stopPropagation();
-                                // Trigger Raw Modal for this specific hunk
-                                const targetBlock = document.getElementById(`block-${message.messageId}-${message.blockIndex}`);
-                                if (targetBlock) {
-                                    const codeText = (targetBlock as any).dataset.rawCode || "";
-                                    const aiderRegex = /<<<<<<< SEARCH\\r?\\n([\\s\\S]*?)\\r?\\n=======\\r?\\n([\\s\\S]*?)\\r?\\n>>>>>>> REPLACE/g;
-                                    const matches = [...codeText.matchAll(aiderRegex)];
-                                    const hunkContent = (message.hunkIndex !== undefined && matches[message.hunkIndex]) 
-                                        ? matches[message.hunkIndex][0] 
-                                        : codeText;
-
-                                    if (dom.rawCodeDisplay) {
-                                        dom.rawCodeFilename.textContent = message.filePath;
-                                        document.getElementById('raw-hunk-id')!.textContent = message.hunkIndex !== undefined ? `HUNK ${message.hunkIndex + 1}` : 'FULL';
-                                        dom.rawCodeDisplay.textContent = hunkContent;
-                                        dom.rawCodeDisplay.dataset.messageId = message.messageId;
-                                        dom.rawCodeDisplay.dataset.blockIndex = String(message.blockIndex);
-                                        dom.rawCodeDisplay.dataset.hunkIndex = message.hunkIndex !== undefined ? String(message.hunkIndex) : "";
-                                        dom.rawCodeModal.classList.add('visible');
-                                    }
-                                }
-                            };
-
-                            ignoreBtn.onclick = (e) => {
-                                e.stopPropagation();
-                                row.style.background = 'transparent';
-                                row.style.opacity = '0.4';
-                                iconEl!.innerHTML = '<span class="codicon codicon-circle-slash"></span>';
-                                actionsEl.style.display = 'none';
-                            };
-                        }
-                    }
-
 
                     // Update Progress Bar on complete
                     if (message.totalCount > 0) {

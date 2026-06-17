@@ -667,6 +667,20 @@ export function initEventHandlers() {
 
     bindClick(dom.setEntryPointButton, 'setEntryPoint');
     bindClick(dom.executeButton, 'executeProject');
+
+    // Debug Project Entry Point (Auto-Audit) Button
+    const debugProjectBtn = document.getElementById('debugProjectButton');
+    if (debugProjectBtn) {
+        debugProjectBtn.onclick = () => {
+            const activeMsgId = 'app_monitor_run_' + Date.now();
+            vscode.postMessage({ 
+                command: 'runAndMonitorApp', 
+                messageId: activeMsgId 
+            });
+            dom.moreActionsMenu.classList.remove('visible');
+        };
+    }
+
     bindClick(dom.debugRestartButton, 'debugRestart');
     if (dom.showDebugLogButton) dom.showDebugLogButton.addEventListener('click', () => {
         vscode.postMessage({ command: 'requestLog' });
@@ -695,18 +709,40 @@ export function initEventHandlers() {
         if (el) el.addEventListener('change', handler);
     };
 
-    bindChange(dom.agentModeCheckbox, (e) => {
-        vscode.postMessage({ command: 'toggleAgentMode' });
+    // Mutually Exclusive Modes (Radios)
+    const handleModeRadioChange = (e: Event) => {
+        const selected = (e.target as HTMLInputElement).value;
+        const partial: any = { agentMode: false, dynamicMode: false };
+        if (selected === 'dynamic') partial.dynamicMode = true;
+        if (selected === 'agent') partial.agentMode = true;
+
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial });
+    };
+
+    ['modeAssistantRadio', 'modeDynamicRadio', 'modeAgentRadio'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', handleModeRadioChange);
     });
-    bindChange(dom.herdModeCheckbox, (e) => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: (e.target as HTMLInputElement).checked } });
-    });
-    bindChange(dom.testModeCheckbox, (e) => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { testMode: (e.target as HTMLInputElement).checked } });
-    });
-    bindChange(dom.docsModeCheckbox, (e) => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { documentationMode: (e.target as HTMLInputElement).checked } });
-    });
+
+    // Auxiliary Protocols (Checkboxes)
+    const bindProtoCheck = (id: string, capabilityKey: string) => {
+        const el = document.getElementById(id) as HTMLInputElement;
+        if (el) {
+            el.addEventListener('change', () => {
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial: { [capabilityKey]: el.checked }
+                });
+            });
+        }
+    };
+
+    bindProtoCheck('protoDebugCheckbox', 'debugMode');
+    bindProtoCheck('protoVerifierCheckbox', 'verifierMode');
+    bindProtoCheck('protoTestCheckbox', 'testMode');
+    bindProtoCheck('protoDocsCheckbox', 'documentationMode');
+    bindProtoCheck('protoGitCheckbox', 'gitAutoWorkflow');
+    bindProtoCheck('protoHerdCheckbox', 'herdMode');
 
     bindChange(dom.modelSelector, (e) => {
         const val = (e.target as HTMLSelectElement).value;
@@ -1468,14 +1504,26 @@ export function initEventHandlers() {
     });
     window.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+            // Check if focus is currently inside a CodeMirror editor or a message edit input
+            const activeEl = document.activeElement;
+            const isInsideEditor = activeEl && (
+                activeEl.classList.contains('cm-content') || 
+                activeEl.closest('.cm-editor') !== null ||
+                activeEl.closest('.edit-overlay') !== null
+            );
+
+            if (isInsideEditor) {
+                // Let the inline editor handle its own Ctrl+F search panel
+                return;
+            }
+
             if (dom.searchBar) {
+                e.preventDefault();
                 if (dom.searchBar.style.display === 'none' || !dom.searchBar.style.display) {
                     dom.searchBar.style.display = 'flex';
                     dom.searchInput.focus();
-                    e.preventDefault();
                 } else {
                     dom.searchInput.focus();
-                    e.preventDefault();
                 }
             }
         }
@@ -1524,6 +1572,27 @@ export function initEventHandlers() {
             if (icon) icon.classList.add('spin');
             vscode.postMessage({ command: 'calculateTokens' });
             setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1000);
+            return;
+        }
+
+        // --- HUD Selections Fast-Switch Dropdown ---
+        const selectionsDropdown = target.closest('#hud-selections-dropdown') as HTMLSelectElement;
+        if (selectionsDropdown) {
+            e.stopPropagation();
+            selectionsDropdown.onchange = () => {
+                const selectedVal = selectionsDropdown.value;
+                if (selectedVal) {
+                    vscode.postMessage({
+                        command: 'executeLollmsCommand',
+                        details: {
+                            command: 'lollms-vs-coder.loadContextSelectionDirect',
+                            params: selectedVal
+                        }
+                    });
+                    // Trigger instant token recount
+                    vscode.postMessage({ command: 'calculateTokens' });
+                }
+            };
             return;
         }
 

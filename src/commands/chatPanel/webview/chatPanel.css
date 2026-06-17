@@ -351,6 +351,16 @@ body.agent-mode-active #plan-resizer {
 .user-message .message-avatar { background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); font-size: 16px; }
 .assistant-message .message-avatar { background-image: var(--lollms-icon); background-color: transparent; border: none; }
 
+/* Mutually Exclusive Mode Icons inside Message Avatars */
+.message.assistant-mode-message .message-avatar { background-image: none !important; background-color: transparent; border: none; }
+.message.assistant-mode-message .message-avatar::before { content: '\eaab'; font-family: codicon; font-size: 18px; color: var(--vscode-charts-blue); }
+
+.message.dynamic-mode-message .message-avatar { background-image: none !important; background-color: transparent; border: none; }
+.message.dynamic-mode-message .message-avatar::before { content: '\eb14'; font-family: codicon; font-size: 18px; color: var(--vscode-charts-orange); }
+
+.message.agent-mode-message .message-avatar { background-image: none !important; background-color: transparent; border: none; }
+.message.agent-mode-message .message-avatar::before { content: '\ebe2'; font-family: codicon; font-size: 18px; color: var(--vscode-charts-red); }
+
 /* 🤖 TECHNICAL EVENT SOVEREIGNTY */
 .message.technical-event {
     background-color: transparent !important;
@@ -2534,13 +2544,28 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 }
 
 mark {
-    background-color: var(--vscode-editor-findMatchHighlightBackground);
-    color: inherit;
+    border-radius: 2px;
+    padding: 0 2px;
+    transition: background-color 0.2s, outline 0.2s;
+}
+
+/* 🎨 THEME ADAPTIVE SEARCH HIGHLIGHTING */
+body.vscode-dark mark {
+    background-color: #ffde37 !important; /* Golden Yellow */
+    color: #000000 !important;
+    font-weight: bold;
+}
+
+body.vscode-light mark {
+    background-color: #ff4747 !important; /* Coral Red */
+    color: #ffffff !important;
+    font-weight: bold;
 }
 
 mark.current-match {
-    background-color: var(--vscode-editor-findMatchBackground);
-    outline: 1px solid var(--vscode-editor-findMatchBorder);
+    outline: 2px solid var(--vscode-focusBorder) !important;
+    box-shadow: 0 0 8px var(--vscode-focusBorder);
+    z-index: 1000;
 }
 
 #search-results-count {

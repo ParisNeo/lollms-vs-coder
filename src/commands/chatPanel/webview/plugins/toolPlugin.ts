@@ -3,60 +3,39 @@ import DOMPurify from 'dompurify';
 
 export const toolPlugin: TagPlugin = {
     id: 'lollms_tool',
-    // Matches <lollms_tool name="tool_name" params='{"key": "val"}' />
-    tagPattern: /^[ \t]*<lollms_tool\s+([^>]*?)\s*\/>/gim,
+    // Matches the simplified <lollms_tool>JSON</lollms_tool> format
+    tagPattern: /^[ \t]*<lollms_tool>([\s\S]*?)<\/lollms_tool>/gim,
 
     render: (match, context) => {
-        const attrStr = match[1];
-        const attrs: any = {};
+        const rawJson = match[1].trim();
+        let parsedCall: any = {};
 
-        // --- ENHANCED ATTRIBUTE PARSER ---
-        // Handles both name="val" and name='{"json": "val"}' correctly
-        const attrRegex = /(\w+)\s*=\s*(?:'([^']*)'|"([^"]*)")/g;
-        let m;
-        while ((m = attrRegex.exec(attrStr)) !== null) {
-            const key = m[1].toLowerCase();
-            const val = m[2] !== undefined ? m[2] : m[3];
-            attrs[key] = val;
-        }
-
-        const toolName = attrs.name;
-        if (!toolName) return null;
-
-        let params: any = {};
-        let paramsStr = attrs.params;
-
-        // Failsafe JSON extractor using brace counting if attribute parser got truncated by single quotes
-        if (!paramsStr && attrStr.includes('params=')) {
-            const startIdx = attrStr.indexOf('params=');
-            const firstBrace = attrStr.indexOf('{', startIdx);
-            if (firstBrace !== -1) {
-                let braceCount = 0;
-                let endIdx = -1;
-                for (let i = firstBrace; i < attrStr.length; i++) {
-                    if (attrStr[i] === '{') braceCount++;
-                    else if (attrStr[i] === '}') {
-                        braceCount--;
-                        if (braceCount === 0) {
-                            endIdx = i;
-                            break;
-                        }
+        try {
+            // primary parse
+            parsedCall = JSON.parse(rawJson);
+        } catch (e) {
+            try {
+                // secondary repair
+                const repaired = rawJson
+                    .replace(/\\`/g, '`')
+                    .replace(/[\r\n\t]/g, ' ')
+                    .replace(/,\s*([\]}])/g, '$1');
+                parsedCall = JSON.parse(repaired);
+            } catch (err) {
+                // tertiary key-value carving for name/arguments
+                const nameMatch = rawJson.match(/"name"\s*:\s*"([^"]+)"/);
+                const argsMatch = rawJson.match(/"(?:arguments|params)"\s*:\s*(\{[\s\S]*\})/);
+                if (nameMatch) {
+                    parsedCall.name = nameMatch[1];
+                    if (argsMatch) {
+                        try { parsedCall.arguments = JSON.parse(argsMatch[1]); } catch {}
                     }
-                }
-                if (endIdx !== -1) {
-                    paramsStr = attrStr.substring(firstBrace, endIdx + 1);
                 }
             }
         }
 
-        try {
-            // Unescape common XML entities before parsing JSON
-            const cleanJson = paramsStr ? paramsStr.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>') : '{}';
-            params = JSON.parse(cleanJson);
-        } catch (e) {
-            console.error("Failed to parse tool params", e);
-            params = { error: "Invalid JSON in params attribute" };
-        }
+        const toolName = parsedCall.name || "unknown_tool";
+        const params = parsedCall.arguments || parsedCall.params || {};
 
         const blockId = `tool-req-${context.messageId}-${Math.random().toString(36).substring(7)}`;
 
@@ -66,7 +45,6 @@ export const toolPlugin: TagPlugin = {
         let color = "var(--vscode-charts-orange)";
         let groupLabel = "REQUEST ACTION";
 
-        // Logic based on tool name or common groupings
         if (toolName.includes('command') || toolName.includes('script')) {
             icon = "terminal"; color = "var(--vscode-charts-red)"; groupLabel = "EXECUTE SHELL";
         } else if (toolName.includes('search') || toolName.includes('scrape')) {

@@ -1587,6 +1587,11 @@
           "when": "lollms:activeTab == memory && workspaceFolderCount > 0"
         },
         {
+          "id": "lollmsFileTreeView",
+          "name": "Active Workspace Explorer",
+          "when": "lollms:activeTab == librarian && workspaceFolderCount > 0"
+        },
+        {
           "id": "lollmsCodeExplorerView",
           "name": "Architecture Graph (Tree)",
           "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
@@ -2080,8 +2085,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-package",
-    "build-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap",
-    "minify-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --minify && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --minify",
+    "build-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts",
+    "minify-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts",
     "compile": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap",
     "watch": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap --watch",
     "esbuild-package": "npm run clean && npm run copy-assets && npm run minify-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --minify",

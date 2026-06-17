@@ -28,7 +28,7 @@ You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or
 - **CONSEQUENCE**: If you use a placeholder, the user's file will be corrupted, and the mission will fail.
 `);
 
-        // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
+       // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
         sections.push(`
         ### 🚦 CODE OUTPUT DECISION TREE (STRICT EXCLUSIVITY & COMPLIANCE MANDATE)
         You MUST strictly follow this decision tree to choose the correct format for code output. Non-compliance results in parsing errors and redundant token usage. 
@@ -43,6 +43,7 @@ You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or
         - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
         - Do NOT output conversational chatter or a "summary of changes" followed by the full file after an Aider patch. This is a severe violation of turn economy and will cause the file system patch to fail.
         - **THINKING & OBSERVATION LANGUAGE BLOCKS (MANDATORY)**: When writing thoughts, reasoning, or observations (such as in the "Observe", "Think", or "Reflect" sections), you are **STRICTLY FORBIDDEN** from using the namespaced \`language:path\` format (e.g. \`\`\`typescript:src/main.ts\`). This namespaced format is EXCLUSIVELY reserved for actual code updates in the **Act** stage that the system should apply to disk. For non-updatable snippets, thoughts, and reasoning, always use standard \`language\` blocks (without the colon and path, e.g. \`\`\`typescript) to prevent accidental file corruption or parsing errors.
+        - **ACTIVE ONTOLOGY QUERIES (CRITICAL)**: If you intend to **actually execute** a SPARQL-lite architecture query, you **MUST NOT** wrap the query in a markdown code block (e.g., \`\`\`sparql ... \`\`\`). Instead, you **MUST** use the raw, naked XML tag \`<query_architecture>...\</query_architecture>\` starting on its own new line. Markdown code blocks are treated as inert text and will NOT trigger active execution.
         - **STAGE ISOLATION**: All code updates (either Aider patches or Full Files) MUST be placed exclusively inside the **Act** stage. You are forbidden from placing code blocks or patches inside the **Observe**, **Think**, or **Reflect** sections.
         `);
 
@@ -99,6 +100,23 @@ Your changes will be applied to the disk automatically. You MUST use the **SEARC
         briefing?: string; // This is the Mission Briefing
         memory?: string;   // This contains Project DNA
     }): string {
+        // Parse the list of possessed files from the files block to create an explicit list
+        const blocks = context.files.split(/```/);
+        const possessedFiles: string[] = [];
+        blocks.forEach(block => {
+            const match = block.match(/^(?:\w+)?:([^\r\n]+)/);
+            if (match) {
+                const path = match[1].trim().split(' ')[0];
+                if (path && !possessedFiles.includes(path)) {
+                    possessedFiles.push(path);
+                }
+            }
+        });
+
+        const filesInventory = possessedFiles.length > 0 
+            ? possessedFiles.map(f => `- \`${f}\` [FULL CONTENT FULLY LOADED - DO NOT REQUEST]`).join('\n')
+            : "No files are currently loaded in your context.";
+
         return `
     # 🛠️ ACTUAL PROJECT STATE (LIVING CONTEXT)
 
@@ -107,6 +125,10 @@ Your changes will be applied to the disk automatically. You MUST use the **SEARC
     2. **MARKER [C]**: If a file is marked with **[C]**, its full source code is ALREADY provided in the 'ACCESSIBLE FILE CONTENTS' section.
     3. **PROHIBITION**: You are STRICTLY FORBIDDEN from using 'read_file' or 'read_files' for any file marked with [C]. Doing so wastes tokens and results in a system penalty.
     4. **ACTION**: If [C] is present, scroll down, find the code, and proceed directly to analysis or implementation.
+
+    ### 👁️ ACTIVE CONTEXT INVENTORY (POSSESSED FILES)
+    The following files are ALREADY loaded into your active memory with full content. You must read them from 'ACCESSIBLE FILE CONTENTS' below and are FORBIDDEN from asking the user to upload or add them:
+    ${filesInventory}
 
     ### 📈 STATE EVOLUTION PROTOCOL (FOR EXTERNAL UI USE)
     If you are processing this request in an external browser (ChatGPT, Gemini, Claude, etc.):
@@ -140,44 +162,72 @@ ${context.files || ''}
         const formatting = this.getFormatInstructions(capabilities, forceFullCodeSetting);
         const projectHeader = context?.projectName ? `# 📂 WORKING ON PROJECT: ${context.projectName.toUpperCase()}\n\n` : '';
 
-        const sparqlOntologyInstruction = `
-### 🧊 LOLLMS SOURCE CODE ONTOLOGY & SPARQL-LITE
-When tasked with exploring the architecture, tracing relationships, or answering questions about how different parts of the code interact, you MUST use the \`query_architecture\` tool with \`query_type: "sparql"\`.
-You MUST structure your SPARQL-lite query according to this ontology:
+    const sparqlOntologyInstruction = `
+### 🧊 SOVEREIGN DUAL-ONTOLOGY GRAPH & SPARQL-LITE
+When tasked with exploring the codebase structure or auditing long-term memory engrams and skills, you MUST use the \`query_architecture\` tool (or \`<query_architecture>\` XML tag) with a valid SPARQL-lite query.
+The system maintains two independent ontologies. You can target either the **Code Graph (ABox/TBox for files/classes)** or the **Memory & Skills Graph (ABox/TBox for engrams/rules/skills)**. The query executor will automatically route your query based on the classes you refer to.
 
-**Classes (Types):**
-- \`s:File\`: A source file on disk.
+---
+
+#### 🗺️ ONTOLOGY A: CODEBASE ARCHITECTURE GRAPH
+Use this to analyze file hierarchies, class inheritances, standalone functions, and method invocations.
+
+**Classes (Concepts):**
+- \`s:File\`: A source file in the workspace on disk.
 - \`s:Class\`: An object-oriented class or interface definition.
-- \`s:Function\`: A standalone global function.
-- \`s:Method\`: An object-oriented method nested inside a class.
-- \`s:Library\`: An external imported package or module.
+- \`s:Function\`: A global standalone function.
+- \`s:Method\`: A class method nested inside a Class.
+- \`s:Library\`: An external imported package or module (e.g. pygame, numpy).
 
 **Properties (Relationships):**
-- \`s:type\`: Declares the class/type of a resource. (e.g., \`?x s:type s:Class\`)
-- \`s:name\`: The literal name of the resource. (e.g., \`?x s:name 'Player'\`)
-- \`s:path\`: The relative workspace file path. (e.g., \`?x s:path 'src/player.py'\`)
-- \`s:contains\`: File or Class contains a nested symbol. (e.g., \`?file s:contains ?class\`)
-- \`s:imports\`: File imports another file or external library. (e.g., \`?file s:imports ?lib\`)
-- \`s:calls\`: A function/method calls another function/method. (e.g., \`?func s:calls ?target\`)
-- \`s:inherits\`: A class inherits from another class. (e.g., \`?class s:inherits ?parent\`)
+- \`s:type\`: Declares the class/concept of a node (e.g. \`?x s:type s:Class\`).
+- \`s:name\`: The literal display name of the symbol (e.g. \`?x s:name 'Player'\`).
+- \`s:path\`: The relative workspace file path (e.g. \`?x s:path 'src/player.py'\`).
+- \`s:contains\`: File or Class contains a nested symbol (e.g. \`?file s:contains ?class\`).
+- \`s:imports\`: File imports another file or external library (e.g. \`?file s:imports ?lib\`).
+- \`s:calls\`: A function/method calls another function/method (e.g. \`?func s:calls ?target\`).
+- \`s:inherits\`: A class inherits from another parent class (e.g. \`?class s:inherits ?parent\`).
 
-**🔥 POWERFUL SPARQL-LITE EXAMPLES (CRITICAL GROUNDING):**
-- *Find all classes defined in 'player.py'*:
-  \`SELECT ?class WHERE { ?file s:name 'player.py' . ?file s:contains ?class . ?class s:type s:Class }\`
-- *Find what functions/methods call 'load_assets'*:
-  \`SELECT ?caller WHERE { ?caller s:calls ?callee . ?callee s:name 'load_assets' }\`
-- *Find files importing the 'pygame' library*:
-  \`SELECT ?file WHERE { ?file s:imports ?lib . ?lib s:name 'pygame' . ?lib s:type s:Library }\`
-- *Find methods inside any class inheriting from 'Sprite'*:
-  \`SELECT ?method WHERE { ?class s:inherits ?parent . ?parent s:name 'Sprite' . ?class s:contains ?method . ?method s:type s:Method }\`
-- *Find functions that instantiate/reference the 'Dungeon' class*:
-  \`SELECT ?func WHERE { ?class s:name 'Dungeon' . ?func s:localVariable ?class . ?func s:type s:Function }\`
-- *Find files that have both a 'Player' and 'Enemy' class defined*:
-  \`SELECT ?file WHERE { ?file s:contains ?c1 . ?c1 s:name 'Player' . ?file s:contains ?c2 . ?c2 s:name 'Enemy' }\`
-- *Find call paths: A calling B, and B calling C*:
-  \`SELECT ?a ?b ?c WHERE { ?a s:calls ?b . ?b s:calls ?c }\`
+**🔥 CODE GRAPH EXAMPLES:**
+*   *Find all classes defined in 'player.py'*:
+    \`SELECT ?class WHERE { ?file s:name 'player.py' . ?file s:contains ?class . ?class s:type s:Class }\`
+*   *Find what methods/functions call 'load_assets'*:
+    \`SELECT ?caller WHERE { ?caller s:calls ?callee . ?callee s:name 'load_assets' }\`
+*   *Find all files importing the 'pygame' library*:
+    \`SELECT ?file WHERE { ?file s:imports ?lib . ?lib s:name 'pygame' . ?lib s:type s:Library }\`
 
-Use these queries dynamically to gather precise structural evidence and answer code-related questions correctly!
+---
+
+#### 🧠 ONTOLOGY B: KNOWLEDGE & SKILLS GRAPH (PROJECT DNA)
+Use this to search, load, or recover custom engrams, saved lessons, architectural constraints, and imported skills library capabilities.
+
+**Classes (Concepts):**
+- \`s:Engram\`: A single unit of captured project facts, standard configurations, or lessons learned.
+- \`s:Tag\`: A semantic hashtag hub used to group and relate different nodes (e.g. #pygame, #security).
+- \`s:Document\`: An external reference source, web scrape, or research document.
+- \`s:Rule\`: An active project standard, constraint, or 'Sovereign Rule' that must be strictly enforced.
+- \`s:Skill\`: An active technical capability imported from your Skills Library.
+
+**Properties (Relationships):**
+- \`s:type\`: Declares the concept category (e.g. \`?x s:type s:Skill\`).
+- \`s:name\`: The display title of the node (e.g. \`?x s:name 'Secure API Handshake'\`).
+- \`s:has_tag\`: Links an engram, rule, or skill to a semantic tag hub (e.g. \`?engram s:has_tag ?tag\`).
+- \`s:part_of\`: Indicates an engram was extracted from a specific document source (e.g. \`?engram s:part_of ?doc\`).
+- \`s:contains\`: A document contains a nested engram (e.g. \`?doc s:contains ?engram\`).
+- \`s:enforces\`: A skill or engram enforces an active project Rule (e.g. \`?skill s:enforces ?rule\`).
+- \`s:supersedes\`: Indicates a new rule replaces or overrides an older rule (e.g. \`?newRule s:supersedes ?oldRule\`).
+
+**🔥 KNOWLEDGE GRAPH EXAMPLES:**
+*   *Find all skills related to 'pygame'*:
+    \`SELECT ?skill WHERE { ?skill s:type s:Skill . ?skill s:has_tag ?tag . ?tag s:name 'pygame' }\`
+*   *Find all active project rules enforced by any engram tagged with 'security'*:
+    \`SELECT ?rule WHERE { ?engram s:type s:Engram . ?engram s:has_tag ?tag . ?tag s:name 'security' . ?engram s:enforces ?rule . ?rule s:type s:Rule }\`
+*   *Locate any engrams containing lessons about 'race condition'*:
+    \`SELECT ?engram WHERE { ?engram s:type s:Engram . ?engram s:has_tag ?tag . ?tag s:name 'race_condition' }\`
+
+---
+
+Use these queries dynamically to gather precise, empirical evidence about both the codebase architecture and your internal knowledge vault before making decisions!
 `;
         const activeProfileId = capabilities?.responseProfileId || 'balanced';
         const activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId) || SYSTEM_RESPONSE_PROFILES[0];
@@ -407,6 +457,7 @@ Consistent parameter usage for file operations:
   - \`<remove_files_from_context>\npath\n</remove_files_from_context>\`
   - \`<project_memory action="add" id="...">content</project_memory>\`
   - \`<query_architecture>\nSELECT ?class WHERE { ?class s:type s:Class }\n</query_architecture>\`
+  - \`<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>\`
 
 - **STRICT NEW-LINE RULE**: All active orchestration XML tags (including those above) MUST start on a **new line** (spaces/tabs before are allowed) to trigger automation. If you write them inline inside a sentence (e.g., "I will use <add_files_to_context> to..."), they will be treated as inert text. Always place each tag on its own line.
 

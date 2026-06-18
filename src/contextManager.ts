@@ -1661,7 +1661,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
               const res = await this.processUrl(url, 'en', userPrompt, signal);
               const fileName = res.filename.split(/[\\/]/).pop() || 'Document';
               addedSources.push({ url, title: fileName });
-              return `` + `📖 Added: ${res.filename}`;
+              return `📖 Added: ${res.filename}`;
             } catch (e: any) { return `❌ Failed: ${url}: ${e.message}`; }
           }));
           chatHistory.push({ role: 'system', content: `Operation results:\n${readResults.join('\n')}` });

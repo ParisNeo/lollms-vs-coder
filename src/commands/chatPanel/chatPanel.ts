@@ -2697,61 +2697,81 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
             this.processManager.updateDescription(processId, `Dynamic Turn ${currentTurnIndex}: Generating...`);
             this.updateGeneratingState();
 
-            await this._lollmsAPI.sendChat(turnMessages, (chunk) => {
-                if (controller?.signal.aborted) return;
-                turnResponse += chunk;
-                streamBuffer += chunk;
+            // Create a localized abort controller for this specific stream turn
+            // This prevents aborting the main process and crashing the entire loop
+            const turnStreamController = new AbortController();
 
-                // Detect if an XML tag is opening
-                const openIdx = streamBuffer.indexOf('<');
+            // Link main cancel button to this stream's cancellation
+            const mainAbortListener = () => {
+                turnStreamController.abort();
+            };
+            controller.signal.addEventListener('abort', mainAbortListener);
 
-                if (openIdx !== -1) {
-                    // Flush any normal conversational text before the tag starts
-                    const textBefore = streamBuffer.substring(0, openIdx);
-                    if (textBefore.length > 0) {
-                        currentFullResponseBuffer += textBefore;
+            try {
+                await this._lollmsAPI.sendChat(turnMessages, (chunk) => {
+                    if (turnStreamController.signal.aborted || controller.signal.aborted) return;
+                    turnResponse += chunk;
+                    streamBuffer += chunk;
+
+                    // Detect if an XML tag is opening
+                    const openIdx = streamBuffer.indexOf('<');
+
+                    if (openIdx !== -1) {
+                        // Flush any normal conversational text before the tag starts
+                        const textBefore = streamBuffer.substring(0, openIdx);
+                        if (textBefore.length > 0) {
+                            currentFullResponseBuffer += textBefore;
+                            this._panel.webview.postMessage({ 
+                                command: 'appendMessageChunk', 
+                                id: assistantMessageId, 
+                                chunk: textBefore 
+                            });
+                        }
+                        streamBuffer = streamBuffer.substring(openIdx);
+
+                        // Check if the XML tag block is fully completed in our buffer
+                        const checkTagEndings = [
+                            { pattern: /<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/i, tag: 'add_files_to_context' },
+                            { pattern: /<query_architecture>([\s\S]*?)<\/query_architecture>/i, tag: 'query_architecture' },
+                            { pattern: /<lollms_tool>([\s\S]*?)<\/lollms_tool>/i, tag: 'lollms_tool' }
+                        ];
+
+                        for (const t of checkTagEndings) {
+                            const match = streamBuffer.match(t.pattern);
+                            if (match) {
+                                interceptedTag = t.tag;
+                                interceptedParams = match[1];
+                                streamBuffer = ""; // Cleared on interception
+                                turnStreamController.abort(); // Abort only this turn's stream
+                                break;
+                            }
+                        }
+                    } else {
+                        // No tag in sight, immediately stream the chunk to keep the UI smooth
+                        currentFullResponseBuffer += streamBuffer;
                         this._panel.webview.postMessage({ 
                             command: 'appendMessageChunk', 
                             id: assistantMessageId, 
-                            chunk: textBefore 
+                            chunk: streamBuffer 
                         });
+                        streamBuffer = "";
                     }
-                    streamBuffer = streamBuffer.substring(openIdx);
-
-                    // Check if the XML tag block is fully completed in our buffer
-                    const checkTagEndings = [
-                        { pattern: /<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/i, tag: 'add_files_to_context' },
-                        { pattern: /<query_architecture>([\s\S]*?)<\/query_architecture>/i, tag: 'query_architecture' },
-                        { pattern: /<lollms_tool>([\s\S]*?)<\/lollms_tool>/i, tag: 'lollms_tool' }
-                    ];
-
-                    for (const t of checkTagEndings) {
-                        const match = streamBuffer.match(t.pattern);
-                        if (match) {
-                            interceptedTag = t.tag;
-                            interceptedParams = match[1];
-                            streamBuffer = ""; // Cleared on interception
-                            controller.abort(); 
-                            break;
-                        }
-                    }
-                } else {
-                    // No tag in sight, immediately stream the chunk to keep the UI smooth
-                    currentFullResponseBuffer += streamBuffer;
-                    this._panel.webview.postMessage({ 
-                        command: 'appendMessageChunk', 
-                        id: assistantMessageId, 
-                        chunk: streamBuffer 
-                    });
-                    streamBuffer = "";
+                }, turnStreamController.signal, this._currentDiscussion.model, {
+                    capabilities: this._discussionCapabilities,
+                    temperature: this._discussionCapabilities.temperature
+                });
+            } catch (err: any) {
+                // If it was cancelled due to tag interception, catch it and ignore the error
+                // so the outer loop can continue processing the tool execution
+                if (err.name !== 'AbortError' && !interceptedTag) {
+                    throw err;
                 }
-            }, controller.signal, this._currentDiscussion.model, {
-                capabilities: this._discussionCapabilities,
-                temperature: this._discussionCapabilities.temperature
-            });
+            } finally {
+                controller.signal.removeEventListener('abort', mainAbortListener);
+            }
 
             // Flush any remaining trailing conversational text
-            if (streamBuffer.length > 0 && !interceptedTag) {
+            if (streamBuffer.length > 0 && !interceptedTag && !controller.signal.aborted) {
                 currentFullResponseBuffer += streamBuffer;
                 this._panel.webview.postMessage({ 
                     command: 'appendMessageChunk', 
@@ -2759,9 +2779,6 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                     chunk: streamBuffer 
                 });
             }
-
-            // Reset controller for the next turn
-            controller = new AbortController();
 
             if (interceptedTag) {
                 this.processManager.updateDescription(processId, `Executing intercepted tool: ${interceptedTag}...`);
@@ -3669,7 +3686,7 @@ If there are no meaningful docs to update, find the README.md and add a "Latest 
             await this.addMessageToDiscussion({ 
                 id: 'error_' + Date.now(),
                 role: 'system', 
-                content: `### 🔌 Connection Error\nLollms could not reach the server at \`${this._lollmsAPI.config.apiUrl}\`.\n\n**Reason:** ${error.message}\n\n*Please check if your Lollms/Ollama server is running and try again.*`,
+                content: `### 🔌 Connection Error\nLollms could not reach the server at \`${this._lollmsAPI.config.apiUrl}\`.\n\n**Reason:** ${error.message}\n\n*Please check if your server is running and try again.*`,
                 timestamp: Date.now()
             }); 
 

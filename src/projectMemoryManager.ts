@@ -1284,9 +1284,11 @@ Provide your audit verdict based on the TBox schema and sanitization rules.`;
      * Scans text for <project_memory> tags and performs the requested actions.
      */
     public async processTags(content: string): Promise<void> {
-        const memoryRegex = /<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gi;
+        // Exclude markdown code blocks before processing
+        const cleanContent = content.replace(/```[\s\S]*?```|`[^`\n\r]+`/g, '');
+        const memoryRegex = /^[ \t]*<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gim;
         let match;
-        while ((match = memoryRegex.exec(content)) !== null) {
+        while ((match = memoryRegex.exec(cleanContent)) !== null) {
             const attrStr = match[1];
             const memoryContent = match[2].trim();
             const attrs: any = {};

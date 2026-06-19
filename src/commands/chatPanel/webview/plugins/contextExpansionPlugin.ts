@@ -91,7 +91,7 @@ export const contextExpansionPlugin: TagPlugin = {
                     <button class="code-action-btn ${addBtnClass} add-btn" ${allIncluded ? 'disabled' : ''} data-block-id="${blockId}">
                         <span class="codicon ${btnIcon}"></span> ${btnText}
                     </button>
-                    <button class="code-action-btn apply-btn add-reprompt-btn" data-block-id="${blockId}">
+                    <button class="code-action-btn apply-btn add-reprompt-btn" id="btn-reprompt-${blockId}" data-block-id="${blockId}">
                         <span class="codicon ${repromptIcon}"></span> ${repromptText}
                     </button>
                     <button class="code-action-btn secondary-btn replace-btn" data-block-id="${blockId}" title="Remove all other files from context and add these">
@@ -114,7 +114,8 @@ export const contextExpansionPlugin: TagPlugin = {
 
         const handleAdd = (btn: HTMLButtonElement, reprompt: boolean) => {
             const block = btn.closest('.context-expansion-block') as HTMLElement;
-            const files = JSON.parse(block?.dataset.files || '[]');
+            if (!block) return;
+            const files = JSON.parse(block.dataset.files || '[]');
             btn.innerHTML = '<div class="spinner"></div> Adding...';
 
             // Disable both buttons to prevent double-triggering
@@ -127,6 +128,19 @@ export const contextExpansionPlugin: TagPlugin = {
                 reprompt // Flag to trigger automatic user feedback
             });
         };
+
+        // AUTO-APPLY for File Ingestions in Dynamic/Agent Mode
+        const isAutoExecute = context.capabilities?.autoApply === true || 
+                             context.capabilities?.dynamicMode === true || 
+                             context.capabilities?.agentMode === true;
+
+        if (isAutoExecute && !container.querySelector('.add-btn')?.disabled) {
+            const repromptBtn = container.querySelector('.add-reprompt-btn') as HTMLButtonElement;
+            if (repromptBtn) {
+                setTimeout(() => handleAdd(repromptBtn, true), 100);
+                return;
+            }
+        }
 
         container.querySelectorAll('.add-btn').forEach(btn => {
             (btn as HTMLButtonElement).onclick = () => handleAdd(btn as HTMLButtonElement, false);

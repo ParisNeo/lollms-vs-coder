@@ -900,6 +900,9 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     });
 }
 
+// Safely expose startEdit globally after its complete definition
+(window as any).startEdit = startEdit;
+
 function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean, start: number, end: number })[] {
     const infos: any[] = [];
     const lines = content.split('\n');
@@ -2017,6 +2020,18 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const isInside = forbidden.some(r => matchIndex >= r.start && matchIndex < r.end);
             if (isInside) continue;
 
+            // Strict Line-Start check: verify the match begins at the start of a line
+            const hasLineStart = matchIndex === 0 || sourceText[matchIndex - 1] === '\n' || sourceText[matchIndex - 1] === '\r';
+            if (!hasLineStart) continue;
+
+            // Also check that the closing tag is at the start of a line (if it is not self-closing)
+            const isSelfClosing = fullMatch.trim().endsWith('/>');
+            if (!isSelfClosing) {
+                const closingTagIndex = matchIndex + fullMatch.lastIndexOf('</');
+                const hasClosingLineStart = closingTagIndex > 0 && (sourceText[closingTagIndex - 1] === '\n' || sourceText[closingTagIndex - 1] === '\r');
+                if (!hasClosingLineStart) continue;
+            }
+
             const isOverlapping = segments.some(s => 
                 (matchIndex >= s.start && matchIndex < s.end) ||
                 (matchIndex + fullMatch.length > s.start && matchIndex + fullMatch.length <= s.end) ||
@@ -2070,13 +2085,26 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     // any remaining occurrences in the markdown segments are *by definition* inline references.
     finalSegments.forEach(seg => {
         if (seg.type === 'markdown') {
+            const forbiddenRanges: { start: number, end: number }[] = [];
+            const inlineFenceRegex = /```[\s\S]*?(?:```|$)|`[^`\n\r]+`/g;
+            let m;
+            while ((m = inlineFenceRegex.exec(seg.content)) !== null) {
+                forbiddenRanges.push({ start: m.index, end: m.index + m[0].length });
+            }
+
+            const isIndexInsideFence = (index: number) => {
+                return forbiddenRanges.some(r => index >= r.start && index < r.end);
+            };
+
             const inlineTagRegex = /<(add_files_to_context|query_architecture|project_memory|lollms_tool|move_files|copy_files|delete_files|remove_files_from_context|skill)\b([^>]*?)>([\s\S]*?)<\/\1>/gi;
-            seg.content = seg.content.replace(inlineTagRegex, (match, tag, attrs, body) => {
+            seg.content = seg.content.replace(inlineTagRegex, (match, tag, attrs, body, offset) => {
+                if (isIndexInsideFence(offset)) return match;
                 return `\`<${tag}${attrs}>${body}</${tag}>\``;
             });
 
             const inlineSelfClosingRegex = /<(lollms_tool|generate_image|edit_image_asset|milestone|plan_status)\s+([^>]*?)\s*\/>/gi;
-            seg.content = seg.content.replace(inlineSelfClosingRegex, (match, tag, attrs) => {
+            seg.content = seg.content.replace(inlineSelfClosingRegex, (match, tag, attrs, offset) => {
+                if (isIndexInsideFence(offset)) return match;
                 return `\`<${tag} ${attrs} />\``;
             });
         }
@@ -2510,25 +2538,27 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     const prev = state.lastContextData || { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "", selections: [] };
 
     state.lastContextData = {
-        context: contextText !== undefined ? contextText : prev.context,
-        files: files !== undefined ? files : prev.files,
-        skills: skills !== undefined ? skills : prev.skills,
-        tools: tools !== undefined ? tools : prev.tools,
-        diagrams: diagrams !== undefined ? diagrams : prev.diagrams,
-        briefing: briefing !== undefined ? briefing : prev.briefing,
-        selections: selections !== undefined ? selections : (prev as any).selections
+        context: contextText !== undefined ? contextText : (prev.context || ""),
+        files: files !== undefined ? files : (prev.files || []),
+        skills: skills !== undefined ? skills : (prev.skills || []),
+        tools: tools !== undefined ? tools : (prev.tools || []),
+        diagrams: diagrams !== undefined ? diagrams : (prev.diagrams || []),
+        briefing: briefing !== undefined ? briefing : (prev.briefing || ""),
+        selections: selections !== undefined ? selections : ((prev as any).selections || [])
     };
 
-    const finalFiles = state.lastContextData.files;
-    const finalTools = state.lastContextData.tools;
-    const finalSkills = state.lastContextData.skills;
+    const finalFiles = state.lastContextData.files || [];
+    const finalTools = state.lastContextData.tools || [];
+    const finalSkills = state.lastContextData.skills || [];
     const finalSelections = (state.lastContextData as any).selections || [];
+    const finalDiagrams = state.lastContextData.diagrams || [];
+    const finalBriefing = state.lastContextData.briefing || "";
 
-    const hasMetadata = (finalFiles && finalFiles.length > 0) || 
-                        (finalTools && finalTools.length > 0) || 
-                        (finalSkills && finalSkills.length > 0) || 
-                        (diagrams && diagrams.length > 0) || 
-                        (briefing && briefing.trim().length > 0);
+    const hasMetadata = (finalFiles.length > 0) || 
+                        (finalTools.length > 0) || 
+                        (finalSkills.length > 0) || 
+                        (finalDiagrams.length > 0) || 
+                        (finalBriefing.trim().length > 0);
 
     // Detection for Welcome Message integration
     const isNewDiscussion = !document.querySelector('.message-wrapper:not(.context-message)');
@@ -3036,6 +3066,23 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
         resetBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
         });
+    }
+
+    // Bind event for the new Saved Selections Dropdown
+    const selectionsDropdown = document.getElementById('hud-selections-dropdown') as HTMLSelectElement;
+    if (selectionsDropdown) {
+        selectionsDropdown.onchange = () => {
+            const selectedVal = selectionsDropdown.value;
+            if (selectedVal) {
+                vscode.postMessage({
+                    command: 'executeLollmsCommand',
+                    details: {
+                        command: 'lollms-vs-coder.loadContextSelectionDirect',
+                        params: selectedVal
+                    }
+                });
+            }
+        };
     }
 
     const bulkRemoveProjectBtn = document.getElementById('bulk-remove-project-btn');

@@ -19,6 +19,7 @@ import { AutomationPanel } from '../../panels/automationPanel';
 import { LocalizationManager } from '../../utils/localizationManager';
 import { LollmsServices } from '../../lollmsContext';
 
+
 interface ActiveGeneration {
     messageId: string;
     buffer: string;
@@ -986,31 +987,49 @@ export class ChatPanel {
                 const discussionTools = this._currentDiscussion?.importedTools || [];
                 const projectTools = await this._contextManager.getActiveProjectTools();
 
-                // Sync the project tools to the AgentManager so its internal filter (getEnabledTools)
-                // allows them into the system prompt.
-                if (this.agentManager) {
-                    (this.agentManager as any)._projectToolsCache = projectTools;
-                }
+                const projectFiles = finalFiles.filter(isProjectFile);
+                const externalFiles = finalFiles.filter(f => !isProjectFile(f));
 
-                // Merge unique names from both scopes
-                const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
+                const renderFileList = (list: string[], emptyMsg: string, allowSummarize: boolean = false) => {
+                    if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
+                    return `<ul class="context-file-list">
+                        ${list.map(f => `
+                            <li class="context-item">
+                                <span class="codicon codicon-file"></span> 
+                                <span class="context-item-label" title="${f}">${f}</span>
+                                <div style="display:flex; gap:2px;">
+                                    ${allowSummarize ? `
+                                    <button class="summarize-context-btn" data-value="${f}" title="Synthesize / Clean / Summarize">
+                                        <span class="codicon codicon-wand"></span>
+                                    </button>` : ''}
+                                    <button class="open-context-btn" data-value="${f}" title="Inspect / Edit File">
+                                        <span class="codicon codicon-edit"></span>
+                                    </button>
+                                    <button class="remove-context-btn" data-type="file" data-value="${f}" title="Remove from context">
+                                        <span class="codicon codicon-close"></span>
+                                    </button>
+                                </div>
+                            </li>`).join('')}
+                    </ul>`;
+                };
 
-                const equippedTools = this.agentManager?.getTools()
-                    ? this.agentManager.getTools().filter(t => allEquippedNames.includes(t.name)).map(t => ({ name: t.name, description: t.description }))
-                    : [];
-
-                let safeFiles: string[] = [];
-                if (provider) {
-                    try {
-                        const rawFiles = provider.getIncludedFiles() || [];
-                        safeFiles = rawFiles
-                            .filter(f => f && typeof f === 'object' && 'path' in f && typeof f.path === 'string')
-                            .map(f => f.path);
-                    } catch (e) {
-                        Logger.warn("Librarian: Failed to extract included files safely.");
-                    }
-                }
-
+                const skillsList = finalSkills.length > 0
+                    ? `<div class="context-skill-list">
+                        ${finalSkills.map(s => `
+                            <div class="context-item skill-item" style="display: flex; align-items: flex-start; gap: 8px; border-bottom: 1px solid var(--vscode-widget-border); padding: 4px 0;">
+                                <details class="info-collapsible" style="flex: 1; border: none; padding: 0;">
+                                    <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600;">${sanitizer.sanitize(s.name)}</summary>
+                                    <div class="skill-content" style="padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 4px; font-family: var(--vscode-editor-font-family); font-size: 10px; max-height: 150px; overflow-y: auto;">
+                                        ${sanitizer.sanitize(s.content)}
+                                    </div>
+                                </details>
+                                <button class="remove-context-btn" data-type="skill" data-value="${s.id}" title="Remove skill" style="padding: 2px; opacity: 0.6;">
+                                    <span class="codicon codicon-close"></span>
+                                </button>
+                            </div>
+                        `).join('')}
+                    </div>`
+                    : '<div class="empty-context-msg">No specialized skills currently active.</div>';
                 // Scan .lollms/selection/ folder for saved selections
                 let savedSelections: string[] = [];
                 const folders = vscode.workspace.workspaceFolders;
@@ -1028,12 +1047,12 @@ export class ChatPanel {
                     command: 'updateContext', 
                     context: contextTextForUI || "",
                     files: safeFiles || [],
-                    skills: currentSkills.map(s => ({ id: s.id, name: s.name, content: s.content })),
+                    skills: (currentSkills || []).map(s => ({ id: s.id, name: s.name, content: s.content })),
                     tools: equippedTools || [],
                     diagrams: context.diagrams || [],
                     images: context.images || [], 
                     briefing: this._currentDiscussion?.discussion_data_zone || "" ,
-                    selections: savedSelections
+                    selections: savedSelections || []
                 });
             }
             this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
@@ -2729,25 +2748,65 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                         }
                         streamBuffer = streamBuffer.substring(openIdx);
 
-                        // Check if the XML tag block is fully completed in our buffer
-                        const checkTagEndings = [
-                            { pattern: /<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/i, tag: 'add_files_to_context' },
-                            { pattern: /<query_architecture>([\s\S]*?)<\/query_architecture>/i, tag: 'query_architecture' },
-                            { pattern: /<lollms_tool>([\s\S]*?)<\/lollms_tool>/i, tag: 'lollms_tool' }
-                        ];
-
-                        for (const t of checkTagEndings) {
-                            const match = streamBuffer.match(t.pattern);
-                            if (match) {
-                                interceptedTag = t.tag;
-                                interceptedParams = match[1];
-                                streamBuffer = ""; // Cleared on interception
-                                turnStreamController.abort(); // Abort only this turn's stream
-                                break;
+                    // Check if the XML tag block is fully completed in our buffer
+                    // SAFETY: Only intercept tags if we are NOT inside a think/reasoning block
+                    const isInsideThink = (() => {
+                        const openTags = ['<think>', '<thinking>', '<analysis>', '<reasoning>'];
+                        for (const tag of openTags) {
+                            const openIdx = turnResponse.lastIndexOf(tag);
+                            if (openIdx !== -1) {
+                                const closeTag = tag.replace('<', '</');
+                                const closeIdx = turnResponse.indexOf(closeTag, openIdx);
+                                if (closeIdx === -1) {
+                                    return true; // Unclosed thinking block
+                                }
                             }
                         }
-                    } else {
-                        // No tag in sight, immediately stream the chunk to keep the UI smooth
+                        return false;
+                    })();
+
+                    let hasMatch = false;
+                    if (!isInsideThink) {
+                        // Check if the current stream buffer is inside a markdown code block (triple or single backticks)
+                        const totalTextSoFar = turnResponse;
+                        const isInsideCodeBlock = (() => {
+                            let openBackticks3 = 0;
+                            let openBackticks1 = 0;
+                            for (let idx = 0; idx < totalTextSoFar.length; idx++) {
+                                if (totalTextSoFar.substring(idx, idx + 3) === '```') {
+                                    openBackticks3 = openBackticks3 === 0 ? 3 : 0;
+                                    idx += 2;
+                                } else if (totalTextSoFar[idx] === '`' && openBackticks3 === 0) {
+                                    openBackticks1 = openBackticks1 === 0 ? 1 : 0;
+                                }
+                            }
+                            return openBackticks3 > 0 || openBackticks1 > 0;
+                        })();
+
+                        if (!isInsideCodeBlock) {
+                            // Ensure the tag starts on a new line (or at the absolute beginning of the entire accumulated text)
+                            const checkTagEndings = [
+                                { pattern: /(?:^|[\r\n])[ \t]*<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/i, tag: 'add_files_to_context' },
+                                { pattern: /(?:^|[\r\n])[ \t]*<query_architecture>([\s\S]*?)<\/query_architecture>/i, tag: 'query_architecture' },
+                                { pattern: /(?:^|[\r\n])[ \t]*<lollms_tool>([\s\S]*?)<\/lollms_tool>/i, tag: 'lollms_tool' }
+                            ];
+
+                            for (const t of checkTagEndings) {
+                                const match = streamBuffer.match(t.pattern);
+                                if (match) {
+                                    interceptedTag = t.tag;
+                                    interceptedParams = match[1];
+                                    streamBuffer = ""; // Cleared on interception
+                                    hasMatch = true;
+                                    turnStreamController.abort(); // Abort only this turn's stream
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (!hasMatch) {
+                        // If we are inside a think tag, or no match yet, stream normally
                         currentFullResponseBuffer += streamBuffer;
                         this._panel.webview.postMessage({ 
                             command: 'appendMessageChunk', 
@@ -2756,6 +2815,16 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                         });
                         streamBuffer = "";
                     }
+                } else {
+                    // No tag in sight, immediately stream the chunk to keep the UI smooth
+                    currentFullResponseBuffer += streamBuffer;
+                    this._panel.webview.postMessage({ 
+                        command: 'appendMessageChunk', 
+                        id: assistantMessageId, 
+                        chunk: streamBuffer 
+                    });
+                    streamBuffer = "";
+                }
                 }, turnStreamController.signal, this._currentDiscussion.model, {
                     capabilities: this._discussionCapabilities,
                     temperature: this._discussionCapabilities.temperature
@@ -5011,6 +5080,8 @@ Task:
                     }
                 }
                 break;
+
+
             case 'inspectCode':
                 this.handleInspectCode(message);
                 return;

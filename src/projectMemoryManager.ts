@@ -1148,52 +1148,204 @@ Provide your audit verdict based on the TBox schema and sanitization rules.`;
             }
         }
 
-        // --- PHASE 3: SYNAPTIC FUSION (AI CONSOLIDATION) ---
-        const lessons = updatedEngrams.filter(e => e.title.toLowerCase().includes('lesson') || e.content.toLowerCase().includes('failed because'));
+        // --- PHASE 3: VECTORIZED SYNAPTIC FUSION (AI CONSOLIDATION) ---
+        if (lollms && updatedEngrams.length >= 2) {
+            if (onProgress) onProgress({ type: 'fuse', title: "Analyzing semantic duplicates (Vectorization)..." });
 
-        if (lollms && lessons.length >= 2) {
-            if (onProgress) onProgress({ type: 'fuse', title: "Consolidating Failure Patterns..." });
+            // 1. Pure-JS TF-IDF Vectorizer & Cosine Similarity Engine
+            const stopwords = new Set(['and', 'the', 'for', 'with', 'this', 'that', 'from', 'your', 'will', 'have', 'been', 'should', 'always']);
 
-            const fusionPrompt = `You are the Neural Architect. Consolidate these redundant technical lessons into a single, high-density "Sovereign Rule". 
-            - Strip all narrative fluff ("Previous attempt failed", "The model should").
-            - Use clear, imperative technical language.
-            - Keep the importance high.
+            const tokenize = (text: string): string[] => {
+                return text.toLowerCase()
+                    .replace(/[^a-z0-9\s]/g, ' ')
+                    .split(/\s+/)
+                    .filter(w => w.length > 2 && !stopwords.has(w));
+            };
 
-            LESSONS TO MERGE:
-            ${lessons.map(l => `- [${l.title}]: ${l.content}`).join('\n')}
+            const documents = updatedEngrams.map(e => ({
+                id: e.id,
+                terms: tokenize(`${e.title} ${e.content}`)
+            }));
 
-            OUTPUT FORMAT: JSON only: {"title": "Sovereign Rule: [Topic]", "content": "..."}`;
+            // Calculate Document Frequencies (DF)
+            const df: Record<string, number> = {};
+            documents.forEach(doc => {
+                const uniqueTerms = new Set(doc.terms);
+                uniqueTerms.forEach(term => {
+                    df[term] = (df[term] || 0) + 1;
+                });
+            });
 
-            try {
-                const response = await lollms.sendChat([
-                    { role: 'system', content: "You are a JSON-only synaptic organizer. Output only JSON." }
-                ], null, undefined, dreamModel, { thinking: false });
+            // Calculate TF-IDF Vectors
+            const N = documents.length;
+            const vectors = documents.map(doc => {
+                const tf: Record<string, number> = {};
+                doc.terms.forEach(t => tf[t] = (tf[t] || 0) + 1);
 
-                const result = JSON.parse(stripThinkingTags(response).replace(/```json|```/g, ''));
+                const tfIdf: Record<string, number> = {};
+                let magnitudeSq = 0;
 
-                const newId = 'rule_' + Date.now();
-                updatedEngrams.push({
-                    id: newId,
-                    title: result.title,
-                    content: result.content,
-                    timestamp: Date.now(),
-                    importance: 95, 
-                    lastUsed: Date.now(),
-                    category: "rules",
-                    tier: 1,
-                    scope: 'local',
-                    origin: 'architect'
+                Object.entries(tf).forEach(([term, count]) => {
+                    const tfVal = count / doc.terms.length;
+                    const idfVal = Math.log(1 + (N / (1 + (df[term] || 0))));
+                    const weight = tfVal * idfVal;
+                    tfIdf[term] = weight;
+                    magnitudeSq += weight * weight;
                 });
 
-                lessons.forEach(l => {
-                    const idx = updatedEngrams.findIndex(ue => ue.id === l.id);
-                    if (idx !== -1) updatedEngrams.splice(idx, 1);
-                });
+                return {
+                    id: doc.id,
+                    tfIdf,
+                    magnitude: Math.sqrt(magnitudeSq)
+                };
+            });
 
-                fused = lessons.length;
-                if (onProgress) onProgress({ type: 'fuse', title: `Fused ${fused} lessons into 1 Rule: "${result.title}"` });
-            } catch (err) {
-                console.error("Fusion failed", err);
+            // 2. Pairwise Cosine Similarity Check
+            const similarityThreshold = 0.78; // Sensitive threshold to catch "Pathlib Over OS" duplicates
+            const redundantPairs: [MemoryEntry, MemoryEntry, number][] = [];
+
+            for (let i = 0; i < vectors.length; i++) {
+                for (let j = i + 1; j < vectors.length; j++) {
+                    const vA = vectors[i];
+                    const vB = vectors[j];
+                    if (vA.magnitude === 0 || vB.magnitude === 0) continue;
+
+                    // Dot Product
+                    let dotProduct = 0;
+                    Object.entries(vA.tfIdf).forEach(([term, weight]) => {
+                        if (vB.tfIdf[term]) {
+                            dotProduct += weight * vB.tfIdf[term];
+                        }
+                    });
+
+                    const cosineSim = dotProduct / (vA.magnitude * vB.magnitude);
+
+                    if (cosineSim >= similarityThreshold) {
+                        const engramA = updatedEngrams.find(e => e.id === vA.id);
+                        const engramB = updatedEngrams.find(e => e.id === vB.id);
+                        // Skip if one of them is a system concept template
+                        if (engramA && engramB && !engramA.id.startsWith('concept_template') && !engramB.id.startsWith('concept_template')) {
+                            redundantPairs.push([engramA, engramB, cosineSim]);
+                        }
+                    }
+                }
+            }
+
+            // 3. AI-Guided Fusion Loop
+            for (const [engramA, engramB, similarity] of redundantPairs) {
+                // Ensure both still exist in our active array (they might have been merged in a previous iteration)
+                const idxA = updatedEngrams.findIndex(e => e.id === engramA.id);
+                const idxB = updatedEngrams.findIndex(e => e.id === engramB.id);
+                if (idxA === -1 || idxB === -1) continue;
+
+                if (onProgress) {
+                    onProgress({ 
+                        type: 'fuse', 
+                        title: `Evaluating duplicate: "${engramA.title}" vs "${engramB.title}" (Sim: ${Math.round(similarity * 100)}%)` 
+                    });
+                }
+
+                const fusionPrompt = `You are the Neural Synaptic Architect. We have identified two highly similar memory engrams in our project graph.
+Your goal is to perform a detailed semantic audit to determine if they represent redundant/duplicate information.
+
+### ENGRAM A:
+ID: "${engramA.id}"
+Title: "${engramA.title}"
+Content: "${engramA.content}"
+Category: "${engramA.category}"
+
+### ENGRAM B:
+ID: "${engramB.id}"
+Title: "${engramB.title}"
+Content: "${engramB.content}"
+Category: "${engramB.category}"
+
+**INSTRUCTIONS:**
+1. If they are NOT redundant and cover distinct, separate concepts, return {"is_duplicate": false}.
+2. If they are redundant, return {"is_duplicate": true} and provide a single consolidated engram that merges all facts, standards, and hashtags from both.
+3. Keep the most descriptive ID (or select a clean, lowercase merged ID).
+4. Output valid JSON only inside a code block.
+
+**OUTPUT FORMAT:**
+\`\`\`json
+{
+  "is_duplicate": true,
+  "keep_id": "the_id_to_keep",
+  "delete_id": "the_id_to_delete",
+  "title": "Consolidated Title",
+  "content": "Consolidated fact body... #merged_tags",
+  "category": "standards" | "rules" | "user" | "general"
+}
+\`\`\``;
+
+                try {
+                    const response = await lollms.sendChat([
+                        { role: 'system', content: "You are a JSON-only synaptic organizer. Output only JSON." },
+                        { role: 'user', content: fusionPrompt }
+                    ], null, undefined, dreamModel, { thinking: false });
+
+                    const cleanJson = stripThinkingTags(response).replace(/```json|```/g, '').trim();
+                    const result = JSON.parse(cleanJson);
+
+                    if (result.is_duplicate === true) {
+                        const keepId = result.keep_id;
+                        const deleteId = result.delete_id;
+
+                        const targetKeepIdx = updatedEngrams.findIndex(e => e.id === keepId);
+                        const targetDeleteIdx = updatedEngrams.findIndex(e => e.id === deleteId);
+
+                        if (targetKeepIdx !== -1 && targetDeleteIdx !== -1) {
+                            const engramToKeep = updatedEngrams[targetKeepIdx];
+                            const engramToDelete = updatedEngrams[targetDeleteIdx];
+
+                            // 🧬 CONSOLIDATE RELATIONSHIPS (PREDICATES)
+                            // Merge all relationship links from both engrams, avoiding duplicates
+                            const mergedPredicates = [...(engramToKeep.predicates || [])];
+
+                            (engramToDelete.predicates || []).forEach(p => {
+                                // Do not copy self-referential relations
+                                if (p.targetId === keepId) return;
+
+                                const exists = mergedPredicates.some(kp => kp.verb === p.verb && kp.targetId === p.targetId);
+                                if (!exists) {
+                                    mergedPredicates.push(p);
+                                }
+                            });
+
+                            // Re-wire any other nodes pointing to the deleted ID to point to the kept ID
+                            updatedEngrams.forEach(e => {
+                                if (e.predicates) {
+                                    e.predicates.forEach(p => {
+                                        if (p.targetId === deleteId) {
+                                            p.targetId = keepId;
+                                        }
+                                    });
+                                }
+                            });
+
+                            // Update the kept node with merged text and relationships
+                            engramToKeep.title = result.title;
+                            engramToKeep.content = result.content;
+                            engramToKeep.category = result.category;
+                            engramToKeep.predicates = mergedPredicates;
+                            engramToKeep.importance = Math.min(100, Math.max(engramToKeep.importance, engramToDelete.importance) + 5); // Boost importance on fusion
+                            engramToKeep.timestamp = Date.now();
+
+                            // Remove the deleted node from memory
+                            updatedEngrams.splice(targetDeleteIdx, 1);
+
+                            fused++;
+                            if (onProgress) {
+                                onProgress({ 
+                                    type: 'fuse', 
+                                    title: `🧬 Fused Synapses: "${engramToDelete.title}" merged into "${result.title}"` 
+                                });
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.error("Synaptic fusion failed", err);
+                }
             }
         }
 

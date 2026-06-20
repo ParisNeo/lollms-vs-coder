@@ -233,7 +233,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (countEl && message.count) countEl.textContent = message.count;
                 break;
             case 'updateContext':
-                updateContext(message.context, message.files, message.skills, message.tools, message.diagrams, message.briefing);
+                updateContext(message.context, message.files, message.skills, message.tools, message.diagrams, message.briefing, message.selections);
                 // Optimized sync: Wait for DOM to stabilize before matching UI blocks
                 import('./ui.js').then(ui => {
                     ui.updateBadges();
@@ -1259,6 +1259,25 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
                     if (!wrapper) break;
 
+                    const isUndo = message.undo === true;
+
+                    const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
+                    const row = wrapper.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`) as HTMLElement;
+
+                    if (row) {
+                        const iconEl = row.querySelector('.status-icon');
+                        if (iconEl) {
+                            iconEl.innerHTML = message.success 
+                                ? '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>' 
+                                : '<span class="codicon codicon-error" style="color:var(--vscode-charts-red)"></span>';
+                        }
+                        row.style.background = '';
+                        row.style.opacity = '1';
+
+                        const labelInline = row.querySelector('.status-label-inline');
+                        if (labelInline) labelInline.remove();
+                    }
+
                     // 1. Update the individual code block UI (even if it wasn't part of an "Apply All" run)
                     const targetBlockId = `block-${message.messageId}-${message.blockIndex}`;
                     const blockEl = document.getElementById(targetBlockId) as HTMLDetailsElement;
@@ -1294,8 +1313,6 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
                     if (blockEl && message.success) {
-                        const isUndo = message.options?.undo === true;
-
                         if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
                         if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
 
@@ -1450,11 +1467,23 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 
                                 const failedCount = resultsList.querySelectorAll('.codicon-error').length;
                                 if (failedCount === 0) {
-                                    // SUCCESS: No more errors! Flip to Green.
-                                    mainBtn.innerHTML = '<span class="codicon codicon-check"></span> All Modifications Applied';
-                                    mainBtn.classList.add('applied');
-                                    mainBtn.style.removeProperty('background-color');
-                                    mainBtn.disabled = true;
+                                    if (isUndo) {
+                                        // SUCCESS: Undo completed! Restore Apply All state.
+                                        mainBtn.innerHTML = '<span class="codicon codicon-check-all"></span> Apply All Changes';
+                                        mainBtn.classList.remove('applied');
+                                        mainBtn.classList.remove('undo-all-btn');
+                                        mainBtn.style.removeProperty('background-color');
+                                        mainBtn.style.removeProperty('color');
+                                        mainBtn.disabled = false;
+                                    } else {
+                                        // SUCCESS: Apply completed! Transform to Undo All.
+                                        mainBtn.innerHTML = '<span class="codicon codicon-discard"></span> Undo All Changes';
+                                        mainBtn.classList.add('applied');
+                                        mainBtn.classList.add('undo-all-btn');
+                                        mainBtn.style.setProperty('background-color', 'var(--vscode-charts-red)', 'important');
+                                        mainBtn.style.setProperty('color', 'white', 'important');
+                                        mainBtn.disabled = false;
+                                    }
                                 } else {
                                     // STILL FAILED: Update count in orange bar
                                     mainBtn.innerHTML = `<span class="codicon codicon-warning"></span> Retry Failed (${failedCount})`;

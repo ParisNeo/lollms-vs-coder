@@ -187,18 +187,47 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         return { folder: ownerFolder, relativePath, uri };
     }
 
+    /**
+     * Resolves a nested list of symbols recursively to find the exact target range for replacement.
+     */
+    async function replaceSymbolContent(document: vscode.TextDocument, targetMember: string[], newContent: string): Promise<string> {
+        const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', document.uri);
+        if (!symbols || symbols.length === 0) {
+            throw new Error("No symbols resolved in this document. Ensure language services/extensions are active.");
+        }
+
+        const findSymbol = (syms: vscode.DocumentSymbol[], pathIdx: number): vscode.DocumentSymbol | null => {
+            const targetName = targetMember[pathIdx];
+            const match = syms.find(s => s.name === targetName);
+            if (!match) return null;
+            if (pathIdx === targetMember.length - 1) return match;
+            return findSymbol(match.children, pathIdx + 1);
+        };
+
+        const matchedSymbol = findSymbol(symbols, 0);
+        if (!matchedSymbol) {
+            throw new Error(`Could not find symbol: ${targetMember.join(' -> ')}`);
+        }
+
+        const text = document.getText();
+        const startOffset = document.offsetAt(matchedSymbol.range.start);
+        const endOffset = document.offsetAt(matchedSymbol.range.end);
+
+        return text.substring(0, startOffset) + newContent + text.substring(endOffset);
+    }
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean, autoSave?: boolean }) => {
         // Clean up hallucinated metadata like "(2 hunks)" from the file path
         const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
         
         // Handle Member-Targeted Replacement (path/to/file:ClassName:MethodName)
-        let targetMember: string[] =[];
+        let targetMember: string[] = [];
         let cleanPath = sanitizedFilePath;
 
         if (sanitizedFilePath.includes(':')) {
             const parts = sanitizedFilePath.split(':');
             cleanPath = parts[0];
-            targetMember = parts.slice(1);
+            targetMember = parts.slice(1).map(p => p.trim()).filter(p => p);
         }
 
         const resolution = await services.contextManager.resolveWorkspaceFromPath(cleanPath);
@@ -225,6 +254,9 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 await openDiffView(fileUri, originalContent, true); 
                 fileExists = true;
             } catch {
+                if (targetMember.length > 0) {
+                    return { success: false, error: "Cannot perform targeted member replacement on a non-existent file." };
+                }
                 const parentDir = vscode.Uri.joinPath(fileUri, '..');
                 await vscode.workspace.fs.createDirectory(parentDir);
 
@@ -245,6 +277,16 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     await vscode.window.showTextDocument(doc);
                 }
                 return { success: true, alreadyApplied: false };
+            }
+
+            let finalWriteContent = content;
+            if (targetMember.length > 0 && document) {
+                try {
+                    finalWriteContent = await replaceSymbolContent(document, targetMember, content);
+                } catch (err: any) {
+                    vscode.window.showErrorMessage(`Targeted symbol replacement failed: ${err.message}`);
+                    return { success: false, error: err.message };
+                }
             }
 
             // --- SOVEREIGN PROTECTION SHIELD: AUTOMATED WRITE INTERRUPT ---
@@ -314,6 +356,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             }
 
             // Open Diff View: Original (Disk) vs Proposed (Virtual)
+            // Open Diff View: Original (Disk) vs Proposed (Virtual)
             if (options?.autoSave && document) {
                 const edit = new vscode.WorkspaceEdit();
                 const lastLine = document.lineCount > 0 ? document.lineCount - 1 : 0;
@@ -321,7 +364,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     new vscode.Position(0, 0),
                     document.lineAt(lastLine).range.end
                 );
-                edit.replace(fileUri, fullRange, content);
+                edit.replace(fileUri, fullRange, finalWriteContent);
                 const applied = await vscode.workspace.applyEdit(edit);
                 if (applied) {
                     await document.save();
@@ -332,7 +375,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             if (!options?.silent) {
                 // Determine discussionId from active panel if available
                 const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
-                await services.diffManager.openDiff(fileUri, content, discussionId);
+                await services.diffManager.openDiff(fileUri, finalWriteContent, discussionId);
             }
 
             return { success: true, alreadyApplied: !!options?.autoSave };

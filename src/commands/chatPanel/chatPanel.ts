@@ -573,6 +573,19 @@ export class ChatPanel {
           const allSkillIds = Array.from(new Set([...projectSkills, ...discussionSkills]));
           const UI_PREVIEW_LIMIT = 10000; // Aligned with updateContextAndTokens for consistency
 
+          // Scan .lollms/selection/ folder for saved selections
+          let savedSelections: string[] = [];
+          const folders = vscode.workspace.workspaceFolders;
+          if (folders && folders.length > 0) {
+              const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+              try {
+                  const entries = await vscode.workspace.fs.readDirectory(selectionDir);
+                  savedSelections = entries
+                      .filter(([name]) => name.endsWith('.lollms-ctx'))
+                      .map(([name]) => name);
+              } catch (e) {}
+          }
+
           if (cachedContext) {
               const contextTextToSend = cachedContext.text.length > UI_PREVIEW_LIMIT 
                   ? cachedContext.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Preview truncated for UI performance. Total: ${cachedContext.text.length} chars]`
@@ -591,9 +604,10 @@ export class ChatPanel {
                 context: contextTextToSend,
                 files: includedFiles,
                 skills: cachedContext.importedSkills || [],
-                tools: equippedTools, // Pass tools explicitly on load
+                tools: equippedTools || [],
                 diagrams: cachedContext.diagrams || [],
-                briefing: this._currentDiscussion?.discussion_data_zone || "" 
+                briefing: this._currentDiscussion?.discussion_data_zone || "",
+                selections: savedSelections
             });
             this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
           } else {
@@ -604,7 +618,8 @@ export class ChatPanel {
                 files: includedFiles,
                 skills: allSkillIds.map(id => ({ id, name: '...' })),
                 diagrams: (this._currentDiscussion.activeDiagrams || []).map(type => ({ type, mermaid: '' })),
-                briefing: this._currentDiscussion?.discussion_data_zone || ""
+                briefing: this._currentDiscussion?.discussion_data_zone || "",
+                selections: savedSelections
             });
           }
       }
@@ -978,58 +993,6 @@ export class ChatPanel {
                 : context.text;
 
             if (!this._isDisposed) {
-                // --- AUTHORITATIVE DATA FETCH ---
-                const provider = this._contextManager.getContextStateProvider();
-                const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
-                const currentSkills = context.importedSkills || []; // Use the skills returned by getContextContent
-
-                // --- MULTI-SCOPE TOOL RESOLUTION ---
-                const discussionTools = this._currentDiscussion?.importedTools || [];
-                const projectTools = await this._contextManager.getActiveProjectTools();
-
-                const projectFiles = finalFiles.filter(isProjectFile);
-                const externalFiles = finalFiles.filter(f => !isProjectFile(f));
-
-                const renderFileList = (list: string[], emptyMsg: string, allowSummarize: boolean = false) => {
-                    if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
-                    return `<ul class="context-file-list">
-                        ${list.map(f => `
-                            <li class="context-item">
-                                <span class="codicon codicon-file"></span> 
-                                <span class="context-item-label" title="${f}">${f}</span>
-                                <div style="display:flex; gap:2px;">
-                                    ${allowSummarize ? `
-                                    <button class="summarize-context-btn" data-value="${f}" title="Synthesize / Clean / Summarize">
-                                        <span class="codicon codicon-wand"></span>
-                                    </button>` : ''}
-                                    <button class="open-context-btn" data-value="${f}" title="Inspect / Edit File">
-                                        <span class="codicon codicon-edit"></span>
-                                    </button>
-                                    <button class="remove-context-btn" data-type="file" data-value="${f}" title="Remove from context">
-                                        <span class="codicon codicon-close"></span>
-                                    </button>
-                                </div>
-                            </li>`).join('')}
-                    </ul>`;
-                };
-
-                const skillsList = finalSkills.length > 0
-                    ? `<div class="context-skill-list">
-                        ${finalSkills.map(s => `
-                            <div class="context-item skill-item" style="display: flex; align-items: flex-start; gap: 8px; border-bottom: 1px solid var(--vscode-widget-border); padding: 4px 0;">
-                                <details class="info-collapsible" style="flex: 1; border: none; padding: 0;">
-                                    <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600;">${sanitizer.sanitize(s.name)}</summary>
-                                    <div class="skill-content" style="padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 4px; font-family: var(--vscode-editor-font-family); font-size: 10px; max-height: 150px; overflow-y: auto;">
-                                        ${sanitizer.sanitize(s.content)}
-                                    </div>
-                                </details>
-                                <button class="remove-context-btn" data-type="skill" data-value="${s.id}" title="Remove skill" style="padding: 2px; opacity: 0.6;">
-                                    <span class="codicon codicon-close"></span>
-                                </button>
-                            </div>
-                        `).join('')}
-                    </div>`
-                    : '<div class="empty-context-msg">No specialized skills currently active.</div>';
                 // Scan .lollms/selection/ folder for saved selections
                 let savedSelections: string[] = [];
                 const folders = vscode.workspace.workspaceFolders;
@@ -1038,10 +1001,15 @@ export class ChatPanel {
                     try {
                         const entries = await vscode.workspace.fs.readDirectory(selectionDir);
                         savedSelections = entries
-                            .filter(([name, type]) => type === vscode.FileType.File && name.endsWith('.lollms-ctx'))
+                            .filter(([name]) => name.endsWith('.lollms-ctx'))
                             .map(([name]) => name);
                     } catch (e) {}
                 }
+
+                // --- AUTHORITATIVE DATA FETCH ---
+                const provider = this._contextManager.getContextStateProvider();
+                const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
+                const currentSkills = context.importedSkills || []; // Use the skills returned by getContextContent
 
                 this._panel.webview.postMessage({ 
                     command: 'updateContext', 
@@ -2992,8 +2960,341 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                 timestamp: Date.now()
             };
 
-            // Persist the shell in history immediately so it survives context recalcs and background scans
+            // Mount the single visible assistant bubble in the discussion history and UI
             await this.addMessageToDiscussion(initialAssistantMessage, true);
+
+            // Maintain the internal conversational thread context used during the multi-turn loop
+            const loopMessages: ChatMessage[] = [
+                { role: 'system', content: baseInstructions },
+                ...history,
+                projectContextUserMessage
+            ];
+            if (currentPromptMessage) {
+                loopMessages.push(currentPromptMessage);
+            }
+
+            const runTurn = async () => {
+                if (controller?.signal.aborted || currentTurnIndex >= maxTurnsLimit) return;
+                currentTurnIndex++;
+
+                if (consecutiveFailsCount >= maxFailsAllowed) {
+                    const finalErrorMsg = `\n\n🛑 **DYNAMIC MODE TERMINATED**: Exceeded maximum self-correction retries (${maxFailsAllowed}). Please adjust your prompt.`;
+                    currentFullResponseBuffer += finalErrorMsg;
+                    await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
+                    return;
+                }
+
+                // Recalculate on-demand context weights to keep track of dynamic folder/file selections
+                const currentData = await this._contextManager.getContextContent({ 
+                    importedSkillIds: importedIds,
+                    includeTree: !isContextMuted,
+                    modelName: targetModel 
+                });
+
+                // Check context window boundary against the 85% safety threshold
+                const tokenCheck = await this._lollmsAPI.tokenize(currentData.text, targetModel);
+                const limitCheck = await this._lollmsAPI.getContextSize(targetModel);
+                const usageRatio = tokenCheck.count / limitCheck.context_size;
+
+                if (usageRatio > 0.85) {
+                    this.log(`[Token Economy] Active context near capacity: ${Math.round(usageRatio * 100)}%`);
+                    const warningMsg = `\n\n⚠️ **TOKEN BUDGET EXCEEDED**: Your active context has reached **${Math.round(usageRatio * 100)}%** capacity. Please use \`remove_files\` to release unused file slots.`;
+                    currentFullResponseBuffer += warningMsg;
+                    await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
+                    completedDynamicActions.push(`⚠️ WARNING: Exceeded 85% token budget.`);
+                }
+
+                // Format the memory scratchpad and append it to the active prompt context
+                const scratchpadBlock = completedDynamicActions.length > 0 
+                    ? `\n### 🧠 MEMORY SCRATCHPAD (YOUR COMPLETED RESEARCH STEPS)\n` + 
+                      completedDynamicActions.map((a, i) => `${i+1}. ${a}`).join('\n')
+                    : "";
+
+                const isFinalTurn = currentTurnIndex > 1 && !currentFullResponseBuffer.match(/<(add_files_to_context|query_architecture|lollms_tool|search_web)/);
+                const isCodeUpdate = typeof message.content === 'string' && (message.content.toLowerCase().includes('fix') || message.content.toLowerCase().includes('update') || message.content.toLowerCase().includes('write'));
+
+                const profileId = (isFinalTurn && isCodeUpdate) ? (this._discussionCapabilities.responseProfileId || 'structured') : 'minimalist';
+                const activeProfile = (config.get('responseProfiles') || []).find((p: any) => p.id === profileId) || { name: 'Minimalist', systemPrompt: '' };
+
+                const finalBaseInstructions = await getProcessedSystemPrompt(
+                    'chat', 
+                    this._discussionCapabilities, 
+                    personaContent + `\n\n${activeProfile.systemPrompt}`, 
+                    undefined, 
+                    forceFullCode, 
+                    { 
+                        ...context, 
+                        tree: !isContextMuted ? currentData.projectTree : '', 
+                        files: currentData.selectedFilesContent, 
+                        projectName: contextData.projectName,
+                        toolManager: this.agentManager?.['toolManager']
+                    } 
+                );
+
+                // Update the system instructions for this specific generation turn
+                loopMessages[0] = { role: 'system', content: finalBaseInstructions };
+
+                let turnResponse = "";
+                let interceptedTag: string | null = null;
+                let interceptedParams: string | null = null;
+                let streamBuffer = ""; 
+
+                this.processManager.updateDescription(processId, `Dynamic Turn ${currentTurnIndex}: Generating...`);
+                this.updateGeneratingState();
+
+                const turnStreamController = new AbortController();
+                const mainAbortListener = () => {
+                    turnStreamController.abort();
+                };
+                controller.signal.addEventListener('abort', mainAbortListener);
+
+                try {
+                    await this._lollmsAPI.sendChat(loopMessages, (chunk) => {
+                        if (turnStreamController.signal.aborted || controller.signal.aborted) return;
+                        turnResponse += chunk;
+                        streamBuffer += chunk;
+
+                        const openIdx = streamBuffer.indexOf('<');
+                        if (openIdx !== -1) {
+                            const textBefore = streamBuffer.substring(0, openIdx);
+                            if (textBefore.length > 0) {
+                                currentFullResponseBuffer += textBefore;
+                                this._panel.webview.postMessage({ 
+                                    command: 'appendMessageChunk', 
+                                    id: assistantMessageId, 
+                                    chunk: textBefore 
+                                });
+                            }
+                            streamBuffer = streamBuffer.substring(openIdx);
+
+                            const isInsideThink = (() => {
+                                const openTags = ['<think>', '<thinking>', '<analysis>', '<reasoning>'];
+                                for (const tag of openTags) {
+                                    const openIdx = turnResponse.lastIndexOf(tag);
+                                    if (openIdx !== -1) {
+                                        const closeTag = tag.replace('<', '</');
+                                        const closeIdx = turnResponse.indexOf(closeTag, openIdx);
+                                        if (closeIdx === -1) return true;
+                                    }
+                                }
+                                return false;
+                            })();
+
+                            let hasMatch = false;
+                            if (!isInsideThink) {
+                                const isInsideCodeBlock = (() => {
+                                    let openBackticks3 = 0;
+                                    let openBackticks1 = 0;
+                                    for (let idx = 0; idx < turnResponse.length; idx++) {
+                                        if (turnResponse.substring(idx, idx + 3) === '```') {
+                                            openBackticks3 = openBackticks3 === 0 ? 3 : 0;
+                                            idx += 2;
+                                        } else if (turnResponse[idx] === '`' && openBackticks3 === 0) {
+                                            openBackticks1 = openBackticks1 === 0 ? 1 : 0;
+                                        }
+                                    }
+                                    return openBackticks3 > 0 || openBackticks1 > 0;
+                                })();
+
+                                if (!isInsideCodeBlock) {
+                                    const checkTagEndings = [
+                                        { pattern: /(?:^|[\r\n])[ \t]*<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/i, tag: 'add_files_to_context' },
+                                        { pattern: /(?:^|[\r\n])[ \t]*<query_architecture>([\s\S]*?)<\/query_architecture>/i, tag: 'query_architecture' },
+                                        { pattern: /(?:^|[\r\n])[ \t]*<lollms_tool>([\s\S]*?)<\/lollms_tool>/i, tag: 'lollms_tool' }
+                                    ];
+
+                                    for (const t of checkTagEndings) {
+                                        const match = streamBuffer.match(t.pattern);
+                                        if (match) {
+                                            interceptedTag = t.tag;
+                                            interceptedParams = match[1];
+                                            streamBuffer = ""; 
+                                            hasMatch = true;
+                                            turnStreamController.abort(); 
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!hasMatch) {
+                                currentFullResponseBuffer += streamBuffer;
+                                this._panel.webview.postMessage({ 
+                                    command: 'appendMessageChunk', 
+                                    id: assistantMessageId, 
+                                    chunk: streamBuffer 
+                                });
+                                streamBuffer = "";
+                            }
+                        } else {
+                            currentFullResponseBuffer += streamBuffer;
+                            this._panel.webview.postMessage({ 
+                                command: 'appendMessageChunk', 
+                                id: assistantMessageId, 
+                                chunk: streamBuffer 
+                            });
+                            streamBuffer = "";
+                        }
+                    }, turnStreamController.signal, this._currentDiscussion.model, {
+                        capabilities: this._discussionCapabilities,
+                        temperature: this._discussionCapabilities.temperature
+                    });
+                } catch (err: any) {
+                    if (err.name !== 'AbortError' && !interceptedTag) {
+                        throw err;
+                    }
+                } finally {
+                    controller.signal.removeEventListener('abort', mainAbortListener);
+                }
+
+                if (streamBuffer.length > 0 && !interceptedTag && !controller.signal.aborted) {
+                    currentFullResponseBuffer += streamBuffer;
+                    this._panel.webview.postMessage({ 
+                        command: 'appendMessageChunk', 
+                        id: assistantMessageId, 
+                        chunk: streamBuffer 
+                    });
+                }
+
+                if (interceptedTag) {
+                    this.processManager.updateDescription(processId, `Executing tool: ${interceptedTag}...`);
+                    this.updateGeneratingState();
+
+                    // Render the tool call to the single visible assistant bubble
+                    await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
+
+                    let toolResult = "";
+                    let isSuccess = true;
+
+                    const currentFingerprint = `${interceptedTag}:${interceptedParams!.trim()}`;
+                    const isDuplicateRepetition = (currentFingerprint === lastExecutedFingerprint);
+                    lastExecutedFingerprint = currentFingerprint;
+
+                    try {
+                        if (isDuplicateRepetition) {
+                            isSuccess = false;
+                            toolResult = `Error: REPETITIVE CALL DETECTED. You already attempted to call '${interceptedTag}' with these exact parameters. Please change your tactics.`;
+                            completedDynamicActions.push(`Attempted identical duplicate tool call (BLOCKED).`);
+                        } else if (interceptedTag === 'add_files_to_context') {
+                            const filesToAdd = interceptedParams!.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
+                            const hasProjectRoot = filesToAdd.some(f => f === '.' || f === '/' || f === '*');
+                            if (hasProjectRoot) {
+                                toolResult = "Error: Adding the entire project root folder ('.') is forbidden to prevent context window bloating.";
+                                isSuccess = false;
+                                completedDynamicActions.push("Attempted project-wide import (BLOCKED).");
+                            } else {
+                                const added = await this._contextManager.getContextStateProvider()?.addFilesToContext(filesToAdd) || [];
+                                if (added.length > 0) {
+                                    toolResult = `Success: Added ${added.join(', ')} to context.`;
+                                    completedDynamicActions.push("Loaded " + added.length + " files into memory.");
+                                } else {
+                                    toolResult = `Error: Could not resolve target files. Check if they exist on disk.`;
+                                    isSuccess = false;
+                                    completedDynamicActions.push("Failed to load requested files (not found).");
+                                }
+                            }
+                        } else if (interceptedTag === 'query_architecture') {
+                            const sparql = interceptedParams!.trim();
+                            const rawResult = this.agentManager.codeGraphManager.executeSparql(sparql);
+                            toolResult = rawResult || "No matches.";
+                            if (rawResult.includes("Error") || rawResult.includes("failed")) {
+                                isSuccess = false;
+                            }
+                            completedDynamicActions.push(`Executed SPARQL query: "${sparql.split('\n')[0]}..."`);
+                        } else if (interceptedTag === 'lollms_tool') {
+                            const rawJson = interceptedParams!.trim();
+                            let parsedCall: any = {};
+                            try {
+                                parsedCall = JSON.parse(rawJson);
+                            } catch (e) {
+                                const repaired = rawJson.replace(/\\`/g, '`').replace(/[\r\n\t]/g, ' ').replace(/,\s*([\]}])/g, '$1');
+                                parsedCall = JSON.parse(repaired);
+                            }
+                            const name = parsedCall.name || "unknown";
+                            const parsedParams = parsedCall.arguments || parsedCall.params || {};
+
+                            const toolDef = this.agentManager.getTools().find((t: any) => t.name === name);
+                            if (toolDef) {
+                                const env = { agentManager: this.agentManager, workspaceRoot: folders[0], contextManager: this._contextManager, lollmsApi: this._lollmsAPI };
+                                const result = await toolDef.execute(parsedParams, env, controller.signal);
+                                toolResult = result.output;
+                                isSuccess = result.success;
+                                completedDynamicActions.push(`Executed tool: ${name}`);
+                            } else {
+                                toolResult = `Error: Tool '${name}' is not equipped or does not exist.`;
+                                isSuccess = false;
+                                completedDynamicActions.push(`Failed to run tool: ${name} (not found).`);
+                            }
+                        }
+                    } catch (executionErr: any) {
+                        isSuccess = false;
+                        toolResult = `Runtime Error: ${executionErr.message}`;
+                        completedDynamicActions.push(`Crashed executing tool.`);
+                    }
+
+                    if (!isSuccess) {
+                        consecutiveFailsCount++;
+                        completedDynamicActions.push(`⚠️ SELF-CORRECTION (Attempt ${consecutiveFailsCount}/${maxFailsAllowed}): Tool failed with "${toolResult.substring(0, 100)}...".`);
+                    } else {
+                        consecutiveFailsCount = 0;
+                    }
+
+                    // Render collapsible widget into the active webview bubble
+                    const statusIcon = isSuccess ? 'codicon-tools' : 'codicon-error';
+                    const summaryColor = isSuccess ? '' : 'color:var(--vscode-charts-red);';
+                    const headerPrefix = isSuccess ? 'Ran Tool' : 'Tool Failed';
+
+                    if (interceptedTag === 'add_files_to_context') {
+                        const filesToAdd = interceptedParams!.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
+                        currentFullResponseBuffer += `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-cloud-download' : 'codicon-error'}"></i> ${isSuccess ? 'Loaded Files Context' : 'File Loading Failed'}: ${filesToAdd.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                    } else if (interceptedTag === 'query_architecture') {
+                        const sparql = interceptedParams!.trim();
+                        currentFullResponseBuffer += `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${statusIcon}"></i> ${isSuccess ? 'Ran SPARQL Query' : 'SPARQL Query Failed'}</summary><div class="processing-body">\`\`\`sparql\n${sparql}\n\`\`\`\n\n**Result:**\n${toolResult}</div></details>\n\n`;
+                    } else {
+                        currentFullResponseBuffer += `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${statusIcon}"></i> ${headerPrefix}: ${interceptedTag}</summary><div class="processing-body">**Output:**\n${toolResult}</div></details>\n\n`;
+                    }
+
+                    await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
+
+                    // Hydrate internal prompt history thread for the next iteration step
+                    loopMessages.push({ role: 'assistant', content: turnResponse });
+                    loopMessages.push({ 
+                        role: 'user', 
+                        content: `### 📋 TOOL EXECUTION RESULT (${interceptedTag})\n${toolResult}\n\nReview this output, adjust your strategy if needed, and continue with the next logical step of the user request.` 
+                    });
+
+                    // Recurse into next turn step
+                    await runTurn();
+                } else {
+                    // Final turn completed. Persist clean message to discussion, omitting internal tool artifacts
+                    const cleanFinalText = stripThinkingTags(turnResponse).trim();
+                    const finalAssistantMessage: ChatMessage = {
+                        id: assistantMessageId,
+                        role: 'assistant',
+                        content: cleanFinalText,
+                        model: targetModel,
+                        personalityName: personaName,
+                        timestamp: Date.now()
+                    };
+                    
+                    // Replace the working dynamic stream message with the clean synthesized one
+                    const msgIdx = this._currentDiscussion!.messages.findIndex(m => m.id === assistantMessageId);
+                    if (msgIdx !== -1) {
+                        this._currentDiscussion!.messages[msgIdx] = finalAssistantMessage;
+                    }
+                    if (!this._currentDiscussion!.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion!);
+                    }
+
+                    if (!this._isDisposed) {
+                        this._panel.webview.postMessage({ 
+                            command: 'finalizeMessage', 
+                            id: assistantMessageId, 
+                            fullContent: currentFullResponseBuffer 
+                        });
+                    }
+                }
+            };
 
             await runTurn();
 
@@ -3006,7 +3307,6 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
             this.updateGeneratingState();
             return; // Terminate execution to bypass standard non-looping flow below
         }
-
         // 4. Build Final Sequence for standard (non-dynamic) flow...
         let messagesToSend: ChatMessage[] = [
             { role: 'system', content: baseInstructions },
@@ -6348,17 +6648,22 @@ Task:
     <html lang="en">
     <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="
+     <meta http-equiv="Content-Security-Policy" content="
         default-src 'none';
         connect-src ${webview.cspSource} https:;
-        style-src ${webview.cspSource} 'unsafe-inline';
-        font-src ${webview.cspSource};
+        style-src ${webview.cspSource} 'unsafe-inline' https://cdn.jsdelivr.net;
+        font-src ${webview.cspSource} https://cdn.jsdelivr.net;
         img-src ${webview.cspSource} data: blob:;
-        script-src 'nonce-${nonce}' 'unsafe-eval' https://cdnjs.cloudflare.com;
+        script-src 'nonce-${nonce}' 'unsafe-eval' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
         worker-src 'self' blob: https://cdnjs.cloudflare.com;
     ">
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Lollms Chat</title>
+    <!-- Secure KaTeX Math typesetting with Subresource Integrity -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+    <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
+    <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
+
     <!-- PDF.js for local rendering (Pure TS/JS, no backend required) -->
     <script nonce="${nonce}" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script nonce="${nonce}">
@@ -6370,11 +6675,6 @@ Task:
     <link href="${codiconsUri}" rel="stylesheet" />
     <link href="${cssUri}" rel="stylesheet" />
     <link href="${prismThemeUri}" rel="stylesheet" />
-    <style>
-        :root {
-            --lollms-icon: url("${lollmsIconUri}");
-        }
-    </style>
     </head>
     <body>
     <div class="chat-container">

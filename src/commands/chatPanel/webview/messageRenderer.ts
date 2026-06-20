@@ -904,8 +904,11 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
 (window as any).startEdit = startEdit;
 
 function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean, start: number, end: number })[] {
+    // 🧠 Strip thinking blocks BEFORE running path extraction to keep index alignments perfect
+    const cleanContent = (window as any).processThinkTags ? (window as any).processThinkTags(content).processedContent : content;
+
     const infos: any[] = [];
-    const lines = content.split('\n');
+    const lines = cleanContent.split('\n');
     let inBlock = false;
     let fenceLength = 0;
     let depth = 0;
@@ -920,21 +923,18 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
 
         if (!inBlock) {
             // --- NAKED AIDER DETECTION ---
-            // If we see a SEARCH marker outside a code fence, treat it as the start of a block
             if (line.startsWith('<<<<<<< SEARCH')) {
                 inBlock = true;
-                // Heuristic: Find the nearest file path mentioned in the 10 lines above
                 let inferredPath = "";
                 for (let k = i - 1; k >= Math.max(0, i - 10); k--) {
                     const pathMatch = lines[k].match(/[`"']?([a-zA-Z0-9._\-\/]+\.[a-z0-9]+)[`"']?/);
                     if (pathMatch) { inferredPath = pathMatch[1]; break; }
                 }
-                infos.push({ type: 'replace', path: inferredPath, stripFirstLine: false, start: currentOffset, isClosed: false });
+                infos.push({ type: 'replace', path: inferredPath, start: currentOffset, isClosed: false });
                 currentOffset += lineWithNewline.length;
                 continue;
             }
 
-            // Check for XML operations outside blocks
             const xmlRename = line.match(/<rename\s+old=["']([^"']+)["']\s+new=["']([^"']+)["']\s*\/>/i);
             const xmlDelete = line.match(/<delete\s+path=["']([^"']+)["']\s*\/>/i);
             const xmlSelect = line.match(/<select\s+path=["']([^"']+)["']\s*\/>/i);
@@ -970,10 +970,11 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                         prefix = parts[1].trim().toLowerCase();
                         pathStr = parts.slice(2).join(':').trim();
                     } else {
+                        // Support full addressing: [lang]:[file_path]:[class_name]:[method_name]
+                        // Path is the second part (index 1)
                         pathStr = parts.slice(1).join(':').trim();
                     }
 
-                    // Map prefix to type, defaulting to 'file' for language names
                     const actionTypes = ['insert', 'replace', 'diff', 'delete_code'];
                     if (actionTypes.includes(prefix)) {
                         type = prefix === 'delete_code' ? 'delete' : prefix;
@@ -1002,7 +1003,7 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                     while (j >= 0 && lines[j].trim() === '') j--;
                     if (j >= 0) {
                         const prevLine = lines[j].trim();
-                        const m = prevLine.match(/^(?:(?:\*\*|__)?(File|Diff|Insert|Replace|DeleteCode)(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                        const m = prevLine.match(/^(?:(?:\textbf|__)?(File|Diff|Insert|Replace|DeleteCode)(?:\textbf|__)?[:\s])\s*(.+)$/i);
                         if (m) {
                             const map: any = { 'File': 'file', 'Diff': 'diff', 'Insert': 'insert', 'Replace': 'replace', 'DeleteCode': 'delete' };
                             type = map[m[1]]; pathStr = m[2].trim();
@@ -1065,7 +1066,7 @@ function looksLikeDiff(text: string): boolean {
 }
 
 function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSource?: any, isFinal: boolean = false) {
-    const pres = container.querySelectorAll('pre');
+    const pres = Array.from(container.querySelectorAll('pre')).filter(pre => !pre.closest('.plan-scratchpad'));
     if (pres.length === 0) return;
 
     let originalContentText = '';
@@ -1147,9 +1148,16 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         details.dataset.rawCode = codeText;
         details.id = `block-${messageId}-${index}`;
 
+        // Format path representation to display targeted OOP members beautifully if present
+        let displayPathVal = pathVal;
+        if (pathVal.includes(':')) {
+            const parts = pathVal.split(':');
+            displayPathVal = parts.join(' › ');
+        }
+
         const summary = document.createElement('summary');
         summary.className = 'code-summary';
-        summary.innerHTML = `<div class="summary-lang-label"><span class="lang-badge" data-lang="${language.toLowerCase()}">${language}</span>${pathVal ? ` : <input type="text" class="path-editor-input" value="${pathVal}"><button class="code-action-btn goto-file-btn" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto: Open this file">Goto</button>` : ''}${isMalformedAider ? '<span class="malformed-badge">Malformed Patch</span>' : ''}</div>`;
+        summary.innerHTML = `<div class="summary-lang-label"><span class="lang-badge" data-lang="${language.toLowerCase()}">${language}</span>${pathVal ? ` : <input type="text" class="path-editor-input" value="${pathVal}" style="display:none;"><span class="path-display-label" style="font-family: var(--vscode-editor-font-family); font-size: 11px; font-weight: bold; margin-left: 8px; color: var(--vscode-textLink-foreground); cursor: pointer;" title="Double-click to edit path">${displayPathVal}</span><button class="code-action-btn goto-file-btn" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto: Open this file">Goto</button>` : ''}${isMalformedAider ? '<span class="malformed-badge">Malformed Patch</span>' : ''}</div>`;
 
         const actions = document.createElement('div');
         actions.className = 'code-actions';
@@ -1253,6 +1261,30 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
                 applyBtn.id = applyBtnId;
                 applyBtn.disabled = isDisabled; // Only disabled if block is still streaming/unclosed
                 actions.appendChild(applyBtn);
+
+                // ADDED: Companion Undo Button for Aider/Full File block
+                if (isFullyApplied) {
+                    const undoBtn = createButton(
+                        'Undo',
+                        'codicon-discard',
+                        () => {
+                            const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
+                            undoBtn.innerHTML = '<div class="spinner"></div>';
+                            vscode.postMessage({ 
+                                command: isAider ? 'replaceCode' : (isDiff ? 'applyPatchContent' : 'applyFileContent'), 
+                                filePath: finalPath, 
+                                content: codeText, 
+                                messageId: currentMsgId, 
+                                blockIndex: blockIdx,
+                                options: { undo: true }
+                            });
+                        },
+                        'code-action-btn delete-btn undo-block-btn',
+                        'Undo all changes for this block'
+                    );
+                    undoBtn.disabled = isDisabled;
+                    actions.appendChild(undoBtn);
+                }
             }
         } else {
             // ADDED: Play button for code without path
@@ -1288,14 +1320,32 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         // Assemble Header (Summary)
         details.appendChild(summary);
 
-        // Attach listener for the Goto button
+        // Attach listener for the Goto and double-click Path Edit buttons
         if (pathVal) {
             const gotoBtn = summary.querySelector('.goto-file-btn') as HTMLElement;
             if (gotoBtn) {
                 gotoBtn.onclick = (e) => {
                     e.stopPropagation();
                     const currentPath = (summary.querySelector('.path-editor-input') as HTMLInputElement).value;
-                    vscode.postMessage({ command: 'openFile', path: currentPath });
+                    vscode.postMessage({ command: 'openFile', path: currentPath.split(':')[0] });
+                };
+            }
+
+            const pathDisplayLabel = summary.querySelector('.path-display-label') as HTMLElement;
+            const pathEditorInput = summary.querySelector('.path-editor-input') as HTMLInputElement;
+            if (pathDisplayLabel && pathEditorInput) {
+                pathDisplayLabel.ondblclick = (e) => {
+                    e.stopPropagation();
+                    pathDisplayLabel.style.display = 'none';
+                    pathEditorInput.style.display = 'inline-block';
+                    pathEditorInput.focus();
+                };
+                pathEditorInput.onblur = () => {
+                    pathEditorInput.style.display = 'none';
+                    pathDisplayLabel.style.display = 'inline-block';
+                    
+                    const newVal = pathEditorInput.value.trim();
+                    pathDisplayLabel.textContent = newVal.includes(':') ? newVal.split(':').join(' › ') : newVal;
                 };
             }
         }
@@ -1444,65 +1494,96 @@ export interface ParsedThought {
 }
 
 export function processThinkTags(content: string): { thoughts: ParsedThought[], processedContent: string } {
-    // Expose to window so that artifacts inside Agent Cards can use it during dynamic rendering
     if (!(window as any).processThinkTags) {
         (window as any).processThinkTags = processThinkTags;
     }
     const thoughts: ParsedThought[] = [];
     if (typeof content !== 'string') return { thoughts, processedContent: '' };
 
-    let workingContent = content;
-
-    // --- HEURISTIC: DANGLING CLOSURE INFERENCE ---
-    const closeTags = ['</think>', '</thinking>', '</analysis>', '</reasoning>'];
-    for (const closeTag of closeTags) {
-        const closeIdx = workingContent.indexOf(closeTag);
-        if (closeIdx !== -1) {
-            const beforeClose = workingContent.substring(0, closeIdx);
-            const openTag = closeTag.replace('/', '');
-
-            if (!beforeClose.includes(openTag)) {
-                thoughts.push({ 
-                    tag: openTag.replace(/[<>]/g, ''), 
-                    content: beforeClose.trim(),
-                    closed: true
-                });
-                workingContent = workingContent.substring(closeIdx + closeTag.length).trim();
-                break; // Process only the first dangling closure as the leading thought
-            }
-        }
+    // 1. Identify all backtick code block ranges to protect them from parsing
+    const protectedRanges: { start: number, end: number }[] = [];
+    const fenceRegex = /```[\s\S]*?(?:```|$)|`[^`\n\r]+`/g;
+    let fMatch;
+    while ((fMatch = fenceRegex.exec(content)) !== null) {
+        protectedRanges.push({ start: fMatch.index, end: fMatch.index + fMatch[0].length });
     }
 
-    // --- UNCLOSED ACTIVE THOUGHTS DETECTOR (STREAM-AWARE) ---
-    // Look for an opening tag where no matching closing tag has arrived yet
+    const isIndexProtected = (index: number) => {
+        return protectedRanges.some(r => index >= r.start && index < r.end);
+    };
+
+    const lines = content.split('\n');
+    let workingContent = "";
+    
     const openTags = ['<think>', '<thinking>', '<analysis>', '<reasoning>'];
-    for (const openTag of openTags) {
-        const openIdx = workingContent.indexOf(openTag);
-        if (openIdx !== -1) {
-            const closeTag = openTag.replace('<', '</');
-            const closeIdx = workingContent.indexOf(closeTag, openIdx);
+    const closeTags = ['</think>', '</thinking>', '</analysis>', '</reasoning>'];
 
-            if (closeIdx === -1) {
-                // Thought block is currently unclosed (active streaming)
-                const thoughtText = workingContent.substring(openIdx + openTag.length);
-                thoughts.push({
-                    tag: openTag.replace(/[<>]/g, ''),
-                    content: thoughtText,
-                    closed: false
-                });
-                // Remove the unclosed thought block entirely from the main markdown display
-                workingContent = workingContent.substring(0, openIdx).trim();
-                break;
+    let activeThought: ParsedThought | null = null;
+    let currentOffset = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+        const lineText = lines[i];
+        const lineTrim = lineText.trim();
+        const lineWithNL = lineText + (i < lines.length - 1 ? '\n' : '');
+
+        // Check if current line starts at a protected index (inside code block)
+        if (isIndexProtected(currentOffset)) {
+            if (activeThought) {
+                activeThought.content += lineWithNL;
+            } else {
+                workingContent += lineWithNL;
+            }
+            currentOffset += lineWithNL.length;
+            continue;
+        }
+
+        // Look for line-starting opening tag
+        const openMatch = openTags.find(tag => lineTrim.startsWith(tag));
+        // Look for line-starting closing tag
+        const closeMatch = closeTags.find(tag => lineTrim.startsWith(tag));
+
+        if (openMatch && !activeThought) {
+            // Start of a valid thinking block
+            const tagName = openMatch.replace(/[<>]/g, '');
+            activeThought = {
+                tag: tagName,
+                content: lineTrim.substring(openMatch.length) + (i < lines.length - 1 ? '\n' : ''),
+                closed: false
+            };
+        } else if (closeMatch && activeThought) {
+            // End of active thinking block
+            activeThought.closed = true;
+            // Trim any trailing/leading whitespace from the gathered thought content
+            activeThought.content = activeThought.content.trim();
+            thoughts.push(activeThought);
+            activeThought = null;
+        } else if (closeMatch && !activeThought) {
+            // Dangling line-start closure: Treat preceding text as the thought
+            const tagName = closeMatch.replace(/[<\/>]/g, '');
+            thoughts.push({
+                tag: tagName,
+                content: workingContent.trim(),
+                closed: true
+            });
+            workingContent = ""; // Clear working content
+        } else {
+            if (activeThought) {
+                activeThought.content += lineWithNL;
+            } else {
+                workingContent += lineWithNL;
             }
         }
+
+        currentOffset += lineWithNL.length;
     }
 
-    const thinkRegex = /<(think|thinking|analysis|reasoning)>([\s\S]*?)<\/\1>/g;
-    const processedContent = workingContent.replace(thinkRegex, (match, tag, thoughtContent) => {
-        thoughts.push({ tag, content: thoughtContent, closed: true });
-        return '';
-    });
-    return { thoughts, processedContent: processedContent.trim() };
+    // Handle unclosed active streaming thoughts
+    if (activeThought) {
+        activeThought.content = activeThought.content.trim();
+        thoughts.push(activeThought);
+    }
+
+    return { thoughts, processedContent: workingContent.trim() };
 }
 
 export function scheduleRender(messageId: string) {
@@ -1950,7 +2031,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     // 1. EXTRACT AND PACKAGE COHERENT REASONING BLOCKS (THOUGHTS)
     const thinkResult = processThinkTags(sourceText);
-    sourceText = thinkResult.processedContent;
+    const mainProcessedContent = thinkResult.processedContent;
 
     let thoughtsHtml = "";
     if (thinkResult.thoughts.length > 0) {
@@ -1997,11 +2078,12 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 </div>`;
         });
     }
+
     // 2. EXCLUDE BACKTICK CODE FENCES FROM PLUGIN PARSING
     const forbidden: {start: number, end: number}[] = [];
     const fenceRegex = /```[\s\S]*?(?:```|$)|`[^`\n\r]+`/g;
     let fMatch;
-    while ((fMatch = fenceRegex.exec(sourceText)) !== null) {
+    while ((fMatch = fenceRegex.exec(mainProcessedContent)) !== null) {
         forbidden.push({ start: fMatch.index, end: fMatch.index + fMatch[0].length });
     }
 
@@ -2013,7 +2095,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         if (!plugin.tagPattern) return;
         plugin.tagPattern.lastIndex = 0;
         let pMatch;
-        while ((pMatch = plugin.tagPattern.exec(sourceText)) !== null) {
+        while ((pMatch = plugin.tagPattern.exec(mainProcessedContent)) !== null) {
             const matchIndex = pMatch.index;
             const fullMatch = pMatch[0];
 
@@ -2021,14 +2103,14 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             if (isInside) continue;
 
             // Strict Line-Start check: verify the match begins at the start of a line
-            const hasLineStart = matchIndex === 0 || sourceText[matchIndex - 1] === '\n' || sourceText[matchIndex - 1] === '\r';
+            const hasLineStart = matchIndex === 0 || mainProcessedContent[matchIndex - 1] === '\n' || mainProcessedContent[matchIndex - 1] === '\r';
             if (!hasLineStart) continue;
 
             // Also check that the closing tag is at the start of a line (if it is not self-closing)
             const isSelfClosing = fullMatch.trim().endsWith('/>');
             if (!isSelfClosing) {
                 const closingTagIndex = matchIndex + fullMatch.lastIndexOf('</');
-                const hasClosingLineStart = closingTagIndex > 0 && (sourceText[closingTagIndex - 1] === '\n' || sourceText[closingTagIndex - 1] === '\r');
+                const hasClosingLineStart = closingTagIndex > 0 && (mainProcessedContent[closingTagIndex - 1] === '\n' || mainProcessedContent[closingTagIndex - 1] === '\r');
                 if (!hasClosingLineStart) continue;
             }
 
@@ -2062,7 +2144,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         if (seg.start > cursor) {
             finalSegments.push({
                 type: 'markdown',
-                content: sourceText.substring(cursor, seg.start),
+                content: mainProcessedContent.substring(cursor, seg.start),
                 start: cursor,
                 end: seg.start
             });
@@ -2071,12 +2153,12 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         cursor = seg.end;
     });
 
-    if (cursor < sourceText.length) {
+    if (cursor < mainProcessedContent.length) {
         finalSegments.push({
             type: 'markdown',
-            content: sourceText.substring(cursor),
+            content: mainProcessedContent.substring(cursor),
             start: cursor,
-            end: sourceText.length
+            end: mainProcessedContent.length
         });
     }
 
@@ -2167,18 +2249,68 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     const totalHtml = thoughtsHtml + finalHtml + imagesHtml;
 
     contentDiv.innerHTML = DOMPurify.sanitize(totalHtml, SANITIZE_CONFIG);
+
+    // Secure Auto-render invocation for Math expressions in Chat Messages
+    if (typeof (window as any).renderMathInElement === 'function') {
+        try {
+            (window as any).renderMathInElement(contentDiv, {
+                delimiters: [
+                    {left: '$$', right: '$$', display: true},
+                    {left: '$', right: '$', display: false},
+                    {left: '\\\\(', right: '\\\\)', display: false},
+                    {left: '\\\\[', right: '\\\\]', display: true}
+                ],
+                throwOnError: false
+            });
+        } catch (mathErr) {
+            console.warn("KaTeX renderMathInElement failed", mathErr);
+        }
+    }
+
+    // Highlight any raw code blocks inside the thoughts area cleanly without action UI
+    contentDiv.querySelectorAll('.plan-scratchpad pre code').forEach(block => {
+        Prism.highlightElement(block);
+    });
+
     enhanceCodeBlocks(contentDiv, messageId, rawContent, isFinal);
 
         // Attach listener for the new Apply All button
         const applyAllBtn = contentDiv.querySelector(`#apply-all-${messageId}`) as HTMLButtonElement;
         if (applyAllBtn) {
             applyAllBtn.onclick = () => {
-                const changes = gatherChangesFromBlocks(messageId);
+                const isUndo = applyAllBtn.classList.contains('undo-all-btn');
+                const changes = gatherChangesFromBlocks(messageId, isUndo);
                 if (changes.length > 0) {
-                    // REDIRECTION: Open the Staging Modal instead of immediate apply
-                    import('./ui.js').then(ui => {
-                        ui.openStagingRevamp(messageId, changes);
-                    });
+                    if (isUndo) {
+                        applyAllBtn.disabled = true;
+                        applyAllBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Undoing Batch...';
+
+                        const resList = document.getElementById(`results-${messageId}`);
+                        const progressContainer = document.getElementById(`progress-container-${messageId}`);
+
+                        if (resList) {
+                            resList.style.display = 'block';
+                            resList.innerHTML = changes.map(c => `
+                                <div class="apply-row" data-block-index="${c.blockIndex}" ${c.hunkIndex !== undefined ? `data-hunk-index="${c.hunkIndex}"` : ''}>
+                                    <span class="status-icon"><div class="spinner"></div></span>
+                                    <span class="row-path">${c.path} ${c.hunkIndex !== undefined ? `(Hunk ${c.hunkIndex+1})` : ''}</span>
+                                    <div class="row-actions" style="display:none"></div>
+                                </div>`).join('');
+                        }
+
+                        if (progressContainer) {
+                            progressContainer.style.display = 'block';
+                            const bar = progressContainer.querySelector('.apply-progress-bar') as HTMLElement;
+                            if (bar) bar.style.width = '0%';
+                        }
+
+                        vscode.postMessage({ command: 'applyAllChanges', changes, messageId, undo: true });
+                    } else {
+                        // REDIRECTION: Open the Staging Modal instead of immediate apply
+                        import('./ui.js').then(ui => {
+                            ui.openStagingRevamp(messageId, changes);
+                        });
+                    }
                 }
             };
         }
@@ -2189,10 +2321,13 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     const btn = contentDiv.querySelector(`.apply-all-btn`) as HTMLButtonElement;
     if (btn) {
         btn.onclick = () => {
-            const changes = gatherChangesFromBlocks(messageId);
+            const isUndo = btn.classList.contains('undo-all-btn');
+            const changes = gatherChangesFromBlocks(messageId, isUndo);
             if (changes.length > 0) {
                 btn.disabled = true;
-                btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying Batch...';
+                btn.innerHTML = isUndo 
+                    ? '<span class="codicon codicon-sync spin"></span> Undoing Batch...' 
+                    : '<span class="codicon codicon-sync spin"></span> Applying Batch...';
 
                 const resList = document.getElementById(`results-${messageId}`);
                 const progressContainer = document.getElementById(`progress-container-${messageId}`);
@@ -2213,7 +2348,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     if (bar) bar.style.width = '0%';
                 }
 
-                vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
+                vscode.postMessage({ command: 'applyAllChanges', changes, messageId, undo: isUndo });
             }
         };
     }
@@ -2233,7 +2368,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
 
 
-function gatherChangesFromBlocks(messageId: string) {
+function gatherChangesFromBlocks(messageId: string, isUndo: boolean = false) {
     const changes: any[] = [];
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return changes;
@@ -2258,7 +2393,8 @@ function gatherChangesFromBlocks(messageId: string) {
         if (hunkBubbles.length > 0) {
             hunkBubbles.forEach((hunk: any, hIdx: number) => {
                 const btn = hunk.querySelector('.apply-btn');
-                if (btn && !btn.classList.contains('applied')) {
+                const isMatch = isUndo ? btn?.classList.contains('applied') : (btn && !btn.classList.contains('applied'));
+                if (isMatch) {
                     changes.push({
                         type: 'replace',
                         path: path,
@@ -2271,7 +2407,8 @@ function gatherChangesFromBlocks(messageId: string) {
             });
         } else {
             const applyBtn = block.querySelector('.code-actions .apply-btn');
-            if (applyBtn && !applyBtn.classList.contains('applied')) {
+            const isMatch = isUndo ? applyBtn?.classList.contains('applied') : (applyBtn && !applyBtn.classList.contains('applied'));
+            if (isMatch) {
                 const labelText = block.querySelector('.summary-lang-label span')?.textContent || "";
                 const type = labelText.toLowerCase().includes('diff') ? 'diff' : 'file';
                 changes.push({
@@ -2689,13 +2826,6 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                                 : '<span class="codicon codicon-library" style="opacity:0.6;"></span>'}
                             <div class="active-badges" id="active-badges"></div>
                         </div>
-                        <div style="display: flex; align-items: center; gap: 12px;">
-                            <button id="hud-matrix-btn" class="icon-btn hud-matrix-btn" title="Workspace Access Matrix" style="color: var(--vscode-textLink-foreground); padding: 2px; cursor: pointer;">
-                                <i class="codicon codicon-layers" style="font-size: 14px; pointer-events: none;"></i>
-                            </button>
-                            <span id="status-text" style="font-size: 10px; font-weight: 900; opacity: 0.4; letter-spacing: 0.5px;">READY</span>
-                            <i class="codicon codicon-chevron-down hud-toggle-icon" style="opacity:0.5; font-size: 12px;"></i>
-                        </div>
                     </div>
 
                     <div class="token-fused-bar" style="display: flex; flex-direction: column; gap: 4px;">
@@ -2733,13 +2863,11 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                         <span class="role-name">Intelligence Context</span>
                     </div>
                     <div style="display: flex; gap: 8px; align-items: center;">
-                        ${finalSelections.length > 0 ? `
-                        <select id="hud-selections-dropdown" style="background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); font-size: 11px; padding: 2px 4px; border-radius: 4px; cursor: pointer; height: 22px; max-width: 140px;">
-                            <option value="">-- Switch Selection --</option>
-                            ${finalSelections.map((s: string) => `<option value="${s}">${s.replace('.lollms-ctx', '')}</option>`).join('')}
-                        </select>
-                        ` : ''}
                         <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
+                        <select id="hud-selections-dropdown" ${finalSelections.length === 0 ? 'disabled' : ''} style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: ${finalSelections.length === 0 ? 'default' : 'pointer'}; height: 22px; max-width: 150px; outline: none; display: inline-block; opacity: ${finalSelections.length === 0 ? '0.5' : '1'};">
+                            <option value="">${finalSelections.length > 0 ? '📁 Select Saved Context...' : '📁 No Saved Contexts'}</option>
+                            ${finalSelections.map((s: string) => `<option value="${s}">${s.replace('.lollms-ctx', '')}</option>`).join('')}
+                        </select>                        
                         <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
                         <button id="load-context-btn" class="icon-btn" title="Load Context (Replace Selection)" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
                         <button id="add-context-btn" class="icon-btn" title="Add Context (Append to Selection)" style="padding: 2px; color: var(--vscode-charts-green);"><i class="codicon codicon-folder-active"></i></button>
@@ -2852,9 +2980,6 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     // Always render the HUD shell in Discussion Mode so the toolbar remains visible to add files
     dom.contextContainer.innerHTML = innerHTML;
 
-    const markdownView = dom.contextContainer.querySelector('.markdown-context-view');
-    dom.contextContainer.innerHTML = (contextText || hasMetadata) ? innerHTML : '';
-
     // 2. RESTORE EXPANSION STATE
     dom.contextContainer.querySelectorAll('details').forEach((d, i) => {
         const summary = d.querySelector('summary')?.innerText || i.toString();
@@ -2862,10 +2987,6 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
             d.open = openStates[summary];
         }
     });
-
-    if (markdownView) {
-        enhanceCodeBlocks(markdownView as HTMLElement, messageId, contextText, true);
-    }
 
     // Trigger Mermaid rendering for diagrams in the context bubble
     if (diagrams.length > 0) {
@@ -3078,7 +3199,7 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                     command: 'executeLollmsCommand',
                     details: {
                         command: 'lollms-vs-coder.loadContextSelectionDirect',
-                        params: selectedVal
+                        params: [selectedVal]
                     }
                 });
             }

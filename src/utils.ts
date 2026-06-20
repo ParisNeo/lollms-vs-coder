@@ -689,6 +689,10 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
     You are operating under **Dynamic Mode (Multi-Turn Chat loop)**.
     This means you can call tools, receive results, and iterate *inside this single chat turn* without waiting for user interaction!
 
+    ### 🧱 LIGHTWEIGHT ARCHITECTURAL EXPLORATION (MANDATORY ORDER OF OPERATIONS)
+    - **SPARQL FIRST**: When asked to locate classes, verify imports, check method signatures, or find where a function is called, you **MUST** use the \`<query_architecture>\` tag to perform a fast, token-efficient SPARQL-lite query on the codebase map first.
+    - **NO PREMATURE FULL READS**: Do **NOT** use \`add_files_to_context\` or \`read_file\` to search for definitions. Peeking or loading files with full contents is extremely expensive and wastes your token budget. Use SPARQL queries to inspect the ontology nodes first, and only load files when you are 100% sure you need to edit or review their detailed inner logic.
+
     **STRICT OPERATIONAL RULES:**
     1. **INTERCEPTED EXECUTION**: When you output an XML tool tag (like \`<add_files_to_context>\`, \`<query_architecture>\`, or \`<lollms_tool>\`), the system will instantly intercept your stream, run the tool, and prompt you to continue.
     2. **ONE TOOL AT A TIME**: Output exactly one tool call per message, and immediately STOP writing. Do not output multiple tools or trailing prose after the closing tag of your tool.
@@ -868,8 +872,6 @@ export function stripThinkingTags(responseText: string): string {
     let working = responseText;
 
     // --- HEURISTIC: DANGLING CLOSURE STRIPPER ---
-    // If there is a dangling closing tag with no preceding opening tag,
-    // we strip everything from the start up to the closing tag.
     const closeTags = ['</think>', '</thinking>', '</analysis>', '</reasoning>'];
     for (const closeTag of closeTags) {
         const closeIdx = working.indexOf(closeTag);
@@ -886,9 +888,33 @@ export function stripThinkingTags(responseText: string): string {
         }
     }
 
-    const thinkRegex = /<(think|thinking|analysis|reasoning)>([\s\S]*?)(?:<\/\1>|$)/gi;
+    // --- 🛡️ UNCLOSED THINKING SAFEGUARD ---
+    // If a thinking tag is opened but NEVER closed, and there are backtick code blocks
+    // further down in the text, we must NOT let the regex eat the entire remaining response!
+    // Instead, we truncate the match right before the first code fence.
+    const openTags = ['<think>', '<thinking>', '<analysis>', '<reasoning>'];
+    for (const openTag of openTags) {
+        const openIdx = working.indexOf(openTag);
+        if (openIdx !== -1) {
+            const closeTag = openTag.replace('<', '</');
+            const closeIdx = working.indexOf(closeTag, openIdx);
+            
+            if (closeIdx === -1) {
+                // Unclosed thinking block detected. Check if there are code fences downstream.
+                const nextCodeFence = working.indexOf('```', openIdx);
+                if (nextCodeFence !== -1) {
+                    // Truncate the thinking block right before the code fence starts.
+                    const thinkingContent = working.substring(openIdx + openTag.length, nextCodeFence);
+                    const before = working.substring(0, openIdx);
+                    const after = working.substring(nextCodeFence);
+                    working = before + after;
+                }
+            }
+        }
+    }
+
+    const thinkRegex = /<(think|thinking|analysis|reasoning)>([\s\S]*?)<\/\1>/gi;
     return working.replace(thinkRegex, (match, tag, inner, offset) => {
-        // If the match is inside a code block, preserve it as literal text
         const isProtected = matches.some(range => offset >= range.start && offset < range.end);
         return isProtected ? match : "";
     }).trim();

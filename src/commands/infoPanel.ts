@@ -70,7 +70,19 @@ export class InfoPanel {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <meta http-equiv="Content-Security-Policy" content="
+                default-src 'none';
+                style-src 'unsafe-inline' ${webview.cspSource} https://cdn.jsdelivr.net;
+                font-src ${webview.cspSource} https://cdn.jsdelivr.net;
+                img-src ${webview.cspSource} data:;
+                script-src 'unsafe-inline' 'unsafe-eval' ${webview.cspSource} https://cdn.jsdelivr.net;
+            ">
             <title>${title}</title>
+            <!-- Secure KaTeX Math typesetting with Subresource Integrity -->
+            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+            <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
+            <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
+
             <script src="https://cdn.jsdelivr.net/npm/marked@5.1.1/marked.min.js"></script>
             <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js"></script>
             <link href="${prismCssUri}" rel="stylesheet" />
@@ -227,6 +239,19 @@ export class InfoPanel {
                 marked.setOptions({ breaks: true, gfm: true });
                 contentContainer.innerHTML = DOMPurify.sanitize(marked.parse(rawContent));
                 Prism.highlightAll();
+
+                // Secure Auto-render invocation for Math expressions
+                if (typeof renderMathInElement === 'function') {
+                    renderMathInElement(contentContainer, {
+                        delimiters: [
+                            {left: '$$', right: '$$', display: true},
+                            {left: '$', right: '$', display: false},
+                            {left: '\\\\(', right: '\\\\)', display: false},
+                            {left: '\\\\[', right: '\\\\]', display: true}
+                        ],
+                        throwOnError: false
+                    });
+                }
 
                 // Actions
                 copyBtn.addEventListener('click', () => {

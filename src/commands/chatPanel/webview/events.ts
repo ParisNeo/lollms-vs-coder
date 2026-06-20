@@ -1586,7 +1586,7 @@ export function initEventHandlers() {
                         command: 'executeLollmsCommand',
                         details: {
                             command: 'lollms-vs-coder.loadContextSelectionDirect',
-                            params: selectedVal
+                            params: [selectedVal]
                         }
                     });
                     // Trigger instant token recount

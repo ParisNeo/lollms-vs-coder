@@ -29,6 +29,7 @@ You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or
 `);
 
        // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
+        // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
         sections.push(`
         ### 🚦 CODE OUTPUT DECISION TREE (STRICT EXCLUSIVITY & COMPLIANCE MANDATE)
         You MUST strictly follow this decision tree to choose the correct format for code output. Non-compliance results in parsing errors and redundant token usage. 
@@ -36,14 +37,13 @@ You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or
         1. **NEW FILES**: You MUST use **FORMAT 1 (FULL FILE)**.
         2. **EXISTING FILES (Surgical Fix affecting < 50% of the file)**: You MUST use **FORMAT 2 (SEARCH/REPLACE)**. This is the preferred and mandated method to maintain project integrity and ensure optimal token economy.
         3. **EXISTING FILES (Major Refactor affecting > 50% of the file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
-        4. **TARGETED FUNCTION EDITS (Tool Mode)**: When in Tool Mode, you can use the \`update_function\` tool to surgically replace the body of a specific function or method instead of full file or Aider blocks.
-        5. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize surgical patches using AIDER FORMAT 2."}
+        4. **TARGETED SYMBOL REPLACEMENT (Full Address Mode)**: When writing or modifying a specific standalone function, class, or class method, you can use **FORMAT 3 (FULL ADDRESS MODE)**. Specify the path, class, and method targeted inside the language header. This is the most token-efficient way to modify large OOP modules!
+        5. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize surgical patches using AIDER FORMAT 2/3."}
 
         **CRITICAL MANDATES**:
         - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
         - Do NOT output conversational chatter or a "summary of changes" followed by the full file after an Aider patch. This is a severe violation of turn economy and will cause the file system patch to fail.
         - **THINKING & OBSERVATION LANGUAGE BLOCKS (MANDATORY)**: When writing thoughts, reasoning, or observations (such as in the "Observe", "Think", or "Reflect" sections), you are **STRICTLY FORBIDDEN** from using the namespaced \`language:path\` format (e.g. \`\`\`typescript:src/main.ts\`). This namespaced format is EXCLUSIVELY reserved for actual code updates in the **Act** stage that the system should apply to disk. For non-updatable snippets, thoughts, and reasoning, always use standard \`language\` blocks (without the colon and path, e.g. \`\`\`typescript) to prevent accidental file corruption or parsing errors.
-        - **ACTIVE ONTOLOGY QUERIES (CRITICAL)**: If you intend to **actually execute** a SPARQL-lite architecture query, you **MUST NOT** wrap the query in a markdown code block (e.g., \`\`\`sparql ... \`\`\`). Instead, you **MUST** use the raw, naked XML tag \`<query_architecture>...\</query_architecture>\` starting on its own new line. Markdown code blocks are treated as inert text and will NOT trigger active execution.
         - **STAGE ISOLATION**: All code updates (either Aider patches or Full Files) MUST be placed exclusively inside the **Act** stage. You are forbidden from placing code blocks or patches inside the **Observe**, **Think**, or **Reflect** sections.
         `);
 
@@ -519,9 +519,12 @@ You interact with a tiered cognitive storage system.
 - **COMMIT**: \`<project_memory action="add" id="..." title="...">Detailed Fact</project_memory>\`
 - **STRENGTHEN**: If an existing memory just helped you avoid a bug, update it to increase its importance: \`<project_memory action="update" id="..." importance="0.9" />\`.
 
-### ⚡ IMMEDIATE TRIGGER RULES
-- User says: "Remember X" or "Note that Y" or "This is a Z project".
-- Your action: IMMEDIATELY output \`<project_memory action="add" id="..." title="...">...</project_memory>\`.
+### ⚡ IMMEDIATE TRIGGER RULES (MANDATORY)
+You MUST immediately commit new knowledge to the permanent cognitive storage using the \`<project_memory action="add" ...>\` tag under the following conditions:
+1. **Direct Request**: Whenever the user explicitly says **"Remember X"**, **"Note that Y"**, or **"This is a Z project"**. You MUST output the corresponding \`<project_memory>\` tag in your immediate next response.
+2. **Autonomous Discovery (New & Important Lessons)**: Whenever you learn or discover something new, critical, or highly important about the codebase, environment, or a successful workaround.
+   - *Example*: You tried to run a tool, it crashed due to an OS limitation, and you found a working terminal workaround. You MUST immediately save this workaround to Project Memory so you never repeat the failing path.
+   - *Example*: You found a hidden configuration rule or dependency mismatch that was not documented. You MUST save this standard to Project Memory immediately.
 
 ${skillsAuthority}
 

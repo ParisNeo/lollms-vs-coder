@@ -444,12 +444,13 @@ export async function activate(context: vscode.ExtensionContext) {
     Logger.info("Lollms: Postponing initialization to stabilize Extension Host...");
     setTimeout(() => {
         initializeWorkspace();
+        // Start the Neural Dream Cycle asynchronously to prevent startup blocks
+        projectMemoryManager.performDreamCycle().then(() => {
+            Logger.info("Dream Cycle complete: Neural memory reorganized.");
+        }).catch((err: any) => {
+            Logger.error("Dream Cycle failed", err);
+        });
     }, 3000);
-    
-    // Start the Neural Dream Cycle
-    projectMemoryManager.performDreamCycle().then(() => {
-        Logger.info("Dream Cycle complete: Neural memory reorganized.");
-    });
 
     // --- DEACTIVATE CONFLICTING EXTENSIONS ---
     if (config.get<boolean>('deactivateConflictingExtensions')) {

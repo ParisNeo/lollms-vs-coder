@@ -193,6 +193,7 @@ Keep it strictly technical and extremely concise.`
     public getEnabledTools(): ToolDefinition[] {
         const policies = this.currentDiscussion?.capabilities?.toolPolicies || {};
         const isAgentMode = this.isActive; 
+        const isBuilderMode = this.currentDiscussion?.capabilities?.workerType === 'builder';
 
         const discussionTools = this.currentDiscussion?.importedTools || [];
         const projectTools = (this as any)._projectToolsCache || []; 
@@ -221,7 +222,9 @@ Keep it strictly technical and extremely concise.`
         }
 
         const tools = this.toolManager.getAllTools().filter(t => {
-            if (this.sessionState.blacklistedTools.has(t.name)) return false;
+            // Strictly exclude any blacklisted tools immediately
+            if (this.sessionState.blacklistedTools && this.sessionState.blacklistedTools.has(t.name)) return false;
+
             if (t.name === 'submit_response') return true;
             if (t.name === 'read_discussion_file' && attachments === 0) return false;
 
@@ -246,10 +249,13 @@ Keep it strictly technical and extremely concise.`
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const useRLM = config.get<boolean>('agent.useRLM') || false;
 
+        let filteredTools = tools;
         if (!useRLM) {
-            return tools.filter(t => t.name !== 'rlm_repl');
+            filteredTools = tools.filter(t => t.name !== 'rlm_repl');
         }
-        return tools;
+
+        // Final sanity check: filter out any blacklisted tools from the final array
+        return filteredTools.filter(t => !this.sessionState.blacklistedTools || !this.sessionState.blacklistedTools.has(t.name));
     }
 
     public setEnabledTools(toolNames: string[]) {

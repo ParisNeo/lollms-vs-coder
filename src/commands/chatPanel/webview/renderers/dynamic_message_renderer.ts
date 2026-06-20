@@ -12,6 +12,18 @@ export function renderDynamicMessage(messageId: string, rawContent: any, isFinal
     if (!layout) {
         bodyDiv.innerHTML = ''; // Clear prior
 
+        // Build action buttons
+        const editButton = `<button class="msg-action-btn edit-msg-btn" title="Edit Message"><i class="codicon codicon-edit"></i></button>`;
+        const copyButton = `<button class="msg-action-btn copy-msg-btn" title="Copy Message"><i class="codicon codicon-copy"></i></button>`;
+        const deleteButton = `<button class="msg-action-btn delete-msg-btn" title="Delete Message"><i class="codicon codicon-trash"></i></button>`;
+        const monitorButton = `<button class="msg-action-btn run-monitor-btn" title="Run App & Monitor Logs"><i class="codicon codicon-play"></i></button>`;
+
+        // Add Floating Action HUD
+        const actions = document.createElement('div');
+        actions.className = 'message-actions';
+        actions.innerHTML = `${editButton}${copyButton}${monitorButton}${deleteButton}`;
+        bodyDiv.appendChild(actions);
+
         // Header Metadata with dynamic style
         const header = document.createElement('div');
         header.className = 'message-header';
@@ -24,6 +36,21 @@ export function renderDynamicMessage(messageId: string, rawContent: any, isFinal
         layout.className = 'dynamic-layout message-content';
         layout.id = `content-${messageId}`;
         bodyDiv.appendChild(layout);
+
+        // Bind events
+        actions.querySelector('.edit-msg-btn')?.addEventListener('click', () => {
+            const msgDiv = wrapper.querySelector('.message') as HTMLElement;
+            if (msgDiv && (window as any).startEdit) (window as any).startEdit(msgDiv, messageId, 'assistant');
+        });
+        actions.querySelector('.copy-msg-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ command: 'copyToClipboard', text: String(rawContent) });
+        });
+        actions.querySelector('.run-monitor-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ command: 'runAndMonitorApp', messageId });
+        });
+        actions.querySelector('.delete-msg-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ command: 'requestDeleteMessage', messageId });
+        });
     }
 
     renderMessageContent(messageId, rawContent, isFinal);

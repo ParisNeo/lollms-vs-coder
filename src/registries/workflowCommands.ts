@@ -5,7 +5,17 @@ import { WorkflowItem } from '../commands/workflowsTreeProvider';
 
 export function registerWorkflowCommands(context: vscode.ExtensionContext, services: LollmsServices) {
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openFlowStudio', (item?: WorkflowItem) => {
-        WorkflowStudioPanel.createOrShow(services.extensionUri, services.lollmsAPI);
+        WorkflowStudioPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.workflowManager);
+
+        // If an item was double-clicked in the sidebar tree view, load it
+        if (item && item.workflow) {
+            setTimeout(() => {
+                WorkflowStudioPanel.currentPanel?.['_panel'].webview.postMessage({
+                    command: 'loadWorkflow',
+                    workflow: item.workflow
+                });
+            }, 500);
+        }
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.createNewWorkflow', async () => {

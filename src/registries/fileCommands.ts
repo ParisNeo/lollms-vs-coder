@@ -752,10 +752,9 @@ ${originalFileContent}
             document = await vscode.workspace.openTextDocument(fileUri);
         }
 
-        // Improved Regex: Allows for optional spaces before markers and handles \r?\n more gracefully
-        // Also supports blocks that might have been accidentally double-wrapped
+         // Improved Regex: Allows for optional spaces before markers and handles line endings more gracefully.
         const normalizedContent = content.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
-        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
+        const aiderRegex = /<<<<<<< SEARCH[ \t\r]*\n([\s\S]*?)\n=======[ \t\r]*\n([\s\S]*?)\n>>>>>>> REPLACE/g;
         let matches = [...normalizedContent.matchAll(aiderRegex)];
 
         if (matches.length === 0) {
@@ -763,7 +762,7 @@ ${originalFileContent}
             // for models that put chatter inside the code block
             const permissiveRegex = /<<<<<<< SEARCH[\s\S]*?=======[\s\S]*?>>>>>>> REPLACE/g;
             matches = [...normalizedContent.matchAll(permissiveRegex)];
-
+            
             if (matches.length === 0) {
                 if (!options?.silent) vscode.window.showErrorMessage("No valid Search/Replace blocks found.");
                 return { success: false, error: "Invalid Aider block format: Markers must be on their own lines." };
@@ -1159,7 +1158,7 @@ ${originalContent}
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyPatchContent', async (filePath: string, patchContent: string, options?: { silent?: boolean }) => {
          try {
              const activeWorkspace = getActiveWorkspace();
-             if(!activeWorkspace) return;
+             if(!activeWorkspace) return { success: false, error: "No active workspace" };
              
              const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
              const doc = await vscode.workspace.openTextDocument(fileUri);
@@ -1195,7 +1194,7 @@ ${originalContent}
                         `Please fix your code. Verify that the context lines in your diff exactly match the original file.`;
                     
                     await ChatPanel.currentPanel.sendMessage({ role: 'user', content: repairPrompt });
-                    return;
+                    return { success: false, error: "AI repair requested" };
                 }
                 throw diffErr;
              }
@@ -1204,8 +1203,9 @@ ${originalContent}
                 await openDiffView(fileUri, originalContent);
                 vscode.window.showInformationMessage(`Patch applied successfully to ${filePath}. Review changes.`);
              }
+             return { success: true };
          } catch (e: any) {
-             // Error already handled or ignored
+             return { success: false, error: e.message };
          }
     }));
 

@@ -54,16 +54,29 @@ export const toolPlugin: TagPlugin = {
         }
 
         const paramsHtml = Object.entries(params || {}).map(([k, v]) => {
-            const isLongText = typeof v === 'string' && (v.length > 60 || v.includes('\n') || ['target', 'query', 'command', 'instructions', 'code', 'script'].includes(k));
-            const inputElement = isLongText 
-                ? `<textarea class="tool-param-input" data-key="${k}" rows="5"
-                       style="width: 100%; background:rgba(0,0,0,0.1); border: 1px solid var(--vscode-widget-border); padding:6px 10px; border-radius:4px; font-family:var(--vscode-editor-font-family); font-size:12px; color: var(--vscode-foreground); outline: none; resize: vertical;">${v}</textarea>`
-                : `<input type="text" class="tool-param-input" data-key="${k}" value="${typeof v === 'string' ? v : JSON.stringify(v)}" 
-                       style="width: 100%; background:rgba(0,0,0,0.1); border: 1px solid var(--vscode-widget-border); padding:6px 10px; border-radius:4px; font-family:var(--vscode-editor-font-family); font-size:12px; color: var(--vscode-foreground); outline: none;">`;
+            let inputElement = "";
+            
+            if (k === 'options' && Array.isArray(v)) {
+                // RENDER INTERACTIVE OPTIONS AS RADIO BUTTONS
+                const optionsHtml = v.map((opt: string, idx: number) => `
+                    <label class="radio-option" style="margin-bottom: 6px; display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 6px 10px; background: rgba(0,0,0,0.15); border: 1px solid var(--vscode-widget-border); border-radius: 4px;">
+                        <input type="radio" name="tool-option-group" value="${opt}" ${idx === 0 ? 'checked' : ''} class="tool-param-radio" style="margin: 0; cursor: pointer;">
+                        <span style="font-size: 11px;">${opt}</span>
+                    </label>
+                `).join('');
+                inputElement = `<div class="radio-group" style="display: flex; flex-direction: column; gap: 6px;">${optionsHtml}</div>`;
+            } else {
+                const isLongText = typeof v === 'string' && (v.length > 60 || ['target', 'query', 'command', 'instructions', 'code', 'script'].includes(k));
+                inputElement = isLongText 
+                    ? `<textarea class="tool-param-input" data-key="${k}" rows="5"
+                           style="width: 100%; background:rgba(0,0,0,0.1); border: 1px solid var(--vscode-widget-border); padding:6px 10px; border-radius:4px; font-family:var(--vscode-editor-font-family); font-size:12px; color: var(--vscode-foreground); outline: none; resize: vertical;">${v}</textarea>`
+                    : `<input type="text" class="tool-param-input" data-key="${k}" value="${typeof v === 'string' ? v : JSON.stringify(v)}" 
+                           style="width: 100%; background:rgba(0,0,0,0.1); border: 1px solid var(--vscode-widget-border); padding:6px 10px; border-radius:4px; font-family:var(--vscode-editor-font-family); font-size:12px; color: var(--vscode-foreground); outline: none;">`;
+            }
 
             return `
-            <div style="margin-bottom:4px;">
-                <span style="font-size:9px; font-weight:900; opacity:0.6; text-transform:uppercase;">${k}</span>
+            <div style="margin-bottom:8px;">
+                <span style="font-size:9px; font-weight:900; opacity:0.6; text-transform:uppercase; display: block; margin-bottom: 4px;">${k}</span>
                 ${inputElement}
             </div>
             `;
@@ -116,17 +129,45 @@ export const toolPlugin: TagPlugin = {
                             finalParams[key] = input.value;
                         }
                     });
+
+                    // Scrape selected radio option if present (for request_user_input)
+                    const checkedRadio = block.querySelector('.tool-param-radio:checked') as HTMLInputElement;
+                    if (checkedRadio) {
+                        finalParams['options'] = checkedRadio.value;
+                    }
                 }
 
-                button.innerHTML = '<div class="spinner"></div> Running...';
                 button.disabled = true;
 
-                context.vscode.postMessage({
-                    command: 'runTool',
-                    tool: toolName,
-                    params: finalParams,
-                    buttonId: button.dataset.blockId
-                });
+                if (toolName === 'request_user_input') {
+                    // REDIRECT TO ACTIVE INPUT RESOLVER TO RESUME THE PAUSED LOOP
+                    button.innerHTML = '<div class="spinner"></div> Submitting...';
+                    const checkedRadio = block ? block.querySelector('.tool-param-radio:checked') as HTMLInputElement : null;
+                    const choiceVal = checkedRadio ? checkedRadio.value : "";
+
+                    context.vscode.postMessage({
+                        command: 'sendMessage',
+                        message: {
+                            role: 'user',
+                            content: `FORM_SUBMISSION:${JSON.stringify({ decision: choiceVal })}`,
+                            isSilentSignal: true
+                        }
+                    });
+
+                    // Remove the card container immediately to provide instant tactile feedback
+                    setTimeout(() => {
+                        const wrapper = block ? block.closest('.message-wrapper') : null;
+                        if (wrapper) wrapper.remove();
+                    }, 200);
+                } else {
+                    button.innerHTML = '<div class="spinner"></div> Running...';
+                    context.vscode.postMessage({
+                        command: 'runTool',
+                        tool: toolName,
+                        params: finalParams,
+                        buttonId: button.dataset.blockId
+                    });
+                }
             };
         });
     }

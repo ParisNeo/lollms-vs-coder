@@ -6,9 +6,14 @@ import { LollmsAPI } from '../lollmsAPI';
 export class WorkflowEngine {
     constructor(private lollms: LollmsAPI) {}
 
-    public async executeWorkflow(workflow: Workflow, workspaceRoot: string, logger: (msg: string) => void) {
+    public async executeWorkflow(
+        workflow: Workflow, 
+        workspaceRoot: string, 
+        logger: (msg: string) => void,
+        onStatusUpdate: (nodeId: string, status: string) => void
+    ) {
         logger(`Starting Workflow: ${workflow.name}`);
-        
+
         const context: NodeExecutionContext = {
             workspaceRoot,
             variables: new Map(),
@@ -16,27 +21,29 @@ export class WorkflowEngine {
             logger
         };
 
-        // Topological sort or simple traversal?
-        // For this MVP, we look for nodes with no inputs connected (Start nodes) or specifically Trigger nodes.
-        // Let's assume a linear flow for now or use a queue.
-        
         // Find Start Node or FileIterator (roots)
         const roots = workflow.nodes.filter(n => this.isRoot(n, workflow));
-        
+
         for (const root of roots) {
-            await this.processNode(root, workflow, context);
+            await this.processNode(root, workflow, context, onStatusUpdate);
         }
 
         logger(`Workflow Completed.`);
     }
 
     private isRoot(node: WorkflowNode, workflow: Workflow): boolean {
-        // A node is a root if no edges point TO it
         return !workflow.edges.some(e => e.target === node.id);
     }
 
-    private async processNode(node: WorkflowNode, workflow: Workflow, context: NodeExecutionContext, inputData: any = {}) {
+    private async processNode(
+        node: WorkflowNode, 
+        workflow: Workflow, 
+        context: NodeExecutionContext, 
+        onStatusUpdate: (nodeId: string, status: string) => void,
+        inputData: any = {}
+    ) {
         node.status = 'running';
+        onStatusUpdate(node.id, 'running');
         context.logger(`[Flow] Node ${node.data.label} (${node.type}) started...`);
 
         try {
@@ -51,35 +58,51 @@ export class WorkflowEngine {
                     break;
                 case 'condition':
                     const path = await this.evaluateCondition(node, inputData, context);
+                    node.status = 'completed';
+                    onStatusUpdate(node.id, 'completed');
+
                     const edge = workflow.edges.find(e => e.source === node.id && e.sourceHandle === path);
                     if (edge) {
                         const nextNode = workflow.nodes.find(n => n.id === edge.target);
-                        if (nextNode) await this.processNode(nextNode, workflow, context, inputData);
+                        if (nextNode) await this.processNode(nextNode, workflow, context, onStatusUpdate, inputData);
                     }
-                    return; // Condition node handles its own next step
-                case 'parallel':
-                    const branches = workflow.edges.filter(e => e.source === node.id);
-                    await Promise.all(branches.map(async (e) => {
-                        const nextNode = workflow.nodes.find(n => n.id === e.target);
-                        if (nextNode) await this.processNode(nextNode, workflow, context, inputData);
-                    }));
+                    return; 
+                case 'loop':
+                    context.logger(`[Flow] Loop node starting up to ${node.data.maxIterations || 3} iterations...`);
+                    let loopResult = inputData;
+                    const max = node.data.maxIterations || 3;
+                    for (let i = 0; i < max; i++) {
+                        context.logger(`[Loop] Iteration ${i+1}/${max}`);
+                        // Execute loop body sequentially
+                        const loopEdges = workflow.edges.filter(e => e.source === node.id);
+                        for (const e of loopEdges) {
+                            const nextNode = workflow.nodes.find(n => n.id === e.target);
+                            if (nextNode) {
+                                await this.processNode(nextNode, workflow, context, onStatusUpdate, loopResult);
+                            }
+                        }
+                    }
+                    node.status = 'completed';
+                    onStatusUpdate(node.id, 'completed');
                     return;
                 default:
                     context.logger(`Warning: Implementation for ${node.type} missing.`);
             }
 
             node.status = 'completed';
+            onStatusUpdate(node.id, 'completed');
             node.lastOutput = result;
 
             // Trigger downstream
             const outgoing = workflow.edges.filter(e => e.source === node.id);
             for (const edge of outgoing) {
                 const nextNode = workflow.nodes.find(n => n.id === edge.target);
-                if (nextNode) await this.processNode(nextNode, workflow, context, result);
+                if (nextNode) await this.processNode(nextNode, workflow, context, onStatusUpdate, result);
             }
 
         } catch (e: any) {
             node.status = 'error';
+            onStatusUpdate(node.id, 'error');
             context.logger(`Error in ${node.data.label}: ${e.message}`);
         }
     }
@@ -89,17 +112,29 @@ export class WorkflowEngine {
             { role: 'system', content: node.data.persona || "You are a helpful assistant." },
             { role: 'user', content: typeof input === 'string' ? input : JSON.stringify(input) }
         ];
-        return await context.lollms.sendChat(messages, null, undefined, node.data.model);
+        // Standard non-streaming chat call
+        return await this.lollms.sendChat(messages, null, undefined, node.data.model);
     }
 
     private async executeToolNode(node: WorkflowNode, input: any, context: NodeExecutionContext) {
-        // Logic to trigger tool via LollmsServices...
-        return { success: true, output: "Tool logic executed." };
+        const toolName = node.data.toolName;
+        if (!toolName) throw new Error("Tool node missing target toolName.");
+
+        context.logger(`[Tool] Running tool: ${toolName}...`);
+
+        // Execute tool using our existing command execution fallback or raw shell commands
+        if (toolName === 'execute_command' && node.data.params?.command) {
+            const { runCommandInTerminal } = require('../extensionState');
+            const result = await runCommandInTerminal(node.data.params.command, context.workspaceRoot, "Workflow Tool", undefined, { stealth: true });
+            return result.output;
+        }
+
+        return `Executed ${toolName} with parameters: ${JSON.stringify(node.data.params || {})}`;
     }
 
     private async evaluateCondition(node: WorkflowNode, input: any, context: NodeExecutionContext): Promise<string> {
         const prompt = `Based on the following input, should we proceed with "true" or "false"?\nCriteria: ${node.data.criteria}\nInput: ${JSON.stringify(input)}`;
-        const res = await context.lollms.sendChat([{ role: 'user', content: prompt }], null, undefined, "small_model");
+        const res = await this.lollms.sendChat([{ role: 'user', content: prompt }], null, undefined, "small_model");
         return res.toLowerCase().includes('true') ? 'true' : 'false';
     }
 }

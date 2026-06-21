@@ -176,9 +176,14 @@ export class ProjectMemoryPanel {
     }
 
     private _getHtml(webview: vscode.Webview, memories: any[], isLoading: boolean = false) {
-        const escape = (str: string) => (str || '').replace(/[&<>"']/g, (m) => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[m] || m));
+        const escape = (str: string) => {
+            if (!str) return '';
+            // Smart escape: Only escape ampersands if they are not part of an existing valid HTML entity
+            const withEscapedAmps = str.replace(/&(?!#?\w+;)/g, '&amp;');
+            return withEscapedAmps.replace(/[<>"']/g, (m) => ({
+                '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[m] || m));
+        };
 
         const T1_THRESHOLD = 25;
 

@@ -74,11 +74,12 @@ export function skillToMd(skill: Skill): string {
 
 function escapeXml(unsafe: string): string {
     if (!unsafe) return '';
-    return unsafe.replace(/[<>&'"]/g, (c) => {
+    // Smart escape: Only escape ampersands if they are not part of an existing valid HTML entity
+    const withEscapedAmps = unsafe.replace(/&(?!#?\w+;)/g, '&amp;');
+    return withEscapedAmps.replace(/[<>'"]/g, (c) => {
         switch (c) {
             case '<': return '&lt;';
             case '>': return '&gt;';
-            case '&': return '&amp;';
             case '\'': return '&apos;';
             case '"': return '&quot;';
         }

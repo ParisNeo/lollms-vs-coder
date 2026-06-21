@@ -119,7 +119,8 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     const strategies = ['strict', 'trim_trailing', 'skip_placeholders', 'indent_agnostic'];
 
     for (const strategy of strategies) {
-        let searchLines = normalizedSearch.split('\n');
+        // Strip trailing whitespaces from individual search lines to prevent matching misses
+        let searchLines = normalizedSearch.split('\n').map(l => l.trimEnd());
         
         // Strategy Modifier: Skip AI meta-comments that break literal matching
         if (strategy === 'skip_placeholders') {

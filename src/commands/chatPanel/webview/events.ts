@@ -858,6 +858,7 @@ export function initEventHandlers() {
     if (dom.messagesDiv) dom.messagesDiv.addEventListener('click', handleGlobalClick);
     if (dom.agentPlanZone) dom.agentPlanZone.addEventListener('click', handleGlobalClick);
     if (dom.inputAreaWrapper) dom.inputAreaWrapper.addEventListener('click', handleGlobalClick);
+    if (dom.contextContainer) dom.contextContainer.addEventListener('click', handleGlobalClick);
 
     // --- Discussion Settings (Profiles) Event Listeners ---
     document.getElementById('modal-add-profile-btn')?.addEventListener('click', () => {
@@ -1333,7 +1334,7 @@ export function initEventHandlers() {
 
         if (mode !== 'full') {
             // Precise regex for Aider markers
-            const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+            const aiderRegex = /<<<<<<< SEARCH[ \t]*\r?\n([\s\S]*?)\r?\n=======[ \t]*(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE[ \t]*/g;
             const matches = [...text.matchAll(aiderRegex)];
             
             if (matches.length > 0) {
@@ -1607,6 +1608,8 @@ export function initEventHandlers() {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'saveContext', params: {} } });
             } else if (id === 'load-context-btn') {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'loadContext', params: {} } });
+            } else if (id === 'add-context-btn') {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'addContext', params: {} } });
             } else if (id === 'reset-context-bubble-btn') {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
             } else if (id === 'hud-copy-markdown-btn') {
@@ -1616,6 +1619,16 @@ export function initEventHandlers() {
             } else if (id === 'view-usage-context-btn') {
                 dom.usageModal.classList.add('visible');
                 vscode.postMessage({ command: 'requestContextUsage' });
+            } else if (id === 'edit-briefing-btn') {
+                vscode.postMessage({ command: 'requestMissionBriefingUI' });
+            } else if (id === 'add-file-context-btn') {
+                vscode.postMessage({ command: 'requestAddFileToContext' });
+            } else if (id === 'add-skill-context-btn') {
+                vscode.postMessage({ command: 'importSkills' });
+            } else if (id === 'add-tool-context-btn') {
+                vscode.postMessage({ command: 'requestToolPicker' });
+            } else if (id === 'add-diagram-context-btn') {
+                vscode.postMessage({ command: 'requestAddDiagramToContext' });
             }
             return;
         }
@@ -2051,6 +2064,48 @@ export function initEventHandlers() {
                 bpBtn.disabled = true;
                 bpBtn.innerHTML = '<span class="codicon codicon-check"></span> Active';
                 bpBtn.classList.replace('apply-btn', 'applied');
+            }
+            return;
+        }
+
+        // Plan Level AI Fix
+        const planFixAiBtn = target.closest('.plan-fix-ai-btn') as HTMLButtonElement;
+        if (planFixAiBtn) {
+            e.stopPropagation();
+            const taskId = planFixAiBtn.dataset.taskId;
+            const filePath = planFixAiBtn.dataset.filePath;
+            if (taskId && filePath) {
+                planFixAiBtn.disabled = true;
+                planFixAiBtn.innerHTML = '<div class="spinner"></div> Fixing...';
+                vscode.postMessage({ 
+                    command: 'replaceCode', 
+                    filePath: filePath, 
+                    content: "REPAIR_REQUESTED", 
+                    messageId: "agent_plan", 
+                    blockIndex: parseInt(taskId, 10),
+                    options: { silent: true }
+                });
+            }
+            return;
+        }
+
+        // Plan Level Manual Stitch (Raw Modal)
+        const planManualFixBtn = target.closest('.plan-manual-fix-btn') as HTMLButtonElement;
+        if (planManualFixBtn) {
+            e.stopPropagation();
+            const taskId = planManualFixBtn.dataset.taskId;
+            const filePath = planManualFixBtn.dataset.filePath;
+            const rawCode = decodeURIComponent(planManualFixBtn.dataset.rawCode || '');
+            if (taskId && filePath && rawCode) {
+                import('./ui.js').then(ui => {
+                    ui.openRawCodeModal(
+                        "agent_plan",
+                        parseInt(taskId, 10),
+                        filePath,
+                        rawCode,
+                        0
+                    );
+                });
             }
             return;
         }

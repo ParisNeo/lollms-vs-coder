@@ -134,9 +134,25 @@ export const contextExpansionPlugin: TagPlugin = {
                              context.capabilities?.dynamicMode === true || 
                              context.capabilities?.agentMode === true;
 
-        if (isAutoExecute && !container.querySelector('.add-btn')?.disabled) {
-            const repromptBtn = container.querySelector('.add-reprompt-btn') as HTMLButtonElement;
-            if (repromptBtn) {
+        // Strict Safety check: Only auto-apply if:
+        // 1. The message stream is completely finished (isFinal is true)
+        // 2. The block hasn't been auto-triggered or disabled yet
+        // 3. This is the absolute last message in the chat pane to avoid triggering historical logs
+        const repromptBtn = container.querySelector('.add-reprompt-btn') as HTMLButtonElement;
+        const addBtn = container.querySelector('.add-btn') as HTMLButtonElement;
+
+        const isLastMessage = (() => {
+            const wrappers = document.querySelectorAll('.message-wrapper');
+            if (wrappers.length === 0) return false;
+            const lastWrapper = wrappers[wrappers.length - 1] as HTMLElement;
+            return lastWrapper.dataset.messageId === context.messageId;
+        })();
+
+        if (isAutoExecute && context.isFinal && isLastMessage && addBtn && !addBtn.disabled && repromptBtn && !repromptBtn.disabled) {
+            const isAlreadyTriggered = repromptBtn.dataset.autoTriggered === "true";
+            if (!isAlreadyTriggered) {
+                repromptBtn.dataset.autoTriggered = "true";
+                if (addBtn) addBtn.disabled = true;
                 setTimeout(() => handleAdd(repromptBtn, true), 100);
                 return;
             }

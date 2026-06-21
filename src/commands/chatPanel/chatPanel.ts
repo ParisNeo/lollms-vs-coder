@@ -181,34 +181,30 @@ export class ChatPanel {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) return;
 
-        // Extraction & Application
-        // We capture the language, the path, and the body. 
-        // We use a more robust regex that handles optional whitespace and ensures we don't capture the header line.
+        const modifiedFiles = new Set<string>();
+        const opts = { silent: true, autoSave: true };
+
+        // 1. Process Fenced Code Blocks (Standard)
         const blockRegex = /```[\t ]*(?:language:|lang:)?(\w+)[\t ]*:[\t ]*([^\n\r\s]+)[\t ]*[\r\n]+([\s\S]+?)[\r\n]+```/g;
         let match;
-        const modifiedFiles = new Set<string>();
 
         while ((match = blockRegex.exec(content)) !== null) {
             if (signal.aborted) break;
             let filePath = match[2];
             let blockContent = match[3];
 
-            // --- HEURISTIC PATH RECOVERY ---
-            // If the header is a simple language (e.g. ```makefile), the Regex captures 'makefile' as 'filePath'.
-            // If the content INSIDE the block is Aider-style, we try to find the real path from the agent's intent.
             const isAiderInside = blockContent.includes('<<<<<<< SEARCH');
             const commonLangs = ['makefile', 'python', 'py', 'javascript', 'js', 'typescript', 'ts', 'json', 'bash', 'sh', 'css', 'html'];
 
             if (isAiderInside && commonLangs.includes(filePath.toLowerCase())) {
-                // Look for a path in the text immediately preceding the block
-                const precedingText = content.substring(Math.max(0, match.index - 100), match.index);
-                const pathMatch = precedingText.match(/[`"']?([a-zA-Z0-9._\-\/]+\.[a-z0-9]+)[`"']?/i);
+                const precedingText = content.substring(Math.max(0, match.index - 120), match.index);
+                const backtickMatch = precedingText.match(/`([^`]+)`/);
+                const pathMatch = backtickMatch ? backtickMatch : precedingText.match(/([a-zA-Z0-9._\-\/]+\.[a-z0-9]+)/i);
                 if (pathMatch) {
                     filePath = pathMatch[1];
                 }
             }
 
-            // Second level safety: strip language prefix if present in the header string
             if (filePath.includes(':')) {
                 const parts = filePath.split(':');
                 if (commonLangs.includes(parts[0].toLowerCase())) {
@@ -218,13 +214,58 @@ export class ChatPanel {
 
             modifiedFiles.add(filePath);
 
-            const opts = { silent: true, autoSave: true };
             if (isAiderInside) {
-                // Normalize markers: Ensure they start at the beginning of lines even if the LLM indented them
                 const normalizedAider = blockContent.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
                 await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
             } else {
                 await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', filePath, blockContent, opts);
+            }
+        }
+
+        // 2. Process Naked Aider Blocks (No backtick fences)
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            if (signal.aborted) break;
+            const line = lines[i].trim();
+
+            if (line.startsWith('<<<<<<< SEARCH')) {
+                // Find matching REPLACE end
+                let endIdx = -1;
+                for (let j = i + 1; j < lines.length; j++) {
+                    if (lines[j].trim().startsWith('>>>>>>> REPLACE')) {
+                        endIdx = j;
+                        break;
+                    }
+                }
+
+                if (endIdx !== -1) {
+                    const blockContent = lines.slice(i, endIdx + 1).join('\n');
+
+                    // Recover path from preceding text
+                    let filePath = "";
+                    for (let k = i - 1; k >= Math.max(0, i - 15); k--) {
+                        const backtickMatch = lines[k].match(/`([^`]+)`/);
+                        if (backtickMatch) {
+                            const candidate = backtickMatch[1].trim();
+                            if (candidate.includes('.') || candidate.includes('/')) {
+                                filePath = candidate;
+                                break;
+                            }
+                        }
+                        const pathMatch = lines[k].match(/([a-zA-Z0-9._\-\/]+\.[a-zA-Z0-9]+)/);
+                        if (pathMatch) {
+                            filePath = pathMatch[1];
+                            break;
+                        }
+                    }
+
+                    if (filePath) {
+                        modifiedFiles.add(filePath);
+                        const normalizedAider = blockContent.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
+                        await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
+                    }
+                    i = endIdx; // Advance parser beyond the block
+                }
             }
         }
 
@@ -2752,7 +2793,8 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                         })();
 
                         if (!isInsideCodeBlock) {
-                            // Ensure the tag starts on a new line (or at the absolute beginning of the entire accumulated text)
+                            // Support mid-line and unstructured tag matching.
+                            // This ensures the stream is intercepted regardless of preceding prose or inline indentation.
                             const checkTagEndings = [
                                 { pattern: /(?:^|[\r\n])[ \t]*<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/i, tag: 'add_files_to_context' },
                                 { pattern: /(?:^|[\r\n])[ \t]*<query_architecture>([\s\S]*?)<\/query_architecture>/i, tag: 'query_architecture' },
@@ -2766,7 +2808,7 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                                     interceptedParams = match[1];
                                     streamBuffer = ""; // Cleared on interception
                                     hasMatch = true;
-                                    turnStreamController.abort(); // Abort only this turn's stream
+                                    turnStreamController.abort(); // Forcefully abort the connection to prevent token leakage
                                     break;
                                 }
                             }
@@ -3053,6 +3095,12 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                         if (turnStreamController.signal.aborted || controller.signal.aborted) return;
                         turnResponse += chunk;
                         streamBuffer += chunk;
+
+                        // Sync streaming buffer to disk in real-time to prevent message loss on sudden reloads
+                        const activeMsg = this._currentDiscussion?.messages.find(m => m.id === assistantMessageId);
+                        if (activeMsg) {
+                            activeMsg.content = currentFullResponseBuffer + streamBuffer;
+                        }
 
                         const openIdx = streamBuffer.indexOf('<');
                         if (openIdx !== -1) {
@@ -4226,13 +4274,24 @@ If there are no meaningful docs to update, find the README.md and add a "Latest 
           }
       }
 
+      // If we are inspecting a specific hunk, construct a focused audit prompt
+      const hunkPrompt = type === 'replace' ? `
+We are inspecting a SPECIFIC AIDER HUNK proposed for this file.
+Verify that:
+1. All variables used inside this hunk are defined in either the hunk context, the file, or its imports.
+2. All functions or modules called inside this hunk are correctly imported or declared.
+3. If any imports are missing or variables are undefined, generate the Aider patch to add the imports or fix the variables.
+` : `
+Please perform a deep structural audit of the code for \`${filePath}\`. 
+Check specifically for:
+1. **Indentation errors**: Mixed whitespace or broken blocks.
+2. **Missing imports**: Usage of external or local symbols without declarations.
+3. **Logic holes**: Unfinished functions or placeholders.
+4. **Integration**: Does this code align with the rest of the project context?
+`;
+
       const prompt = `### 🔍 SURGICAL INSPECTION: ${filePath}
-      Please perform a deep structural audit of the code for \`${filePath}\`. 
-      Check specifically for:
-      1. **Indentation errors**: Mixed whitespace or broken blocks.
-      2. **Missing imports**: Usage of external or local symbols without declarations.
-      3. **Logic holes**: Unfinished functions or placeholders.
-      4. **Integration**: Does this code align with the rest of the project context?
+      ${hunkPrompt}
 
       **STRICT REQUIREMENT:**
       - Provide fixes using **AIDER SEARCH/REPLACE** blocks.
@@ -4678,12 +4737,14 @@ ${targetContent}
             case 'replaceCode':
                 try {
                     // Logic to normalize markers before sending to command
+                    // Logic to normalize markers before sending to command
                     const normalizedContent = message.content
                         .replace(/^\s*<<<<<<< SEARCH/gm, '<<<<<<< SEARCH')
                         .replace(/^\s*=======/gm, '=======')
                         .replace(/^\s*>>>>>>> REPLACE/gm, '>>>>>>> REPLACE');
 
                     const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, normalizedContent, this, message.messageId, message.options);
+                    
                     webview.postMessage({
                         command: 'applyAllResult',
                         messageId: message.messageId,
@@ -5315,6 +5376,11 @@ ${targetContent}
                                 title: "Lollms: Building architecture map for SPARQL query...",
                                 cancellable: false
                             }, async (progress) => {
+                                // Ensure the workspace root is set before building the graph
+                                const folders = vscode.workspace.workspaceFolders;
+                                if (folders && folders.length > 0) {
+                                    this.agentManager.codeGraphManager.setWorkspaceRoot(folders[0].uri);
+                                }
                                 await this.agentManager.codeGraphManager.buildGraph(undefined, (p) => {
                                     progress.report({ message: `${p.status} (${p.percentage}%)` });
                                 });
@@ -5330,9 +5396,27 @@ ${targetContent}
                         success: true,
                         sparqlResult: result
                     });
+                    
                     if (params.reprompt) {
-                        const responsePrompt = `### 🧱 SPARQL QUERY RESULT\nQuery executed on the complete ontology graph:\n\`\`\`sparql\n${params.query}\n\`\`\`\n\n**Result:**\n${result}\n\nAnalyze these results and proceed with the mission.`;
-                        this.sendMessage({ role: 'user', content: responsePrompt });
+                        // Rather than sending a new User message and starting a new chat turn,
+                        // we privately inject the result into the current active conversation thread
+                        // to keep all tool results and corrections inside the same single assistant bubble.
+                        const activePanel = ChatPanel.panels.get(this.discussionId);
+                        if (activePanel && activePanel.getCurrentDiscussion()) {
+                            const disc = activePanel.getCurrentDiscussion()!;
+                            
+                            // Check if this is the dynamic mode loop
+                            const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
+                            if (activeGen) {
+                                // Dynamic mode is actively running, let the loop handle it
+                                return;
+                            }
+
+                            // If triggered manually by user click, we simulate the next turn privately
+                            const responsePrompt = `### 📋 SPARQL QUERY RESULT\nQuery executed on the complete ontology graph:\n\`\`\`sparql\n${params.query}\n\`\`\`\n\n**Result:**\n${result}\n\nAnalyze these results and proceed with the mission.`;
+                            
+                            activePanel.sendMessage({ role: 'system', content: responsePrompt, skipInPrompt: false });
+                        }
                     }
                 } else if (command === 'createNotebook') {
                     vscode.commands.executeCommand('lollms-vs-coder.createNotebook', params.path, params.cellContent);
@@ -6048,7 +6132,7 @@ Task:
                         detail: 'lollms-vs-coder.mergeGitBranch' 
                     }
                 ];
-                
+
                 vscode.window.showQuickPick(items, { placeHolder: 'Git Workflow Actions' }).then(selected => {
                     if (selected && selected.detail) {
                         if (selected.detail === 'lollms-vs-coder.createGitBranch') {
@@ -6058,7 +6142,6 @@ Task:
                         }
                     }
                 });
-                this.processManager.unregister(applyProcId);
                 break;
 
             case 'requestGitStatus':

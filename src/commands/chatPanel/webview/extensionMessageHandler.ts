@@ -1,7 +1,7 @@
 import { dom, vscode, state } from './dom.js';
 import DOMPurify from 'dompurify';
 import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender, checkAndSyncMessageAppliedState } from './messageRenderer.js';
-import { collapseBlockWithScrollPreservation } from './utils.js';
+import { collapseBlockWithScrollPreservation, isScrolledToBottom } from './utils.js';
 import { setCalculatingTokens,
     showProjectLoader,
     hideProjectLoader,
@@ -28,6 +28,18 @@ export async function handleExtensionMessage(event: MessageEvent) {
         switch (message.command) {
             case 'addMessage':
                 addMessage(message.message);
+                if (dom.messagesDiv) {
+                    dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                    requestAnimationFrame(() => {
+                        if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                    });
+                    setTimeout(() => {
+                        if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                    }, 50);
+                    setTimeout(() => {
+                        if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                    }, 200);
+                }
                 break;
             case 'appendMessageChunk':
                 {
@@ -73,7 +85,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if(messageDiv) {
                         messageDiv.dataset.originalContent = JSON.stringify(stream.buffer);
                     }
+                    const wasAtBottom = dom.messagesDiv && isScrolledToBottom(dom.messagesDiv);
                     scheduleRender(message.id);
+                    if (wasAtBottom && dom.messagesDiv) {
+                        // Defer to let the throttled render finish painting
+                        requestAnimationFrame(() => {
+                            if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                        });
+                    }
                 }
                 break;
             case 'finalizeMessage':
@@ -338,7 +357,18 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
                     }
 
-                    if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                    if (dom.messagesDiv) {
+                        dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                        requestAnimationFrame(() => {
+                            if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                        });
+                        setTimeout(() => {
+                            if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                        }, 50);
+                        setTimeout(() => {
+                            if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                        }, 200);
+                    }
                     }
                     break;
 
@@ -742,7 +772,18 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'forceScrollToBottom':
-                if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                if (dom.messagesDiv) {
+                    dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                    requestAnimationFrame(() => {
+                        if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                    });
+                    setTimeout(() => {
+                        if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                    }, 50);
+                    setTimeout(() => {
+                        if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                    }, 200);
+                }
                 break;
             case 'imageGenerationResult':
                 const genBtn = document.getElementById(message.buttonId) as HTMLButtonElement;
@@ -1387,7 +1428,6 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         // 1. STOP THE SPINNER
                         if (mainApplyBtn) {
                             mainApplyBtn.disabled = false;
-                            // Restore original icon (Tools or Aider swap)
                             const isAider = blockEl.dataset.rawCode?.includes('<<<<<<< SEARCH');
                             mainApplyBtn.innerHTML = `<span class="codicon ${isAider ? 'codicon-arrow-swap' : 'codicon-tools'}"></span>`;
                         }
@@ -1414,17 +1454,52 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         blockEl.classList.add('malformed');
                         blockEl.style.borderColor = 'var(--vscode-errorForeground)';
 
-                        // FAILURE CASE: Restore the button so the user can try again
-                        if (mainApplyBtn && mainApplyBtn.dataset.originalHtml) {
-                            mainApplyBtn.disabled = false;
-                            mainApplyBtn.innerHTML = mainApplyBtn.dataset.originalHtml;
+                        // FAILURE CASE: Insert explicit "Fix with AI" & "Manual Fix" buttons
+                        // in place of the generic error message or as floating helper actions
+                        const actions = blockEl.querySelector('.code-actions');
+                        if (actions && !actions.querySelector('.fix-ai-btn')) {
+                            const fixAiBtn = document.createElement('button');
+                            fixAiBtn.className = 'code-action-btn apply-btn fix-ai-btn';
+                            fixAiBtn.style.borderColor = 'var(--vscode-charts-purple)';
+                            fixAiBtn.innerHTML = '<span class="codicon codicon-sparkle"></span> Fix with AI';
+                            fixAiBtn.onclick = () => {
+                                fixAiBtn.disabled = true;
+                                fixAiBtn.innerHTML = '<div class="spinner"></div> Fixing...';
+                                vscode.postMessage({ 
+                                    command: 'replaceCode', 
+                                    filePath: message.filePath, 
+                                    content: "REPAIR_REQUESTED", 
+                                    messageId: message.messageId, 
+                                    blockIndex: message.blockIndex,
+                                    hunkIndex: message.hunkIndex,
+                                    options: { silent: true }
+                                });
+                            };
+
+                            const manualFixBtn = document.createElement('button');
+                            manualFixBtn.className = 'code-action-btn secondary-btn manual-fix-btn';
+                            manualFixBtn.style.borderColor = 'var(--vscode-charts-orange)';
+                            manualFixBtn.innerHTML = '<span class="codicon codicon-tools"></span> Manual Fix';
+                            manualFixBtn.onclick = () => {
+                                const codeText = blockEl.dataset.rawCode || "";
+                                import('./ui.js').then(ui => {
+                                    ui.openRawCodeModal(
+                                        message.messageId, 
+                                        message.blockIndex, 
+                                        message.filePath, 
+                                        codeText, 
+                                        message.hunkIndex !== undefined ? message.hunkIndex : 0
+                                    );
+                                });
+                            };
+
+                            actions.appendChild(fixAiBtn);
+                            actions.appendChild(manualFixBtn);
                         }
 
-                        // AUTOMATIC REDIRECTION to the NEW Tabbed Raw Code Modal
-                        // We trigger this immediately so the user can see the raw code and the search failure
+                        // AUTOMATIC REDIRECTION to the Raw Code Modal (Manual Fix)
                         if (!message.repaired && !message.alreadyApplied) {
                             const codeText = blockEl.dataset.rawCode || "";
-                            // Small timeout to allow the "Apply" button to finish its spinner animation
                             setTimeout(() => {
                                 import('./ui.js').then(ui => {
                                     ui.openRawCodeModal(
@@ -1437,7 +1512,6 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 });
                             }, 100);
                         }
-                    
                     }
                     
 

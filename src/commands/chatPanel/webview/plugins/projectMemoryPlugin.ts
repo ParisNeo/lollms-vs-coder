@@ -23,6 +23,29 @@ export const projectMemoryPlugin: TagPlugin = {
             </div>`;
         }
 
+        // Escape all HTML/XML special characters to prevent the browser from evaluating them as DOM elements
+        const escapedTitle = (title || "").replace(/[<>&'"]/g, (c: string) => {
+            switch (c) {
+                case '<': return '&lt;';
+                case '>': return '&gt;';
+                case '&': return '&amp;';
+                case '\'': return '&apos;';
+                case '"': return '&quot;';
+            }
+            return c;
+        });
+
+        const escapedContent = (content || "").replace(/[<>&'"]/g, (c: string) => {
+            switch (c) {
+                case '<': return '&lt;';
+                case '>': return '&gt;';
+                case '&': return '&amp;';
+                case '\'': return '&apos;';
+                case '"': return '&quot;';
+            }
+            return c;
+        });
+
         return `
         <div class="learning-card" data-mem-id="${id}">
             <div class="learning-card-header">
@@ -30,8 +53,8 @@ export const projectMemoryPlugin: TagPlugin = {
                 <span>Genie Memory: ${action === 'update' ? 'Reinforced' : 'Learned'}</span>
             </div>
             <div class="learning-body">
-                <div class="learning-title">${title}</div>
-                <div class="learning-content">${content}</div>
+                <div class="learning-title">${escapedTitle}</div>
+                <div class="learning-content">${escapedContent}</div>
                 <div class="learning-meta">
                     <button class="icon-btn sync-memory-btn" 
                             data-action="${action}" 

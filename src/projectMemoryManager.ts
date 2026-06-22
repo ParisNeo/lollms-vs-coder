@@ -1460,16 +1460,26 @@ Category: "${engramB.category}"
                     try {
                         // Unescape any XML quotes before parsing JSON
                         const cleanJson = predicates.replace(/&quot;/g, '"').replace(/&apos;/g, "'");
-                        parsedPreds = JSON.parse(cleanJson);
+                        const rawPreds = JSON.parse(cleanJson);
+                        if (Array.isArray(rawPreds)) {
+                            // SELF-HEALING: Strip redundant s: prefix hallucinations from AI output
+                            parsedPreds = rawPreds.map((p: any) => ({
+                                verb: (p.verb || '').replace(/^s:/i, '').trim(),
+                                targetId: (p.targetId || '').replace(/^s:/i, '').trim()
+                            }));
+                        }
                     } catch (e) {
                         Logger.warn("Failed to parse predicates from project_memory tag", e);
                     }
                 }
 
+                // Strip leading s: from the main id too if it snuck in
+                const cleanId = id.replace(/^s:/i, '').trim();
+
                 await this.updateMemory(
                     action as any, 
-                    id, 
-                    title || id, 
+                    cleanId, 
+                    title || cleanId, 
                     memoryContent, 
                     category || "general", 
                     imp,

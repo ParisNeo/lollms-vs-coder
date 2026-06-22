@@ -265,7 +265,19 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             return workspaceState[relativePath];
         }
 
-        // 2. Check for ancestor state (inheritance for exclusion/collapsed)
+        // 2. Check if this folder currently contains any active/included files or subfolders
+        // If it does, we must force it to remain uncollapsed to maintain UI synchronization.
+        const hasActiveChildren = Object.keys(workspaceState).some(key => {
+            const normKey = this.normalize(key);
+            return normKey.startsWith(relativePath + '/') && 
+                   (workspaceState[key] === 'included' || workspaceState[key] === 'definitions-only' || workspaceState[key] === 'tree-only');
+        });
+
+        if (hasActiveChildren) {
+            return 'tree-only';
+        }
+
+        // 3. Check for ancestor state (inheritance for exclusion/collapsed)
         let currentPath = relativePath;
         while (currentPath.includes('/')) {
             const lastSlash = currentPath.lastIndexOf('/');

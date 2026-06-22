@@ -71,6 +71,9 @@ export class ChatPanel {
   private _activeGenerationCompleteListener?: (fullContent: string) => void;
   private pdfExtractionPromises: Record<string, { resolve: (val: string[]) => void, reject: (err: Error) => void, timeout: NodeJS.Timeout }> = {};
 
+  // Tracks failing patches to prevent infinite repetition loops
+  private _failedPatchesRegistry: Map<string, Set<string>> = new Map();
+
   public static createOrShow(services: LollmsServices, discussionId: string): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
@@ -216,9 +219,16 @@ export class ChatPanel {
 
             if (isAiderInside) {
                 const normalizedAider = blockContent.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
-                await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
+                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
+                
+                // If the patch application failed, trigger automated self-correction (Mute for system IDs to prevent infinite loops)
+                const isSystemId = messageId.startsWith('self_correction') || messageId.startsWith('guardian') || messageId.startsWith('system') || messageId.startsWith('inspection');
+                if (result && !result.success && !isSystemId && !signal.aborted) {
+                    this.log(`Patch failed for ${filePath}. Initiating automated AI self-correction...`, 'WARN');
+                    await this.triggerSurgicalSelfCorrection(filePath, normalizedAider, result.error || "Search block mismatch.", signal);
+                }
             } else {
-                await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', filePath, blockContent, opts);
+                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(blockContent, 'utf8'));
             }
         }
 
@@ -262,7 +272,14 @@ export class ChatPanel {
                     if (filePath) {
                         modifiedFiles.add(filePath);
                         const normalizedAider = blockContent.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
-                        await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
+                        const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
+                        
+                        // Trigger automated self-correction for naked block failure
+                        const isSystemId = messageId.startsWith('self_correction') || messageId.startsWith('guardian') || messageId.startsWith('system') || messageId.startsWith('inspection');
+                        if (result && !result.success && !isSystemId && !signal.aborted) {
+                            this.log(`Naked patch failed for ${filePath}. Initiating automated AI self-correction...`, 'WARN');
+                            await this.triggerSurgicalSelfCorrection(filePath, normalizedAider, result.error || "Search block mismatch.", signal);
+                        }
                     }
                     i = endIdx; // Advance parser beyond the block
                 }
@@ -349,9 +366,149 @@ export class ChatPanel {
         }
 
     public setAgentManager(agent: AgentManager) {
-        this.agentManager = agent;
-        ChatPanel.activeAgents.set(this.discussionId, agent);
-    }
+          this.agentManager = agent;
+          ChatPanel.activeAgents.set(this.discussionId, agent);
+      }
+
+      /**
+       * Spawns an automated AI correction turn when a search/replace patch fails.
+       * Supports up to 4 total attempts, but terminates early if a repeated failing approach is detected.
+       */
+      public async triggerSurgicalSelfCorrection(filePath: string, failingPatch: string, errorMsg: string, signal: AbortSignal, currentAttempt: number = 1) {
+          const maxAttempts = 4;
+          if (currentAttempt > maxAttempts) {
+              this.log(`Self-Correction: Reached maximum attempts limit (${maxAttempts}) for ${filePath}. Halting.`, 'WARN');
+              return;
+          }
+
+          const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+          if (!workspaceFolder) return;
+
+          const resolution = await this._contextManager.resolveWorkspaceFromPath(filePath);
+          if (!resolution) return;
+
+          // Register the initial failure into the duplicate-prevention registry
+          if (!this._failedPatchesRegistry.has(filePath)) {
+              this._failedPatchesRegistry.set(filePath, new Set());
+          }
+          const normalizedFailingPatch = failingPatch.replace(/\s+/g, ' ').trim();
+          this._failedPatchesRegistry.get(filePath)!.add(normalizedFailingPatch);
+
+          let originalFileContent = "";
+          try {
+              const document = await vscode.workspace.openTextDocument(resolution.uri);
+              originalFileContent = document.getText();
+          } catch (e: any) {
+              this.log(`Self-Correction: Could not read original file ${filePath}: ${e.message}`, 'ERROR');
+              return;
+          }
+
+          const correctionMsgId = 'self_correction_' + Date.now() + '_' + currentAttempt;
+          await this.addMessageToDiscussion({
+              id: correctionMsgId,
+              role: 'system',
+              content: `🛡️ **Sovereign Shield: Patch Application Failed (Attempt ${currentAttempt}/${maxAttempts})**
+  File: \`${filePath}\`
+  Error: \`${errorMsg}\`
+  *Summoning the Synaptic Architect to automatically repair the patch based on actual disk content...*`,
+              skipInPrompt: true
+          });
+
+          const systemPrompt = "You are a surgical code repair expert. You analyze original files and failing Aider patches, then output a corrected version.";
+          const userPrompt = `### 🛑 SEARCH/REPLACE FAILURE REPORT (ATTEMPT ${currentAttempt} of ${maxAttempts})
+  The following patch failed to apply to \`${filePath}\`.
+
+  **CRITICAL ERROR:** 
+  "${errorMsg}"
+
+  **YOUR PREVIOUS ATTEMPT:**
+  \`\`\`diff
+  ${failingPatch}
+  \`\`\`
+
+  **ACTUAL FILE CONTENT (REFERENCE):**
+  \`\`\`
+  ${originalFileContent}
+  \`\`\`
+
+  **INSTRUCTIONS FOR REPAIR:**
+  1. Your SEARCH block was NOT a literal, character-for-character match of the file content.
+  2. Check for **indentation differences** (spaces vs tabs) and **trailing whitespace**.
+  3. **DO NOT REPEAT YOUR PREVIOUS ATTEMPT**. It failed because it didn't match. You must write a different search block.
+  4. Provide the CORRECTED block. Include 2-3 lines of unchanged context in the SEARCH section to ensure a unique match.
+  5. Output **ONLY** the corrected \`<<<<<<< SEARCH ... >>>>>>> REPLACE\` block. Do not wrap it in other code blocks.`;
+
+          try {
+              const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+              const response = await this._lollmsAPI.sendChat([
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: userPrompt }
+              ], null, signal, model, { thinking: false });
+
+              if (signal.aborted) return;
+
+              const cleanResponse = stripThinkingTags(response);
+
+              // Extract the fixed block from the response
+              let fixedBlock = "";
+              const startTag = "<<<<<<< SEARCH";
+              const endTag = ">>>>>>> REPLACE";
+              const startIdx = cleanResponse.indexOf(startTag);
+              const endIdx = cleanResponse.indexOf(endTag);
+
+              if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+                  fixedBlock = cleanResponse.substring(startIdx, endIdx + endTag.length);
+              } else {
+                  const match = cleanResponse.match(/```(?:\w+)?\n([\s\S]*?)\n```/);
+                  fixedBlock = match ? match[1].trim() : cleanResponse.trim();
+              }
+
+              if (fixedBlock && fixedBlock.includes("<<<<<<< SEARCH")) {
+                  const normalizedFixedBlock = fixedBlock.replace(/\s+/g, ' ').trim();
+
+                  // 🛑 REPETITION CIRCUIT BREAKER
+                  if (this._failedPatchesRegistry.get(filePath)!.has(normalizedFixedBlock)) {
+                      this.log(`Repetitive approach detected for ${filePath}. Blocking execution loop to protect token budget.`, 'WARN');
+                      await this.addMessageToDiscussion({
+                          id: 'repetition_blocked_' + Date.now(),
+                          role: 'system',
+                          content: `🛡️ **Sovereign Shield: Repetitive thought pattern blocked.** 
+  The AI generated a patch that is identical to a previously failing approach. 
+  *Self-correction halted to prevent infinite loops. Please edit manually using the Raw Block tool.*`,
+                          skipInPrompt: true
+                      });
+                      return;
+                  }
+
+                  const successMsgId = 'self_correction_applied_' + Date.now() + '_' + currentAttempt;
+                  await this.addMessageToDiscussion({
+                      id: successMsgId,
+                      role: 'system',
+                      content: `🛡️ **Sovereign Shield**: Corrected patch generated. Applying to disk...`,
+                      skipInPrompt: true
+                  });
+
+                  // Apply the newly corrected patch silently
+                  const applyResult: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, fixedBlock, this, successMsgId, { silent: true, autoSave: true });
+
+                  if (applyResult && applyResult.success) {
+                      await this.updateMessageContent(successMsgId, `🛡️ **Sovereign Shield**: Corrected patch successfully applied to \`${filePath}\`.`);
+                      // Clear registry on complete success
+                      this._failedPatchesRegistry.delete(filePath);
+                  } else {
+                      const nextError = applyResult?.error || "Search block mismatch.";
+                      await this.updateMessageContent(successMsgId, `🛡️ **Sovereign Shield**: Corrected patch also failed to apply. Recurving loop...`);
+                      // Recurse into the next attempt
+                      await this.triggerSurgicalSelfCorrection(filePath, fixedBlock, nextError, signal, currentAttempt + 1);
+                  }
+              } else {
+                  await this.updateMessageContent(correctionMsgId, `🛡️ **Sovereign Shield**: AI repair produced an invalid format. Please resolve the conflict manually.`);
+              }
+
+          } catch (e: any) {
+              this.log(`Automated self-correction failed: ${e.message}`, 'ERROR');
+          }
+      }
 
   
     public updateGeneratingState() {
@@ -2264,7 +2421,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
   }
 
 
-  public async sendMessage(message: ChatMessage, autoContextMode: boolean = false) {
+  public async sendMessage(message: ChatMessage) {
     if (this._isDisposed || !this.processManager || !this._currentDiscussion) return;
 
     await this.waitForWebviewReady();
@@ -5529,11 +5686,6 @@ Task:
                 this.saveCapabilities();
                 this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
                 break;
-            case 'toggleAutoContext': 
-                this._discussionCapabilities.autoContextMode = message.enabled;
-                this.saveCapabilities();
-                this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
-                break;
             case 'runAgent':
                 if (!this._currentDiscussion) return;
 
@@ -6015,7 +6167,7 @@ Task:
 
                     // OPTIMIZATION: If only visual modes (Think, Agent, AutoContext) changed,
                     // do not trigger a full context scan to avoid badge-flicker.
-                    const isVisualOnly = partial.thinkingMode !== undefined || partial.agentMode !== undefined || partial.autoContextMode !== undefined;
+                    const isVisualOnly = partial.thinkingMode !== undefined || partial.agentMode !== undefined;
 
                     if (!isVisualOnly) {
                         await this.updateContextAndTokens({ isBackgroundSync: false });
@@ -6884,15 +7036,6 @@ Task:
                             </div>
                             <div class="menu-item-radio">
                                 <label><input type="radio" name="mode-group" value="agent" id="modeAgentRadio"> <span>🤖 Agent Mode (Autonomous)</span></label>
-                            </div>
-                            <div class="menu-separator"></div>
-                            <div class="menu-item-toggle">
-                                <span>🧠 Auto Context Scouting</span>
-                                <label class="switch"><input type="checkbox" id="autoContextCheckbox"><span class="slider"></span></label>
-                            </div>
-                            <div class="menu-item-toggle">
-                                <span>💡 Auto Skill Projection</span>
-                                <label class="switch"><input type="checkbox" id="autoSkillCheckbox"><span class="slider"></span></label>
                             </div>
                         </div>
 
@@ -7940,6 +8083,10 @@ Task:
                     </div>
                     <span class="close-btn" id="raw-code-close-btn">&times;</span>
                 </div>
+
+                <!-- Hunk tabs container for multi-hunk view inside Raw Block modal -->
+                <div id="modal-hunk-tabs" class="hunk-tabs-nav" style="padding: 6px 16px 0 16px; border-bottom: 1px solid var(--vscode-widget-border); display: flex; gap: 4px; overflow-x: auto;"></div>
+
                 <div class="modal-body" style="display:flex; gap:10px; height: 60vh; padding: 10px;">
                     <pre id="raw-code-display" style="flex: 2; margin: 0; user-select: text; white-space: pre-wrap; word-break: break-all; background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 12px;"></pre>
                     <div id="raw-search-results" class="search-results-mini" style="flex: 1; display: none; flex-direction: column; overflow-y: auto; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 5px;"></div>

@@ -79,7 +79,6 @@ export interface DiscussionCapabilities {
     autoBranch: boolean;
     maxFixRetries: number;
     autoApply: boolean;
-    autoContextMode: boolean;
     autoSkillMode: boolean;
     autoToolMode: boolean;
     disableProjectContext: boolean;

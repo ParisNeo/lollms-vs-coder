@@ -42,9 +42,71 @@ export class OnboardingPanel {
         this._panel.webview.onDidReceiveMessage(async (msg) => {
             if (msg.command === 'submit') {
                 await this.handleOnboarding(msg.data);
+            } else if (msg.command === 'exportProfile') {
+                await this.handleExportProfile(msg.data);
+            } else if (msg.command === 'importProfile') {
+                await this.handleImportProfile();
             }
         }, null, this._disposables);
     }
+
+    private async handleExportProfile(data: any) {
+        const { destiny, instructions, preferences, pathway } = data;
+        const profile = {
+            version: 1,
+            destiny,
+            instructions: instructions || "",
+            preferences: preferences || "",
+            pathway: pathway || "none"
+        };
+
+        const uri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file('lollms_onboarding_profile.json'),
+            filters: { 'JSON Configuration': ['json'] },
+            saveLabel: 'Export Onboarding Profile'
+        });
+
+        if (uri) {
+            try {
+                await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(profile, null, 2), 'utf8'));
+                vscode.window.showInformationMessage(`Onboarding profile exported successfully to: ${path.basename(uri.fsPath)}`);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Failed to export profile: ${e.message}`);
+            }
+        }
+    }
+
+    private async handleImportProfile() {
+        const uris = await vscode.window.showOpenDialog({
+            canSelectMany: false,
+            filters: { 'JSON Configuration': ['json'] },
+            openLabel: 'Import Onboarding Profile'
+        });
+
+        if (uris && uris[0]) {
+            try {
+                const bytes = await vscode.workspace.fs.readFile(uris[0]);
+                const profile = JSON.parse(Buffer.from(bytes).toString('utf8'));
+
+                if (profile && typeof profile === 'object') {
+                    this._panel.webview.postMessage({
+                        command: 'loadProfileData',
+                        data: {
+                            destiny: profile.destiny || 'vibe',
+                            instructions: profile.instructions || '',
+                            preferences: profile.preferences || '',
+                            pathway: profile.pathway || 'none'
+                        }
+                    });
+                    vscode.window.showInformationMessage(`Onboarding profile imported successfully from: ${path.basename(uris[0].fsPath)}`);
+                } else {
+                    throw new Error("Invalid file structure.");
+                }
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Failed to import profile: ${e.message}`);
+            }
+        }
+    }    
 
     private async handleOnboarding(data: any) {
         const { destiny, instructions, preferences, pathway } = data;
@@ -148,52 +210,14 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
             }
         });
 
-        // 4. Create and launch discussion
-        const discussion = this.services.discussionManager.createNewDiscussion();
-        discussion.title = `Project: ${this.folder.name}`;
-        discussion.capabilities = caps;
-        await this.services.discussionManager.saveDiscussion(discussion);
-
-        const panel = ChatPanel.createOrShow(this.services, discussion.id);
-        panel.setProcessManager(this.services.processManager);
-        panel.setContextManager(this.services.contextManager);
-        panel.setPersonalityManager(this.services.personalityManager);
-        panel.setHerdManager(this.services.herdManager);
-
-        const agent = new AgentManager(
-            panel, this.services.lollmsAPI, this.services.contextManager, this.services.gitIntegration,
-            this.services.discussionManager, this.services.extensionUri, this.services.codeGraphManager, this.services.skillsManager,
-            this.services.toolManager, this.services.rlmDb
-        );
-        agent.setProcessManager(this.services.processManager);
-        agent.projectMemoryManager = this.services.projectMemoryManager;
-        agent.personalityManager = this.services.personalityManager;
-        panel.setAgentManager(agent);
-
-        await panel.loadDiscussion();
+        // 4. Refresh tree views to display the newly compiled project capabilities & memories
         this.services.treeProviders.discussion?.refresh();
+        vscode.commands.executeCommand('lollmsProjectMemoryView.focus');
 
-        // 5. Send Initial Pathway Prompt
-        let prompt = "";
-        if (destiny === 'vibe') {
-            prompt = `Let's start building!
-Main Ideas: "${rawInstructions}"`;
-        } else {
-            if (pathway === 'prd') {
-                prompt = `Let's draft our **Product Requirements Document (PRD)**.
-1. Outline the System Architecture (Model-View-Controller splits).
-2. Detail the critical User Flows.
-3. Establish the core security parameters (No custom auth, sanitize every input, handle exceptions generically).
-
-*Remember: Coding comes later once the architecture is locked.*`;
-            } else {
-                prompt = `Let's perform a **Codebase Reconnaissance** scan.
-Analyze the complete project structure, identify the key entry points, and summarize the existing code relationships so we have a firm, grounded starting point before any changes are proposed.`;
-            }
-        }
-
-        panel._panel.reveal();
-        await panel.sendMessage({ role: 'user', content: prompt });
+        vscode.window.showInformationMessage(
+            `🚀 Project "${this.folder.name}" initialized successfully! We have mapped your custom standards to Project Memory.`,
+            "Ok"
+        );
 
         this.dispose();
     }
@@ -308,6 +332,11 @@ Analyze the complete project structure, identify the key entry points, and summa
                         </div>
                     </div>
 
+                    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                        <button class="btn secondary" id="import-profile-btn" onclick="importProfile()" style="flex: 1;"><i class="codicon codicon-cloud-upload"></i> Import Profile</button>
+                        <button class="btn secondary" id="export-profile-btn" onclick="exportProfile()" style="flex: 1;"><i class="codicon codicon-cloud-download"></i> Export Profile</button>
+                    </div>
+
                     <button class="btn" id="submit-btn" onclick="submit()"><i class="codicon codicon-check"></i> Initialize Workspace</button>
                 </div>
             </div>
@@ -318,11 +347,15 @@ Analyze the complete project structure, identify the key entry points, and summa
                 let selectedPathway = 'prd';
 
                 // Synchronize height on textareas to feel cohesive
-                document.querySelectorAll('textarea').forEach(el => {
-                    el.addEventListener('input', () => {
+                function syncTextareas() {
+                    document.querySelectorAll('textarea').forEach(el => {
                         el.style.height = 'auto';
                         el.style.height = el.scrollHeight + 'px';
                     });
+                }
+
+                document.querySelectorAll('textarea').forEach(el => {
+                    el.addEventListener('input', syncTextareas);
                 });
 
                 function selectDestiny(val) {
@@ -344,6 +377,25 @@ Analyze the complete project structure, identify the key entry points, and summa
                     document.getElementById('r-scan').checked = val === 'scan';
                 }
 
+                function exportProfile() {
+                    const instructions = document.getElementById('instructions').value.trim();
+                    const preferences = document.getElementById('preferences').value.trim();
+
+                    vscode.postMessage({
+                        command: 'exportProfile',
+                        data: {
+                            destiny: selectedDestiny,
+                            instructions: instructions,
+                            preferences: preferences,
+                            pathway: selectedDestiny === 'agentic' ? selectedPathway : 'none'
+                        }
+                    });
+                }
+
+                function importProfile() {
+                    vscode.postMessage({ command: 'importProfile' });
+                }
+
                 function submit() {
                     const btn = document.getElementById('submit-btn');
                     if (btn.disabled) return;
@@ -355,7 +407,7 @@ Analyze the complete project structure, identify the key entry points, and summa
                     btn.disabled = true;
                     btn.innerHTML = '<i class="codicon codicon-loading spin"></i> Mapping Synaptic Engrams...';
 
-                    document.querySelectorAll('input, textarea, .radio-option').forEach(el => {
+                    document.querySelectorAll('input, textarea, .radio-option, button').forEach(el => {
                         el.style.pointerEvents = 'none';
                         el.style.opacity = '0.6';
                     });
@@ -370,6 +422,22 @@ Analyze the complete project structure, identify the key entry points, and summa
                         }
                     });
                 }
+
+                window.addEventListener('message', event => {
+                    const message = event.data;
+                    if (message.command === 'loadProfileData') {
+                        const d = message.data;
+                        selectDestiny(d.destiny || 'vibe');
+
+                        document.getElementById('instructions').value = d.instructions || '';
+                        document.getElementById('preferences').value = d.preferences || '';
+
+                        if (d.destiny === 'agentic' && d.pathway) {
+                            selectPathway(d.pathway);
+                        }
+                        syncTextareas();
+                    }
+                });
             </script>
         </body>
         </html>`;

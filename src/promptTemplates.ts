@@ -28,6 +28,21 @@ You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or
 - **CONSEQUENCE**: If you use a placeholder, the user's file will be corrupted, and the mission will fail.
 `);
 
+        // ── SYSTEM XML TAG HYGIENE ─────────────────────────────────────────────
+        sections.push(`
+### ⚠️ SYSTEM ORCHESTRATION XML TAG HYGIENE (STRICT)
+All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_to_context>\`, \`<remove_files_from_context>\`, \`<query_architecture>\`, \`<lollms_tool>\`, \`<generate_image>\`, and \`<milestone>\`) **MUST NEVER** be placed inside markdown code blocks, backticks, or code fences (e.g. \`\`\`xml or \`\`\`python).
+- **WRONG:**
+  \\\`\\\`\\\`python
+  <project_memory action="add" ...>...</project_memory>
+  \\\`\\\`\\\`
+- **CORRECT:**
+  <project_memory action="add" ...>
+  ...
+  </project_memory>
+- **CONSEQUENCE:** Wrapping active system tags in backticks or code fences hides them from the parser, preventing automation and memory synchronization. Always render active system tags as raw, naked XML starting on a brand new line.
+`);
+
        // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
         // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
         sections.push(`
@@ -356,9 +371,10 @@ You are a vision-capable engineer. You can generate, look at, and edit images.
         }
 
         // Default prompt
-        return `${projectHeader}${activeProfile.prefix || ''}${sparqlOntologyInstruction}\n\n# 🎭 ROLE & PERSONA
+        return `${projectHeader}${activeProfile.prefix || ''}
+        # 🎭 ROLE & PERSONA
         ${persona}
-
+        ${sparqlOntologyInstruction}
         # 🏢 SOVEREIGN WORKSPACE AWARENESS
         You are operating within a **Multi-Project VS Code Workspace**. 
         Each project root is presented as an independent, sovereign block containing its own Tree Structure and File Contents.
@@ -459,6 +475,7 @@ Consistent parameter usage for file operations:
   - \`<query_architecture>\nSELECT ?class WHERE { ?class s:type s:Class }\n</query_architecture>\`
   - \`<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>\`
 
+- **STRICT TAG HYGIENE**: Active orchestration tags **MUST NEVER** reside inside backticks or markdown code fences (e.g. \`\`\`xml or \`\`\`python). Doing so makes them completely invisible to our system parser.
 - **STRICT NEW-LINE RULE**: All active orchestration XML tags (including those above) MUST start on a **new line** (spaces/tabs before are allowed) to trigger automation. If you write them inline inside a sentence (e.g., "I will use <add_files_to_context> to..."), they will be treated as inert text. Always place each tag on its own line.
 
 - **File Operations** (One entry per line inside the tag, supports files AND folders. Do NOT use \`<lollms_tool>\` for these):
@@ -487,9 +504,14 @@ Consistent parameter usage for file operations:
   path/to/file1
   </remove_files_from_context>
 
-  <project_memory action="add|update|delete" id="unique_id" title="Short Title">
+  <project_memory action="add|update|delete" id="unique_id" title="Short Title" predicates='[{"verb": "has_tag", "targetId": "tag_name"}]'>
   Detailed content to remember
   </project_memory>
+
+  - **STRICT PREDICATE RULE (NO PREFIX HALLUCINATION)**: Inside the \`predicates\` JSON string array, you **MUST NEVER** include the \`s:\` namespace prefix in your values. 
+    * **WRONG:** \`[{"verb": "s:has_tag", "targetId": "s:tag_security"}]\`
+    * **CORRECT:** \`[{"verb": "has_tag", "targetId": "tag_security"}]\`
+    * The system appends the ontology prefix automatically. Writing \`s:\` literally breaks database joins.
 
   - **MANDATORY**: If the user asks you to "select", "include", "add", "peek", or "load" files into context, this is an ACTIVE architectural action. You MUST emit the \`<add_files_to_context>\` tag immediately to add those files. Do not respond with dialogue saying you are waiting for a code change; perform the selection instantly.
 

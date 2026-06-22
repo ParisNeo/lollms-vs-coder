@@ -478,8 +478,6 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (gitCheck) gitCheck.checked = !!caps.gitAutoWorkflow;
                     if (herdCheck) herdCheck.checked = !!caps.herdMode;
 
-                    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
-
                     if (dom.tempSlider) {
                         // Ensure 0 is treated as a valid value but undefined triggers the 0.7 default
                         const tempValue = (caps.temperature !== undefined && caps.temperature !== null) 
@@ -1317,6 +1315,72 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                         const labelInline = row.querySelector('.status-label-inline');
                         if (labelInline) labelInline.remove();
+
+                        // Add "Fix with AI" and "Manual Stitch" buttons if the change failed to apply
+                        // (Mute for system-generated messages to prevent recursive loops)
+                        const isSystemId = message.messageId.startsWith('self_correction') || message.messageId.startsWith('guardian') || message.messageId.startsWith('system') || message.messageId.startsWith('inspection');
+                        if (!message.success && !isSystemId) {
+                            let rowActions = row.querySelector('.row-actions') as HTMLElement;
+                            if (!rowActions) {
+                                rowActions = document.createElement('div');
+                                rowActions.className = 'row-actions';
+                                row.appendChild(rowActions);
+                            }
+                            rowActions.style.display = 'flex';
+                            rowActions.style.gap = '6px';
+                            rowActions.style.marginLeft = 'auto';
+
+                            // Find the raw code block on the page to retrieve data for the modal
+                            const blockEl = document.getElementById(`block-${message.messageId}-${message.blockIndex}`) as HTMLDetailsElement;
+                            const rawCode = blockEl ? blockEl.dataset.rawCode || "" : "";
+
+                            rowActions.innerHTML = `
+                                <button class="code-action-btn apply-btn row-fix-ai-btn" style="height:20px; font-size:9px; padding:0 6px;" title="Ask AI to repair this specific change">
+                                    <i class="codicon codicon-sparkle"></i> Fix with AI
+                                </button>
+                                <button class="code-action-btn secondary-btn row-manual-stitch-btn" style="height:20px; font-size:9px; padding:0 6px;" title="Open manual stitching modal">
+                                    <i class="codicon codicon-tools"></i> Raw Block
+                                </button>
+                            `;
+
+                            // Bind "Fix with AI" action
+                            const fixAiBtn = rowActions.querySelector('.row-fix-ai-btn') as HTMLButtonElement;
+                            if (fixAiBtn) {
+                                fixAiBtn.onclick = (e) => {
+                                    e.stopPropagation();
+                                    fixAiBtn.disabled = true;
+                                    fixAiBtn.innerHTML = '<div class="spinner"></div> Repairing...';
+                                    vscode.postMessage({
+                                        command: 'replaceCode',
+                                        filePath: message.filePath,
+                                        content: "REPAIR_REQUESTED",
+                                        messageId: message.messageId,
+                                        options: { 
+                                            silent: true,
+                                            blockIndex: message.blockIndex,
+                                            hunkIndex: message.hunkIndex
+                                        }
+                                    });
+                                };
+                            }
+
+                            // Bind "Raw Block / Manual Stitch" action
+                            const manualStitchBtn = rowActions.querySelector('.row-manual-stitch-btn') as HTMLButtonElement;
+                            if (manualStitchBtn) {
+                                manualStitchBtn.onclick = (e) => {
+                                    e.stopPropagation();
+                                    import('./ui.js').then(ui => {
+                                        ui.openRawCodeModal(
+                                            message.messageId,
+                                            message.blockIndex,
+                                            message.filePath,
+                                            rawCode,
+                                            message.hunkIndex !== undefined ? message.hunkIndex : 0
+                                        );
+                                    });
+                                };
+                            }
+                        }
                     }
 
                     // 1. Update the individual code block UI (even if it wasn't part of an "Apply All" run)

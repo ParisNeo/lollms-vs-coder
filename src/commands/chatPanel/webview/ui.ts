@@ -710,7 +710,6 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
     }
 
     if(dom.agentModeCheckbox) dom.agentModeCheckbox.disabled = isGenerating;
-    if(dom.autoContextCheckbox) dom.autoContextCheckbox.disabled = isGenerating;
 
     if(dom.modelSelector) dom.modelSelector.disabled = isGenerating;
     if(dom.attachButton) dom.attachButton.disabled = isGenerating;
@@ -1228,7 +1227,6 @@ export function updateBadges() {
     const economyCheck = document.getElementById('cap-tokenEconomyMode');
     if (economyCheck) economyCheck.checked = !!caps.tokenEconomyMode;
     if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
-    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
     if (dom.contextAggressionSelect) dom.contextAggressionSelect.value = caps.contextAggression || 'respect';
     if (dom.capGitWorkflow) dom.capGitWorkflow.checked = !!caps.gitWorkflow;
     if (dom.capEnableTTS) dom.capEnableTTS.checked = !!caps.enableTTS;

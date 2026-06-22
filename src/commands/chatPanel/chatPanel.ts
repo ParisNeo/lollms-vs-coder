@@ -3512,12 +3512,19 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
             this.updateGeneratingState();
             return; // Terminate execution to bypass standard non-looping flow below
         }
+
+
+
         // 4. Build Final Sequence for standard (non-dynamic) flow...
         let messagesToSend: ChatMessage[] = [
             { role: 'system', content: baseInstructions },
             ...history,
             projectContextUserMessage
         ];
+
+        if (currentPromptMessage) {
+            messagesToSend.push(currentPromptMessage);
+        }
 
         // =========================================================================
         // 🛡️ CONTEXT GOVERNOR: LLM-DRIVEN SMART PRUNING

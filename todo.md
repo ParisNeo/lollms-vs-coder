@@ -56,3 +56,5 @@ When a hunk is applied its content disapears and we can't bring it back (it need
 # IMPORTANT
 When the llm executes the same tool with the same parameters more than once, it gets rejected. This is not good. For example testing/fixing cycle is done by executing the same test over and over again.
 
+## LAST TODO:
+the model is not receiving the first user message!!

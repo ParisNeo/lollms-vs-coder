@@ -41,20 +41,13 @@ Add a fast librarian mode (single shot, just take a look at the current task and
 Make skills md with claude style
 
 # IMPORTANT
-## Problem in websearch
-Add the possibility to force a model name without scan.
-Implement add from search feature to be abele to add new files to context by doing a search and selecting the files that match that search
-UI problems in the modify with lollms ui
-
-When there are images in the prompt, it is not rendered in the bubble.
-When a hunk is applied its content disapears and we can't bring it back (it needs to be uncollapsible)
-
-# New stuff
-- SPARQL queries might block the whole project
-- Dream must tag audited memories and must not audit the tags. tags shouldn't have values that can be decayed.
-
-# IMPORTANT
-When the llm executes the same tool with the same parameters more than once, it gets rejected. This is not good. For example testing/fixing cycle is done by executing the same test over and over again.
-
-## LAST TODO:
-the model is not receiving the first user message!!
+- add a new tool that loads a selection. add some metadata to the selection file so that the LLM can list selections and get their description then can select one
+- details what's happening when 🧠 Loading file content... It is very long sometimes making the ui freeze
+- adding external files is not working
+- Add information about the context size/file size in tokens in the built context
+- Add a new personality to build optimized files selections for a specific problem. it starts be cleaning up the context then does the selection
+- when using manual fix, the search doesn't find the text even though I can find it manually, and then the ui is blocked (can't close the modal until I close the whole tab)
+- delete all tool is not working and is notasking the user for confirmation.
+- add a reprompt button that reprompts the llm about the failed hunk updates so it fix that.
+- in dynamic mode, when the applyall failes and auto apply is on, reprompt to fix the unmatched hunks
+- 

@@ -41,6 +41,7 @@ Add a fast librarian mode (single shot, just take a look at the current task and
 Make skills md with claude style
 
 # IMPORTANT
+- add a new tool that loads a selection. add some metadata to the selection file so that the LLM can list selections and get their description then can select one
 - details what's happening when 🧠 Loading file content... It is very long sometimes making the ui freeze
 - adding external files is not working
 - Add information about the context size/file size in tokens in the built context

@@ -74,6 +74,10 @@ export class ChatPanel {
   // Tracks failing patches to prevent infinite repetition loops
   private _failedPatchesRegistry: Map<string, Set<string>> = new Map();
 
+  private _activeTokenizationPromise: Promise<void> | null = null;
+  private _tokenizationPendingRerun = false;
+  private _tokenizationPendingOptions: any = null;
+
   public static createOrShow(services: LollmsServices, discussionId: string): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
@@ -185,7 +189,7 @@ export class ChatPanel {
         if (!workspaceFolder) return;
 
         const modifiedFiles = new Set<string>();
-        const opts = { silent: true, autoSave: true };
+        let blockIndex = 0; // Initialize precise index tracker
 
         // 1. Process Fenced Code Blocks (Standard)
         const blockRegex = /```[\t ]*(?:language:|lang:)?(\w+)[\t ]*:[\t ]*([^\n\r\s]+)[\t ]*[\r\n]+([\s\S]+?)[\r\n]+```/g;
@@ -195,6 +199,9 @@ export class ChatPanel {
             if (signal.aborted) break;
             let filePath = match[2];
             let blockContent = match[3];
+
+            const currentBlockIndex = blockIndex++; // Track block index
+            const opts = { silent: true, autoSave: true, blockIndex: currentBlockIndex };
 
             const isAiderInside = blockContent.includes('<<<<<<< SEARCH');
             const commonLangs = ['makefile', 'python', 'py', 'javascript', 'js', 'typescript', 'ts', 'json', 'bash', 'sh', 'css', 'html'];
@@ -220,15 +227,18 @@ export class ChatPanel {
             if (isAiderInside) {
                 const normalizedAider = blockContent.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
                 const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
-                
+
                 // If the patch application failed, trigger automated self-correction (Mute for system IDs to prevent infinite loops)
                 const isSystemId = messageId.startsWith('self_correction') || messageId.startsWith('guardian') || messageId.startsWith('system') || messageId.startsWith('inspection');
                 if (result && !result.success && !isSystemId && !signal.aborted) {
                     this.log(`Patch failed for ${filePath}. Initiating automated AI self-correction...`, 'WARN');
-                    await this.triggerSurgicalSelfCorrection(filePath, normalizedAider, result.error || "Search block mismatch.", signal);
+                    await this.triggerSurgicalSelfCorrection(filePath, normalizedAider, result.error || "Search block mismatch.", signal, 1);
                 }
             } else {
-                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(blockContent, 'utf8'));
+                const resolution = await this.contextManager.resolveWorkspaceFromPath(filePath);
+                if (resolution) {
+                    await vscode.workspace.fs.writeFile(resolution.uri, Buffer.from(blockContent, 'utf8'));
+                }
             }
         }
 
@@ -250,6 +260,8 @@ export class ChatPanel {
 
                 if (endIdx !== -1) {
                     const blockContent = lines.slice(i, endIdx + 1).join('\n');
+                    const currentBlockIndex = blockIndex++; // Track block index
+                    const opts = { silent: true, autoSave: true, blockIndex: currentBlockIndex };
 
                     // Recover path from preceding text
                     let filePath = "";
@@ -273,12 +285,12 @@ export class ChatPanel {
                         modifiedFiles.add(filePath);
                         const normalizedAider = blockContent.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
                         const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
-                        
+
                         // Trigger automated self-correction for naked block failure
                         const isSystemId = messageId.startsWith('self_correction') || messageId.startsWith('guardian') || messageId.startsWith('system') || messageId.startsWith('inspection');
                         if (result && !result.success && !isSystemId && !signal.aborted) {
                             this.log(`Naked patch failed for ${filePath}. Initiating automated AI self-correction...`, 'WARN');
-                            await this.triggerSurgicalSelfCorrection(filePath, normalizedAider, result.error || "Search block mismatch.", signal);
+                            await this.triggerSurgicalSelfCorrection(filePath, normalizedAider, result.error || "Search block mismatch.", signal, 1);
                         }
                     }
                     i = endIdx; // Advance parser beyond the block
@@ -1022,507 +1034,521 @@ export class ChatPanel {
     }
   }
 
-  public async updateContextAndTokens(options?: { isBackgroundSync?: boolean, forceFullScan?: boolean }) {
+  public async updateContextAndTokens(options?: { isBackgroundSync?: boolean, forceFullScan?: boolean }): Promise<void> {
     if (this._isDisposed) return;
 
-    const isBackground = options?.isBackgroundSync === true;
-    const forceFull = options?.forceFullScan === true;
+    // Concurrency Lock / Double-run Debouncer:
+    // If a calculation is currently executing, we queue a trailing-edge re-run
+    // to ensure the final token count accurately reflects the latest workspace state.
+    if (this._activeTokenizationPromise) {
+        this._tokenizationPendingRerun = true;
+        this._tokenizationPendingOptions = options;
+        return this._activeTokenizationPromise;
+    }
 
-    if (forceFull && this.contextStateProvider) {
-        this._panel.webview.postMessage({ command: 'showProjectLoader', projectName: this._currentDiscussion?.title || "Workspace" });
-        this._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Librarian: Indexing files. Please stand by...' });
+    const runCalculation = async () => {
+        const isBackground = options?.isBackgroundSync === true;
+        const forceFull = options?.forceFullScan === true;
 
-        await this.contextStateProvider.triggerFullScan((pct, status) => {
-            this._panel.webview.postMessage({ 
-                command: 'updateLoaderStatus', 
-                status: `${status} Please stand by...`,
-                stats: { files: pct, tokens: -1 }
+        if (forceFull && this.contextStateProvider) {
+            this._panel.webview.postMessage({ command: 'showProjectLoader', projectName: this._currentDiscussion?.title || "Workspace" });
+            this._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Librarian: Indexing files. Please stand by...' });
+
+            await this.contextStateProvider.triggerFullScan((pct, status) => {
+                this._panel.webview.postMessage({ 
+                    command: 'updateLoaderStatus', 
+                    status: `${status} Please stand by...`,
+                    stats: { files: pct, tokens: -1 }
+                });
             });
-        });
-        
-        this._panel.webview.postMessage({ command: 'hideProjectLoader' });
-    }
-
-    // --- IMMEDIATE INSTANT HYDRATION / REACTION ---
-    if (!isBackground && this._panel && this._panel.webview) {
-        try {
-            const provider = this._contextManager.getContextStateProvider();
-            const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
-
-            if (includedFiles.length === 0) {
-                // Instantly clear the list and reset segments in the UI with zero delay
-                this._panel.webview.postMessage({ 
-                    command: 'updateContext', 
-                    files: [],
-                    skills: [],
-                    tools: [],
-                    diagrams: [],
-                    briefing: ""
-                });
-
-                const oldMetrics = this._currentDiscussion?.lastTokenMetrics;
-                const fallbackSize = oldMetrics?.contextSize || 128000;
-                const fallbackSegments = {
-                    system: oldMetrics?.segments?.system || 0,
-                    briefing: 0,
-                    tree: oldMetrics?.segments?.tree || 0,
-                    skills: 0,
-                    memory: oldMetrics?.segments?.memory || 0,
-                    diagrams: 0,
-                    files: 0,
-                    history: oldMetrics?.segments?.history || 0,
-                    images: 0
-                };
-
-                this._panel.webview.postMessage({
-                    command: 'updateTokenProgress',
-                    totalTokens: Object.values(fallbackSegments).reduce((a, b) => a + b, 0),
-                    contextSize: fallbackSize,
-                    isApproximate: false,
-                    segments: fallbackSegments
-                });
-            } else {
-                // Send a fast path partial update with just the files list so the checks sync instantly
-                this._panel.webview.postMessage({ 
-                    command: 'updateContext', 
-                    files: includedFiles
-                });
-            }
-        } catch (e) {
-            Logger.warn("Failed to apply instant UI hydration");
-        }
-    }
-
-    // Concurrency Lock: If already tokenizing, cancel previous and restart
-    if (this._tokenAbortController) {
-        this._tokenAbortController.abort();
-    }
-
-    this._tokenAbortController = new AbortController();
-    const signal = this._tokenAbortController.signal;
-
-    // INCREASE DEBOUNCE: Give the Extension Host more time to settle (especially Python isort/pylance)
-    await new Promise(resolve => setTimeout(resolve, 800));
-    if (signal.aborted) return;
-
-    this._isTokenizing = true;
-    const modelForTokenization = (this._currentDiscussion?.model || this._lollmsAPI.getModelName() || "default").trim();
-
-    let diagramText = ""; // Declare diagramText at the top-level of the method to ensure it's in scope for catch block
-    let briefingText = "";
-
-    try {
-        if (!this._contextManager || !this._currentDiscussion || !this._panel.webview) {
-            this.log("updateContextAndTokens: Missing dependencies (contextManager or discussion)", 'WARN');
-            this._panel.webview?.postMessage({ command: 'updateTokenProgress' });
-            return;
+            
+            this._panel.webview.postMessage({ command: 'hideProjectLoader' });
         }
 
-        if (!this._isDisposed) {
-            const isRebuildNeeded = this._contextManager.isTreeDirty();
-            const statusText = isRebuildNeeded ? 'Syncing...' : 'Counting...';
+        // --- IMMEDIATE INSTANT HYDRATION / REACTION ---
+        if (!isBackground && this._panel && this._panel.webview) {
+            try {
+                const provider = this._contextManager.getContextStateProvider();
+                const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
 
-            // Only send 'CalculationStarted' if we don't have cached data to show
-            // This prevents the "Calculating..." flicker on every tab switch
-            if (this._currentDiscussion && (!this._currentDiscussion.lastTokenMetrics || !isBackground)) {
-                this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: statusText });
-            }
+                if (includedFiles.length === 0) {
+                    // Instantly clear the list and reset segments in the UI with zero delay
+                    this._panel.webview.postMessage({ 
+                        command: 'updateContext', 
+                        files: [],
+                        skills: [],
+                        tools: [],
+                        diagrams: [],
+                        briefing: ""
+                    });
 
-            if (!isBackground) {
-                this._panel.webview.postMessage({ 
-                    command: 'updateStatus', 
-                    status: isRebuildNeeded ? 'Scanning project files...' : 'Syncing context...', 
-                    type: 'info' 
-                });
-            }
-        }
+                    const oldMetrics = this._currentDiscussion?.lastTokenMetrics;
+                    const fallbackSize = oldMetrics?.contextSize || 128000;
+                    const fallbackSegments = {
+                        system: oldMetrics?.segments?.system || 0,
+                        briefing: 0,
+                        tree: oldMetrics?.segments?.tree || 0,
+                        skills: 0,
+                        memory: oldMetrics?.segments?.memory || 0,
+                        diagrams: 0,
+                        files: 0,
+                        history: oldMetrics?.segments?.history || 0,
+                        images: 0
+                    };
 
-        try {
-            this.log("Fetching context content...");
-            const importedIds = this._currentDiscussion?.importedSkills || [];
-            const activeDiagramIds = this._currentDiscussion?.activeDiagrams || [];
-
-            this._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Assembling Codebase Map...' });
-
-            let currentTokenEstimate = 0;
-            const context = await this._contextManager.getContextContent({ 
-                signal, 
-                capabilities: this._discussionCapabilities,
-                importedSkillIds: importedIds,
-                activeDiagramIds: activeDiagramIds,
-                modelName: modelForTokenization,
-                onProgress: (pct) => {
-                    if (!this._isDisposed) {
-                        // 1. Update the top small progress bar
-                        this._panel.webview.postMessage({ command: 'tokenCalculationProgress', progress: pct });
-
-                        // 2. Update the big Blueprint loader with "Live" stats
-                        // We calculate a rough token estimate (chars / 3.5) to show growth in real-time
-                        this._panel.webview.postMessage({
-                            command: 'updateLoaderStatus',
-                            status: `Indexing: ${pct}% complete...`,
-                            stats: { 
-                                files: Math.round((pct / 100) * context.selectedFilesContent.length), 
-                                tokens: -1 // Indicate we are still counting
-                            }
-                        });
-                    }
+                    this._panel.webview.postMessage({
+                        command: 'updateTokenProgress',
+                        totalTokens: Object.values(fallbackSegments).reduce((a, b) => a + b, 0),
+                        contextSize: fallbackSize,
+                        isApproximate: false,
+                        segments: fallbackSegments
+                    });
+                } else {
+                    // Send a fast path partial update with just the files list so the checks sync instantly
+                    this._panel.webview.postMessage({ 
+                        command: 'updateContext', 
+                        files: includedFiles
+                    });
                 }
-            });
+            } catch (e) {
+                Logger.warn("Failed to apply instant UI hydration");
+            }
+        }
 
-            if (signal.aborted) {
-                this.log("Token calculation aborted.");
+        // Concurrency Lock: If already tokenizing, cancel previous and restart
+        if (this._tokenAbortController) {
+            this._tokenAbortController.abort();
+        }
+
+        this._tokenAbortController = new AbortController();
+        const signal = this._tokenAbortController.signal;
+
+        // DEBOUNCE: Give the Extension Host more time to settle (especially Python isort/pylance)
+        await new Promise(resolve => setTimeout(resolve, 250));
+        if (signal.aborted) return;
+
+        this._isTokenizing = true;
+        const modelForTokenization = (this._currentDiscussion?.model || this._lollmsAPI.getModelName() || "default").trim();
+
+        let diagramText = ""; // Declare diagramText at the top-level of the method to ensure it's in scope for catch block
+        let briefingText = "";
+
+        try {
+            if (!this._contextManager || !this._currentDiscussion || !this._panel.webview) {
+                this.log("updateContextAndTokens: Missing dependencies (contextManager or discussion)", 'WARN');
+                this._panel.webview?.postMessage({ command: 'updateTokenProgress' });
                 return;
             }
 
-            if (this._isDisposed) return;
-
-            let includedFiles: string[] = [];
-            try {
-                const provider = this._contextManager.getContextStateProvider();
-                const rawFiles = provider ? provider.getIncludedFiles() : [];
-                includedFiles = rawFiles.filter(f => f && f.path).map(f => f.path);
-            } catch (e) {}
-
-            // Aggressive truncation for Webview UI to prevent IPC Channel Closure
-            const UI_PREVIEW_LIMIT = 10000; 
-            const contextTextForUI = context.text.length > UI_PREVIEW_LIMIT
-                ? context.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Truncated for UI performance. Total: ${context.text.length} chars]`
-                : context.text;
-
             if (!this._isDisposed) {
-                // Scan .lollms/selection/ folder for saved selections
-                let savedSelections: string[] = [];
-                const folders = vscode.workspace.workspaceFolders;
-                if (folders && folders.length > 0) {
-                    const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
-                    try {
-                        const entries = await vscode.workspace.fs.readDirectory(selectionDir);
-                        savedSelections = entries
-                            .filter(([name]) => name.endsWith('.lollms-ctx'))
-                            .map(([name]) => name);
-                    } catch (e) {}
+                const isRebuildNeeded = this._contextManager.isTreeDirty();
+                const statusText = isRebuildNeeded ? 'Syncing...' : 'Counting...';
+
+                // Only send 'CalculationStarted' if we don't have cached data to show
+                // This prevents the "Calculating..." flicker on every tab switch
+                if (this._currentDiscussion && (!this._currentDiscussion.lastTokenMetrics || !isBackground)) {
+                    this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: statusText });
                 }
-
-                // --- AUTHORITATIVE DATA FETCH ---
-                const provider = this._contextManager.getContextStateProvider();
-                const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
-                const currentSkills = context.importedSkills || []; // Use the skills returned by getContextContent
-
-                this._panel.webview.postMessage({ 
-                    command: 'updateContext', 
-                    context: contextTextForUI || "",
-                    files: safeFiles || [],
-                    skills: (currentSkills || []).map(s => ({ id: s.id, name: s.name, content: s.content })),
-                    tools: equippedTools || [],
-                    diagrams: context.diagrams || [],
-                    images: context.images || [], 
-                    briefing: this._currentDiscussion?.discussion_data_zone || "" ,
-                    selections: savedSelections || []
-                });
-            }
-            this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
-
-            // --- MOVED: Extract Project Memory early for tokenization ---
-            const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
-                ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, this._skillsManager)
-                : "";
-
-            const rawBriefing = this._currentDiscussion?.discussion_data_zone || "";
-            briefingText = (rawBriefing.startsWith('{')) ? this._contextManager.renderBriefing(this._currentDiscussion) : rawBriefing;
-
-            this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
-            this._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
-
-            const { estimateImageTokens } = require('../../utils');
-
-            const personaContent = this.getCurrentPersonaSystemPrompt();
-            const systemText = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, false, { ...context, tree: '', files: '', memory: projectMemory });
-
-            const historyText = this._currentDiscussion!.messages.map(msg => {
-                const content = msg.content;
-                if (typeof content === 'string') return content;
-                if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => item.text).join('\n');
-                return '';
-            }).join('\n');
-
-            let imageTokens = 0;
-            const visionEnabled = this._discussionCapabilities.enableImages !== false;
-
-            if (visionEnabled) {
-                // Determine a base cost per image. 
-                // If model-specific estimation fails (returns 0), we use a standard 600 token floor 
-                // to ensure images are visible in the progress bar segments.
-                const imgBaseCost = estimateImageTokens(modelForTokenization);
-                const safeImgCost = imgBaseCost > 0 ? imgBaseCost : 600;
-
-                // Calculate from Context (Included Files)
-                context.images.forEach(img => {
-                    imageTokens += safeImgCost;
-                });
-                // Calculate from Discussion History
-                this._currentDiscussion.messages.forEach(m => {
-                    if (Array.isArray(m.content)) {
-                        m.content.forEach((p: any) => { 
-                            if (p.type === 'image_url') imageTokens += safeImgCost; 
-                        });
-                    }
-                });
-            }
-            // 🛡️ INDEPENDENT TOKENIZATION (Soft-Fail Protocol with High-Performance Cache)
-            // We run each part independently so one failure doesn't crash the HUD
-            const getFastHash = (str: string): string => {
-                let hash = 0;
-                for (let i = 0; i < str.length; i++) {
-                    hash = (hash << 5) - hash + str.charCodeAt(i);
-                    hash |= 0;
-                }
-                return `${str.length}_${hash}`;
-            };
-
-            const getTokenCount = async (text: string) => {
-                if (!text) return { count: 0, isEstimation: false };
-
-                const cacheKey = `${modelForTokenization}_${getFastHash(text)}`;
-                if (ChatPanel._tokenCountCache.has(cacheKey)) {
-                    return { count: ChatPanel._tokenCountCache.get(cacheKey)!, isEstimation: false };
-                }
-
-                try {
-                    const res = await this._lollmsAPI.tokenize(text, modelForTokenization);
-                    ChatPanel._tokenCountCache.set(cacheKey, res.count);
-                    return { count: res.count, isEstimation: !!res.isEstimation };
-                } catch (e) {
-                    // Fallback to heuristic immediately on error
-                    return { count: Math.ceil(text.length / 3.5), isEstimation: true };
-                }
-            };
-
-            // --- GRANULAR FOLDER STATS CALCULATION (PARALLEL) ---
-            const folderStats: Record<string, { tree: number, files: number }> = {};
-            const activeFolders = vscode.workspace.workspaceFolders || [];
-            const folderSettings = this._discussionCapabilities.folderSettings || {};
-            const statsPromises: Promise<void>[] = [];
-
-            // Sync active files list to workspaceState for multi-factorial memory pre-calculation
-            if (this._contextManager) {
-                try {
-                    const provider = this._contextManager.getContextStateProvider();
-                    const rawFiles = provider ? provider.getIncludedFiles() : [];
-                    const activeFilesList = rawFiles.filter(f => f && f.path);
-                    await this._discussionManager.context.workspaceState.update('lollms_active_context_files', activeFilesList);
-                } catch (e) {}
-            }
-
-            activeFolders.forEach(folder => {
-                const uriKey = folder.uri.toString();
-                const settings = folderSettings[uriKey] || { tree: true, content: true };
-
-                statsPromises.push((async () => {
-                    if (signal.aborted) return;
-                    try {
-                        let treeTokens = 0;
-                        let filesTokens = 0;
-
-                        // 1. Tree Weight
-                        if (settings.tree) {
-                            const folderTree = await this._contextManager.generateIsolatedProjectTree(folder, signal, this._discussionCapabilities);
-                            const res = await getTokenCount(folderTree);
-                            treeTokens = res.count;
-                        }
-
-                        // 2. Content Weight (Fast Heuristic from Cache/Stats)
-                        if (settings.content) {
-                            const provider = this._contextManager.getContextStateProvider();
-                            const included = provider?.getIncludedFiles() || [];
-
-                            for (const file of included) {
-                                const resolution = await this._contextManager.resolveWorkspaceFromPath(file.path);
-                                if (resolution?.folder?.uri.toString() === uriKey) {
-                                    const cached = (this._contextManager as any)._fileContentCache.get(file.path);
-                                    if (cached) {
-                                        filesTokens += Math.ceil(cached.content.length / 3.5);
-                                    } else {
-                                        try {
-                                            const stats = await vscode.workspace.fs.stat(resolution.uri);
-                                            filesTokens += Math.ceil(stats.size / 3.5);
-                                        } catch {}
-                                    }
-                                }
-                            }
-                        }
-                        folderStats[uriKey] = { tree: treeTokens, files: filesTokens };
-                    } catch (err) {
-                        Logger.warn(`[TokenStats] Error for ${folder.name}: ${err}`);
-                        folderStats[uriKey] = { tree: 0, files: 0 };
-                    }
-                })());
-            });
-
-            // --- SYNC WITH MATRIX ---
-            const filteredFilesText = await this._getFilteredFilesContent(context, folderSettings);
-
-            // Calculate Diagram Text for accurate tokenization
-            let diagramText = "";
-            if (context.diagrams && context.diagrams.length > 0) {
-                context.diagrams.forEach(d => {
-                    diagramText += `### ${d.type.replace('_', ' ').toUpperCase()}\n\`\`\`mermaid\n${d.mermaid}\n\`\`\`\n\n`;
-                });
-            }
-
-            let results;
-            try {
-                results = await Promise.all([
-                    getTokenCount(systemText),
-                    getTokenCount(historyText),
-                    getTokenCount(context.projectTree),
-                    getTokenCount(context.skillsContent || ""),
-                    getTokenCount(projectMemory || ""),
-                    getTokenCount(briefingText || ""),
-                    getTokenCount(diagramText),
-                    this._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
-                        Logger.error(`[TokenStats] Context Size API critically failed: ${e.message}`);
-                        return { context_size: 128000, isEstimation: true }; 
-                    }),
-                    Promise.all(statsPromises)
-                ]);
-            } catch (e: any) {
-                if (e.name === 'AbortError' || signal.aborted) {
-                    return; // Gracefully exit concurrent call
-                }
-                throw e; // Re-throw real errors
-            }
-
-            const [systemRes, historyRes, treeRes, skillsRes, memoryRes, briefingRes, diagramRes, contextSizeRes] = results;
-
-            if (this._isDisposed || signal.aborted) return;
-
-            // RESOLVE CONTEXT SIZE Authoritatively
-            let finalCtxSize = 128000;
-            let isLimitApproximate = true;
-            let isUserDefined = false;
-
-            if (contextSizeRes) {
-                finalCtxSize = contextSizeRes.context_size;
-                isLimitApproximate = !!contextSizeRes.isEstimation && !contextSizeRes.isUserDefined;
-                isUserDefined = !!contextSizeRes.isUserDefined;
-            } else {
-                // Heuristic Fallback if API returned null or crashed
-                const { getContextLimitForModel } = require('../../utils');
-                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                const manualOverride = config.get<number>('failsafeContextSize') || 0;
-
-                if (manualOverride > 0) {
-                    finalCtxSize = manualOverride;
-                    isLimitApproximate = false;
-                    isUserDefined = true;
-                } else {
-                    finalCtxSize = getContextLimitForModel(modelForTokenization);
-                    isLimitApproximate = true;
-                }
-            }
-
-            // Segment 'files' represents actual code
-            const contentTokens = Math.ceil(filteredFilesText.length / 3.5);
-            const skillTokens = (skillsRes as any).count;
-            const systemTokens = (systemRes as any).count;
-            const historyTokens = (historyRes as any).count;
-            const treeTokens = (treeRes as any).count;
-            const memoryTokens = (memoryRes as any).count;
-            const briefingTokens = (briefingRes as any).count;
-            const diagramTokens = (diagramRes as any).count;
-
-            // ── AUTHORITATIVE MATHEMATICAL SYNCHRONIZATION ──
-            // Calculate the total as the sum of parts to ensure the HUD bar matches the labels exactly.
-            const totalTokens = systemTokens + 
-                                briefingTokens +
-                                historyTokens + 
-                                treeTokens + 
-                                contentTokens + 
-                                skillTokens + 
-                                memoryTokens +
-                                diagramTokens +
-                                imageTokens;
-
-
-            const segments = {
-                system: systemTokens,
-                briefing: briefingTokens,
-                tree: treeTokens,
-                skills: skillTokens,
-                memory: memoryTokens,
-                diagrams: diagramTokens,
-                files: contentTokens,
-                history: historyTokens,
-                images: imageTokens
-            };
-            // Update the discussion object with the new authoritative total
-            if (this._currentDiscussion) {
-                this._currentDiscussion.lastTokenMetrics = {
-                    total: totalTokens,
-                    contextSize: finalCtxSize,
-                    segments: segments, // Persist segments for instant hydration
-                };
-            }
-
-            const ctxSize = finalCtxSize;
-            const isActuallyApproximate = isLimitApproximate;
-
-            // --- VERBOSE LOGGING ---
-            Logger.info(`[TokenStats] Success! Model: ${modelForTokenization}`);
-            Logger.info(`[TokenStats] Breakdown: System=${systemRes.count}, Tree=${treeRes.count}, Content=${contentTokens}, History=${historyRes.count}, Images=${imageTokens}`);
-            Logger.info(`[TokenStats] Final: ${totalTokens} / ${ctxSize} (Approx: ${isActuallyApproximate})`);
-
-            // --- CONTEXT GOVERNOR ---
-            if (totalTokens > ctxSize * 1.5) {
-                this._panel.webview.postMessage({ 
-                    command: 'updateStatus', 
-                    status: `CRITICAL OVERFLOW: ${totalTokens.toLocaleString()} tokens`, 
-                    type: 'error' 
-                });
-                Logger.warn(`[TokenStats] Context size is dangerously high (${totalTokens}). Model ${modelForTokenization} will likely fail.`);
-            }
-
-
-            // PERSIST FOR INSTANT HYDRATION
-            if (this._currentDiscussion) {
-                this._currentDiscussion.lastTokenMetrics = {
-                    total: totalTokens,
-                    contextSize: ctxSize,
-                    segments: segments
-                };
-                if (!this._currentDiscussion.id.startsWith('temp-')) {
-                    await this._discussionManager.saveDiscussion(this._currentDiscussion);
-                }
-            }
-
-            if (this._panel && this._panel.webview) {
-                // Send the authoritative sum and segments to the UI
-                this._panel.webview.postMessage({
-                    command: 'updateTokenProgress',
-                    totalTokens: totalTokens,
-                    contextSize: ctxSize,
-                    isApproximate: isActuallyApproximate,
-                    segments: segments
-                });
 
                 if (!isBackground) {
-                    this._panel.webview.postMessage({
-                        command: 'updateLoaderStatus',
-                        status: 'Context Grounding Complete',
-                        stats: { files: includedFiles.length, tokens: totalTokens }
+                    this._panel.webview.postMessage({ 
+                        command: 'updateStatus', 
+                        status: isRebuildNeeded ? 'Scanning project files...' : 'Syncing context...', 
+                        type: 'info' 
                     });
                 }
             }
 
-            if (isActuallyApproximate) {
-                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approximate - API Check Failed)', type: 'warning' });
-            } else {
-                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+            try {
+                this.log("Fetching context content...");
+                const importedIds = this._currentDiscussion?.importedSkills || [];
+                const activeDiagramIds = this._currentDiscussion?.activeDiagrams || [];
+
+                this._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Assembling Codebase Map...' });
+
+                let currentTokenEstimate = 0;
+                const context = await this._contextManager.getContextContent({ 
+                    signal, 
+                    capabilities: this._discussionCapabilities,
+                    importedSkillIds: importedIds,
+                    activeDiagramIds: activeDiagramIds,
+                    modelName: modelForTokenization,
+                    onProgress: (pct) => {
+                        if (!this._isDisposed) {
+                            // 1. Update the top small progress bar
+                            this._panel.webview.postMessage({ command: 'tokenCalculationProgress', progress: pct });
+
+                            // 2. Update the big Blueprint loader with "Live" stats
+                            // We calculate a rough token estimate (chars / 3.5) to show growth in real-time
+                            this._panel.webview.postMessage({
+                                command: 'updateLoaderStatus',
+                                status: `Indexing: ${pct}% complete...`,
+                                stats: { 
+                                    files: Math.round((pct / 100) * context.selectedFilesContent.length), 
+                                    tokens: -1 // Indicate we are still counting
+                                }
+                            });
+                        }
+                    }
+                });
+
+                if (signal.aborted) {
+                    this.log("Token calculation aborted.");
+                    return;
+                }
+
+                if (this._isDisposed) return;
+
+                let includedFiles: string[] = [];
+                try {
+                    const provider = this._contextManager.getContextStateProvider();
+                    const rawFiles = provider ? provider.getIncludedFiles() : [];
+                    includedFiles = rawFiles.filter(f => f && f.path).map(f => f.path);
+                } catch (e) {}
+
+                // Aggressive truncation for Webview UI to prevent IPC Channel Closure
+                const UI_PREVIEW_LIMIT = 10000; 
+                const contextTextForUI = context.text.length > UI_PREVIEW_LIMIT
+                    ? context.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Truncated for UI performance. Total: ${context.text.length} chars]`
+                    : context.text;
+
+                if (!this._isDisposed) {
+                    // Scan .lollms/selection/ folder for saved selections
+                    let savedSelections: string[] = [];
+                    const folders = vscode.workspace.workspaceFolders;
+                    if (folders && folders.length > 0) {
+                        const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+                        try {
+                            const entries = await vscode.workspace.fs.readDirectory(selectionDir);
+                            savedSelections = entries
+                                .filter(([name]) => name.endsWith('.lollms-ctx'))
+                                .map(([name]) => name);
+                        } catch (e) {}
+                    }
+
+                    // --- HIGH-PERFORMANCE INTELLECTUAL HYGIENE (IPC PAYLOAD DE-BLOATING) ---
+                    // Do NOT pass full file contents over postMessage (causes severe Extension Host lag).
+                    // We only pass the metadata list of active file paths.
+                    const provider = this._contextManager.getContextStateProvider();
+                    const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
+                    const currentSkills = context.importedSkills || []; 
+
+                    this._panel.webview.postMessage({ 
+                        command: 'updateContext', 
+                        context: "", // Swapped 15MB+ raw string with a 0-byte token placeholder
+                        files: includedFiles,
+                        skills: (currentSkills || []).map(s => ({ id: s.id, name: s.name, content: "" })), // Exclude heavy skill descriptions from UI
+                        tools: equippedTools || [],
+                        diagrams: [], // Kept empty; rendered on-demand in dedicated tabs
+                        images: [], // Kept in memory only, not serialized to chat panel
+                        briefing: this._currentDiscussion?.discussion_data_zone || "" ,
+                        selections: savedSelections || []
+                    });
+                }
+                this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
+
+                // --- MOVED: Extract Project Memory early for tokenization ---
+                const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
+                    ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, this._skillsManager)
+                    : "";
+
+                const rawBriefing = this._currentDiscussion?.discussion_data_zone || "";
+                briefingText = (rawBriefing.startsWith('{')) ? this._contextManager.renderBriefing(this._currentDiscussion) : rawBriefing;
+
+                this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
+                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
+
+                const { estimateImageTokens } = require('../../utils');
+
+                const personaContent = this.getCurrentPersonaSystemPrompt();
+                const systemText = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, false, { ...context, tree: '', files: '', memory: projectMemory });
+
+                const historyText = this._currentDiscussion!.messages.map(msg => {
+                    const content = msg.content;
+                    if (typeof content === 'string') return content;
+                    if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => item.text).join('\n');
+                    return '';
+                }).join('\n');
+
+                let imageTokens = 0;
+                const visionEnabled = this._discussionCapabilities.enableImages !== false;
+
+                if (visionEnabled) {
+                    // Determine a base cost per image. 
+                    // If model-specific estimation fails (returns 0), we use a standard 600 token floor 
+                    // to ensure images are visible in the progress bar segments.
+                    const imgBaseCost = estimateImageTokens(modelForTokenization);
+                    const safeImgCost = imgBaseCost > 0 ? imgBaseCost : 600;
+
+                    // Calculate from Context (Included Files)
+                    context.images.forEach(img => {
+                        imageTokens += safeImgCost;
+                    });
+                    // Calculate from Discussion History
+                    this._currentDiscussion.messages.forEach(m => {
+                        if (Array.isArray(m.content)) {
+                            m.content.forEach((p: any) => { 
+                                if (p.type === 'image_url') imageTokens += safeImgCost; 
+                            });
+                        }
+                    });
+                }
+                // 🛡️ INDEPENDENT TOKENIZATION (Soft-Fail Protocol with High-Performance Cache)
+                // We run each part independently so one failure doesn't crash the HUD
+                const getFastHash = (str: string): string => {
+                    let hash = 0;
+                    for (let i = 0; i < str.length; i++) {
+                        hash = (hash << 5) - hash + str.charCodeAt(i);
+                        hash |= 0;
+                    }
+                    return `${str.length}_${hash}`;
+                };
+
+                const getTokenCount = async (text: string) => {
+                    if (!text) return { count: 0, isEstimation: false };
+
+                    const cacheKey = `${modelForTokenization}_${getFastHash(text)}`;
+                    if (ChatPanel._tokenCountCache.has(cacheKey)) {
+                        return { count: ChatPanel._tokenCountCache.get(cacheKey)!, isEstimation: false };
+                    }
+
+                    try {
+                        const res = await this._lollmsAPI.tokenize(text, modelForTokenization);
+                        ChatPanel._tokenCountCache.set(cacheKey, res.count);
+                        return { count: res.count, isEstimation: !!res.isEstimation };
+                    } catch (e) {
+                        // Fallback to heuristic immediately on error
+                        return { count: Math.ceil(text.length / 3.5), isEstimation: true };
+                    }
+                };
+
+                // --- GRANULAR FOLDER STATS CALCULATION (PARALLEL) ---
+                const folderStats: Record<string, { tree: number, files: number }> = {};
+                const activeFolders = vscode.workspace.workspaceFolders || [];
+                const folderSettings = this._discussionCapabilities.folderSettings || {};
+                const statsPromises: Promise<void>[] = [];
+
+                // Sync active files list to workspaceState for multi-factorial memory pre-calculation
+                if (this._contextManager) {
+                    try {
+                        const provider = this._contextManager.getContextStateProvider();
+                        const rawFiles = provider ? provider.getIncludedFiles() : [];
+                        const activeFilesList = rawFiles.filter(f => f && f.path);
+                        await this._discussionManager.context.workspaceState.update('lollms_active_context_files', activeFilesList);
+                    } catch (e) {}
+                }
+
+                activeFolders.forEach(folder => {
+                    const uriKey = folder.uri.toString();
+                    const settings = folderSettings[uriKey] || { tree: true, content: true };
+
+                    statsPromises.push((async () => {
+                        if (signal.aborted) return;
+                        try {
+                            let treeTokens = 0;
+                            let filesTokens = 0;
+
+                            // 1. Tree Weight
+                            if (settings.tree) {
+                                const folderTree = await this._contextManager.generateIsolatedProjectTree(folder, signal, this._discussionCapabilities);
+                                const res = await getTokenCount(folderTree);
+                                treeTokens = res.count;
+                            }
+
+                            // 2. Content Weight (Fast Heuristic from Cache/Stats)
+                            if (settings.content) {
+                                const provider = this._contextManager.getContextStateProvider();
+                                const included = provider?.getIncludedFiles() || [];
+
+                                for (const file of included) {
+                                    const resolution = await this._contextManager.resolveWorkspaceFromPath(file.path);
+                                    if (resolution?.folder?.uri.toString() === uriKey) {
+                                        const cached = (this._contextManager as any)._fileContentCache.get(file.path);
+                                        if (cached) {
+                                            filesTokens += Math.ceil(cached.content.length / 3.5);
+                                        } else {
+                                            try {
+                                                const stats = await vscode.workspace.fs.stat(resolution.uri);
+                                                filesTokens += Math.ceil(stats.size / 3.5);
+                                            } catch {}
+                                        }
+                                    }
+                                }
+                            }
+                            folderStats[uriKey] = { tree: treeTokens, files: filesTokens };
+                        } catch (err) {
+                            Logger.warn(`[TokenStats] Error for ${folder.name}: ${err}`);
+                            folderStats[uriKey] = { tree: 0, files: 0 };
+                        }
+                    })());
+                });
+
+                // --- SYNC WITH MATRIX ---
+                const filteredFilesText = await this._getFilteredFilesContent(context, folderSettings);
+
+                // Calculate Diagram Text for accurate tokenization
+                let diagramText = "";
+                if (context.diagrams && context.diagrams.length > 0) {
+                    context.diagrams.forEach(d => {
+                        diagramText += `### ${d.type.replace('_', ' ').toUpperCase()}\n\`\`\`mermaid\n${d.mermaid}\n\`\`\`\n\n`;
+                    });
+                }
+
+                let results;
+                try {
+                    results = await Promise.all([
+                        getTokenCount(systemText),
+                        getTokenCount(historyText),
+                        getTokenCount(context.projectTree),
+                        getTokenCount(context.skillsContent || ""),
+                        getTokenCount(projectMemory || ""),
+                        getTokenCount(briefingText || ""),
+                        diagramText,
+                        this._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
+                            Logger.error(`[TokenStats] Context Size API critically failed: ${e.message}`);
+                            return { context_size: 128000, isEstimation: true }; 
+                        }),
+                        Promise.all(statsPromises)
+                    ]);
+                } catch (e: any) {
+                    if (e.name === 'AbortError' || signal.aborted) {
+                        return; // Gracefully exit concurrent call
+                    }
+                    throw e; // Re-throw real errors
+                }
+
+                const [systemRes, historyRes, treeRes, skillsRes, memoryRes, briefingRes, diagramRes, contextSizeRes] = results;
+
+                if (this._isDisposed || signal.aborted) return;
+
+                // RESOLVE CONTEXT SIZE Authoritatively
+                let finalCtxSize = 128000;
+                let isLimitApproximate = true;
+                let isUserDefined = false;
+
+                if (contextSizeRes) {
+                    finalCtxSize = contextSizeRes.context_size;
+                    isLimitApproximate = !!contextSizeRes.isEstimation && !contextSizeRes.isUserDefined;
+                    isUserDefined = !!contextSizeRes.isUserDefined;
+                } else {
+                    // Heuristic Fallback if API returned null or crashed
+                    const { getContextLimitForModel } = require('../../utils');
+                    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                    const manualOverride = config.get<number>('failsafeContextSize') || 0;
+
+                    if (manualOverride > 0) {
+                        finalCtxSize = manualOverride;
+                        isLimitApproximate = false;
+                        isUserDefined = true;
+                    } else {
+                        finalCtxSize = getContextLimitForModel(modelForTokenization);
+                        isLimitApproximate = true;
+                    }
+                }
+
+                // Segment 'files' represents actual code
+                const contentTokens = Math.ceil(filteredFilesText.length / 3.5);
+                const skillTokens = (skillsRes as any).count;
+                const systemTokens = (systemRes as any).count;
+                const historyTokens = (historyRes as any).count;
+                const treeTokens = (treeRes as any).count;
+                const memoryTokens = (memoryRes as any).count;
+                const briefingTokens = (briefingRes as any).count;
+                const diagramTokens = (diagramRes as any).count;
+
+                // ── AUTHORITATIVE MATHEMATICAL SYNCHRONIZATION ──
+                // Calculate the total as the sum of parts to ensure the HUD bar matches the labels exactly.
+                const totalTokens = systemTokens + 
+                                    briefingTokens +
+                                    historyTokens + 
+                                    treeTokens + 
+                                    contentTokens + 
+                                    skillTokens + 
+                                    memoryTokens +
+                                    diagramTokens +
+                                    imageTokens;
+
+
+                const segments = {
+                    system: systemTokens,
+                    briefing: briefingTokens,
+                    tree: treeTokens,
+                    skills: skillTokens,
+                    memory: memoryTokens,
+                    diagrams: diagramTokens,
+                    files: contentTokens,
+                    history: historyTokens,
+                    images: imageTokens
+                };
+                // Update the discussion object with the new authoritative total
+                if (this._currentDiscussion) {
+                    this._currentDiscussion.lastTokenMetrics = {
+                        total: totalTokens,
+                        contextSize: finalCtxSize,
+                        segments: segments, // Persist segments for instant hydration
+                    };
+                }
+
+                const ctxSize = finalCtxSize;
+                const isActuallyApproximate = isLimitApproximate;
+
+                // --- VERBOSE LOGGING ---
+                Logger.info(`[TokenStats] Success! Model: ${modelForTokenization}`);
+                Logger.info(`[TokenStats] Breakdown: System=${systemRes.count}, Tree=${treeRes.count}, Content=${contentTokens}, History=${historyRes.count}, Images=${imageTokens}`);
+                Logger.info(`[TokenStats] Final: ${totalTokens} / ${ctxSize} (Approx: ${isActuallyApproximate})`);
+
+                // --- CONTEXT GOVERNOR ---
+                if (totalTokens > ctxSize * 1.5) {
+                    this._panel.webview.postMessage({ 
+                        command: 'updateStatus', 
+                        status: `CRITICAL OVERFLOW: ${totalTokens.toLocaleString()} tokens`, 
+                        type: 'error' 
+                    });
+                    Logger.warn(`[TokenStats] Context size is dangerously high (${totalTokens}). Model ${modelForTokenization} will likely fail.`);
+                }
+
+
+                // PERSIST FOR INSTANT HYDRATION
+                if (this._currentDiscussion) {
+                    this._currentDiscussion.lastTokenMetrics = {
+                        total: totalTokens,
+                        contextSize: ctxSize,
+                        segments: segments
+                    };
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                }
+
+                if (this._panel && this._panel.webview) {
+                    // Send the authoritative sum and segments to the UI
+                    this._panel.webview.postMessage({
+                        command: 'updateTokenProgress',
+                        totalTokens: totalTokens,
+                        contextSize: ctxSize,
+                        isApproximate: isActuallyApproximate,
+                        segments: segments
+                    });
+
+                    if (!isBackground) {
+                        this._panel.webview.postMessage({
+                            command: 'updateLoaderStatus',
+                            status: 'Context Grounding Complete',
+                            stats: { files: includedFiles.length, tokens: totalTokens }
+                        });
+                    }
+                }
+
+                if (isActuallyApproximate) {
+                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
+                } else {
+                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+                }
+            } catch (innerErr) {
+                throw innerErr;
             }
-    
         } catch (error: any) {
-            if (error.message === "Operation cancelled" || signal.aborted) {
+            if (error.name === "Operation cancelled" || signal.aborted) {
                 this.log("Context update cancelled.", 'INFO');
                 return;
             }
@@ -1570,13 +1596,7 @@ export class ChatPanel {
                 
                 if (signal.aborted) return;
 
-                const historyText = this._currentDiscussion!.messages.map(msg => {
-                    const content = msg.content;
-                    if (typeof content === 'string') return content;
-                    if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => item.text).join('\n');
-                    return '';
-                }).join('\n');
-
+                const historyText = this._currentDiscussion!.messages.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
                 const systemText = await getProcessedSystemPrompt('chat', this._discussionCapabilities, undefined, undefined, false, { ...context, tree: '', files: '' });
                 
                 const wordCount = (context.text + '\n' + historyText + '\n' + (systemText || '')).trim().split(/\s+/).length;
@@ -1641,14 +1661,25 @@ export class ChatPanel {
                 this._tokenAbortController = null;
             }
         }
-    } catch (e: any) {
+    };
+
+    this._activeTokenizationPromise = runCalculation().catch(e => {
         this.log(`Unexpected error in updateContextAndTokens: ${e.message}`, 'ERROR');
         if (!this._isDisposed && this._panel.webview) {
             this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
         }
-    }
-    }
+    }).finally(() => {
+        this._activeTokenizationPromise = null;
+        if (this._tokenizationPendingRerun) {
+            this._tokenizationPendingRerun = false;
+            const pendingOpts = this._tokenizationPendingOptions;
+            this._tokenizationPendingOptions = null;
+            this.updateContextAndTokens(pendingOpts);
+        }
+    });
 
+    return this._activeTokenizationPromise;
+  }
     /**
     * Helper to strip file blocks from context data if their parent folder is muted in the matrix.
     */
@@ -2466,65 +2497,6 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     // Code Graph is used to resolve context on-demand; legacy non-unified Librarian/AutoSkill agents removed.
     const hasWorkspace = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0;
 
-    // --- WEB RESEARCH AGENT ---
-    if (this._discussionCapabilities.webSearch && processId && controller) {
-        this.processManager.updateDescription(processId, "Web Search...");
-        this.updateGeneratingState();
-
-        this.log("Web Search active. Starting research agent.");
-        const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
-        let userPromptText = "User request";
-        if (typeof message.content === 'string') {
-            userPromptText = message.content;
-        } else if (Array.isArray(message.content)) {
-            const textPart = message.content.find((p: any) => p.type === 'text');
-            if (textPart && textPart.text) userPromptText = textPart.text;
-        }
-        const webAgentMsgId = 'web_agent_' + Date.now();
-
-        await this.addMessageToDiscussion({
-            id: webAgentMsgId, 
-            role: 'system', 
-            content: `**🌍 Web Research Agent**\n*Checking if external info is needed...*\n\n`, 
-            skipInPrompt: false 
-        });
-
-        try {
-            await this._contextManager.runWebResearchAgent(
-                userPromptText, 
-                model, 
-                controller.signal, 
-                (newContent) => {
-                    if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateMessage', messageId: webAgentMsgId, newContent });
-                },
-                (overlayStatus) => {
-                    if (!this._isDisposed && this.processManager) {
-                        this.processManager.updateDescription(processId, overlayStatus);
-                        this.updateGeneratingState();
-                    }
-                }
-            );
-
-            // 🛑 STOP CHECK: If research was cancelled
-            if (controller.signal.aborted) {
-                this.processManager.unregister(processId);
-                this.updateGeneratingState();
-                return;
-            }
-
-            // Refresh tokens/context after files might have been added
-            this.updateContextAndTokens();
-
-        } catch (e: any) { 
-            if (e.name === 'AbortError' || controller.signal.aborted) {
-                this.processManager.unregister(processId);
-                this.updateGeneratingState();
-                return; // 🛑 EXIT WORKFLOW
-            }
-            this.log(`Web Research failed: ${e.message}`, 'ERROR');
-        }
-    }
-
     // --- DEBUG SANDBOX BRANCH CREATION (PRE-WORKER) ---
     if (this._discussionCapabilities.debugMode && message.role !== 'system') {
         this.processManager.updateDescription(processId, "🐞 Creating Debug Sandbox...");
@@ -3023,6 +2995,14 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                 // Sync the accumulated text to persistent history before running the tool
                 await this.updateMessage(assistantMessageId, currentFullResponseBuffer);
 
+                // --- AUTO-APPLY INTEGRATION ---
+                // If Auto-Apply is active, we MUST manifest all code rewrites written so far in this turn
+                // to disk before launching the tool, ensuring the tool runs against the updated codebase.
+                if (this._discussionCapabilities.autoApply && !controller?.signal.aborted) {
+                    this.log(`Auto-Apply: Writing files to disk before executing tool ${interceptedTag}...`);
+                    await this.executeAutomationPipeline(currentFullResponseBuffer, assistantMessageId, controller?.signal, processId);
+                }
+
                 let toolResult = "";
                 let isSuccess = true;
 
@@ -3365,8 +3345,16 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                     this.processManager.updateDescription(processId, `Executing tool: ${interceptedTag}...`);
                     this.updateGeneratingState();
 
-                    // Render the tool call to the single visible assistant bubble
-                    await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
+                    // Sync the accumulated text to persistent history before running the tool
+                    await this.updateMessage(assistantMessageId, currentFullResponseBuffer);
+
+                    // --- AUTO-APPLY INTEGRATION ---
+                    // If Auto-Apply is active, we MUST manifest all code rewrites written so far in this turn
+                    // to disk before launching the tool, ensuring the tool runs against the updated codebase.
+                    if (this._discussionCapabilities.autoApply && !controller?.signal.aborted) {
+                        this.log(`Auto-Apply: Writing files to disk before executing tool ${interceptedTag}...`);
+                        await this.executeAutomationPipeline(currentFullResponseBuffer, assistantMessageId, controller?.signal, processId);
+                    }
 
                     let toolResult = "";
                     let isSuccess = true;
@@ -4980,6 +4968,14 @@ ${targetContent}
                                     blockId: blockId
                                 });
 
+                                // --- INSTANT HUD RE-RENDER FOR ADDED FILES ---
+                                const provider = this._contextManager.getContextStateProvider();
+                                const currentFilesList = provider ? provider.getIncludedFiles().map(f => f.path) : [];
+                                this._panel.webview.postMessage({
+                                    command: 'updateContext',
+                                    files: currentFilesList
+                                });
+
                                 if (reprompt) {
                                     // Trigger the next turn immediately with fresh context
                                     await this.sendMessage({
@@ -5389,6 +5385,7 @@ ${targetContent}
                     const paths = message.command === 'bulkRemoveFiles' ? message.paths : [message.path];
                     const uris: vscode.Uri[] = [];
 
+                    let tokensToRemove = 0;
                     for (let p of paths) {
                         const res = await this._contextManager.resolveWorkspaceFromPath(p);
                         if (res) {
@@ -5396,10 +5393,40 @@ ${targetContent}
                         } else {
                             uris.push(vscode.Uri.file(p));
                         }
+
+                        // Retrieve the cached token weight before removing it to perform instant subtraction
+                        const cached = (this._contextManager as any)._fileContentCache.get(p);
+                        if (cached) {
+                            tokensToRemove += Math.ceil(cached.content.length / 3.5);
+                        }
+
+                        // Remove from active token cache to force immediate accurate updates
+                        await this._contextManager.removeCachedTokens(p);
                     }
 
                     await this._contextManager.getContextStateProvider()?.setStateForUris(uris, 'tree-only');
-                    this.updateContextAndTokens();
+
+                    // --- INSTANT HYDRATION SUBTRACTION ---
+                    // Dynamically subtract the token weight from the current cached metrics
+                    // and update the webview instantly to eliminate any lagging calculation delay.
+                    if (this._currentDiscussion?.lastTokenMetrics) {
+                        const m = this._currentDiscussion.lastTokenMetrics;
+                        m.total = Math.max(0, m.total - tokensToRemove);
+                        if (m.segments) {
+                            m.segments.files = Math.max(0, m.segments.files - tokensToRemove);
+                        }
+
+                        this._panel.webview.postMessage({
+                            command: 'updateTokenProgress',
+                            totalTokens: m.total,
+                            contextSize: m.contextSize,
+                            isApproximate: false,
+                            segments: m.segments
+                        });
+                    }
+
+                    // Run the background sync asynchronously to align with disk state
+                    this.updateContextAndTokens({ isBackgroundSync: true });
                 }
                 break;
             case 'openFile':
@@ -5851,11 +5878,11 @@ Task:
                         error: res?.error
                     });
                     if (res && res.success) {
-                        await this.updateAppliedState(message.messageId, message.blockIndex);
+                        await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex);
                     }
                 } catch (e: any) {
                     this.log(`Command applyPatchContent failed: ${e.message}`, 'ERROR');
-                    webview.postMessage({ command: 'applyAllResult', messageId: message.messageId, blockIndex: message.blockIndex, success: false, error: e.message });
+                    webview.postMessage({ command: 'applyAllResult', messageId: message.messageId, blockIndex: message.blockIndex, hunkIndex: message.hunkIndex, success: false, error: e.message });
                 }
                 break;
             case 'runScript':
@@ -6204,6 +6231,7 @@ Task:
                 const toolName = message.tool;
                 const toolParams = message.params;
                 const buttonId = message.buttonId; // Captured from step 1
+                const autoReprompt = message.reprompt !== false; // Default to true if not explicitly false
 
                 if (this.agentManager) {
                     const toolDef = this.agentManager.getTools().find(t => t.name === toolName);
@@ -6221,16 +6249,12 @@ Task:
                             const result = await toolDef.execute(toolParams, env as any, controller.signal);
 
                             // --- CALLBACK TO TRIGGERING BUTTON ---
-                            // If we have a buttonId, this was a UI-triggered iteration.
-                            // We return the visual result directly to that block instead of a new bubble.
                             if (buttonId && (toolName === 'edit_image_asset' || result.output.includes('<image_result'))) {
                                 const outputPath = toolParams.output_path || toolParams.target_path;
                                 if (outputPath) {
                                     const res = await this._contextManager.resolveWorkspaceFromPath(outputPath);
                                     if (res) {
                                         const webviewUri = webview.asWebviewUri(res.uri).toString();
-
-                                        // 1. Update the original tag UI
                                         webview.postMessage({ 
                                             command: 'imageGenerationResult', 
                                             buttonId: buttonId, 
@@ -6238,11 +6262,20 @@ Task:
                                             webviewUri 
                                         });
                                     }
-
-                                    // 2. Silently update the discussion history so the LLM "sees" the result
-                                    // We don't add a message, we just update the internal state
-                                    return; // STOP: Don't execute standard bubble logic
+                                    return; 
                                 }
+                            }
+
+                            // If we requested local execution without reprompt, send result to the specific block
+                            if (!autoReprompt && buttonId) {
+                                webview.postMessage({
+                                    command: 'applyAllResult',
+                                    messageId: message.messageId, // Can pass down if available
+                                    blockIndex: message.blockIndex,
+                                    success: result.success,
+                                    sparqlResult: result.output // Re-use for raw display
+                                });
+                                return;
                             }
 
                             const resultMessage: ChatMessage = {
@@ -6252,15 +6285,12 @@ Task:
                             await this.addMessageToDiscussion(resultMessage);
 
                             // --- AUTOMATIC REACTION TRIGGER ---
-                            // If the tool was run manually via a UI button, we must nudge the AI 
-                            // to analyze the result and decide on the next step.
                             const nudgeMessage: ChatMessage = {
                                 role: 'system',
                                 content: `The user manually triggered the tool '${toolName}'. Analyze the output above and proceed with the mission.`,
-                                skipInPrompt: false // Ensure the AI sees this nudge
+                                skipInPrompt: false 
                             };
 
-                            // We use sendMessage to restart the ReAct loop
                             await this.sendMessage(nudgeMessage);
 
                             } catch (e: any) {
@@ -7447,6 +7477,14 @@ Task:
                             <p style="font-size: 10px; opacity: 0.7; margin:0;">Context filling percentage that triggers automatic pruning.</p>
                         </div>
                         <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-sparqlEnabled"><span class="slider"></span></label>
+                            <label for="cap-sparqlEnabled"><strong>📊 SPARQL Engine:</strong> Enable background Code Graph parsing.</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-grepEnabled"><span class="slider"></span></label>
+                            <label for="cap-grepEnabled"><strong>🔍 GREP Indexer:</strong> Enable high-speed on-disk regex search.</label>
+                        </div>
+                        <div class="checkbox-container">
                             <label class="switch"><input type="checkbox" id="cap-projectMemoryEnabled"><span class="slider"></span></label>
                             <label for="cap-projectMemoryEnabled"><strong>🧠 Project Memory:</strong> Discreetly save technical facts.</label>
                         </div>
@@ -8112,10 +8150,25 @@ Task:
         <!-- Image Editor Modal -->
         <div id="image-editor-modal" class="editor-modal">
             <div class="editor-toolbar">
+                <div class="tool-group" id="vector-tools">
+                    <label>Annotate Tools</label>
+                    <button class="code-action-btn" id="tool-select" title="Select / Move / Resize Shapes"><i class="codicon codicon-pointer"></i> Select</button>
+                    <button class="code-action-btn" id="tool-pan" title="Pan Canvas"><i class="codicon codicon-move"></i> Pan</button>
+                    <button class="code-action-btn" id="tool-brush" title="Free Brush"><i class="codicon codicon-edit"></i> Brush</button>
+                    <button class="code-action-btn" id="tool-arrow" title="Draw Single Arrow"><i class="codicon codicon-arrow-right"></i> Arrow</button>
+                    <button class="code-action-btn" id="tool-dual-arrow" title="Draw Dual Arrow"><i class="codicon codicon-arrow-swap"></i> Dual Arrow</button>
+                    <button class="code-action-btn" id="tool-spline-arrow" title="Draw Curved Spline Arrow"><i class="codicon codicon-call-outgoing"></i> Spline Arrow</button>
+                    <button class="code-action-btn" id="tool-spline-dual-arrow" title="Draw Curved Dual Spline Arrow"><i class="codicon codicon-git-compare"></i> Spline Dual</button>
+                    <button class="code-action-btn" id="tool-rect" title="Draw Rectangle"><i class="codicon codicon-primitive-square"></i> Rectangle</button>
+                    <button class="code-action-btn" id="tool-oval" title="Draw Oval"><i class="codicon codicon-circle-large-outline"></i> Oval</button>
+                    <button class="code-action-btn" id="tool-text" title="Write Text Layer"><i class="codicon codicon-symbol-class"></i> Text</button>
+                    <button class="code-action-btn" id="tool-webcam" title="Import Webcam Snapshot"><i class="codicon codicon-device-camera"></i> Webcam</button>
+                </div>
                 <div class="tool-group">
-                    <button class="code-action-btn" id="tool-brush" title="Brush"><i class="codicon codicon-edit"></i></button>
-                    <button class="code-action-btn" id="tool-text" title="Text Area"><i class="codicon codicon-type-hierarchy"></i></button>
-                    <button class="code-action-btn" id="tool-webcam" title="Webcam"><i class="codicon codicon-device-camera"></i></button>
+                    <label>Zoom</label>
+                    <button class="code-action-btn" id="editor-zoom-in" title="Zoom In"><i class="codicon codicon-zoom-in"></i></button>
+                    <button class="code-action-btn" id="editor-zoom-out" title="Zoom Out"><i class="codicon codicon-zoom-out"></i></button>
+                    <button class="code-action-btn" id="editor-zoom-fit" title="Fit to Screen"><i class="codicon codicon-screen-full"></i> Fit</button>
                 </div>
                 <div class="tool-group">
                     <button class="code-action-btn" id="editor-undo" title="Undo"><i class="codicon codicon-discard"></i></button>
@@ -8123,7 +8176,7 @@ Task:
                 </div>
                 <div class="tool-group">
                     <label>Color</label>
-                    <input type="color" id="editor-color" value="#ff0000">
+                    <input type="color" id="editor-color" value="#e74c3c">
                 </div>
                 <div class="tool-group">
                     <label>Width</label>
@@ -8131,12 +8184,13 @@ Task:
                 </div>
                 <div class="tool-group">
                     <label>Font Size</label>
-                    <input type="number" id="editor-font-size" value="20" min="8" max="100">
+                    <input type="number" id="editor-font-size" value="18" min="8" max="100">
                 </div>
                 <div style="flex:1"></div>
+                <button class="code-action-btn" id="editor-delete-shape" style="color:var(--vscode-charts-red); display:none;" title="Delete selected annotation shape"><i class="codicon codicon-trash"></i> Delete Shape</button>
                 <button class="code-action-btn" id="editor-clear">Clear</button>
                 <button class="code-action-btn" id="editor-cancel">Cancel</button>
-                <button class="code-action-btn apply-btn" id="editor-save">Save & Close</button>
+                <button class="code-action-btn apply-btn" id="editor-save">Inject to Chat</button>
             </div>
             <div class="editor-canvas-container">
                 <div id="webcam-container" style="display: none; position: absolute; z-index: 10001; background: black; flex-direction: column; align-items: center; gap: 10px; padding: 10px; border-radius: 8px;">
@@ -8147,7 +8201,7 @@ Task:
                     </div>
                 </div>
                 <canvas id="image-editor-canvas"></canvas>
-                <input type="text" id="canvas-text-input">
+                <input type="text" id="canvas-text-input" placeholder="Type annotation...">
             </div>
         </div>
 
@@ -8218,6 +8272,22 @@ Task:
         </div>
 
         <!-- NEW: Context Viewer Modal -->
+        <div id="workspace-matrix-modal" class="modal">
+            <div class="modal-content" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h2 style="margin:0; font-size: 14px; display:flex; align-items:center; gap:8px;"><i class="codicon codicon-layers"></i> Workspace Access Matrix</h2>
+                    <span class="close-btn" id="matrix-close-btn">&times;</span>
+                </div>
+                <div class="modal-body" style="padding: 0;">
+                    <div id="matrix-rows-container" style="max-height: 400px; overflow-y: auto;"></div>
+                </div>
+                <div class="modal-footer">
+                    <button id="matrix-done-btn" class="code-action-btn apply-btn" style="width: 80px;">Done</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- NEW: Context Viewer Modal -->
         <div id="context-viewer-modal" class="modal">
             <div class="modal-content" style="max-width: 900px; width: 95%; height: 80vh;">
                 <div class="modal-header">
@@ -8225,7 +8295,7 @@ Task:
                     <span class="close-btn" id="context-viewer-close-btn">&times;</span>
                 </div>
                 <div class="modal-body" style="flex: 1; padding: 0; overflow: hidden; display: flex; flex-direction: column;">
-                    <div id="context-viewer-display" class="markdown-body" style="padding: 20px; overflow-y: auto; flex: 1; font-family: var(--vscode-editor-font-family); font-size: 12px; line-height: 1.5; background: var(--vscode-editor-background);">
+                    <div id="context-viewer-display" class="markdown-body" style="padding: 20px; overflow-y: auto; flex: 1; font-family: var(--vscode-editor-font-family); font-size: 12px; line-height: 1.5; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground);">
                     </div>
                 </div>
                 <div class="modal-footer" style="display:flex; justify-content: flex-end; gap: 10px;">
@@ -8235,7 +8305,6 @@ Task:
             </div>
         </div>
         </div>
-
     <input type="file" id="fileInput" style="display: none;" multiple accept=".md,.txt,.msg,.docx,.pdf,.pptx,.xlsx,.csv,.png,.jpg,.jpeg,.bmp,.webp">
 
     <script nonce="${nonce}">

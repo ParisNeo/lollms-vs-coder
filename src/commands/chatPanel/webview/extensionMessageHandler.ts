@@ -672,6 +672,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (barContainer) barContainer.style.display = 'none';
                 }
                 if (dom.tokenCountLabel) dom.tokenCountLabel.style.opacity = '0.5';
+
+                // Add calculation animation class to the progress bar
+                if (dom.tokenProgressBar) {
+                    dom.tokenProgressBar.className = 'token-progress-bar calculating';
+                    dom.tokenProgressBar.style.width = '100%';
+                }
                 break;
             case 'tokenCalculationProgress':
                 {
@@ -686,6 +692,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'tokenCalculationFinished':
                 setCalculatingTokens(false);
                 hideProjectLoader(); // Remove the big overlay when context is ready
+                if (dom.tokenProgressBar && dom.tokenProgressBar.classList.contains('calculating')) {
+                    dom.tokenProgressBar.classList.remove('calculating');
+                }
                 break;
             case 'showProjectLoader':
                 showProjectLoader(message.projectName);
@@ -720,7 +729,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     } else if (typeof totalTokens === 'number') {
                         const size = (contextSize > 0) ? contextSize : 128000;
                         dom.tokenCountLabel.textContent = `${isApproximate ? 'Est. ' : ''}Tokens: ${totalTokens.toLocaleString()} / ${size.toLocaleString()}`;
-                        
+
+                        // Clean calculating class on new data load
+                        if (dom.tokenProgressBar && dom.tokenProgressBar.classList.contains('calculating')) {
+                            dom.tokenProgressBar.classList.remove('calculating');
+                        }
+
                         // Pass segments to the progress bar
                         updateProgressBar(dom.tokenProgressContainer, totalTokens, size, message.segments);
 
@@ -1168,6 +1182,16 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 updateBadges();
                 break;
             case 'fileSearchResults':
+                // --- PROGRESSIVE HUNK MATCHING INTERCEPTOR ---
+                // If the state machine is active, delegate results to it directly
+                const globalUI = (window as any);
+                if (globalUI.progressiveSearchState && dom.rawCodeModal.classList.contains('visible')) {
+                    if (typeof globalUI.handleProgressiveSearchResults === 'function') {
+                        globalUI.handleProgressiveSearchResults(message.results);
+                        return;
+                    }
+                }
+
                 // Check if the Raw Code Modal is open, if so, route results there
                 if (dom.rawCodeModal.classList.contains('visible') && dom.rawSearchResultsMini) {
                     dom.rawSearchResultsMini.style.display = 'flex';
@@ -1180,7 +1204,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             </div>
                             ` + message.results.map((res: any) => {
                             const safeSnippet = sanitizer.sanitize(res.snippet);
-                            
+
                             return `
                             <div class="mini-search-item raw-stitch-result-item" 
                                  style="flex-direction:column; align-items:flex-start; gap:4px; padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); cursor:pointer;" 
@@ -1275,10 +1299,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
 
                 // Update Main Action Button Status Label
+                // Keep the button active/clickable so the user can click to Stop the process!
                 const mainBtn = document.getElementById(`apply-all-${message.messageId}`) as HTMLButtonElement;
                 if (mainBtn) {
-                    mainBtn.disabled = true;
-                    mainBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Applying [${message.currentIndex + 1}/${message.totalCount}] — Writing files...`;
+                    mainBtn.disabled = false;
+                    mainBtn.classList.add('sequential-applying');
+                    mainBtn.classList.add('stop-btn-red'); // Style as red stop button
+                    mainBtn.innerHTML = `<span class="codicon codicon-primitive-square"></span> Stop Applying [${message.currentIndex + 1}/${message.totalCount}]`;
                 }
 
                 // Update Progress Bar
@@ -1369,15 +1396,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             if (manualStitchBtn) {
                                 manualStitchBtn.onclick = (e) => {
                                     e.stopPropagation();
-                                    import('./ui.js').then(ui => {
-                                        ui.openRawCodeModal(
-                                            message.messageId,
-                                            message.blockIndex,
-                                            message.filePath,
-                                            rawCode,
-                                            message.hunkIndex !== undefined ? message.hunkIndex : 0
-                                        );
-                                    });
+                                    openRawCodeModal(
+                                        message.messageId, 
+                                        message.blockIndex, 
+                                        message.filePath, 
+                                        rawCode,
+                                        message.hunkIndex !== undefined ? message.hunkIndex : 0
+                                    );
                                 };
                             }
                         }
@@ -1528,7 +1553,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             fixAiBtn.innerHTML = '<span class="codicon codicon-sparkle"></span> Fix with AI';
                             fixAiBtn.onclick = () => {
                                 fixAiBtn.disabled = true;
-                                fixAiBtn.innerHTML = '<div class="spinner"></div> Fixing...';
+                                fixAiBtn.innerHTML = '<div class="spinner"></div> Repairing...';
                                 vscode.postMessage({ 
                                     command: 'replaceCode', 
                                     filePath: message.filePath, 
@@ -1546,38 +1571,22 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             manualFixBtn.innerHTML = '<span class="codicon codicon-tools"></span> Manual Fix';
                             manualFixBtn.onclick = () => {
                                 const codeText = blockEl.dataset.rawCode || "";
-                                import('./ui.js').then(ui => {
-                                    ui.openRawCodeModal(
-                                        message.messageId, 
-                                        message.blockIndex, 
-                                        message.filePath, 
-                                        codeText, 
-                                        message.hunkIndex !== undefined ? message.hunkIndex : 0
-                                    );
-                                });
+                                openRawCodeModal(
+                                    message.messageId, 
+                                    message.blockIndex, 
+                                    message.filePath, 
+                                    codeText, 
+                                    message.hunkIndex !== undefined ? message.hunkIndex : 0
+                                );
                             };
 
                             actions.appendChild(fixAiBtn);
                             actions.appendChild(manualFixBtn);
                         }
-
-                        // AUTOMATIC REDIRECTION to the Raw Code Modal (Manual Fix)
-                        if (!message.repaired && !message.alreadyApplied) {
-                            const codeText = blockEl.dataset.rawCode || "";
-                            setTimeout(() => {
-                                import('./ui.js').then(ui => {
-                                    ui.openRawCodeModal(
-                                        message.messageId, 
-                                        message.blockIndex, 
-                                        message.filePath, 
-                                        codeText, 
-                                        message.hunkIndex !== undefined ? message.hunkIndex : 0
-                                    );
-                                });
-                            }, 100);
-                        }
                     }
-                    
+
+
+
 
                     // Update Progress Bar on complete
                     if (message.totalCount > 0) {
@@ -1630,7 +1639,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 }
                             }
                         }
-                    }
+                    }                    
                 }
                 break;
 

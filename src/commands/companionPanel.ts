@@ -84,49 +84,55 @@ export class CompanionPanel {
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
         this._panel.webview.onDidReceiveMessage(
-            message => {
+            async message => {
                 switch (message.command) {
                     case 'webview-ready':
-                        // Send initial state
                         this.setContextInfo(this._contextInfo);
                         this._panel.webview.postMessage({ command: 'updateAttachState', isAttached: this._isAttached });
                         this.updateHistoryList();
                         break;
                     case 'submitPrompt':
-                        this._onDidSubmit.fire(message.text);
-                        return;
+                        this._onDidSubmit.fire(message.text || message.query || "");
+                        break;
                     case 'copyToClipboard':
-                        vscode.env.clipboard.writeText(message.text);
-                        vscode.window.showInformationMessage('Copied to clipboard');
-                        return;
-                    case 'insertAtCursor':
-                        this.insertAtCursor(message.text);
-                        return;
-                    case 'replaceSelection':
-                        this.replaceSelection(message.text);
-                        return;
-                    case 'loadHistory':
-                        this.loadHistoryItem(message.id);
-                        return;
-                    case 'deleteHistory':
-                        this.deleteHistoryItem(message.id);
-                        return;
-                    case 'clearHistory':
-                        this._history = [];
-                        this._currentHistoryIndex = -1;
-                        this._panel.webview.postMessage({ command: 'clearResponse' });
-                        this.updateHistoryList();
-                        return;
-                    case 'openTools':
-                        this.handleOpenTools();
-                        return;
-                    case 'toggleAttach':
-                        this.toggleAttach();
-                        return;
+                        if (message.text) {
+                            await vscode.env.clipboard.writeText(message.text);
+                            vscode.window.setStatusBarMessage("Lollms: Copied to clipboard", 2000);
+                        }
+                        break;
+                    case 'replaceCode':
+                        // Surgical in-line Search/Replace application
+                        try {
+                            const normalizedContent = message.content
+                                .replace(/^\s*<<<<<<< SEARCH/gm, '<<<<<<< SEARCH')
+                                .replace(/^\s*=======/gm, '=======')
+                                .replace(/^\s*>>>>>>> REPLACE/gm, '>>>>>>> REPLACE');
+
+                            const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, normalizedContent, undefined, undefined, message.options);
+                            this._panel.webview.postMessage({
+                                command: 'applyAllResult',
+                                success: res?.success ?? false,
+                                error: res?.error
+                            });
+                        } catch (e: any) {
+                            this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message });
+                        }
+                        break;
+                    case 'applyFileContent':
+                        // Full File overwrite application
+                        try {
+                            const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content, { autoSave: true, silent: true });
+                            this._panel.webview.postMessage({
+                                command: 'applyAllResult',
+                                success: res?.success ?? false,
+                                error: res?.error
+                            });
+                        } catch (e: any) {
+                            this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message });
+                        }
+                        break;
                 }
-            },
-            null,
-            []
+            }
         );
         // Load the HTML once on initialization
         this._panel.webview.html = this._getHtmlForWebview();
@@ -344,6 +350,30 @@ export class CompanionPanel {
                     display: flex; height: 100vh; overflow: hidden;
                 }
 
+                /* --- FLOATING THOUGHTS STYLING --- */
+                .plan-scratchpad {
+                    border-left: 3px solid #9b59b6;
+                    background: rgba(155, 89, 182, 0.05);
+                    margin-bottom: 12px;
+                    border-radius: 4px;
+                }
+                .scratchpad-header {
+                    padding: 6px 12px;
+                    font-weight: bold;
+                    color: #9b59b6;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    font-size: 11px;
+                }
+                .scratchpad-content {
+                    padding: 10px 15px;
+                    font-size: 11px;
+                    opacity: 0.9;
+                    background: rgba(0,0,0,0.05);
+                }
+
                 .sidebar {
                     width: 300px;
                     border-right: 1px solid var(--vscode-panel-border);
@@ -543,13 +573,122 @@ export class CompanionPanel {
                     vscode.postMessage({ command: 'toggleAttach' });
                 }
 
+                // --- THOUGHT PARSING LOGIC ---
+                function processThinkTags(content) {
+                    const thoughts = [];
+                    if (typeof content !== 'string') return { thoughts, processedContent: '' };
+
+                    const protectedRanges = [];
+                    const fenceRegex = new RegExp("\\\`\\\`\\\`[\\\\s\\\\S]*?(?:\\\`\\\`\\\`|$)|\\\`[^\\\`\\\\n\\\\r]+\\\`", "g");
+                    let fMatch;
+                    while ((fMatch = fenceRegex.exec(content)) !== null) {
+                        protectedRanges.push({ start: fMatch.index, end: fMatch.index + fMatch[0].length });
+                    }
+
+                    const isIndexProtected = (index) => {
+                        return protectedRanges.some(r => index >= r.start && index < r.end);
+                    };
+
+                    const lines = content.split('\n');
+                    let workingContent = "";
+                    const openTags = ['<think>', '<thinking>', '<analysis>', '<reasoning>'];
+                    const closeTags = ['</think>', '</thinking>', '</analysis>', '</reasoning>'];
+
+                    let activeThought = null;
+                    let currentOffset = 0;
+
+                    for (let i = 0; i < lines.length; i++) {
+                        const lineText = lines[i];
+                        const lineTrim = lineText.trim();
+                        const lineWithNL = lineText + (i < lines.length - 1 ? '\n' : '');
+
+                        if (isIndexProtected(currentOffset)) {
+                            if (activeThought) {
+                                activeThought.content += lineWithNL;
+                            } else {
+                                workingContent += lineWithNL;
+                            }
+                            currentOffset += lineWithNL.length;
+                            continue;
+                        }
+
+                        const openMatch = openTags.find(tag => lineTrim.startsWith(tag));
+                        const closeMatch = closeTags.find(tag => lineTrim.startsWith(tag));
+
+                        if (openMatch && !activeThought) {
+                            const tagName = openMatch.replace(/[<>]/g, '');
+                            activeThought = {
+                                tag: tagName,
+                                content: lineTrim.substring(openMatch.length) + (i < lines.length - 1 ? '\n' : ''),
+                                closed: false
+                            };
+                        } else if (closeMatch && activeThought) {
+                            activeThought.closed = true;
+                            activeThought.content = activeThought.content.trim();
+                            thoughts.push(activeThought);
+                            activeThought = null;
+                        } else if (closeMatch && !activeThought) {
+                            const tagName = closeMatch.replace(/[<\/>]/g, '');
+                            thoughts.push({
+                                tag: tagName,
+                                content: workingContent.trim(),
+                                closed: true
+                            });
+                            workingContent = ""; 
+                        } else {
+                            if (activeThought) {
+                                activeThought.content += lineWithNL;
+                            } else {
+                                workingContent += lineWithNL;
+                            }
+                        }
+                        currentOffset += lineWithNL.length;
+                    }
+
+                    if (activeThought) {
+                        activeThought.content = activeThought.content.trim();
+                        thoughts.push(activeThought);
+                    }
+
+                    return { thoughts, processedContent: workingContent.trim() };
+                }
+
                 function renderResponse(text, prompt) {
                     activeContentBuffer = text;
                     if (!text) {
                         container.innerHTML = '<div style="color: var(--vscode-descriptionForeground); text-align: center; margin-top: 40px;"><h3>👋 Lollms Companion</h3><p>Select code or place your cursor, then type below.</p></div>';
                         return;
                     }
-                    container.innerHTML = DOMPurify.sanitize(marked.parse(text));
+
+                    const parsed = processThinkTags(text);
+                    let thoughtsHtml = "";
+
+                    if (parsed.thoughts.length > 0) {
+                        parsed.thoughts.forEach((t, idx) => {
+                            const isClosed = t.closed;
+                            const iconHtml = isClosed 
+                                ? '<span class="codicon codicon-circuit-board"></span>' 
+                                : '<span class="codicon codicon-sync spin" style="color:#9b59b6;"></span>';
+
+                            thoughtsHtml += \`
+                                <div class="plan-scratchpad" data-idx="\${idx}">
+                                    <details \${!isClosed ? 'open' : ''}>
+                                        <summary class="scratchpad-header">
+                                            <div style="display: flex; align-items: center; gap: 6px;">
+                                                \${iconHtml}
+                                                <span style="font-weight: bold;">Thoughts (Reasoning)\${!isClosed ? '...' : ''}</span>
+                                            </div>
+                                        </summary>
+                                        <div class="scratchpad-content">
+                                            \${DOMPurify.sanitize(marked.parse(t.content || "*Contemplating...*"))}
+                                        </div>
+                                    </details>
+                                </div>\`;
+                        });
+                    }
+
+                    const finalMarkdown = parsed.processedContent;
+                    container.innerHTML = thoughtsHtml + DOMPurify.sanitize(marked.parse(finalMarkdown));
 
                     document.querySelectorAll('pre code').forEach((block) => {
                         const pre = block.parentElement;
@@ -579,16 +718,13 @@ export class CompanionPanel {
                         pre.insertAdjacentElement('afterend', actionsDiv);
                     });
 
-                    Prism.highlightAll();
+                    Prism.highlightAllUnder(container);
                     container.scrollTop = container.scrollHeight;
                 }
 
                 function appendChunk(chunk) {
                     activeContentBuffer += chunk;
-                    // Render in real-time
-                    container.innerHTML = DOMPurify.sanitize(marked.parse(activeContentBuffer));
-                    Prism.highlightAllUnder(container);
-                    container.scrollTop = container.scrollHeight;
+                    renderResponse(activeContentBuffer, "");
                 }
 
                 function copyFullResponse() { vscode.postMessage({ command: 'copyToClipboard', text: activeContentBuffer }); }

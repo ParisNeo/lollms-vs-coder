@@ -88,14 +88,23 @@ export const toolPlugin: TagPlugin = {
                 <span class="summary-lang-label" style="color: ${color}; font-weight: 800;">
                     <i class="codicon codicon-${icon}"></i> ${groupLabel}: ${toolName.toUpperCase()}
                 </span>
-                <div class="code-actions">
-                    <button class="code-action-btn apply-btn run-tool-btn" 
-                            id="btn-${blockId}"
+                <div class="code-actions" style="display:flex; gap:6px;">
+                    <button class="code-action-btn secondary-btn run-local-tool-btn" 
+                            id="btn-local-${blockId}"
+                            data-tool="${toolName}" 
+                            data-params='${JSON.stringify(params).replace(/'/g, "&apos;")}'
+                            data-block-id="${blockId}"
+                            title="Execute locally and display results inside the chat history without requesting an AI response">
+                        <i class="codicon codicon-terminal"></i> Run
+                    </button>
+                    <button class="code-action-btn apply-btn run-reprompt-tool-btn" 
+                            id="btn-reprompt-${blockId}"
                             style="background-color: ${color} !important; color: white !important;"
                             data-tool="${toolName}" 
                             data-params='${JSON.stringify(params).replace(/'/g, "&apos;")}'
-                            data-block-id="${blockId}">
-                        <i class="codicon codicon-play"></i> Run Tool
+                            data-block-id="${blockId}"
+                            title="Execute and automatically ask Lollms to analyze the output">
+                        <i class="codicon codicon-play"></i> Run & Reprompt
                     </button>
                 </div>
             </div>
@@ -108,66 +117,76 @@ export const toolPlugin: TagPlugin = {
     },
 
     initialize: (container, context) => {
-        container.querySelectorAll('.run-tool-btn').forEach(btn => {
-            (btn as HTMLButtonElement).onclick = () => {
-                const button = btn as HTMLElement;
-                const block = button.closest('.generation-block');
-                const toolName = button.dataset.tool;
+        const block = container.querySelector('.generation-block') as HTMLElement;
+        if (!block) return;
 
-                // 1. Start with original params
-                let finalParams: any = {};
-                try {
-                    finalParams = JSON.parse(button.dataset.params || '{}');
-                } catch(e) {}
+        const runTool = (button: HTMLButtonElement, autoReprompt: boolean) => {
+            const toolName = button.dataset.tool;
 
-                // 2. Scrape edited values from the UI inputs
-                if (block) {
-                    const inputs = block.querySelectorAll('.tool-param-input');
-                    inputs.forEach((input: any) => {
-                        const key = input.dataset.key;
-                        if (key) {
-                            finalParams[key] = input.value;
-                        }
-                    });
+            // 1. Start with original params
+            let finalParams: any = {};
+            try {
+                finalParams = JSON.parse(button.dataset.params || '{}');
+            } catch(e) {}
 
-                    // Scrape selected radio option if present (for request_user_input)
-                    const checkedRadio = block.querySelector('.tool-param-radio:checked') as HTMLInputElement;
-                    if (checkedRadio) {
-                        finalParams['options'] = checkedRadio.value;
+            // 2. Scrape edited values from the UI inputs
+            const inputs = block.querySelectorAll('.tool-param-input');
+            inputs.forEach((input: any) => {
+                const key = input.dataset.key;
+                if (key) {
+                    finalParams[key] = input.value;
+                }
+            });
+
+            // Scrape selected radio option if present (for request_user_input)
+            const checkedRadio = block.querySelector('.tool-param-radio:checked') as HTMLInputElement;
+            if (checkedRadio) {
+                finalParams['options'] = checkedRadio.value;
+            }
+
+            // Lock all action buttons inside this block
+            block.querySelectorAll('.run-local-tool-btn, .run-tool-btn, .run-reprompt-tool-btn, .run-local-this-btn').forEach((btn: any) => {
+                btn.disabled = true;
+                btn.style.opacity = '0.5';
+            });
+
+            if (toolName === 'request_user_input') {
+                button.innerHTML = '<div class="spinner"></div> Submitting...';
+                const choiceVal = checkedRadio ? checkedRadio.value : "";
+
+                context.vscode.postMessage({
+                    command: 'sendMessage',
+                    message: {
+                        role: 'user',
+                        content: `FORM_SUBMISSION:${JSON.stringify({ decision: choiceVal })}`,
+                        isSilentSignal: true
                     }
-                }
+                });
 
-                button.disabled = true;
+                setTimeout(() => {
+                    const wrapper = block.closest('.message-wrapper');
+                    if (wrapper) wrapper.remove();
+                }, 200);
+            } else {
+                button.innerHTML = '<div class="spinner"></div> Running...';
+                context.vscode.postMessage({
+                    command: 'runTool',
+                    tool: toolName,
+                    params: finalParams,
+                    buttonId: button.dataset.blockId,
+                    reprompt: autoReprompt
+                });
+            }
+        };
 
-                if (toolName === 'request_user_input') {
-                    // REDIRECT TO ACTIVE INPUT RESOLVER TO RESUME THE PAUSED LOOP
-                    button.innerHTML = '<div class="spinner"></div> Submitting...';
-                    const checkedRadio = block ? block.querySelector('.tool-param-radio:checked') as HTMLInputElement : null;
-                    const choiceVal = checkedRadio ? checkedRadio.value : "";
-
-                    context.vscode.postMessage({
-                        command: 'sendMessage',
-                        message: {
-                            role: 'user',
-                            content: `FORM_SUBMISSION:${JSON.stringify({ decision: choiceVal })}`,
-                            isSilentSignal: true
-                        }
-                    });
-
-                    // Remove the card container immediately to provide instant tactile feedback
-                    setTimeout(() => {
-                        const wrapper = block ? block.closest('.message-wrapper') : null;
-                        if (wrapper) wrapper.remove();
-                    }, 200);
-                } else {
-                    button.innerHTML = '<div class="spinner"></div> Running...';
-                    context.vscode.postMessage({
-                        command: 'runTool',
-                        tool: toolName,
-                        params: finalParams,
-                        buttonId: button.dataset.blockId
-                    });
-                }
+        // --- SINGLE, EXCLUSIVE CLICK REGISTRATION LOOP ---
+        // Binds exactly one event handler per action button to guarantee single-execution.
+        block.querySelectorAll('.run-local-tool-btn, .run-tool-btn, .run-reprompt-tool-btn').forEach((btn: any) => {
+            const isReprompt = btn.classList.contains('run-reprompt-tool-btn') || btn.classList.contains('run-tool-btn');
+            btn.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                runTool(btn, isReprompt);
             };
         });
     }

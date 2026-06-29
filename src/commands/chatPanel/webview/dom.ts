@@ -90,6 +90,8 @@ export interface DiscussionCapabilities {
     clipboardInsertRole: 'user' | 'assistant';
     monitoredLogPaths?: string[]; // Custom log files to monitor
     profileType?: 'vibe' | 'agentic';
+    sparqlEnabled?: boolean; // Control background code graph indexing
+    grepEnabled?: boolean;   // Control background ripgrep indexing
     guiState?: {
         agentBadge: boolean;
         debugBadge: boolean;

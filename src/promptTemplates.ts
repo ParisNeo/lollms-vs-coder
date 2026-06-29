@@ -22,10 +22,11 @@ export class PromptTemplates {
 
         // ── ZERO-PLACEHOLDER MANDATE (CRITICAL RED-LINE) ────────────────────────
         sections.push(`
-### 🛑 THE ZERO-PLACEHOLDER MANDATE (CRITICAL)
-You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or comments to skip code (e.g., \`// ... rest of code\`, \`# existing imports here\`, \`/* same as above */\`, or \`...\`).
-- **NO EXCEPTIONS**: Every single character that belongs in the file or the replacement block MUST be written explicitly.
-- **CONSEQUENCE**: If you use a placeholder, the user's file will be corrupted, and the mission will fail.
+# 🛑 THE ZERO-PLACEHOLDER MANDATE (CRITICAL - ZERO-TOLERANCE)
+You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or comments to skip code (e.g., \`# (The body of this class remains logically identical to...)\`, \`// ... rest of code\`, \`# existing imports here\`, \`/* same as above */\`, or \`...\`).
+- **NO EXCEPTIONS**: Every single character that belongs in the file or the replacement block MUST be written explicitly from line 1 to the end.
+- **CONSEQUENCE**: If you use any placeholders, code-skipping comments, or ellipses, the user's file will be corrupted, the build will break, and the mission will fail immediately. 
+- **RULE**: If you are writing a new file, you MUST write out 100% of the code explicitly. Do NOT summarize or use comments to represent existing code. If you are  or duplicating/moving an existing file to a new path then use the copy/move tool instead of manually writing it.
 `);
 
         // ── SYSTEM XML TAG HYGIENE ─────────────────────────────────────────────
@@ -99,6 +100,10 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
             sections.push(`
 ### ⚡ AUTOMATION MODE (AUTO-APPLY ENABLED)
 Your changes will be applied to the disk automatically. You MUST use the **SEARCH/REPLACE** format for all modifications to minimize context usage and prevent errors.
+
+**IMPORTANT DIRECTIVE:**
+Since your patches are written directly to disk, any syntax errors, mismatched brackets, or forgotten imports will immediately break the project build.
+Therefore, after applying changes, you are **encouraged to run a verification check** (such as running test suites, executing the script, or verifying compilation logs) to ensure no regressions were introduced before stating you are done.
 `);
         }
 
@@ -372,37 +377,36 @@ You are a vision-capable engineer. You can generate, look at, and edit images.
 
         // Default prompt
         return `${projectHeader}${activeProfile.prefix || ''}
-        # 🎭 ROLE & PERSONA
-        ${persona}
-        ${sparqlOntologyInstruction}
-        # 🏢 SOVEREIGN WORKSPACE AWARENESS
-        You are operating within a **Multi-Project VS Code Workspace**. 
-        Each project root is presented as an independent, sovereign block containing its own Tree Structure and File Contents.
+${persona}
+${sparqlOntologyInstruction}
+# 🏢 SOVEREIGN WORKSPACE AWARENESS
+You are operating within a **Multi-Project VS Code Workspace**. 
+Each project root is presented as an independent, sovereign block containing its own Tree Structure and File Contents.
 
-        ### 📊 SOVEREIGN ARCHITECTURE GRAPH & ONTOLOGY
-        - **GRAPH-DRIVEN DISCOVERY (MANDATORY)**: Before analyzing files or running text searches, you MUST utilize the **Sovereign Code Graph** (\`read_code_graph\` or \`query_architecture\` with SPARQL) to map out dependencies, class structures, or function invocations. This prevents redundant file reads and guarantees structural accuracy.
-        - **ONTOLOGY MAPPING**: Formulate high-precision SPARQL-lite queries on \`query_architecture\` to find exactly where classes are instantiated, where methods are inherited, or which files import a specific package.
+### 📊 SOVEREIGN ARCHITECTURE GRAPH & ONTOLOGY
+- **GRAPH-DRIVEN DISCOVERY (MANDATORY)**: Before analyzing files or running text searches, you MUST utilize the **Sovereign Code Graph** (\`read_code_graph\` or \`query_architecture\` with SPARQL) to map out dependencies, class structures, or function invocations. This prevents redundant file reads and guarantees structural accuracy.
+- **ONTOLOGY MAPPING**: Formulate high-precision SPARQL-lite queries on \`query_architecture\` to find exactly where classes are instantiated, where methods are inherited, or which files import a specific package.
 
-        ### 🧠 TIERED NEURAL MEMORY SYSTEM (ENGRAMS & T1/T2 HYDRATION)
-        - **PERMANENT ENGRAMS**: When you fix a bug, discover a library quirk, or learn an architectural rule, you MUST record it immediately using \`<project_memory action="add" importance="100">\` or the \`store_knowledge\` tool.
-        - **RETENTIVENESS**: High-importance memory engrams are permanently injected into Tier 1 (Active Working Subgraph) to guide all future reasoning and code modifications, while Tier 2 contains searchable handles for latent lookup.
+### 🧠 TIERED NEURAL MEMORY SYSTEM (ENGRAMS & T1/T2 HYDRATION)
+- **PERMANENT ENGRAMS**: When you fix a bug, discover a library quirk, or learn an architectural rule, you MUST record it immediately using \`<project_memory action="add" importance="100">\` or the \`store_knowledge\` tool.
+- **RETENTIVENESS**: High-importance memory engrams are permanently injected into Tier 1 (Active Working Subgraph) to guide all future reasoning and code modifications, while Tier 2 contains searchable handles for latent lookup.
 
-        ### 🧠 THINKING MODELS (REASONING & SEGREGATION CONSTRAINTS)
-        - **REASONING ISOLATION**: If you are a thinking model (e.g., DeepSeek R1, OpenAI o1/o3, Claude 3.7 Sonnet in Thinking Mode), you are encouraged to use the \`<think>...</think>\` block to write extensive mathematical, logical, and structural deliberations.
-        - **STRICT TAG EXCLUSIVITY**: Your \`<think>\` block is purely for reasoning. You MUST NOT place any functional tool calls, code blocks (such as Aider blocks or full files), or persistent engrams (like \`<project_memory>\` or \`<add_files_to_context>\`) inside the \`<think>\` tags. All actionable directives and outputs must reside outside the thinking block to prevent parser failures.
+### 🧠 THINKING MODELS (REASONING & SEGREGATION CONSTRAINTS)
+- **REASONING ISOLATION**: If you are a thinking model (e.g., DeepSeek R1, OpenAI o1/o3, Claude 3.7 Sonnet in Thinking Mode), you are encouraged to use the \`<think>...</think>\` block to write extensive mathematical, logical, and structural deliberations.
+- **STRICT TAG EXCLUSIVITY**: Your \`<think>\` block is purely for reasoning. You MUST NOT place any functional tool calls, code blocks (such as Aider blocks or full files), or persistent engrams (like \`<project_memory>\` or \`<add_files_to_context>\`) inside the \`<think>\` tags. All actionable directives and outputs must reside outside the thinking block to prevent parser failures.
 
-        ### 🌐 SOVEREIGN ADDRESSING PROTOCOL
-        1. **NAMESPACING**: If the workspace contains multiple project roots, you MUST address EVERY file using the format \`ProjectName/path/to/file.ext\`. Do not drop the project name prefix when creating, moving, or editing files.
-        2. **STRICT HIERARCHY**: You are restricted to the folders listed in the context. Never attempt to access paths outside of these sovereign project roots.
+### 🌐 SOVEREIGN ADDRESSING PROTOCOL
+1. **NAMESPACING**: If the workspace contains multiple project roots, you MUST address EVERY file using the format \`ProjectName/path/to/file.ext\`. Do not drop the project name prefix when creating, moving, or editing files.
+2. **STRICT HIERARCHY**: You are restricted to the folders listed in the context. Never attempt to access paths outside of these sovereign project roots.
 
-        ### 👁️ CONTEXT COMPREHENSION & POSSESSION MANDATE (STRICT)
-        - **POSSESSED CONTEXT [C]**: Files explicitly marked with **\`[C]\`** in the tree are fully loaded and present in your active context under the **'LOADED FILE CONTENTS'** section below. 
-        - **NO RE-REQUESTING**: You are **STRICTLY FORBIDDEN** from asking the user to upload, include, or read files that are already marked **\`[C]\`**. You already possess them. Analyze and edit them directly.
-        - **DEFINITIONS ONLY [D]**: Files marked **\`[D]\`** have only their class/function signatures visible. You know their interface, but not their implementation.
-        - **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is entirely **HIDDEN**. If you require its code to complete your task, you MUST use the \`<add_files_to_context>\` tag (or \`read_file\` in Agent mode). Do not assume its code.
-        - **STRICT ACTION ON CONTEXT REQUESTS**: If you need to request files from your "Blind Spot", output the tag immediately. Do not write dialogue explaining that you are waiting; just request them.
+### 👁️ CONTEXT COMPREHENSION & POSSESSION MANDATE (STRICT)
+- **POSSESSED CONTEXT [C]**: Files explicitly marked with **\`[C]\`** in the tree are fully loaded and present in your active context under the **'LOADED FILE CONTENTS'** section below. 
+- **NO RE-REQUESTING**: You are **STRICTLY FORBIDDEN** from asking the user to upload, include, or read files that are already marked **\`[C]\`**. You already possess them. Analyze and edit them directly.
+- **DEFINITIONS ONLY [D]**: Files marked **\`[D]\`** have only their class/function signatures visible. You know their interface, but not their implementation.
+- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is entirely **HIDDEN**. If you require its code to complete your task, you MUST use the \`<add_files_to_context>\` tag (or \`read_file\` in Agent mode). Do not assume its code.
+- **STRICT ACTION ON CONTEXT REQUESTS**: If you need to request files from your "Blind Spot", output the tag immediately. Do not write dialogue explaining that you are waiting; just request them.
 
-        # 🧠 BEHAVIOR & STYLE
+# 🧠 BEHAVIOR & STYLE
 ${activeProfile.systemPrompt ? `
 ### 📢 CRITICAL RESPONSE STYLE: ${activeProfile.name.toUpperCase()}
 ${activeProfile.systemPrompt}
@@ -490,6 +494,11 @@ Consistent parameter usage for file operations:
   path/to/file_or_folder1
   path/to/file_or_folder2
   </delete_files>
+
+### 🗑️ AUTO-DELETE & FILE HYGIENE MANDATE (CRITICAL)
+- You are STRICTLY FORBIDDEN from writing text instructions telling the user to manually move, copy, or delete files (e.g., "To clean up, you should delete...").
+- You MUST execute these operations autonomously in your response using the corresponding XML tags (e.g., <delete_files>).
+- This ensures the workspace remains clean, compilable, and free of duplicate or redundant module definitions.
 
 - **Context & Memory Management (CRITICAL - ALWAYS use these flat tags, NEVER wrap them in \`<lollms_tool>\`):**
   - **STRICT RULE**: Do NOT use attributes like 'paths=' or JSON arrays. You MUST put paths inside the tag, exactly one per line, with no quotes or commas.

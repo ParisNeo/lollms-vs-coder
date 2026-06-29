@@ -60,6 +60,10 @@ export class CodeGraphManager {
     private contextSetter?: ContextSetter;
     private abortController?: AbortController;
 
+    // --- CONCURRENCY LOCK MUTEX ---
+    private activeBuildPromise: Promise<void> | null = null;
+    private activeIncrementalPromises = new Map<string, Promise<void>>();
+
     // Preserved index state for progressive and incremental background builds
     private nextNodeIdNum: number = 0;
     private nextEdgeIdNum: number = 0;
@@ -106,21 +110,28 @@ export class CodeGraphManager {
      * @param onProgress Optional callback for real-time progress metrics.
      */
     async buildGraph(focusPath?: string, onProgress?: (p: { percentage: number, status: string }) => void) {
-        // Cancel any existing operation
-        this.cancel();
-
-        // JIT Resolution: If root is not set, try to grab it from current VS Code state
-        if (!this.workspaceRoot) {
-            const folders = vscode.workspace.workspaceFolders;
-            if (folders && folders.length > 0) {
-                this.workspaceRoot = folders[0].uri;
-            } else {
-                this.fail('Workspace root not defined. Please open a project folder.');
-                return;
-            }
+        // --- CONCURRENCY MUTEX LOCK ---
+        // If a build is already in progress, reuse the existing promise to prevent duplicate concurrent builds
+        if (this.activeBuildPromise) {
+            return this.activeBuildPromise;
         }
 
-        this.buildState = 'building';
+        this.activeBuildPromise = (async () => {
+            // Cancel any existing operation
+            this.cancel();
+
+            // JIT Resolution: If root is not set, try to grab it from current VS Code state
+            if (!this.workspaceRoot) {
+                const folders = vscode.workspace.workspaceFolders;
+                if (folders && folders.length > 0) {
+                    this.workspaceRoot = folders[0].uri;
+                } else {
+                    this.fail('Workspace root not defined. Please open a project folder.');
+                    return;
+                }
+            }
+
+            this.buildState = 'building';
         this.lastError = undefined;
         this.abortController = new AbortController();
         const signal = this.abortController.signal;
@@ -598,7 +609,11 @@ export class CodeGraphManager {
                 this.buildState = 'idle';
             }
             this.contextSetter?.('codeGraph.building', false);
+            this.activeBuildPromise = null; // Release Lock
         }
+        })();
+
+        return this.activeBuildPromise;
     }
 
     private stripCommentsAndStrings(code: string): string {
@@ -742,15 +757,29 @@ export class CodeGraphManager {
         const relativePath = vscode.workspace.asRelativePath(fileUri);
         const normalizedPath = relativePath.replace(/\\/g, '/');
 
-        // 1. Remove old nodes and edges
-        this.removeFileFromGraph(fileUri);
-
+        // --- DIRECTORY WATCHER PROTECTION ---
+        // Prevent EISDIR (Error: illegal operation on a directory) from blocking the Extension Host
         try {
-            // Pre-flight file size check: skip reading if size exceeds 200KB
             const stats = await vscode.workspace.fs.stat(fileUri);
-            if (stats.size > 200000) return;
+            if (stats.type === vscode.FileType.Directory) {
+                return; // Silently skip directory triggers
+            }
+            if (stats.size > 200000) return; // skip large files (>200KB)
+        } catch (statErr) {
+            return; // File deleted or unreachable, handled by removeFileFromGraph
+        }
 
-            const fileBytes = await vscode.workspace.fs.readFile(fileUri);
+        // --- INCREMENTAL LOCK MUTEX ---
+        if (this.activeIncrementalPromises.has(normalizedPath)) {
+            return this.activeIncrementalPromises.get(normalizedPath);
+        }
+
+        const promise = (async () => {
+            // 1. Remove old nodes and edges
+            this.removeFileFromGraph(fileUri);
+
+            try {
+                const fileBytes = await vscode.workspace.fs.readFile(fileUri);
             const text = Buffer.from(fileBytes).toString('utf8');
             const linesCount = text.split('\n').length;
 
@@ -1070,9 +1099,15 @@ export class CodeGraphManager {
             }
 
             this.contextSetter?.('codeGraph.ready', true);
-        } catch (err: any) {
-            console.warn(`[Incremental Graph Update] Error updating ${normalizedPath}:`, err);
-        }
+            } catch (err: any) {
+                console.warn(`[Incremental Graph Update] Error updating ${normalizedPath}:`, err);
+            } finally {
+                this.activeIncrementalPromises.delete(normalizedPath); // Release lock
+            }
+        })();
+
+        this.activeIncrementalPromises.set(normalizedPath, promise);
+        return promise;
     }
 
     reset() {

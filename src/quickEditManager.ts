@@ -87,6 +87,9 @@ export class QuickEditManager {
             let prompt = "";
             const contextLines = 20;
             
+            const currentFileCode = document.getText();
+            const currentFileBlock = `### 📄 ACTIVE FILE CONTENT [C]\n\`\`\`${languageId}:${relativePath}\n${currentFileCode}\n\`\`\`\n`;
+
             if (hasSelection) {
                 const startLine = selection.start.line;
                 const endLine = selection.end.line;
@@ -99,9 +102,9 @@ export class QuickEditManager {
 
                 prompt = `I am working on the file \`${relativePath}\` (${languageId}).\n\n` +
                             `I have selected code from line ${startLine + 1} to ${endLine + 1}.\n\n` +
-                            (contextBefore ? `**Context Before:**\n\`\`\`${languageId}\n${contextBefore}\n\`\`\`\n\n` : '') +
+                            (contextBefore ? `**Context Before Selection:**\n\`\`\`${languageId}\n${contextBefore}\n\`\`\`\n\n` : '') +
                             `**Selected Code:**\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
-                            (contextAfter ? `**Context After:**\n\`\`\`${languageId}\n${contextAfter}\n\`\`\`\n\n` : '') +
+                            (contextAfter ? `**Context After Selection:**\n\`\`\`${languageId}\n${contextAfter}\n\`\`\`\n\n` : '') +
                             `**Instruction/Question:** "${instruction}"\n\n`;
             } else {
                 const position = selection.active;
@@ -124,15 +127,12 @@ export class QuickEditManager {
                 prompt = `**NOTEBOOK CONTEXT (Preceding Cells):**\n${notebookContext}\n\n` + prompt;
             }
 
-            prompt += `Please respond with markdown. If you provide code, use code blocks.`;
-
-            // --- FOCUS GROUNDING: READ CURRENT FILE ONLY ---
-            const currentFileCode = document.getText();
-            const currentFileBlock = `### 📄 ACTIVE FILE: ${relativePath}\n\`\`\`${languageId}\n${currentFileCode}\n\`\`\`\n`;
+            prompt += `\n**COMPLIANCE RULES:**\n` +
+                      `1. Use AIDER SEARCH/REPLACE blocks for surgical modifications to the active file.\n` +
+                      `2. Use FULL FILE blocks if you need to rewrite more than 50% of the file.\n` +
+                      `3. You may use the available tools to search the workspace, run queries, or find code.`;
 
             // --- SOVEREIGN SUB-GRAPH EXTRACTION ---
-            // Construct a highly focused architectural snapshot representing all links
-            // (both incoming usages and outgoing dependencies) of the current file.
             const graph = this.contextManager['codeGraphManager'];
             let localGraphSummary = "";
             let dependencyContent = "";
@@ -144,7 +144,6 @@ export class QuickEditManager {
 
                 const targetNode = graph.getGraphData().nodes.find(n => n.filePath === relativePath);
                 if (targetNode) {
-                    // Extract all imported/dependent files
                     const depFiles = graph.getGraphData().edges
                         .filter(e => e.source === targetNode.id && e.label === 'imports')
                         .map(e => graph.getGraphData().nodes.find(n => n.id === e.target)?.filePath)
@@ -155,23 +154,20 @@ export class QuickEditManager {
                     }
                 }
 
-                // Query the graph for relations
                 const deps = graph.getArchitectureAnalysis(relativePath, 'dependencies');
                 const usages = graph.getArchitectureAnalysis(relativePath, 'usages');
                 localGraphSummary = `### 🗺️ LOCAL ARCHITECTURAL SUB-GRAPH (RELATIONS FOR ${relativePath})\n${deps}\n${usages}\n`;
             }
 
             const contextData = {
-                tree: localGraphSummary, // Limit tree context strictly to the local sub-graph connections!
+                tree: localGraphSummary,
                 files: currentFileBlock + "\n\n### SURGICAL DEPENDENCIES (GROUNDED)\n" + dependencyContent,
-                skills: "", // Keep companion light, fast, and token-efficient
+                skills: "",
                 projectName: vscode.workspace.workspaceFolders?.[0]?.name || "Project"
             };
 
             let systemPromptContent = await getProcessedSystemPrompt('chat', undefined, undefined, this.memoryManager, false, contextData);
             if (isNotebook) {
-                // Since systemPromptContent is now structured, appending might break structure or just append to Instructions section.
-                // The structure ends with Instructions. So appending is safe, it just adds to instructions.
                 systemPromptContent += `\n\n**NOTEBOOK MODE ACTIVATED**
 You are an expert Jupyter Notebook assistant.
 - You are editing a specific cell (or selection) within a notebook.
@@ -185,12 +181,13 @@ You are an expert Jupyter Notebook assistant.
             let systemPrompt = systemPromptContent + 
                 "\nYou are Lollms, a helpful AI coding companion. Provide clear, concise answers.";
 
-            if (hasTools) {
-                const toolDescriptions = tools.map(t => `${t.name}: ${t.description}`).join('\n');
-                systemPrompt += `\n\nAVAILABLE TOOLS:\n${toolDescriptions}\n\n` +
-                    `To use a tool, reply ONLY with a valid JSON object in a markdown block like this:\n` +
-                    `\`\`\`json\n{"tool": "tool_name", "params": { ... }}\n\`\`\`\n` +
-                    `Do not add any other text when invoking a tool. Wait for the tool output in the next message.`;
+            // Equivocate the Companion to the full toolbelt for deep workspace reconnaissance
+            const equippedTools = this.contextManager['toolManager']?.getEnabledTools() || [];
+            if (equippedTools.length > 0) {
+                const toolDescriptions = equippedTools.map(t => `- **${t.name}**: ${t.description}`).join('\n');
+                systemPrompt += `\n\n### 🔌 EQUIPPED WORKSPACE TOOLS\nYou can execute any of these tools autonomously to gain intelligence or apply files. Reply ONLY with a single valid JSON block to call a tool:\n` +
+                    `\`\`\`json\n{"tool": "tool_name", "params": { ... }}\n\`\`\`\n\n` +
+                    `**AVAILABLE TOOLS:**\n${toolDescriptions}`;
             }
 
             const messages: ChatMessage[] = [
@@ -209,16 +206,14 @@ You are an expert Jupyter Notebook assistant.
                     type: 'image_url',
                     image_url: { url: `data:image/jpeg;base64,${img.data}` }
                 }));
-                // Insert images as a user message part
                 messages.splice(1, 0, { role: 'user', content: imageContent as any });
             }
 
             let finalResponse = "";
-            let toolCallLimit = 5;
+            let toolCallLimit = 8; // Extended tool execution budget
             
             const controller = new AbortController(); 
 
-            // Clear the panel first before starting the generation stream
             panel._panel.webview.postMessage({ command: 'clearResponse' });
 
             while (toolCallLimit > 0) {
@@ -231,15 +226,8 @@ You are an expert Jupyter Notebook assistant.
                     }
                     currentChunkBuffer += chunk;
 
-                    // Stream clean chunks to the Webview in real-time
-                    // We strip any thinking tags from the active stream before dispatching
-                    const cleanChunk = stripThinkingTags(currentChunkBuffer);
-                    const lastToken = cleanChunk.substring(finalResponse.length);
-
-                    if (lastToken) {
-                        finalResponse = cleanChunk;
-                        panel._panel.webview.postMessage({ command: 'appendChunk', text: lastToken });
-                    }
+                    // Stream raw, un-stripped chunks directly so the Webview can parse thoughts dynamically
+                    panel._panel.webview.postMessage({ command: 'appendChunk', text: chunk });
                 }, controller.signal);
 
                 const { content: cleanedResponse, memory = null } = extractAndStripMemory(stripThinkingTags(response));
@@ -247,13 +235,14 @@ You are an expert Jupyter Notebook assistant.
                     await this.memoryManager.updateMemory(memory);
                 }
 
+                // Intercept tool calls autonomously
                 const toolMatch = cleanedResponse.match(/```json\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*```/);
-                
-                if (hasTools && toolMatch) {
+
+                if (equippedTools.length > 0 && toolMatch) {
                     try {
                         const toolCall = JSON.parse(toolMatch[1]);
-                        const tool = tools.find(t => t.name === toolCall.tool);
-                        
+                        const tool = equippedTools.find(t => t.name === toolCall.tool);
+
                         if (tool) {
                             messages.push({ role: 'assistant', content: response });
 
@@ -263,16 +252,17 @@ You are an expert Jupyter Notebook assistant.
                                 currentPlan: null,
                             };
 
+                            panel._panel.webview.postMessage({ command: 'appendChunk', text: `\n\n⚙️ **Executing tool: \`${tool.name}\`...**\n` });
                             const result = await tool.execute(toolCall.params, env, controller.signal);
                             messages.push({ role: 'system', content: `Tool Output (${tool.name}):\n${result.output}` });
-                            
+
                             toolCallLimit--;
                             continue;
                         }
                     } catch (e) { }
                 }
 
-                finalResponse = cleanedResponse;
+                finalResponse = response; // Preserving raw response for history
                 break;
             }
 

@@ -10,7 +10,8 @@ import cytoscapeDagre from 'cytoscape-dagre';
 
 cytoscape.use(coseBilkent);
 cytoscape.use(cytoscapeDagre);
-import { renderWorkspaceMatrix } from './ui.js';
+import { renderWorkspaceMatrix, openRawCodeModal } from './ui.js';
+import { applyDiffToString, applySearchReplace } from './utils.js';
 
 // CodeMirror imports
 import { EditorState } from "@codemirror/state";
@@ -2220,7 +2221,12 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         if (seg.type === 'plugin') {
             finalHtml += seg.content;
         } else {
-            finalHtml += `<div class="markdown-body">${marked.parse(seg.content)}</div>`;
+            // Check if marked can be parsed safely
+            try {
+                finalHtml += `<div class="markdown-body">${marked.parse(seg.content)}</div>`;
+            } catch (err) {
+                finalHtml += `<div class="markdown-body"><pre>${seg.content}</pre></div>`;
+            }
         }
     });
 
@@ -2278,6 +2284,14 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         const applyAllBtn = contentDiv.querySelector(`#apply-all-${messageId}`) as HTMLButtonElement;
         if (applyAllBtn) {
             applyAllBtn.onclick = () => {
+                // If clicked while active, cancel immediately!
+                if (applyAllBtn.classList.contains('sequential-applying')) {
+                    applyAllBtn.disabled = true;
+                    applyAllBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Cancelling...';
+                    vscode.postMessage({ command: 'stopGeneration' });
+                    return;
+                }
+
                 const isUndo = applyAllBtn.classList.contains('undo-all-btn');
                 const changes = gatherChangesFromBlocks(messageId, isUndo);
                 if (changes.length > 0) {
@@ -2784,7 +2798,7 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
             // but keep the details open/closed state.
             const briefingBody = existingDashboard.querySelector('.briefing-content');
             if (briefingBody) briefingBody.innerHTML = briefing ? renderDataBriefing(briefing) : '...';
-            
+
             // Update Lists (Skills, Tools, Files)
             const skillsContainer = existingDashboard.querySelector('.hud-skills-list');
             if (skillsContainer) skillsContainer.innerHTML = skillsList;
@@ -2802,6 +2816,77 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
             const extFilesContainer = existingDashboard.querySelector('.hud-external-files-list');
             if (extFilesContainer) extFilesContainer.innerHTML = renderFileList(externalFiles, "No search results in context.", true);
         }
+
+        // Prevent the parent <details> from collapsing/expanding when interactive elements are clicked
+        const hudSummary = existingDashboard.querySelector('.fused-context-details summary');
+        if (hudSummary) {
+            hudSummary.addEventListener('click', (e) => {
+                const target = e.target as HTMLElement;
+                if (
+                    target.closest('button') || 
+                    target.closest('select') || 
+                    target.closest('input') || 
+                    target.closest('.active-badges') || 
+                    target.closest('.token-progress-container') ||
+                    target.closest('.token-legend')
+                ) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+            });
+        }
+
+        // Add immediate event bindings to dynamically added elements in the lists
+        existingDashboard.querySelectorAll('.remove-context-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const target = e.currentTarget as HTMLElement;
+                const type = target.dataset.type;
+                const value = target.dataset.value;
+
+                if (type === 'file') {
+                    vscode.postMessage({ command: 'removeFileFromContext', path: value });
+                    const item = target.closest('.context-item');
+                    if (item) {
+                        item.style.opacity = '0.3';
+                        item.style.pointerEvents = 'none';
+                    }
+                } else if (type === 'skill') {
+                    vscode.postMessage({ command: 'removeSkillFromContext', skillId: value });
+                    const item = target.closest('.context-item');
+                    if (item) {
+                        item.style.opacity = '0.3';
+                        item.style.pointerEvents = 'none';
+                    }
+                } else if (type === 'tool') {
+                    vscode.postMessage({ command: 'removeToolFromContext', toolName: value });
+                    const item = target.closest('.context-item');
+                    if (item) {
+                        item.style.opacity = '0.3';
+                        item.style.pointerEvents = 'none';
+                    }
+                }
+            });
+        });
+
+        existingDashboard.querySelectorAll('.open-context-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const target = e.currentTarget as HTMLElement;
+                const value = target.dataset.value;
+                if (value) {
+                    vscode.postMessage({ command: 'openFile', path: value });
+                }
+            });
+        });
+
+        existingDashboard.querySelectorAll('.summarize-context-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const target = e.currentTarget as HTMLElement;
+                const value = target.dataset.value;
+                if (value) {
+                    vscode.postMessage({ command: 'summarizeContextFile', path: value });
+                }
+            });
+        });
         
         // Re-run badge logic and exit
         import('./ui.js').then(ui => ui.updateBadges());
@@ -2979,6 +3064,26 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     
     // Always render the HUD shell in Discussion Mode so the toolbar remains visible to add files
     dom.contextContainer.innerHTML = innerHTML;
+
+    // Prevent the parent <details> from collapsing/expanding when interactive elements are clicked (First-time rendering path)
+    const newDashboard = document.getElementById('fused-context-dashboard');
+    const newSummary = newDashboard?.querySelector('.fused-context-details summary');
+    if (newSummary) {
+        newSummary.addEventListener('click', (e) => {
+            const target = e.target as HTMLElement;
+            if (
+                target.closest('button') || 
+                target.closest('select') || 
+                target.closest('input') || 
+                target.closest('.active-badges') || 
+                target.closest('.token-progress-container') ||
+                target.closest('.token-legend')
+            ) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        });
+    }
 
     // 2. RESTORE EXPANSION STATE
     dom.contextContainer.querySelectorAll('details').forEach((d, i) => {

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.9.5",
+  "version": "0.10.2",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -37,6 +37,16 @@
   ],
   "contributes": {
     "commands": [
+      {
+        "command": "lollms-vs-coder.retriggerOnboarding",
+        "title": "Lollms: Reconfigure Project DNA & Style",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "lollms-vs-coder.retriggerOnboarding",
+        "title": "Lollms: Reconfigure Project DNA & Style",
+        "icon": "$(settings-gear)"
+      },
       {
         "command": "lollms-vs-coder.triggerInlineSuggestion",
         "title": "Lollms: Trigger Inline Completion Suggestion"
@@ -1569,72 +1579,72 @@
         {
           "id": "lollmsDiscussionsView",
           "name": "Discussions",
-          "when": "lollms:activeTab == chat"
+          "when": "lollms:activeTab == chat && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsProcessesView",
           "name": "Active Processes",
-          "when": "lollms:activeTab == chat && workspaceFolderCount > 0"
+          "when": "lollms:activeTab == chat && workspaceFolderCount > 0 && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsSkillsView",
           "name": "Skills Library",
-          "when": "lollms:activeTab == chat && workspaceFolderCount > 0"
+          "when": "lollms:activeTab == chat && workspaceFolderCount > 0 && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsProjectMemoryView",
           "name": "Project Memory (Global)",
-          "when": "lollms:activeTab == memory && workspaceFolderCount > 0"
+          "when": "lollms:activeTab == memory && workspaceFolderCount > 0 && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsFileTreeView",
           "name": "Active Workspace Explorer",
-          "when": "lollms:activeTab == librarian && workspaceFolderCount > 0"
+          "when": "lollms:activeTab == librarian && workspaceFolderCount > 0 && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsCodeExplorerView",
           "name": "Architecture Graph (Tree)",
-          "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
+          "when": "lollms:activeTab == lab && workspaceFolderCount > 0 && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsPersonalitiesView",
           "name": "Expert Personas",
-          "when": "lollms:activeTab == lab"
+          "when": "lollms:activeTab == lab && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsWorkflowsView",
           "name": "Saved Agentic Flows",
-          "when": "lollms:activeTab == studio && workspaceFolderCount > 0"
+          "when": "lollms:activeTab == studio && workspaceFolderCount > 0 && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsChatPromptsView",
           "name": "Chat Prompts",
-          "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
+          "when": "lollms:activeTab == lab && workspaceFolderCount > 0 && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsCodeActionsView",
           "name": "Code Actions",
-          "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
+          "when": "lollms:activeTab == lab && workspaceFolderCount > 0 && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsRLMView",
           "name": "RLM Database",
-          "when": "lollms:activeTab == lab"
+          "when": "lollms:activeTab == lab && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsDevToolsView",
           "name": "Developer: Tool Tester",
-          "when": "lollms:activeTab == developer"
+          "when": "lollms:activeTab == developer && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsGenieToolsView",
           "name": "Genie Toolbelt (Dynamic)",
-          "when": "lollms:activeTab == chat && lollms:agentModeActive"
+          "when": "lollms:activeTab == chat && lollms:agentModeActive && lollms:isEnvironmentReady"
         },
         {
           "id": "lollmsActionsView",
           "name": "Quick Actions",
-          "when": "lollms:activeTab == lab"
+          "when": "lollms:activeTab == lab && lollms:isEnvironmentReady"
         }
       ]
     },

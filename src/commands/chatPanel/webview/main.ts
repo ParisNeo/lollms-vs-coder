@@ -59,7 +59,7 @@ import 'prismjs/components/prism-sass';
 import 'prismjs/components/prism-scss';
 import 'prismjs/components/prism-jsx';
 import 'prismjs/components/prism-tsx';
-import { setGeneratingState, updateBadges, renderPendingImages, openImageEditor, filterSkillsTree, renderWorkspaceMatrix } from './ui.js';
+import { setGeneratingState, updateBadges, renderPendingImages, openImageEditor, filterSkillsTree, renderWorkspaceMatrix, openRawCodeModal } from './ui.js';
 
 // Initialize DOMPurify
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
@@ -72,6 +72,30 @@ const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) :
 (window as any).renderPendingImages = renderPendingImages;
 (window as any).openImageEditor = openImageEditor;
 (window as any).filterSkillsTree = filterSkillsTree;
+(window as any).openRawCodeModal = openRawCodeModal;
+
+// Expose Progressive Hunk Matching handlers globally
+import { progressiveSearchState, runProgressiveHunkSearch, handleProgressiveSearchResults } from './ui.js';
+Object.defineProperty(window, 'progressiveSearchState', {
+    get: () => {
+        try { return (require('./ui.js') || {}).progressiveSearchState; } catch {
+            // Webpack/esbuild dynamic binding recovery
+            const ui = (window as any).__ui_module || {};
+            return ui.progressiveSearchState;
+        }
+    },
+    set: (val) => {
+        try { (require('./ui.js') || {}).progressiveSearchState = val; } catch {
+            const ui = (window as any).__ui_module || {};
+            ui.progressiveSearchState = val;
+        }
+    },
+    configurable: true
+});
+(window as any).handleProgressiveSearchResults = handleProgressiveSearchResults;
+(window as any).runOnboardingPipeline = async () => {
+    vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.runOnboardingPipeline' } });
+};
 
 // Ensure messageRenderer utilities are exposed for the Agent Plan Zone
 import { processThinkTags } from './messageRenderer.js';
@@ -349,6 +373,12 @@ document.getElementById('ttsButton')?.addEventListener('click', () => {
 
             // Initialize Event Handlers
             initEventHandlers();
+
+            // Initialize Automation Panel sub-options alignment
+            try {
+                const { initAutomationUI } = require('./ui.js');
+                initAutomationUI();
+            } catch (e) {}
 
             // Notify extension that webview is ready
             vscode.postMessage({ command: 'webview-ready' });

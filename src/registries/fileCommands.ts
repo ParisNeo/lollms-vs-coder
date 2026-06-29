@@ -246,8 +246,9 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             let fileExists = false;
             let document: vscode.TextDocument | undefined;
 
+            // --- NON-BLOCKING ASYNCHRONOUS FILE CHECK ---
             try {
-                await vscode.workspace.fs.stat(fileUri);
+                const stat = await vscode.workspace.fs.stat(fileUri);
                 document = await vscode.workspace.openTextDocument(fileUri);
                 originalContent = document.getText();
                 // Ensure a snapshot exists for diffing later
@@ -380,10 +381,10 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
             return { success: true, alreadyApplied: !!options?.autoSave };
 
-            } catch (e: any) {
-            Logger.error(`Error applying file content: ${e.message}`, e);
-            vscode.window.showErrorMessage(`Error applying file content: ${e.message}`);
-            return { success: false, error: e.message };
+        } catch (e: any) {
+        Logger.error(`Error applying file content: ${e.message}`, e);
+        vscode.window.showErrorMessage(`Error applying file content: ${e.message}`);
+        return { success: false, error: e.message };
         }
     }));
 

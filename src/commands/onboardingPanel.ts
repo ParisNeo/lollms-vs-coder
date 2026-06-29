@@ -6,6 +6,13 @@ import { AgentManager } from '../agentManager';
 import { Logger } from '../logger';
 import { stripThinkingTags } from '../utils';
 
+export interface ArchitecturalProfile {
+    id: string;
+    name: string;
+    objectives: string;
+    style: string;
+}
+
 export class OnboardingPanel {
     public static currentPanel: OnboardingPanel | undefined;
     private readonly _panel: vscode.WebviewPanel;
@@ -40,36 +47,175 @@ export class OnboardingPanel {
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
         this._panel.webview.onDidReceiveMessage(async (msg) => {
-            if (msg.command === 'submit') {
-                await this.handleOnboarding(msg.data);
-            } else if (msg.command === 'exportProfile') {
-                await this.handleExportProfile(msg.data);
-            } else if (msg.command === 'importProfile') {
-                await this.handleImportProfile();
+            switch (msg.command) {
+                case 'submit':
+                    await this.handleOnboarding(msg.data);
+                    break;
+                case 'exportProfile':
+                    await this.handleExportProfile(msg.data);
+                    break;
+                case 'importProfile':
+                    await this.handleImportProfile();
+                    break;
+                case 'saveGlobalProfile':
+                    await this.handleSaveGlobalProfile(msg.profile);
+                    break;
+                case 'deleteGlobalProfile':
+                    await this.handleDeleteGlobalProfile(msg.id);
+                    break;
             }
         }, null, this._disposables);
+
+        // Send saved profiles and pre-fill existing workspace setup
+        this.sendGlobalProfilesToWebview().then(() => {
+            this.hydrateFormFromCurrentState();
+        });
+    }
+
+    private async hydrateFormWithActiveState() {
+        if (!this.services.projectMemoryManager) return;
+
+        try {
+            const engrams = await this.services.projectMemoryManager.getMemories();
+            const projectDna = engrams.find((e: any) => e.id === 'project_dna');
+            const userDna = engrams.find((e: any) => e.id === 'user_dna' || e.id === 'user_preferences');
+
+            const caps = this.services.discussionManager.getLastCapabilities();
+
+            // Extract plain text back from the engrams
+            const cleanContent = (text: string) => {
+                if (!text) return "";
+                return text
+                    .replace(/## 🧬 PROJECT DNA\n-\s*Objectives:\s*/i, '')
+                    .replace(/## 👤 USER DNA\n-\s*Preferences:\s*/i, '')
+                    .replace(/- Structure:[\s\S]*?###/g, '') // strip system-generated tree snapshots
+                    .replace(/#[\w_]+/g, '') // Strip hashtags
+                    .trim();
+            };
+
+            this._panel.webview.postMessage({
+                command: 'loadProfileData',
+                data: {
+                    destiny: caps.profileType || (caps.agentMode ? 'agentic' : 'vibe'),
+                    instructions: projectDna ? cleanContent(projectDna.content) : '',
+                    preferences: userDna ? cleanContent(userDna.content) : '',
+                    pathway: caps.agentMode ? 'prd' : 'none'
+                }
+            });
+        } catch (e) {
+            Logger.debug("No active onboarding engrams to pre-populate. Displaying clean form.");
+        }
+    }
+
+    private async hydrateFormFromCurrentState() {
+        if (!this.services.projectMemoryManager) return;
+
+        try {
+            const engrams = await this.services.projectMemoryManager.getMemories();
+            const projectDna = engrams.find((e: any) => e.id === 'project_dna');
+            const userDna = engrams.find((e: any) => e.id === 'user_dna');
+            const caps = this.services.discussionManager.getLastCapabilities();
+
+            const cleanContent = (text: string) => {
+                if (!text) return "";
+                return text
+                    .replace(/^## 🧬 PROJECT DNA\n/i, '')
+                    .replace(/^## 👤 USER DNA\n/i, '')
+                    .replace(/^- Objectives:\s*/i, '')
+                    .replace(/^- Preferences:\s*/i, '')
+                    .replace(/#[\w_]+/g, '') // Strip tags
+                    .trim();
+            };
+
+            this._panel.webview.postMessage({
+                command: 'loadProfileData',
+                data: {
+                    destiny: caps.profileType || (caps.agentMode ? 'agentic' : 'vibe'),
+                    instructions: projectDna ? cleanContent(projectDna.content) : '',
+                    preferences: userDna ? cleanContent(userDna.content) : '',
+                    pathway: caps.agentMode ? 'prd' : 'none'
+                }
+            });
+        } catch (e) {
+            Logger.debug("Failed to pre-populate onboarding form from active memory", e);
+        }
+    }
+
+    private getGlobalProfiles(): ArchitecturalProfile[] {
+        const defaultProfiles: ArchitecturalProfile[] = [
+            {
+                id: "profile_python_vibe",
+                name: "Python Rapid Prototyping (Vibe)",
+                objectives: "Build fast, modular Python features (Pygame, FastAPI) using clean f-strings, type hints, and lightweight packages.",
+                style: "Prioritize velocity and high-fidelity rendering. Use expressive, descriptive variable names and comments. Prefer pathlib over os."
+            },
+            {
+                id: "profile_embedded_c",
+                name: "Embedded Systems C (Rigorous)",
+                objectives: "Develop low-level bare-metal or RTOS drivers for STM32 microcontrollers. Focus on register-level efficiency and DMA.",
+                style: "Strict MISRA C:2012 compliance. Prevent dynamic allocations entirely. No printf inside ISRs. Highly compact, self-contained functions with clear hardware bit-shifting comments."
+            },
+            {
+                id: "profile_react_ts",
+                name: "React TypeScript & Tailwind (Modern)",
+                objectives: "Build accessible, performant UI components using React Server Components, TS strict typing, and responsive layout flows.",
+                style: "Utility-first classes (Tailwind CSS) only. Enforce strict WCAG accessibility attributes (ARIA), reusable hooks, and full type safety for all component props."
+            }
+        ];
+
+        const saved = this.services.discussionManager.context.globalState.get<ArchitecturalProfile[]>('lollms_saved_architectural_profiles', []);
+        return [...defaultProfiles, ...saved];
+    }
+
+    private async sendGlobalProfilesToWebview() {
+        const profiles = this.getGlobalProfiles();
+        this._panel.webview.postMessage({ command: 'updateGlobalProfiles', profiles });
+    }
+
+    private async handleSaveGlobalProfile(profile: ArchitecturalProfile) {
+        const saved = this.services.discussionManager.context.globalState.get<ArchitecturalProfile[]>('lollms_saved_architectural_profiles', []);
+        const cleanProfile = {
+            ...profile,
+            id: `custom_${Date.now()}`
+        };
+        saved.push(cleanProfile);
+        await this.services.discussionManager.context.globalState.update('lollms_saved_architectural_profiles', saved);
+        vscode.window.showInformationMessage(`Architectural profile "${profile.name}" saved globally.`);
+        await this.sendGlobalProfilesToWebview();
+    }
+
+    private async handleDeleteGlobalProfile(id: string) {
+        if (id.startsWith('profile_')) {
+            vscode.window.showWarningMessage("Cannot delete core system profiles.");
+            return;
+        }
+        let saved = this.services.discussionManager.context.globalState.get<ArchitecturalProfile[]>('lollms_saved_architectural_profiles', []) || [];
+        saved = saved.filter((p: any) => p.id !== id);
+        await this.services.discussionManager.context.globalState.update('lollms_saved_architectural_profiles', saved);
+
+        vscode.window.showInformationMessage("Profile removed from library.");
+        await this.sendGlobalProfilesToWebview();
     }
 
     private async handleExportProfile(data: any) {
-        const { destiny, instructions, preferences, pathway } = data;
+        const { name, objectives, style } = data;
         const profile = {
             version: 1,
-            destiny,
-            instructions: instructions || "",
-            preferences: preferences || "",
-            pathway: pathway || "none"
+            name: name || "Custom Architectural Profile",
+            objectives,
+            style
         };
 
         const uri = await vscode.window.showSaveDialog({
-            defaultUri: vscode.Uri.file('lollms_onboarding_profile.json'),
-            filters: { 'JSON Configuration': ['json'] },
-            saveLabel: 'Export Onboarding Profile'
+            defaultUri: vscode.Uri.file('lollms_architectural_profile.json'),
+            filters: { 'JSON Profile': ['json'] },
+            saveLabel: 'Export Profile'
         });
 
         if (uri) {
             try {
                 await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(profile, null, 2), 'utf8'));
-                vscode.window.showInformationMessage(`Onboarding profile exported successfully to: ${path.basename(uri.fsPath)}`);
+                vscode.window.showInformationMessage(`Profile exported successfully to: ${path.basename(uri.fsPath)}`);
             } catch (e: any) {
                 vscode.window.showErrorMessage(`Failed to export profile: ${e.message}`);
             }
@@ -79,8 +225,8 @@ export class OnboardingPanel {
     private async handleImportProfile() {
         const uris = await vscode.window.showOpenDialog({
             canSelectMany: false,
-            filters: { 'JSON Configuration': ['json'] },
-            openLabel: 'Import Onboarding Profile'
+            filters: { 'JSON Profile': ['json'] },
+            openLabel: 'Import Profile'
         });
 
         if (uris && uris[0]) {
@@ -92,13 +238,12 @@ export class OnboardingPanel {
                     this._panel.webview.postMessage({
                         command: 'loadProfileData',
                         data: {
-                            destiny: profile.destiny || 'vibe',
-                            instructions: profile.instructions || '',
-                            preferences: profile.preferences || '',
-                            pathway: profile.pathway || 'none'
+                            name: profile.name || '',
+                            objectives: profile.objectives || '',
+                            style: profile.style || ''
                         }
                     });
-                    vscode.window.showInformationMessage(`Onboarding profile imported successfully from: ${path.basename(uris[0].fsPath)}`);
+                    vscode.window.showInformationMessage(`Profile imported successfully from: ${path.basename(uris[0].fsPath)}`);
                 } else {
                     throw new Error("Invalid file structure.");
                 }
@@ -109,7 +254,7 @@ export class OnboardingPanel {
     }    
 
     private async handleOnboarding(data: any) {
-        const { destiny, instructions, preferences, pathway } = data;
+        const { destiny, objectives, style, pathway } = data;
 
         // 1. Save Workspace State
         await this.services.discussionManager.context.workspaceState.update('lollms_workspace_onboarded', true);
@@ -121,8 +266,8 @@ export class OnboardingPanel {
         await this.services.discussionManager.saveLastCapabilities(caps);
 
         // 3. AI Graph Generation Pass
-        const rawInstructions = instructions || "General software development.";
-        const rawPreferences = preferences || "Standard professional development.";
+        const rawObjectives = objectives || "General software development.";
+        const rawStyle = style || "Standard professional development.";
 
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -170,8 +315,8 @@ Properties (Relationship Predicates):
 \`\`\``;
 
                 const userPrompt = `### USER RAW INPUTS
-Project Goals: "${rawInstructions}"
-User Preferences & Style: "${rawPreferences}"
+Project Goals: "${rawObjectives}"
+User Preferences & Style: "${rawStyle}"
 
 Generate a list of structured s:Engram JSON objects mapping these traits.`;
 
@@ -204,8 +349,8 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                 
                 // Fallback: Write basic flat engrams if AI parsing crashed
                 if (this.services.projectMemoryManager) {
-                    await this.services.projectMemoryManager.updateMemory('add', 'project_dna', 'Project DNA & Standards', `## 🧬 PROJECT DNA\n- Objectives: ${rawInstructions}\n- Indentation Standard: 4 spaces\n`, 'standards', 100);
-                    await this.services.projectMemoryManager.updateMemory('add', 'user_dna', 'User Persona & Preferences', `## 👤 USER DNA\n- Preferences: ${rawPreferences}\n`, 'user', 95);
+                    await this.services.projectMemoryManager.updateMemory('add', 'project_dna', 'Project DNA & Standards', `## 🧬 PROJECT DNA\n- Objectives: ${rawObjectives}\n- Indentation Standard: 4 spaces\n`, 'standards', 100);
+                    await this.services.projectMemoryManager.updateMemory('add', 'user_dna', 'User Persona & Preferences', `## 👤 USER DNA\n- Preferences: ${rawStyle}\n`, 'user', 95);
                 }
             }
         });
@@ -253,8 +398,8 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                 p { opacity: 0.8; font-size: 13px; margin: 0; }
                 .form-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.4); }
                 label { display: block; font-weight: bold; font-size: 11px; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 0.5px; }
-                textarea { width: 100%; background: var(--input-bg); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 10px 12px; border-radius: 6px; box-sizing: border-box; font-family: inherit; font-size: 13px; margin-bottom: 20px; resize: vertical; }
-                textarea:focus { outline: 1px solid var(--vscode-focusBorder); border-color: transparent; }
+                textarea, input[type="text"], select { width: 100%; background: var(--input-bg); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 10px 12px; border-radius: 6px; box-sizing: border-box; font-family: inherit; font-size: 13px; margin-bottom: 20px; resize: vertical; }
+                textarea:focus, input:focus, select:focus { outline: 1px solid var(--vscode-focusBorder); border-color: transparent; }
                 
                 .radio-group { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
                 .radio-option { border: 1px solid var(--border); background: var(--vscode-editor-background); padding: 16px; border-radius: 8px; display: flex; align-items: flex-start; gap: 12px; cursor: pointer; transition: all 0.2s; user-select: none; }
@@ -280,6 +425,18 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                 <p>Let's configure your workspace's destiny and extract its core DNA before writing any code.</p>
 
                 <div class="form-card">
+                    <!-- REUSABLE ARCHITECTURAL PROFILES SELECTOR -->
+                    <div style="background: rgba(0, 122, 204, 0.05); padding: 15px; border-radius: 8px; border: 1px dashed var(--vscode-widget-border); margin-bottom: 20px;">
+                        <label><i class="codicon codicon-library"></i> Load Architectural Profile Template</label>
+                        <div style="display:flex; gap:10px;">
+                            <select id="global-profile-select" style="margin:0; flex:1;">
+                                <option value="">-- Select from Library --</option>
+                            </select>
+                            <button class="btn secondary" id="delete-profile-btn" style="width:auto; height:36px; padding:0 12px; margin:0; color:var(--vscode-errorForeground);"><i class="codicon codicon-trash"></i></button>
+                        </div>
+                        <span class="help-text" style="font-size:10px; opacity:0.6; display:block; margin-top:4px;">Instantly populate the forms below using a saved template.</span>
+                    </div>
+
                     <label>1. Define your workspace's destiny</label>
                     <div class="radio-group">
                         <div class="radio-option active" id="opt-vibe" onclick="selectDestiny('vibe')">
@@ -301,13 +458,21 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     <div class="form-group">
                         <label for="instructions">2. Project Objectives & Core Ideas</label>
                         <textarea id="instructions" rows="3" placeholder="e.g., A Pygame retro RPG using modular sprites, or a FastAPI backend with PostgreSQL..."></textarea>
-                        <p class="help-text" style="font-size:10px; opacity:0.6; margin-top:-15px; margin-bottom: 20px;">This gets processed and structured into Project DNA rules and standards.</p>
                     </div>
 
                     <div class="form-group">
                         <label for="preferences">3. User Persona & Preferences</label>
                         <textarea id="preferences" rows="3" placeholder="e.g., 'I am a junior developer learning embedded C. I prefer very simple, step-by-step code with rich inline comments. I hate over-engineering...'"></textarea>
-                        <p class="help-text" style="font-size:10px; opacity:0.6; margin-top:-15px; margin-bottom: 20px;">This establishes your User DNA, guiding how Lollms explains and formats code for you.</p>
+                    </div>
+
+                    <div class="checkbox-container" style="margin-bottom: 20px;">
+                        <input type="checkbox" id="save-as-global-check" style="width:14px; height:14px; cursor:pointer;">
+                        <label for="save-as-global-check" style="font-size:12px; display:inline-block; font-weight:normal;">Save these details as a new template in my Global Library</label>
+                    </div>
+
+                    <div class="form-group" id="save-profile-name-group" style="display:none; margin-bottom:20px; animation:slideDown 0.2s ease-out;">
+                        <label for="save-profile-name">Global Template Name</label>
+                        <input type="text" id="save-profile-name" placeholder="e.g., My Pythonic Style">
                     </div>
 
                     <!-- Pathway Selection (Only visible for Agentic) -->
@@ -345,18 +510,7 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                 const vscode = acquireVsCodeApi();
                 let selectedDestiny = 'vibe';
                 let selectedPathway = 'prd';
-
-                // Synchronize height on textareas to feel cohesive
-                function syncTextareas() {
-                    document.querySelectorAll('textarea').forEach(el => {
-                        el.style.height = 'auto';
-                        el.style.height = el.scrollHeight + 'px';
-                    });
-                }
-
-                document.querySelectorAll('textarea').forEach(el => {
-                    el.addEventListener('input', syncTextareas);
-                });
+                let globalProfiles = [];
 
                 function selectDestiny(val) {
                     selectedDestiny = val;
@@ -377,17 +531,61 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     document.getElementById('r-scan').checked = val === 'scan';
                 }
 
+                const saveAsGlobalCheck = document.getElementById('save-as-global-check');
+                const saveProfileNameGroup = document.getElementById('save-profile-name-group');
+                const saveProfileNameInput = document.getElementById('save-profile-name');
+
+                saveAsGlobalCheck.onchange = () => {
+                    saveProfileNameGroup.style.display = saveAsGlobalCheck.checked ? 'block' : 'none';
+                    if (saveAsGlobalCheck.checked) {
+                        saveProfileNameInput.focus();
+                    }
+                };
+
+                const globalSelect = document.getElementById('global-profile-select');
+                globalSelect.onchange = () => {
+                    const selectedIdx = globalSelect.value;
+                    if (selectedIdx !== "") {
+                        const p = globalProfiles[selectedIdx];
+                        if (p) {
+                            document.getElementById('instructions').value = p.objectives;
+                            document.getElementById('preferences').value = p.style;
+                            syncTextareas();
+                        }
+                    }
+                };
+
+                document.getElementById('delete-profile-btn').onclick = () => {
+                    const idx = globalSelect.value;
+                    if (idx !== "") {
+                        const p = globalProfiles[idx];
+                        if (p && confirm("Delete template '" + p.name + "' from your global library?")) {
+                            vscode.postMessage({ command: 'deleteGlobalProfile', id: p.id });
+                        }
+                    }
+                };
+
+                function syncTextareas() {
+                    document.querySelectorAll('textarea').forEach(el => {
+                        el.style.height = 'auto';
+                        el.style.height = el.scrollHeight + 'px';
+                    });
+                }
+
+                document.querySelectorAll('textarea').forEach(el => {
+                    el.addEventListener('input', syncTextareas);
+                });
+
                 function exportProfile() {
-                    const instructions = document.getElementById('instructions').value.trim();
-                    const preferences = document.getElementById('preferences').value.trim();
+                    const objectives = document.getElementById('instructions').value.trim();
+                    const style = document.getElementById('preferences').value.trim();
 
                     vscode.postMessage({
                         command: 'exportProfile',
                         data: {
-                            destiny: selectedDestiny,
-                            instructions: instructions,
-                            preferences: preferences,
-                            pathway: selectedDestiny === 'agentic' ? selectedPathway : 'none'
+                            name: saveProfileNameInput.value.trim() || undefined,
+                            objectives: objectives,
+                            style: style
                         }
                     });
                 }
@@ -400,24 +598,42 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     const btn = document.getElementById('submit-btn');
                     if (btn.disabled) return;
 
-                    const instructions = document.getElementById('instructions').value.trim();
-                    const preferences = document.getElementById('preferences').value.trim();
+                    const objectives = document.getElementById('instructions').value.trim();
+                    const style = document.getElementById('preferences').value.trim();
+                    const profileName = saveProfileNameInput.value.trim();
 
-                    // Lock UI and show local loading spinner
+                    if (saveAsGlobalCheck.checked && !profileName) {
+                        saveProfileNameInput.style.borderColor = 'var(--vscode-errorForeground)';
+                        saveProfileNameInput.focus();
+                        return;
+                    }
+
                     btn.disabled = true;
                     btn.innerHTML = '<i class="codicon codicon-loading spin"></i> Mapping Synaptic Engrams...';
 
-                    document.querySelectorAll('input, textarea, .radio-option, button').forEach(el => {
+                    document.querySelectorAll('input, textarea, select, .radio-option, button').forEach(el => {
                         el.style.pointerEvents = 'none';
                         el.style.opacity = '0.6';
                     });
+
+                    // Save to global library first if requested
+                    if (saveAsGlobalCheck.checked) {
+                        vscode.postMessage({
+                            command: 'saveGlobalProfile',
+                            profile: {
+                                name: profileName,
+                                objectives: objectives,
+                                style: style
+                            }
+                        });
+                    }
 
                     vscode.postMessage({
                         command: 'submit',
                         data: {
                             destiny: selectedDestiny,
-                            instructions: instructions,
-                            preferences: preferences,
+                            objectives: objectives,
+                            style: style,
                             pathway: selectedDestiny === 'agentic' ? selectedPathway : 'none'
                         }
                     });
@@ -427,15 +643,20 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     const message = event.data;
                     if (message.command === 'loadProfileData') {
                         const d = message.data;
-                        selectDestiny(d.destiny || 'vibe');
-
-                        document.getElementById('instructions').value = d.instructions || '';
-                        document.getElementById('preferences').value = d.preferences || '';
-
-                        if (d.destiny === 'agentic' && d.pathway) {
-                            selectPathway(d.pathway);
+                        document.getElementById('instructions').value = d.objectives || '';
+                        document.getElementById('preferences').value = d.style || '';
+                        if (d.name) {
+                            saveAsGlobalCheck.checked = true;
+                            saveProfileNameGroup.style.display = 'block';
+                            saveProfileNameInput.value = d.name;
                         }
                         syncTextareas();
+                    } else if (message.command === 'updateGlobalProfiles') {
+                        globalProfiles = message.profiles || [];
+                        globalSelect.innerHTML = '<option value="">-- Select from Library --</option>';
+                        globalProfiles.forEach((p, idx) => {
+                            globalSelect.appendChild(new Option(p.name, idx));
+                        });
                     }
                 });
             </script>

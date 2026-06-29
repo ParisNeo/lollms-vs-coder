@@ -65,98 +65,90 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
             return;
         }
 
-        if (prompt.action_type === 'information') {
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: "Lollms: Exploring codebase & preparing discussion...",
-                cancellable: false
-            }, async () => {
-                const prompts = await buildCodeActionPrompt(
-                    prompt.content,
-                    prompt.action_type,
-                    editor,
-                    services.extensionUri,
-                    services.contextManager,
-                    services.lollmsAPI,
-                    useContext
+        // --- DYNAMIC SURGICAL COMPOSER FLOW ---
+        // For both generation and information tasks, we spin up an optimized
+        // Dynamic Discussion with a lean context (active file only) and Auto-Apply on.
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Initializing Dynamic Surgical Workspace...",
+            cancellable: false
+        }, async () => {
+            const provider = services.contextManager.getContextStateProvider();
+            const originalIncludedFiles = provider ? provider.getIncludedFiles().map(f => f.path) : [];
+
+            // 1. Soft-reset active selections & isolate exclusively to the active file
+            if (provider) {
+                await provider.softReset();
+                const activeRelPath = vscode.workspace.asRelativePath(editor.document.uri);
+                await provider.addFilesToContext([activeRelPath]);
+            }
+
+            const prompts = await buildCodeActionPrompt(
+                prompt.content,
+                prompt.action_type,
+                editor,
+                services.extensionUri,
+                services.contextManager,
+                services.lollmsAPI,
+                useContext
+            );
+
+            if (prompts) {
+                const discussion = services.discussionManager.createNewDiscussion();
+                discussion.title = `Surgical Fix: ${prompt.title}`;
+
+                // 2. Enforce Dynamic Mode + Auto-Apply + Full Tool Access
+                discussion.capabilities = {
+                    ...discussion.capabilities,
+                    ...services.discussionManager.getLastCapabilities(),
+                    dynamicMode: true,
+                    autoApply: true,
+                    autoFix: true,
+                    sparqlEnabled: true,
+                    grepEnabled: true,
+                    disableProjectContext: false
+                };
+
+                await services.discussionManager.saveDiscussion(discussion);
+                const panel = ChatPanel.createOrShow(services, discussion.id);
+
+                // 3. Connect the Agent manager and load state
+                const agent = new AgentManager(
+                    panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
+                    services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+                    services.toolManager,
+                    services.rlmDb
                 );
-                if (prompts) {
-                    await startDiscussionWithInitialPrompt(services, prompts.userPrompt, activeFolder, true, 'user');
+                agent.projectMemoryManager = services.projectMemoryManager;
+                agent.personalityManager = services.personalityManager;
+                agent.setProcessManager(services.processManager);
+                panel.setAgentManager(agent);
+
+                panel.setProcessManager(services.processManager);
+                panel.setContextManager(services.contextManager);
+                panel.setPersonalityManager(services.personalityManager);
+                panel.setHerdManager(services.herdManager);
+
+                await panel.loadDiscussion();
+                services.treeProviders.discussion?.refresh();
+
+                // 4. Dispatch the instruction immediately
+                const initialMessage: ChatMessage = {
+                    id: 'msg_' + Date.now() + Math.random().toString(36).substring(2),
+                    role: 'user',
+                    content: prompts.userPrompt,
+                    timestamp: Date.now()
+                };
+
+                panel._panel.reveal();
+                await panel.sendMessage(initialMessage);
+
+                // 5. Restore original context selection so the user's workspace sidebar remains untouched
+                if (provider && originalIncludedFiles.length > 0) {
+                    await provider.softReset();
+                    await provider.addFilesToContext(originalIncludedFiles);
                 }
-            });
-        } else {
-            // --- SURGICAL FAST-PATH: INLINE DIFF ---
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: "Lollms: Exploring dependencies & generating patch...",
-                cancellable: true
-            }, async (progress, token) => {
-                const abortController = new AbortController();
-                token.onCancellationRequested(() => abortController.abort());
-
-                try {
-                    // Do the exploration phase INSIDE the progress block to prevent UI flickering
-                    progress.report({ message: "Analyzing code graph..." });
-                    const prompts = await buildCodeActionPrompt(
-                        prompt.content,
-                        prompt.action_type,
-                        editor,
-                        services.extensionUri,
-                        services.contextManager,
-                        services.lollmsAPI,
-                        useContext,
-                        abortController.signal
-                    );
-
-                    if (!prompts) return;
-                    if (token.isCancellationRequested) return;
-
-                    progress.report({ message: "Generating surgical patch..." });
-                    const response = await services.lollmsAPI.sendChat([
-                        { role: 'system', content: prompts.systemPrompt },
-                        { role: 'user', content: prompts.userPrompt }
-                    ], null, abortController.signal);
-
-                    const cleanResponse = stripThinkingTags(response);
-
-                    // Look for Aider Search/Replace or standard code blocks
-                    const aiderMatch = cleanResponse.match(/<<<<<<< SEARCH[\s\S]*?=======[\s\S]*?>>>>>>> REPLACE/);
-                    const codeBlockMatch = cleanResponse.match(/```(?:\w+)?[\r\n]+([\s\S]*?)[\r\n]+```/);
-
-                    let updatedCode = "";
-
-                    if (aiderMatch) {
-                        // Apply Aider logic to selection only
-                        const searchPart = aiderMatch[0].split('=======')[0].replace('<<<<<<< SEARCH', '').trim();
-                        const replacePart = aiderMatch[0].split('=======')[1].split('>>>>>>> REPLACE')[0].trim();
-
-                        const currentSelection = editor.document.getText(editor.selection);
-                        const result = applySearchReplace(currentSelection, searchPart, replacePart);
-                        if (result.success) {
-                            updatedCode = result.result;
-                        }
-                    } else if (codeBlockMatch) {
-                        updatedCode = codeBlockMatch[1].trim();
-                    }
-
-                    if (updatedCode) {
-                        await services.inlineDiffProvider.startSession(
-                            editor,
-                            editor.selection,
-                            updatedCode,
-                            [], // Empty history for now
-                            cleanResponse
-                        );
-                    } else {
-                        throw new Error("No code update was detected in the AI response.");
-                    }
-
-                } catch (e: any) {
-                    if (e.name !== 'AbortError') {
-                        vscode.window.showErrorMessage(`Surgical update failed: ${e.message}`);
-                    }
-                }
-            });
-        }
+            }
+        });
     }));
 }

@@ -82,9 +82,10 @@ let canvasCtx: CanvasRenderingContext2D | null = null;
 let currentEditingIdx: number | null = null;
 let isDrawing = false;
 let isPanning = false;
-let currentTool = 'brush';
+let currentTool = 'select'; // Default to select mode (PPTX Style)
 let textInputPos = { x: 0, y: 0, w: 0, h: 0 };
 let startPos = { x: 0, y: 0 };
+let currentDragPos = { x: 0, y: 0 }; // Track real-time drag coordinates
 let lastPanPos = { x: 0, y: 0 };
 let webcamStream: MediaStream | null = null;
 
@@ -95,6 +96,34 @@ let viewState = {
     offsetY: 0
 };
 
+// Layered Vector Shapes (PPTX Style)
+interface VectorShape {
+    id: string;
+    type: 'arrow' | 'rect' | 'oval' | 'text' | 'brush' | 'spline';
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    text?: string;
+    color: string;
+    width: number;
+    arrowType?: 'single' | 'dual';
+    cx?: number; // Control point X for splines
+    cy?: number; // Control point Y for splines
+    points?: {x: number, y: number}[]; // For brush
+}
+
+let annotationShapes: VectorShape[] = [];
+let selectedShape: VectorShape | null = null;
+let isDraggingShape = false;
+let isResizingShape = false;
+let resizeHandle: string | null = null; // 'nw', 'ne', 'se', 'sw', 'n', 's', 'e', 'w', 'control'
+let dragOffset = { x: 0, y: 0 };
+let baseImage: HTMLImageElement | null = null;
+
+const HANDLE_SIZE = 8;
+const SNAP_THRESHOLD = 15; // Snapping threshold in pixels
+
 // Helper to convert screen mouse coords to internal canvas coords
 function getTransformedPoint(x: number, y: number) {
     return {
@@ -103,50 +132,330 @@ function getTransformedPoint(x: number, y: number) {
     };
 }
 
-// Undo/Redo System
-let undoStack: string[] = [];
+// Undo/Redo System for Vector Layers
+let undoStack: string[] = []; // JSON strings of annotationShapes
 let redoStack: string[] = [];
 
 function saveState() {
-    if (!dom.editorCanvas) return;
-    undoStack.push(dom.editorCanvas.toDataURL());
-    redoStack = []; // Clear redo on new action
+    undoStack.push(JSON.stringify(annotationShapes));
+    redoStack = []; 
     if (undoStack.length > 50) undoStack.shift();
 }
 
 function undo() {
-    if (undoStack.length < 2) return; // Keep current state
+    if (undoStack.length < 2) return; 
     const current = undoStack.pop()!;
     redoStack.push(current);
     const prev = undoStack[undoStack.length - 1];
-    loadState(prev);
+    annotationShapes = JSON.parse(prev);
+    redrawCanvas();
 }
 
 function redo() {
     if (redoStack.length === 0) return;
     const next = redoStack.pop()!;
     undoStack.push(next);
-    loadState(next);
+    annotationShapes = JSON.parse(next);
+    redrawCanvas();
 }
 
-function loadState(dataUrl: string) {
-    const img = new Image();
-    img.onload = () => {
-        if (!canvasCtx || !dom.editorCanvas) return;
-        // Reset transform to clear the whole physical area
-        canvasCtx.setTransform(1, 0, 0, 1, 0, 0);
-        canvasCtx.clearRect(0, 0, dom.editorCanvas.width, dom.editorCanvas.height);
-        
-        // Re-apply current zoom/pan before drawing the background image
-        canvasCtx.setTransform(viewState.scale, 0, 0, viewState.scale, viewState.offsetX, viewState.offsetY);
-        canvasCtx.drawImage(img, 0, 0);
+function drawArrow(ctx: CanvasRenderingContext2D, fromx: number, fromy: number, tox: number, toy: number, color: string, width: number, arrowType: 'single' | 'dual' = 'single') {
+    const headlen = 15; 
+    const angle = Math.atan2(toy - fromy, tox - fromx);
+
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+
+    // Draw main line
+    ctx.beginPath();
+    ctx.moveTo(fromx, fromy);
+    ctx.lineTo(tox, toy);
+    ctx.stroke();
+
+    // Draw target arrow head
+    ctx.beginPath();
+    ctx.moveTo(tox, toy);
+    ctx.lineTo(tox - headlen * Math.cos(angle - Math.PI / 6), toy - headlen * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(tox - headlen * Math.cos(angle + Math.PI / 6), toy - headlen * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fill();
+
+    // Draw source arrow head if dual
+    if (arrowType === 'dual') {
+        ctx.beginPath();
+        ctx.moveTo(fromx, fromy);
+        ctx.lineTo(fromx + headlen * Math.cos(angle - Math.PI / 6), fromy + headlen * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(fromx + headlen * Math.cos(angle + Math.PI / 6), fromy + headlen * Math.sin(angle + Math.PI / 6));
+        ctx.closePath();
+        ctx.fill();
+    }
+}
+
+function drawSplineArrow(ctx: CanvasRenderingContext2D, fromx: number, fromy: number, cx: number, cy: number, tox: number, toy: number, color: string, width: number, arrowType: 'single' | 'dual' = 'single') {
+    const headlen = 15;
+
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+
+    // Draw quadratic Bezier curve
+    ctx.beginPath();
+    ctx.moveTo(fromx, fromy);
+    ctx.quadraticCurveTo(cx, cy, tox, toy);
+    ctx.stroke();
+
+    // Calculate tangents for arrow heads at end-points of Bezier curve
+    // Derivative of Q(t) = (1-t)^2*P0 + 2(1-t)t*P1 + t^2*P2 is:
+    // Q'(t) = 2(1-t)(P1 - P0) + 2t(P2 - P1)
+
+    // At t = 1 (target end)
+    const angleEnd = Math.atan2(toy - cy, tox - cx);
+    ctx.beginPath();
+    ctx.moveTo(tox, toy);
+    ctx.lineTo(tox - headlen * Math.cos(angleEnd - Math.PI / 6), toy - headlen * Math.sin(angleEnd - Math.PI / 6));
+    ctx.lineTo(tox - headlen * Math.cos(angleEnd + Math.PI / 6), toy - headlen * Math.sin(angleEnd + Math.PI / 6));
+    ctx.closePath();
+    ctx.fill();
+
+    // At t = 0 (source end) if dual
+    if (arrowType === 'dual') {
+        const angleStart = Math.atan2(cy - fromy, cx - fromx);
+        ctx.beginPath();
+        ctx.moveTo(fromx, fromy);
+        ctx.lineTo(fromx + headlen * Math.cos(angleStart - Math.PI / 6), fromy + headlen * Math.sin(angleStart - Math.PI / 6));
+        ctx.lineTo(fromx + headlen * Math.cos(angleStart + Math.PI / 6), fromy + headlen * Math.sin(angleStart + Math.PI / 6));
+        ctx.closePath();
+        ctx.fill();
+    }
+}
+
+function getSelectionHandles(shape: VectorShape) {
+    const x = shape.x;
+    const y = shape.y;
+    const w = shape.w;
+    const h = shape.h;
+
+    // Normalize bounding box dimensions to support negative widths/heights
+    const x1 = w < 0 ? x + w : x;
+    const x2 = w < 0 ? x : x + w;
+    const y1 = h < 0 ? y + h : y;
+    const y2 = h < 0 ? y : y + h;
+    const midX = x1 + (x2 - x1) / 2;
+    const midY = y1 + (y2 - y1) / 2;
+
+    const baseHandles: any = {
+        nw: { x: x1, y: y1 },
+        n:  { x: midX, y: y1 },
+        ne: { x: x2, y: y1 },
+        e:  { x: x2, y: midY },
+        se: { x: x2, y: y2 },
+        s:  { x: midX, y: y2 },
+        sw: { x: x1, y: y2 },
+        w:  { x: x1, y: midY }
     };
-    img.src = dataUrl;
+
+    // If it's a spline, we also expose its control point handle
+    if (shape.type === 'spline' && shape.cx !== undefined && shape.cy !== undefined) {
+        baseHandles.control = { x: shape.cx, y: shape.cy };
+    }
+
+    return baseHandles;
+}
+
+/**
+ * Iterates through all other shapes to find if the active coordinate is close to any of their selection handles.
+ * If a match is found within SNAP_THRESHOLD, returns the snapped coordinates; otherwise returns original.
+ */
+function getSnappedPoint(pt: { x: number, y: number }, excludeId?: string): { x: number, y: number, snapped: boolean } {
+    for (const shape of annotationShapes) {
+        if (excludeId && shape.id === excludeId) continue;
+
+        // Grab all handles of the candidate shape
+        const handles = getSelectionHandles(shape);
+        for (const key in handles) {
+            const h = handles[key];
+            const dist = Math.sqrt((pt.x - h.x) ** 2 + (pt.y - h.y) ** 2);
+            if (dist <= SNAP_THRESHOLD) {
+                return { x: h.x, y: h.y, snapped: true };
+            }
+        }
+    }
+    return { x: pt.x, y: pt.y, snapped: false };
 }
 
 function redrawCanvas() {
-    if (undoStack.length > 0) {
-        loadState(undoStack[undoStack.length - 1]);
+    if (!canvasCtx || !dom.editorCanvas) return;
+
+    // 1. Reset transform and clear
+    canvasCtx.setTransform(1, 0, 0, 1, 0, 0);
+    canvasCtx.fillStyle = '#1e1e1e'; // Background gap color
+    canvasCtx.fillRect(0, 0, dom.editorCanvas.width, dom.editorCanvas.height);
+
+    // 2. Set current zoom/pan transform
+    canvasCtx.setTransform(viewState.scale, 0, 0, viewState.scale, viewState.offsetX, viewState.offsetY);
+
+    // 3. Draw Base Image
+    if (baseImage && baseImage.complete) {
+        canvasCtx.drawImage(baseImage, 0, 0);
+    }
+
+    // 4. Draw Vector Layers (Shapes)
+    annotationShapes.forEach(shape => {
+        canvasCtx!.save();
+
+        const x1 = shape.w < 0 ? shape.x + shape.w : shape.x;
+        const y1 = shape.h < 0 ? shape.y + shape.h : shape.y;
+        const absW = Math.abs(shape.w);
+        const absH = Math.abs(shape.h);
+
+        if (shape === selectedShape) {
+            // Highlight selected shape (PPTX Style)
+            canvasCtx!.strokeStyle = 'var(--vscode-charts-orange)';
+            canvasCtx!.lineWidth = 1.5 / viewState.scale;
+            canvasCtx!.setLineDash([4 / viewState.scale, 4 / viewState.scale]);
+            canvasCtx!.strokeRect(x1 - 4, y1 - 4, absW + 8, absH + 8);
+            canvasCtx!.setLineDash([]);
+
+            // Draw bounding handles for resizing
+            const handles = getSelectionHandles(shape);
+            canvasCtx!.fillStyle = '#ffffff';
+            canvasCtx!.strokeStyle = 'var(--vscode-charts-orange)';
+            canvasCtx!.lineWidth = 1 / viewState.scale;
+
+            const halfHandle = (HANDLE_SIZE / 2) / viewState.scale;
+            const sideHandle = HANDLE_SIZE / viewState.scale;
+
+            for (const key in handles) {
+                const h = (handles as any)[key];
+                canvasCtx!.fillRect(h.x - halfHandle, h.y - halfHandle, sideHandle, sideHandle);
+                canvasCtx!.strokeRect(h.x - halfHandle, h.y - halfHandle, sideHandle, sideHandle);
+            }
+        }
+
+        canvasCtx!.strokeStyle = shape.color;
+        canvasCtx!.fillStyle = shape.color;
+        canvasCtx!.lineWidth = shape.width;
+
+        if (shape.type === 'rect') {
+            canvasCtx!.strokeRect(shape.x, shape.y, shape.w, shape.h);
+        } else if (shape.type === 'oval') {
+            canvasCtx!.beginPath();
+            const cx = shape.x + shape.w / 2;
+            const cy = shape.y + shape.h / 2;
+            const rx = Math.abs(shape.w) / 2;
+            const ry = Math.abs(shape.h) / 2;
+            canvasCtx!.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
+            canvasCtx!.stroke();
+        } else if (shape.type === 'arrow') {
+            drawArrow(canvasCtx!, shape.x, shape.y, shape.x + shape.w, shape.y + shape.h, shape.color, shape.width, shape.arrowType || 'single');
+        } else if (shape.type === 'spline') {
+            const ctrlX = shape.cx !== undefined ? shape.cx : (shape.x + shape.w / 2);
+            const ctrlY = shape.cy !== undefined ? shape.cy : (shape.y + shape.h / 2 - 40);
+            drawSplineArrow(canvasCtx!, shape.x, shape.y, ctrlX, ctrlY, shape.x + shape.w, shape.y + shape.h, shape.color, shape.width, shape.arrowType || 'single');
+        } else if (shape.type === 'text' && shape.text) {
+            canvasCtx!.font = `${shape.width * 5}px sans-serif`;
+            canvasCtx!.textBaseline = 'top';
+
+            // Text Wrapping within vector boundary width
+            const words = shape.text.split(' ');
+            let line = '';
+            let lineY = shape.y;
+            const lineHeight = shape.width * 5.8;
+            const maxW = Math.abs(shape.w);
+
+            for (let n = 0; n < words.length; n++) {
+                const testLine = line + words[n] + ' ';
+                const metrics = canvasCtx!.measureText(testLine);
+                if (metrics.width > maxW && n > 0) {
+                    canvasCtx!.fillText(line, shape.x, lineY);
+                    line = words[n] + ' ';
+                    lineY += lineHeight;
+                } else {
+                    line = testLine;
+                }
+            }
+            canvasCtx!.fillText(line, shape.x, lineY);
+        } else if (shape.type === 'brush' && shape.points) {
+            canvasCtx!.beginPath();
+            canvasCtx!.lineCap = 'round';
+            canvasCtx!.lineJoin = 'round';
+            shape.points.forEach((p, idx) => {
+                if (idx === 0) canvasCtx!.moveTo(p.x, p.y);
+                else canvasCtx!.lineTo(p.x, p.y);
+            });
+            canvasCtx!.stroke();
+        }
+
+        canvasCtx!.restore();
+    });
+
+    // 5. Draw Real-time Dashed Preview of the active shape being dragged
+    if (isDrawing && ['rect', 'oval', 'arrow', 'dual_arrow', 'spline_arrow', 'spline_dual_arrow', 'text'].includes(currentTool)) {
+        canvasCtx!.save();
+        const activeColor = (document.getElementById('editor-color') as HTMLInputElement).value;
+        const activeWidth = parseInt((document.getElementById('editor-width') as HTMLInputElement).value) / viewState.scale;
+
+        canvasCtx!.strokeStyle = activeColor;
+        canvasCtx!.lineWidth = activeWidth;
+        canvasCtx!.setLineDash([6 / viewState.scale, 4 / viewState.scale]); // Dashed line styling
+
+        const w = currentDragPos.x - startPos.x;
+        const h = currentDragPos.y - startPos.y;
+
+        if (currentTool === 'rect' || currentTool === 'text') {
+            canvasCtx!.strokeRect(startPos.x, startPos.y, w, h);
+        } else if (currentTool === 'oval') {
+            canvasCtx!.beginPath();
+            const cx = startPos.x + w / 2;
+            const cy = startPos.y + h / 2;
+            const rx = Math.abs(w) / 2;
+            const ry = Math.abs(h) / 2;
+            canvasCtx!.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
+            canvasCtx!.stroke();
+        } else if (['arrow', 'dual_arrow'].includes(currentTool)) {
+            // Apply real-time snapping to other handles while drawing
+            const snapRes = getSnappedPoint(currentDragPos, undefined);
+            const finalW = snapRes.x - startPos.x;
+            const finalH = snapRes.y - startPos.y;
+
+            drawArrow(canvasCtx!, startPos.x, startPos.y, startPos.x + finalW, startPos.y + finalH, activeColor, activeWidth, currentTool === 'dual_arrow' ? 'dual' : 'single');
+
+            // Draw a tiny visual indicator at snap site if snapped
+            if (snapRes.snapped) {
+                canvasCtx!.fillStyle = 'var(--vscode-charts-green)';
+                canvasCtx!.beginPath();
+                canvasCtx!.arc(snapRes.x, snapRes.y, 5 / viewState.scale, 0, 2 * Math.PI);
+                canvasCtx!.fill();
+            }
+        } else if (['spline_arrow', 'spline_dual_arrow'].includes(currentTool)) {
+            const snapRes = getSnappedPoint(currentDragPos, undefined);
+            const finalW = snapRes.x - startPos.x;
+            const finalH = snapRes.y - startPos.y;
+
+            // Generate an automatic arched control point
+            const midX = startPos.x + finalW / 2;
+            const midY = startPos.y + finalH / 2 - 40;
+
+            drawSplineArrow(canvasCtx!, startPos.x, startPos.y, midX, midY, startPos.x + finalW, startPos.y + finalH, activeColor, activeWidth, currentTool === 'spline_dual_arrow' ? 'dual' : 'single');
+
+            if (snapRes.snapped) {
+                canvasCtx!.fillStyle = 'var(--vscode-charts-green)';
+                canvasCtx!.beginPath();
+                canvasCtx!.arc(snapRes.x, snapRes.y, 5 / viewState.scale, 0, 2 * Math.PI);
+                canvasCtx!.fill();
+            }
+        }
+
+        canvasCtx!.restore();
+    }
+
+    // Update Delete button visibility
+    const delBtn = document.getElementById('editor-delete-shape');
+    if (delBtn) {
+        delBtn.style.display = selectedShape ? 'inline-flex' : 'none';
     }
 }
 
@@ -184,30 +493,74 @@ export function openImageEditor(index: number | null = null): void {
 
     modal.style.display = 'flex';
     canvasCtx = canvas.getContext('2d');
-    
+
     undoStack = [];
     redoStack = [];
+    annotationShapes = [];
+    selectedShape = null;
+
+    const onImageLoaded = (img: HTMLImageElement) => {
+        baseImage = img;
+        canvas.width = img.width;
+        canvas.height = img.height;
+        viewState = { scale: 1, offsetX: 0, offsetY: 0 };
+        saveState(); // Initial empty state
+        redrawCanvas();
+    };
 
     if (index !== null) {
         const img = new Image();
-        img.onload = () => {
-            canvas.width = img.width;
-            canvas.height = img.height;
-            canvasCtx?.drawImage(img, 0, 0);
-            saveState(); // Initial state
-        };
+        img.onload = () => onImageLoaded(img);
         img.src = state.pendingImages[index].data;
     } else {
-        canvas.width = 800;
-        canvas.height = 600;
-        if (canvasCtx) {
-            canvasCtx.fillStyle = 'white';
-            canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-        saveState(); // Initial state
+        // Create blank white canvas
+        const img = new Image();
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = 800;
+        tempCanvas.height = 600;
+        const tempCtx = tempCanvas.getContext('2d')!;
+        tempCtx.fillStyle = 'white';
+        tempCtx.fillRect(0, 0, 800, 600);
+
+        img.onload = () => onImageLoaded(img);
+        img.src = tempCanvas.toDataURL();
     }
 
     initCanvasEvents();
+}
+
+export function fitImageToScreen(): void {
+    if (!baseImage || !dom.editorCanvas) return;
+    const canvas = dom.editorCanvas;
+
+    // Fit scale with a 5% margin
+    const scaleX = canvas.width / baseImage.width;
+    const scaleY = canvas.height / baseImage.height;
+    const scale = Math.min(scaleX, scaleY) * 0.95;
+
+    // Centering offsets
+    const offsetX = (canvas.width - baseImage.width * scale) / 2;
+    const offsetY = (canvas.height - baseImage.height * scale) / 2;
+
+    viewState = { scale, offsetX, offsetY };
+    redrawCanvas();
+}
+
+export function zoomCanvas(zoomIn: boolean): void {
+    if (!dom.editorCanvas) return;
+    const canvas = dom.editorCanvas;
+    const factor = zoomIn ? 1.2 : 0.8;
+    const newScale = Math.min(Math.max(viewState.scale * factor, 0.1), 10);
+
+    // Zoom relative to the center of the canvas
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+
+    viewState.offsetX = centerX - (centerX - viewState.offsetX) * (newScale / viewState.scale);
+    viewState.offsetY = centerY - (centerY - viewState.offsetY) * (newScale / viewState.scale);
+    viewState.scale = newScale;
+
+    redrawCanvas();
 }
 
 async function startWebcam() {
@@ -314,19 +667,15 @@ function initCanvasEvents() {
     const canvas = dom.editorCanvas;
     if (!canvas || !canvasCtx) return;
 
-    // --- ZOOM LOGIC (Wheel) ---
+    // --- ZOOM LOGIC ---
     canvas.addEventListener('wheel', (e: WheelEvent) => {
-        // Only prevent default if we are holding a modifier key (Intentional Zoom)
         if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
         }
-        const zoomSpeed = 0.0015;
         const delta = -e.deltaY;
         const factor = Math.pow(1.1, delta / 100);
-        
         const newScale = Math.min(Math.max(viewState.scale * factor, 0.1), 10);
-        
-        // Zoom relative to mouse position
+
         const mouse = { x: e.offsetX, y: e.offsetY };
         viewState.offsetX = mouse.x - (mouse.x - viewState.offsetX) * (newScale / viewState.scale);
         viewState.offsetY = mouse.y - (mouse.y - viewState.offsetY) * (newScale / viewState.scale);
@@ -334,9 +683,10 @@ function initCanvasEvents() {
 
         redrawCanvas();
     }, { passive: false });
+
     canvas.onmousedown = (e) => {
-        // Middle button (1) or Space+Left triggers Pan
-        if (e.button === 1 || (e.button === 0 && (window as any).isSpaceDown)) {
+        // Space+Left click, Middle click, or Pan Tool triggers Pan
+        if (e.button === 1 || (e.button === 0 && (currentTool === 'pan' || (window as any).isSpaceDown))) {
             isPanning = true;
             lastPanPos = { x: e.clientX, y: e.clientY };
             canvas.style.cursor = 'grabbing';
@@ -348,21 +698,90 @@ function initCanvasEvents() {
         }
 
         const pt = getTransformedPoint(e.offsetX, e.offsetY);
-        startPos = pt;
-        isDrawing = true;
 
+        // Apply snap-to-handle mechanics when initiating a line/arrow to wire nodes together
+        let activeStartPos = pt;
+        if (['arrow', 'dual_arrow', 'spline_arrow', 'spline_dual_arrow'].includes(currentTool)) {
+            const snapRes = getSnappedPoint(pt, undefined);
+            if (snapRes.snapped) {
+                activeStartPos = { x: snapRes.x, y: snapRes.y };
+            }
+        }
+        startPos = activeStartPos;
+
+        // 1. SELECT/MOVE/RESIZE MODE (PowerPoint Style)
+        if (currentTool === 'select') {
+            if (selectedShape) {
+                // Check if we clicked on any resize handles of the currently selected shape first
+                const handles = getSelectionHandles(selectedShape);
+                const clickRadius = (HANDLE_SIZE * 1.5) / viewState.scale;
+
+                for (const key in handles) {
+                    const h = (handles as any)[key];
+                    const dist = Math.sqrt((pt.x - h.x) ** 2 + (pt.y - h.y) ** 2);
+                    if (dist <= clickRadius) {
+                        isResizingShape = true;
+                        resizeHandle = key;
+                        redrawCanvas();
+                        return;
+                    }
+                }
+            }
+
+            // Find if clicked inside any shape bounding box (reverse order for top-most)
+            const clicked = [...annotationShapes].reverse().find(shape => {
+                const x1 = shape.w < 0 ? shape.x + shape.w : shape.x;
+                const x2 = shape.w < 0 ? shape.x : shape.x + shape.w;
+                const y1 = shape.h < 0 ? shape.y + shape.h : shape.y;
+                const y2 = shape.h < 0 ? shape.y : shape.y + shape.h;
+
+                // For splines, expand selection bounds to cover the control point
+                if (shape.type === 'spline' && shape.cx !== undefined && shape.cy !== undefined) {
+                    const minX = Math.min(x1, shape.cx);
+                    const maxX = Math.max(x2, shape.cx);
+                    const minY = Math.min(y1, shape.cy);
+                    const maxY = Math.max(y2, shape.cy);
+                    return pt.x >= minX && pt.x <= maxX && pt.y >= minY && pt.y <= maxY;
+                }
+
+                return pt.x >= x1 && pt.x <= x2 && pt.y >= y1 && pt.y <= y2;
+            });
+
+            if (clicked) {
+                selectedShape = clicked;
+                isDraggingShape = true;
+                dragOffset.x = pt.x - clicked.x;
+                dragOffset.y = pt.y - clicked.y;
+            } else {
+                selectedShape = null; // Clicked on background
+            }
+            redrawCanvas();
+            return;
+        }
+
+        // 2. CREATION MODES
+        isDrawing = true;
         if (currentTool === 'brush') {
-            canvasCtx!.setTransform(viewState.scale, 0, 0, viewState.scale, viewState.offsetX, viewState.offsetY);
-            canvasCtx!.beginPath();
-            canvasCtx!.moveTo(pt.x, pt.y);
-            canvasCtx!.strokeStyle = (document.getElementById('editor-color') as HTMLInputElement).value;
-            canvasCtx!.lineWidth = parseInt((document.getElementById('editor-width') as HTMLInputElement).value) / viewState.scale;
-            canvasCtx!.lineCap = 'round';
-            canvasCtx!.lineJoin = 'round';
+            const brushShape: VectorShape = {
+                id: `shape_${Date.now()}`,
+                type: 'brush',
+                x: pt.x,
+                y: pt.y,
+                w: 0,
+                h: 0,
+                color: (document.getElementById('editor-color') as HTMLInputElement).value,
+                width: parseInt((document.getElementById('editor-width') as HTMLInputElement).value) / viewState.scale,
+                points: [pt]
+            };
+            annotationShapes.push(brushShape);
+            selectedShape = brushShape;
         }
     };
 
     canvas.onmousemove = (e) => {
+        const pt = getTransformedPoint(e.offsetX, e.offsetY);
+        currentDragPos = pt; // Always update real-time cursor coordinate
+
         if (isPanning) {
             const dx = e.clientX - lastPanPos.x;
             const dy = e.clientY - lastPanPos.y;
@@ -373,27 +792,85 @@ function initCanvasEvents() {
             return;
         }
 
+        if (isDraggingShape && selectedShape) {
+            selectedShape.x = pt.x - dragOffset.x;
+            selectedShape.y = pt.y - dragOffset.y;
+            redrawCanvas();
+            return;
+        }
+
+        if (isResizingShape && selectedShape) {
+            // Apply real-time snapping when resizing arrow or spline terminal points
+            const isLineLike = ['arrow', 'spline'].includes(selectedShape.type);
+            const snapRes = isLineLike ? getSnappedPoint(pt, selectedShape.id) : { x: pt.x, y: pt.y };
+
+            const x = selectedShape.x;
+            const y = selectedShape.y;
+            const w = selectedShape.w;
+            const h = selectedShape.h;
+
+            if (resizeHandle === 'control' && selectedShape.type === 'spline') {
+                selectedShape.cx = pt.x;
+                selectedShape.cy = pt.y;
+            } else if (resizeHandle === 'se') {
+                selectedShape.w = snapRes.x - x;
+                selectedShape.h = snapRes.y - y;
+            } else if (resizeHandle === 'nw') {
+                selectedShape.x = snapRes.x;
+                selectedShape.y = snapRes.y;
+                selectedShape.w = (x + w) - snapRes.x;
+                selectedShape.h = (y + h) - snapRes.y;
+            } else if (resizeHandle === 'ne') {
+                selectedShape.y = snapRes.y;
+                selectedShape.w = snapRes.x - x;
+                selectedShape.h = (y + h) - snapRes.y;
+            } else if (resizeHandle === 'sw') {
+                selectedShape.x = snapRes.x;
+                selectedShape.w = (x + w) - snapRes.x;
+                selectedShape.h = snapRes.y - y;
+            } else if (resizeHandle === 'e') {
+                selectedShape.w = snapRes.x - x;
+            } else if (resizeHandle === 'w') {
+                selectedShape.x = snapRes.x;
+                selectedShape.w = (x + w) - snapRes.x;
+            } else if (resizeHandle === 's') {
+                selectedShape.h = snapRes.y - y;
+            } else if (resizeHandle === 'n') {
+                selectedShape.y = snapRes.y;
+                selectedShape.h = (y + h) - snapRes.y;
+            }
+            redrawCanvas();
+            return;
+        }
+
         if (!isDrawing) return;
 
-        const pt = getTransformedPoint(e.offsetX, e.offsetY);
-
-        if (currentTool === 'brush') {
-            canvasCtx!.lineTo(pt.x, pt.y);
-            canvasCtx!.stroke();
-        } else if (currentTool === 'text') {
+        if (currentTool === 'brush' && selectedShape && selectedShape.points) {
+            selectedShape.points.push(pt);
             redrawCanvas();
-            canvasCtx!.setLineDash([5 / viewState.scale, 5 / viewState.scale]);
-            canvasCtx!.strokeStyle = 'gray';
-            canvasCtx!.lineWidth = 1 / viewState.scale;
-            canvasCtx!.strokeRect(startPos.x, startPos.y, pt.x - startPos.x, pt.y - startPos.y);
-            canvasCtx!.setLineDash([]);
+        } else if (['rect', 'oval', 'arrow'].includes(currentTool)) {
+            // Re-render canvas to draw the real-time dashed preview
+            redrawCanvas();
         }
     };
 
     canvas.onmouseup = (e) => {
         if (isPanning) {
             isPanning = false;
-            canvas.style.cursor = 'crosshair';
+            canvas.style.cursor = currentTool === 'pan' ? 'grab' : 'crosshair';
+            return;
+        }
+
+        if (isDraggingShape) {
+            isDraggingShape = false;
+            saveState();
+            return;
+        }
+
+        if (isResizingShape) {
+            isResizingShape = false;
+            resizeHandle = null;
+            saveState();
             return;
         }
 
@@ -404,6 +881,46 @@ function initCanvasEvents() {
 
         if (currentTool === 'brush') {
             saveState();
+        } else if (['rect', 'oval', 'arrow', 'dual_arrow', 'spline_arrow', 'spline_dual_arrow'].includes(currentTool)) {
+            // Apply final snap logic to terminal point
+            const isLineLike = ['arrow', 'dual_arrow', 'spline_arrow', 'spline_dual_arrow'].includes(currentTool);
+            const snapRes = isLineLike ? getSnappedPoint(pt, undefined) : { x: pt.x, y: pt.y };
+
+            const w = snapRes.x - startPos.x;
+            const h = snapRes.y - startPos.y;
+
+            if (Math.abs(w) > 4 || Math.abs(h) > 4) {
+                const isSpline = currentTool.startsWith('spline');
+                const isDual = currentTool.includes('dual');
+                const shapeType = isSpline ? 'spline' : (currentTool.includes('arrow') ? 'arrow' : currentTool);
+
+                const shape: VectorShape = {
+                    id: `shape_${Date.now()}`,
+                    // @ts-ignore
+                    type: shapeType,
+                    x: startPos.x,
+                    y: startPos.y,
+                    w,
+                    h,
+                    color: (document.getElementById('editor-color') as HTMLInputElement).value,
+                    width: parseInt((document.getElementById('editor-width') as HTMLInputElement).value) / viewState.scale
+                };
+
+                if (isLineLike) {
+                    shape.arrowType = isDual ? 'dual' : 'single';
+                }
+
+                if (isSpline) {
+                    // Set an arched control point halfway along the line as default
+                    shape.cx = startPos.x + w / 2;
+                    shape.cy = startPos.y + h / 2 - 45;
+                }
+
+                annotationShapes.push(shape);
+                selectedShape = shape;
+                saveState();
+            }
+            redrawCanvas();
         } else if (currentTool === 'text') {
             const width = Math.abs(pt.x - startPos.x);
             const height = Math.abs(pt.y - startPos.y);
@@ -411,7 +928,6 @@ function initCanvasEvents() {
             const y = Math.min(startPos.y, pt.y);
 
             if (width > 5 && height > 5) {
-                // Convert back to screen coords for the input box placement
                 const screenPos = {
                     x: x * viewState.scale + viewState.offsetX,
                     y: y * viewState.scale + viewState.offsetY,
@@ -422,28 +938,95 @@ function initCanvasEvents() {
             }
         }
     };
-    
-    const brushTool = document.getElementById('tool-brush');
-    if (brushTool) {
-        brushTool.onclick = (e) => {
-            e.preventDefault();
-            currentTool = 'brush';
-        };
-    }
 
-    const textTool = document.getElementById('tool-text');
-    if (textTool) {
-        textTool.onclick = (e) => {
-            e.preventDefault();
-            currentTool = 'text';
-        };
-    }
+    // --- TOOLBAR CLICKS (PPTX STYLING) ---
+    const bindTool = (id: string, tool: string) => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.onclick = (e) => {
+                e.preventDefault();
+                currentTool = tool;
+                selectedShape = null;
+                document.querySelectorAll('#vector-tools .code-action-btn').forEach(b => b.classList.remove('active'));
+                el.classList.add('active');
+
+                if (tool === 'pan') {
+                    canvas.style.cursor = 'grab';
+                } else if (tool === 'select') {
+                    canvas.style.cursor = 'default';
+                } else {
+                    canvas.style.cursor = 'crosshair';
+                }
+                redrawCanvas();
+            };
+        }
+    };
+
+    bindTool('tool-select', 'select');
+    bindTool('tool-pan', 'pan');
+    bindTool('tool-brush', 'brush');
+    bindTool('tool-text', 'text');
+    bindTool('tool-rect', 'rect');
+    bindTool('tool-oval', 'oval');
+    bindTool('tool-arrow', 'arrow');
+    bindTool('tool-dual-arrow', 'dual_arrow');
+    bindTool('tool-spline-arrow', 'spline_arrow');
+    bindTool('tool-spline-dual-arrow', 'spline_dual_arrow');
+
+    // Default to active brush tool on init
+    const brushBtn = document.getElementById('tool-brush');
+    if (brushBtn) brushBtn.classList.add('active');
+
+    // ⌨️ GLOBAL KEYBOARD UNDO/REDO LISTENERS
+    const handleShortcuts = (e: KeyboardEvent) => {
+        if (dom.editorModal.style.display === 'flex') {
+            // Bypass if user is actively writing text inside the canvas textarea
+            if (document.activeElement === dom.editorTextInput) {
+                return;
+            }
+            if (e.ctrlKey || e.metaKey) {
+                if (e.key === 'z' || e.key === 'Z') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    undo();
+                } else if (e.key === 'y' || e.key === 'Y') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    redo();
+                }
+            }
+        }
+    };
+    window.removeEventListener('keydown', handleShortcuts);
+    window.addEventListener('keydown', handleShortcuts);
+
+    // Zoom Buttons
+    const zoomInBtn = document.getElementById('editor-zoom-in');
+    if (zoomInBtn) zoomInBtn.onclick = () => zoomCanvas(true);
+
+    const zoomOutBtn = document.getElementById('editor-zoom-out');
+    if (zoomOutBtn) zoomOutBtn.onclick = () => zoomCanvas(false);
+
+    const zoomFitBtn = document.getElementById('editor-zoom-fit');
+    if (zoomFitBtn) zoomFitBtn.onclick = () => fitImageToScreen();
 
     const undoBtn = document.getElementById('editor-undo');
     if (undoBtn) undoBtn.onclick = undo;
 
     const redoBtn = document.getElementById('editor-redo');
     if (redoBtn) redoBtn.onclick = redo;
+
+    const delBtn = document.getElementById('editor-delete-shape');
+    if (delBtn) {
+        delBtn.onclick = () => {
+            if (selectedShape) {
+                annotationShapes = annotationShapes.filter(s => s.id !== selectedShape!.id);
+                selectedShape = null;
+                saveState();
+                redrawCanvas();
+            }
+        };
+    }
 
     if (dom.toolWebcam) {
         dom.toolWebcam.onclick = (e) => {
@@ -473,7 +1056,17 @@ function initCanvasEvents() {
         // Ensure any active text is drawn before capturing the data URL
         commitTextToCanvas();
 
+        // Temporarily clear selection highlights before raster flattening
+        const previousSelection = selectedShape;
+        selectedShape = null;
+        redrawCanvas();
+
         const dataUrl = canvas.toDataURL('image/png');
+
+        // Restore highlights for continuation
+        selectedShape = previousSelection;
+        redrawCanvas();
+
         if (currentEditingIdx !== null) {
             state.pendingImages[currentEditingIdx].data = dataUrl;
         } else {
@@ -488,19 +1081,23 @@ function commitTextToCanvas() {
     const input = dom.editorTextInput;
     if (input.style.display === 'block' && input.value.trim() !== '') {
         const fontSize = parseInt(input.style.fontSize);
-        canvasCtx!.fillStyle = input.style.color;
-        canvasCtx!.font = `${fontSize}px sans-serif`;
-        canvasCtx!.textBaseline = 'top';
 
-        wrapTextToCanvas(
-            canvasCtx!, 
-            input.value, 
-            textInputPos.x, 
-            textInputPos.y, 
-            textInputPos.w, 
-            fontSize * 1.2
-        );
+        const shape: VectorShape = {
+            id: `shape_${Date.now()}`,
+            type: 'text',
+            x: textInputPos.x,
+            y: textInputPos.y,
+            w: textInputPos.w,
+            h: textInputPos.h,
+            text: input.value,
+            color: input.style.color,
+            width: fontSize / 5 // Scale factor
+        };
+
+        annotationShapes.push(shape);
+        selectedShape = null; // Clear target boundary immediately after committing text
         saveState();
+        redrawCanvas();
     }
     input.style.display = 'none';
 }
@@ -683,7 +1280,9 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
     }
 
     // --- GLOBAL BUTTON LOCKDOWN ---
-    const actionableButtons = document.querySelectorAll('.apply-btn, .lollms-command-btn, .code-action-btn, .msg-action-btn, .summarize-context-btn, .open-context-btn, .remove-context-btn');
+    // Restrict button lockdown to chat messages (.messages) and the context HUD (#context-container).
+    // This explicitly prevents locking the Image Editor modal so you can draw/annotate while a task runs.
+    const actionableButtons = document.querySelectorAll('.messages .apply-btn, .messages .lollms-command-btn, .messages .code-action-btn, .messages .msg-action-btn, .messages .summarize-context-btn, .messages .open-context-btn, .messages .remove-context-btn, #context-container button');
     actionableButtons.forEach((btn: any) => {
         if (isGenerating) {
             // Discrete lockdown: disable and fade, but DO NOT replace content with spinners
@@ -1113,7 +1712,6 @@ export function updateBadges() {
     container.innerHTML = '';
 
     const isAgentMode = caps.agentMode === true;
-
     const isAgentActive = caps.agentMode === true;
 
     // Set high-level presence on body for HUD-aware styling
@@ -1132,14 +1730,24 @@ export function updateBadges() {
         container.appendChild(infraGroup);
 
         // Model Badge
-    if (dom.modelSelector && dom.modelSelector.value) {
-        const model = dom.modelSelector.value;
-        const span = document.createElement('span');
-        span.className = 'mode-badge model';
-        span.title = 'Current Model';
-        span.textContent = model;
-        infraGroup.appendChild(span);
-    }
+        if (dom.modelSelector && dom.modelSelector.value) {
+            const model = dom.modelSelector.value;
+            const span = document.createElement('span');
+            span.className = 'mode-badge model clickable';
+            span.title = 'Current Model (Click to change)';
+            span.innerHTML = `<span class="codicon codicon-hubot"></span> ${model}`;
+            span.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (dom.modelSelector) {
+                    dom.modelSelector.focus();
+                    const event = document.createEvent('MouseEvents');
+                    event.initMouseEvent('mousedown', true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
+                    dom.modelSelector.dispatchEvent(event);
+                }
+            };
+            infraGroup.appendChild(span);
+        }
 
     // Personality Badge
     if (!isAgentMode && state.personalities && state.personalities.length > 0) {
@@ -1235,6 +1843,14 @@ export function updateBadges() {
     if (dom.herdConfigSection) {
         dom.herdConfigSection.style.display = caps.herdMode ? 'block' : 'none';
     }
+
+    const debugConfig = document.getElementById('debug-config-section');
+    if (debugConfig) {
+        debugConfig.style.display = caps.debugMode ? 'block' : 'none';
+    }
+
+    if (dom.capDebugMode) dom.capDebugMode.checked = !!caps.debugMode;
+    if (dom.capMaxDebugSteps) dom.capMaxDebugSteps.value = (caps.maxDebugSteps || 10).toString();
 
     // Initialize TTS/STT capability UI elements
     const ttsCheck = document.getElementById('cap-enableTTS') as HTMLInputElement;
@@ -1385,7 +2001,173 @@ export function updateBadges() {
     }
     }
 
-    // --- GROUP B: SOVEREIGN OPERATIONAL MODE (Mutually Exclusive) ---
+    // --- GROUP B: SOVEREIGN GROUNDING COGNITION (SPARQL, GREP, WEB, DNA & SKILLS Toggles) ---
+    const groundingGroup = document.createElement('div');
+    groundingGroup.className = 'badge-group';
+    container.appendChild(groundingGroup);
+
+    // 1. SPARQL (Graph-Based Semantic Understanding)
+    const sparqlActive = caps.sparqlEnabled !== false;
+    const sparqlBadge = createToggleBadge(
+        '📊 SPARQL',
+        'thinking',
+        true,
+        sparqlActive,
+        () => {
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { sparqlEnabled: !sparqlActive }
+            });
+        },
+        () => {
+            // Interactive Action: Open the SPARQL Query Sidebar / Panel directly
+            const sidebar = document.getElementById('sidebar-right');
+            if (sidebar && sidebar.classList.contains('collapsed')) {
+                const toggleBtn = document.getElementById('toggle-sidebar');
+                if (toggleBtn) toggleBtn.click();
+            }
+            const input = document.getElementById('sparql-query-input');
+            if (input) input.focus();
+        }
+    );
+    if (sparqlBadge) {
+        if (sparqlActive) {
+            sparqlBadge.style.backgroundColor = 'var(--vscode-charts-purple)';
+            sparqlBadge.style.color = 'white';
+        }
+        groundingGroup.appendChild(sparqlBadge);
+    }
+
+    // 2. GREP (Grounded Text Regex Scanning)
+    const grepActive = caps.grepEnabled !== false;
+    const grepBadge = createToggleBadge(
+        '🔍 GREP',
+        'verifier',
+        true,
+        grepActive,
+        () => {
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { grepEnabled: !grepActive }
+            });
+        },
+        () => {
+            // Interactive Action: Open the Deep Workspace Power Search modal
+            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'search-add-context-btn' } });
+        }
+    );
+    if (grepBadge) {
+        if (grepActive) {
+            grepBadge.style.backgroundColor = 'var(--vscode-charts-blue)';
+            grepBadge.style.color = 'white';
+        }
+        groundingGroup.appendChild(grepBadge);
+    }
+
+    // 3. WEB (Web Search Tool)
+    const webActive = caps.webSearch === true;
+    const webBadge = createToggleBadge(
+        '🌍 WEB',
+        'autocontext',
+        true,
+        webActive,
+        () => {
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { webSearch: !webActive }
+            });
+        },
+        () => {
+            // Interactive Action: Open the Ingestion/Web-Discovery modal directly
+            const webBtn = document.getElementById('web-context-btn');
+            if (webBtn) webBtn.click();
+        }
+    );
+    if (webBadge) {
+        if (webActive) {
+            webBadge.style.backgroundColor = 'var(--vscode-charts-orange)';
+            webBadge.style.color = 'white';
+        }
+        groundingGroup.appendChild(webBadge);
+    }
+
+    // 4. DNA (Project Memory Vault)
+    const dnaActive = caps.projectMemoryEnabled !== false;
+    const dnaBadge = createToggleBadge(
+        '🧠 DNA',
+        'herd',
+        true,
+        dnaActive,
+        () => {
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { projectMemoryEnabled: !dnaActive }
+            });
+        },
+        () => {
+            // Interactive Action: Open the physical Project Memory Manager Panel
+            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.manageProjectMemory' } });
+        }
+    );
+    if (dnaBadge) {
+        if (dnaActive) {
+            dnaBadge.style.backgroundColor = '#9b59b6'; // Vibrant Purple
+            dnaBadge.style.color = 'white';
+        }
+        groundingGroup.appendChild(dnaBadge);
+    }
+
+    // 5. SKILLS (Skills Library - Manual and Auto)
+    const skillsActive = caps.autoSkillMode === true;
+    const skillsBadge = createToggleBadge(
+        '💡 SKILLS',
+        'autoskill',
+        true,
+        skillsActive,
+        () => {
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { autoSkillMode: !skillsActive }
+            });
+        },
+        () => {
+            // Interactive Action: Open the Skills Library Selector modal
+            vscode.postMessage({ command: 'importSkills' });
+        }
+    );
+    if (skillsBadge) {
+        if (skillsActive) {
+            skillsBadge.style.backgroundColor = 'var(--vscode-charts-green)';
+            skillsBadge.style.color = 'white';
+        }
+        groundingGroup.appendChild(skillsBadge);
+    }
+
+    // 6. AUTO-APPLY (Automated Hunk Writes & Self-Correction)
+    const autoApplyActive = caps.autoApply === true;
+    const autoApplyBadge = createToggleBadge(
+        '⚡ AUTO-APPLY',
+        'active', // Standard active badge base
+        true,
+        autoApplyActive,
+        () => {
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { autoApply: !autoApplyActive }
+            });
+        }
+    );
+    if (autoApplyBadge) {
+        if (autoApplyActive) {
+            autoApplyBadge.style.backgroundColor = 'var(--vscode-charts-orange)';
+            autoApplyBadge.style.color = 'white';
+            autoApplyBadge.style.borderColor = 'rgba(214, 122, 13, 0.4)';
+            autoApplyBadge.style.boxShadow = '0 2px 8px rgba(214, 122, 13, 0.3)';
+        }
+        groundingGroup.appendChild(autoApplyBadge);
+    }
+
+    // --- GROUP C: SOVEREIGN OPERATIONAL MODE (Mutually Exclusive) ---
     const modeGroup = document.createElement('div');
     modeGroup.className = 'badge-group';
     container.appendChild(modeGroup);
@@ -1405,6 +2187,7 @@ export function updateBadges() {
                 command: 'updateDiscussionCapabilitiesPartial', 
                 partial: { agentMode: false, dynamicMode: false } 
             });
+            updateBadges();
         }
     );
     if (assistantBadge) {
@@ -1423,6 +2206,7 @@ export function updateBadges() {
                 command: 'updateDiscussionCapabilitiesPartial', 
                 partial: { agentMode: false, dynamicMode: true } 
             });
+            updateBadges();
         }
     );
     if (dynamicBadge) {
@@ -1445,6 +2229,7 @@ export function updateBadges() {
                 command: 'updateDiscussionCapabilitiesPartial', 
                 partial: { agentMode: true, dynamicMode: false } 
             });
+            updateBadges();
         }
     );
     if (agentBadge) {
@@ -1637,132 +2422,6 @@ export function updateBadges() {
             wrapper.appendChild(genieBadge);
             wrapper.appendChild(menu);
             container.appendChild(wrapper);
-        }
-    }
-
-    // --- THEME: DNA & MEMORY ---
-    if (!isAgentMode) {
-        const memoryGroup = document.createElement('div');
-        memoryGroup.className = 'badge-group hud-options-parent';
-        container.appendChild(memoryGroup);
-
-        const memRoot = document.createElement('span');
-        memRoot.className = 'mode-badge active clickable';
-        memRoot.style.background = caps.projectMemoryEnabled ? 'var(--vscode-charts-purple)' : 'var(--vscode-editorWidget-background)';
-        memRoot.innerHTML = `<span class="codicon codicon-chip"></span> <span class="badge-label">DNA</span>`;
-        memoryGroup.appendChild(memRoot);
-
-        const memPopup = document.createElement('div');
-        memPopup.className = 'hud-options-popup';
-        memoryGroup.appendChild(memPopup);
-
-        const memBadge = createToggleBadge(
-            '🧠 Project Memory', 
-            'thinking', 
-            true, 
-            caps.projectMemoryEnabled, 
-            () => {
-                vscode.postMessage({ 
-                    command: 'updateDiscussionCapabilitiesPartial', 
-                    partial: { projectMemoryEnabled: !caps.projectMemoryEnabled } 
-                });
-            }
-        );
-        if (memBadge) memPopup.appendChild(memBadge);
-    }
-
-    // --- THEME: KNOWLEDGE (Unified Ontological Sub-system) ---
-    const isBuilderMode = caps.workerType === 'builder';
-
-    if (!isAgentMode && !isBuilderMode) {
-        const knowledgeGroup = document.createElement('div');
-        knowledgeGroup.className = 'badge-group hud-options-parent';
-        container.appendChild(knowledgeGroup);
-
-        const knRoot = document.createElement('span');
-        knRoot.className = 'mode-badge active clickable';
-        knRoot.style.background = 'var(--vscode-editorWidget-background)';
-        knRoot.innerHTML = `<span class="codicon codicon-library"></span> <span class="badge-label">KNOWLEDGE</span>`;
-        knowledgeGroup.appendChild(knRoot);
-
-        const knPopup = document.createElement('div');
-        knPopup.className = 'hud-options-popup';
-        knowledgeGroup.appendChild(knPopup);
-
-        // A. SPARQL-lite Query Engine Launcher
-        const queryBadge = document.createElement('span');
-        queryBadge.className = 'mode-badge active clickable';
-        queryBadge.style.backgroundColor = 'var(--vscode-charts-purple)';
-        queryBadge.style.color = 'white';
-        queryBadge.title = "Execute SPARQL-lite pattern matching on the active codebase or memory graph.";
-        queryBadge.innerHTML = `<span class="codicon codicon-search"></span> <span class="badge-label">Query Ontology</span>`;
-        queryBadge.onclick = (e) => {
-            e.stopPropagation();
-            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.searchDiscussions' } });
-        };
-        knPopup.appendChild(queryBadge);
-
-        // B. Memory Vault (Project Engrams)
-        const memBadge = document.createElement('span');
-        memBadge.className = 'mode-badge active clickable';
-        memBadge.style.backgroundColor = 'var(--vscode-charts-blue)';
-        memBadge.style.color = 'white';
-        memBadge.title = "View, edit, and inspect project engrams.";
-        memBadge.innerHTML = `<span class="codicon codicon-chip"></span> <span class="badge-label">Memory Vault</span>`;
-        memBadge.onclick = (e) => {
-            e.stopPropagation();
-            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.manageProjectMemory' } });
-        };
-        knPopup.appendChild(memBadge);
-
-        // C. Skills Library
-        const skillsBadge = document.createElement('span');
-        skillsBadge.className = 'mode-badge active clickable';
-        skillsBadge.style.backgroundColor = 'var(--vscode-charts-green)';
-        skillsBadge.style.color = 'white';
-        skillsBadge.title = "Import or edit specialized technical skills.";
-        skillsBadge.innerHTML = `<span class="codicon codicon-lightbulb"></span> <span class="badge-label">Skills Library</span>`;
-        skillsBadge.onclick = (e) => {
-            e.stopPropagation();
-            vscode.postMessage({ command: 'importSkills' });
-        };
-        knPopup.appendChild(skillsBadge);
-    }
-
-    // --- THEME: RESEARCH (Web Search) ---
-    if (!isAgentMode && guiState.webSearchBadge !== false) {
-        const researchGroup = document.createElement('div');
-        researchGroup.className = 'badge-group hud-options-parent';
-        container.appendChild(researchGroup);
-
-        const resRoot = document.createElement('span');
-        resRoot.className = 'mode-badge active clickable';
-        resRoot.style.background = caps.webSearch ? 'var(--vscode-charts-blue)' : 'var(--vscode-editorWidget-background)';
-        resRoot.innerHTML = `<span class="codicon codicon-globe"></span> <span class="badge-label">RESEARCH</span>`;
-        researchGroup.appendChild(resRoot);
-
-        const resPopup = document.createElement('div');
-        resPopup.className = 'hud-options-popup';
-        researchGroup.appendChild(resPopup);
-
-        const webBadge = createToggleBadge(
-            '🌍 Web Search Agent', 'web', 
-            true, 
-            caps.webSearch, 
-            () => {
-                vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { webSearch: !caps.webSearch } });
-            },
-            () => {
-                const text = dom.messageInput.value.trim();
-                vscode.postMessage({ command: 'internetHelpSearch', query: text });
-                dom.messageInput.value = '';
-                dom.messageInput.style.height = 'auto';
-            }
-        );
-        
-        if (webBadge) {
-            webBadge.classList.add('webSearch-indicator');
-            resPopup.appendChild(webBadge);
         }
     }
 
@@ -2957,6 +3616,155 @@ let currentStagingIdx = 0;
 /**
  * Opens the Raw Aider Block modal with tabs for each hunk.
  */
+// --- PROGRESSIVE HUNK MATCHING STATE MACHINE ---
+export let progressiveSearchState: {
+    lines: string[];
+    currentStartLineIdx: number;
+    currentEndLineIdx: number;
+    filePath: string;
+    messageId: string;
+    blockIndex: number;
+    hunkIndex: number;
+    originalSearchBlock: string;
+} | null = null;
+
+export function runProgressiveHunkSearch() {
+    if (!progressiveSearchState) return;
+
+    const { lines, currentStartLineIdx, currentEndLineIdx, filePath } = progressiveSearchState;
+
+    if (currentStartLineIdx >= lines.length) {
+        // We have exhausted all lines without finding any match
+        renderProgressiveSearchFailure();
+        return;
+    }
+
+    // Isolate current window of lines and join them with space for fast AND-pattern searching
+    const queryLines = lines.slice(currentStartLineIdx, currentEndLineIdx + 1);
+    const query = queryLines.join(' ').trim();
+
+    if (!query) {
+        // If empty line, skip directly to next starting line
+        progressiveSearchState.currentStartLineIdx++;
+        progressiveSearchState.currentEndLineIdx = progressiveSearchState.currentStartLineIdx;
+        runProgressiveHunkSearch();
+        return;
+    }
+
+    // Show temporary progress status in results panel
+    if (dom.rawSearchResultsMini) {
+        dom.rawSearchResultsMini.style.display = 'flex';
+        dom.rawSearchResultsMini.innerHTML = `
+            <div style="padding:15px; text-align:center; opacity:0.7; width:100%;">
+                <div class="spinner" style="margin-bottom:8px;"></div>
+                <div>Searching: <code>${sanitizer.sanitize(query.substring(0, 40))}${query.length > 40 ? '...' : ''}</code></div>
+            </div>
+        `;
+    }
+
+    // Trigger on-disk grep/findstr search
+    vscode.postMessage({
+        command: 'requestFileSearch',
+        query: query,
+        mode: 'content',
+        options: { matchCase: true, wholeWord: false, include: filePath }
+    });
+}
+
+function renderProgressiveSearchFailure() {
+    progressiveSearchState = null;
+    if (dom.rawSearchResultsMini) {
+        dom.rawSearchResultsMini.style.display = 'flex';
+        dom.rawSearchResultsMini.innerHTML = `
+            <div style="padding:20px; opacity:0.6; text-align:center; width:100%;">
+                <i class="codicon codicon-search-stop" style="font-size:24px; display:block; margin-bottom:8px; color:var(--vscode-charts-orange);"></i>
+                <strong>No exact match found on disk</strong>
+                <div style="font-size:10px; margin-top:4px;">Try selecting a smaller block and clicking <strong>Search Selection</strong>.</div>
+            </div>
+        `;
+    }
+}
+
+export function handleProgressiveSearchResults(results: any[]) {
+    if (!progressiveSearchState) return;
+
+    const { lines, currentStartLineIdx, currentEndLineIdx, filePath, originalSearchBlock } = progressiveSearchState;
+    const matchedCount = results.length;
+
+    if (matchedCount === 1) {
+        // Perfect match! Show result, highlight matched query portion, and terminate loop
+        const result = results[0];
+        const queryText = lines.slice(currentStartLineIdx, currentEndLineIdx + 1).join(' ').trim();
+        progressiveSearchState = null; // Clear state machine
+
+        if (dom.rawSearchResultsMini) {
+            dom.rawSearchResultsMini.style.display = 'flex';
+            dom.rawSearchResultsMini.innerHTML = `
+                <div style="font-size: 10px; font-weight: bold; opacity: 0.8; padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); margin-bottom: 5px; color: var(--vscode-charts-green); width:100%;">
+                    <i class="codicon codicon-check"></i> EXACT MATCH LOCATED ON DISK
+                </div>
+                <div class="mini-search-item raw-stitch-result-item" 
+                     style="flex-direction:column; align-items:flex-start; gap:4px; padding: 10px; border-bottom: 1px solid var(--vscode-widget-border); cursor:pointer; width:100%; box-sizing:border-box;" 
+                     data-path="${result.path}" 
+                     data-query="${queryText.replace(/"/g, '&quot;')}"
+                     data-line="${result.line}">
+                    <div style="display:flex; justify-content:space-between; width:100%; font-size: 11px;">
+                        <span style="font-weight:bold; color: var(--vscode-textLink-foreground);">${result.path.split('/').pop()}</span>
+                        <span style="opacity:0.6; font-size:10px; font-weight:bold;">Line ${result.line}</span>
+                    </div>
+                    <div style="font-size:10px; opacity:0.9; font-family:var(--vscode-editor-font-family); white-space:pre; overflow:hidden; text-overflow:ellipsis; width:100%; background:rgba(0,0,0,0.25); padding:4px 8px; border-radius:4px; border:1px solid rgba(255,255,255,0.05); margin-top:4px;">
+                        ${sanitizer.sanitize(result.snippet).replace(new RegExp(`(${queryText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'), '<mark class="search-highlight">$1</mark>')}
+                    </div>
+                    <div style="font-size:9px; opacity:0.5; margin-top:4px;">Click this result to open and automatically highlight in your editor. Then press Ctrl+V to paste the replacement.</div>
+                </div>
+            `;
+        }
+    } else if (matchedCount > 1) {
+        // Multiple matches: Try adding more lines to increase uniqueness
+        if (currentEndLineIdx + 1 < lines.length) {
+            progressiveSearchState.currentEndLineIdx++;
+            runProgressiveHunkSearch();
+        } else {
+            // Cannot expand further: Show multiple candidates so user can choose
+            const queryText = lines.slice(currentStartLineIdx, currentEndLineIdx + 1).join(' ').trim();
+            progressiveSearchState = null; // Clear state machine
+
+            if (dom.rawSearchResultsMini) {
+                dom.rawSearchResultsMini.style.display = 'flex';
+                dom.rawSearchResultsMini.innerHTML = `
+                    <div style="font-size: 10px; font-weight: bold; opacity: 0.8; padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); margin-bottom: 5px; color: var(--vscode-charts-orange); width:100%;">
+                        <i class="codicon codicon-warning"></i> MULTIPLE MATCHES DETECTED (${matchedCount})
+                    </div>
+                ` + results.map((res: any) => `
+                    <div class="mini-search-item raw-stitch-result-item" 
+                         style="flex-direction:column; align-items:flex-start; gap:4px; padding: 10px; border-bottom: 1px solid var(--vscode-widget-border); cursor:pointer; width:100%; box-sizing:border-box;" 
+                         data-path="${res.path}" 
+                         data-query="${queryText.replace(/"/g, '&quot;')}"
+                         data-line="${res.line}">
+                        <div style="display:flex; justify-content:space-between; width:100%; font-size: 11px;">
+                            <span style="font-weight:bold; color: var(--vscode-textLink-foreground);">${res.path.split('/').pop()}</span>
+                            <span style="opacity:0.6; font-size:10px;">Line ${res.line}</span>
+                        </div>
+                        <div style="font-size:10px; opacity:0.8; font-family:var(--vscode-editor-font-family); white-space:pre; overflow:hidden; text-overflow:ellipsis; width:100%; background:rgba(0,0,0,0.15); padding:4px; border-radius:4px;">${sanitizer.sanitize(res.snippet)}</div>
+                    </div>
+                `).join('');
+            }
+        }
+    } else {
+        // Zero matches: Match failed with this combination
+        if (currentEndLineIdx > currentStartLineIdx) {
+            // Sliding anchor: Increment start line index and reset end line to start searching next line individually
+            progressiveSearchState.currentStartLineIdx++;
+            progressiveSearchState.currentEndLineIdx = progressiveSearchState.currentStartLineIdx;
+        } else {
+            // Single line search failed: move to next line directly
+            progressiveSearchState.currentStartLineIdx++;
+            progressiveSearchState.currentEndLineIdx = progressiveSearchState.currentStartLineIdx;
+        }
+        runProgressiveHunkSearch();
+    }
+}
+
 export function openRawCodeModal(messageId: string, blockIndex: number, filePath: string, rawCode: string, initialHunkIdx: number = 0) {
     // 🧹 CLEANUP GHOST ELEMENTS: Remove any orphaned action buttons from previous failed renders
     document.querySelectorAll('.modal-footer > button, .raw-block-actions').forEach(el => {
@@ -3000,6 +3808,27 @@ export function openRawCodeModal(messageId: string, blockIndex: number, filePath
         dom.markAppliedBtn.innerHTML = isApplied 
             ? '<span class="codicon codicon-check"></span> Applied Manually'
             : '<span class="codicon codicon-check"></span> Mark as Applied Manually';
+
+        // --- AUTOMATED STITCH RESEARCH PROTOCOL ---
+        // Automatically find the most plausible insertion site on disk using our progressive search algorithm
+        const searchPart = match[1] || "";
+        const cleanLines = searchPart.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+        if (cleanLines.length > 0) {
+            progressiveSearchState = {
+                lines: cleanLines,
+                currentStartLineIdx: 0,
+                currentEndLineIdx: 0,
+                filePath: filePath,
+                messageId: messageId,
+                blockIndex: blockIndex,
+                hunkIndex: idx,
+                originalSearchBlock: searchPart
+            };
+            runProgressiveHunkSearch();
+        } else {
+            renderProgressiveSearchFailure();
+        }
     };
 
     matches.forEach((_, i) => {
@@ -3008,7 +3837,7 @@ export function openRawCodeModal(messageId: string, blockIndex: number, filePath
         // Add a dot if the hunk is already applied
         const appliedHunks = state.appliedState?.[messageId]?.[blockIndex] || [];
         const isApplied = appliedHunks.includes(i) || appliedHunks.includes(-1);
-        
+
         tab.innerHTML = `<i class="codicon ${isApplied ? 'codicon-check' : 'codicon-primitive-dot'}"></i> HUNK ${i + 1}`;
         tab.onclick = () => switchHunk(i);
         tabBar.appendChild(tab);
@@ -3016,24 +3845,13 @@ export function openRawCodeModal(messageId: string, blockIndex: number, filePath
 
     switchHunk(initialHunkIdx);
 
-    // --- AUTO-FOCUS LOGIC ---
-    // If we just opened this because of a failure, try to help the user find the spot.
-    const searchPart = matches[initialHunkIdx]?.[1];
-    if (searchPart && dom.rawSearchInput) {
-        // Take a small unique snippet from the search block (e.g. first 30 chars)
-        const uniqueLine = searchPart.split('\n').find(l => l.trim().length > 10) || searchPart.substring(0, 30);
-        dom.rawSearchInput.value = uniqueLine.trim();
-        // Trigger the search manually
-        import('./events.js').then(() => {
-            // This invokes the search logic we defined in events.ts
-            dom.rawSearchInput.dispatchEvent(new Event('input'));
-        });
-    }
+    // Clear manual search box when opening
+    if (dom.rawSearchInput) dom.rawSearchInput.value = '';
 
     // Explicitly force layout to absolute center
     modal.style.display = 'flex';
     modal.classList.add('visible');
-    }
+}
 
 export async function openStagingRevamp(messageId: string, changes: any[]) {
     currentStagingChanges = changes;

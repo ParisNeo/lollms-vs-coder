@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ToolDefinition } from "./tool";
 import { allTools } from './builtins';
 import { McpClient } from '../mcpClient';
+import { navigateToCodeTool } from './builtins/navigateToCode';
 import { generateImageTool } from './builtins/generateImage';
 import { editImageAssetTool } from './builtins/editImageAsset';
 import { searchKeywordsTool } from './builtins/searchKeywords';
@@ -27,6 +28,7 @@ export class ToolManager {
         allTools.forEach(tool => {
             this.tools.set(tool.name, tool);
         });
+        this.tools.set(navigateToCodeTool.name, navigateToCodeTool);
     }
 
     private async loadMcpTools() {

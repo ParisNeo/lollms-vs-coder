@@ -40,6 +40,7 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
         const actions: ActionItem[] = [];
 
         if (hasWorkspace) {
+            actions.push(new ActionItem(vscode.l10n.t('Reconfigure Project DNA & Style'), 'lollms-vs-coder.retriggerOnboarding', 'settings-gear', 'Update Destiny, objectives, and styling preferences'));
             actions.push(new ActionItem(vscode.l10n.t('Lollms Studio (Skills/Personas)'), 'lollms-vs-coder.openStudio', 'beaker', 'Open the building studio'));
             actions.push(new ActionItem(vscode.l10n.t('Validate CVE Legitimacy'), 'lollms-vs-coder.analyzeCveLegitimacy', 'shield-check', 'Analyze code against a specific CVE'));
             actions.push(new ActionItem(vscode.l10n.t('CVE Report Builder'), 'lollms-vs-coder.openCveBuilder', 'shield', 'Build a vulnerability report'));

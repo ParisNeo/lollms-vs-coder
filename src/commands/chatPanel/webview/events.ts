@@ -1,7 +1,7 @@
 import { dom, vscode, state } from './dom.js';
 import { performSearch, navigateSearch, clearSearch } from './search.js';
 import { insertNewMessageEditor } from './messageRenderer.js';
-import { setGeneratingState, updateBadges, openImageEditor, renderPendingImages, renderWorkspaceMatrix } from './ui.js';
+import { setGeneratingState, updateBadges, openImageEditor, renderPendingImages, renderWorkspaceMatrix, openRawCodeModal } from './ui.js';
 import { isScrolledToBottom } from './utils.js';
 
 export function initEventHandlers() {
@@ -29,12 +29,29 @@ export function initEventHandlers() {
             }
         });
         // Handle Space key for Panning mode
-    window.addEventListener('keydown', (e) => {
-        if (e.code === 'Space') (window as any).isSpaceDown = true;
-    });
-    window.addEventListener('keyup', (e) => {
-        if (e.code === 'Space') (window as any).isSpaceDown = false;
-    });
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                // If the image editor modal is active, prevent Space from triggering focused button clicks or scrolling
+                if (dom.editorModal && dom.editorModal.style.display === 'flex') {
+                    if (document.activeElement !== dom.editorTextInput) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                }
+                (window as any).isSpaceDown = true;
+            }
+        });
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'Space') {
+                if (dom.editorModal && dom.editorModal.style.display === 'flex') {
+                    if (document.activeElement !== dom.editorTextInput) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                }
+                (window as any).isSpaceDown = false;
+            }
+        });
 
     window.addEventListener('mouseup', () => {
             if (isResizing) {
@@ -744,6 +761,9 @@ export function initEventHandlers() {
     bindProtoCheck('protoGitCheckbox', 'gitAutoWorkflow');
     bindProtoCheck('protoHerdCheckbox', 'herdMode');
 
+    if (dom.capAutoFix && state.capabilities) dom.capAutoFix.checked = state.capabilities.autoFix !== false;
+    if (dom.capAutoBranch && state.capabilities) dom.capAutoBranch.checked = !!state.capabilities.autoBranch;
+
     bindChange(dom.modelSelector, (e) => {
         const val = (e.target as HTMLSelectElement).value;
         vscode.postMessage({ command: 'updateDiscussionModel', model: val });
@@ -961,6 +981,8 @@ export function initEventHandlers() {
                 },
                 explainCode: dom.capExplainCode?.checked ?? true,
                 projectMemoryEnabled: dom.capProjectMemory?.checked ?? true,
+                sparqlEnabled: (document.getElementById('cap-sparqlEnabled') as HTMLInputElement)?.checked ?? true,
+                grepEnabled: (document.getElementById('cap-grepEnabled') as HTMLInputElement)?.checked ?? true,
                 tokenEconomyMode: (document.getElementById('cap-tokenEconomyMode') as HTMLInputElement)?.checked ?? false,
                 clipboardInsertRole: dom.capClipboardRole?.value || 'user',
                 monitoredLogPaths: (document.getElementById('cap-monitoredLogPaths') as HTMLInputElement)?.value.split('\n').map(p => p.trim()).filter(p => p),
@@ -1478,6 +1500,7 @@ export function initEventHandlers() {
             }
         });
     }
+
     if (dom.capAutoFix && state.capabilities) dom.capAutoFix.checked = state.capabilities.autoFix !== false;
     if (dom.capAutoBranch && state.capabilities) dom.capAutoBranch.checked = !!state.capabilities.autoBranch;
 
@@ -1494,14 +1517,14 @@ export function initEventHandlers() {
             const img = target as HTMLImageElement;
             // Prevent zooming on tiny icons or avatars
             if (img.naturalWidth > 50 || img.naturalHeight > 50 || img.src.startsWith('data:')) {
-                import('./ui.js').then(ui => ui.openSovereignZoom(img.src));
+                openSovereignZoom(img.src);
             }
         }
     });
 
     // Close zoom on overlay click
     document.getElementById('image-zoom-overlay')?.addEventListener('click', () => {
-        import('./ui.js').then(ui => ui.closeSovereignZoom());
+        closeSovereignZoom();
     });
     window.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
@@ -1774,6 +1797,22 @@ export function initEventHandlers() {
         const closeMemBtn = target.closest('.task-memory-header .codicon-close');
         if (closeMemBtn) {
             closeMemBtn.closest('.task-memory-render-area')?.classList.remove('visible');
+            return;
+        }
+
+        // --- INTERACTIVE FILE PATHS ---
+        // Clicking anywhere on a file status row navigates directly to that file
+        const applyRow = target.closest('.apply-row') as HTMLElement;
+        if (applyRow && !target.closest('button')) {
+            e.preventDefault();
+            e.stopPropagation();
+            const rowPathEl = applyRow.querySelector('.row-path');
+            const rawPathText = rowPathEl ? rowPathEl.textContent || "" : "";
+            // Clean out any helper text like "(Hunk 1)" or "(Definitions Only)"
+            const cleanPath = rawPathText.split('(')[0].trim();
+            if (cleanPath) {
+                vscode.postMessage({ command: 'openFile', path: cleanPath });
+            }
             return;
         }
 
@@ -2097,15 +2136,36 @@ export function initEventHandlers() {
             const filePath = planManualFixBtn.dataset.filePath;
             const rawCode = decodeURIComponent(planManualFixBtn.dataset.rawCode || '');
             if (taskId && filePath && rawCode) {
-                import('./ui.js').then(ui => {
-                    ui.openRawCodeModal(
-                        "agent_plan",
-                        parseInt(taskId, 10),
-                        filePath,
-                        rawCode,
-                        0
-                    );
-                });
+                openRawCodeModal(
+                    "agent_plan",
+                    parseInt(taskId, 10),
+                    filePath,
+                    rawCode,
+                    0
+                );
+            }
+            return;
+        }
+
+        // Copy Search and Hunk Actions
+        const rowManualStitchBtn = target.closest('.row-manual-stitch-btn') as HTMLButtonElement;
+        if (rowManualStitchBtn) {
+            e.stopPropagation();
+            const card = rowManualStitchBtn.closest('.apply-row') as HTMLElement;
+            const wrapper = rowManualStitchBtn.closest('.message-wrapper') as HTMLElement;
+            if (card && wrapper) {
+                const filePath = card.querySelector('.row-path')?.textContent?.split('(')[0].trim() || "";
+                const messageId = wrapper.dataset.messageId || "";
+                const blockIndex = parseInt(card.dataset.blockIndex || "0", 10);
+                const hunkIndex = card.dataset.hunkIndex !== undefined ? parseInt(card.dataset.hunkIndex, 10) : 0;
+
+                // Retrieve the raw code from the corresponding block element on the page
+                const blockEl = document.getElementById(`block-${messageId}-${blockIndex}`) as HTMLElement;
+                const rawCode = blockEl ? blockEl.dataset.rawCode || "" : "";
+
+                if (filePath && rawCode) {
+                    openRawCodeModal(messageId, blockIndex, filePath, rawCode, hunkIndex);
+                }
             }
             return;
         }

@@ -44,7 +44,7 @@ import { InfoPanel } from './commands/infoPanel';
 
 import { LocalizationManager } from './utils/localizationManager';
 
-export async function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext): Promise<vscode.ExtensionContext> {
     process.on('unhandledRejection', (reason: any) => {
         if (reason?.message?.includes('connection got disposed')) return;
         Logger.error('Unhandled Rejection:', reason);
@@ -142,8 +142,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register Commands (This calls registerUICommands internally)
     await registerCommands(context, services, getActiveWorkspace);
 
-    // Legacy Switcher Command removed - Now using Sovereign Workspace Protocol
-
+    // Recreate Client command already handled in commandRegistry/uiCommands? No, it's defined here:
     let recreateClientDisposable = vscode.commands.registerCommand('lollmsApi.recreateClient', async () => {
         console.log('[INFO] Recreating Lollms API Client...');
         try {
@@ -165,7 +164,7 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(recreateClientDisposable);
 
-    // Onboarding Panel Command
+    // Onboarding Panel Commands
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showOnboardingWizard', (folder: vscode.WorkspaceFolder) => {
         const { OnboardingPanel } = require('./commands/onboardingPanel');
         OnboardingPanel.createOrShow(context.extensionUri, services, folder);
@@ -235,40 +234,13 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const inlineCompletionProvider = new (require('./commands/inlineSuggestions').LollmsInlineCompletionProvider)(lollmsAPI);
 
-    // Register on-demand manual trigger command with a safety guard to prevent duplicate registration warnings
-    try {
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerInlineSuggestion', async () => {
-            const editor = vscode.window.activeTextEditor;
-            if (!editor) return;
-
-            const position = editor.selection.active;
-            const document = editor.document;
-
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Window,
-                title: "Lollms: Fetching completion..."
-            }, async () => {
-                const completion = await inlineCompletionProvider.triggerSuggestion(document, position);
-                if (completion) {
-                    editor.edit(editBuilder => {
-                        editBuilder.insert(position, completion);
-                    });
-                } else {
-                    vscode.window.setStatusBarMessage("Lollms: No completion available.", 2000);
-                }
-            });
-        }));
-    } catch (e) {
-        Logger.warn("Command 'lollms-vs-coder.triggerInlineSuggestion' registration skipped: already registered.");
-    }
-
     // Status Bar
     const statusBar = new LollmsStatusBar(context, lollmsAPI);
     context.subscriptions.push(statusBar);
 
-    // --- CACHE INVALIDATION LISTENERS (GLOBAL FS WATCHER) ---
+    // --- HIGH-PERFORMANCE ASYNCHRONOUS DEBOUNCE QUEUE ---
     const watcher = vscode.workspace.createFileSystemWatcher('**/*');
-    
+
     const isIgnored = (uri: vscode.Uri) => {
         const p = uri.fsPath;
         // Allow .lollms/skills to pass through so we can refresh the library
@@ -276,62 +248,74 @@ export async function activate(context: vscode.ExtensionContext) {
         return p.includes('.lollms') || p.includes('.git') || p.includes('node_modules') || p.includes('venv');
     };
 
-    watcher.onDidChange(async (uri) => {
-        const p = uri.fsPath;
-        if (p.includes('.lollms') || p.includes('.git') || p.includes('node_modules')) return;
+    let watcherDebounceTimer: NodeJS.Timeout | undefined;
+    const fileEventsQueue = new Map<string, 'change' | 'create' | 'delete'>();
 
-        if (uri.fsPath.includes('skills')) {
-            skillsManager.invalidateCache();
-            return;
-        }
+    const flushWatcherQueue = async () => {
+        if (fileEventsQueue.size === 0) return;
 
-        contextManager.refreshFileInCache(uri);
-        contextManager.updateTreeStructure(uri, 'change');
+        const events = Array.from(fileEventsQueue.entries());
+        fileEventsQueue.clear();
 
-        // Incremental graph update
-        codeGraphManager.updateFileInGraph(uri);
+        Logger.info(`[Sovereign Queue] Flushing ${events.length} pending filesystem events in background.`);
 
-        // 🚀 REACTIVE HUD SYNC
-        const provider = contextManager.getContextStateProvider();
-        if (provider) {
-            const state = provider.getStateForUri(uri);
-            if (state === 'included' || state === 'definitions-only' || state === 'tree-only') {
-                if (ChatPanel.currentPanel) {
-                    ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: true });
+        const caps = services.discussionManager.getLastCapabilities();
+        const isSparqlActive = caps.sparqlEnabled !== false;
+
+        for (const [fsPath, type] of events) {
+            const uri = vscode.Uri.file(fsPath);
+            const relPath = vscode.workspace.asRelativePath(uri, false);
+
+            if (type === 'change') {
+                contextManager.refreshFileInCache(uri);
+                contextManager.updateTreeStructure(uri, 'change');
+
+                // Strictly incremental Code Graph updates: Only parse the changed file if SPARQL is active
+                if (isSparqlActive) {
+                    Logger.info(`[Sovereign Graph] Performing incremental parse for: ${path.basename(fsPath)}`);
+                    await codeGraphManager.updateFileInGraph(uri);
                 }
-                Logger.info(`Background cache invalidated for: ${path.basename(p)}`);
+            } else if (type === 'create') {
+                contextStateProvider.addFileToCache(relPath);
+                contextManager.updateTreeStructure(uri, 'create');
+
+                if (isSparqlActive) {
+                    await codeGraphManager.updateFileInGraph(uri);
+                }
+            } else if (type === 'delete') {
+                contextStateProvider.removeFileFromCache(relPath);
+                contextManager.refreshFileInCache(uri);
+                contextManager.updateTreeStructure(uri, 'delete');
+
+                if (isSparqlActive) {
+                    await codeGraphManager.removeFileFromGraph(uri);
+                }
             }
         }
-    });
 
-    watcher.onDidCreate(uri => {
+        // Trigger single, unified background recount after batch completes
+        if (ChatPanel.currentPanel) {
+            ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: true });
+        }
+    };
+
+    const queueEvent = (uri: vscode.Uri, type: 'change' | 'create' | 'delete') => {
         if (isIgnored(uri)) return;
         if (uri.fsPath.includes('skills')) {
             skillsManager.invalidateCache();
             return;
         }
-        const relPath = vscode.workspace.asRelativePath(uri, false);
-        contextStateProvider.addFileToCache(relPath);
-        contextManager.updateTreeStructure(uri, 'create');
+        fileEventsQueue.set(uri.fsPath, type);
 
-        // Incremental graph addition
-        codeGraphManager.updateFileInGraph(uri);
-    });
+        if (watcherDebounceTimer) clearTimeout(watcherDebounceTimer);
+        watcherDebounceTimer = setTimeout(() => {
+            flushWatcherQueue();
+        }, 1500);
+    };
 
-    watcher.onDidDelete(uri => {
-        if (isIgnored(uri)) return;
-        if (uri.fsPath.includes('skills')) {
-            skillsManager.invalidateCache();
-            return;
-        }
-        const relPath = vscode.workspace.asRelativePath(uri, false);
-        contextStateProvider.removeFileFromCache(relPath);
-        contextManager.refreshFileInCache(uri);
-        contextManager.updateTreeStructure(uri, 'delete');
-
-        // Incremental graph subtraction
-        codeGraphManager.removeFileFromGraph(uri);
-    });
+    watcher.onDidChange(uri => queueEvent(uri, 'change'));
+    watcher.onDidCreate(uri => queueEvent(uri, 'create'));
+    watcher.onDidDelete(uri => queueEvent(uri, 'delete'));
 
     context.subscriptions.push(watcher);
 
@@ -378,6 +362,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         const isInitialLoad = activeWorkspaceFolder === undefined;
         activeWorkspaceFolder = folder;
+        // Track the active workspace folder internally
         statusBar.updateActiveWorkspace(folder);
 
         // Notify managers to refresh (Merge logic now handles the multi-root data)
@@ -408,12 +393,53 @@ export async function activate(context: vscode.ExtensionContext) {
             });
             vscode.window.showInformationMessage(`Lollms workspace switched to '${folder.name}'.`);
         }
+    }
 
-        // Trigger One-Time Project Onboarding automatically if missing
-        const wasOnboarded = context.workspaceState.get<boolean>('lollms_workspace_onboarded', false);
-        if (!wasOnboarded) {
-            vscode.commands.executeCommand('lollms-vs-coder.showOnboardingWizard', folder);
+    // --- LINEAR ONBOARDING PIPELINE ENGINE ---
+    async function runOnboardingPipeline() {
+        Logger.info("[Pipeline] Running Onboarding Pipeline validation...");
+
+        // Gate 1: Code of Conduct / Pledge
+        const pledgeSigned = context.globalState.get<boolean>('lollms.pledgeSigned', false);
+        if (!pledgeSigned) {
+            Logger.info("[Pipeline] Gate 1 Blocked: Awaiting Developer Pledge signature.");
+            vscode.commands.executeCommand('setContext', 'lollms:isEnvironmentReady', false);
+            showConductWebview(context);
+            return;
         }
+
+        // Gate 2: Connection Configuration (Server, Key, Model)
+        const wasConfigured = context.globalState.get<boolean>('lollms.wasConfigured', false);
+        const hasCustomKey = config.get<string>('apiKey') !== "";
+        const hasCustomModel = config.get<string>('modelName') !== "ollama/mistral";
+        const hasCustomUrl = config.get<string>('apiUrl') !== "http://localhost:9642";
+
+        const isConfigured = wasConfigured || hasCustomKey || hasCustomModel || hasCustomUrl;
+
+        if (!isConfigured) {
+            Logger.info("[Pipeline] Gate 2 Blocked: Awaiting active Lollms connection setup.");
+            vscode.commands.executeCommand('setContext', 'lollms:isEnvironmentReady', false);
+            showQuickSetupWizard(context);
+            return;
+        }
+
+        // Both Gates Passed: Enable all custom commands, tabs, and sidebar features
+        Logger.info("[Pipeline] Gate 1 & 2 Cleared: Environment marked active.");
+        vscode.commands.executeCommand('setContext', 'lollms:isEnvironmentReady', true);
+
+        // Gate 3: Project/Workspace Onboarding
+        const folders = vscode.workspace.workspaceFolders;
+        if (folders && folders.length > 0) {
+            const activeFolder = activeWorkspaceFolder || folders[0];
+            const wasOnboarded = context.workspaceState.get<boolean>('lollms_workspace_onboarded', false);
+            if (!wasOnboarded) {
+                Logger.info(`[Pipeline] Gate 3: Opening Project Onboarding for '${activeFolder.name}'`);
+                vscode.commands.executeCommand('lollms-vs-coder.showOnboardingWizard', activeFolder);
+                return;
+            }
+        }
+
+        Logger.info("[Pipeline] Onboarding complete. System is fully operational.");
     }
 
     // Initialization logic
@@ -442,8 +468,12 @@ export async function activate(context: vscode.ExtensionContext) {
     // DELAYED START: Give other extensions (isort, Pylance) 3 seconds to breathe
     // before the Librarian and Architect start scanning the project.
     Logger.info("Lollms: Postponing initialization to stabilize Extension Host...");
-    setTimeout(() => {
+    setTimeout(async () => {
         initializeWorkspace();
+
+        // Trigger the linear onboarding pipeline on startup
+        await runOnboardingPipeline();
+
         // Start the Neural Dream Cycle asynchronously to prevent startup blocks
         projectMemoryManager.performDreamCycle().then(() => {
             Logger.info("Dream Cycle complete: Neural memory reorganized.");
@@ -457,18 +487,10 @@ export async function activate(context: vscode.ExtensionContext) {
         deactivateConflictingExtensions();
     }
 
-    // --- FIRST RUN & COMPLIANCE WIZARD ---
-    const wasConfigured = context.globalState.get<boolean>('lollms.wasConfigured', false);
-    const hasCustomKey = config.get<string>('apiKey') !== "";
-    const hasCustomModel = config.get<string>('modelName') !== "ollama/mistral";
-    const hasCustomUrl = config.get<string>('apiUrl') !== "http://localhost:9642";
-
-    // Bug Fix: Don't show if any manual configuration is detected, unless they haven't signed the CoC
-    if (!wasConfigured && !hasCustomKey && !hasCustomModel && !hasCustomUrl) {
-        showQuickSetupWizard(context);
-    } else if (!wasConfigured) {
-        showConductWebview(context);
-    }
+    // Re-expose pipeline to webview command registries
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runOnboardingPipeline', async () => {
+        await runOnboardingPipeline();
+    }));
 
     // Event Listeners
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(initializeWorkspace));
@@ -480,16 +502,19 @@ export async function activate(context: vscode.ExtensionContext) {
             switchActiveWorkspace(workspace);
         }
     }));
-    
+
     // Process status updates
     context.subscriptions.push(processManager.onDidProcessChange(() => {
         statusBar.updateProcesses(processManager.getAll().length);
         ChatPanel.panels.forEach(panel => panel.updateGeneratingState());   
     }));
 
+    return context;
+
     } catch (e: any) {
         Logger.error("CRITICAL ERROR during extension activation", e);
         vscode.window.showErrorMessage(`Lollms failed to activate: ${e.message}`);
+        throw e;
     }
 }
 
@@ -605,25 +630,32 @@ async function showConductWebview(context: vscode.ExtensionContext) {
             </div>
 
             <div class="footer">
-                <button class="btn-secondary" onclick="sendMessage('decline')">Maybe Later</button>
-                <button class="btn-primary" onclick="sendMessage('agree')">I'm In, Let's Code</button>
+                <button class="btn-secondary" id="btn-decline">Maybe Later</button>
+                <button class="btn-primary" id="btn-agree">I'm In, Let's Code</button>
             </div>
         </div>
 
         <script>
             const vscode = acquireVsCodeApi();
-            function sendMessage(cmd) {
-                vscode.postMessage({ command: cmd });
-            }
+            
+            document.getElementById('btn-agree').addEventListener('click', () => {
+                vscode.postMessage({ command: 'agree' });
+            });
+            
+            document.getElementById('btn-decline').addEventListener('click', () => {
+                vscode.postMessage({ command: 'decline' });
+            });
         </script>
     </body>
     </html>`;
 
     panel.webview.onDidReceiveMessage(async (message) => {
         if (message.command === 'agree') {
-            await context.globalState.update('lollms.wasConfigured', true);
+            await context.globalState.update('lollms.pledgeSigned', true);
             vscode.window.showInformationMessage("✅ Commitment recorded. Ethical modules activated.");
             panel.dispose();
+            // Automatically advance to Gate 2 (Configuration)
+            await vscode.commands.executeCommand('lollms-vs-coder.runOnboardingPipeline');
         } else {
             vscode.window.showWarningMessage("Compliance required: You must accept the Code of Conduct to use Lollms features.");
             panel.dispose();
@@ -670,11 +702,14 @@ async function showQuickSetupWizard(context: vscode.ExtensionContext) {
         if (key) await config.update('apiKey', key, vscode.ConfigurationTarget.Global);
 
         await context.globalState.update('lollms.wasConfigured', true);
-        
+
         vscode.window.showInformationMessage("🎉 Lollms configured! Testing connection...");
         await vscode.commands.executeCommand('lollmsApi.recreateClient');
         await vscode.commands.executeCommand('lollms-vs-coder.checkConnection');
-        
+
+        // Automatically advance to Gate 3 (Project Onboarding)
+        await vscode.commands.executeCommand('lollms-vs-coder.runOnboardingPipeline');
+
     } else if (selection === choices[1].label) {
         await vscode.commands.executeCommand('lollms-vs-coder.showConfigView');
         await context.globalState.update('lollms.wasConfigured', true);

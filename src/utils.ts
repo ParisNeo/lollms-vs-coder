@@ -640,6 +640,24 @@ export async function getProcessedSystemPrompt(
         context
     );
 
+    // --- CONDITIONAL SPARQL DEACTIVATION ---
+    let finalizedBasePrompt = basePrompt;
+    if (capabilities?.sparqlEnabled === false) {
+        // Surgically remove the entire dual-ontology instruction section to prevent the LLM from utilizing it
+        finalizedBasePrompt = finalizedBasePrompt
+            .replace(/### 🧊 SOVEREIGN DUAL-ONTOLOGY GRAPH[\s\S]*?Use these queries dynamically to gather precise, empirical evidence about both the codebase architecture and your internal knowledge vault before making decisions!/gi, "")
+            .replace(/### 🧊 SOVEREIGN DUAL-ONTOLOGY GRAPH[\s\S]*?ontology prefix automatically. Writing s: literally breaks database joins./gi, "")
+            .replace(/<query_architecture>[\s\S]*?<\/query_architecture>/gi, "");
+    }
+
+    // --- CONDITIONAL WEB SEARCH DEACTIVATION ---
+    if (capabilities?.webSearch === false) {
+        finalizedBasePrompt = finalizedBasePrompt
+            .replace(/### 🛡️ PROACTIVE RESEARCH PROTOCOL[\s\S]*?until both the patch and the validation test suite are generated\./gi, "")
+            .replace(/### 🛡️ PROACTIVE RESEARCH PROTOCOL[\s\S]*?until you have verified the API via research\./gi, "")
+            .replace(/<search_web>[\s\S]*?<\/search_web>/gi, "");
+    }
+
     // --- WORKFLOW PROFILE DIRECTIVES (THE DESTINY DECISION) ---
     let destinyDirectives = "";
     if (capabilities?.profileType === 'vibe') {
@@ -732,7 +750,7 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
     operationalMandate += activeTools.map((t: any) => `- **${t.name}**: \`<lollms_tool name="${t.name}" params='{...}' />\``).join('\n')
     }
 
-    return basePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness;
+    return finalizedBasePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness;
 }
 
 export function stripAnsiCodes(text: string): string {

@@ -342,27 +342,50 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
      * Goal: Scout and prepare context for the Discussion LLM.
      */
     public async getLibrarianSystemPrompt(allowedTools: ToolDefinition[], importedSkillIds?: string[]): Promise<string> {
-        return `You are the **Lead Project Librarian**.
-    Your goal is to optimize the project context and build the technical briefing for the team.
+        const { ChatPanel } = require('./commands/chatPanel/chatPanel');
+        const activeDiscussion = ChatPanel.currentPanel?.getCurrentDiscussion();
+        const sparqlEnabled = activeDiscussion?.capabilities?.sparqlEnabled !== false;
 
+        let graphSection = `
     ### 📊 SOVEREIGN CODE GRAPH & PATTERNS
     - **GRAPH-DRIVEN DISCOVERY (MANDATORY)**: You MUST consult the **Architecture Graph** (\`read_code_graph\` or \`query_architecture\`) before blindly reading files or running text searches. The graph is the absolute source of truth for the project's class hierarchies, call patterns, and module dependencies.
     - **ONTOLOGY ALIGNMENT**: Use SPARQL-lite queries on \`query_architecture\` to map out exactly which files import a library or call a target method. This is 10x faster than raw content grep and protects your attention map.
+        `;
 
+        if (!sparqlEnabled) {
+            graphSection = "";
+        }
+
+        const constitutionLines = [
+            "1. **SPATIAL AWARENESS (MANDATORY)**: Before asking for a file, look at the tree. If it is marked **[C]**, you ALREADY possess it. Asking for it again is a system violation.",
+            "2. **ATTENTION HYGIENE**: You MUST remove files that are not directly relevant to the current question using \`remove_files\`."
+        ];
+
+        if (sparqlEnabled) {
+            constitutionLines.push("3. **SCOUTING**: Use \`read_file_relations\` or SPARQL queries to find dependencies. Do not guess.");
+            constitutionLines.push("4. **TOOL HYGIENE**: You are STRICTLY FORBIDDEN from calling non-existent tools like \`list_files\`, \`list_dir\`, or raw directory listings. The file tree provided in your context contains the entire codebase structure. Use the Code Graph or \`query_architecture\` if you need structural information.");
+        } else {
+            constitutionLines.push("3. **SCOUTING**: Use \`read_file_relations\` to find dependencies. Do not guess.");
+            constitutionLines.push("4. **TOOL HYGIENE**: You are STRICTLY FORBIDDEN from calling non-existent tools like \`list_files\`, \`list_dir\`, or raw directory listings. The file tree provided in your context contains the entire codebase structure.");
+        }
+
+        constitutionLines.push("5. **DOCUMENTATION**: Record all technical findings in the 'Briefing' using \`add_briefing_entry\`. This briefing is the ONLY way the Chat LLM will understand the project's \"Hidden Logic\".");
+        constitutionLines.push("6. **NO IMPLEMENTATION**: You are a Scout, not a Coder. Do NOT attempt to fix code. Your job finishes when the right files are loaded and the briefing is clear.");
+
+        const filteredTools = sparqlEnabled ? allowedTools : allowedTools.filter(t => t.name !== 'query_architecture' && t.name !== 'read_code_graph');
+
+        return `You are the **Lead Project Librarian**.
+    Your goal is to optimize the project context and build the technical briefing for the team.
+    ${graphSection}
     ### 🧠 NEURAL MEMORY INTEGRATION (TIERED KNOWLEDGE)
     - **ENGRAMS & SKILLS**: When you discover a project-specific standard, library quirk, or crucial dependency relation, do NOT let it get lost in chat history. You MUST use \`store_knowledge\` or write a \`<project_memory action="add">\` tag to save it to our **Tiered Neural Memory System**.
     - **HYDRATION**: Search through latent memory handles and promote relevant skills or legacy engrams to active working memory to keep the context grounded.
 
     ### 📜 LIBRARIAN CONSTITUTION
-    1. **SPATIAL AWARENESS (MANDATORY)**: Before asking for a file, look at the tree. If it is marked **[C]**, you ALREADY possess it. Asking for it again is a system violation.
-    2. **ATTENTION HYGIENE**: You MUST remove files that are not directly relevant to the current question using \`remove_files\`.
-    3. **SCOUTING**: Use \`read_file_relations\` or SPARQL queries to find dependencies. Do not guess.
-    4. **TOOL HYGIENE**: You are STRICTLY FORBIDDEN from calling non-existent tools like \`list_files\`, \`list_dir\`, or raw directory listings. The file tree provided in your context contains the entire codebase structure. Use the Code Graph or \`query_architecture\` if you need structural information.
-    5. **DOCUMENTATION**: Record all technical findings in the 'Briefing' using \`add_briefing_entry\`. This briefing is the ONLY way the Chat LLM will understand the project's "Hidden Logic".
-    6. **NO IMPLEMENTATION**: You are a Scout, not a Coder. Do NOT attempt to fix code. Your job finishes when the right files are loaded and the briefing is clear.
+    ${constitutionLines.join('\n    ')}
 
     ### 🛠️ AVAILABLE LIBRARIAN TOOLS:
-    ${allowedTools.map(t => `- ${t.name}: ${t.description}`).join('\n')}
+    ${filteredTools.map(t => `- ${t.name}: ${t.description}`).join('\n')}
     `;
     }
 
@@ -371,12 +394,24 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
      * Goal: Discover, Assemble, and Implement.
      */
     public async getBuilderSystemPrompt(allowedTools: ToolDefinition[], importedSkillIds?: string[]): Promise<string> {
-        return `You are the **Sovereign Project Builder**.
-    Your goal is to autonomously implement the user's request.
+        const { ChatPanel } = require('./commands/chatPanel/chatPanel');
+        const activeDiscussion = ChatPanel.currentPanel?.getCurrentDiscussion();
+        const sparqlEnabled = activeDiscussion?.capabilities?.sparqlEnabled !== false;
 
+        let graphSection = `
     ### 📊 GRAPH-BASED ARCHITECTURE AWARENESS
     - **NO ISOLATED CODE**: You are forbidden from modifying files without understanding their structural neighborhood. You MUST consult the **Sovereign Code Graph** (\`read_code_graph\` or \`query_architecture\`) before creating new files or changing existing methods to ensure your implementation perfectly aligns with the project's design patterns and doesn't introduce duplicate classes or circular imports.
+        `;
 
+        if (!sparqlEnabled) {
+            graphSection = "";
+        }
+
+        const filteredTools = sparqlEnabled ? allowedTools : allowedTools.filter(t => t.name !== 'query_architecture' && t.name !== 'read_code_graph');
+
+        return `You are the **Sovereign Project Builder**.
+    Your goal is to autonomously implement the user's request.
+    ${graphSection}
     ### 🧠 NEURAL MEMORY PERFUSION
     - **FACT PERSISTENCE**: Every time you resolve a compiler error, configure a new dependency, or establish a coding standard, you MUST save this rule into the **Sovereign Memory Vault** using a \`<project_memory action="add" importance="100">\` tag. This ensures your learnings survive across turns and are immediately available to other sub-agents.
     - **SKILL PROJECTION**: Search and use the active skills in your memory context to write safe, clean, idiomatic code that respects the project's DNA.
@@ -384,7 +419,7 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
     ### 🛠️ ERROR RECOVERY & JSON HYGIENE
     - **STRICT SINGLE-TOOL RULE**: You are FORBIDDEN from outputting multiple JSON blocks in a single response. You must output exactly ONE valid JSON object per turn representing your next technical step.
     - If you receive an "Unknown tool" error, DO NOT repeat the call. Check the 'AVAILABLE TOOLS' list below and pivot to a different strategy (e.g., use 'execute_command' to run 'ls' or 'grep').
-    - If you are stuck in a loop, use 'read_code_graph' to reset your awareness.
+    ${sparqlEnabled ? "- If you are stuck in a loop, use 'read_code_graph' to reset your awareness." : ""}
     - **JSON ESCAPING MANDATE**: When outputting tool parameters containing newlines, quotes, or backslashes, you MUST escape them correctly. Do NOT write raw unescaped newlines or double quotes inside a JSON string value, as this causes parser failures like "Unterminated string in JSON".
 
     ### 🏗️ BUILDER PROTOCOL
@@ -394,7 +429,7 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
     4. **PROGRESSION**: Your mission is only complete when the code is manifested on disk and the user has been told how to verify it.
 
     ### 🛠️ AVAILABLE BUILDER TOOLS:
-    ${allowedTools.map(t => `- ${t.name}: ${t.description}`).join('\n')}
+    ${filteredTools.map(t => `- ${t.name}: ${t.description}`).join('\n')}
     `;
     }
 

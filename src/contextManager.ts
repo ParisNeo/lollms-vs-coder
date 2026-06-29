@@ -348,6 +348,11 @@ export class ContextManager {
       onProgress?: (percentage: number) => void,
       capabilities?: DiscussionCapabilities
   ): Promise<string> {
+      // --- GREP/TREE ACCESS CONTROL GATE ---
+      if (capabilities && capabilities.grepEnabled === false) {
+          return '## 🌳 PROJECT STRUCTURE\n*(Grep/File indexing is currently deactivated by the user to save CPU. Toggle the GREP badge in the HUD to activate.)*\n';
+      }
+
       if (!this.contextStateProvider || !vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
         return '## 🌳 PROJECT STRUCTURE\n\n*No project structure available - no workspace folder found.*\n';
       }
@@ -655,6 +660,9 @@ export class ContextManager {
             const pct = Math.round((filesProcessed / totalFiles) * 100);
             options.onProgress(pct);
         }
+
+        // Yield control back to the Extension Host event loop to prevent UI unresponsiveness
+        await new Promise(resolve => setTimeout(resolve, 0));
 
         const resolution = await this.resolveWorkspaceFromPath(fileEntry.path);
 
@@ -988,6 +996,13 @@ export class ContextManager {
     options: { matchCase: boolean, wholeWord: boolean, include?: string, exclude?: string, literal?: boolean } = { matchCase: false, wholeWord: false },
     signal?: AbortSignal
   ): Promise<{ path: string, snippet: string, line?: string }[]> {
+    // --- GREP ACCESS CONTROL GATE ---
+    const capabilities = this.contextStateProvider?.context.globalState.get<any>('lollms_last_capabilities');
+    if (capabilities && capabilities.grepEnabled === false) {
+        Logger.info("[Grep Gate] Aborting workspace content search: GREP engine is deactivated by user settings.");
+        return [{ path: "Security Notice", snippet: "*(Grep indexer is currently deactivated by the user to save resources. Toggle the GREP badge in the HUD to activate.)*" }];
+    }
+
     const results: { path: string, snippet: string, line?: string }[] = [];
     const maxResults = 100;
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -2239,6 +2254,13 @@ Example:
   public async setCachedTokens(filePath: string, hash: string, tokens: number) {
     this._tokenCache.files[filePath] = { hash, tokens };
     await this.savePersistentTokenCache();
+  }
+
+  public async removeCachedTokens(filePath: string) {
+    if (this._tokenCache.files[filePath]) {
+        delete this._tokenCache.files[filePath];
+        await this.savePersistentTokenCache();
+    }
   }
 
   public async updateSegmentTokens(segment: 'tree' | 'system' | 'history', count: number) {

@@ -655,7 +655,13 @@ export class SettingsPanel {
                     vscode.l10n.t({ key: 'info.configSaved', message: 'Configuration saved. Recreating LollmsAPI...' })
                   );
                   Logger.info('Configuration saved successfully.');
-                  await vscode.commands.executeCommand('lollmsApi.recreateClient');
+                  
+                  // --- NON-BLOCKING CLIENT RECREATION ---
+                  // Re-create client asynchronously so the webview is immediately notified of save completion
+                  // and doesn't get locked by network timeout/server lag
+                  vscode.commands.executeCommand('lollmsApi.recreateClient').then(() => {
+                      vscode.commands.executeCommand('lollms-vs-coder.runOnboardingPipeline');
+                  });
                   
                   // REFRESH: Send signal to webview that save is complete
                   this._panel.webview.postMessage({ 

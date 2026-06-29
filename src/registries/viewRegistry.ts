@@ -36,6 +36,7 @@ export class TabsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
             new TabItem("MCP Tools", "mcp", "plug", activeTab === 'mcp'),
             new TabItem("Environment", "env", "symbol-variable", activeTab === 'env'),
             new TabItem("Sovereign Billing Dashboard", "billing", "credit-card", activeTab === 'billing'),
+            new TabItem("Active Processes", "processes", "sync", activeTab === 'processes'),
             new TabItem("Manage Volumes", "lab", "database", false), 
             new TabItem("Git Manager", "git", "git-merge", activeTab === 'git'),
             new TabItem("Architecture Graph", "graph", "graph", activeTab === 'graph')

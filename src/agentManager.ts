@@ -203,6 +203,7 @@ Keep it strictly technical and extremely concise.`
         const DISCUSSION_SAFE_LIST = [
             'add_files_to_context',
             'remove_files_from_context',
+            'navigate_to_code',
             'move_file',
             'delete_file',
             'generate_image',
@@ -221,9 +222,22 @@ Keep it strictly technical and extremely concise.`
             return [];
         }
 
+        const sparqlEnabled = this.currentDiscussion?.capabilities?.sparqlEnabled !== false;
+        const webSearchEnabled = this.currentDiscussion?.capabilities?.webSearch === true;
+
         const tools = this.toolManager.getAllTools().filter(t => {
             // Strictly exclude any blacklisted tools immediately
             if (this.sessionState.blacklistedTools && this.sessionState.blacklistedTools.has(t.name)) return false;
+
+            // Dynamically remove SPARQL-specific tools when deactivated
+            if (!sparqlEnabled && (t.name === 'query_architecture' || t.name === 'read_code_graph')) {
+                return false;
+            }
+
+            // Dynamically remove Web-Search tools when deactivated
+            if (!webSearchEnabled && (t.name === 'search_web' || t.name === 'search_wikipedia' || t.name === 'search_stackoverflow' || t.name === 'scrape_website')) {
+                return false;
+            }
 
             if (t.name === 'submit_response') return true;
             if (t.name === 'read_discussion_file' && attachments === 0) return false;
@@ -1547,8 +1561,17 @@ Please provide a clear, concise final response to the user summarizing the outco
 
     private async runSingleTask(task: Task, signal: AbortSignal, modelOverride?: string): Promise<{ success: boolean, output: string }> {
         if (!this.currentPlan) return { success: false, output: "" };
+
+        // Generate execution fingerprint to prevent concurrent double-triggering of the identical task
+        const executionFingerprint = `${task.action}:${JSON.stringify(task.parameters)}`;
+        if (this.activeExecutions.has(executionFingerprint)) {
+            Logger.info(`[Harness] De-duplicating concurrent task execution: ${task.action}`);
+            return { success: false, output: `🛑 CONCURRENCY GUARD: This identical task is already running. Duplicate execution prevented.` };
+        }
+        this.activeExecutions.add(executionFingerprint);
+
         const specialistModel = task.model || modelOverride || this.currentDiscussion?.model;
-        
+
         if (['generate_code', 'delete_file', 'move_file'].includes(task.action)) {
             await this.performGitBackup(`Checkpoint: Task ${task.id} - ${task.description}`);
         }
@@ -2006,6 +2029,7 @@ Please provide a clear, concise final response to the user summarizing the outco
         }
 
         await this.displayPlan(this.currentPlan);
+        this.activeExecutions.delete(executionFingerprint);
         return result;
     }
 

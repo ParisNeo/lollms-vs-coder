@@ -7,6 +7,7 @@ import { registerSelectModelCommand } from '../commands/selectModel';
 import { ProcessItem } from '../commands/treeItems';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { BillingDashboardPanel } from '../commands/billingDashboardPanel';
+import { ProcessesDashboardPanel } from '../commands/processesDashboardPanel';
 
 
 export function registerUICommands(context: vscode.ExtensionContext, services: LollmsServices) {
@@ -149,13 +150,17 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         vscode.commands.executeCommand('lollms-vs-coder.fixAllErrors');
     });
 
+    safeRegister('lollms-vs-coder.showProcessesTab', () => {
+        setTab('processes');
+        ProcessesDashboardPanel.createOrShow(services.extensionUri, services.processManager);
+    });
+
     // Initialize default tab
     const savedTab = context.globalState.get<'chat' | 'librarian' | 'git' | 'graph' | 'lab'>('lollms.activeTab', 'chat');
     vscode.commands.executeCommand('setContext', 'lollms:activeTab', savedTab);
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showRunningProcesses', () => {
-        // Reveal the processes view in the sidebar
-        vscode.commands.executeCommand('lollmsProcessesView.focus');
+        vscode.commands.executeCommand('lollms-vs-coder.showProcessesTab');
     }));
 
     // NEW: Cancel Process Command
@@ -315,7 +320,7 @@ export const myCustomTool: ToolDefinition = {
             InfoPanel.createOrShow(services.extensionUri, title, content || "No content available.");
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.viewFullContext', async (type: 'system' | 'files' | 'chat' | 'tree' | 'images') => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.viewFullContext', async (type: 'system' | 'files' | 'chat' | 'tree' | 'images' | 'memory' | 'briefing' | 'skills' | 'diagrams') => {
         const panel = ChatPanel.currentPanel || Array.from(ChatPanel.panels.values())[0];
         if (!panel) {
             vscode.window.showWarningMessage("No active Chat found to display context from.");
@@ -380,6 +385,31 @@ export const myCustomTool: ToolDefinition = {
                         ).join('\n\n---\n\n');
                     } else {
                         content = "*No images currently in context.*";
+                    }
+                } else if (type === 'memory') {
+                    title = "Active Project Memory";
+                    content = services.projectMemoryManager 
+                        ? await services.projectMemoryManager.getFormattedMemoryBlock(
+                            disc?.messages[disc.messages.length - 1]?.content || "",
+                            services.skillsManager
+                          )
+                        : "*Project Memory Manager not active.*";
+                } else if (type === 'briefing') {
+                    title = "Mission Briefing & Constraints";
+                    content = services.contextManager.renderBriefing(disc);
+                } else if (type === 'skills') {
+                    title = "Active Context Skills";
+                    content = contextData.skillsContent || "*No active skills currently loaded in context.*";
+                } else if (type === 'diagrams') {
+                    title = "Active System Diagrams";
+                    content = "";
+                    if (disc?.activeDiagrams && disc.activeDiagrams.length > 0) {
+                        for (const diagType of disc.activeDiagrams) {
+                            const mermaidCode = services.codeGraphManager.generateMermaid(diagType);
+                            content += `### ${diagType.replace('_', ' ').toUpperCase()}\n\`\`\`mermaid\n${mermaidCode}\n\`\`\`\n\n`;
+                        }
+                    } else {
+                        content = "*No architectural diagrams currently active.*";
                     }
                 }
 

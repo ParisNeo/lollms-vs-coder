@@ -41,6 +41,7 @@ Add a fast librarian mode (single shot, just take a look at the current task and
 Make skills md with claude style
 
 # IMPORTANT
+- details what's happening when 🧠 Loading file content... It is very long sometimes making the ui freeze
 - adding external files is not working
 - Add information about the context size/file size in tokens in the built context
 - Add a new personality to build optimized files selections for a specific problem. it starts be cleaning up the context then does the selection

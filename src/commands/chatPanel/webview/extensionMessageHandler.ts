@@ -1483,7 +1483,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         // Update specific Apply button for this block
                         const mainBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
                         if (mainBtn) restoreBtn(mainBtn);
-                        if (message.hunkIndex !== undefined) {
+                        if (message.hunkIndex !== undefined && message.hunkIndex !== -1) {
                             // TAB SYNC: Find the specific tab and pane
                             const tab = blockEl.querySelector(`.hunk-tab-${message.hunkIndex}`) as HTMLElement;
                             const pane = blockEl.querySelector(`.hunk-pane-${message.hunkIndex}`) as HTMLElement;
@@ -1510,6 +1510,27 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
 
                         // Re-sync main button state for the entire message
+                        checkAndSyncMessageAppliedState(message.messageId);
+                    } else if (message.success && message.blockIndex === undefined) {
+                        // --- AUTO-APPLY FALLBACK ---
+                        // If applied without a blockIndex (e.g. from background automation pipeline),
+                        // mark all blocks of this messageId as applied in the state and sync the UI!
+                        if (!state.appliedState[message.messageId]) {
+                            state.appliedState[message.messageId] = {};
+                        }
+
+                        const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                        if (wrapper) {
+                            const blocks = wrapper.querySelectorAll('details.code-collapsible');
+                            blocks.forEach((block: any, idx) => {
+                                state.appliedState[message.messageId][idx] = [-1];
+                                const applyBtn = block.querySelector('.code-actions .apply-btn') as HTMLButtonElement;
+                                if (applyBtn) {
+                                    applyBtn.classList.add('applied');
+                                    applyBtn.innerHTML = '<i class="codicon codicon-check"></i>';
+                                }
+                            });
+                        }
                         checkAndSyncMessageAppliedState(message.messageId);
 
 

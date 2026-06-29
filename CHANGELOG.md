@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-06-29 01:28]
+
+- style(chatPanel): use VS Code theme variables and fix apply button logic
+
 ## [2026-06-28 09:46]
 
 - feat: upgrade to version 0.10.2 and enhance chat panel and agent management

@@ -522,6 +522,7 @@ body.agent-mode-active .chat-container {
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     border: 1px solid var(--vscode-widget-border) !important;
+    color: var(--vscode-editor-foreground) !important;
     box-shadow: 0 16px 40px rgba(0,0,0,0.15) !important;
     overflow: visible !important; 
     transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
@@ -2145,7 +2146,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 }
 
 .fused-hud-header {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, transparent 100%);
+    background: var(--vscode-editorWidget-background);
     padding: 12px 16px;
     border-radius: 12px;
     display: flex;
@@ -2239,13 +2240,13 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .token-progress-container { 
     width: 100%; 
     height: 12px; 
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--vscode-input-background);
     border-radius: 6px; 
     overflow: hidden; 
-    border: 1px solid rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--vscode-widget-border);
     display: flex; /* Stack children horizontally */
     cursor: pointer;
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .token-bar-segment {
@@ -2471,10 +2472,11 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     font-weight: 600;
     cursor: default;
     user-select: none;
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--vscode-widget-border);
+    background: var(--vscode-editor-inactiveSelectionBackground);
+    color: var(--vscode-editor-foreground);
     transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 .mode-badge.active.agent { 
@@ -2521,15 +2523,15 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     box-shadow: 0 2px 8px rgba(15, 157, 88, 0.3);
 }
 .mode-badge.model { 
-    background-color: rgba(255, 255, 255, 0.05); 
+    background-color: var(--vscode-editor-inactiveSelectionBackground); 
     color: var(--vscode-foreground); 
     padding-left: 10px;
-    border-color: rgba(255, 255, 255, 0.1);
+    border-color: var(--vscode-widget-border);
 }
 .mode-badge.personality { 
-    background-color: rgba(255, 255, 255, 0.05); 
+    background-color: var(--vscode-editor-inactiveSelectionBackground); 
     color: var(--vscode-foreground); 
-    border-color: rgba(255, 255, 255, 0.08); 
+    border-color: var(--vscode-widget-border); 
     border-style: dashed; 
     padding-left: 8px; 
 }
@@ -2537,13 +2539,13 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 .mode-badge.inactive {
     background-color: transparent;
     color: var(--vscode-descriptionForeground);
-    border-color: rgba(255, 255, 255, 0.05);
+    border-color: var(--vscode-widget-border);
     opacity: 0.6;
 }
 .mode-badge.inactive:hover {
     opacity: 1;
-    background-color: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.1);
+    background-color: var(--vscode-editor-inactiveSelectionBackground);
+    border-color: var(--vscode-focusBorder);
     color: var(--vscode-foreground);
 }
 

@@ -5671,6 +5671,19 @@ details[open] > summary .folder-handle::before {
     font-size: 14px;
 }
 
+/* --- INTERACTIVE HUD LINKS --- */
+.row-path.clickable {
+    cursor: pointer !important;
+    text-decoration: underline dotted;
+    transition: color 0.15s ease, opacity 0.15s;
+}
+
+.row-path.clickable:hover {
+    color: var(--vscode-textLink-activeForeground) !important;
+    text-decoration: underline solid;
+    opacity: 1 !important;
+}
+
 .status-success .status-icon { color: var(--vscode-charts-green); }
 .status-failed .status-icon { color: var(--vscode-charts-red); }
 .status-applying .status-icon { animation: spin 1s linear infinite; }

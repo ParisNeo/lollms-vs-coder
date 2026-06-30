@@ -99,12 +99,29 @@ export class ChatPanel {
             vscode.Uri.joinPath(services.extensionUri, 'media'),
             vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri: services.extensionUri
         ],
-        retainContextWhenHidden: true
+        retainContextWhenHidden: true // Enabled with optimized state-hydration to speed up tab switching significantly
       }
     );
     panel.iconPath = vscode.Uri.joinPath(services.extensionUri, 'media', 'lollms-icon.svg');
 
     const newPanel = new ChatPanel(panel, services, discussionId);
+
+    // --- HIGH-SPEED WATCHDOG ---
+    // Reduced delay to 350ms to instantly recover if an update/restart corrupts the panel state.
+    let bootstrapTimeout = setTimeout(() => {
+        if (!newPanel._isWebviewReady) {
+            Logger.warn(`[Immunizer] Webview bootstrap timeout detected on ${discussionId}. Quick re-hydration.`);
+            newPanel.dispose();
+            vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', discussionId);
+        }
+    }, 350);
+
+    panel.webview.onDidReceiveMessage((m) => {
+        if (m.command === 'webview-bootstrap-ok' || m.command === 'webview-ready') {
+            clearTimeout(bootstrapTimeout);
+        }
+    });
+
     ChatPanel.panels.set(discussionId, newPanel);
     ChatPanel.currentPanel = newPanel;
     return newPanel;
@@ -682,308 +699,287 @@ export class ChatPanel {
       }
   }
 
-  public async loadDiscussion(): Promise<void> {
-    if (this._isDisposed) return;
+    public async loadDiscussion(): Promise<void> {
+        if (this._isDisposed) return;
 
-    // REMOVED: No more showProjectLoader here. We want a seamless transition.
+        if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
+            let discussion: Discussion | null;
+            if (this.discussionId.startsWith('temp-')) {
+                discussion = {
+                    id: this.discussionId,
+                    title: 'Temporary Discussion',
+                    messages: [],
+                    timestamp: Date.now(),
+                    groupId: null,
+                    plan: null,
+                    capabilities: { ...this._discussionCapabilities, agentMode: false }, 
+                    personalityId: 'default_coder',
+                    importedSkills: []
+                };
+            } else {
+                discussion = await this._discussionManager.getDiscussion(this.discussionId);
+            }
 
-    if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
-          let discussion: Discussion | null;
-          if (this.discussionId.startsWith('temp-')) {
-              discussion = {
-                  id: this.discussionId,
-                  title: 'Temporary Discussion',
-                  messages: [],
-                  timestamp: Date.now(),
-                  groupId: null,
-                  plan: null,
-                  capabilities: { ...this._discussionCapabilities, agentMode: false }, 
-                  personalityId: 'default_coder',
-                  importedSkills: []
-              };
-          } else {
-              discussion = await this._discussionManager.getDiscussion(this.discussionId);
-          }
+            if (discussion) {
+                if (!discussion.messages || !Array.isArray(discussion.messages)) {
+                    discussion.messages = [];
+                }
 
-          if (discussion) {
-              // Ensure critical fields exist in memory but DO NOT save immediately
-              // Saving during load is a destructive race condition
-              if (!discussion.messages || !Array.isArray(discussion.messages)) {
-                  discussion.messages = [];
-              }
-              
-              discussion.messages.forEach(msg => {
-                  if (!msg.id) {
-                      msg.id = Date.now().toString() + Math.random().toString(36).substring(2);
-                  }
-              });
+                discussion.messages.forEach(msg => {
+                    if (!msg.id) {
+                        msg.id = Date.now().toString() + Math.random().toString(36).substring(2);
+                    }
+                });
 
-              if (!('plan' in discussion)) {
-                  discussion.plan = null;
-              }
+                if (!('plan' in discussion)) {
+                    discussion.plan = null;
+                }
 
-              if (discussion.capabilities) {
-                  this._discussionCapabilities = discussion.capabilities;
-              } else {
-                  discussion.capabilities = this._discussionCapabilities;
-              }
+                if (discussion.capabilities) {
+                    this._discussionCapabilities = discussion.capabilities;
+                } else {
+                    discussion.capabilities = this._discussionCapabilities;
+                }
 
-              if (!discussion.personalityId) {
-                  discussion.personalityId = 'default_coder';
-              }
+                if (!discussion.personalityId) {
+                    discussion.personalityId = 'default_coder';
+                }
 
-              if (!discussion.importedSkills) {
-                  discussion.importedSkills = [];
-              }
+                if (!discussion.importedSkills) {
+                    discussion.importedSkills = [];
+                }
 
-              this._currentDiscussion = discussion;
-              this._panel.title = this._currentDiscussion.title;
+                this._currentDiscussion = discussion;
+                this._panel.title = this._currentDiscussion.title;
 
-              // Ensure AgentManager internal state matches the discussion's saved capability
-              if (this.agentManager) {
-                  const savedAgentMode = !!this._discussionCapabilities.agentMode;
-                  if (this.agentManager.getIsActive() !== savedAgentMode) {
-                      // Synchronize the manager's state without sending a system message to chat
-                      (this.agentManager as any).isActive = savedAgentMode;
-                  }
-              }
-          } else {
-              this.log(`Discussion ${this.discussionId} not found.`, 'ERROR');
-              this._panel.webview.postMessage({ command: 'updateTokenProgress' });
-              vscode.window.showErrorMessage(`Lollms: Could not load discussion ${this.discussionId}. It may have been deleted.`);
-              this.dispose();
-              return;
-          }
-      }
+                if (this.agentManager) {
+                    const savedAgentMode = !!this._discussionCapabilities.agentMode;
+                    if (this.agentManager.getIsActive() !== savedAgentMode) {
+                        (this.agentManager as any).isActive = savedAgentMode;
+                    }
+                }
+            } else {
+                this.log(`Discussion ${this.discussionId} not found.`, 'ERROR');
+                this._panel.webview.postMessage({ command: 'updateTokenProgress' });
+                vscode.window.showErrorMessage(`Lollms: Could not load discussion ${this.discussionId}. It may have been deleted.`);
+                this.dispose();
+                return;
+            }
+        }
 
-      if (!this._isWebviewReady) {
-          this.log("Webview not ready, queuing load.");
-          this._isLoadPending = true;
-          return;
-      }
-      this._isLoadPending = false;
+        if (!this._isWebviewReady) {
+            this.log("Webview not ready, queuing load.");
+            this._isLoadPending = true;
+            return;
+        }
+        this._isLoadPending = false;
 
-      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-      const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
-      const profiles = config.get('responseProfiles') || [];
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
+        const profiles = config.get('responseProfiles') || [];
 
-      if (this._contextManager) {
-          const cachedContext = this._contextManager.getLastContext();
-          let includedFiles: string[] = [];
-          try {
-              const provider = this._contextManager.getContextStateProvider();
-              const rawFiles = provider ? provider.getIncludedFiles() : [];
-              includedFiles = rawFiles.filter(f => f && f.path).map(f => f.path);
-          } catch (e) {
-              Logger.warn("Safeguard caught error reading included files.");
-          }
-          const projectSkills = await this._contextManager.getActiveProjectSkills();
-          const discussionSkills = this._currentDiscussion.importedSkills || [];
-          
-          const allSkillIds = Array.from(new Set([...projectSkills, ...discussionSkills]));
-          const UI_PREVIEW_LIMIT = 10000; // Aligned with updateContextAndTokens for consistency
+        if (this._contextManager) {
+            const cachedContext = this._contextManager.getLastContext();
+            let includedFiles: string[] = [];
+            try {
+                const provider = this._contextManager.getContextStateProvider();
+                const rawFiles = provider ? provider.getIncludedFiles() : [];
+                includedFiles = rawFiles.filter(f => f && f.path).map(f => f.path);
+            } catch (e) {
+                Logger.warn("Safeguard caught error reading included files.");
+            }
+            const projectSkills = await this._contextManager.getActiveProjectSkills();
+            const discussionSkills = this._currentDiscussion.importedSkills || [];
 
-          // Scan .lollms/selection/ folder for saved selections
-          let savedSelections: string[] = [];
-          const folders = vscode.workspace.workspaceFolders;
-          if (folders && folders.length > 0) {
-              const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
-              try {
-                  const entries = await vscode.workspace.fs.readDirectory(selectionDir);
-                  savedSelections = entries
-                      .filter(([name]) => name.endsWith('.lollms-ctx'))
-                      .map(([name]) => name);
-              } catch (e) {}
-          }
+            const allSkillIds = Array.from(new Set([...projectSkills, ...discussionSkills]));
+            const UI_PREVIEW_LIMIT = 10000;
 
-          if (cachedContext) {
-              const contextTextToSend = cachedContext.text.length > UI_PREVIEW_LIMIT 
-                  ? cachedContext.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Preview truncated for UI performance. Total: ${cachedContext.text.length} chars]`
-                  : cachedContext.text;
+            let savedSelections: string[] = [];
+            const folders = vscode.workspace.workspaceFolders;
+            if (folders && folders.length > 0) {
+                const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+                try {
+                    const entries = await vscode.workspace.fs.readDirectory(selectionDir);
+                    savedSelections = entries
+                        .filter(([name]) => name.endsWith('.lollms-ctx'))
+                        .map(([name]) => name);
+                } catch (e) {}
+            }
 
-            // Resolve tools for the UI during initial load
-            const discussionTools = this._currentDiscussion?.importedTools || [];
-            const projectTools = await this._contextManager.getActiveProjectTools();
-            const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
-            const equippedTools = this.agentManager.getTools()
-                .filter(t => allEquippedNames.includes(t.name))
-                .map(t => ({ name: t.name, description: t.description }));
+            if (cachedContext) {
+                const contextTextToSend = cachedContext.text.length > UI_PREVIEW_LIMIT 
+                    ? cachedContext.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Preview truncated for UI performance. Total: ${cachedContext.text.length} chars]`
+                    : cachedContext.text;
+
+                const discussionTools = this._currentDiscussion?.importedTools || [];
+                const projectTools = await this._contextManager.getActiveProjectTools();
+                const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
+                const equippedTools = this.agentManager.getTools()
+                    .filter(t => allEquippedNames.includes(t.name))
+                    .map(t => ({ name: t.name, description: t.description }));
+
+                this._panel.webview.postMessage({ 
+                    command: 'updateContext', 
+                    context: contextTextToSend,
+                    files: includedFiles,
+                    skills: cachedContext.importedSkills || [],
+                    tools: equippedTools || [],
+                    diagrams: cachedContext.diagrams || [],
+                    briefing: this._currentDiscussion?.discussion_data_zone || "",
+                    selections: savedSelections
+                });
+                this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
+            } else {
+                this._panel.webview.postMessage({ 
+                    command: 'updateContext', 
+                    context: '', 
+                    files: includedFiles,
+                    skills: allSkillIds.map(id => ({ id, name: '...' })),
+                    diagrams: (this._currentDiscussion.activeDiagrams || []).map(type => ({ type, mermaid: '' })),
+                    briefing: this._currentDiscussion?.discussion_data_zone || "",
+                    selections: savedSelections
+                });
+            }
+        }
+
+        const currentP = this._personalityManager?.getPersonality(this._currentDiscussion.personalityId || 'default_coder');
+        const safeMessages = (this._currentDiscussion.messages || []).map(m => ({
+            ...m,
+            personalityName: m.role === 'assistant' ? (m.personalityName || currentP?.name || 'Lollms') : undefined
+        }));
+
+        const workspaceFolders = (vscode.workspace.workspaceFolders ||[]).map(f => ({
+            name: f.name,
+            uri: f.uri.toString()
+        }));
+
+        const { AGENT_MISSION_PROFILES } = require('../../registries/agentProfiles');
+        this._panel.webview.postMessage({ 
+            command: 'loadDiscussion', 
+            messages: safeMessages,
+            isInspectorEnabled: isInspectorEnabled,
+            agentMode: !!this._discussionCapabilities.agentMode,
+            appliedState: this._currentDiscussion.appliedState || {},
+            currentModel: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
+            currentTemperature: this._discussionCapabilities.temperature ?? config.get<number>('temperature') ?? 0.7,
+            workspaceFolders: workspaceFolders,
+            agentProfiles: AGENT_MISSION_PROFILES
+        });
+
+        this._panel.webview.postMessage({ 
+            command: 'updateDiscussionCapabilities', 
+            capabilities: this._discussionCapabilities 
+        });
+
+        const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
+        if (activeGen) {
+            this.log(`Reconnecting to active generation for ${this.discussionId}`);
+
+            const tempMsg: ChatMessage = {
+                id: activeGen.messageId,
+                role: 'assistant',
+                content: activeGen.buffer,
+                model: activeGen.model,
+                startTime: activeGen.startTime
+            };
+            this._panel.webview.postMessage({ command: 'addMessage', message: tempMsg });
+
+            if (!this._activeGenerationListener || !activeGen.listeners.has(this._activeGenerationListener)) {
+                this.log("Attaching new listeners for active generation");
+
+                const listener = (chunk: string) => {
+                    if (!this._isDisposed && this._panel.webview) {
+                        this._panel.webview.postMessage({ 
+                            command: 'appendMessageChunk', 
+                            id: activeGen.messageId, 
+                            chunk: chunk 
+                        });
+                    }
+                };
+
+                const completionListener = (fullContent: string) => {
+                    if (!this._isDisposed && this._panel.webview) {
+                        this._panel.webview.postMessage({ 
+                            command: 'finalizeMessage', 
+                            id: activeGen.messageId, 
+                            fullContent: fullContent 
+                        });
+                        this.updateGeneratingState();
+                        this._activeGenerationListener = undefined;
+                        this._activeGenerationCompleteListener = undefined;
+                    }
+                };
+
+                this._activeGenerationListener = listener;
+                this._activeGenerationCompleteListener = completionListener;
+
+                activeGen.listeners.add(listener);
+                activeGen.onComplete.add(completionListener);
+            }
+
+            this.updateGeneratingState();
+        }
+
+        const { SYSTEM_RESPONSE_PROFILES } = require('../../utils');
+        const userProfiles = (Array.isArray(profiles) ? profiles : []).filter((p: any) => p && p.id);
+        const allProfiles = [...SYSTEM_RESPONSE_PROFILES, ...userProfiles.filter((p: any) => !SYSTEM_RESPONSE_PROFILES.some((sp: any) => sp.id === p.id))];
+
+        let isRepo = false;
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (workspaceFolder && this._gitIntegration) {
+            isRepo = await this._gitIntegration.isGitRepo(workspaceFolder);
+        }
+        this._panel.webview.postMessage({ command: 'updateGitRepoStatus', isRepo: isRepo });
+
+        if (this._discussionCapabilities.gitWorkflow && workspaceFolder) {
+            this.sendGitBranchState(workspaceFolder);
+        }
+
+        if (this._personalityManager) {
+            this._panel.webview.postMessage({
+                command: 'updatePersonalities',
+                personalities: this._personalityManager.getPersonalities(),
+                currentPersonalityId: this._currentDiscussion.personalityId
+            });
+        }
+
+        this.displayPlan(this._currentDiscussion.plan);
+
+        const isGenerating = !!this.processManager.getForDiscussion(this.discussionId);
+        if (isGenerating) {
+            this.updateGeneratingState();
+        }
+
+        if (this._currentDiscussion?.lastTokenMetrics) {
+            const m = this._currentDiscussion.lastTokenMetrics;
+
+            const provider = this._contextManager.getContextStateProvider();
+            const safeFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
 
             this._panel.webview.postMessage({ 
                 command: 'updateContext', 
-                context: contextTextToSend,
-                files: includedFiles,
-                skills: cachedContext.importedSkills || [],
-                tools: equippedTools || [],
-                diagrams: cachedContext.diagrams || [],
-                briefing: this._currentDiscussion?.discussion_data_zone || "",
-                selections: savedSelections
+                tools: m.activeTools || [],
+                skills: m.activeSkills || [],
+                files: safeFiles
             });
-            this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
-          } else {
-              // NO CACHE: Send minimal metadata immediately so the header appears right away
-              this._panel.webview.postMessage({ 
-                command: 'updateContext', 
-                context: '', 
-                files: includedFiles,
-                skills: allSkillIds.map(id => ({ id, name: '...' })),
-                diagrams: (this._currentDiscussion.activeDiagrams || []).map(type => ({ type, mermaid: '' })),
-                briefing: this._currentDiscussion?.discussion_data_zone || "",
-                selections: savedSelections
+
+            this._panel.webview.postMessage({
+                command: 'updateTokenProgress',
+                totalTokens: m.total,
+                contextSize: m.contextSize,
+                isApproximate: false,
+                segments: m.segments
             });
-          }
-      }
 
-      // Optimization: Enrich historical messages with personality names if missing
-      const currentP = this._personalityManager?.getPersonality(this._currentDiscussion.personalityId || 'default_coder');
-      const safeMessages = (this._currentDiscussion.messages || []).map(m => ({
-          ...m,
-          personalityName: m.role === 'assistant' ? (m.personalityName || currentP?.name || 'Lollms') : undefined
-      }));
-      
-      // Use a slightly faster serialization path for large histories
-      const workspaceFolders = (vscode.workspace.workspaceFolders ||[]).map(f => ({
-          name: f.name,
-          uri: f.uri.toString()
-      }));
+            this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+        } 
 
-      const { AGENT_MISSION_PROFILES } = require('../../registries/agentProfiles');
-      this._panel.webview.postMessage({ 
-          command: 'loadDiscussion', 
-          messages: safeMessages,
-          isInspectorEnabled: isInspectorEnabled,
-          agentMode: !!this._discussionCapabilities.agentMode, // Explicitly pass mode for UI theme
-          appliedState: this._currentDiscussion.appliedState || {},
-          currentModel: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
-          currentTemperature: this._discussionCapabilities.temperature ?? config.get<number>('temperature') ?? 0.7,
-          workspaceFolders: workspaceFolders,
-          agentProfiles: AGENT_MISSION_PROFILES
-      });
-      
-      // Ensure capabilities are also pushed so badges can render immediately on load
-      this._panel.webview.postMessage({ 
-          command: 'updateDiscussionCapabilities', 
-          capabilities: this._discussionCapabilities 
-      });
-      
-      const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
-      if (activeGen) {
-          this.log(`Reconnecting to active generation for ${this.discussionId}`);
-          
-          // Re-inject the partial message into the UI (since loadDiscussion wipes UI state)
-          const tempMsg: ChatMessage = {
-              id: activeGen.messageId,
-              role: 'assistant',
-              content: activeGen.buffer,
-              model: activeGen.model,
-              startTime: activeGen.startTime
-          };
-          this._panel.webview.postMessage({ command: 'addMessage', message: tempMsg });
-          
-          // Only attach new listeners if we haven't already attached them for this panel instance
-          if (!this._activeGenerationListener || !activeGen.listeners.has(this._activeGenerationListener)) {
-              this.log("Attaching new listeners for active generation");
-
-              const listener = (chunk: string) => {
-                  if (!this._isDisposed && this._panel.webview) {
-                      this._panel.webview.postMessage({ 
-                          command: 'appendMessageChunk', 
-                          id: activeGen.messageId, 
-                          chunk: chunk 
-                      });
-                  }
-              };
-              
-              const completionListener = (fullContent: string) => {
-                  if (!this._isDisposed && this._panel.webview) {
-                      this._panel.webview.postMessage({ 
-                          command: 'finalizeMessage', 
-                          id: activeGen.messageId, 
-                          fullContent: fullContent 
-                  });
-                      this.updateGeneratingState();
-                      
-                      // Cleanup
-                      this._activeGenerationListener = undefined;
-                      this._activeGenerationCompleteListener = undefined;
-                  }
-              };
-
-              this._activeGenerationListener = listener;
-              this._activeGenerationCompleteListener = completionListener;
-
-              activeGen.listeners.add(listener);
-              activeGen.onComplete.add(completionListener);
-          } else {
-              this.log("Listeners already attached for this panel, skipping.");
-          }
-          
-          this.updateGeneratingState();
-      }
-
-      // Merge System Profiles with User Profiles for the UI
-      const { SYSTEM_RESPONSE_PROFILES } = require('../../utils');
-      const userProfiles = (Array.isArray(profiles) ? profiles : []).filter((p: any) => p && p.id);
-      const allProfiles = [...SYSTEM_RESPONSE_PROFILES, ...userProfiles.filter((p: any) => !SYSTEM_RESPONSE_PROFILES.some((sp: any) => sp.id === p.id))];
-
-      let isRepo = false;
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-      if (workspaceFolder && this._gitIntegration) {
-          isRepo = await this._gitIntegration.isGitRepo(workspaceFolder);
-      }
-      this._panel.webview.postMessage({ command: 'updateGitRepoStatus', isRepo: isRepo });
-
-      if (this._discussionCapabilities.gitWorkflow && workspaceFolder) {
-          this.sendGitBranchState(workspaceFolder);
-      }
-
-      if (this._personalityManager) {
-          this._panel.webview.postMessage({
-              command: 'updatePersonalities',
-              personalities: this._personalityManager.getPersonalities(),
-              currentPersonalityId: this._currentDiscussion.personalityId
-          });
-      }
-
-      this.displayPlan(this._currentDiscussion.plan);
-      
-      // If we are already generating (e.g. handover from surgical), ensure overlay is visible
-      const isGenerating = !!this.processManager.getForDiscussion(this.discussionId);
-      if (isGenerating) {
-          this.updateGeneratingState();
-      }
-
-      // --- INSTANT HYDRATION ---
-      if (this._currentDiscussion?.lastTokenMetrics) {
-          const m = this._currentDiscussion.lastTokenMetrics;
-
-          // 🛡️ ULTRA-DEFENSIVE PATH EXTRACTION
-          // Render HUD Metadata immediately from cache
-          const provider = this._contextManager.getContextStateProvider();
-          const safeFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
-
-          this._panel.webview.postMessage({ 
-              command: 'updateContext', 
-              tools: m.activeTools || [],
-              skills: m.activeSkills || [],
-              files: safeFiles
-          });
-
-          this._panel.webview.postMessage({
-              command: 'updateTokenProgress',
-              totalTokens: m.total,
-              contextSize: m.contextSize,
-              isApproximate: false,
-              segments: m.segments
-          });
-
-          this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-      } 
-
-      // Always trigger a background sync to ensure accuracy, but now the UI is pre-filled
-      this.updateContextAndTokens({ isBackgroundSync: true });
-      await this._fetchAndSetModels(false);
-  }
+        // Non-blocking deferred calculations to prevent UI render blocking
+        setTimeout(() => {
+            this.updateContextAndTokens({ isBackgroundSync: true });
+            this._fetchAndSetModels(false);
+        }, 10);
+    }
 
   public async sendGitBranchState(folder: vscode.WorkspaceFolder) {
       if (!this._gitIntegration) return;
@@ -1066,7 +1062,7 @@ export class ChatPanel {
         }
 
         // --- IMMEDIATE INSTANT HYDRATION / REACTION ---
-        if (!isBackground && this._panel && this._panel.webview) {
+        if (this._panel && this._panel.webview) {
             try {
                 const provider = this._contextManager.getContextStateProvider();
                 const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
@@ -1103,7 +1099,16 @@ export class ChatPanel {
                         isApproximate: false,
                         segments: fallbackSegments
                     });
-                } else {
+
+                    // Clear calculation state labels in the UI
+                    this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+
+                    // SHORT-CIRCUIT: Exit execution immediately.
+                    // This prevents empty file selections from spinning up heavy background file system counts.
+                    this._isTokenizing = false;
+                    return;
+                } else if (!isBackground) {
                     // Send a fast path partial update with just the files list so the checks sync instantly
                     this._panel.webview.postMessage({ 
                         command: 'updateContext', 
@@ -2394,10 +2399,10 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
               }
 
               // --- UNIFIED EXTERNAL INGESTION PIPELINE ---
-              // Write the parsed document to the local cache so it appears in the EXTERNAL & RESEARCH HUD
+              // Write the parsed document to a non-ignored external cache folder so it is not strictly blocked by ContextStateProvider
               const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
               if (workspaceFolder && text.trim().length > 0) {
-                  const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'web_cache');
+                  const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, 'external');
                   await vscode.workspace.fs.createDirectory(cacheDir).then(undefined, () => {});
 
                   const safeName = name.replace(/[^a-zA-Z0-9.]/g, '_');
@@ -2405,7 +2410,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
                   await vscode.workspace.fs.writeFile(fileUri, Buffer.from(text, 'utf8'));
 
-                  const relativePath = path.join('.lollms', 'web_cache', safeName).replace(/\\/g, '/');
+                  const relativePath = path.join('external', safeName).replace(/\\/g, '/');
                   await this._contextManager.getContextStateProvider()?.addFilesToContext([relativePath]);
               }
 
@@ -4816,7 +4821,7 @@ ${targetContent}
                     const { id: applyProcId, controller: applyCtrl } = this.processManager.register(this.discussionId, `Applying batch changes...`);
                     this.updateGeneratingState();
 
-                    // SERIALIZED EXECUTION PROTOCOL
+                    // SEQUENTIAL HIGH-SPEED BATCH APPLY ENGINE (ORDER-PRESERVING)
                     const runBatch = async () => {
                         for (let i = 0; i < changesBatch.length; i++) {
                             if (applyCtrl.signal.aborted) {
@@ -4826,9 +4831,6 @@ ${targetContent}
 
                             const change = changesBatch[i];
                             const fileName = path.basename(change.path);
-
-                            this.processManager.updateDescription(applyProcId, `Applying [${i+1}/${changesBatch.length}]: ${fileName}`);
-                            this.updateGeneratingState();
 
                             // 1. Notify UI: Item processing started
                             this._panel.webview.postMessage({ 
@@ -4842,7 +4844,6 @@ ${targetContent}
 
                             let result: any = { success: false };
                             try {
-                                // Force synchronous write behaviors
                                 const opts = { 
                                     silent: true, 
                                     blockIndex: change.blockIndex, 
@@ -4859,7 +4860,6 @@ ${targetContent}
                                     result = await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
                                 }
 
-                                // 2. Critical: Update internal discussion state immediately
                                 if (result?.success) {
                                     await this.updateAppliedState(messageId, change.blockIndex, change.hunkIndex);
                                 }
@@ -4868,7 +4868,7 @@ ${targetContent}
                                 this.log(`Batch failure on ${change.path}: ${e.message}`, 'ERROR');
                             }
 
-                            // 3. Notify UI: Item result
+                            // 2. Notify UI: Item result
                             this._panel.webview.postMessage({
                                 command: 'applyAllResult',
                                 messageId: messageId,
@@ -4880,9 +4880,6 @@ ${targetContent}
                                 currentIndex: i,
                                 totalCount: changesBatch.length
                             });
-
-                            // Physical delay to allow FS and Language Server to catch up
-                            await new Promise(r => setTimeout(r, 250));
                         }
 
                         this.processManager.unregister(applyProcId);
@@ -5250,8 +5247,8 @@ ${targetContent}
                                     // Standard internal file: add directly to background project context
                                     await vscode.commands.executeCommand('lollms-vs-coder.setContextIncluded', uri, [uri]);
                                 } else if (workspaceFolder) {
-                                    // External File: Ingest and write to the local web cache folder
-                                    const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'web_cache');
+                                    // External File: Ingest and write to the local external cache folder
+                                    const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, 'external');
                                     await vscode.workspace.fs.createDirectory(cacheDir).then(undefined, () => {});
 
                                     const fileBytes = await vscode.workspace.fs.readFile(uri);
@@ -5261,9 +5258,8 @@ ${targetContent}
                                     await vscode.workspace.fs.writeFile(cacheUri, fileBytes);
 
                                     // Register the ingested path to the context
-                                    const relativePath = path.join('.lollms', 'web_cache', safeName).replace(/\\/g, '/');
+                                    const relativePath = path.join('external', safeName).replace(/\\/g, '/');
                                     await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [relativePath]);
-                                    Logger.info(`[Librarian] Ingested external file: ${fileName} as ${relativePath}`);
                                 }
                             } catch (e: any) {
                                 vscode.window.showErrorMessage(`Failed to ingest ${fileName}: ${e.message}`);
@@ -7051,6 +7047,18 @@ Task:
     ">
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Lollms Chat</title>
+    <script nonce="${nonce}">
+        // --- SOVEREIGN SERVICE WORKER SHIELD ---
+        // Forcefully intercept and reject any service worker registrations inside the webview iframe.
+        // This immunizes the document frame against the VS Code 'The document is in an invalid state' error.
+        if (navigator.serviceWorker) {
+            navigator.serviceWorker.register = function() {
+                return new Promise((resolve, reject) => {
+                    reject(new DOMException("Service Workers are blocked in this secure sandboxed context.", "InvalidStateError"));
+                });
+            };
+        }
+    </script>
     <!-- Secure KaTeX Math typesetting with Subresource Integrity -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
     <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>

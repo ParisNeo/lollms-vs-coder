@@ -7,6 +7,7 @@ import { startDiscussionWithInitialPrompt } from '../utils/discussionUtils';
 import { CustomActionModal } from '../commands/customActionModal';
 import { stripThinkingTags, getProcessedSystemPrompt, applySearchReplace } from '../utils';
 import { Logger } from '../logger';
+import { AgentManager } from '../agentManager';
 
 export function registerPromptCommands(context: vscode.ExtensionContext, services: LollmsServices) {
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveMessageAsPrompt', async (content: string) => {

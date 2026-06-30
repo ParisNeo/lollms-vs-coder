@@ -118,10 +118,10 @@ export const state: {
     lastCommitHash: string,
     currentPersonalityId: string,
     currentModelName: string,
-    personalities: [],
-    agentProfiles: [],
-    profiles: [],
-    pendingImages: []
+    personalities: any[],
+    agentProfiles: any[],
+    profiles: any[],
+    pendingImages: any[]
 } = {
     searchMatches: [],
     currentMatchIndex: -1,
@@ -138,6 +138,7 @@ export const state: {
     currentPersonalityId: 'default_coder',
     currentModelName: 'Loading...',
     personalities: [],
+    agentProfiles: [],
     profiles: [],
     pendingImages: []
 };

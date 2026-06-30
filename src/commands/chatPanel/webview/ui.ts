@@ -1974,32 +1974,7 @@ export function updateBadges() {
     // --- THEME: TASK & TEAM ---
     // --- THEME: THINKING & REASONING ---
     // Suppress Reasoning/Task/Research groups in Agent Mode to reduce clutter
-    if (!caps.agentMode) {
-    const thinkingGroup = document.createElement('div');
-    thinkingGroup.className = 'badge-group';
-    container.appendChild(thinkingGroup);
-
-    const thinkBadge = createToggleBadge(
-        '🧠 Think', 
-        'thinking', 
-        true, 
-        caps.thinkingMode, 
-        () => {
-            vscode.postMessage({ 
-                command: 'updateDiscussionCapabilitiesPartial', 
-                partial: { thinkingMode: !caps.thinkingMode } 
-            });
-        }
-    );
-    if (thinkBadge) {
-        if (caps.thinkingMode) {
-            thinkBadge.classList.add('active');
-            thinkBadge.style.backgroundColor = 'var(--thinking-color)';
-            thinkBadge.style.color = 'white';
-        }
-        thinkingGroup.appendChild(thinkBadge);
-    }
-    }
+    // Duplicated Think Badge logic safely purged!
 
     // --- GROUNDING COGNITION & AUXILIARY PROTOCOLS (COLLAPSED DROP-DOWN HUB) ---
     const optionsParentGroup = document.createElement('div');
@@ -2144,7 +2119,7 @@ export function updateBadges() {
         vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
     });
 
-    // --- GROUP C: SOVEREIGN OPERATIONAL MODE (Mutually Exclusive) ---
+    // --- GROUP C: SOVEREIGN OPERATIONAL MODE (Mutually Exclusive Unified Dropdown) ---
     const modeGroup = document.createElement('div');
     modeGroup.className = 'badge-group';
     container.appendChild(modeGroup);
@@ -2153,70 +2128,77 @@ export function updateBadges() {
     const isDynamic = caps.dynamicMode === true && !isAgent;
     const isAssistant = !isAgent && !isDynamic;
 
-    // A. Assistant Mode (Fully Manual)
-    const assistantBadge = createToggleBadge(
-        '👤 Assistant',
-        'autocontext',
-        true,
-        isAssistant,
-        () => {
-            vscode.postMessage({ 
-                command: 'updateDiscussionCapabilitiesPartial', 
-                partial: { agentMode: false, dynamicMode: false } 
-            });
-            updateBadges();
-        }
-    );
-    if (assistantBadge) {
-        assistantBadge.title = "Assistant Mode: Fully manual execution. AI provides code; you apply and run manually.";
-        modeGroup.appendChild(assistantBadge);
+    // Define properties based on the active mode
+    let activeModeLabel = '👤 Assistant';
+    let activeModeColor = 'var(--vscode-button-secondaryBackground)';
+    let activeModeTitle = 'Assistant Mode: Manual code execution.';
+    let activeModeClass = 'inactive';
+
+    if (isAgent) {
+        activeModeLabel = '🤖 Agent';
+        activeModeColor = 'var(--vscode-charts-red)';
+        activeModeTitle = 'Agent Mode: Autonomous execution.';
+        activeModeClass = 'active agent';
+    } else if (isDynamic) {
+        activeModeLabel = '🧠 Dynamic';
+        activeModeColor = 'var(--vscode-charts-orange)';
+        activeModeTitle = 'Dynamic Mode: Interactive tools loop.';
+        activeModeClass = 'active thinking';
     }
 
-    // B. Dynamic Mode (Semi-Automated In-Chat Loop)
-    const dynamicBadge = createToggleBadge(
-        '🧠 Dynamic',
-        'thinking',
-        true,
-        isDynamic,
-        () => {
-            vscode.postMessage({ 
-                command: 'updateDiscussionCapabilitiesPartial', 
-                partial: { agentMode: false, dynamicMode: true } 
-            });
-            updateBadges();
-        }
-    );
-    if (dynamicBadge) {
-        dynamicBadge.title = "Dynamic Mode: Semi-automated. AI runs context updates, research, and queries dynamically inside your chat bubble.";
-        if (isDynamic) {
-            dynamicBadge.style.backgroundColor = 'var(--vscode-charts-orange)';
-            dynamicBadge.style.color = 'white';
-        }
-        modeGroup.appendChild(dynamicBadge);
-    }
+    const wrapper = document.createElement('div');
+    wrapper.className = 'badge-wrapper';
+    wrapper.style.position = 'relative';
 
-    // C. Agent Mode (Fully Automated Sidebar)
-    const agentBadge = createToggleBadge(
-        '🤖 Agent',
-        'agent',
-        true,
-        isAgent,
-        () => {
+    const mainBadge = document.createElement('span');
+    mainBadge.className = `mode-badge ${activeModeClass} clickable`;
+    if (isAgent || isDynamic) {
+        mainBadge.style.backgroundColor = activeModeColor;
+        mainBadge.style.color = 'white';
+    }
+    mainBadge.title = `${activeModeTitle} Click to switch modes.`;
+    mainBadge.innerHTML = `<span class="codicon codicon-unfold"></span> <span class="badge-label">${activeModeLabel}</span>`;
+
+    const menu = document.createElement('div');
+    menu.id = 'mode-dropdown-menu';
+    menu.className = 'custom-menu hidden';
+
+    const appendModeOption = (label: string, icon: string, isActive: boolean, partialUpdate: any) => {
+        const item = document.createElement('div');
+        item.className = `custom-menu-item ${isActive ? 'current-head' : ''}`;
+        item.innerHTML = `<span class="codicon ${isActive ? 'codicon-check' : icon}"></span> ${label}`;
+        item.onclick = (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
             vscode.postMessage({ 
                 command: 'updateDiscussionCapabilitiesPartial', 
-                partial: { agentMode: true, dynamicMode: false } 
+                partial: partialUpdate 
             });
             updateBadges();
+            menu.classList.remove('visible');
+        };
+        menu.appendChild(item);
+    };
+
+    appendModeOption('👤 Assistant (Manual)', 'codicon-account', isAssistant, { agentMode: false, dynamicMode: false });
+    appendModeOption('🧠 Dynamic (Semi-Auto)', 'codicon-circuit-board', isDynamic, { agentMode: false, dynamicMode: true });
+    appendModeOption('🤖 Agent (Autonomous)', 'codicon-robot', isAgent, { agentMode: true, dynamicMode: false });
+
+    mainBadge.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const isOpening = !menu.classList.contains('visible');
+        document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+
+        if (isOpening) {
+            adjustMenuPosition(mainBadge, menu);
+            menu.classList.add('visible');
         }
-    );
-    if (agentBadge) {
-        agentBadge.title = "Agent Mode: Fully autonomous sidebar operator. Plans, writes files, and runs terminal commands.";
-        if (isAgent) {
-            agentBadge.style.backgroundColor = 'var(--vscode-charts-red)';
-            agentBadge.style.color = 'white';
-        }
-        modeGroup.appendChild(agentBadge);
-    }
+    };
+
+    wrapper.appendChild(mainBadge);
+    wrapper.appendChild(menu);
+    modeGroup.appendChild(wrapper);
 
     // --- AGENT MISSION PROFILE SELECTOR (Only in Agent Mode) ---
     if (isAgent && state.agentProfiles && state.agentProfiles.length > 0) {

@@ -207,6 +207,11 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                 const content = JSON.stringify(included, null, 2);
                 await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
                 vscode.window.showInformationMessage(`Context selection saved to ${path.basename(uri.fsPath)}`);
+
+                // Reactively update the active Chat HUD to refresh the dropdown selection list instantly
+                if (ChatPanel.currentPanel) {
+                    ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: true });
+                }
             } catch (e: any) {
                 vscode.window.showErrorMessage(`Failed to save context: ${e.message}`);
             }
@@ -348,6 +353,11 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                 const content = JSON.stringify(files, null, 2);
                 await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
                 vscode.window.showInformationMessage(`Selection saved to ${path.basename(uri.fsPath)}`);
+
+                // Reactively update the active Chat HUD to refresh the dropdown selection list instantly
+                if (ChatPanel.currentPanel) {
+                    ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: true });
+                }
             } catch (e: any) {
                 vscode.window.showErrorMessage(`Failed to save selection: ${e.message}`);
             }

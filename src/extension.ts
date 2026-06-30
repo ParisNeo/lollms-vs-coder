@@ -463,28 +463,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         switchActiveWorkspace(initial);
     }
 
-    // DELAYED START: Give other extensions (isort, Pylance) 3 seconds to breathe
-    // before the Librarian and Architect start scanning the project.
-    Logger.info("Lollms: Postponing initialization to stabilize Extension Host...");
-    setTimeout(async () => {
-        initializeWorkspace();
-
-        // Trigger the linear onboarding pipeline on startup
-        await runOnboardingPipeline();
-
-        // Start the Neural Dream Cycle asynchronously to prevent startup blocks
-        projectMemoryManager.performDreamCycle().then(() => {
-            Logger.info("Dream Cycle complete: Neural memory reorganized.");
-        }).catch((err: any) => {
-            Logger.error("Dream Cycle failed", err);
-        });
-    }, 3000);
-
-    // --- DEACTIVATE CONFLICTING EXTENSIONS ---
-    if (config.get<boolean>('deactivateConflictingExtensions')) {
-        deactivateConflictingExtensions();
-    }
-
     // Re-expose pipeline to webview command registries
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runOnboardingPipeline', async () => {
         await runOnboardingPipeline();
@@ -506,6 +484,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         statusBar.updateProcesses(processManager.getAll().length);
         ChatPanel.panels.forEach(panel => panel.updateGeneratingState());   
     }));
+
+    // DELAYED START: Defer non-critical setup to the next event tick.
+    // This allows activate() to return immediately to the VS Code process runner,
+    // avoiding the 10-second Extension Host startup timeout when paused on breakpoints.
+    setImmediate(() => {
+        Logger.info("Lollms: Extension host active. Scheduling background initialization...");
+        setTimeout(async () => {
+            initializeWorkspace();
+
+            // Trigger the linear onboarding pipeline on startup
+            await runOnboardingPipeline();
+
+            // Start the Neural Dream Cycle asynchronously to prevent startup blocks
+            projectMemoryManager.performDreamCycle().then(() => {
+                Logger.info("Dream Cycle complete: Neural memory reorganized.");
+            }).catch((err: any) => {
+                Logger.error("Dream Cycle failed", err);
+            });
+
+            // --- DEACTIVATE CONFLICTING EXTENSIONS ---
+            if (config.get<boolean>('deactivateConflictingExtensions')) {
+                deactivateConflictingExtensions();
+            }
+        }, 3000);
+    });
 
     return context;
 

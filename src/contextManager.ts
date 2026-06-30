@@ -1213,7 +1213,7 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) throw new Error("No workspace folder open.");
 
-    const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'web_cache');
+    const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, 'external');
     try { await vscode.workspace.fs.createDirectory(cacheDir); } catch (e) {}
 
     let rawContent = "";
@@ -1273,7 +1273,7 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
     const fileUri = vscode.Uri.joinPath(cacheDir, filename);
     await vscode.workspace.fs.writeFile(fileUri, Buffer.from(`# Source: ${url}\n# Date: ${new Date().toISOString()}\n\n${processedContent}`, 'utf8'));
 
-    const relativePath = path.join('.lollms', 'web_cache', filename);
+    const relativePath = path.join('external', filename).replace(/\\/g, '/');
     await this.contextStateProvider?.addFilesToContext([relativePath]);
 
     // --- AUTOMATIC GRAPH INGESTION ---

@@ -133,15 +133,13 @@ export class QuickEditManager {
                       `3. You may use the available tools to search the workspace, run queries, or find code.`;
 
             // --- SOVEREIGN SUB-GRAPH EXTRACTION ---
+            // Only extract complex codebase relationships if the graph is already compiled.
+            // This prevents long-running buildGraph tasks from hanging the Companion's initial prompt.
             const graph = this.contextManager['codeGraphManager'];
             let localGraphSummary = "";
             let dependencyContent = "";
 
-            if (graph) {
-                if (graph.getBuildState() !== 'ready') {
-                    await graph.buildGraph();
-                }
-
+            if (graph && graph.getBuildState() === 'ready') {
                 const targetNode = graph.getGraphData().nodes.find(n => n.filePath === relativePath);
                 if (targetNode) {
                     const depFiles = graph.getGraphData().edges
@@ -167,6 +165,32 @@ export class QuickEditManager {
             };
 
             let systemPromptContent = await getProcessedSystemPrompt('chat', undefined, undefined, this.memoryManager, false, contextData);
+
+            // Gather friendly user info & Project DNA
+            const userConfig = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const userName = userConfig.get<string>('userInfo.name') || "Friend";
+            const userStyle = userConfig.get<string>('userInfo.codingStyle') || "";
+
+            let projectDNA = "";
+            if (this.contextManager.agentManager?.projectMemoryManager) {
+                projectDNA = await this.contextManager.agentManager.projectMemoryManager.getFormattedMemoryBlock();
+            }
+
+            systemPromptContent += `
+
+### 🎭 PERSONALIZATION PROFILE: BEST CODING FRIEND
+- **Identity**: You are Lollms, the user's best coding friend. You are supportive, highly encouraging, and enthusiastic about helping them succeed.
+- **Friend**: "${userName}"
+- **Preferred Coding Style**: ${userStyle || "Clean, readable, well-commented code."}
+
+${projectDNA ? `### 🧬 PROJECT DNA (KNOWLEDGE GROUNDING)\n${projectDNA}\n` : ""}
+
+**MANDATE**:
+- Call the user by name ("${userName}") occasionally to make the pairing feel personal and friendly.
+- Provide a brief, supportive word ("We got this!", "Let's crack this together!") before diving into the code.
+- Align every code change with their preferred coding style and project DNA.
+`;
+
             if (isNotebook) {
                 systemPromptContent += `\n\n**NOTEBOOK MODE ACTIVATED**
 You are an expert Jupyter Notebook assistant.
@@ -178,8 +202,7 @@ You are an expert Jupyter Notebook assistant.
 `;
             }
 
-            let systemPrompt = systemPromptContent + 
-                "\nYou are Lollms, a helpful AI coding companion. Provide clear, concise answers.";
+            let systemPrompt = systemPromptContent;
 
             // Equivocate the Companion to the full toolbelt for deep workspace reconnaissance
             const equippedTools = this.contextManager['toolManager']?.getEnabledTools() || [];

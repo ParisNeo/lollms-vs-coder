@@ -612,7 +612,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         const folders = vscode.workspace.workspaceFolders || [];
 
-        return Object.entries(workspaceState)
+        let stateWasModified = false;
+
+        const filteredEntries = Object.entries(workspaceState)
             .filter(([key, state]) => {
                 if (!key || typeof key !== 'string') return false;
                 if (state !== 'included' && state !== 'definitions-only') return false;
@@ -627,6 +629,14 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                     fileUri = vscode.Uri.joinPath(projectFolder.uri, segments.slice(1).join('/'));
                 } else {
                     fileUri = vscode.Uri.joinPath(workspaceFolder.uri, key);
+                }
+
+                // --- FILE EXISTENCE SHIELD ---
+                // Automatically prune manually deleted files from the workspaceState cache on-the-fly
+                if (!fs.existsSync(fileUri.fsPath)) {
+                    delete workspaceState[key];
+                    stateWasModified = true;
+                    return false;
                 }
 
                 // 2. Strict ignore check (heavy folders, glob exclusions, etc.)
@@ -655,11 +665,18 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                     }
 
                     if (this.isStrictlyIgnored(parentUri)) return false;
-                }
-                return true;
-            })
-            .map(([key, state]) => ({ path: key, state }));
-    }
+                    }
+                    return true;
+                });
+
+            if (stateWasModified) {
+                this.context.workspaceState.update(this.stateKey, workspaceState).then(() => {
+                    this._onDidChangeTreeData.fire();
+                });
+            }
+
+            return filteredEntries.map(([key, state]) => ({ path: key, state }));
+        }
 
     public async addFilesToContext(files: string[]): Promise<string[]> {
         const folders = vscode.workspace.workspaceFolders;

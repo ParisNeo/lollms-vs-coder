@@ -643,11 +643,23 @@ export async function getProcessedSystemPrompt(
     // --- CONDITIONAL SPARQL DEACTIVATION ---
     let finalizedBasePrompt = basePrompt;
     if (capabilities?.sparqlEnabled === false) {
-        // Surgically remove the entire dual-ontology instruction section to prevent the LLM from utilizing it
+        // Surgically remove all ontological, graph, and SPARQL instructions to keep the LLM blind to them
         finalizedBasePrompt = finalizedBasePrompt
-            .replace(/### 🧊 SOVEREIGN DUAL-ONTOLOGY GRAPH[\s\S]*?Use these queries dynamically to gather precise, empirical evidence about both the codebase architecture and your internal knowledge vault before making decisions!/gi, "")
-            .replace(/### 🧊 SOVEREIGN DUAL-ONTOLOGY GRAPH[\s\S]*?ontology prefix automatically. Writing s: literally breaks database joins./gi, "")
-            .replace(/<query_architecture>[\s\S]*?<\/query_architecture>/gi, "");
+            .replace(/### 🧊 SOVEREIGN DUAL-ONTOLOGY GRAPH[\s\S]*?before making decisions!/gi, "")
+            .replace(/### 📊 SOVEREIGN CODE GRAPH & PATTERNS[\s\S]*?protects your attention map\./gi, "")
+            .replace(/### 📊 GRAPH-BASED ARCHITECTURE AWARENESS[\s\S]*?or circular imports\./gi, "")
+            .replace(/<query_architecture>[\s\S]*?<\/query_architecture>/gi, "")
+            .split('\n')
+            .filter(line => {
+                const lower = line.toLowerCase();
+                return !lower.includes('sparql') && 
+                       !lower.includes('ontology') && 
+                       !lower.includes('read_code_graph') && 
+                       !lower.includes('query_architecture') &&
+                       !lower.includes('s:class') &&
+                       !lower.includes('s:file');
+            })
+            .join('\n');
     }
 
     // --- CONDITIONAL WEB SEARCH DEACTIVATION ---

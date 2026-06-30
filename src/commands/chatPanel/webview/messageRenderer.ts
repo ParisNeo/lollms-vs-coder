@@ -2425,7 +2425,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                             resList.innerHTML = changes.map(c => `
                                 <div class="apply-row" data-block-index="${c.blockIndex}" ${c.hunkIndex !== undefined ? `data-hunk-index="${c.hunkIndex}"` : ''}>
                                     <span class="status-icon"><div class="spinner"></div></span>
-                                    <span class="row-path">${c.path} ${c.hunkIndex !== undefined ? `(Hunk ${c.hunkIndex+1})` : ''}</span>
+                                    <span class="row-path clickable" onclick="vscode.postMessage({command:'openFile', path:'${c.path}'})">${c.path} ${c.hunkIndex !== undefined ? `(Hunk ${c.hunkIndex+1})` : ''}</span>
                                     <div class="row-actions" style="display:none"></div>
                                 </div>`).join('');
                         }
@@ -2469,7 +2469,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     resList.innerHTML = changes.map(c => `
                         <div class="apply-row" data-block-index="${c.blockIndex}" ${c.hunkIndex !== undefined ? `data-hunk-index="${c.hunkIndex}"` : ''}>
                             <span class="status-icon"><div class="spinner"></div></span>
-                            <span class="row-path">${c.path} ${c.hunkIndex !== undefined ? `(Hunk ${c.hunkIndex+1})` : ''}</span>
+                            <span class="row-path clickable" onclick="vscode.postMessage({command:'openFile', path:'${c.path}'})">${c.path} ${c.hunkIndex !== undefined ? `(Hunk ${c.hunkIndex+1})` : ''}</span>
                             <div class="row-actions" style="display:none"></div>
                         </div>`).join('');
                 }

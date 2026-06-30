@@ -46,6 +46,7 @@ Make skills md with claude style
 - adding external files is not working
 - Add information about the context size/file size in tokens in the built context
 - Add a new personality to build optimized files selections for a specific problem. it starts be cleaning up the context then does the selection
+
 - when using manual fix, the search doesn't find the text even though I can find it manually, and then the ui is blocked (can't close the modal until I close the whole tab)
 - delete all tool is not working and is notasking the user for confirmation.
 - add a reprompt button that reprompts the llm about the failed hunk updates so it fix that.

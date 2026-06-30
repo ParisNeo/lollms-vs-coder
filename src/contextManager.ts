@@ -75,7 +75,7 @@ export class ContextManager {
   private _cachedTreeString: string | null = null;
   private _isTreeDirty: boolean = true;
   private _fileTreeObject: any = null;
-  private _fileContentCache!: Map<string, { content: string, state: ContextState }>;
+  private _fileContentCache!: Map<string, { content: string, mtime: number, size: number, state: ContextState }>;
   private _cachedIsolatedTrees = new Map<string, string>(); // Caches the rendered tree per workspace folder
   private _cachedVisibleFiles: string[] | null = null;
   private static PROJECT_TOOLS_KEY = 'lollms_project_active_tools';
@@ -498,6 +498,7 @@ export class ContextManager {
     modelName?: string,
     allowRLM?: boolean,
     onProgress?: (pct: number) => void,
+    onLoadProgress?: (progress: { current: number, total: number, percentage: number, fileName: string }) => void,
     capabilities?: DiscussionCapabilities
   }): Promise<ContextResult> {
 
@@ -658,7 +659,13 @@ export class ContextManager {
         filesProcessed++;
         if (options?.onProgress) {
             const pct = Math.round((filesProcessed / totalFiles) * 100);
-            options.onProgress(pct);
+            // Enrich with structural metadata about the current file in the queue
+            (options.onProgress as any)({
+                percentage: pct,
+                current: filesProcessed,
+                total: totalFiles,
+                fileName: path.basename(fileEntry.path)
+            });
         }
 
         // Yield control back to the Extension Host event loop to prevent UI unresponsiveness
@@ -688,10 +695,10 @@ export class ContextManager {
           const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
           if (!stat || stat.type !== vscode.FileType.File) continue;
 
-          if (cached && cached.state === contextState) {
+          // STAT-FIRST VERIFICATION:
+          // Compare mtime and size. If matched, reuse cache immediately with ZERO disk reads.
+          if (cached && cached.state === contextState && cached.mtime === stat.mtime && cached.size === stat.size) {
               // --- CACHE CORRUPTION GUARD ---
-              // If the cache contains an empty string but the file on disk has bytes,
-              // force-delete the corrupted cache entry and trigger a fresh read.
               if (stat.size > 0 && (!cached.content || cached.content.trim() === "")) {
                   this._fileContentCache.delete(cacheKey);
                   Logger.warn(`[Cache Guard] Cleared corrupted empty cache entry for: ${cacheKey}`);
@@ -771,13 +778,18 @@ export class ContextManager {
 
           if (fileContent.length < 200000) { // Lower limit for caching individual files to 200KB
             // --- LRU CACHE EVICTION ---
-            if (this._fileContentCache.size >= 30) {
+            if (this._fileContentCache.size >= 100) { // Expanded size to fit more files in large projects
               const oldestKey = this._fileContentCache.keys().next().value;
               if (oldestKey !== undefined) {
                 this._fileContentCache.delete(oldestKey);
               }
             }
-            this._fileContentCache.set(cacheKey, { content: fileContent, state: contextState });
+            this._fileContentCache.set(cacheKey, { 
+                content: fileContent, 
+                mtime: stat.mtime, 
+                size: stat.size, 
+                state: contextState 
+            });
           }
 
           projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${fileContent}\n\`\`\`\n\n`;

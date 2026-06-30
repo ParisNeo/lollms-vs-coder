@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ToolDefinition } from '../tool';
 import { addFilesToContextTool } from './addFilesToContext';
 import { autoSelectContextFilesTool } from './autoSelectContextFiles';
+import { manageSelectionsTool } from './manageSelections';
 import { createPythonEnvironmentTool } from './createPythonEnvironment';
 import { removeFilesFromContextTool } from './removeFilesFromContext';
 import { editPlanTool } from './editPlan';
@@ -80,9 +81,11 @@ import { testNativeUiTool } from './testNativeUi';
 import { smartScoutTool } from './smartScout';
 import { interactiveUiTestTool } from './interactiveUiTest';
 import { updateFunctionTool } from './updateFunction';
+import { manageSelectionsTool } from './manageSelections';
 
 
 export const allTools: ToolDefinition[] = [
+    manageSelectionsTool,
     updateFunctionTool,
     interactiveUiTestTool,
     smartScoutTool,

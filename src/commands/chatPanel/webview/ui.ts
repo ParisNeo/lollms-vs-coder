@@ -2001,171 +2001,148 @@ export function updateBadges() {
     }
     }
 
-    // --- GROUP B: SOVEREIGN GROUNDING COGNITION (SPARQL, GREP, WEB, DNA & SKILLS Toggles) ---
-    const groundingGroup = document.createElement('div');
-    groundingGroup.className = 'badge-group';
-    container.appendChild(groundingGroup);
+    // --- GROUNDING COGNITION & AUXILIARY PROTOCOLS (COLLAPSED DROP-DOWN HUB) ---
+    const optionsParentGroup = document.createElement('div');
+    optionsParentGroup.className = 'badge-group hud-options-parent';
+    container.appendChild(optionsParentGroup);
 
-    // 1. SPARQL (Graph-Based Semantic Understanding)
-    const sparqlActive = caps.sparqlEnabled !== false;
-    const sparqlBadge = createToggleBadge(
-        '📊 SPARQL',
-        'thinking',
-        true,
-        sparqlActive,
-        () => {
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { sparqlEnabled: !sparqlActive }
-            });
-        },
-        () => {
-            // Interactive Action: Open the SPARQL Query Sidebar / Panel directly
-            const sidebar = document.getElementById('sidebar-right');
-            if (sidebar && sidebar.classList.contains('collapsed')) {
-                const toggleBtn = document.getElementById('toggle-sidebar');
-                if (toggleBtn) toggleBtn.click();
-            }
-            const input = document.getElementById('sparql-query-input');
-            if (input) input.focus();
-        }
-    );
-    if (sparqlBadge) {
-        if (sparqlActive) {
-            sparqlBadge.style.backgroundColor = 'var(--vscode-charts-purple)';
-            sparqlBadge.style.color = 'white';
-        }
-        groundingGroup.appendChild(sparqlBadge);
-    }
+    // 1. Gather all active visual icons representing enabled protocols
+    const activeIcons: string[] = [];
+    if (caps.thinkingMode) activeIcons.push('🧠');
+    if (caps.sparqlEnabled !== false) activeIcons.push('📊');
+    if (caps.grepEnabled !== false) activeIcons.push('🔍');
+    if (caps.webSearch === true) activeIcons.push('🌍');
+    if (caps.projectMemoryEnabled !== false) activeIcons.push('🧬');
+    if (caps.autoSkillMode === true) activeIcons.push('💡');
+    if (caps.autoApply === true) activeIcons.push('⚡');
+    if (caps.debugMode === true) activeIcons.push('🐞');
+    if (caps.verifierMode === true) activeIcons.push('🛡️');
+    if (caps.testMode === true) activeIcons.push('🧪');
+    if (caps.documentationMode === true) activeIcons.push('📖');
+    if (caps.gitAutoWorkflow === true) activeIcons.push('🐙');
+    if (caps.herdMode === true) activeIcons.push('🐂');
 
-    // 2. GREP (Grounded Text Regex Scanning)
-    const grepActive = caps.grepEnabled !== false;
-    const grepBadge = createToggleBadge(
-        '🔍 GREP',
-        'verifier',
-        true,
-        grepActive,
-        () => {
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { grepEnabled: !grepActive }
-            });
-        },
-        () => {
-            // Interactive Action: Open the Deep Workspace Power Search modal
-            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'search-add-context-btn' } });
-        }
-    );
-    if (grepBadge) {
-        if (grepActive) {
-            grepBadge.style.backgroundColor = 'var(--vscode-charts-blue)';
-            grepBadge.style.color = 'white';
-        }
-        groundingGroup.appendChild(grepBadge);
-    }
+    const iconsLabel = activeIcons.length > 0 ? activeIcons.join(' ') : '⚙️';
 
-    // 3. WEB (Web Search Tool)
-    const webActive = caps.webSearch === true;
-    const webBadge = createToggleBadge(
-        '🌍 WEB',
-        'autocontext',
-        true,
-        webActive,
-        () => {
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { webSearch: !webActive }
-            });
-        },
-        () => {
-            // Interactive Action: Open the Ingestion/Web-Discovery modal directly
-            const webBtn = document.getElementById('web-context-btn');
-            if (webBtn) webBtn.click();
-        }
-    );
-    if (webBadge) {
-        if (webActive) {
-            webBadge.style.backgroundColor = 'var(--vscode-charts-orange)';
-            webBadge.style.color = 'white';
-        }
-        groundingGroup.appendChild(webBadge);
-    }
+    // 2. Render Consolidated Trigger Badge
+    const optionsTriggerBadge = document.createElement('span');
+    optionsTriggerBadge.className = 'mode-badge active clickable';
+    optionsTriggerBadge.style.background = 'var(--vscode-button-secondaryBackground)';
+    optionsTriggerBadge.style.color = 'var(--vscode-button-secondaryForeground)';
+    optionsTriggerBadge.style.borderColor = 'var(--vscode-widget-border)';
+    optionsTriggerBadge.title = `Sovereign HUD Options (Hover/Click to configure protocols)`;
+    optionsTriggerBadge.innerHTML = `
+        <span class="codicon codicon-settings-gear"></span> 
+        <span class="badge-label" style="margin-left: 4px; letter-spacing: 0.5px; font-weight: bold;">HUD: ${iconsLabel}</span>
+    `;
+    optionsParentGroup.appendChild(optionsTriggerBadge);
 
-    // 4. DNA (Project Memory Vault)
-    const dnaActive = caps.projectMemoryEnabled !== false;
-    const dnaBadge = createToggleBadge(
-        '🧠 DNA',
-        'herd',
-        true,
-        dnaActive,
-        () => {
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { projectMemoryEnabled: !dnaActive }
-            });
-        },
-        () => {
-            // Interactive Action: Open the physical Project Memory Manager Panel
-            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.manageProjectMemory' } });
-        }
-    );
-    if (dnaBadge) {
-        if (dnaActive) {
-            dnaBadge.style.backgroundColor = '#9b59b6'; // Vibrant Purple
-            dnaBadge.style.color = 'white';
-        }
-        groundingGroup.appendChild(dnaBadge);
-    }
+    // 3. Render Vertical Options Popup
+    const optionsDropdownMenu = document.createElement('div');
+    optionsDropdownMenu.className = 'hud-options-popup';
+    optionsDropdownMenu.style.cssText = `
+        display: none;
+        position: absolute;
+        top: calc(100% + 5px);
+        left: 0;
+        z-index: 10001;
+        background: var(--vscode-editorWidget-background);
+        border: 1px solid var(--vscode-widget-border);
+        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        padding: 10px;
+        border-radius: 8px;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 240px;
+        max-height: 70vh;
+        overflow-y: auto;
+    `;
+    optionsParentGroup.appendChild(optionsDropdownMenu);
 
-    // 5. SKILLS (Skills Library - Manual and Auto)
-    const skillsActive = caps.autoSkillMode === true;
-    const skillsBadge = createToggleBadge(
-        '💡 SKILLS',
-        'autoskill',
-        true,
-        skillsActive,
-        () => {
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { autoSkillMode: !skillsActive }
-            });
-        },
-        () => {
-            // Interactive Action: Open the Skills Library Selector modal
-            vscode.postMessage({ command: 'importSkills' });
-        }
-    );
-    if (skillsBadge) {
-        if (skillsActive) {
-            skillsBadge.style.backgroundColor = 'var(--vscode-charts-green)';
-            skillsBadge.style.color = 'white';
-        }
-        groundingGroup.appendChild(skillsBadge);
-    }
+    // Prevent closing details/accordions when clicking inside the popup menu
+    optionsDropdownMenu.onclick = (e) => {
+        e.stopPropagation();
+    };
 
-    // 6. AUTO-APPLY (Automated Hunk Writes & Self-Correction)
-    const autoApplyActive = caps.autoApply === true;
-    const autoApplyBadge = createToggleBadge(
-        '⚡ AUTO-APPLY',
-        'active', // Standard active badge base
-        true,
-        autoApplyActive,
-        () => {
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { autoApply: !autoApplyActive }
-            });
-        }
-    );
-    if (autoApplyBadge) {
-        if (autoApplyActive) {
-            autoApplyBadge.style.backgroundColor = 'var(--vscode-charts-orange)';
-            autoApplyBadge.style.color = 'white';
-            autoApplyBadge.style.borderColor = 'rgba(214, 122, 13, 0.4)';
-            autoApplyBadge.style.boxShadow = '0 2px 8px rgba(214, 122, 13, 0.3)';
-        }
-        groundingGroup.appendChild(autoApplyBadge);
-    }
+    // Toggle menu visibility on left click of the trigger badge
+    optionsTriggerBadge.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const isVisible = optionsDropdownMenu.style.display === 'flex';
+        document.querySelectorAll('.hud-options-popup').forEach((m: any) => m.style.display = 'none');
+        optionsDropdownMenu.style.display = isVisible ? 'none' : 'flex';
+    };
+
+    // Auto-close menu when clicking anywhere else on window
+    const closeMenuHandler = () => {
+        optionsDropdownMenu.style.display = 'none';
+        window.removeEventListener('click', closeMenuHandler);
+    };
+    optionsTriggerBadge.addEventListener('click', () => {
+        setTimeout(() => window.addEventListener('click', closeMenuHandler), 50);
+    });
+
+    // Helper to generate checkboxes inside the options dropdown list
+    const appendToggleOption = (label: string, icon: string, checked: boolean, onToggle: () => void) => {
+        const optionRow = document.createElement('div');
+        optionRow.style.cssText = "display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 4px 8px; border-radius: 4px; font-size: 12px;";
+        optionRow.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 8px; opacity: 0.9;">
+                <span class="codicon ${icon}"></span>
+                <span>${label}</span>
+            </div>
+            <label class="switch" style="width: 28px; height: 16px; margin: 0; flex-shrink: 0;">
+                <input type="checkbox" ${checked ? 'checked' : ''} style="margin: 0; cursor: pointer;">
+                <span class="slider" style="border-radius: 16px;"></span>
+            </label>
+        `;
+        optionRow.querySelector('input')!.onchange = (e) => {
+            e.stopPropagation();
+            onToggle();
+        };
+        optionsDropdownMenu.appendChild(optionRow);
+    };
+
+    // Populate all original options vertical style
+    appendToggleOption('🧠 Thinking Mode', 'codicon-circuit-board', !!caps.thinkingMode, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { thinkingMode: !caps.thinkingMode } });
+    });
+    appendToggleOption('📊 SPARQL Engine', 'codicon-graph', caps.sparqlEnabled !== false, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { sparqlEnabled: caps.sparqlEnabled === false } });
+    });
+    appendToggleOption('🔍 GREP Indexer', 'codicon-search', caps.grepEnabled !== false, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { grepEnabled: caps.grepEnabled === false } });
+    });
+    appendToggleOption('🌍 Web Research', 'codicon-globe', !!caps.webSearch, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { webSearch: !caps.webSearch } });
+    });
+    appendToggleOption('🧬 Project DNA', 'codicon-chip', caps.projectMemoryEnabled !== false, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { projectMemoryEnabled: caps.projectMemoryEnabled === false } });
+    });
+    appendToggleOption('💡 Skills Library', 'codicon-lightbulb', !!caps.autoSkillMode, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { autoSkillMode: !caps.autoSkillMode } });
+    });
+    appendToggleOption('⚡ Auto-Apply Blocks', 'codicon-zap', !!caps.autoApply, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { autoApply: !caps.autoApply } });
+    });
+    appendToggleOption('🐞 Debug Protocol', 'codicon-bug', !!caps.debugMode, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { debugMode: !caps.debugMode } });
+    });
+    appendToggleOption('🛡️ Verifier Protocol', 'codicon-shield', !!caps.verifierMode, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { verifierMode: !caps.verifierMode } });
+    });
+    appendToggleOption('🧪 Test Protocol', 'codicon-beaker', !!caps.testMode, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { testMode: !caps.testMode } });
+    });
+    appendToggleOption('📖 Docs Protocol', 'codicon-book', !!caps.documentationMode, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { documentationMode: !caps.documentationMode } });
+    });
+    appendToggleOption('🐙 Git Integration', 'codicon-git-branch', !!caps.gitAutoWorkflow, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { gitAutoWorkflow: !caps.gitAutoWorkflow } });
+    });
+    appendToggleOption('🐂 Multi-Agent (Herd)', 'codicon-organization', !!caps.herdMode, () => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
+    });
 
     // --- GROUP C: SOVEREIGN OPERATIONAL MODE (Mutually Exclusive) ---
     const modeGroup = document.createElement('div');
@@ -2240,130 +2217,6 @@ export function updateBadges() {
         }
         modeGroup.appendChild(agentBadge);
     }
-
-    // --- GROUP C: AUXILIARY PROTOCOLS (Separate Layers) ---
-    const protocolGroup = document.createElement('div');
-    protocolGroup.className = 'badge-group hud-options-parent';
-    container.appendChild(protocolGroup);
-
-    const protoRoot = document.createElement('span');
-    protoRoot.className = 'mode-badge active clickable';
-    protoRoot.style.background = 'var(--vscode-editorWidget-background)';
-    protoRoot.innerHTML = `<span class="codicon codicon-settings-gear"></span> <span class="badge-label">PROTOCOLS</span>`;
-    protocolGroup.appendChild(protoRoot);
-
-    const protoPopup = document.createElement('div');
-    protoPopup.className = 'hud-options-popup';
-    protocolGroup.appendChild(protoPopup);
-
-    // 1. Debug Protocol
-    const debugBadge = createToggleBadge(
-        '🐞 Debug', 
-        'thinking', 
-        true, 
-        caps.debugMode, 
-        () => {
-            vscode.postMessage({ 
-                command: 'updateDiscussionCapabilitiesPartial', 
-                partial: { debugMode: !caps.debugMode } 
-            });
-        },
-        () => {
-            const prompt = dom.messageInput ? dom.messageInput.value : "";
-            vscode.postMessage({ command: 'runDebugAgent', prompt: prompt });
-        }
-    );
-    if (debugBadge) {
-        if (caps.debugMode) {
-            debugBadge.style.backgroundColor = 'var(--vscode-charts-red)';
-            debugBadge.style.color = 'white';
-        }
-        protoPopup.appendChild(debugBadge);
-    }
-
-    // 2. Verifier Protocol
-    const verifierBadge = createToggleBadge(
-        '🛡️ Verifier',
-        'verifier',
-        true, 
-        caps.verifierMode,
-        () => {
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { verifierMode: !caps.verifierMode }
-            });
-        }
-    );
-    if (verifierBadge) protoPopup.appendChild(verifierBadge);
-
-    // 3. Test Protocol
-    const testBadge = createToggleBadge(
-        '🧪 Test',
-        'test',
-        true,
-        caps.testMode,
-        () => {
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { testMode: !caps.testMode }
-            });
-        }
-    );
-    if (testBadge) {
-        if (caps.testMode) {
-            testBadge.style.backgroundColor = '#e84393';
-            testBadge.style.color = 'white';
-        }
-        protoPopup.appendChild(testBadge);
-    }
-
-    // 4. Docs Protocol
-    const docsBadge = createToggleBadge(
-        '📖 Docs',
-        'docs',
-        true,
-        caps.documentationMode,
-        () => {
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { documentationMode: !caps.documentationMode }
-            });
-        }
-    );
-    if (docsBadge) {
-        if (caps.documentationMode) {
-            docsBadge.style.backgroundColor = '#00b894';
-            docsBadge.style.color = 'white';
-        }
-        protoPopup.appendChild(docsBadge);
-    }
-
-    // 5. Git Protocol
-    const gitWorkflowBadge = createToggleBadge(
-        '🐙 Git',
-        'git',
-        true,
-        caps.gitAutoWorkflow,
-        () => {
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { gitAutoWorkflow: !caps.gitAutoWorkflow }
-            });
-        }
-    );
-    if (gitWorkflowBadge) {
-        if (caps.gitAutoWorkflow) {
-            gitWorkflowBadge.style.backgroundColor = 'var(--vscode-gitDecoration-modifiedResourceForeground)';
-            gitWorkflowBadge.style.color = 'white';
-        }
-        protoPopup.appendChild(gitWorkflowBadge);
-    }
-
-    // 6. Multi-Agent (Herd) Protocol
-    const herdBadge = createToggleBadge('🐂 Multi-Agent', 'herd', true, caps.herdMode, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
-    });
-    if (herdBadge) protoPopup.appendChild(herdBadge);
 
     // --- AGENT MISSION PROFILE SELECTOR (Only in Agent Mode) ---
     if (isAgent && state.agentProfiles && state.agentProfiles.length > 0) {

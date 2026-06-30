@@ -1587,16 +1587,126 @@ export function processThinkTags(content: string): { thoughts: ParsedThought[], 
     return { thoughts, processedContent: workingContent.trim() };
 }
 
+// --- STREAM THROTTLER & DEBOUNCED RENDERER ---
+const streamQueues = new Map<string, { buffer: string; lastRender: number }>();
+let animationFrameRequest: number | null = null;
+
+function flushStreamQueues() {
+    const now = Date.now();
+    let hasUpdates = false;
+
+    streamQueues.forEach((data, messageId) => {
+        if (now - data.lastRender >= 100) { // 100ms Throttling Window
+            renderMessageContent(messageId, data.buffer);
+            data.lastRender = now;
+            hasUpdates = true;
+        }
+    });
+
+    if (hasUpdates) {
+        // Trigger virtual list recalculation to sync height adjustments
+        triggerVirtualListRecalculation();
+    }
+
+    animationFrameRequest = requestAnimationFrame(flushStreamQueues);
+}
+
 export function scheduleRender(messageId: string) {
     const stream = state.streamingMessages[messageId];
-    if (!stream || stream.timer) return;
-    stream.timer = setTimeout(() => {
-        if (state.streamingMessages[messageId]) {
-            renderMessageContent(messageId, state.streamingMessages[messageId].buffer);
-            state.streamingMessages[messageId].timer = null;
-        }
-    }, RENDER_THROTTLE_MS);
+    if (!stream) return;
+
+    if (!streamQueues.has(messageId)) {
+        streamQueues.set(messageId, { buffer: stream.buffer, lastRender: 0 });
+    } else {
+        streamQueues.get(messageId)!.buffer = stream.buffer;
+    }
+
+    if (animationFrameRequest === null) {
+        animationFrameRequest = requestAnimationFrame(flushStreamQueues);
+    }
 }
+
+
+// --- LIGHTWEIGHT VIRTUAL SCROLL LIST ENGINE ---
+// Tracks which message wrappers are inside the viewport and substitutes
+// off-screen nodes with padding spacers to keep active DOM nodes low.
+let virtualScrollTimer: any = null;
+const visibleHeightCache = new Map<string, number>(); // messageId -> height
+
+export function triggerVirtualListRecalculation() {
+    if (virtualScrollTimer) return;
+    virtualScrollTimer = setTimeout(() => {
+        virtualScrollTimer = null;
+        runVirtualWindowing();
+    }, 60); // Debounce reflow calculations
+}
+
+function runVirtualWindowing() {
+    const container = dom.messagesDiv;
+    if (!container) return;
+
+    const wrappers = Array.from(container.querySelectorAll('.message-wrapper')) as HTMLElement[];
+    if (wrappers.length < 5) {
+        // Don't virtualize short discussions
+        wrappers.forEach(w => w.style.display = 'flex');
+        return;
+    }
+
+    const scrollTop = container.scrollTop;
+    const viewportHeight = container.clientHeight;
+    const buffer = 400; // Render buffer zone above/below viewport
+
+    let accumulatedHeight = 0;
+    let topSpacerHeight = 0;
+    let bottomSpacerHeight = 0;
+
+    wrappers.forEach(wrapper => {
+        const id = wrapper.dataset.messageId || "";
+
+        // Measure and cache heights when visible to prevent layout thrashing
+        let height = wrapper.offsetHeight;
+        if (height > 0) {
+            visibleHeightCache.set(id, height);
+        } else {
+            height = visibleHeightCache.get(id) || 120; // Fallback estimate
+        }
+
+        const startY = accumulatedHeight;
+        const endY = startY + height;
+        accumulatedHeight += height;
+
+        const isVisible = (endY >= scrollTop - buffer) && (startY <= scrollTop + viewportHeight + buffer);
+
+        if (isVisible) {
+            wrapper.style.display = 'flex';
+            // Restore actual height once re-instantiated
+            wrapper.style.height = ''; 
+        } else {
+            wrapper.style.display = 'none';
+            if (startY < scrollTop - buffer) {
+                topSpacerHeight += height;
+            } else {
+                bottomSpacerHeight += height;
+            }
+        }
+    });
+
+    // Apply virtual padding to preserve scrollbar proportions
+    let listContainer = document.getElementById('chat-messages-container');
+    if (listContainer) {
+        listContainer.style.paddingTop = `${topSpacerHeight}px`;
+        listContainer.style.paddingBottom = `${bottomSpacerHeight}px`;
+    }
+}
+
+// Attach scroll listener to the main viewport container
+setTimeout(() => {
+    if (dom.messagesDiv) {
+        dom.messagesDiv.addEventListener('scroll', () => {
+            triggerVirtualListRecalculation();
+        }, { passive: true });
+    }
+}, 1000);
 
 function renderDebugReport(dataStr: string): string {
     try {
@@ -2016,6 +2126,14 @@ interface MessageSegment {
 }
 
 export function renderMessageContent(messageId: string, rawContent: any, isFinal: boolean = false) {
+    if (isFinal) {
+        streamQueues.delete(messageId);
+        if (streamQueues.size === 0 && animationFrameRequest !== null) {
+            cancelAnimationFrame(animationFrameRequest);
+            animationFrameRequest = null;
+        }
+    }
+
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return;
     const contentDiv = wrapper.querySelector('.message-content') as HTMLElement;
@@ -2372,6 +2490,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             seg.plugin.initialize(contentDiv, ctx);
         }
     });
+
+    triggerVirtualListRecalculation();
 }
 
 
@@ -2725,23 +2845,33 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     const renderFileList = (list: string[], emptyMsg: string, allowSummarize: boolean = false) => {
         if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
         return `<ul class="context-file-list">
-            ${list.map(f => `
-                <li class="context-item">
-                    <span class="codicon codicon-file"></span> 
-                    <span class="context-item-label" title="${f}">${f}</span>
-                    <div style="display:flex; gap:2px;">
-                        ${allowSummarize ? `
-                        <button class="summarize-context-btn" data-value="${f}" title="Synthesize / Clean / Summarize">
-                            <span class="codicon codicon-wand"></span>
-                        </button>` : ''}
-                        <button class="open-context-btn" data-value="${f}" title="Inspect / Edit File">
-                            <span class="codicon codicon-edit"></span>
-                        </button>
-                        <button class="remove-context-btn" data-type="file" data-value="${f}" title="Remove from context">
-                            <span class="codicon codicon-close"></span>
-                        </button>
+            ${list.map(f => {
+                const uniqueDomId = f.replace(/[^a-zA-Z0-9]/g, '_');
+                return `
+                <li class="context-item" style="flex-direction: column; align-items: stretch; gap: 4px;">
+                    <div style="display:flex; align-items:center; width:100%;">
+                        <details class="info-collapsible lazy-file-accordion" data-path="${f}" style="flex: 1; min-width:0; border:none; padding:0;">
+                            <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600;">
+                                <span class="codicon codicon-file"></span> ${f.split('/').pop()}
+                            </summary>
+                            <div class="lazy-file-pane" id="lazy-pane-${uniqueDomId}" style="padding-top: 8px; font-size:11px; font-family:var(--vscode-editor-font-family);">
+                                <div style="display:flex; align-items:center; gap:8px; opacity:0.6;"><div class="spinner"></div> Ingesting file content from disk...</div>
+                            </div>
+                        </details>
+                        <div style="display:flex; gap:2px; flex-shrink:0;">
+                            ${allowSummarize ? `
+                            <button class="summarize-context-btn" data-value="${f}" title="Synthesize / Clean / Summarize">
+                                <span class="codicon codicon-wand"></span>
+                            </button>` : ''}
+                            <button class="open-context-btn" data-value="${f}" title="Inspect / Edit File">
+                                <span class="codicon codicon-edit"></span>
+                            </button>
+                            <button class="remove-context-btn" data-type="file" data-value="${f}" title="Remove from context">
+                                <span class="codicon codicon-close"></span>
+                            </button>
+                        </div>
                     </div>
-                </li>`).join('')}
+                </li>`}).join('')}
            </ul>`;
     };
 
@@ -2835,6 +2965,26 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                 }
             });
         }
+
+        // --- LAZY FILE INGESTION GESTURE ATTACHMENT ---
+        existingDashboard.querySelectorAll('.lazy-file-accordion').forEach(accordion => {
+            accordion.addEventListener('toggle', () => {
+                const details = accordion as HTMLDetailsElement;
+                const filePath = details.dataset.path;
+                const registry = (window as any).lazyFilesRegistry;
+
+                if (details.open && filePath && registry) {
+                    const cachedFile = registry.get(filePath);
+                    if (cachedFile && !cachedFile.hasContent) {
+                        // Request the file content asynchronously from the extension host
+                        vscode.postMessage({
+                            command: 'requestLazyFileContent',
+                            filePath: filePath
+                        });
+                    }
+                }
+            });
+        });
 
         // Add immediate event bindings to dynamically added elements in the lists
         existingDashboard.querySelectorAll('.remove-context-btn').forEach(btn => {
@@ -4247,4 +4397,3 @@ function formatPlanForCopy(plan: any): string {
 
     return log;
 }
-

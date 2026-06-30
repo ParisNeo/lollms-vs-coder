@@ -70,15 +70,18 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         panel.setContextManager(services.contextManager);
         panel.setPersonalityManager(services.personalityManager);
         panel.setHerdManager(services.herdManager); 
-        
-        await panel.loadDiscussion();
-        services.treeProviders.discussion?.refresh();
+
+        // Offload document loading to a non-blocking macrotask so the panel renders instantly
+        setTimeout(async () => {
+            await panel.loadDiscussion();
+            services.treeProviders.discussion?.refresh();
+        }, 5);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newAgentDiscussion', async (item?: DiscussionGroupItem) => {
         const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
         const discussion = services.discussionManager.createNewDiscussion(groupId);
-        
+
         // --- FORCE AGENT MODE ---
         if (discussion.capabilities) {
             discussion.capabilities.agentMode = true;
@@ -107,8 +110,11 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         panel.setPersonalityManager(services.personalityManager);
         panel.setHerdManager(services.herdManager);
 
-        await panel.loadDiscussion();
-        services.treeProviders.discussion?.refresh();
+        // Offload document loading to a non-blocking macrotask so the panel renders instantly
+        setTimeout(async () => {
+            await panel.loadDiscussion();
+            services.treeProviders.discussion?.refresh();
+        }, 5);
     }));
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newTempDiscussion', async () => {
@@ -240,8 +246,10 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             panel.setAgentManager(agent);
         }
 
-        // 4. Trigger the load
-        await panel.loadDiscussion();
+        // 4. Trigger the load asynchronously to ensure the webview reveals instantly without lag
+        setTimeout(async () => {
+            await panel.loadDiscussion();
+        }, 5);
     }));
 
 

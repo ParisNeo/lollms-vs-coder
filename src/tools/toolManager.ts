@@ -3,10 +3,6 @@ import { ToolDefinition } from "./tool";
 import { allTools } from './builtins';
 import { McpClient } from '../mcpClient';
 import { navigateToCodeTool } from './builtins/navigateToCode';
-import { generateImageTool } from './builtins/generateImage';
-import { editImageAssetTool } from './builtins/editImageAsset';
-import { searchKeywordsTool } from './builtins/searchKeywords';
-import { updateFunctionTool } from './builtins/updateFunction';
 
 export class ToolManager {
     private tools: Map<string, ToolDefinition> = new Map();
@@ -23,7 +19,6 @@ export class ToolManager {
         this.setDefaultEnabledTools();
     }
 
-    
     private loadTools() {
         allTools.forEach(tool => {
             this.tools.set(tool.name, tool);
@@ -43,7 +38,7 @@ export class ToolManager {
                 const parts = cmdString.split(' ');
                 const command = parts[0];
                 const args = parts.slice(1);
-                
+
                 const client = new McpClient({
                     name: serverName,
                     type: (configEntry.type as any) || 'stdio',
@@ -58,7 +53,7 @@ export class ToolManager {
                 for (const t of mcpTools) {
                     // Namespace tools to avoid collisions (e.g., github_create_issue)
                     const namespacedName = `${serverName}_${t.name}`.replace(/-/g, '_');
-                    
+
                     const toolDef: ToolDefinition = {
                         name: namespacedName,
                         description: t.description || `[MCP] ${t.name}`,
@@ -119,7 +114,7 @@ export class ToolManager {
     getEnabledTools(): ToolDefinition[] {
         return Array.from(this.enabledTools).map(name => this.tools.get(name)).filter((t): t is ToolDefinition => !!t);
     }
-    
+
     setEnabledTools(toolNames: string[]) {
         this.enabledTools = new Set(toolNames);
     }

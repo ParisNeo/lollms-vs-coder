@@ -260,6 +260,48 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     (window as any)._syncTimer = setTimeout(() => ui.syncExpansionBlocks(), 800);
                 });
                 break;
+            case 'updateContextDelta':
+                {
+                    const { action, files, skills, tools, briefing, selections, filePath, content } = message;
+
+                    if (action === 'sync_all') {
+                        // Fast local sync without full re-render of code block contents
+                        state.lastContextData = {
+                            context: "",
+                            files: files.map((f: any) => f.path),
+                            skills: skills,
+                            tools: tools,
+                            diagrams: [],
+                            briefing: briefing,
+                            selections: selections
+                        };
+
+                        // Store descriptors in our local view cache
+                        (window as any).lazyFilesRegistry = new Map(files.map((f: any) => [f.path, f]));
+
+                        import('./ui.js').then(ui => {
+                            ui.updateBadges();
+                            ui.renderContextDashboard(); // Renders lightweight UI skeleton
+                        });
+                    } else if (action === 'lazy_load_file') {
+                        const registry = (window as any).lazyFilesRegistry;
+                        if (registry && registry.has(filePath)) {
+                            const cachedFile = registry.get(filePath);
+                            cachedFile.content = content;
+                            cachedFile.hasContent = true;
+
+                            // Dynamically update the specific accordion pane with the resolved text
+                            const pane = document.getElementById(`lazy-pane-${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`);
+                            if (pane) {
+                                pane.innerHTML = `<pre class="markdown-body" style="padding:12px; margin:0; overflow:auto; max-height:400px; font-family:var(--vscode-editor-font-family); font-size:12px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); border-radius:4px;">${(window as any).DOMPurify.sanitize((window as any).marked.parse(content))}</pre>`;
+                                pane.querySelectorAll('pre code').forEach(block => {
+                                    (window as any).Prism.highlightElement(block);
+                                });
+                            }
+                        }
+                    }
+                }
+                break;
             case 'updateDiscussionSkillsMetadata':
                 if (state.lastContextData) {
                     state.lastContextData.skillIds = message.skillIds;
@@ -686,6 +728,21 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (barContainer && bar) {
                         barContainer.style.display = 'block';
                         bar.style.width = `${message.progress}%`;
+                    }
+
+                    // Dynamically update the active text labels during calculation with precise metrics
+                    const label = document.getElementById('token-count-label');
+                    const loaderText = document.getElementById('loading-files-text');
+                    
+                    if (message.current && message.total) {
+                        const progressStatus = `Processing: ${message.current} / ${message.total} files (${message.progress}%) [${message.fileName}]`;
+                        if (label) {
+                            label.textContent = progressStatus;
+                            label.style.opacity = '1';
+                        }
+                        if (loaderText) {
+                            loaderText.textContent = progressStatus;
+                        }
                     }
                 }
                 break;

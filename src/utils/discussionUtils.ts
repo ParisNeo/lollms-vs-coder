@@ -74,22 +74,45 @@ export async function startDiscussionWithInitialPrompt(
 
     if (autoExecute) {
         panel._panel.reveal();
-        // sendMessage handles both adding to discussion and triggering the LLM
-        await panel.sendMessage(initialMessage);
+        // Run the main generation asynchronously to free up the extension host thread instantly
+        setTimeout(async () => {
+            await panel.sendMessage(initialMessage);
+
+            // Generate the discussion title on the background thread after the message has started/completed
+            if (config.get<boolean>('autoGenerateTitle')) {
+                try {
+                    const newTitle = await services.discussionManager.generateDiscussionTitle({
+                        ...discussion,
+                        messages: [{ role: 'user', content: role === 'assistant' ? '' : prompt } as ChatMessage]
+                    });
+                    if (newTitle) {
+                        discussion.title = newTitle;
+                        await services.discussionManager.saveDiscussion(discussion);
+                        services.treeProviders.discussion?.refresh();
+                        if (ChatPanel.currentPanel === panel) { panel._panel.title = newTitle; }
+                    }
+                } catch (e) {
+                    console.warn("Background title generation failed:", e);
+                }
+            }
+        }, 10);
     } else {
         await panel.addMessageToDiscussion(initialMessage);
-    }
 
-    if (config.get<boolean>('autoGenerateTitle')) {
-        const newTitle = await services.discussionManager.generateDiscussionTitle({
-            ...discussion,
-            messages: [{ role: 'user', content: role === 'assistant' ? '' : prompt } as ChatMessage]
-        });
-        if (newTitle) {
-            discussion.title = newTitle;
-            await services.discussionManager.saveDiscussion(discussion);
-            services.treeProviders.discussion?.refresh();
-            if (ChatPanel.currentPanel === panel) { panel._panel.title = newTitle; }
+        // Asynchronously generate title for silent insertions as well
+        if (config.get<boolean>('autoGenerateTitle')) {
+            setTimeout(async () => {
+                const newTitle = await services.discussionManager.generateDiscussionTitle({
+                    ...discussion,
+                    messages: [{ role: 'user', content: role === 'assistant' ? '' : prompt } as ChatMessage]
+                });
+                if (newTitle) {
+                    discussion.title = newTitle;
+                    await services.discussionManager.saveDiscussion(discussion);
+                    services.treeProviders.discussion?.refresh();
+                    if (ChatPanel.currentPanel === panel) { panel._panel.title = newTitle; }
+                }
+            }, 100);
         }
     }
 }

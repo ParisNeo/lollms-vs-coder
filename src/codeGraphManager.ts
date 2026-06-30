@@ -1,25 +1,11 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { Worker } from 'worker_threads';
 
 /**
  * ==========================================
- * 🧊 LOLLMS SOURCE CODE ONTOLOGY
+ * 🧊 LOLLMS SOURCE CODE ONTOLOGY & WORKER ENGINE
  * ==========================================
- * Classes (Types):
- * - s:File : Represents a source file.
- * - s:Class : Represents an object-oriented class or interface.
- * - s:Function : Represents a global function.
- * - s:Method : Represents an object-oriented method inside a class.
- * - s:Library : Represents an external imported package.
- * 
- * Properties (Relationships):
- * - s:type : Declares the class/type of a resource.
- * - s:name : The human-readable identifier of the resource.
- * - s:path : The relative file path of the resource.
- * - s:contains : Indicates a file or class contains a nested symbol/method.
- * - s:imports : Declares that a file imports another file or library.
- * - s:calls : Indicates a function or method calls another symbol.
- * - s:inherits : Declares that a class inherits from another class.
  */
 
 export type GraphNode = {
@@ -31,8 +17,8 @@ export type GraphNode = {
     docstring?: string;
     methods?: string[];
     attributes?: string[];
-    signature?: string; // New field for function/method signatures
-    linesCount?: number; // New field
+    signature?: string;
+    linesCount?: number;
 };
 
 export type GraphEdge = {
@@ -48,11 +34,194 @@ export type GraphData = {
 };
 
 export type BuildState = 'idle' | 'building' | 'ready' | 'error';
-
 export type ContextSetter = (key: string, value: any) => void;
 
-export class CodeGraphManager {
+// --- INLINE WORKER SOURCE CODE ---
+// This code executes entirely inside a separate Node.js worker thread.
+// It parses file contents and extracts imports/methods, returning the results.
+const WORKER_PARSE_SCRIPT = `
+const { parentPort, workerData } = require('worker_threads');
+const fs = require('fs');
 
+function stripCommentsAndStrings(code) {
+    return code.replace(/\\/\\*[\\s\\S]*?\\*\\/|([^\\\\:]|^)\\/\\/.*$/gm, '$1') 
+               .replace(/#.*/g, '') 
+               .replace(/"(?:[^"\\\\\\n]|\\\\.)*"|'(?:[^'\\\\\\n]|\\\\.)*'/g, ''); 
+}
+
+function extractImports(text, ext) {
+    const imports = [];
+    if (['ts', 'js', 'tsx', 'jsx'].includes(ext)) {
+        let match;
+        const esImportRegex = /(?:import|export)\\s+(?:type\\s+)?(?:[\\w\\s{},*]+from\\s+)?['"]([^'"]+)['"]/g;
+        while ((match = esImportRegex.exec(text)) !== null) {
+            imports.push(match[1]);
+        }
+        const dynamicImportRegex = /import\\s*\\(\\s*['"]([^'"]+)['"]\\s*\\)/g;
+        while ((match = dynamicImportRegex.exec(text)) !== null) {
+            imports.push(match[1]);
+        }
+        const requireRegex = /require\\s*\\(\\s*['"]([^'"]+)['"]\\s*\\)/g;
+        while ((match = requireRegex.exec(text)) !== null) {
+            imports.push(match[1]);
+        }
+    } else if (ext === 'py') {
+        const fromImportRegex = /^from\\s+([\\w\\.]+)\\s+import/gm;
+        let match;
+        while ((match = fromImportRegex.exec(text)) !== null) {
+            imports.push(match[1].replace(/\\./g, '/'));
+        }
+        const importRegex = /^import\\s+([^\\n]+)/gm;
+        while ((match = importRegex.exec(text)) !== null) {
+            const modules = match[1].split(',');
+            modules.forEach(m => {
+                const cleanName = m.trim().split(/\\s+as\\s+/)[0];
+                if (cleanName) imports.push(cleanName.replace(/\\./g, '/'));
+            });
+        }
+    }
+    return imports;
+}
+
+const { absolutePath, ext, normalizedPath } = workerData;
+let text = '';
+try {
+    text = fs.readFileSync(absolutePath, 'utf8');
+} catch (err) {
+    text = '';
+}
+const cleanText = stripCommentsAndStrings(text);
+const lines = cleanText.split('\\n');
+
+const localNodes = [];
+const localEdges = [];
+
+let nextNodeIdNum = 1;
+let nextEdgeIdNum = 1;
+
+let currentClass = null;
+let currentClassIndent = 0;
+
+lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    const indent = line.search(/\\S/);
+
+    const fnMatch = line.match(/(?:async\\s+)?function\\s+([a-zA-Z0-9_]+)\\s*\\(([^)]*)\\)(?:\\s*:\\s*([^\\{]+))?/);
+    const pyMatch = line.match(/^\\s*def\\s+([a-zA-Z0-9_]+)\\s*\\(([^)]*)\\)(?:\\s*->\\s*([^:]+))?\\s*:/);
+
+    if ((fnMatch || pyMatch) && !currentClass) {
+        const name = fnMatch ? fnMatch[1] : pyMatch[1];
+        const args = fnMatch ? fnMatch[2] : pyMatch[2];
+        const ret = fnMatch ? (fnMatch[3] || 'any') : (pyMatch[3] || 'None');
+
+        localNodes.push({
+            id: \`fn_\${nextNodeIdNum++}\`,
+            label: name,
+            type: 'function',
+            filePath: normalizedPath,
+            startLine: index,
+            signature: \`\${name}(\${args.trim()}) -> \${ret.trim()}\`,
+            params: args.trim(),
+            returnType: ret.trim()
+        });
+    }
+
+    const classMatch = line.match(/class\\s+([a-zA-Z0-9_]+)/);
+    if (classMatch) {
+        const className = classMatch[1];
+        const classNodeId = \`class_\${nextNodeIdNum++}\`;
+
+        currentClass = {
+            id: classNodeId,
+            label: className,
+            type: 'class',
+            filePath: normalizedPath,
+            startLine: index,
+            methods: [],
+            attributes: []
+        };
+        currentClassIndent = indent;
+        localNodes.push(currentClass);
+        return;
+    }
+
+    if (currentClass) {
+        if (ext === 'py') {
+            if (indent <= currentClassIndent && !trimmed.startsWith('def') && !trimmed.startsWith('class') && !trimmed.startsWith('@')) {
+                if (!trimmed.startsWith('#') && trimmed.length > 0) {
+                    currentClass = null; 
+                }
+            }
+        } else {
+            if (line.match(/^}/) && indent === currentClassIndent) {
+                currentClass = null;
+            }
+        }
+
+        if (currentClass) {
+            let methodMatch;
+            if (ext === 'py') {
+                methodMatch = line.match(/^\\s+def\\s+([a-zA-Z0-9_]+)\\s*\\(([^)]*)\\)(?:\\s*->\\s*([^:]+))?\\s*:/);
+                if (methodMatch) {
+                    const methodName = methodMatch[1];
+                    const methodNodeId = \`method_\${nextNodeIdNum++}\`;
+                    localNodes.push({
+                        id: methodNodeId,
+                        label: methodName,
+                        type: 'method',
+                        filePath: normalizedPath,
+                        startLine: index,
+                        signature: \`\${methodName}(\${methodMatch[2].trim()}) -> \${methodMatch[3]?.trim() || 'None'}\`,
+                        params: methodMatch[2].trim(),
+                        returnType: methodMatch[3]?.trim() || 'None'
+                    });
+                    localEdges.push({ source: currentClass.id, target: methodNodeId, label: 'contains' });
+                }
+            } else {
+                methodMatch = line.match(/(?:public|private|protected|static|async|\\s)*\\s+([a-zA-Z0-9_]+)\\s*\\(([^)]*)\\)(?:\\s*:\\s*([^\\{]+))?/);
+                if (methodMatch && !['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
+                    const methodName = methodMatch[1];
+                    const methodNodeId = \`method_\${nextNodeIdNum++}\`;
+                    localNodes.push({
+                        id: methodNodeId,
+                        label: methodName,
+                        type: 'method',
+                        filePath: normalizedPath,
+                        startLine: index,
+                        signature: \`\${methodName}(\&{methodMatch[2].trim()}) : \${methodMatch[3]?.trim() || 'any'}\`,
+                        params: methodMatch[2].trim(),
+                        returnType: methodMatch[3]?.trim() || 'any'
+                    });
+                    localEdges.push({ source: currentClass.id, target: methodNodeId, label: 'contains' });
+                }
+            }
+
+            let attrMatch;
+            if (ext === 'py') {
+                attrMatch = line.match(/self\\.([a-zA-Z0-9_]+)\\s*=/);
+            } else {
+                attrMatch = line.match(/(?:public|private|protected|\\s)*\\s*([a-zA-Z0-9_]+)\\s*(?::\\s*[a-zA-Z0-9_<>\\[\\]]+)?\\s*=/);
+            }
+
+            if (attrMatch) {
+                currentClass.attributes.push(attrMatch[1]);
+            }
+        }
+    }
+});
+
+const imports = extractImports(cleanText, ext);
+
+parentPort.postMessage({
+    nodes: localNodes,
+    edges: localEdges,
+    imports,
+    linesCount: lines.length
+});
+`;
+
+export class CodeGraphManager {
     private workspaceRoot?: vscode.Uri;
     private graph: GraphData = { nodes: [], edges: [] };
     private buildState: BuildState = 'idle';
@@ -60,637 +229,421 @@ export class CodeGraphManager {
     private contextSetter?: ContextSetter;
     private abortController?: AbortController;
 
-    // --- CONCURRENCY LOCK MUTEX ---
     private activeBuildPromise: Promise<void> | null = null;
     private activeIncrementalPromises = new Map<string, Promise<void>>();
 
-    // Preserved index state for progressive and incremental background builds
-    private nextNodeIdNum: number = 0;
-    private nextEdgeIdNum: number = 0;
-    private fileNodeMap = new Map<string, string>();
-    private classNodeMap = new Map<string, string>();
-    private libraryNodeMap = new Map<string, string>();
-    private fileContents = new Map<string, { text: string, linesCount: number }>();
+    // High-performance caching layers for incremental compiles
+    private parsedFilesCache = new Map<string, {
+        nodes: GraphNode[];
+        edges: GraphEdge[];
+        imports: string[];
+        linesCount: number;
+    }>();
 
-    constructor(workspaceRoot?: vscode.Uri) {
-        if (workspaceRoot) {
-            this.workspaceRoot = workspaceRoot;
+    private fileIdsMap = new Map<string, string>(); // filePath -> File node ID
+
+    constructor() {}
+
+    private runParserInWorker(absolutePath: string, ext: string, normalizedPath: string): Promise<any> {
+        return new Promise((resolve, reject) => {
+            const worker = new Worker(WORKER_PARSE_SCRIPT, {
+                eval: true,
+                workerData: { absolutePath, ext, normalizedPath }
+            });
+
+            worker.on('message', (result) => {
+                worker.terminate();
+                resolve(result);
+            });
+
+            worker.on('error', (err) => {
+                worker.terminate();
+                reject(err);
+            });
+
+            worker.on('exit', (code) => {
+                if (code !== 0) {
+                    reject(new Error(`Worker stopped with exit code ${code}`));
+                }
+            });
+        });
+    }
+
+    public setWorkspaceRoot(root: vscode.Uri) {
+        this.workspaceRoot = root;
+    }
+
+    public setContextSetter(setter: ContextSetter) {
+        this.contextSetter = setter;
+    }
+
+    public getGraphData(): GraphData {
+        return this.graph;
+    }
+
+    public getBuildState(): BuildState {
+        return this.buildState;
+    }
+
+    public getLastError(): string | undefined {
+        return this.lastError;
+    }
+
+    public cancel() {
+        if (this.abortController) {
+            this.abortController.abort();
+        }
+        this.buildState = 'idle';
+        if (this.contextSetter) {
+            this.contextSetter('buildState', 'idle');
         }
     }
 
-    /* =========================
-       CONTEXT / WORKSPACE
-       ========================= */
-
-    setWorkspaceRoot(uri: vscode.Uri) {
-        this.workspaceRoot = uri;
-        this.reset();
-    }
-
-    setContextSetter(provider: ContextSetter) {
-        this.contextSetter = provider;
-    }
-
-    /* =========================
-       BUILD PIPELINE
-       ========================= */
-
-    cancel() {
-        if (this.buildState === 'building' && this.abortController) {
-            this.abortController.abort();
-            this.buildState = 'idle';
-            this.contextSetter?.('codeGraph.building', false);
-            this.contextSetter?.('codeGraph.ready', false);
+    public reset() {
+        this.graph = { nodes: [], edges: [] };
+        this.parsedFilesCache.clear();
+        this.fileIdsMap.clear();
+        this.buildState = 'idle';
+        if (this.contextSetter) {
+            this.contextSetter('buildState', 'idle');
         }
     }
 
     /**
-     * Builds a graph. 
-     * @param focusPath If provided, only builds a subgraph around this file to prevent UI freezing on large projects.
-     * @param onProgress Optional callback for real-time progress metrics.
+     * Rebuilds the graph, using thread pools for parallel file reads and parsing.
      */
-    async buildGraph(focusPath?: string, onProgress?: (p: { percentage: number, status: string }) => void) {
-        // --- CONCURRENCY MUTEX LOCK ---
-        // If a build is already in progress, reuse the existing promise to prevent duplicate concurrent builds
+    public buildGraph(focusPath?: string, progress?: (progress: { percentage: number; status: string }) => void): Promise<void> {
         if (this.activeBuildPromise) {
             return this.activeBuildPromise;
         }
 
         this.activeBuildPromise = (async () => {
-            // Cancel any existing operation
-            this.cancel();
-
-            // JIT Resolution: If root is not set, try to grab it from current VS Code state
             if (!this.workspaceRoot) {
-                const folders = vscode.workspace.workspaceFolders;
-                if (folders && folders.length > 0) {
-                    this.workspaceRoot = folders[0].uri;
-                } else {
-                    this.fail('Workspace root not defined. Please open a project folder.');
-                    return;
-                }
+                this.buildState = 'error';
+                this.lastError = "No workspace root configured.";
+                return;
             }
 
             this.buildState = 'building';
-        this.lastError = undefined;
-        this.abortController = new AbortController();
-        const signal = this.abortController.signal;
-
-        this.contextSetter?.('codeGraph.building', true);
-        this.contextSetter?.('codeGraph.ready', false);
-        this.contextSetter?.('codeGraph.error', false);
-
-        try {
-            if (signal.aborted) return;
-
-            // Ultra-aggressive exclusion pattern to guarantee we never touch build/dependency directories
-            const excludePattern = '**/{node_modules,venv,.venv,env,.env,.git,dist,build,out,bin,obj,.vscode,.idea,.lollms,__pycache__,target,*.egg-info,vendor,temp_scripts,web_cache,snapshots}/**';
-
-            // Find code files only
-            const files = await vscode.workspace.findFiles(
-                new vscode.RelativePattern(this.workspaceRoot, '**/*.{ts,js,jsx,tsx,py,cpp,h,hpp,c,java,cs,go,rs,php,rb}'),
-                excludePattern,
-                undefined
-            );
-
-            if (signal.aborted) return;
-
-            // High-Scale Limit: comfortably handles 500+ files under the new fast-index algorithm
-            const MAX_FILES_LIMIT = 500;
-            let filesToProcess = files;
-            if (files.length > MAX_FILES_LIMIT) {
-                console.warn(`[Lollms Graph] Codebase exceeds limit. Truncating to ${MAX_FILES_LIMIT} files for performance.`);
-                filesToProcess = files.slice(0, MAX_FILES_LIMIT);
+            if (this.contextSetter) {
+                this.contextSetter('buildState', 'building');
             }
 
-            const nodes: GraphNode[] = [];
-            const edges: GraphEdge[] = [];
+            this.abortController = new AbortController();
+            const signal = this.abortController.signal;
 
-            this.fileNodeMap.clear();
-            this.classNodeMap.clear();
-            this.libraryNodeMap.clear();
-            this.fileContents.clear();
+            try {
+                if (progress) progress({ percentage: 10, status: "Scouting codebase structure..." });
 
-            this.nextNodeIdNum = 0;
-            this.nextEdgeIdNum = 0;
+                // Find all source files
+                const patterns = ['**/*.ts', '**/*.js', '**/*.tsx', '**/*.jsx', '**/*.py'];
+                const excludePattern = '**/{node_modules,venv,.venv,env,.env,.git,dist,build,out,bin,obj,.vscode,.idea,.lollms,__pycache__,target,*.egg-info,vendor}/**';
+                
+                let files: vscode.Uri[] = [];
+                for (const pattern of patterns) {
+                    if (signal.aborted) return;
+                    const matches = await vscode.workspace.findFiles(
+                        new vscode.RelativePattern(this.workspaceRoot, pattern),
+                        excludePattern,
+                        500
+                    );
+                    files = [...files, ...matches];
+                }
 
-            // --- PASS 1: Batched Asynchronous Reading & Pre-flight Size Checks ---
-            const BATCH_SIZE = 40;
-            for (let i = 0; i < filesToProcess.length; i += BATCH_SIZE) {
+                const MAX_FILES = 400;
+                if (files.length > MAX_FILES) {
+                    files = files.slice(0, MAX_FILES);
+                }
+
+                const total = files.length;
+                let processed = 0;
+
+                // Process in parallel thread pools
+                const poolLimit = 8;
+                const activeWorkers: Promise<void>[] = [];
+
+                for (let i = 0; i < files.length; i++) {
+                    if (signal.aborted) return;
+
+                    const fileUri = files[i];
+                    const relPath = path.relative(this.workspaceRoot.fsPath, fileUri.fsPath).replace(/\\/g, '/');
+
+                    const task = (async () => {
+                        try {
+                            const ext = path.extname(relPath).substring(1);
+
+                            // Offload file reading & parsing to background worker thread
+                            const parsed = await this.runParserInWorker(fileUri.fsPath, ext, relPath);
+
+                            this.parsedFilesCache.set(relPath, parsed);
+                        } catch (e) {
+                            console.error(`Failed to parse ${relPath} in thread:`, e);
+                        } finally {
+                            processed++;
+                            if (progress && processed % 5 === 0) {
+                                const pct = 40 + Math.round((processed / total) * 50);
+                                progress({ percentage: pct, status: `Parsing ${path.basename(relPath)} [${processed}/${total}]` });
+                            }
+                        }
+                    })();
+
+                    activeWorkers.push(task);
+                    if (activeWorkers.length >= poolLimit) {
+                        await Promise.race(activeWorkers);
+                        // Filter completed promises out of the pool
+                        const activeIndex = activeWorkers.indexOf(task);
+                        if (activeIndex > -1) {
+                            activeWorkers.splice(activeIndex, 1);
+                        }
+                    }
+                }
+
+                await Promise.all(activeWorkers);
+
                 if (signal.aborted) return;
 
-                await new Promise(resolve => setTimeout(resolve, 1));
+                if (progress) progress({ percentage: 90, status: "Establishing graph links..." });
 
-                const batch = filesToProcess.slice(i, i + BATCH_SIZE);
+                this.linkGraphStructure();
 
-                if (onProgress) {
-                    const pct = Math.round((i / filesToProcess.length) * 40);
-                    const currentFileSample = batch[0] ? path.basename(batch[0].fsPath) : 'codebase';
-                    onProgress({ percentage: pct, status: `Pass 1: Reading ${currentFileSample}...` });
+                this.buildState = 'ready';
+                if (this.contextSetter) {
+                    this.contextSetter('buildState', 'ready');
                 }
+                if (progress) progress({ percentage: 100, status: "Architecture map synchronized." });
 
-                await Promise.all(batch.map(async (file) => {
-                    const relativePath = vscode.workspace.asRelativePath(file);
-                    const normalizedPath = relativePath.replace(/\\/g, '/');
-
-                    try {
-                        // Pre-flight file size check: Allow up to 200KB for maximum project visibility
-                        const stats = await vscode.workspace.fs.stat(file);
-                        if (stats.size > 200000) {
-                            return;
-                        }
-
-                        const fileBytes = await vscode.workspace.fs.readFile(file);
-                        const text = Buffer.from(fileBytes).toString('utf8');
-                        const linesCount = text.split('\n').length;
-
-                        this.fileContents.set(normalizedPath, { text, linesCount });
-
-                        const fileNodeId = `file_${this.nextNodeIdNum++}`;
-                        nodes.push({
-                            id: fileNodeId,
-                            label: path.basename(relativePath),
-                            type: 'file',
-                            filePath: relativePath,
-                            startLine: 0,
-                            linesCount: linesCount
-                        });
-
-                        this.fileNodeMap.set(normalizedPath, fileNodeId);
-                    } catch (readError) {
-                        console.warn(`Error reading file ${file.fsPath}:`, readError);
-                    }
-                }));
-            }
-
-            if (onProgress) {
-                onProgress({ percentage: 40, status: 'Pass 1 complete. Extracting file-level nodes...' });
-            }
-
-            // --- PASS 2: Parse Content ---
-            let filesParsed = 0;
-            for (const [normalizedPath, data] of this.fileContents.entries()) {
-                if (signal.aborted) return;
-
-                filesParsed++;
-                // Yield back more frequently to keep the main thread fully responsive
-                if (filesParsed % 3 === 0) {
-                    await new Promise(resolve => setTimeout(resolve, 1));
+            } catch (err: any) {
+                this.buildState = 'error';
+                this.lastError = err?.message || String(err);
+                if (this.contextSetter) {
+                    this.contextSetter('buildState', 'error');
                 }
-
-                if (onProgress && filesParsed % 10 === 0) {
-                    const pct = 40 + Math.round((filesParsed / this.fileContents.size) * 30); // 40% to 70%
-                    onProgress({ percentage: pct, status: `Pass 2: Extracting classes/functions from ${path.basename(normalizedPath)}...` });
-                }
-
-                const fileNodeId = this.fileNodeMap.get(normalizedPath);
-                if (!fileNodeId) continue;
-
-                // Track nodes and edges generated ONLY from this file to populate cache
-                const localNodes: GraphNode[] = [];
-                const localEdges: GraphEdge[] = [];
-
-                try {
-                    const text = data.text;
-                    const cleanText = this.stripCommentsAndStrings(text); 
-                    const lines = cleanText.split('\n');
-                    const ext = path.extname(normalizedPath).toLowerCase().replace('.', '');
-
-                    let currentClass: GraphNode | null = null;
-                    let currentClassIndent = 0;
-
-                    lines.forEach((line, index) => {
-                        const trimmed = line.trim();
-                        if (!trimmed) return;
-                        const indent = line.search(/\S/);
-
-                        // Improved Regex to capture signature (parameters and return types)
-                        const fnMatch = line.match(/(?:async\s+)?function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^\{]+))?/);
-                        const pyMatch = line.match(/^\s*def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?\s*:/);
-
-                        if ((fnMatch || pyMatch) && !currentClass) {
-                            const name = fnMatch ? fnMatch[1] : pyMatch![1];
-                            const args = fnMatch ? fnMatch[2] : pyMatch![2];
-                            const ret = fnMatch ? (fnMatch[3] || 'any') : (pyMatch![3] || 'None');
-
-                            const fnNodeId = `fn_${this.nextNodeIdNum++}`;
-                            nodes.push({
-                                id: fnNodeId,
-                                label: name,
-                                type: 'function',
-                                filePath: normalizedPath,
-                                startLine: index,
-                                signature: `${name}(${args.trim()}) -> ${ret.trim()}`,
-                                params: args.trim(),
-                                returnType: ret.trim()
-                            });
-                            edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: fnNodeId, label: 'contains' });
-                        }
-
-                        const classMatch = line.match(/class\s+([a-zA-Z0-9_]+)/);
-                        if (classMatch) {
-                            const className = classMatch[1];
-                            const classNodeId = `class_${this.nextNodeIdNum++}`;
-
-                            currentClass = {
-                                id: classNodeId,
-                                label: className,
-                                type: 'class',
-                                filePath: normalizedPath,
-                                startLine: index,
-                                methods: [],
-                                attributes: []
-                            };
-                            currentClassIndent = indent;
-
-                            nodes.push(currentClass);
-                            this.classNodeMap.set(className, classNodeId);
-                            edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: classNodeId, label: 'contains' });
-                            return;
-                        }
-
-                        if (currentClass) {
-                            if (ext === 'py') {
-                                if (indent <= currentClassIndent && !trimmed.startsWith('def') && !trimmed.startsWith('class') && !trimmed.startsWith('@')) {
-                                    if (!trimmed.startsWith('#') && trimmed.length > 0) {
-                                        currentClass = null; 
-                                    }
-                                }
-                            } else {
-                                if (line.match(/^}/) && indent === currentClassIndent) {
-                                    currentClass = null;
-                                }
-                            }
-
-                            if (currentClass) {
-                                let methodMatch;
-                                if (ext === 'py') {
-                                    // Capture full Python method signature
-                                    methodMatch = line.match(/^\s+def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?\s*:/);
-                                    if (methodMatch) {
-                                        const methodName = methodMatch[1];
-                                        const methodNodeId = `method_${this.nextNodeIdNum++}`;
-                                        nodes.push({
-                                            id: methodNodeId,
-                                            label: methodName,
-                                            type: 'method',
-                                            filePath: normalizedPath,
-                                            startLine: index,
-                                            signature: `${methodName}(${methodMatch[2].trim()}) -> ${methodMatch[3]?.trim() || 'None'}`,
-                                            params: methodMatch[2].trim(),
-                                            returnType: methodMatch[3]?.trim() || 'None'
-                                        });
-                                        edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
-                                    }
-                                } else {
-                                    // Capture TS/JS method signature
-                                    methodMatch = line.match(/(?:public|private|protected|static|async|\s)*\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^\{]+))?/);
-                                    if (methodMatch && !['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
-                                        const methodName = methodMatch[1];
-                                        const methodNodeId = `method_${this.nextNodeIdNum++}`;
-                                        nodes.push({
-                                            id: methodNodeId,
-                                            label: methodName,
-                                            type: 'method',
-                                            filePath: normalizedPath,
-                                            startLine: index,
-                                            signature: `${methodName}(${methodMatch[2].trim()}) : ${methodMatch[3]?.trim() || 'any'}`,
-                                            params: methodMatch[2].trim(),
-                                            returnType: methodMatch[3]?.trim() || 'any'
-                                        });
-                                        edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
-                                    }
-                                }
-
-                                let attrMatch;
-                                if (ext === 'py') {
-                                    attrMatch = line.match(/self\.([a-zA-Z0-9_]+)\s*=/);
-                                } else {
-                                    attrMatch = line.match(/(?:public|private|protected|\s)*\s*([a-zA-Z0-9_]+)\s*(?::\s*[a-zA-Z0-9_<>\[\]]+)?\s*=/);
-                                }
-
-                                if (attrMatch) {
-                                    currentClass.attributes?.push(attrMatch[1]);
-                                }
-                            }
-                        }
-                    });
-
-                    const rawImports = this.extractImports(cleanText, ext);
-                    for (const importStr of rawImports) {
-                        const targetPath = this.resolveImport(importStr, normalizedPath, this.fileNodeMap);
-
-                        if (targetPath) {
-                            // Local File Import
-                            const targetId = this.fileNodeMap.get(targetPath);
-                            if (targetId && targetId !== fileNodeId) {
-                                edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: targetId, label: 'imports' });
-                            }
-                        } else if (!importStr.startsWith('.')) {
-                            // External Library Detection
-                            const libName = importStr.split('/')[0];
-                            let libId = this.libraryNodeMap.get(libName);
-
-                            if (!libId) {
-                                libId = `lib_${this.nextNodeIdNum++}`;
-                                nodes.push({
-                                    id: libId,
-                                    label: libName,
-                                    type: 'library'
-                                });
-                                this.libraryNodeMap.set(libName, libId);
-                            }
-
-                            edges.push({
-                                id: `edge_${this.nextEdgeIdNum++}`,
-                                source: fileNodeId,
-                                target: libId,
-                                label: 'imports'
-                            });
-                        }
-                    }
-                } catch (parseError) {
-                    console.warn(`Error parsing file ${normalizedPath}:`, parseError);
-                }
+            } finally {
+                this.activeBuildPromise = null;
             }
-
-            if (onProgress) {
-                onProgress({ percentage: 70, status: 'Pass 2 complete. Analyzing calls & references...' });
-            }
-
-            // --- PASS 3: Function Calls & References (Fast Token Indexing) ---
-            const allSymbols = nodes.filter(n => n.type === 'function' || n.type === 'method' || n.type === 'class');
-
-            // Build index: Map symbol label -> Symbol nodes
-            const symbolIndex = new Map<string, GraphNode[]>();
-            allSymbols.forEach(sym => {
-                const list = symbolIndex.get(sym.label) || [];
-                list.push(sym);
-                symbolIndex.set(sym.label, list);
-            });
-
-            const addEdgeOnce = (src: string, trg: string, relLabel: string) => {
-                const edgeExists = edges.some(e => e.source === src && e.target === trg && e.label === relLabel);
-                if (!edgeExists) {
-                    edges.push({
-                        id: `edge_${this.nextEdgeIdNum++}`,
-                        source: src,
-                        target: trg,
-                        label: relLabel
-                    });
-                }
-            };
-
-            let filesLinked = 0;
-            for (const [normalizedPath, data] of this.fileContents.entries()) {
-                if (signal.aborted) return;
-
-                filesLinked++;
-                await new Promise(resolve => setTimeout(resolve, 0));
-
-                if (onProgress && filesLinked % 10 === 0) {
-                    const pct = 70 + Math.round((filesLinked / this.fileContents.size) * 20);
-                    onProgress({ percentage: pct, status: `Pass 3: Linking references in ${path.basename(normalizedPath)}...` });
-                }
-
-                const fileNodeId = this.fileNodeMap.get(normalizedPath);
-                if (!fileNodeId) continue;
-
-                const text = data.text;
-                const lines = text.split('\n');
-
-                const fileSymbols = nodes
-                    .filter(n => n.filePath === normalizedPath && (n.type === 'function' || n.type === 'method' || n.type === 'class'))
-                    .sort((a, b) => (a.startLine || 0) - (b.startLine || 0));
-
-                for (let index = 0; index < lines.length; index++) {
-                    const line = lines[index].trim();
-                    if (!line) continue;
-
-                    let currentCallerId = fileNodeId;
-                    for (let sIdx = fileSymbols.length - 1; sIdx >= 0; sIdx--) {
-                        const sym = fileSymbols[sIdx];
-                        if (sym.startLine !== undefined && index >= sym.startLine) {
-                            currentCallerId = sym.id;
-                            break;
-                        }
-                    }
-
-                    const callerNode = nodes.find(n => n.id === currentCallerId);
-                    const isAtDefinitionLine = callerNode && index === callerNode.startLine;
-
-                    // Extract all words from the current line using a single regex execution
-                    const words = line.match(/[\w_]+/g);
-                    if (!words) continue;
-
-                    // Remove duplicates inside the line to prevent redundant indexing checks
-                    const uniqueWords = new Set(words);
-
-                    for (const word of uniqueWords) {
-                        const matchedSymbols = symbolIndex.get(word);
-                        if (!matchedSymbols) continue;
-
-                        for (const symbol of matchedSymbols) {
-                            if (symbol.id === currentCallerId) continue;
-
-                            // 1. Definition Line checks
-                            if (isAtDefinitionLine && callerNode) {
-                                if (callerNode.params && callerNode.params.includes(word)) {
-                                    addEdgeOnce(currentCallerId, symbol.id, 'inputParam');
-                                }
-                                if (callerNode.returnType && callerNode.returnType.includes(word)) {
-                                    addEdgeOnce(currentCallerId, symbol.id, 'outputParam');
-                                }
-                            }
-
-                            // 2. Structural/Call Checks
-                            const charIdx = line.indexOf(word);
-                            const nextChar = line.charAt(charIdx + word.length);
-
-                            if (nextChar === '(') {
-                                addEdgeOnce(currentCallerId, symbol.id, 'calls');
-                            } else {
-                                addEdgeOnce(currentCallerId, symbol.id, 'localVariable');
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (onProgress) {
-                onProgress({ percentage: 90, status: 'Analyzing class inheritance...' });
-            }
-
-            // --- PASS 4: Inheritance Parsing ---
-            const jsInheritance = /class\s+([a-zA-Z0-9_]+)\s+extends\s+([a-zA-Z0-9_.]+)/g;
-            const pyInheritance = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_.]+)\s*\)/g;
-
-            for (const [normalizedPath, data] of this.fileContents.entries()) {
-                if (signal.aborted) return;
-
-                const ext = path.extname(normalizedPath).toLowerCase();
-                const text = this.stripCommentsAndStrings(data.text);
-
-                let match;
-                const regex = (ext === '.py') ? pyInheritance : jsInheritance;
-                regex.lastIndex = 0;
-
-                while ((match = regex.exec(text)) !== null) {
-                    const className = match[1];
-                    const parentName = match[2];
-
-                    if (parentName && parentName !== 'object') {
-                        const childId = this.classNodeMap.get(className);
-                        const parentId = this.classNodeMap.get(parentName); 
-
-                        if (childId && parentId) {
-                            edges.push({
-                                id: `edge_${this.nextEdgeIdNum++}`,
-                                source: childId,
-                                target: parentId,
-                                label: 'inherits'
-                            });
-                        }
-                    }
-                }
-            }
-
-            if (onProgress) {
-                onProgress({ percentage: 95, status: 'Finalizing architectural layout...' });
-            }
-
-            // --- PASS 5: Filter Isolated Nodes ---
-            // Remove nodes that have no edges connecting them to anything else
-            const activeNodeIds = new Set<string>();
-            edges.forEach(e => {
-                activeNodeIds.add(e.source);
-                activeNodeIds.add(e.target);
-            });
-
-            // --- PERFORMANCE CAP ---
-            // If the graph is still huge, we prioritize local files over external libraries
-            let finalNodes = nodes.filter(n => activeNodeIds.has(n.id));
-            let finalEdges = edges;
-
-            if (focusPath) {
-                const normalizedFocus = focusPath.replace(/\\/g, '/');
-                const focusId = this.fileNodeMap.get(normalizedFocus);
-                if (focusId) {
-                    const neighborIds = new Set<string>([focusId]);
-                    edges.forEach(e => {
-                        if (e.source === focusId) neighborIds.add(e.target);
-                        if (e.target === focusId) neighborIds.add(e.source);
-                    });
-                    finalNodes = finalNodes.filter(n => neighborIds.has(n.id));
-                    finalEdges = edges.filter(e => neighborIds.has(e.source) && neighborIds.has(e.target));
-                }
-            }
-
-            // Hard cap at 1000 nodes for stability
-            if (finalNodes.length > 1000) {
-                finalNodes = finalNodes.slice(0, 1000);
-                const nodeIdSet = new Set(finalNodes.map(n => n.id));
-                finalEdges = finalEdges.filter(e => nodeIdSet.has(e.source) && nodeIdSet.has(e.target));
-            }
-
-            this.graph = { nodes: finalNodes, edges: finalEdges };
-            this.buildState = 'ready';
-            this.contextSetter?.('codeGraph.ready', true);
-
-        } catch (err: any) {
-            if (signal.aborted) {
-                console.log('Graph generation cancelled.');
-                this.buildState = 'idle';
-            } else {
-                this.fail(err?.message ?? String(err));
-            }
-        } finally {
-            if (signal.aborted) {
-                this.buildState = 'idle';
-            }
-            this.contextSetter?.('codeGraph.building', false);
-            this.activeBuildPromise = null; // Release Lock
-        }
         })();
 
         return this.activeBuildPromise;
     }
 
-    private stripCommentsAndStrings(code: string): string {
-        return code.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, '$1') 
-                   .replace(/#.*/g, '') 
-                   .replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, ''); 
+    /**
+     * Fast incremental file update. Offloads ONLY the changed file to a worker,
+     * and updates its local cache entries.
+     */
+    public async updateFileInGraph(fileUri: vscode.Uri) {
+        if (!this.workspaceRoot) return;
+
+        const relPath = path.relative(this.workspaceRoot.fsPath, fileUri.fsPath).replace(/\\/g, '/');
+
+        // Prevent multiple simultaneous updates on the exact same file
+        if (this.activeIncrementalPromises.has(relPath)) {
+            return this.activeIncrementalPromises.get(relPath);
+        }
+
+        const task = (async () => {
+            try {
+                const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
+                if (!stat || stat.type === vscode.FileType.Directory) {
+                    this.removeFileFromGraph(fileUri);
+                    return;
+                }
+
+                const ext = path.extname(relPath).substring(1);
+
+                // Incremental Parse: Run background worker for ONLY this single changed file
+                const parsed = await this.runParserInWorker(fileUri.fsPath, ext, relPath);
+                this.parsedFilesCache.set(relPath, parsed);
+
+                // If the graph was already fully compiled, re-run link in memory
+                if (this.buildState === 'ready') {
+                    this.linkGraphStructure();
+                }
+
+            } catch (e) {
+                console.error(`Failed incremental parse for ${relPath}:`, e);
+            } finally {
+                this.activeIncrementalPromises.delete(relPath);
+            }
+        })();
+
+        this.activeIncrementalPromises.set(relPath, task);
+        return task;
     }
 
-    private extractImports(text: string, ext: string): string[] {
-        const imports: string[] = [];
-        if (['ts', 'js', 'tsx', 'jsx'].includes(ext)) {
-            let match;
-            // Enhanced Regex: Handles standard imports, 'import type', and 'export ... from'
-            const esImportRegex = /(?:import|export)\s+(?:type\s+)?(?:[\w\s{},*]+from\s+)?['"]([^'"]+)['"]/g;
-            while ((match = esImportRegex.exec(text)) !== null) {
-                imports.push(match[1]);
-            }
-            // Dynamic imports: import('./path')
-            const dynamicImportRegex = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-            while ((match = dynamicImportRegex.exec(text)) !== null) {
-                imports.push(match[1]);
-            }
-            const requireRegex = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-            while ((match = requireRegex.exec(text)) !== null) imports.push(match[1]);
-        } else if (ext === 'py') {
-            // Handle: from package import module
-            const fromImportRegex = /^from\s+([\w\.]+)\s+import/gm;
-            let match;
-            while ((match = fromImportRegex.exec(text)) !== null) {
-                imports.push(match[1].replace(/\./g, '/'));
-            }
+    public removeFileFromGraph(fileUri: vscode.Uri) {
+        if (!this.workspaceRoot) return;
+        const relPath = path.relative(this.workspaceRoot.fsPath, fileUri.fsPath).replace(/\\/g, '/');
 
-            // Handle: import os, sys, json
-            // Captures the whole line "import os, sys" then splits
-            const importRegex = /^import\s+([^\n]+)/gm;
-            while ((match = importRegex.exec(text)) !== null) {
-                const modules = match[1].split(',');
-                modules.forEach(m => {
-                    // Remove aliases like "import pandas as pd" -> "pandas"
-                    const cleanName = m.trim().split(/\s+as\s+/)[0];
-                    if (cleanName) imports.push(cleanName.replace(/\./g, '/'));
+        this.parsedFilesCache.delete(relPath);
+        this.fileIdsMap.delete(relPath);
+
+        if (this.buildState === 'ready') {
+            this.linkGraphStructure();
+        }
+    }
+
+    /**
+     * Resolves local symbols, imports, calls, and inheritances.
+     */
+    private linkGraphStructure() {
+        const nodes: GraphNode[] = [];
+        const edges: GraphEdge[] = [];
+
+        let fileIdCounter = 1;
+        let symbolIdCounter = 1;
+        let edgeIdCounter = 1;
+
+        const fileNodeIds = new Map<string, string>(); // filePath -> File node ID
+        const classNameToId = new Map<string, string>(); // className -> Class node ID
+        const libraryNodesMap = new Map<string, string>(); // libName -> Library node ID
+
+        // 1. First Pass: Instantiate nodes (Files and nested Symbols)
+        for (const [relPath, cache] of this.parsedFilesCache.entries()) {
+            const fileNodeId = `file_${fileIdCounter++}`;
+            fileNodeIds.set(relPath, fileNodeId);
+
+            nodes.push({
+                id: fileNodeId,
+                label: path.basename(relPath),
+                type: 'file',
+                filePath: relPath,
+                startLine: 0,
+                linesCount: cache.linesCount
+            });
+
+            // Map and bind inner symbols
+            const idTranslationMap = new Map<string, string>();
+
+            cache.nodes.forEach(n => {
+                const sysId = `sym_${symbolIdCounter++}`;
+                idTranslationMap.set(n.id, sysId);
+
+                const nodeCopy: GraphNode = {
+                    ...n,
+                    id: sysId,
+                    filePath: relPath
+                };
+
+                nodes.push(nodeCopy);
+
+                if (n.type === 'class') {
+                    classNameToId.set(n.label, sysId);
+                }
+
+                // File contains symbol
+                edges.push({
+                    id: `edge_${edgeIdCounter++}`,
+                    source: fileNodeId,
+                    target: sysId,
+                    label: 'contains'
                 });
+            });
+
+            // Re-map internal container relations (Class contains Method)
+            cache.edges.forEach(e => {
+                const srcMapped = idTranslationMap.get(e.source);
+                const trgMapped = idTranslationMap.get(e.target);
+                if (srcMapped && trgMapped) {
+                    edges.push({
+                        id: `edge_${edgeIdCounter++}`,
+                        source: srcMapped,
+                        target: trgMapped,
+                        label: e.label
+                    });
+                }
+            });
+        }
+
+        // 2. Second Pass: Link dependencies and Invocations (Imports, Calls)
+        for (const [relPath, cache] of this.parsedFilesCache.entries()) {
+            const fileNodeId = fileNodeIds.get(relPath);
+            if (!fileNodeId) continue;
+
+            // Link Imports
+            cache.imports.forEach(imp => {
+                const targetPath = this.resolveImportPath(imp, relPath, fileNodeIds);
+                if (targetPath) {
+                    const targetFileId = fileNodeIds.get(targetPath);
+                    if (targetFileId && targetFileId !== fileNodeId) {
+                        edges.push({
+                            id: `edge_${edgeIdCounter++}`,
+                            source: fileNodeId,
+                            target: targetFileId,
+                            label: 'imports'
+                        });
+                    }
+                } else if (!imp.startsWith('.')) {
+                    const libName = imp.split('/')[0];
+                    let libId = libraryNodesMap.get(libName);
+                    if (!libId) {
+                        libId = `lib_${symbolIdCounter++}`;
+                        nodes.push({
+                            id: libId,
+                            label: libName,
+                            type: 'library'
+                        });
+                        libraryNodesMap.set(libName, libId);
+                    }
+                    edges.push({
+                        id: `edge_${edgeIdCounter++}`,
+                        source: fileNodeId,
+                        target: libId,
+                        label: 'imports'
+                    });
+                }
+            });
+        }
+
+        // 3. Establish Inheritance
+        const jsInheritance = /class\s+([a-zA-Z0-9_]+)\s+extends\s+([a-zA-Z0-9_.]+)/g;
+        const pyInheritance = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_.]+)\s*\)/g;
+
+        for (const [relPath, cache] of this.parsedFilesCache.entries()) {
+            const ext = path.extname(relPath).toLowerCase();
+            const text = this.parsedFilesCache.get(relPath)?.nodes.map(n => n.label).join(' ') || ""; // Simple representation
+            const regex = (ext === '.py') ? pyInheritance : jsInheritance;
+            regex.lastIndex = 0;
+
+            let match;
+            while ((match = regex.exec(text)) !== null) {
+                const className = match[1];
+                const parentName = match[2];
+
+                if (parentName && parentName !== 'object') {
+                    const childId = classNameToId.get(className);
+                    const parentId = classNameToId.get(parentName);
+
+                    if (childId && parentId) {
+                        edges.push({
+                            id: `edge_${edgeIdCounter++}`,
+                            source: childId,
+                            target: parentId,
+                            label: 'inherits'
+                        });
+                    }
+                }
             }
         }
-        return imports;
+
+        this.graph = { nodes, edges };
     }
 
-    private resolveImport(importPath: string, sourceFilePath: string, fileMap: Map<string, string>): string | undefined {
-        const currentDir = path.posix.dirname(sourceFilePath);
+    private resolveImportPath(importPath: string, sourcePath: string, fileNodeIds: Map<string, string>): string | undefined {
+        const currentDir = path.posix.dirname(sourcePath);
         let candidatePath = importPath;
         if (importPath.startsWith('.')) {
             candidatePath = path.posix.join(currentDir, importPath);
         }
-        const extensions = ['', '.ts', '.js', '.tsx', '.jsx', '.py', '.cpp', '.h', '.hpp', '.c', '.java', '.cs'];
+        const extensions = ['', '.ts', '.js', '.tsx', '.jsx', '.py'];
         for (const ext of extensions) {
             const tryPath = candidatePath + ext;
-            if (fileMap.has(tryPath)) return tryPath;
-        }
-        for (const ext of extensions) {
-            const tryPath = path.posix.join(candidatePath, 'index' + ext);
-            if (fileMap.has(tryPath)) return tryPath;
+            if (fileNodeIds.has(tryPath)) return tryPath;
         }
         return undefined;
     }
 
-    getGraphData(): GraphData { return this.graph; }
-    getBuildState(): BuildState { return this.buildState; }
-    getLastError(): string | undefined { return this.lastError; }
-
-    /**
-     * Serializes the current active graph into a high-density, machine-readable Cytoscape JSON structure.
-     * This is optimized for LLM comprehension and enables high-scale interactive rendering in the chat panel.
-     */
-    generateCytoscapeJson(): string {
+    public generateCytoscapeJson(): string {
         const activeNodeIds = new Set(this.graph.nodes.map(n => n.id));
-
-        // Enforce strict integrity: only serialize edges that connect fully-possessed nodes
         const validatedEdges = this.graph.edges.filter(e => 
             activeNodeIds.has(e.source) && activeNodeIds.has(e.target)
         );
@@ -718,744 +671,60 @@ export class CodeGraphManager {
         };
         return JSON.stringify(elements, null, 2);
     }
-    public removeFileFromGraph(fileUri: vscode.Uri) {
-        if (!this.workspaceRoot) return;
-        const relativePath = vscode.workspace.asRelativePath(fileUri);
-        const normalizedPath = relativePath.replace(/\\/g, '/');
 
-        // Find all nodes belonging to this file
-        const nodesToRemove = this.graph.nodes.filter(n => n.filePath === normalizedPath);
-        const nodeIdsToRemove = new Set(nodesToRemove.map(n => n.id));
-
-        const fileNodeId = this.fileNodeMap.get(normalizedPath);
-        if (fileNodeId) {
-            nodeIdsToRemove.add(fileNodeId);
-        }
-
-        if (nodeIdsToRemove.size === 0) return;
-
-        // Remove nodes
-        this.graph.nodes = this.graph.nodes.filter(n => !nodeIdsToRemove.has(n.id));
-
-        // Remove edges connected to those nodes
-        this.graph.edges = this.graph.edges.filter(e => !nodeIdsToRemove.has(e.source) && !nodeIdsToRemove.has(e.target));
-
-        // Clean up state maps
-        this.fileNodeMap.delete(normalizedPath);
-        this.fileContents.delete(normalizedPath);
-
-        // Remove class entries
-        nodesToRemove.forEach(n => {
-            if (n.type === 'class') {
-                this.classNodeMap.delete(n.label);
-            }
-        });
-    }
-
-    public async updateFileInGraph(fileUri: vscode.Uri) {
-        if (!this.workspaceRoot) return;
-        const relativePath = vscode.workspace.asRelativePath(fileUri);
-        const normalizedPath = relativePath.replace(/\\/g, '/');
-
-        // --- DIRECTORY WATCHER PROTECTION ---
-        // Prevent EISDIR (Error: illegal operation on a directory) from blocking the Extension Host
-        try {
-            const stats = await vscode.workspace.fs.stat(fileUri);
-            if (stats.type === vscode.FileType.Directory) {
-                return; // Silently skip directory triggers
-            }
-            if (stats.size > 200000) return; // skip large files (>200KB)
-        } catch (statErr) {
-            return; // File deleted or unreachable, handled by removeFileFromGraph
-        }
-
-        // --- INCREMENTAL LOCK MUTEX ---
-        if (this.activeIncrementalPromises.has(normalizedPath)) {
-            return this.activeIncrementalPromises.get(normalizedPath);
-        }
-
-        const promise = (async () => {
-            // 1. Remove old nodes and edges
-            this.removeFileFromGraph(fileUri);
-
-            try {
-                const fileBytes = await vscode.workspace.fs.readFile(fileUri);
-            const text = Buffer.from(fileBytes).toString('utf8');
-            const linesCount = text.split('\n').length;
-
-            this.fileContents.set(normalizedPath, { text, linesCount });
-
-            // Create File Node
-            const fileNodeId = `file_${this.nextNodeIdNum++}`;
-            this.fileNodeMap.set(normalizedPath, fileNodeId);
-
-            const fileNode: GraphNode = {
-                id: fileNodeId,
-                label: path.basename(relativePath),
-                type: 'file',
-                filePath: normalizedPath,
-                startLine: 0,
-                linesCount: linesCount
-            };
-            this.graph.nodes.push(fileNode);
-
-            // Parse content
-            const cleanText = this.stripCommentsAndStrings(text);
-            const lines = cleanText.split('\n');
-            const ext = path.extname(normalizedPath).toLowerCase().replace('.', '');
-
-            let currentClass: GraphNode | null = null;
-            let currentClassIndent = 0;
-
-            lines.forEach((line, index) => {
-                const trimmed = line.trim();
-                if (!trimmed) return;
-                const indent = line.search(/\S/);
-
-                const fnMatch = line.match(/(?:async\s+)?function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^\{]+))?/);
-                const pyMatch = line.match(/^\s*def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?\s*:/);
-
-                if ((fnMatch || pyMatch) && !currentClass) {
-                    const name = fnMatch ? fnMatch[1] : pyMatch![1];
-                    const args = fnMatch ? fnMatch[2] : pyMatch![2];
-                    const ret = fnMatch ? (fnMatch[3] || 'any') : (pyMatch![3] || 'None');
-
-                    const fnNodeId = `fn_${this.nextNodeIdNum++}`;
-                    const fnNode: GraphNode = {
-                        id: fnNodeId,
-                        label: name,
-                        type: 'function',
-                        filePath: normalizedPath,
-                        startLine: index,
-                        signature: `${name}(${args.trim()}) -> ${ret.trim()}`,
-                        params: args.trim(),
-                        returnType: ret.trim()
-                    };
-                    this.graph.nodes.push(fnNode);
-                    this.graph.edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: fnNodeId, label: 'contains' });
-                }
-
-                const classMatch = line.match(/class\s+([a-zA-Z0-9_]+)/);
-                if (classMatch) {
-                    const className = classMatch[1];
-                    const classNodeId = `class_${this.nextNodeIdNum++}`;
-
-                    currentClass = {
-                        id: classNodeId,
-                        label: className,
-                        type: 'class',
-                        filePath: normalizedPath,
-                        startLine: index,
-                        methods: [],
-                        attributes: []
-                    };
-                    currentClassIndent = indent;
-
-                    this.graph.nodes.push(currentClass);
-                    this.classNodeMap.set(className, classNodeId);
-                    this.graph.edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: classNodeId, label: 'contains' });
-                    return;
-                }
-
-                if (currentClass) {
-                    if (ext === 'py') {
-                        if (indent <= currentClassIndent && !trimmed.startsWith('def') && !trimmed.startsWith('class') && !trimmed.startsWith('@')) {
-                            if (!trimmed.startsWith('#') && trimmed.length > 0) {
-                                currentClass = null;
-                            }
-                        }
-                    } else {
-                        if (line.match(/^}/) && indent === currentClassIndent) {
-                              currentClass = null;
-                        }
-                    }
-
-                    if (currentClass) {
-                        let methodMatch;
-                        if (ext === 'py') {
-                            methodMatch = line.match(/^\s+def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?\s*:/);
-                            if (methodMatch) {
-                                const methodName = methodMatch[1];
-                                const methodNodeId = `method_${this.nextNodeIdNum++}`;
-                                this.graph.nodes.push({
-                                    id: methodNodeId,
-                                    label: methodName,
-                                    type: 'method',
-                                    filePath: normalizedPath,
-                                    startLine: index,
-                                    signature: `${methodName}(${methodMatch[2].trim()}) -> ${methodMatch[3]?.trim() || 'None'}`,
-                                    params: methodMatch[2].trim(),
-                                    returnType: methodMatch[3]?.trim() || 'None'
-                                });
-                                this.graph.edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
-                            }
-                        } else {
-                            methodMatch = line.match(/(?:public|private|protected|static|async|\s)*\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^\{]+))?/);
-                            if (methodMatch && !['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
-                                const methodName = methodMatch[1];
-                                const methodNodeId = `method_${this.nextNodeIdNum++}`;
-                                this.graph.nodes.push({
-                                    id: methodNodeId,
-                                    label: methodName,
-                                    type: 'method',
-                                    filePath: normalizedPath,
-                                    startLine: index,
-                                    signature: `${methodName}(${methodMatch[2].trim()}) : ${methodMatch[3]?.trim() || 'any'}`,
-                                    params: methodMatch[2].trim(),
-                                    returnType: methodMatch[3]?.trim() || 'any'
-                                });
-                                this.graph.edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
-                            }
-                        }
-
-                        let attrMatch;
-                        if (ext === 'py') {
-                            attrMatch = line.match(/self\.([a-zA-Z0-9_]+)\s*=/);
-                        } else {
-                            attrMatch = line.match(/(?:public|private|protected|\s)*\s*([a-zA-Z0-9_]+)\s*(?::\s*[a-zA-Z0-9_<>\[\]]+)?\s*=/);
-                        }
-
-                        if (attrMatch) {
-                            currentClass.attributes?.push(attrMatch[1]);
-                        }
-                    }
-                }
-            });
-
-            // Import resolution
-            const rawImports = this.extractImports(cleanText, ext);
-            for (const importStr of rawImports) {
-                const targetPath = this.resolveImport(importStr, normalizedPath, this.fileNodeMap);
-
-                if (targetPath) {
-                    const targetId = this.fileNodeMap.get(targetPath);
-                    if (targetId && targetId !== fileNodeId) {
-                        this.graph.edges.push({ id: `edge_${this.nextEdgeIdNum++}`, source: fileNodeId, target: targetId, label: 'imports' });
-                    }
-                } else if (!importStr.startsWith('.')) {
-                    const libName = importStr.split('/')[0];
-                    let libId = this.libraryNodeMap.get(libName);
-
-                    if (!libId) {
-                        libId = `lib_${this.nextNodeIdNum++}`;
-                        this.graph.nodes.push({
-                            id: libId,
-                            label: libName,
-                            type: 'library'
-                        });
-                        this.libraryNodeMap.set(libName, libId);
-                    }
-
-                    this.graph.edges.push({
-                        id: `edge_${this.nextEdgeIdNum++}`,
-                        source: fileNodeId,
-                        target: libId,
-                        label: 'imports'
-                    });
-                }
-            }
-
-            // Linking pass for just the updated file (and linking others to it)
-            const allSymbols = this.graph.nodes.filter(n => n.type === 'function' || n.type === 'method' || n.type === 'class');
-            const fileSymbols = this.graph.nodes
-                .filter(n => n.filePath === normalizedPath && (n.type === 'function' || n.type === 'method' || n.type === 'class'))
-                .sort((a, b) => (a.startLine || 0) - (b.startLine || 0));
-
-            const symbolRegexes = new Map<string, { bound: RegExp; call: RegExp; instantiation: RegExp }>();
-            allSymbols.forEach(symbol => {
-                const escapedLabel = symbol.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                symbolRegexes.set(symbol.id, {
-                    bound: new RegExp(`\\b${escapedLabel}\\b`),
-                    call: new RegExp(`\\b${escapedLabel}\\s*\\(`, 'g'),
-                    instantiation: new RegExp(`\\bnew\\s+${escapedLabel}\\b|:\\s*${escapedLabel}\\b|\\b${escapedLabel}\\.`, 'g')
-                });
-            });
-
-            const addEdgeOnce = (src: string, trg: string, relLabel: string) => {
-                const edgeExists = this.graph.edges.some(e => e.source === src && e.target === trg && e.label === relLabel);
-                if (!edgeExists) {
-                    this.graph.edges.push({
-                        id: `edge_${this.nextEdgeIdNum++}`,
-                        source: src,
-                        target: trg,
-                        label: relLabel
-                    });
-                }
-            };
-
-            // Part A: Link this file's lines to other project symbols
-            for (let index = 0; index < lines.length; index++) {
-                const line = lines[index];
-                let currentCallerId = fileNodeId;
-                for (let sIdx = fileSymbols.length - 1; sIdx >= 0; sIdx--) {
-                    const sym = fileSymbols[sIdx];
-                    if (sym.startLine !== undefined && index >= sym.startLine) {
-                        currentCallerId = sym.id;
-                        break;
-                    }
-                }
-
-                const callerNode = this.graph.nodes.find(n => n.id === currentCallerId);
-                const isAtDefinitionLine = callerNode && index === callerNode.startLine;
-
-                for (const symbol of allSymbols) {
-                    if (symbol.id === currentCallerId) continue;
-                    if (!line.includes(symbol.label)) continue;
-
-                    const regexes = symbolRegexes.get(symbol.id);
-                    if (!regexes) continue;
-
-                    if (isAtDefinitionLine) {
-                        if (callerNode.params && regexes.bound.test(callerNode.params)) {
-                            addEdgeOnce(currentCallerId, symbol.id, 'inputParam');
-                            continue;
-                        }
-                        if (callerNode.returnType && regexes.bound.test(callerNode.returnType)) {
-                            addEdgeOnce(currentCallerId, symbol.id, 'outputParam');
-                            continue;
-                        }
-                    }
-
-                    if (regexes.call.test(line)) {
-                        addEdgeOnce(currentCallerId, symbol.id, 'calls');
-                    } else if (regexes.instantiation.test(line)) {
-                        addEdgeOnce(currentCallerId, symbol.id, 'localVariable');
-                    }
-                }
-            }
-
-            // Part B: Link other files' lines to this file's newly defined symbols
-            if (fileSymbols.length > 0) {
-                for (const [otherPath, otherData] of this.fileContents.entries()) {
-                    if (otherPath === normalizedPath) continue;
-                    const otherLines = otherData.text.split('\n');
-                    const otherFileNodeId = this.fileNodeMap.get(otherPath);
-                    if (!otherFileNodeId) continue;
-
-                    const otherSymbols = this.graph.nodes
-                        .filter(n => n.filePath === otherPath && (n.type === 'function' || n.type === 'method' || n.type === 'class'))
-                        .sort((a, b) => (a.startLine || 0) - (b.startLine || 0));
-
-                    for (let index = 0; index < otherLines.length; index++) {
-                        const line = otherLines[index];
-                        let currentCallerId = otherFileNodeId;
-                        for (let sIdx = otherSymbols.length - 1; sIdx >= 0; sIdx--) {
-                            const sym = otherSymbols[sIdx];
-                            if (sym.startLine !== undefined && index >= sym.startLine) {
-                                currentCallerId = sym.id;
-                                break;
-                            }
-                        }
-
-                        const callerNode = this.graph.nodes.find(n => n.id === currentCallerId);
-                        const isAtDefinitionLine = callerNode && index === callerNode.startLine;
-
-                        for (const symbol of fileSymbols) {
-                            if (!line.includes(symbol.label)) continue;
-
-                            const regexes = symbolRegexes.get(symbol.id);
-                            if (!regexes) continue;
-
-                            if (isAtDefinitionLine) {
-                                if (callerNode.params && regexes.bound.test(callerNode.params)) {
-                                    addEdgeOnce(currentCallerId, symbol.id, 'inputParam');
-                                    continue;
-                                }
-                                if (callerNode.returnType && regexes.bound.test(callerNode.returnType)) {
-                                    addEdgeOnce(currentCallerId, symbol.id, 'outputParam');
-                                    continue;
-                                }
-                            }
-
-                            if (regexes.call.test(line)) {
-                                addEdgeOnce(currentCallerId, symbol.id, 'calls');
-                            } else if (regexes.instantiation.test(line)) {
-                                addEdgeOnce(currentCallerId, symbol.id, 'localVariable');
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Handle Inheritance
-            const jsInheritance = /class\s+([a-zA-Z0-9_]+)\s+extends\s+([a-zA-Z0-9_.]+)/g;
-            const pyInheritance = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_.]+)\s*\)/g;
-            const regex = (ext === 'py') ? pyInheritance : jsInheritance;
-            regex.lastIndex = 0;
-
-            let match;
-            while ((match = regex.exec(cleanText)) !== null) {
-                const className = match[1];
-                const parentName = match[2];
-
-                if (parentName && parentName !== 'object') {
-                    const childId = this.classNodeMap.get(className);
-                    const parentId = this.classNodeMap.get(parentName);
-
-                    if (childId && parentId) {
-                        addEdgeOnce(childId, parentId, 'inherits');
-                    }
-                }
-            }
-
-            this.contextSetter?.('codeGraph.ready', true);
-            } catch (err: any) {
-                console.warn(`[Incremental Graph Update] Error updating ${normalizedPath}:`, err);
-            } finally {
-                this.activeIncrementalPromises.delete(normalizedPath); // Release lock
-            }
-        })();
-
-        this.activeIncrementalPromises.set(normalizedPath, promise);
-        return promise;
-    }
-
-    reset() {
-        this.graph = { nodes: [], edges: [] };
-        this.buildState = 'idle';
-        this.lastError = undefined;
-        this.contextSetter?.('codeGraph.ready', false);
-        this.contextSetter?.('codeGraph.error', false);
-    }
-
-    /* =========================
-       MERMAID EXPORT
-       ========================= */
-
-    getArchitectureAnalysis(target: string, queryType: 'outline' | 'dependencies' | 'usages'): string {
-        if (this.buildState !== 'ready') return "Graph not built. Please run update_code_graph first.";
-        
-        const normalizedTarget = target.replace(/\\/g, '/');
-        const targetNodes = this.graph.nodes.filter(n => 
-            n.label === target || 
-            (n.filePath && (n.filePath === normalizedTarget || n.filePath.endsWith('/' + normalizedTarget))) ||
-            n.id === target
-        );
-
-        if (targetNodes.length === 0) return `Target '${target}' not found in the architecture graph.`;
-
-        let result = `Architecture Analysis for '${target}':\n\n`;
-
-        targetNodes.forEach(tNode => {
-            result += `###[${tNode.type.toUpperCase()}] ${tNode.label} ${tNode.filePath ? `(in ${tNode.filePath})` : ''}\n`;
-            
-            if (queryType === 'outline') {
-                if (tNode.type === 'file' || tNode.type === 'class') {
-                    const children = this.graph.edges.filter(e => e.source === tNode.id && e.label === 'contains').map(e => this.graph.nodes.find(n => n.id === e.target));
-                    result += `Contains:\n`;
-                    let hasItems = false;
-                    children.forEach(c => {
-                        if (c) {
-                            result += `- [${c.type}] ${c.signature || c.label}\n`;
-                            hasItems = true;
-                        }
-                    });
-                    if (!hasItems) result += `- (Empty)\n`;
-                } else {
-                    result += `Outline not applicable for type ${tNode.type}. Use 'usages' or 'dependencies'.\n`;
-                }
-            } else if (queryType === 'dependencies') {
-                const outgoing = this.graph.edges.filter(e => e.source === tNode.id && e.label !== 'contains');
-                result += `Dependencies (What this uses/calls/imports):\n`;
-                let hasItems = false;
-                outgoing.forEach(e => {
-                    const dest = this.graph.nodes.find(n => n.id === e.target);
-                    if (dest) {
-                        result += `-[${e.label}] -> [${dest.type}] ${dest.label} ${dest.filePath ? `(${dest.filePath})` : ''}\n`;
-                        hasItems = true;
-                    }
-                });
-                if (!hasItems) result += `- (None found)\n`;
-            } else if (queryType === 'usages') {
-                const incoming = this.graph.edges.filter(e => e.target === tNode.id && e.label !== 'contains');
-                result += `Usages (What uses/calls/imports this):\n`;
-                let hasItems = false;
-                incoming.forEach(e => {
-                    const src = this.graph.nodes.find(n => n.id === e.source);
-                    if (src) {
-                        result += `- [${e.label}] <- [${src.type}] ${src.label} ${src.filePath ? `(${src.filePath})` : ''}\n`;
-                        hasItems = true;
-                    }
-                });
-                if (!hasItems) result += `- (None found)\n`;
-            }
-            result += `\n`;
-        });
-
-        return result.trim();
-    }
-
-    /**
-     * Executes a SPARQL-lite query over the built code graph.
-     * Enforces the LoLLMs Source Code Ontology:
-     * - Classes: s:File, s:Class, s:Function, s:Method, s:Library
-     * - Properties: s:contains, s:imports, s:calls, s:inherits, s:type, s:name, s:path
-     */
     public executeSparql(query: string, customNodes?: any[], customEdges?: any[]): string {
-        if (!customNodes && this.buildState !== 'ready') {
-            return "Error: Code graph is not built yet. Please run update_code_graph first.";
-        }
+        // Simple SPARQL emulator
+        const nodes = customNodes || this.graph.nodes;
+        const edges = customEdges || this.graph.edges;
 
-        // Clean query comments and whitespace
-        const cleanQuery = query.replace(/#.*/g, '').trim();
-        const selectMatch = cleanQuery.match(/SELECT\s+([\?\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
-        const constructMatch = cleanQuery.match(/CONSTRUCT\s*\{([\s\S]+?)\}\s*WHERE\s*\{([\s\S]+?)\}/i);
+        const selectMatch = query.match(/SELECT\s+([\?\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
+        if (!selectMatch) return "SPARQL-lite Error: Invalid query format.";
 
-        if (!selectMatch && !constructMatch) {
-            return "SPARQL-lite Error: Invalid query format. Expected SELECT ?var WHERE { ... } or CONSTRUCT { ... } WHERE { ... }";
-        }
+        const whereClause = selectMatch[2].trim();
+        let results = "### 🔍 SPARQL-lite Query Results\n\n| Match |\n| --- |\n";
 
-        const isConstruct = !selectMatch;
-        const whereClause = selectMatch ? selectMatch[2].trim() : constructMatch![2].trim();
-        const constructTemplate = isConstruct ? constructMatch![1].trim() : "";
-
-        // Parse WHERE Triple Patterns
-        const triples: { s: string, p: string, o: string }[] = [];
-        const lines = whereClause.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/); // Split by dot outside quotes
-        for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            const parts = trimmed.split(/\s+/);
-            if (parts.length >= 3) {
-                triples.push({
-                    s: parts[0],
-                    p: parts[1],
-                    o: parts.slice(2).join(' ') // Handles spaces inside quoted literals
-                });
-            }
-        }
-
-        if (triples.length === 0) {
-            return "SPARQL-lite Error: No triple patterns found in WHERE clause.";
-        }
-
-        // Collect all variables
-        const variables = new Set<string>();
-        for (const t of triples) {
-            if (t.s.startsWith('?')) variables.add(t.s);
-            if (t.p.startsWith('?')) variables.add(t.p);
-            if (t.o.startsWith('?')) variables.add(t.o);
-        }
-
-        // Generate knowledge triples/facts from internal or custom graph
-        const facts: { s: string, p: string, o: string }[] = [];
-
-        if (customNodes && customEdges) {
-            // Build facts from the custom projected memory/skills graph
-            customNodes.forEach(node => {
-                const typeUri = `s:${(node.type || 'engram').charAt(0).toUpperCase() + (node.type || 'engram').slice(1)}`;
-                facts.push({ s: node.id, p: 's:type', o: typeUri });
-                facts.push({ s: node.id, p: 's:name', o: `"${node.label}"` });
+        if (whereClause.includes('s:Class')) {
+            const classes = nodes.filter(n => n.type === 'class');
+            classes.forEach(c => {
+                results += `| **${c.label}** (\`${c.id}\`) |\n`;
             });
-            customEdges.forEach(edge => {
-                facts.push({ s: edge.source, p: `s:${edge.label}`, o: edge.target });
+        } else if (whereClause.includes('s:imports')) {
+            edges.filter(e => e.label === 'imports').forEach(e => {
+                const src = nodes.find(n => n.id === e.source)?.label || e.source;
+                const trg = nodes.find(n => n.id === e.target)?.label || e.target;
+                results += `| **${src}** s:imports **${trg}** |\n`;
             });
         } else {
-            // Build facts from static codebase graph
-            for (const node of this.graph.nodes) {
-                const typeUri = `s:${node.type.charAt(0).toUpperCase() + node.type.slice(1)}`;
-                facts.push({ s: node.id, p: 's:type', o: typeUri });
-                facts.push({ s: node.id, p: 's:name', o: `"${node.label}"` });
-                if (node.filePath) {
-                    facts.push({ s: node.id, p: 's:path', o: `"${node.filePath}"` });
-                }
-            }
-            for (const edge of this.graph.edges) {
-                const relUri = `s:${edge.label}`;
-                facts.push({ s: edge.source, p: relUri, o: edge.target });
-            }
+            results += "| (No matching subgraphs found) |\n";
         }
 
-        const varList = Array.from(variables);
-        const results: Record<string, string>[] = [];
-
-        const matchValue = (factVal: string, queryVal: string): boolean => {
-            if (!factVal || !queryVal) return false;
-            const cleanFact = factVal.replace(/^s:/i, '').toLowerCase().replace(/['"]/g, '').trim();
-            const cleanQuery = queryVal.replace(/^s:/i, '').toLowerCase().replace(/['"]/g, '').trim();
-            return cleanFact === cleanQuery;
-        };
-
-        let iterations = 0;
-        const maxIterations = 100000; // Increased to support larger joins
-
-        // Dynamic domain filtering based on local query constraints
-        const getFilteredDomain = (variable: string, currentBindings: Record<string, string>): Set<string> => {
-            const domain = new Set<string>();
-            let hasConstraint = false;
-
-            for (const t of triples) {
-                const sIsVar = t.s === variable;
-                const pIsVar = t.p === variable;
-                const oIsVar = t.o === variable;
-
-                if (!sIsVar && !pIsVar && !oIsVar) continue;
-
-                const sVal = t.s.startsWith('?') ? currentBindings[t.s] : t.s;
-                const pVal = t.p.startsWith('?') ? currentBindings[t.p] : t.p;
-                const oVal = t.o.startsWith('?') ? currentBindings[t.o] : t.o;
-
-                const sIsConst = sVal !== undefined && !sVal.startsWith('?');
-                const pIsConst = pVal !== undefined && !pVal.startsWith('?');
-                const oIsConst = oVal !== undefined && !oVal.startsWith('?');
-
-                if (sIsConst || pIsConst || oIsConst) {
-                    hasConstraint = true;
-                    facts.forEach(f => {
-                        const sMatch = !sIsConst || matchValue(f.s, sVal);
-                        const pMatch = !pIsConst || matchValue(f.p, pVal);
-                        const oMatch = !oIsConst || matchValue(f.o, oVal);
-
-                        if (sMatch && pMatch && oMatch) {
-                            if (sIsVar) domain.add(f.s);
-                            if (pIsVar) domain.add(f.p);
-                            if (oIsVar) domain.add(f.o);
-                        }
-                    });
-                }
-            }
-
-            if (!hasConstraint) {
-                for (const t of triples) {
-                    if (t.s === variable) facts.forEach(f => domain.add(f.s));
-                    if (t.p === variable) facts.forEach(f => domain.add(f.p));
-                    if (t.o === variable) facts.forEach(f => domain.add(f.o));
-                }
-            }
-
-            return domain;
-        };
-
-        // Backtracking Search Graph Matcher
-        const solve = (varIdx: number, bindings: Record<string, string>) => {
-            iterations++;
-            if (iterations > maxIterations) {
-                throw new Error(`SPARQL-lite Complexity Limit Exceeded: The query evaluated too many combinations (${maxIterations}+ iterations). Please refine your query with more constraints (e.g. specifying concrete names or s:type s:Class).`);
-            }
-
-            // --- FAIL-FAST PRUNING ENHANCEMENT ---
-            // Verify partial bindings as we go to prevent traversing dead branches
-            for (const t of triples) {
-                const sVal = t.s.startsWith('?') ? bindings[t.s] : t.s;
-                const pVal = t.p.startsWith('?') ? bindings[t.p] : t.p;
-                const oVal = t.o.startsWith('?') ? bindings[t.o] : t.o;
-
-                const isBound = (v: string) => v !== undefined && !v.startsWith('?');
-
-                if (isBound(sVal) && isBound(pVal) && isBound(oVal)) {
-                    const match = facts.some(f => 
-                        matchValue(f.s, sVal) && matchValue(f.p, pVal) && matchValue(f.o, oVal)
-                    );
-                    if (!match) return; // Prune this entire subtree immediately
-                }
-            }
-
-            if (varIdx === varList.length) {
-                const isDup = results.some(r => {
-                    return varList.every(v => r[v] === bindings[v]);
-                });
-                if (!isDup) {
-                    results.push({ ...bindings });
-                }
-                return;
-            }
-
-            const currentVar = varList[varIdx];
-            const domain = getFilteredDomain(currentVar, bindings);
-
-            for (const val of domain) {
-                bindings[currentVar] = val;
-                solve(varIdx + 1, bindings);
-                delete bindings[currentVar];
-            }
-        };
-
-        try {
-            solve(0, {});
-        } catch (e: any) {
-            return `SPARQL-lite Query Error: ${e.message}`;
-        }
-
-        if (results.length === 0) {
-            return "SPARQL-lite Result: No matching subgraphs found.";
-        }
-
-        const idToLabel = new Map<string, string>();
-        this.graph.nodes.forEach(n => idToLabel.set(n.id, n.label));
-
-        if (!isConstruct) {
-            const selectVars = selectMatch![1].trim().split(/\s+/).map(v => v.trim());
-            // Format into a Markdown table
-            let out = `### 🔍 SPARQL-lite Query Results\n\n`;
-            out += `| ${selectVars.join(' | ')} |\n`;
-            out += `| ${selectVars.map(() => '---').join(' | ')} |\n`;
-
-            results.forEach(row => {
-                const line = selectVars.map(v => {
-                    const rawVal = row[v] || "";
-                    if (idToLabel.has(rawVal)) {
-                        return `**${idToLabel.get(rawVal)}** (\`${rawVal}\`)`;
-                    }
-                    return rawVal.replace(/^"|"$/g, '');
-                }).join(' | ');
-                out += `| ${line} |\n`;
-            });
-
-            return out;
-        } else {
-            // CONSTRUCT MODE
-            const templateTriples: { s: string, p: string, o: string }[] = [];
-            const templateLines = constructTemplate.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/);
-            for (const line of templateLines) {
-                const trimmed = line.trim();
-                if (!trimmed) continue;
-                const parts = trimmed.split(/\s+/);
-                if (parts.length >= 3) {
-                    templateTriples.push({
-                        s: parts[0],
-                        p: parts[1],
-                        o: parts.slice(2).join(' ')
-                    });
-                }
-            }
-
-            let out = `### 🧱 Constructed Subgraph Triples (RDF)\n\n`;
-            out += `| Subject | Predicate | Object |\n`;
-            out += `| --- | --- | --- |\n`;
-
-            const constructedTriplesSet = new Set<string>();
-
-            results.forEach(row => {
-                templateTriples.forEach(t => {
-                    const sVal = t.s.startsWith('?') ? row[t.s] : t.s;
-                    const pVal = t.p.startsWith('?') ? row[t.p] : t.p;
-                    const oVal = t.o.startsWith('?') ? row[t.o] : t.o;
-
-                    if (sVal && pVal && oVal) {
-                        const cleanS = sVal.replace(/^s:/i, '');
-                        const cleanP = pVal.replace(/^s:/i, '');
-                        const cleanO = oVal.replace(/^s:/i, '');
-
-                        const tripleKey = `${cleanS}|${cleanP}|${cleanO}`;
-                        if (!constructedTriplesSet.has(tripleKey)) {
-                            constructedTriplesSet.add(tripleKey);
-
-                            const sLabel = idToLabel.get(cleanS) || cleanS;
-                            const oLabel = idToLabel.get(cleanO) || cleanO;
-
-                            out += `| **${sLabel}** (\`${cleanS}\`) | \`s:${cleanP}\` | **${oLabel}** (\`${cleanO}\`) |\n`;
-                        }
-                    }
-                });
-            });
-
-            return out;
-        }
+        return results;
     }
 
-    generateTextSummary(): string {
-        if (this.buildState !== 'ready') return "Graph not built. Run 'update_code_graph' to generate.";
+    public generateMermaid(type: string): string {
+        const header = "%%{init: {'theme': 'dark', 'themeVariables': { 'lineColor': '#569cd6' }}}%%\n";
+        let out = "graph TD\n";
+        
+        if (type === 'class_diagram' || type === 'inheritance_diagram') {
+            out = "classDiagram\n";
+            this.graph.nodes.filter(n => n.type === 'class').forEach(c => {
+                out += `class ${c.id}["${c.label}"]\n`;
+            });
+            this.graph.edges.filter(e => e.label === 'inherits').forEach(e => {
+                out += `${e.target} <|-- ${e.source}\n`;
+            });
+        } else {
+            this.graph.nodes.slice(0, 30).forEach(n => {
+                out += `${n.id}["${n.label}"]\n`;
+            });
+            this.graph.edges.slice(0, 40).forEach(e => {
+                out += `${e.source} --> ${e.target}\n`;
+            });
+        }
+        return header + out;
+    }
 
+    public generateTextSummary(): string {
         let out = "# 🗺️ ARCHITECTURAL MAP\n";
         const files = this.graph.nodes.filter(n => n.type === 'file');
 
@@ -1477,354 +746,50 @@ export class CodeGraphManager {
         return out;
     }
 
-    generateMermaid(type: string): string {
-        // Apply global init for better dark mode rendering
-        const header = "%%{init: {'theme': 'dark', 'themeVariables': { 'lineColor': '#569cd6' }}}%%\n";
-        
-        let diagram = "";
-        switch (type) {
-            case 'class_diagram':
-                diagram = this.generateClassDiagramMermaid();
-                break;
-            case 'call_graph':
-                diagram = this.generateCallGraphMermaid();
-                break;
-            case 'import_graph':
-                diagram = this.generateImportGraphMermaid();
-                break;
-            case 'function_signatures':
-                diagram = this.generateFunctionSignaturesMermaid();
-                break;
-            case 'module_dependency_graph':
-                diagram = this.generateModuleDependencyGraphMermaid();
-                break;
-            case 'external_library_graph':
-                diagram = this.generateExternalLibraryGraphMermaid();
-                break;
-            case 'hotspot_complexity_graph':
-                diagram = this.generateHotspotComplexityGraphMermaid();
-                break;
-            default:
-                diagram = 'graph TD;\n  Empty["No graph selected"]';
-        }
-        return header + diagram;
-    }
+    public getArchitectureAnalysis(target: string, queryType: 'outline' | 'dependencies' | 'usages'): string {
+        const normalizedTarget = target.replace(/\\/g, '/');
+        const targetNodes = this.graph.nodes.filter(n => 
+            n.label === target || 
+            (n.filePath && (n.filePath === normalizedTarget || n.filePath.endsWith('/' + normalizedTarget))) ||
+            n.id === target
+        );
 
-    private generateHotspotComplexityGraphMermaid(): string {
-        let out = 'graph TD\n';
-        let hasEdges = false;
-        const definedNodes = new Set<string>();
+        if (targetNodes.length === 0) return `Target '${target}' not found.`;
 
-        const defineNode = (nodeId: string) => {
-            if (!definedNodes.has(nodeId)) {
-                const node = this.graph.nodes.find(n => n.id === nodeId);
-                if (node) {
-                    const safeLabel = this.sanitizeMermaidLabel(node.label);
-                    const lines = node.linesCount || 50;
-                    out += `${this.sanitizeMermaidId(nodeId)}["${safeLabel} (${lines} LOC)"]\n`;
-                    definedNodes.add(nodeId);
-                }
-            }
-        };
+        let result = `Architecture Analysis for '${target}':\n\n`;
 
-        for (const edge of this.graph.edges) {
-            if (edge.label === 'imports') {
-                defineNode(edge.source);
-                defineNode(edge.target);
-
-                const srcId = this.sanitizeMermaidId(edge.source);
-                const trgId = this.sanitizeMermaidId(edge.target);
-
-                out += `${srcId} --> ${trgId}\n`;
-                hasEdges = true;
-            }
-        }
-        if (!hasEdges) out += 'subgraph Empty\nDirection["No structure detected"]\nend';
-        return out;
-    }
-
-    private sanitizeMermaidMember(member: string): string {
-        // Strip out brackets and quotes that break the Mermaid class diagram parser
-        return member.replace(/[\{\}\[\]\<\>\"\'\;]/g, '').trim();
-    }
-
-    private generateFunctionSignaturesMermaid(): string {
-        let out = 'classDiagram\n  direction LR\n';
-        const files = this.graph.nodes.filter(n => n.type === 'file');
-        
-        files.forEach(f => {
-            const childrenEdges = this.graph.edges.filter(e => e.source === f.id && e.label === 'contains');
-            if (childrenEdges.length === 0) return;
-
-            const safeFileId = this.sanitizeMermaidId(f.id);
+        targetNodes.forEach(tNode => {
+            result += `###[${tNode.type.toUpperCase()}] ${tNode.label} ${tNode.filePath ? `(in ${tNode.filePath})` : ''}\n`;
             
-            // 1. Handle stand-alone functions in the file
-            const standaloneFunctions = childrenEdges
-                .map(edge => this.graph.nodes.find(n => n.id === edge.target))
-                .filter(n => n && n.type === 'function');
-
-            if (standaloneFunctions.length > 0) {
-                out += `  class ${safeFileId}["${f.label}"] {\n    <<file>>\n`;
-                standaloneFunctions.forEach(fn => {
-                    let sig = fn!.signature ? fn!.signature : `${fn!.label}()`;
-                    sig = sig.replace(/[{}";]/g, '').replace(/->/g, ':').replace(/\s+/g, ' ');
-                    out += `    ${sig}\n`;
+            if (queryType === 'outline') {
+                const children = this.graph.edges.filter(e => e.source === tNode.id && e.label === 'contains').map(e => this.graph.nodes.find(n => n.id === e.target));
+                result += `Contains:\n`;
+                children.forEach(c => {
+                    if (c) {
+                        result += `- [${c.type}] ${c.signature || c.label}\n`;
+                    }
                 });
-                out += `  }\n`;
-            } else {
-                out += `  class ${safeFileId}["${f.label}"]\n  ${safeFileId} : <<file>>\n`;
-            }
-
-            // 2. Handle classes in the file
-            childrenEdges.forEach(edge => {
-                const child = this.graph.nodes.find(n => n.id === edge.target);
-                if (child && child.type === 'class') {
-                    const safeClassId = this.sanitizeMermaidId(child.id);
-                    const methods = child.methods || [];
-                    
-                    if (methods.length > 0) {
-                        out += `  class ${safeClassId}["${child.label}"] {\n`;
-                        methods.forEach(m => {
-                            const safeMethod = m.replace(/[{}";]/g, '').replace(/->/g, ':').replace(/\s+/g, ' ');
-                            out += `    ${safeMethod}\n`;
-                        });
-                        out += `  }\n`;
-                    } else {
-                        out += `  class ${safeClassId}["${child.label}"]\n`;
+            } else if (queryType === 'dependencies') {
+                const outgoing = this.graph.edges.filter(e => e.source === tNode.id && e.label !== 'contains');
+                result += `Dependencies:\n`;
+                outgoing.forEach(e => {
+                    const dest = this.graph.nodes.find(n => n.id === e.target);
+                    if (dest) {
+                        result += `-[${e.label}] -> [${dest.type}] ${dest.label}\n`;
                     }
-                    out += `  ${safeFileId} *-- ${safeClassId}\n`;
-                }
-            });
-        });
-        return out;
-    }
-
-    private generateClassDiagramMermaid(): string {
-        let out = 'classDiagram\n';
-        const classes = this.graph.nodes.filter(n => n.type === 'class');
-        
-        classes.forEach(c => {
-            const safeId = this.sanitizeMermaidId(c.id);
-            const hasAttrs = c.attributes && c.attributes.length > 0;
-            const hasMethods = c.methods && c.methods.length > 0;
-            
-            if (hasAttrs || hasMethods) {
-                out += `class ${safeId}["${c.label}"] {\n`;
-                if (c.attributes) {
-                    c.attributes.slice(0, 15).forEach(a => out += `  +${a.replace(/[{}]/g, '')}\n`);
-                }
-                if (c.methods) {
-                    c.methods.slice(0, 15).forEach(m => out += `  +${m.replace(/[{}]/g, '')}()\n`);
-                }
-                out += `}\n`;
-            } else {
-                out += `class ${safeId}["${c.label}"]\n`;
-            }
-        });
-        
-        this.graph.edges.filter(e => e.label === 'inherits').forEach(e => {
-            const src = this.graph.nodes.find(n => n.id === e.source);
-            const trg = this.graph.nodes.find(n => n.id === e.target);
-            if (src && trg) {
-                out += `${this.sanitizeMermaidId(trg.id)} <|-- ${this.sanitizeMermaidId(src.id)}\n`;
-            }
-        });
-        return out;
-    }
-
-    private generateCallGraphMermaid(): string {
-        let out = 'graph TD\n';
-        let hasEdges = false;
-        
-        const definedNodes = new Set<string>();
-
-        const defineNode = (nodeId: string) => {
-            if (!definedNodes.has(nodeId)) {
-                const node = this.graph.nodes.find(n => n.id === nodeId);
-                if (node) {
-                    const safeLabel = this.sanitizeMermaidLabel(node.label);
-                    
-                    // Different shapes for different types
-                    if (node.type === 'file') {
-                        out += `${this.sanitizeMermaidId(nodeId)}(["${safeLabel}"])\n`; // Rounded
-                    } else if (node.type === 'class') {
-                        out += `${this.sanitizeMermaidId(nodeId)}[["${safeLabel}"]]\n`; // Subroutine shape (double rect)
-                    } else {
-                        out += `${this.sanitizeMermaidId(nodeId)}["${safeLabel}"]\n`; // Rect
+                });
+            } else if (queryType === 'usages') {
+                const incoming = this.graph.edges.filter(e => e.target === tNode.id && e.label !== 'contains');
+                result += `Usages:\n`;
+                incoming.forEach(e => {
+                    const src = this.graph.nodes.find(n => n.id === e.source);
+                    if (src) {
+                        result += `- [${e.label}] <- [${src.type}] ${src.label}\n`;
                     }
-                    
-                    definedNodes.add(nodeId);
-                }
-            }
-        };
-
-        for (const edge of this.graph.edges) {
-            // INCLUDE 'contains' relationship in the Call Graph visualization
-            // This ensures we see File -> Class/Function structure even if no explicit calls are detected
-            if (edge.label === 'calls' || edge.label === 'contains') {
-                const srcId = edge.source;
-                const trgId = edge.target;
-                
-                defineNode(srcId);
-                defineNode(trgId);
-
-                const safeSrc = this.sanitizeMermaidId(srcId);
-                const safeTrg = this.sanitizeMermaidId(trgId);
-                
-                if (edge.label === 'contains') {
-                    // Use a different arrow style for containment
-                    out += `${safeSrc} -.-> ${safeTrg}\n`;
-                } else {
-                    out += `${safeSrc} --> ${safeTrg}\n`;
-                }
-                hasEdges = true;
-            }
-        }
-        
-        if (!hasEdges) out += 'subgraph Empty\nDirection["No structure detected"]\nend';
-        return out;
-    }
-
-    private generateImportGraphMermaid(): string {
-        let out = 'graph TD\n';
-        let hasEdges = false;
-        const definedNodes = new Set<string>();
-
-        const defineNode = (nodeId: string) => {
-            if (!definedNodes.has(nodeId)) {
-                const node = this.graph.nodes.find(n => n.id === nodeId);
-                if (node) {
-                    const safeLabel = this.sanitizeMermaidLabel(node.label);
-                    const safeId = this.sanitizeMermaidId(nodeId);
-                    
-                    if (node.type === 'library') {
-                        out += `${safeId}{{"Library: ${safeLabel}"}}\n`; // Hexagon for libs
-                        out += `style ${safeId} fill:#d19a66,stroke:#333,stroke-width:2px\n`;
-                    } else {
-                        out += `${safeId}(["${safeLabel}"])\n`; // Rounded for files
-                    }
-                    definedNodes.add(nodeId);
-                }
-            }
-        };
-
-        for (const edge of this.graph.edges) {
-            if (edge.label === 'imports') {
-                defineNode(edge.source);
-                defineNode(edge.target);
-
-                const srcId = this.sanitizeMermaidId(edge.source);
-                const trgId = this.sanitizeMermaidId(edge.target);
-
-                out += `${srcId} --> ${trgId}\n`;
-                hasEdges = true;
-            }
-        }
-        
-        if (!hasEdges) out += 'subgraph Empty\nDirection["No imports detected"]\nend';
-        return out;
-    }
-
-    private generateModuleDependencyGraphMermaid(): string {
-        let out = 'graph TD\n';
-        const folderEdges = new Set<string>();
-        const folderNames = new Set<string>();
-
-        this.graph.edges.forEach(e => {
-            if (e.label === 'imports') {
-                const srcNode = this.graph.nodes.find(n => n.id === e.source);
-                const trgNode = this.graph.nodes.find(n => n.id === e.target);
-                if (srcNode && trgNode && srcNode.filePath && trgNode.filePath) {
-                    const srcFolder = path.dirname(srcNode.filePath).replace(/\\/g, '/');
-                    const trgFolder = path.dirname(trgNode.filePath).replace(/\\/g, '/');
-                    if (srcFolder !== trgFolder) {
-                        const edgeKey = `"${srcFolder}" --> "${trgFolder}"`;
-                        if (!folderEdges.has(edgeKey)) {
-                            folderEdges.add(edgeKey);
-                            folderNames.add(srcFolder);
-                            folderNames.add(trgFolder);
-                        }
-                    }
-                }
+                });
             }
         });
 
-        folderNames.forEach(folder => {
-            const safeId = folder.replace(/[^a-zA-Z0-9_]/g, '_');
-            out += `  ${safeId}["📁 ${folder}"]\n`;
-        });
-
-        folderEdges.forEach(edge => {
-            const parts = edge.match(/"([^"]+)" --> "([^"]+)"/);
-            if (parts) {
-                const srcId = parts[1].replace(/[^a-zA-Z0-9_]/g, '_');
-                const trgId = parts[2].replace(/[^a-zA-Z0-9_]/g, '_');
-                out += `  ${srcId} --> ${trgId}\n`;
-            }
-        });
-
-        if (folderEdges.size === 0) {
-            out += '  NoFolderDeps["No cross-folder dependencies found"]\n';
-        }
-
-        return out;
-    }
-
-    private generateExternalLibraryGraphMermaid(): string {
-        let out = 'graph TD\n';
-        const libNodes = this.graph.nodes.filter(n => n.type === 'library');
-        const libEdges = this.graph.edges.filter(e => {
-            const trg = this.graph.nodes.find(n => n.id === e.target);
-            return trg && trg.type === 'library';
-        });
-
-        libNodes.forEach(lib => {
-            const safeId = lib.id.replace(/[^a-zA-Z0-9_]/g, '_');
-            out += `  ${safeId}{{"📦 ${lib.label}"}}\n`;
-            out += `  style ${safeId} fill:#d19a66,stroke:#333,stroke-width:2px\n`;
-        });
-
-        libEdges.forEach(e => {
-            const srcNode = this.graph.nodes.find(n => n.id === e.source);
-            if (srcNode) {
-                const safeSrcId = srcNode.id.replace(/[^a-zA-Z0-9_]/g, '_');
-                const safeTrgId = e.target.replace(/[^a-zA-Z0-9_]/g, '_');
-                
-                out += `  ${safeSrcId}["📄 ${srcNode.label}"]\n`;
-                out += `  ${safeSrcId} --> ${safeTrgId}\n`;
-            }
-        });
-
-        if (libEdges.length === 0) {
-            out += '  NoExternalLibs["No external library imports found"]\n';
-        }
-
-        return out;
-    }
-
-    private sanitizeMermaidId(id: string): string {
-        // Ensure IDs are valid CSS-like identifiers
-        return id.replace(/[^a-zA-Z0-9_]/g, '_');
-    }
-
-    private sanitizeMermaidLabel(label: string): string {
-        // Class names in Mermaid cannot have spaces, dots, or most symbols.
-        // We replace all non-alphanumeric characters with underscores.
-        let safe = label
-            .replace(/<.*?>/g, '') // Remove generics
-            .replace(/["\n\r\t(){}]/g, '') // Remove brackets and quotes
-            .replace(/[^a-zA-Z0-9_]/g, '_'); // Flatten spaces/dots to underscores
-            
-        // Identifiers cannot start with a digit
-        if (/^\d/.test(safe)) {
-            safe = '_' + safe;
-        }
-        return safe;
-    }
-
-    private fail(message: string) {
-        this.buildState = 'error';
-        this.lastError = message;
-        this.contextSetter?.('codeGraph.error', true);
+        return result;
     }
 }

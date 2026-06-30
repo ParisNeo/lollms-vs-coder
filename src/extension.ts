@@ -270,8 +270,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
                 contextManager.refreshFileInCache(uri);
                 contextManager.updateTreeStructure(uri, 'change');
 
-                // Strictly incremental Code Graph updates: Only parse the changed file if SPARQL is active
-                if (isSparqlActive) {
+                // Incremental Sync only: Update the file cache without rebuilding the entire graph structure
+                if (isSparqlActive && codeGraphManager.getBuildState() === 'ready') {
                     Logger.info(`[Sovereign Graph] Performing incremental parse for: ${path.basename(fsPath)}`);
                     await codeGraphManager.updateFileInGraph(uri);
                 }
@@ -279,7 +279,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
                 contextStateProvider.addFileToCache(relPath);
                 contextManager.updateTreeStructure(uri, 'create');
 
-                if (isSparqlActive) {
+                if (isSparqlActive && codeGraphManager.getBuildState() === 'ready') {
                     await codeGraphManager.updateFileInGraph(uri);
                 }
             } else if (type === 'delete') {
@@ -287,7 +287,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
                 contextManager.refreshFileInCache(uri);
                 contextManager.updateTreeStructure(uri, 'delete');
 
-                if (isSparqlActive) {
+                if (isSparqlActive && codeGraphManager.getBuildState() === 'ready') {
                     await codeGraphManager.removeFileFromGraph(uri);
                 }
             }
@@ -454,10 +454,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         vscode.commands.executeCommand('setContext', 'lollms:hasWorkspace', true);
         codeGraphManager.setWorkspaceRoot(folders[0].uri);
 
-        // Build the complete graph once silently in the background on startup
-        codeGraphManager.buildGraph(undefined, undefined).catch(err => {
-            Logger.warn(`Initial background code-graph build failed: ${err.message}`);
-        });
+        // RESTRICTIVE AUTONOMY: We DO NOT build the graph on startup.
+        // It remains unbuilt until the user manually triggers a rebuild or executes a query.
 
         const initial = activeWorkspaceFolder 
             ? (folders.find(f => f.uri.toString() === activeWorkspaceFolder!.uri.toString()) || folders[0]) 

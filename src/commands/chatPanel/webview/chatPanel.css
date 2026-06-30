@@ -317,16 +317,15 @@ body.agent-mode-active #plan-resizer {
     width: calc(100% - 24px);
     flex-grow: 1;
     gap: 12px; 
-    padding: 20px 24px; 
+    padding: 16px 20px; 
     position: relative; 
-    transition: all 0.2s ease-in-out; 
     border: 1px solid var(--vscode-widget-border); 
     border-left: 4px solid transparent; /* Role-based accent */
-    border-radius: 12px; 
-    margin: 12px; 
+    border-radius: 8px; 
+    margin: 8px 12px; 
     box-sizing: border-box; 
     background-color: var(--vscode-editor-background);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    box-shadow: none; /* Removed expensive drop-shadows */
     min-width: 0;
     overflow: visible !important; 
 }
@@ -334,13 +333,12 @@ body.agent-mode-active #plan-resizer {
 /* Zebra Striping */
 .message-wrapper:nth-child(even) .message {
     background-color: var(--vscode-editor-inactiveSelectionBackground);
-    opacity: 0.98;
 }
 
 .message:hover { 
     background-color: var(--vscode-list-hoverBackground);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
-    transform: translateY(-1px);
+    /* Keep layout perfectly stationary on hover */
+    transform: none;
 }
 
 /* Role-based Accents */
@@ -517,20 +515,21 @@ body.agent-mode-active .chat-container {
 .context-message.standard-mode-bubble {
     pointer-events: auto;
     margin: 8px 16px 12px 16px !important;
-    border-radius: 12px !important;
+    border-radius: 8px !important;
+    /* Solid high-performance background - no transparency or filters */
     background-color: var(--vscode-editorWidget-background) !important;
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
     border: 1px solid var(--vscode-widget-border) !important;
     color: var(--vscode-editor-foreground) !important;
-    box-shadow: 0 16px 40px rgba(0,0,0,0.15) !important;
+    /* Simple solid border instead of blurry drop-shadows */
+    box-shadow: none !important;
+    border-bottom: 2px solid var(--vscode-widget-border) !important;
     overflow: visible !important; 
-    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .context-message.agent-mode-bubble {
     border: 1.5px solid var(--vscode-charts-orange) !important;
-    box-shadow: 0 16px 40px rgba(214, 122, 13, 0.15) !important;
+    border-bottom: 3px solid var(--vscode-charts-orange) !important;
+    box-shadow: none !important;
 }
 
 /* 🧬 HUD INTERNAL SCROLL SANCTUARY */
@@ -684,31 +683,21 @@ body.agent-mode-active .chat-container {
 
 .message-actions { 
     position: sticky !important; 
-    /* Offset so it doesn't collide with the very top of the window */
     top: 5px; 
-    
-    /* Float to the right so content flows behind/around it */
     float: right;
-    
-    /* Ensure it is ABOVE code block headers (which use 500) */
     z-index: 10000 !important; 
-    
-    /* Hide the space it occupies so it doesn't push the header down */
     margin-bottom: -40px; 
     margin-left: 10px;
-    
     display: flex; 
     gap: 4px;
     background-color: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-widget-border); 
-    box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-    border-radius: 6px; 
+    /* Flattened shadow to optimize GPU paint times */
+    box-shadow: 0 2px 5px rgba(0,0,0,0.25);
+    border-radius: 4px; 
     padding: 4px; 
-    
-    /* Visibility logic */
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.1s ease-in-out;
 }
 
 /* Hovering the message or the actions itself shows the HUD */
@@ -2411,33 +2400,37 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     position: relative;
 }
 
-/* ⚙️ HUD OPTIONS FLYOUT */
+/* ⚙️ HUD OPTIONS FLYOUT & NEON PROTOCOLS */
 .hud-options-parent {
     overflow: visible !important;
+    position: relative;
 }
 
+/* Smooth, high-performance styling for the vertical protocols dropdown */
 .hud-options-popup {
     display: none;
     position: absolute;
     top: calc(100% + 5px);
     left: 0;
-    z-index: 5001;
+    z-index: 10001;
     background: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-widget-border);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-    padding: 8px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    padding: 10px;
     border-radius: 8px;
     flex-direction: column;
-    gap: 6px;
-    min-width: 220px;
-    white-space: nowrap;
+    gap: 8px;
+    min-width: 240px;
+    max-height: 70vh;
+    overflow-y: auto;
 }
 
+/* Hovering trigger badge unhides the dropdown options */
 .hud-options-parent:hover .hud-options-popup {
     display: flex;
 }
 
-/* Hover-Bridge to prevent jitter */
+/* Anti-jitter hover bridge */
 .hud-options-popup::after {
     content: '';
     position: absolute;
@@ -2447,10 +2440,50 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     height: 10px;
 }
 
-.hud-options-popup .mode-badge {
-    width: 100%;
-    justify-content: flex-start;
-    padding: 6px 12px;
+/* Align switch toggles inside the vertical rows */
+.hud-options-popup .switch {
+    width: 28px;
+    height: 16px;
+    position: relative;
+    display: inline-block;
+}
+
+.hud-options-popup .switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.hud-options-popup .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-color: var(--vscode-input-background);
+    border: 1px solid var(--vscode-widget-border);
+    transition: .3s;
+    border-radius: 16px;
+}
+
+.hud-options-popup .slider:before {
+    position: absolute;
+    content: "";
+    height: 10px;
+    width: 10px;
+    left: 2px;
+    bottom: 2px;
+    background-color: var(--vscode-foreground);
+    transition: .3s;
+    border-radius: 50%;
+}
+
+.hud-options-popup input:checked + .slider {
+    background-color: var(--vscode-button-background);
+    border-color: var(--vscode-button-background);
+}
+
+.hud-options-popup input:checked + .slider:before {
+    transform: translateX(12px);
+    background-color: var(--vscode-button-foreground);
 }
 
 .badge-group-label {

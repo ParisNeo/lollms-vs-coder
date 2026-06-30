@@ -1173,19 +1173,29 @@ export class ChatPanel {
                     importedSkillIds: importedIds,
                     activeDiagramIds: activeDiagramIds,
                     modelName: modelForTokenization,
-                    onProgress: (pct) => {
+                    onProgress: (progressData: any) => {
                         if (!this._isDisposed) {
-                            // 1. Update the top small progress bar
-                            this._panel.webview.postMessage({ command: 'tokenCalculationProgress', progress: pct });
+                            const pct = typeof progressData === 'object' ? progressData.percentage : progressData;
+                            const current = progressData?.current || 0;
+                            const total = progressData?.total || 0;
+                            const name = progressData?.fileName || '';
+
+                            // 1. Send detailed progress data to the webview
+                            this._panel.webview.postMessage({ 
+                                command: 'tokenCalculationProgress', 
+                                progress: pct,
+                                current: current,
+                                total: total,
+                                fileName: name
+                            });
 
                             // 2. Update the big Blueprint loader with "Live" stats
-                            // We calculate a rough token estimate (chars / 3.5) to show growth in real-time
                             this._panel.webview.postMessage({
                                 command: 'updateLoaderStatus',
                                 status: `Indexing: ${pct}% complete...`,
                                 stats: { 
-                                    files: Math.round((pct / 100) * context.selectedFilesContent.length), 
-                                    tokens: -1 // Indicate we are still counting
+                                    files: current, 
+                                    tokens: -1 
                                 }
                             });
                         }
@@ -1226,21 +1236,23 @@ export class ChatPanel {
                         } catch (e) {}
                     }
 
-                    // --- HIGH-PERFORMANCE INTELLECTUAL HYGIENE (IPC PAYLOAD DE-BLOATING) ---
-                    // Do NOT pass full file contents over postMessage (causes severe Extension Host lag).
-                    // We only pass the metadata list of active file paths.
+                    // --- LAZY INGESTION & DELTA STATE CACHE ---
+                    // Instead of sending massive file content blocks, we transmit only 
+                    // lightweight file descriptors.
                     const provider = this._contextManager.getContextStateProvider();
-                    const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
+                    const includedFiles = provider ? provider.getIncludedFiles().map(f => ({
+                        path: f.path,
+                        state: f.state,
+                        hasContent: false // Loaded dynamically on-demand
+                    })) : [];
                     const currentSkills = context.importedSkills || []; 
 
                     this._panel.webview.postMessage({ 
-                        command: 'updateContext', 
-                        context: "", // Swapped 15MB+ raw string with a 0-byte token placeholder
+                        command: 'updateContextDelta', 
+                        action: 'sync_all',
                         files: includedFiles,
-                        skills: (currentSkills || []).map(s => ({ id: s.id, name: s.name, content: "" })), // Exclude heavy skill descriptions from UI
+                        skills: (currentSkills || []).map(s => ({ id: s.id, name: s.name, description: s.description })), // Lightweight descriptors
                         tools: equippedTools || [],
-                        diagrams: [], // Kept empty; rendered on-demand in dedicated tabs
-                        images: [], // Kept in memory only, not serialized to chat panel
                         briefing: this._currentDiscussion?.discussion_data_zone || "" ,
                         selections: savedSelections || []
                     });
@@ -2520,7 +2532,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         }
     }
 
-    this.processManager.updateDescription(processId, "Loading file content...");
+    this.processManager.updateDescription(processId, "Preparing workspace context...");
     this.updateGeneratingState();
 
     const importedIds = this._currentDiscussion?.importedSkills || [];
@@ -2539,7 +2551,14 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     const contextData = await this._contextManager.getContextContent({ 
         importedSkillIds: importedIds,
         includeTree: !isContextMuted,
-        modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName() 
+        modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName(),
+        onLoadProgress: (progress) => {
+            if (processId) {
+                const statusMessage = `Loading file content [${progress.current}/${progress.total}]: ${progress.fileName} (${progress.percentage}%)`;
+                this.processManager.updateDescription(processId, statusMessage);
+                this.updateGeneratingState();
+            }
+        }
     });
 
     // Append diagrams to the text sent to the AI
@@ -4968,9 +4987,57 @@ ${targetContent}
                                     blockId: blockId
                                 });
 
-                                // --- INSTANT HUD RE-RENDER FOR ADDED FILES ---
-                                const provider = this._contextManager.getContextStateProvider();
-                                const currentFilesList = provider ? provider.getIncludedFiles().map(f => f.path) : [];
+                                // --- INSTANT HUD INCREMENTAL INGESTION ---
+                                // Concurrently read and tokenize ONLY the newly added files
+                                let addedTokensWeight = 0;
+                                const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+                                const crypto = require('crypto');
+
+                                for (const addedPath of addedPaths) {
+                                    try {
+                                        const res = await this._contextManager.resolveWorkspaceFromPath(addedPath);
+                                        if (res) {
+                                            const fileContentBytes = await vscode.workspace.fs.readFile(res.uri);
+                                            const fileContent = Buffer.from(fileContentBytes).toString('utf8');
+                                            const hash = crypto.createHash('md5').update(fileContent).digest('hex');
+
+                                            // Tokenize the single file
+                                            const tokenRes = await this._lollmsAPI.tokenize(fileContent, model);
+                                            addedTokensWeight += tokenRes.count;
+
+                                            // Cache the single file's token weight
+                                            await this._contextManager.setCachedTokens(addedPath, hash, tokenRes.count);
+
+                                            // Prime the internal file content cache so the next compile is instantaneous
+                                            (this._contextManager as any)._fileContentCache.set(addedPath, { 
+                                                content: fileContent, 
+                                                state: 'included' 
+                                            });
+                                        }
+                                    } catch (fileErr) {
+                                        console.warn(`Incremental tokenization failed for ${addedPath}:`, fileErr);
+                                    }
+                                }
+
+                                // Apply the mathematical delta directly to our cached metrics
+                                if (this._currentDiscussion?.lastTokenMetrics && addedTokensWeight > 0) {
+                                    const m = this._currentDiscussion.lastTokenMetrics;
+                                    m.total += addedTokensWeight;
+                                    if (m.segments) {
+                                        m.segments.files += addedTokensWeight;
+                                    }
+
+                                    // Instantly update the webview's progress bar with zero delay
+                                    this._panel.webview.postMessage({
+                                        command: 'updateTokenProgress',
+                                        totalTokens: m.total,
+                                        contextSize: m.contextSize,
+                                        isApproximate: false,
+                                        segments: m.segments
+                                    });
+                                }
+
+                                const currentFilesList = provider.getIncludedFiles().map(f => f.path);
                                 this._panel.webview.postMessage({
                                     command: 'updateContext',
                                     files: currentFilesList
@@ -4983,8 +5050,8 @@ ${targetContent}
                                         content: `I have added the requested files to context. Please proceed with the analysis.`
                                     });
                                 } else {
-                                    // Background update (e.g. user just clicked "Add to Context")
-                                    this.updateContextAndTokens();
+                                    // Silent background sync to ensure alignment with other elements (briefing, history)
+                                    this.updateContextAndTokens({ isBackgroundSync: true });
                                 }
                             } else {
                                 // Even if nothing was added, notify the UI to clear any pending spinners
@@ -5141,6 +5208,7 @@ ${targetContent}
                 if (uris && uris.length > 0) {
                     // Show progress immediately
                     this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: true, statusText: 'Processing documents...' });
+                    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
                     
                     for (const uri of uris) {
                         const ext = path.extname(uri.fsPath).toLowerCase();
@@ -5155,7 +5223,7 @@ ${targetContent}
 
                                 let importMode: string | undefined = undefined;
                                 if (ext === '.pdf') {
-                                    const choices =[
+                                    const choices = [
                                         { label: 'Text (Markdown)', mode: 'text', detail: 'Extract text content only.' },
                                         { label: 'Text + Images', mode: 'mixed', detail: 'Extract text and include embedded images.' },
                                         { label: 'Images only', mode: 'images', detail: 'Convert every page of the PDF into an image for visual analysis.' }
@@ -5174,8 +5242,32 @@ ${targetContent}
                                 vscode.window.showErrorMessage(`Failed to attach ${fileName}: ${e.message}`);
                             }
                         } else {
-                            // Standard text/code file: add to background project context
-                            await vscode.commands.executeCommand('lollms-vs-coder.setContextIncluded', uri, [uri]);
+                            // Standard text/code file
+                            try {
+                                const isWithinWorkspace = workspaceFolder && vscode.workspace.getWorkspaceFolder(uri);
+                                
+                                if (isWithinWorkspace) {
+                                    // Standard internal file: add directly to background project context
+                                    await vscode.commands.executeCommand('lollms-vs-coder.setContextIncluded', uri, [uri]);
+                                } else if (workspaceFolder) {
+                                    // External File: Ingest and write to the local web cache folder
+                                    const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'web_cache');
+                                    await vscode.workspace.fs.createDirectory(cacheDir).then(undefined, () => {});
+
+                                    const fileBytes = await vscode.workspace.fs.readFile(uri);
+                                    const safeName = `external_${fileName.replace(/[^a-zA-Z0-9.]/g, '_')}`;
+                                    const cacheUri = vscode.Uri.joinPath(cacheDir, safeName);
+
+                                    await vscode.workspace.fs.writeFile(cacheUri, fileBytes);
+
+                                    // Register the ingested path to the context
+                                    const relativePath = path.join('.lollms', 'web_cache', safeName).replace(/\\/g, '/');
+                                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [relativePath]);
+                                    Logger.info(`[Librarian] Ingested external file: ${fileName} as ${relativePath}`);
+                                }
+                            } catch (e: any) {
+                                vscode.window.showErrorMessage(`Failed to ingest ${fileName}: ${e.message}`);
+                            }
                         }
                     }
                     this.updateContextAndTokens();
@@ -6452,6 +6544,28 @@ Task:
             case 'requestContextUsage':
                 await this.handleRequestContextUsage();
                 break;
+            case 'requestLazyFileContent':
+                {
+                    const { filePath } = message;
+                    if (filePath && this._contextManager) {
+                        const resolution = await this._contextManager.resolveWorkspaceFromPath(filePath);
+                        if (resolution) {
+                            try {
+                                const doc = await vscode.workspace.openTextDocument(resolution.uri);
+                                const content = doc.getText();
+                                this._panel.webview.postMessage({
+                                    command: 'updateContextDelta',
+                                    action: 'lazy_load_file',
+                                    filePath: filePath,
+                                    content: content
+                                });
+                            } catch (err: any) {
+                                Logger.warn(`Lazy file ingestion failed for ${filePath}: ${err.message}`);
+                            }
+                        }
+                    }
+                }
+                break;
             case 'requestMissionBriefing':
             case 'requestMissionBriefingUI':
                 await this.openMissionBriefingUI();
@@ -6875,24 +6989,30 @@ Task:
 
       // 2. Populate tokens incrementally
       for (const file of includedFiles) {
+          // Cooperative Yield: Let the main Extension Host thread breathe and process webview paints
+          await new Promise(resolve => setTimeout(resolve, 5));
+
           try {
               const uri = vscode.Uri.joinPath(workspaceFolder.uri, file.path);
               const stats = await vscode.workspace.fs.stat(uri);
-              const fileContent = await vscode.workspace.fs.readFile(uri);
-              const hash = crypto.createHash('md5').update(fileContent).digest('hex');
 
-              let tokenCount = await this._contextManager.getCachedTokens(file.path, hash);
+              // Generate a lightweight, non-reading composite hash using file size + modified time
+              const compositeHash = `${stats.size}_${stats.mtime}`;
+
+              let tokenCount = await this._contextManager.getCachedTokens(file.path, compositeHash);
 
               if (tokenCount === null) {
+                  // Only read the file if we do not have a cached token count for this specific version!
                   let text = "";
                   if (file.state === 'definitions-only') {
                       text = await (this._contextManager as any).extractDefinitions(uri);
                   } else {
+                      const fileContent = await vscode.workspace.fs.readFile(uri);
                       text = Buffer.from(fileContent).toString('utf8');
                   }
                   const tokenRes = await this._lollmsAPI.tokenize(text, model);
                   tokenCount = tokenRes.count;
-                  await this._contextManager.setCachedTokens(file.path, hash, tokenCount);
+                  await this._contextManager.setCachedTokens(file.path, compositeHash, tokenCount);
               }
 
               this._panel.webview.postMessage({

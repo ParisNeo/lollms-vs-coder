@@ -728,13 +728,22 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 urisToFire.push(targetUri);
                 addedPaths.push(file); // Return the original string so the webview can map it back
                 Logger.info(`[Librarian] Successfully resolved and added: ${key}`);
+
+                // INCREMENTAL CACHE UPDATE: Do not invalidate the entire visible files cache.
+                // Insert the new path directly so we don't trigger a full workspace directory walk.
+                if (this._cachedVisibleFiles && !this._cachedVisibleFiles.includes(key)) {
+                    this._cachedVisibleFiles.push(key);
+                }
             } else {
                 Logger.warn(`[Librarian] Failed to resolve path: ${file}`);
             }
         }
 
         await this.context.workspaceState.update(this.stateKey, workspaceState);
-        this.refresh();
+
+        // Fire incremental decoration updates and tree data changes without calling a full refresh()
+        this._isTreeDirty = false; // Preserve cache
+        this._onDidChangeTreeData.fire();
         this._onDidChangeFileDecorations.fire(urisToFire);
         return addedPaths;
     }

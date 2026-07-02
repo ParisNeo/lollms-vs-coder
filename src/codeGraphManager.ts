@@ -454,9 +454,9 @@ export class CodeGraphManager {
                 const parsed = await this.runParserInWorker(fileUri.fsPath, ext, relPath);
                 this.parsedFilesCache.set(relPath, parsed);
 
-                // If the graph was already fully compiled, re-run link in memory
+                // If the graph was already fully compiled, update only the modified file surgically
                 if (this.buildState === 'ready') {
-                    this.linkGraphStructure();
+                    this.linkFileInGraph(relPath);
                 }
 
             } catch (e) {
@@ -478,7 +478,156 @@ export class CodeGraphManager {
         this.fileIdsMap.delete(relPath);
 
         if (this.buildState === 'ready') {
-            this.linkGraphStructure();
+            const fileNodeId = `file_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+            this.graph.nodes = this.graph.nodes.filter(n => n.filePath !== relPath && n.id !== fileNodeId);
+            this.graph.edges = this.graph.edges.filter(e => {
+                const srcNode = this.graph.nodes.find(n => n.id === e.source);
+                const trgNode = this.graph.nodes.find(n => n.id === e.target);
+                return srcNode && trgNode; // Sweep away orphaned edges
+            });
+        }
+    }
+
+    /**
+     * Surgically updates a single file inside the fully compiled active graph,
+     * preserving all other unchanged nodes and edge configurations.
+     */
+    private linkFileInGraph(relPath: string) {
+        if (this.buildState !== 'ready') return;
+
+        const fileNodeId = `file_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+
+        // 1. Evict old file node, symbol nodes, and contains relations
+        this.graph.nodes = this.graph.nodes.filter(n => n.filePath !== relPath && n.id !== fileNodeId);
+
+        const activeNodeIds = new Set(this.graph.nodes.map(n => n.id));
+        this.graph.edges = this.graph.edges.filter(e => {
+            return activeNodeIds.has(e.source) && activeNodeIds.has(e.target);
+        });
+
+        const cache = this.parsedFilesCache.get(relPath);
+        if (!cache) return;
+
+        // 2. Add New File Node with Stable ID
+        this.graph.nodes.push({
+            id: fileNodeId,
+            label: path.basename(relPath),
+            type: 'file',
+            filePath: relPath,
+            startLine: 0,
+            linesCount: cache.linesCount
+        });
+
+        const classNameToId = new Map<string, string>();
+        this.graph.nodes.forEach(n => {
+            if (n.type === 'class') {
+                classNameToId.set(n.label, n.id);
+            }
+        });
+
+        // 3. Re-inject symbol nodes and contains links
+        cache.nodes.forEach(n => {
+            const sysId = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${n.label}`;
+            this.graph.nodes.push({
+                ...n,
+                id: sysId,
+                filePath: relPath
+            });
+
+            if (n.type === 'class') {
+                classNameToId.set(n.label, sysId);
+            }
+
+            this.graph.edges.push({
+                id: `edge_contains_${fileNodeId}_${sysId}`,
+                source: fileNodeId,
+                target: sysId,
+                label: 'contains'
+            });
+        });
+
+        // Re-inject internal symbol hierachies (Class contains Method)
+        cache.edges.forEach(e => {
+            const srcSymbol = cache.nodes.find(n => n.id === e.source);
+            const trgSymbol = cache.nodes.find(n => n.id === e.target);
+            if (srcSymbol && trgSymbol) {
+                const srcMapped = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${srcSymbol.label}`;
+                const trgMapped = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${trgSymbol.label}`;
+                this.graph.edges.push({
+                    id: `edge_${e.label}_${srcMapped}_${trgMapped}`,
+                    source: srcMapped,
+                    target: trgMapped,
+                    label: e.label
+                });
+            }
+        });
+
+        // 4. Map File Nodes and Re-link imports surgically
+        const fileNodeIds = new Map<string, string>();
+        this.graph.nodes.forEach(n => {
+            if (n.type === 'file' && n.filePath) {
+                fileNodeIds.set(n.filePath, n.id);
+            }
+        });
+
+        cache.imports.forEach(imp => {
+            const targetPath = this.resolveImportPath(imp, relPath, fileNodeIds);
+            if (targetPath) {
+                const targetFileId = fileNodeIds.get(targetPath);
+                if (targetFileId && targetFileId !== fileNodeId) {
+                    this.graph.edges.push({
+                        id: `edge_imports_${fileNodeId}_${targetFileId}`,
+                        source: fileNodeId,
+                        target: targetFileId,
+                        label: 'imports'
+                    });
+                }
+            } else if (!imp.startsWith('.')) {
+                const libName = imp.split('/')[0];
+                const libId = `lib_${libName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+                if (!this.graph.nodes.some(n => n.id === libId)) {
+                    this.graph.nodes.push({
+                        id: libId,
+                        label: libName,
+                        type: 'library'
+                    });
+                }
+                this.graph.edges.push({
+                    id: `edge_imports_${fileNodeId}_${libId}`,
+                    source: fileNodeId,
+                    target: libId,
+                    label: 'imports'
+                });
+            }
+        });
+
+        // 5. Re-link inheritances surgically
+        const jsInheritance = /class\s+([a-zA-Z0-9_]+)\s+extends\s+([a-zA-Z0-9_.]+)/g;
+        const pyInheritance = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_.]+)\s*\)/g;
+
+        const ext = path.extname(relPath).toLowerCase();
+        const text = cache.nodes.map(n => n.label).join(' ');
+        const regex = (ext === '.py') ? pyInheritance : jsInheritance;
+        regex.lastIndex = 0;
+
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+            const className = match[1];
+            const parentName = match[2];
+
+            if (parentName && parentName !== 'object') {
+                const childId = classNameToId.get(className);
+                const parentId = classNameToId.get(parentName);
+
+                if (childId && parentId) {
+                    this.graph.edges.push({
+                        id: `edge_inherits_${childId}_${parentId}`,
+                        source: childId,
+                        target: parentId,
+                        label: 'inherits'
+                    });
+                }
+            }
         }
     }
 
@@ -489,17 +638,13 @@ export class CodeGraphManager {
         const nodes: GraphNode[] = [];
         const edges: GraphEdge[] = [];
 
-        let fileIdCounter = 1;
-        let symbolIdCounter = 1;
-        let edgeIdCounter = 1;
-
         const fileNodeIds = new Map<string, string>(); // filePath -> File node ID
         const classNameToId = new Map<string, string>(); // className -> Class node ID
         const libraryNodesMap = new Map<string, string>(); // libName -> Library node ID
 
-        // 1. First Pass: Instantiate nodes (Files and nested Symbols)
+        // 1. First Pass: Instantiate nodes with stable IDs (Files and nested Symbols)
         for (const [relPath, cache] of this.parsedFilesCache.entries()) {
-            const fileNodeId = `file_${fileIdCounter++}`;
+            const fileNodeId = `file_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
             fileNodeIds.set(relPath, fileNodeId);
 
             nodes.push({
@@ -511,20 +656,14 @@ export class CodeGraphManager {
                 linesCount: cache.linesCount
             });
 
-            // Map and bind inner symbols
-            const idTranslationMap = new Map<string, string>();
-
             cache.nodes.forEach(n => {
-                const sysId = `sym_${symbolIdCounter++}`;
-                idTranslationMap.set(n.id, sysId);
+                const sysId = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${n.label}`;
 
-                const nodeCopy: GraphNode = {
+                nodes.push({
                     ...n,
                     id: sysId,
                     filePath: relPath
-                };
-
-                nodes.push(nodeCopy);
+                });
 
                 if (n.type === 'class') {
                     classNameToId.set(n.label, sysId);
@@ -532,20 +671,22 @@ export class CodeGraphManager {
 
                 // File contains symbol
                 edges.push({
-                    id: `edge_${edgeIdCounter++}`,
+                    id: `edge_contains_${fileNodeId}_${sysId}`,
                     source: fileNodeId,
                     target: sysId,
                     label: 'contains'
                 });
             });
 
-            // Re-map internal container relations (Class contains Method)
+            // Map internal container relations (Class contains Method)
             cache.edges.forEach(e => {
-                const srcMapped = idTranslationMap.get(e.source);
-                const trgMapped = idTranslationMap.get(e.target);
-                if (srcMapped && trgMapped) {
+                const srcSymbol = cache.nodes.find(n => n.id === e.source);
+                const trgSymbol = cache.nodes.find(n => n.id === e.target);
+                if (srcSymbol && trgSymbol) {
+                    const srcMapped = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${srcSymbol.label}`;
+                    const trgMapped = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${trgSymbol.label}`;
                     edges.push({
-                        id: `edge_${edgeIdCounter++}`,
+                        id: `edge_${e.label}_${srcMapped}_${trgMapped}`,
                         source: srcMapped,
                         target: trgMapped,
                         label: e.label
@@ -566,7 +707,7 @@ export class CodeGraphManager {
                     const targetFileId = fileNodeIds.get(targetPath);
                     if (targetFileId && targetFileId !== fileNodeId) {
                         edges.push({
-                            id: `edge_${edgeIdCounter++}`,
+                            id: `edge_imports_${fileNodeId}_${targetFileId}`,
                             source: fileNodeId,
                             target: targetFileId,
                             label: 'imports'
@@ -574,9 +715,8 @@ export class CodeGraphManager {
                     }
                 } else if (!imp.startsWith('.')) {
                     const libName = imp.split('/')[0];
-                    let libId = libraryNodesMap.get(libName);
-                    if (!libId) {
-                        libId = `lib_${symbolIdCounter++}`;
+                    const libId = `lib_${libName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+                    if (!libraryNodesMap.has(libName)) {
                         nodes.push({
                             id: libId,
                             label: libName,
@@ -585,7 +725,7 @@ export class CodeGraphManager {
                         libraryNodesMap.set(libName, libId);
                     }
                     edges.push({
-                        id: `edge_${edgeIdCounter++}`,
+                        id: `edge_imports_${fileNodeId}_${libId}`,
                         source: fileNodeId,
                         target: libId,
                         label: 'imports'
@@ -600,7 +740,7 @@ export class CodeGraphManager {
 
         for (const [relPath, cache] of this.parsedFilesCache.entries()) {
             const ext = path.extname(relPath).toLowerCase();
-            const text = this.parsedFilesCache.get(relPath)?.nodes.map(n => n.label).join(' ') || ""; // Simple representation
+            const text = cache.nodes.map(n => n.label).join(' ');
             const regex = (ext === '.py') ? pyInheritance : jsInheritance;
             regex.lastIndex = 0;
 
@@ -615,7 +755,7 @@ export class CodeGraphManager {
 
                     if (childId && parentId) {
                         edges.push({
-                            id: `edge_${edgeIdCounter++}`,
+                            id: `edge_inherits_${childId}_${parentId}`,
                             source: childId,
                             target: parentId,
                             label: 'inherits'

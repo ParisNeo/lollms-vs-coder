@@ -1,8 +1,11 @@
+import * as crypto from 'crypto';
+
 export interface FailedAttempt {
     toolName: string;
     parameters: any;
     errorOutput: string;
     timestamp: number;
+    paramHash?: string;
 }
 
 export class FailureMemory {
@@ -11,7 +14,17 @@ export class FailureMemory {
 
     public recordFailure(toolName: string, params: any, error: string) {
         this._lastFailureTime = Date.now();
-        this.failures.push({ toolName, parameters: params, errorOutput: error, timestamp: this._lastFailureTime });
+        const cleaned = this.cleanParams(params);
+        const paramStr = JSON.stringify(cleaned);
+        const paramHash = crypto.createHash('md5').update(paramStr).digest('hex');
+
+        this.failures.push({ 
+            toolName, 
+            parameters: params, 
+            errorOutput: error, 
+            timestamp: this._lastFailureTime,
+            paramHash
+        });
     }
 
     private cleanParams(params: any): any {
@@ -60,12 +73,11 @@ export class FailureMemory {
 
     public hasFailedBefore(toolName: string, params: any): boolean {
         const cleanedTarget = this.cleanParams(params);
-        const paramStr = JSON.stringify(cleanedTarget);
+        const targetStr = JSON.stringify(cleanedTarget);
+        const targetHash = crypto.createHash('md5').update(targetStr).digest('hex');
 
         return this.failures.some(f => {
-            if (f.toolName !== toolName) return false;
-            const cleanedFailure = this.cleanParams(f.parameters);
-            return JSON.stringify(cleanedFailure) === paramStr;
+            return f.toolName === toolName && f.paramHash === targetHash;
         });
     }
 

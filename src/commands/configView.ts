@@ -42,7 +42,8 @@ export class SettingsPanel {
     commitMessagePersona: '',
     contextFileExceptions: [] as string[],
     language: 'auto',
-    
+    contextMaxDepth: 8,
+
     connectionProfiles: [] as any[],
 
     // REPLACED OLD MODES WITH PROFILES
@@ -182,6 +183,7 @@ export class SettingsPanel {
     this._pendingConfig.commitMessagePersona = config.get<string>('commitMessagePersona') || '';
     this._pendingConfig.contextFileExceptions = config.get<string[]>('contextFileExceptions') || [];
     this._pendingConfig.language = config.get<string>('language') || 'auto';
+    this._pendingConfig.contextMaxDepth = config.get<number>('contextMaxDepth') || config.get<number>('context.maxDepth') || 8;
     
     this._pendingConfig.connectionProfiles = config.get<any[]>('connectionProfiles') || [];
 
@@ -689,12 +691,13 @@ export class SettingsPanel {
                 if (selection === "Reset") {
                     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                     const keys = [
-                        'apiKey', 'apiUrl', 'backendType', 'useLollmsExtensions', 'modelName', 
-                        'architectModelName', 'disableSslVerification', 'sslCertPath', 
-                        'requestTimeout', 'agentMaxRetries', 'maxImageSize', 'enableCodeInspector',
-                        'inspectorModelName', 'codeInspectorPersona', 'chatPersona', 'agentPersona',
-                        'commitMessagePersona', 'contextFileExceptions', 'language', 'generationFormats', 'explainCode', 'allowedFileFormats', 
-                        'reasoningLevel', 'failsafeContextSize', 'verifyAndCorrectCodeBlocks', 'searchProvider', 'searchApiKey',
+                                'apiKey', 'apiUrl', 'backendType', 'useLollmsExtensions', 'modelName', 
+                                'architectModelName', 'disableSslVerification', 'sslCertPath', 
+                                'requestTimeout', 'agentMaxRetries', 'maxImageSize', 'enableCodeInspector',
+                                'inspectorModelName', 'codeInspectorPersona', 'chatPersona', 'agentPersona',
+                                'commitMessagePersona', 'contextFileExceptions', 'language', 'generationFormats', 'explainCode', 'allowedFileFormats', 
+                                'reasoningLevel', 'failsafeContextSize', 'verifyAndCorrectCodeBlocks', 'searchProvider', 'searchApiKey',
+                                'context.maxDepth',
                         'searchCx', 'autoUpdateChangelog', 'autoGenerateTitle', 
                         'addPedagogicalInstruction', 'forceFullCodePath', 'clipboardInsertRole', 'companion.enableWebSearch',
                         'companion.enableArxivSearch', 'userInfo.name', 'userInfo.email', 
@@ -810,7 +813,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, verifyAndCorrectCodeBlocks, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, forceFullCode, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentScreenCapture, agentWebTesting, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, verifyAndCorrectCodeBlocks, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, forceFullCode, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentScreenCapture, agentWebTesting, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels, contextMaxDepth } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
 
@@ -904,6 +907,17 @@ personalities: this._personalityManager.getPersonalities()
               .toolbar-btn { background: transparent; border: 1px solid var(--vscode-panel-border); border-radius: var(--border-radius-sm); width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--vscode-foreground); transition: var(--transition); padding: 0; }
               .toolbar-btn:hover { background: var(--vscode-toolbar-hoverBackground); border-color: var(--primary-accent); }
               .toolbar-btn.save:hover { color: var(--success-color); border-color: var(--success-color); }
+              .toolbar-btn.save.dirty-highlight {
+                  animation: save-pulse 1.8s infinite ease-in-out;
+                  border-color: var(--success-color) !important;
+                  color: var(--success-color) !important;
+                  box-shadow: 0 0 10px rgba(46, 204, 113, 0.4);
+              }
+              @keyframes save-pulse {
+                  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.4); }
+                  50% { transform: scale(1.1); box-shadow: 0 0 12px 4px rgba(46, 204, 113, 0.2); }
+                  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(46, 204, 113, 0); }
+              }
               .toolbar-btn.reset:hover { color: var(--warning-color); border-color: var(--warning-color); }
               .toolbar-btn.close:hover { color: var(--error-color); border-color: var(--error-color); }
               .toolbar-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -1194,6 +1208,8 @@ personalities: this._personalityManager.getPersonalities()
               <input type="number" id="failsafeContextSize" value="${failsafeContextSize}" min="1024" step="1024" />
               <label for="maxImageSize">${t('config.maxImageSize.label', 'Max Image Size (px)')}</label>
               <input type="number" id="maxImageSize" value="${maxImageSize}" min="0" step="128" />
+              <label for="contextMaxDepth">Maximum File Tree Depth before Truncation</label>
+              <input type="number" id="contextMaxDepth" value="${contextMaxDepth}" min="1" max="100" />
               <label for="contextFileExceptions">${t('config.contextFileExceptions.label', 'Context File Exceptions')}</label>
               <textarea id="contextFileExceptions" rows="8">${contextFileExceptions.join('\n')}</textarea>
               
@@ -1854,6 +1870,7 @@ personalities: this._personalityManager.getPersonalities()
                 }
 
                 if(config.contextFileExceptions) document.getElementById('contextFileExceptions').value = config.contextFileExceptions.join('\\n');
+                safeSet('contextMaxDepth', config.contextMaxDepth);
 
                 renderRatesTable();
                 if(config.remoteAllowedUsers) document.getElementById('remoteAllowedUsers').value = config.remoteAllowedUsers.join('\\n');
@@ -1867,6 +1884,7 @@ personalities: this._personalityManager.getPersonalities()
                 refreshModelsList(false);
 
                 bind('graphModelSelect', 'graphModelName');
+                bind('contextMaxDepth', 'contextMaxDepth');
                 bind('modelSelect', 'modelName');
                 bind('ttiModelSelect', 'ttiModelName');
                 bind('dreamModelSelect', 'dreamModelName');
@@ -1877,6 +1895,62 @@ personalities: this._personalityManager.getPersonalities()
                 bind('surgicalModelSelect', 'surgicalModelName');
                 bind('summarizationModelSelect', 'summarizationModelName');
             }
+            
+            const bindTempUpdates = () => {
+                const numericKeys = ['requestTimeout', 'agentMaxRetries', 'maxImageSize', 'failsafeContextSize', 'contextMaxDepth', 'remoteServerPort', 'billingBudgetCap'];
+                const checkboxKeys = ['useLollmsExtensions', 'disableSsl', 'verifyAndCorrectCodeBlocks', 'autoUpdateChangelog', 'autoGenerateTitle', 'addPedagogicalInstruction', 'explainCode', 'showOs', 'showIp', 'showShells', 'agentShellExecution', 'agentFilesystemWrite', 'agentFilesystemRead', 'agentInternetAccess', 'agentScreenCapture', 'agentWebTesting', 'agentUseRLM', 'enableCodeInspector', 'moltbookEnable', 'remoteDiscordEnabled', 'remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions', 'billingEnabled', 'billingEnableCapping'];
+                const textKeys = ['apiKey', 'apiUrl', 'backendType', 'sslCertPath', 'language', 'codeInspectorPersona', 'chatPersona', 'agentPersona', 'commitMessagePersona', 'contextFileExceptions', 'searchProvider', 'searchApiKey', 'searchCx', 'clipboardInsertRole', 'companionEnableWebSearch', 'companionEnableArxivSearch', 'userInfoName', 'userInfoEmail', 'userInfoLicense', 'userInfoCodingStyle', 'mcpServers', 'deleteBranchAfterMerge', 'unstagedChangesBehavior', 'includeGitInfo', 'systemCustomInfo', 'moltbookApiKey', 'moltbookBotName', 'moltbookBotPurpose', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'];
+
+                const highlightSaveBtn = () => {
+                    const saveBtn = document.getElementById('saveToolbar');
+                    if (saveBtn) {
+                        saveBtn.classList.add('dirty-highlight');
+                    }
+                };
+
+                numericKeys.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) {
+                        el.addEventListener('input', () => {
+                            postTempUpdate(id === 'contextMaxDepth' ? 'contextMaxDepth' : id, parseFloat(el.value) || 0);
+                            highlightSaveBtn();
+                        });
+                    }
+                });
+
+                checkboxKeys.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) {
+                        el.addEventListener('change', () => {
+                            postTempUpdate(id, el.checked);
+                            highlightSaveBtn();
+                        });
+                    }
+                });
+
+                textKeys.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) {
+                        el.addEventListener('input', () => {
+                            let val = el.value;
+                            if (['contextFileExceptions', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].includes(id)) {
+                                val = val.split('\\n').map(s => s.trim()).filter(Boolean);
+                            }
+                            postTempUpdate(id, val);
+                            highlightSaveBtn();
+                        });
+                    }
+                });
+
+                // Attach listeners to selects, list additions, and dropdowns
+                document.querySelectorAll('select, .model-dropdown').forEach(el => {
+                    el.addEventListener('change', highlightSaveBtn);
+                });
+            };
+
+            // Trigger temporary bindings after initial load
+            setTimeout(bindTempUpdates, 50);
+
 
             function populateModelDropdown(selectElement, selectedValue, error) {
                 if(!selectElement) return;
@@ -2213,6 +2287,10 @@ personalities: this._personalityManager.getPersonalities()
                 } else if (m.command === 'configSaved') {
                     config = m.newConfig;
                     checkReactivity();
+                    const saveBtn = document.getElementById('saveToolbar');
+                    if (saveBtn) {
+                        saveBtn.classList.remove('dirty-highlight');
+                    }
                     const toast = document.getElementById('saveToast');
                     toast.style.display = 'flex';
                     setTimeout(() => toast.style.display = 'none', 3000);

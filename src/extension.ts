@@ -58,13 +58,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
     let activeWorkspaceFolder: vscode.WorkspaceFolder | undefined;
     const getActiveWorkspace = () => activeWorkspaceFolder;
 
-    // Python Extension API
+    // Python Extension API - Asynchronous Non-Blocking Activation
     const pythonExt = vscode.extensions.getExtension('ms-python.python');
     let pythonExtApi = null;
     if (pythonExt) {
-        if (!pythonExt.isActive) await pythonExt.activate();
-        pythonExtApi = pythonExt.exports;
-        setPythonApi(pythonExtApi);
+        if (!pythonExt.isActive) {
+            pythonExt.activate().then(exports => {
+                setPythonApi(exports);
+                Logger.info("Python Extension API lazily activated and connected.");
+            }).catch(err => {
+                Logger.warn("Failed to lazily activate Python Extension:", err);
+            });
+        } else {
+            pythonExtApi = pythonExt.exports;
+            setPythonApi(pythonExtApi);
+        }
     }
 
     // Config & API
@@ -356,7 +364,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
 
     // Workspace Switching Logic (Now only handles UI updates, not state resets)
     async function switchActiveWorkspace(folder: vscode.WorkspaceFolder) {
-        if (activeWorkspaceFolder?.uri.toString() === folder.uri.toString()) {
+        if (!folder || !folder.uri) return;
+
+        if (activeWorkspaceFolder?.uri?.toString() === folder.uri.toString()) {
             return;
         }
 
@@ -367,12 +377,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
 
         // Notify managers to refresh (Merge logic now handles the multi-root data)
         await discussionManager.initialize();
-        await skillsManager.switchWorkspace(vscode.workspace.workspaceFolders?.[0].uri || folder.uri, context.extensionUri);
+        await skillsManager.switchWorkspace(vscode.workspace.workspaceFolders?.[0]?.uri || folder.uri, context.extensionUri);
         await projectMemoryManager.getMemories();
-        
+
         services.treeProviders.skills?.refresh();
         services.treeProviders.discussion?.refresh();
-        
+
         // Code Graph is specifically allowed to focus on the active folder
         codeGraphManager.setWorkspaceRoot(folder.uri);
         codeGraphManager.setContextSetter((key, value) => {
@@ -433,7 +443,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
             const activeFolder = activeWorkspaceFolder || folders[0];
             const wasOnboarded = context.workspaceState.get<boolean>('lollms_workspace_onboarded', false);
             if (!wasOnboarded) {
-                Logger.info(`[Pipeline] Gate 3: Opening Project Onboarding for '${activeFolder.name}'`);
+                Logger.info(`[Pipeline] Gate 3: Opening Project Onboarding for '${activeFolder?.name}'`);
                 vscode.commands.executeCommand('lollms-vs-coder.showOnboardingWizard', activeFolder);
                 return;
             }
@@ -458,9 +468,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         // It remains unbuilt until the user manually triggers a rebuild or executes a query.
 
         const initial = activeWorkspaceFolder 
-            ? (folders.find(f => f.uri.toString() === activeWorkspaceFolder!.uri.toString()) || folders[0]) 
+            ? (folders.find(f => f && f.uri && f.uri.toString() === activeWorkspaceFolder?.uri?.toString()) || folders[0]) 
             : folders[0];
-        switchActiveWorkspace(initial);
+        if (initial) {
+            switchActiveWorkspace(initial);
+        }
     }
 
     // Re-expose pipeline to webview command registries
@@ -485,29 +497,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         ChatPanel.panels.forEach(panel => panel.updateGeneratingState());   
     }));
 
-    // DELAYED START: Defer non-critical setup to the next event tick.
-    // This allows activate() to return immediately to the VS Code process runner,
-    // avoiding the 10-second Extension Host startup timeout when paused on breakpoints.
+    // DELAYED START: Defer ALL non-critical setups, workspace initializations, and onboarding checks.
+    // This guarantees the activate() function resolves in milliseconds, preventing 10-second warning freezes.
     setImmediate(() => {
-        Logger.info("Lollms: Extension host active. Scheduling background initialization...");
+        Logger.info("Lollms: Extension host registered successfully. Dispatching deferred background initializations...");
         setTimeout(async () => {
-            initializeWorkspace();
+            try {
+                // Initialize active workspace structure in the background
+                initializeWorkspace();
 
-            // Trigger the linear onboarding pipeline on startup
-            await runOnboardingPipeline();
+                // Trigger the linear onboarding pipeline in the background
+                await runOnboardingPipeline();
 
-            // Start the Neural Dream Cycle asynchronously to prevent startup blocks
-            projectMemoryManager.performDreamCycle().then(() => {
-                Logger.info("Dream Cycle complete: Neural memory reorganized.");
-            }).catch((err: any) => {
-                Logger.error("Dream Cycle failed", err);
-            });
+                // Start the Neural Dream Cycle asynchronously
+                projectMemoryManager.performDreamCycle().then(() => {
+                    Logger.info("Dream Cycle complete: Neural memory reorganized.");
+                }).catch((err: any) => {
+                    Logger.error("Dream Cycle failed", err);
+                });
 
-            // --- DEACTIVATE CONFLICTING EXTENSIONS ---
-            if (config.get<boolean>('deactivateConflictingExtensions')) {
-                deactivateConflictingExtensions();
+                // Deactivate conflicting extension modules in the background
+                if (config.get<boolean>('deactivateConflictingExtensions')) {
+                    deactivateConflictingExtensions();
+                }
+            } catch (err: any) {
+                Logger.error("Deferred background initialization failed:", err);
             }
-        }, 3000);
+        }, 3000); // 3-second breathing window for the editor UI to finish painting
     });
 
     return context;

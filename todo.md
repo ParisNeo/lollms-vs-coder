@@ -52,3 +52,36 @@ Make skills md with claude style
 - add a reprompt button that reprompts the llm about the failed hunk updates so it fix that.
 - in dynamic mode, when the applyall failes and auto apply is on, reprompt to fix the unmatched hunks
 - 
+
+
+# New recommendations
+## Context and Memory Management (The Primary Source of CPU & Token Bloat) [OK]
+- O(N²) Search and Verification Overhead:
+Instead of recursively sorting and stringifying large objects on every turn, compute an MD5 or SHA-256 hash of the normalized parameters once upon creation and store it alongside the task metadata.
+
+
+- Synchronous JSON & File Stat Checking inside Ingestion Loops:
+In src/contextManager.ts (inside getContextContent), the code loops over every file in the active context, checks its existence on disk, and optionally reads or parses its contents.
+utilize a cached directory snapshot instead of querying the physical disk on every token recount.
+
+## Webview Rendering and IPC Communication (UI Latency) [OK]
+- Massive JSON Payloads over VS Code's IPC Channel
+In src/commands/chatPanel/chatPanel.ts (inside updateContextAndTokens), the extension packages the full text of all active files and sends it to the webview:
+Lazy-Load Code Previews: Only send the list of file paths to the Webview. When the user clicks to expand a specific file in the Accordion UI, request its content on-demand via a fast postMessage('requestFileContent', filePath) callback.
+String Truncation: Cap the initial preview block sent over IPC to a safe length (e.g., 5,000 characters).
+
+- Redundant Virtual DOM Re-renders in the Webview
+In src/commands/chatPanel/webview/messageRenderer.ts, rendering streaming text chunks triggers complete Markdown and KaTeX math parsing passes:
+Throttle Renditions: Introduce a rendering queue that flushes updates to the DOM at a controlled interval (e.g., every 150ms) rather than on every incoming token chunk.
+
+
+## Resource-Intensive Code Graph Compilation (Network & CPU Load)
+- Eager Graph Compilation on Startup
+src/codeGraphManager.ts can perform heavy parallel parsing during the activation path if not carefully controlled:
+Searching and parsing hundreds of files using regex matching (even with worker threads) consumes significant memory and CPU cycles during the extension's startup sequence.
+Keep the graph build entirely lazy. Do not invoke buildGraph() on startup. Instead, only initiate graph builds when the user opens the "Architecture Graph" tab or explicitly runs a SPARQL-lite structural query.
+
+- Non-incremental Import Path Resolution
+The linkGraphStructure() method in src/codeGraphManager.ts reconstructs the entire network of file nodes and imports from scratch during updates.
+If only one file is modified, rebuilding the entire graph is highly inefficient and scales poorly with codebase size.
+Implement a localized dependency resolver. When a file is updated, remove only its associated outgoing edges and re-link its specific imports, preserving the rest of the in-memory graph.

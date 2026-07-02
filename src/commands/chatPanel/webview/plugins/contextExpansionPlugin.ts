@@ -129,9 +129,9 @@ export const contextExpansionPlugin: TagPlugin = {
             });
         };
 
-        // AUTO-APPLY for File Ingestions in Dynamic/Agent Mode
-        const isAutoExecute = context.capabilities?.autoApply === true || 
-                             context.capabilities?.dynamicMode === true || 
+        // AUTO-APPLY: Strictly restricted to Co-Engineer (Dynamic) or autonomous Agent Mode.
+        // In manual Assistant Mode, file additions must always wait for explicit user validation.
+        const isAutoExecute = context.capabilities?.dynamicMode === true || 
                              context.capabilities?.agentMode === true;
 
         // Strict Safety check: Only auto-apply if:

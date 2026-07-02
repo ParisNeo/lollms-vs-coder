@@ -837,11 +837,14 @@ export class LollmsAPI {
         body = { 
             model, 
             messages: sanitizedMessages, 
-            stream,
-            options: {
-                temperature: options?.temperature
-            }
+            stream
         };
+        // Only append options block if temperature is explicitly requested/provided
+        if (options?.temperature !== undefined) {
+            body.options = {
+                temperature: options.temperature
+            };
+        }
         // Only inject the 'think' key if explicitly requested to avoid 500 on standard models
         if (isThinkingActive) {
             body.think = true;
@@ -860,6 +863,9 @@ export class LollmsAPI {
             system: systemMsg ? systemMsg.content : undefined,
             stream
         };
+        if (options?.temperature !== undefined) {
+            body.temperature = options.temperature;
+        }
         if (isThinkingActive) {
             body.thinking = { type: "enabled", budget_tokens: thinkingBudget };
         }
@@ -868,9 +874,11 @@ export class LollmsAPI {
         body = { 
             model, 
             messages: sanitizedMessages, 
-            stream,
-            temperature: options?.temperature
+            stream
         };
+        if (options?.temperature !== undefined) {
+            body.temperature = options.temperature;
+        }
         if (isThinkingActive) {
             // OpenAI o1/o3 style
             body.max_completion_tokens = thinkingBudget;

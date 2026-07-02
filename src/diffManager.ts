@@ -59,6 +59,12 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
                         const panel = ChatPanel.panels.get(discussionId);
                         if (panel) {
                             panel._panel.reveal();
+                            // Notify webview to collapse all blocks associated with the saved file path
+                            const relativeSavedPath = vscode.workspace.asRelativePath(originalUri);
+                            panel._panel.webview.postMessage({
+                                command: 'fileSavedOnDisk',
+                                filePath: relativeSavedPath
+                            });
                         } else {
                             vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', discussionId);
                         }

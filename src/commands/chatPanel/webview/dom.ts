@@ -49,6 +49,7 @@ export interface DiscussionCapabilities {
     fileSelect: boolean;
     fileReset: boolean;
     imageGen: boolean;
+    enableImages: boolean;
     enableTTS: boolean;
     enableSTT: boolean;
     webSearch: boolean;
@@ -92,6 +93,8 @@ export interface DiscussionCapabilities {
     profileType?: 'vibe' | 'agentic';
     sparqlEnabled?: boolean; // Control background code graph indexing
     grepEnabled?: boolean;   // Control background ripgrep indexing
+    enableTemperature?: boolean; // Enabled state for custom temperature override
+    temperature?: number;
     guiState?: {
         agentBadge: boolean;
         debugBadge: boolean;
@@ -231,6 +234,8 @@ export const dom = {
     get addAiMessageBtn() { return document.getElementById('add-ai-message-btn') as HTMLButtonElement; },
     get tempSlider() { return document.getElementById('temp-slider') as HTMLInputElement; },
     get tempValDisplay() { return document.getElementById('temp-val-display') as HTMLDivElement; },
+    get toggleTempSliderBtn() { return document.getElementById('toggleTempSliderBtn') as HTMLButtonElement; },
+    get inputTempContainer() { return document.getElementById('inputTempContainer') as HTMLDivElement; },
     get copyContextButton() { return document.getElementById('copyContextButton') as HTMLButtonElement; },
     get statusLabel() { return document.getElementById('status-label') as HTMLDivElement; },
     get hudMatrixBtn() { return document.getElementById('hud-matrix-btn') as HTMLButtonElement; },

@@ -43,9 +43,14 @@ export interface MemoryEntry {
     category: string;
     tier: MemoryTier;
     scope: 'local' | 'global';
-    origin?: 'architect' | 'agent' | 'user'; // Track who created the engram
+    origin?: 'architect' | 'agent' | 'user' | 'system'; // Track who created the engram
     predicates?: MemoryPredicate[]; // Upgraded Graph Relationship links
     lastAudited?: number; // Timestamp of last successful AI semantic audit
+
+    // --- EPISODIC CONTEXT ANCHORS ---
+    discussionId?: string;       // Causal chat session ID where this was learned
+    triggerPrompt?: string;      // The specific user prompt/error that caused this write
+    historicalLog?: string[];    // Chronological trail: ["Date: Created...", "Date: Refined..."]
 
     // --- MULTIMODAL RESEARCH METADATA ---
     metadata?: {
@@ -189,34 +194,52 @@ export class ProjectMemoryManager {
         let globalEntries: MemoryEntry[] = [];
 
         // 1. Read Project-specific Memories
+        let projectFileExists = false;
         try {
-            const content = await vscode.workspace.fs.readFile(projectMemoryPath);
-            const data = JSON.parse(Buffer.from(content).toString('utf8'));
-            projectEntries = Array.isArray(data) ? data : [];
-            projectEntries.forEach(e => e.scope = 'local');
-        } catch (error) {
-            projectEntries = [];
-        }
+            await vscode.workspace.fs.stat(projectMemoryPath);
+            projectFileExists = true;
+        } catch {}
 
-        if (projectEntries.length === 0) {
+        if (projectFileExists) {
+            try {
+                const content = await vscode.workspace.fs.readFile(projectMemoryPath);
+                const data = JSON.parse(Buffer.from(content).toString('utf8'));
+                projectEntries = Array.isArray(data) ? data : [];
+                projectEntries.forEach(e => e.scope = 'local');
+            } catch (error: any) {
+                Logger.error(`Failed to read or parse project_memory.json: ${error.message}`);
+                // Restore in-memory cache to prevent writing an empty state over a corrupt file
+                projectEntries = this._cache.filter(e => e.scope !== 'global');
+            }
+        } else {
             try {
                 const dir = vscode.Uri.joinPath(projectMemoryPath, '..');
                 await vscode.workspace.fs.createDirectory(dir);
-                // Initialize with a clean, empty ABox instance array
+                // Initialize with a clean, empty ABox instance array ONLY if the file did not exist
                 await vscode.workspace.fs.writeFile(projectMemoryPath, Buffer.from('[]', 'utf8'));
+                projectEntries = [];
             } catch (e) {
                 Logger.error("Failed to initialize empty memory vault", e);
             }
         }
 
         // 2. Read Global Cross-project Memories
+        let globalFileExists = false;
         try {
-            const content = await vscode.workspace.fs.readFile(globalMemoryPath);
-            const data = JSON.parse(Buffer.from(content).toString('utf8'));
-            globalEntries = Array.isArray(data) ? data : [];
-            globalEntries.forEach(e => e.scope = 'global');
-        } catch (error) {
-            globalEntries = [];
+            await vscode.workspace.fs.stat(globalMemoryPath);
+            globalFileExists = true;
+        } catch {}
+
+        if (globalFileExists) {
+            try {
+                const content = await vscode.workspace.fs.readFile(globalMemoryPath);
+                const data = JSON.parse(Buffer.from(content).toString('utf8'));
+                globalEntries = Array.isArray(data) ? data : [];
+                globalEntries.forEach(e => e.scope = 'global');
+            } catch (error: any) {
+                Logger.error(`Failed to read or parse global_memory.json: ${error.message}`);
+                globalEntries = this._cache.filter(e => e.scope === 'global');
+            }
         }
 
         let combined = [...projectEntries, ...globalEntries];
@@ -301,6 +324,103 @@ export class ProjectMemoryManager {
         return this._cache;
     }
 
+    /**
+     * AGM Belief Revision Arbiter (Write-Time AUDN Pipeline)
+     * Compares incoming candidate memories against existing engrams to identify
+     * logical contradictions, redundancies, or potential refinements.
+     * Incorporates detailed episodic metadata inside the comparisons.
+     */
+    private async resolveBeliefInconsistency(
+        candidateId: string,
+        candidateTitle: string,
+        candidateContent: string,
+        candidateCategory: string,
+        scope: 'local' | 'global',
+        activeDiscussionId: string,
+        activeTriggerPrompt: string
+    ): Promise<{ action: 'add' | 'update' | 'supersede' | 'none'; targetId?: string; mergedContent?: string; mergedTitle?: string }> {
+        if (!this.lollmsAPI || this._cache.length === 0) {
+            return { action: 'add' };
+        }
+
+        // Filter out tags and templates to only compare semantic facts
+        const activeFacts = this._cache.filter(m => 
+            m.category !== 'tag' && 
+            m.category !== 'concept' && 
+            m.category !== 'chunk' && 
+            !m.id.startsWith('concept_template_') &&
+            m.id !== candidateId
+        );
+
+        if (activeFacts.length === 0) {
+            return { action: 'add' };
+        }
+
+        const systemPrompt = `You are the Sovereign AGM Belief Revision Arbiter.
+Your sole job is to maintain the logical consistency of our Project Knowledge Graph.
+You are comparing a NEW candidate engram against our EXISTING database of technical facts.
+
+### 📜 CONFLICT RESOLUTION RULES:
+1. **CONTRADICTION**: If the new engram directly contradicts an existing fact (e.g., "Use SQLite" vs "Use PostgreSQL"), select "supersede". The newer fact will replace the older one.
+2. **REFINEMENT/MERGE**: If the new engram provides more detail, updates, or complements an existing fact on the same topic, select "update" and provide a merged, cohesive content block that preserves both old and new facts.
+3. **REDUNDANCY**: If the new engram is already fully captured, duplicated, or implied by an existing fact with no new informational gain, select "none".
+4. **COMPATIBILITY**: If the new engram is entirely compatible and refers to a different topic, select "add".
+
+Output ONLY valid JSON. No conversational chatter.
+{
+  "action": "add" | "update" | "supersede" | "none",
+  "targetId": "ID_of_conflicting_or_refined_existing_node",
+  "mergedTitle": "New title if merging or superseding (2-4 words)",
+  "mergedContent": "Consolidated content if merging/updating. For superseding, provide the clean new content."
+}`;
+
+        const contextBlock = activeFacts.map(f => {
+            const episodicStr = f.historicalLog && f.historicalLog.length > 0 
+                ? `\n  Episodic Trail:\n  ${f.historicalLog.join('\n  ')}`
+                : "";
+            return `- ID: "${f.id}"\n  Category: "${f.category}"\n  Title: "${f.title}"\n  Content: "${f.content}"${episodicStr}`;
+        }).join('\n\n');
+
+        const userPrompt = `### EXISTING FACT STORAGE
+${contextBlock}
+
+### NEW CANDIDATE ENGRAM
+ID: "${candidateId}"
+Category: "${candidateCategory}"
+Title: "${candidateTitle}"
+Content: "${candidateContent}"
+Learned in Session: "${activeDiscussionId}"
+Trigger Prompt: "${activeTriggerPrompt}"
+
+Evaluate the candidate and return your AUDN verdict:`;
+
+        try {
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const dreamModel = config.get<string>('dreamModelName') || undefined;
+
+            const response = await this.lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ], null, undefined, dreamModel, { thinking: false });
+
+            const cleanJson = stripThinkingTags(response).trim().replace(/```json|```/g, '').trim();
+            const decision = JSON.parse(cleanJson);
+
+            if (['update', 'supersede', 'none'].includes(decision.action)) {
+                return {
+                    action: decision.action,
+                    targetId: decision.targetId,
+                    mergedContent: decision.mergedContent,
+                    mergedTitle: decision.mergedTitle
+                };
+            }
+        } catch (e) {
+            Logger.warn("[Belief Revision] Arbiter failed, defaulting to additive write.", e);
+        }
+
+        return { action: 'add' };
+    }
+
     public async updateMemory(
         action: 'add' | 'update' | 'delete', 
         id: string, 
@@ -313,22 +433,23 @@ export class ProjectMemoryManager {
     ) {
         await this.getMemories();
 
-        // --- IMPORTANCE NORMALIZATION ---
-        let finalImportance = importance;
-        if (finalImportance !== undefined && finalImportance <= 5.0 && finalImportance > 0) {
+        // Normalize importance values
+        let finalImportance = importance !== undefined ? importance : 90;
+        if (finalImportance <= 5.0 && finalImportance > 0) {
             finalImportance = finalImportance * 20; 
         }
+        finalImportance = Math.max(0, Math.min(100, finalImportance));
+
+        const finalScope = scope || (id.startsWith('global_') || ['user', 'global'].includes(category) ? 'global' : 'local');
 
         if (action === 'delete') {
             this._cache = this._cache.filter(m => m.id !== id);
-            // Cascading deletion of orphan relations
             this._cache.forEach(m => {
                 if (m.predicates) {
                     m.predicates = m.predicates.filter(p => p.targetId !== id);
                 }
             });
         } else {
-            const index = this._cache.findIndex(m => m.id === id);
             const targetContent = content || "";
             let targetPredicates = predicates || [];
 
@@ -338,7 +459,6 @@ export class ProjectMemoryManager {
             const extractedTags = new Set<string>();
             while ((match = tagRegex.exec(targetContent)) !== null) {
                 const tag = match[1].toLowerCase();
-                // Enforce meaningful non-numeric tags
                 if (isValidSemanticTag(tag)) {
                     extractedTags.add(tag);
                 }
@@ -353,7 +473,7 @@ export class ProjectMemoryManager {
                 }
             });
 
-            // Strip invalid predicates
+            // Strip invalid tag predicates
             targetPredicates = targetPredicates.filter(p => {
                 if (p.verb === 'has_tag' && p.targetId.startsWith('tag_')) {
                     const tagLabel = p.targetId.substring(4);
@@ -369,39 +489,104 @@ export class ProjectMemoryManager {
                 }
             });
 
-            // Infer scope: default to global if category is user/global or explicitly requested
-            const finalScope = scope || (id.startsWith('global_') || ['user', 'global'].includes(category) ? 'global' : 'local');
+            // --- DYNAMIC EPISODIC ANCHORS RECOVERY ---
+            const { ChatPanel } = require('./commands/chatPanel/chatPanel');
+            const activePanel = ChatPanel.currentPanel;
+            const activeDiscussion = activePanel?.getCurrentDiscussion();
+            const activeDiscussionId = activeDiscussion?.id || "unspecified_chat_session";
+
+            // Extract the last prompt message text as the episodic trigger
+            const lastMessageObj = activeDiscussion?.messages ? [...activeDiscussion.messages].reverse().find(m => m.role === 'user') : null;
+            const activeTriggerPrompt = lastMessageObj 
+                ? (typeof lastMessageObj.content === 'string' ? lastMessageObj.content : 'Multi-modal instruction')
+                : 'Manual user creation';
+
+            const originRole = lastMessageObj ? 'agent' : 'user';
+
+            // --- LIVE BELIEF REVISION CHECK (AUDN Gating) ---
+            let finalId = id;
+            let finalTitle = title || id;
+            let finalWriteContent = targetContent;
+            let currentHistoricalLog: string[] = [];
+
+            if (action === 'add') {
+                const audit = await this.resolveBeliefInconsistency(id, finalTitle, targetContent, category, finalScope, activeDiscussionId, activeTriggerPrompt);
+
+                if (audit.action === 'none') {
+                    Logger.info(`[Belief Revision] Ignored redundant memory addition: "${finalTitle}"`);
+                    return; // Short-circuit, ignore write
+                }
+
+                if (audit.action === 'update' && audit.targetId) {
+                    // Update / Refine existing node instead of adding a new one
+                    finalId = audit.targetId;
+                    finalTitle = audit.mergedTitle || finalTitle;
+                    finalWriteContent = audit.mergedContent || finalWriteContent;
+                    action = 'update';
+                    Logger.info(`[Belief Revision] Refined existing engram node '${finalId}' with new information.`);
+                } else if (audit.action === 'supersede' && audit.targetId) {
+                    // Supersede existing node: old node is marked as superseded, and new node links to it
+                    const targetIdx = this._cache.findIndex(m => m.id === audit.targetId);
+                    if (targetIdx !== -1) {
+                        const oldNode = this._cache[targetIdx];
+
+                        // We do not physically delete, we mark as superseded (preserving history/monotonicity)
+                        oldNode.importance = 10; // Archive immediately to deep latent memory
+                        oldNode.title = `[SUPERSEDED] ${oldNode.title}`;
+                        oldNode.content = `[SUPERSEDED on ${new Date().toLocaleDateString()} by ${finalId}]\n\n${oldNode.content}`;
+                        oldNode.category = 'archive';
+
+                        // Keep the old node's historical log and append the supersession event
+                        if (!oldNode.historicalLog) oldNode.historicalLog = [];
+                        oldNode.historicalLog.push(`[${new Date().toISOString()}] Superseded by ${finalId} in session ${activeDiscussionId}`);
+
+                        // Add s:supersedes edge pointing from the new engram to the old one
+                        targetPredicates.push({ verb: 'supersedes', targetId: oldNode.id });
+                        Logger.info(`[Belief Revision] Engram '${finalId}' has successfully superseded older engram '${oldNode.id}'.`);
+                    }
+                }
+            }
+
+            const index = this._cache.findIndex(m => m.id === finalId);
 
             if (index === -1) {
-                // ADD or UPSERT
+                // ADD (Fresh Episodic Creation)
+                currentHistoricalLog = [
+                    `[${new Date().toISOString()}] Created as ${category} engram in session ${activeDiscussionId} by ${originRole}. Trigger: "${activeTriggerPrompt.substring(0, 50)}..."`
+                ];
+
                 this._cache.push({
-                    id,
-                    title: title || id,
-                    content: targetContent,
+                    id: finalId,
+                    title: finalTitle,
+                    content: finalWriteContent,
                     timestamp: Date.now(),
-                    importance: finalImportance !== undefined ? Math.max(0, Math.min(100, finalImportance)) : 50,
+                    importance: finalImportance,
                     lastUsed: Date.now(),
                     category: category,
                     tier: 1,
                     scope: finalScope,
+                    origin: originRole,
+                    discussionId: activeDiscussionId,
+                    triggerPrompt: activeTriggerPrompt,
+                    historicalLog: currentHistoricalLog,
                     predicates: targetPredicates
                 });
             } else {
-                // UPDATE
+                // UPDATE (Episodic Refinement)
                 const entry = this._cache[index];
-                if (title) entry.title = title;
-                entry.content = targetContent;
+                entry.title = finalTitle;
+                entry.content = finalWriteContent;
                 entry.predicates = targetPredicates;
                 entry.scope = finalScope;
-
-                if (finalImportance !== undefined) {
-                    entry.importance = Math.max(0, Math.min(100, finalImportance));
-                } else {
-                    entry.importance = Math.min(100, (entry.importance || 0) + 10);
-                }
-
+                entry.importance = Math.max(entry.importance, finalImportance); // Preserve/boost highest importance
                 entry.timestamp = Date.now();
                 entry.lastUsed = Date.now();
+
+                // Append the refinement action to the node's historical episodic log
+                if (!entry.historicalLog) entry.historicalLog = [];
+                entry.historicalLog.push(
+                    `[${new Date().toISOString()}] Refined in session ${activeDiscussionId}. Causal prompt: "${activeTriggerPrompt.substring(0, 50)}..."`
+                );
             }
 
             // Create tag nodes in the same scope
@@ -1148,7 +1333,7 @@ Provide your audit verdict based on the TBox schema and sanitization rules.`;
             }
         }
 
-        // --- PHASE 3: VECTORIZED SYNAPTIC FUSION (AI CONSOLIDATION) ---
+        // --- PHASE 3: EPISODIC SYNAPTIC FUSION (AI CONSOLIDATION) ---
         if (lollms && updatedEngrams.length >= 2) {
             if (onProgress) onProgress({ type: 'fuse', title: "Analyzing semantic duplicates (Vectorization)..." });
 
@@ -1323,11 +1508,30 @@ Category: "${engramB.category}"
                                 }
                             });
 
-                            // Update the kept node with merged text and relationships
+                            // --- EPISODIC LOG MERGER ---
+                            // Fuse the chronological records of both engrams into a single coherent timeline
+                            const keepLog = engramToKeep.historicalLog || [];
+                            const deleteLog = engramToDelete.historicalLog || [];
+                            const mergedLog = [...keepLog, ...deleteLog];
+
+                            // Sort logs chronologically by extracting ISO-timestamp prefix if possible
+                            mergedLog.sort((a, b) => {
+                                const matchA = a.match(/\[(.*?)\]/);
+                                const matchB = b.match(/\[(.*?)\]/);
+                                if (matchA && matchB) {
+                                    return new Date(matchA[1]).getTime() - new Date(matchB[1]).getTime();
+                                }
+                                return 0;
+                            });
+
+                            mergedLog.push(`[${new Date().toISOString()}] Consolidated/Fused duplicate engram '${deleteId}' into '${keepId}' during Dream Cycle.`);
+
+                            // Update the kept node with merged text, relationships, and history
                             engramToKeep.title = result.title;
                             engramToKeep.content = result.content;
                             engramToKeep.category = result.category;
                             engramToKeep.predicates = mergedPredicates;
+                            engramToKeep.historicalLog = mergedLog;
                             engramToKeep.importance = Math.min(100, Math.max(engramToKeep.importance, engramToDelete.importance) + 5); // Boost importance on fusion
                             engramToKeep.timestamp = Date.now();
 

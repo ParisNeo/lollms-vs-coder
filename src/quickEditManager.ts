@@ -21,10 +21,14 @@ export class QuickEditManager {
     ) {}
 
     public async triggerQuickEdit() {
+        const activeEditor = vscode.window.activeTextEditor;
         const panel = CompanionPanel.createOrShow(
             vscode.extensions.getExtension('parisneo.lollms-vs-coder')!.extensionUri, 
             "Lollms Companion"
         );
+        if (activeEditor && activeEditor.document.uri.scheme === 'file') {
+            panel.setActiveEditor(activeEditor);
+        }
 
         this.panelDisposables.forEach(d => d.dispose());
         this.panelDisposables = [];
@@ -94,9 +98,9 @@ export class QuickEditManager {
                 const startLine = selection.start.line;
                 const endLine = selection.end.line;
                 const startContextLine = Math.max(0, startLine - contextLines);
+                const endContextLine = Math.min(document.lineCount - 1, endLine + contextLines);
                 const rangeBefore = new vscode.Range(new vscode.Position(startContextLine, 0), selection.start);
                 const contextBefore = document.getText(rangeBefore);
-                const endContextLine = Math.min(document.lineCount - 1, endLine + contextLines);
                 const rangeAfter = new vscode.Range(selection.end, new vscode.Position(endContextLine, document.lineAt(endContextLine).text.length));
                 const contextAfter = document.getText(rangeAfter);
 
@@ -106,31 +110,26 @@ export class QuickEditManager {
                             `**Selected Code:**\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
                             (contextAfter ? `**Context After Selection:**\n\`\`\`${languageId}\n${contextAfter}\n\`\`\`\n\n` : '') +
                             `**Instruction/Question:** "${instruction}"\n\n`;
+
+                if (isNotebook && notebookContext) {
+                    prompt = `**NOTEBOOK CONTEXT (Preceding Cells):**\n${notebookContext}\n\n` + prompt;
+                }
+
+                prompt += `\n**COMPLIANCE RULES:**\n` +
+                          `1. Use AIDER SEARCH/REPLACE blocks for surgical modifications to the active file.\n` +
+                          `2. Use FULL FILE blocks if you need to rewrite more than 50% of the file.\n` +
+                          `3. You may use the available tools to search the workspace, run queries, or find code.`;
             } else {
-                const position = selection.active;
-                const startContextLine = Math.max(0, position.line - contextLines);
-                const endContextLine = Math.min(document.lineCount - 1, position.line + contextLines);
-                const rangeBefore = new vscode.Range(new vscode.Position(startContextLine, 0), position);
-                const contextBefore = document.getText(rangeBefore);
-                const rangeAfter = new vscode.Range(position, new vscode.Position(endContextLine, document.lineAt(endContextLine).text.length));
-                const contextAfter = document.getText(rangeAfter);
-                
-                prompt = `I am working on the file \`${relativePath}\` (${languageId}).\n\n` +
-                            `The cursor is at line ${position.line + 1}, column ${position.character + 1}.\n\n` +
-                            (contextBefore ? `**Context Before Cursor:**\n\`\`\`${languageId}\n${contextBefore}\n\`\`\`\n\n` : '') +
-                            `**[CURSOR IS HERE]**\n\n` +
-                            (contextAfter ? `**Context After Cursor:**\n\`\`\`${languageId}\n${contextAfter}\n\`\`\`\n\n` : '') +
-                            `**Instruction/Question:** "${instruction}"\n\n`;
+                // Conversational/Casual mode when no text is selected
+                prompt = `I am discussing casually with you. I do not have any code selected to modify.\n\n` +
+                         `Current active file in editor (for your reference only): \`${relativePath}\` (${languageId}).\n\n` +
+                         `**My Question / Message:** "${instruction}"\n\n` +
+                         `**COMPLIANCE RULES (MANDATORY):**\n` +
+                         `1. DO NOT output any AIDER search/replace blocks or modify any files on disk.\n` +
+                         `2. DO NOT use namespaced code blocks (e.g., do NOT use \` \` \`lang:path\`).\n` +
+                         `3. If you write code examples, use standard, non-namespaced markdown blocks (e.g., \` \` \`python or \` \` \`javascript) so they do not trigger any file writes.\n` +
+                         `4. Just answer my question casually, friendly, and helpfully as a senior mentor.`;
             }
-
-            if (isNotebook && notebookContext) {
-                prompt = `**NOTEBOOK CONTEXT (Preceding Cells):**\n${notebookContext}\n\n` + prompt;
-            }
-
-            prompt += `\n**COMPLIANCE RULES:**\n` +
-                      `1. Use AIDER SEARCH/REPLACE blocks for surgical modifications to the active file.\n` +
-                      `2. Use FULL FILE blocks if you need to rewrite more than 50% of the file.\n` +
-                      `3. You may use the available tools to search the workspace, run queries, or find code.`;
 
             // --- SOVEREIGN SUB-GRAPH EXTRACTION ---
             // Only extract complex codebase relationships if the graph is already compiled.
@@ -202,19 +201,9 @@ You are an expert Jupyter Notebook assistant.
 `;
             }
 
-            let systemPrompt = systemPromptContent;
-
-            // Equivocate the Companion to the full toolbelt for deep workspace reconnaissance
-            const equippedTools = this.contextManager['toolManager']?.getEnabledTools() || [];
-            if (equippedTools.length > 0) {
-                const toolDescriptions = equippedTools.map(t => `- **${t.name}**: ${t.description}`).join('\n');
-                systemPrompt += `\n\n### 🔌 EQUIPPED WORKSPACE TOOLS\nYou can execute any of these tools autonomously to gain intelligence or apply files. Reply ONLY with a single valid JSON block to call a tool:\n` +
-                    `\`\`\`json\n{"tool": "tool_name", "params": { ... }}\n\`\`\`\n\n` +
-                    `**AVAILABLE TOOLS:**\n${toolDescriptions}`;
-            }
-
+            // Companion is strictly conversational/non-agentic: No tools described or executed.
             const messages: ChatMessage[] = [
-                { role: 'system', content: systemPrompt },
+                { role: 'system', content: systemPromptContent },
                 { role: 'user', content: prompt }
             ];
 
@@ -233,60 +222,17 @@ You are an expert Jupyter Notebook assistant.
             }
 
             let finalResponse = "";
-            let toolCallLimit = 8; // Extended tool execution budget
-            
             const controller = new AbortController(); 
 
             panel._panel.webview.postMessage({ command: 'clearResponse' });
 
-            while (toolCallLimit > 0) {
-                let currentChunkBuffer = "";
-                let firstToken = false;
+            finalResponse = await this.lollmsAPI.sendChat(messages, (chunk) => {
+                panel._panel.webview.postMessage({ command: 'appendChunk', text: chunk });
+            }, controller.signal);
 
-                const response = await this.lollmsAPI.sendChat(messages, (chunk) => {
-                    if (!firstToken) {
-                        firstToken = true;
-                    }
-                    currentChunkBuffer += chunk;
-
-                    // Stream raw, un-stripped chunks directly so the Webview can parse thoughts dynamically
-                    panel._panel.webview.postMessage({ command: 'appendChunk', text: chunk });
-                }, controller.signal);
-
-                const { content: cleanedResponse, memory = null } = extractAndStripMemory(stripThinkingTags(response));
-                if (memory) {
-                    await this.memoryManager.updateMemory(memory);
-                }
-
-                // Intercept tool calls autonomously
-                const toolMatch = cleanedResponse.match(/```json\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*```/);
-
-                if (equippedTools.length > 0 && toolMatch) {
-                    try {
-                        const toolCall = JSON.parse(toolMatch[1]);
-                        const tool = equippedTools.find(t => t.name === toolCall.tool);
-
-                        if (tool) {
-                            messages.push({ role: 'assistant', content: response });
-
-                            const env: ToolExecutionEnv = {
-                                lollmsApi: this.lollmsAPI,
-                                contextManager: this.contextManager,
-                                currentPlan: null,
-                            };
-
-                            panel._panel.webview.postMessage({ command: 'appendChunk', text: `\n\n⚙️ **Executing tool: \`${tool.name}\`...**\n` });
-                            const result = await tool.execute(toolCall.params, env, controller.signal);
-                            messages.push({ role: 'system', content: `Tool Output (${tool.name}):\n${result.output}` });
-
-                            toolCallLimit--;
-                            continue;
-                        }
-                    } catch (e) { }
-                }
-
-                finalResponse = response; // Preserving raw response for history
-                break;
+            const { content: cleanedResponse, memory = null } = extractAndStripMemory(stripThinkingTags(finalResponse));
+            if (memory) {
+                await this.memoryManager.updateMemory(memory);
             }
 
             // Sync with history drawer and set final completed layout with copy/insert/replace controls

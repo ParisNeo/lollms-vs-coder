@@ -149,6 +149,7 @@ export class DiscussionManager {
             documentationMode: config.get<boolean>('documentationMode') ?? false,
             maxDebugSteps: 10, 
             autoSkillMode: false,
+            enableTemperature: false, // Default off (meaning we do not send any temperature)
             temperature: config.get<number>('temperature') ?? 0.7,
             ttftTimeout: 0,
             interTokenTimeout: 0,

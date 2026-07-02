@@ -849,9 +849,9 @@ export class ChatPanel {
         }));
 
         const workspaceFolders = (vscode.workspace.workspaceFolders ||[]).map(f => ({
-            name: f.name,
-            uri: f.uri.toString()
-        }));
+            name: f?.name || "Workspace",
+            uri: f?.uri?.toString() || ""
+        })).filter(item => item.uri !== "");
 
         const { AGENT_MISSION_PROFILES } = require('../../registries/agentProfiles');
         this._panel.webview.postMessage({ 
@@ -861,7 +861,7 @@ export class ChatPanel {
             agentMode: !!this._discussionCapabilities.agentMode,
             appliedState: this._currentDiscussion.appliedState || {},
             currentModel: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
-            currentTemperature: this._discussionCapabilities.temperature ?? config.get<number>('temperature') ?? 0.7,
+            currentTemperature: this._discussionCapabilities.enableTemperature ? (this._discussionCapabilities.temperature ?? 0.7) : undefined,
             workspaceFolders: workspaceFolders,
             agentProfiles: AGENT_MISSION_PROFILES
         });
@@ -976,7 +976,9 @@ export class ChatPanel {
 
         // Non-blocking deferred calculations to prevent UI render blocking
         setTimeout(() => {
-            this.updateContextAndTokens({ isBackgroundSync: true });
+            // Only trigger calculation if we have no cached metrics, or run it quietly as a background sync
+            const hasCachedMetrics = !!this._currentDiscussion?.lastTokenMetrics;
+            this.updateContextAndTokens({ isBackgroundSync: hasCachedMetrics });
             this._fetchAndSetModels(false);
         }, 10);
     }
@@ -1204,6 +1206,20 @@ export class ChatPanel {
                                 }
                             });
                         }
+                    },
+                    onScanProgress: (pct: number, status: string) => {
+                        if (!this._isDisposed && this._panel.webview) {
+                            this._panel.webview.postMessage({
+                                command: 'tokenCalculationProgress',
+                                progress: pct,
+                                status: status
+                            });
+                            this._panel.webview.postMessage({
+                                command: 'updateLoaderStatus',
+                                status: `${status}...`,
+                                stats: { files: -1, tokens: -1 }
+                            });
+                        }
                     }
                 });
 
@@ -1226,6 +1242,23 @@ export class ChatPanel {
                 const contextTextForUI = context.text.length > UI_PREVIEW_LIMIT
                     ? context.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Truncated for UI performance. Total: ${context.text.length} chars]`
                     : context.text;
+
+                const { estimateImageTokens } = require('../../utils');
+
+                const historyText = this._currentDiscussion!.messages.map(msg => {
+                    const content = msg.content;
+                    if (typeof content === 'string') return content;
+                    if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => item.text).join('\n');
+                    return '';
+                }).join('\n');
+
+                // --- MOVED: Extract Project Memory early for tokenization ---
+                const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
+                    ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, this._skillsManager)
+                    : "";
+
+                const rawBriefing = this._currentDiscussion?.discussion_data_zone || "";
+                briefingText = (rawBriefing.startsWith('{')) ? this._contextManager.renderBriefing(this._currentDiscussion) : rawBriefing;
 
                 if (!this._isDisposed) {
                     // Scan .lollms/selection/ folder for saved selections
@@ -1264,28 +1297,8 @@ export class ChatPanel {
                 }
                 this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
 
-                // --- MOVED: Extract Project Memory early for tokenization ---
-                const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
-                    ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, this._skillsManager)
-                    : "";
-
-                const rawBriefing = this._currentDiscussion?.discussion_data_zone || "";
-                briefingText = (rawBriefing.startsWith('{')) ? this._contextManager.renderBriefing(this._currentDiscussion) : rawBriefing;
-
                 this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
                 this._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
-
-                const { estimateImageTokens } = require('../../utils');
-
-                const personaContent = this.getCurrentPersonaSystemPrompt();
-                const systemText = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, false, { ...context, tree: '', files: '', memory: projectMemory });
-
-                const historyText = this._currentDiscussion!.messages.map(msg => {
-                    const content = msg.content;
-                    if (typeof content === 'string') return content;
-                    if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => item.text).join('\n');
-                    return '';
-                }).join('\n');
 
                 let imageTokens = 0;
                 const visionEnabled = this._discussionCapabilities.enableImages !== false;
@@ -2773,7 +2786,7 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             history = allMessages;
         }
 
-        // --- DYNAMIC MODE LOOP LAYER ---
+        // --- CO-ENGINEER (DYNAMIC) MODE LOOP LAYER ---
         const isDynamicMode = this._discussionCapabilities.dynamicMode === true;
         const originalIncludedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles() || [];
 
@@ -2790,367 +2803,6 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
 
         // Keep local reference to allow updates to the same bubble
         let currentFullResponseBuffer = "";
-
-        const runTurn = async () => {
-            if (controller?.signal.aborted || currentTurnIndex >= maxTurnsLimit) return;
-            currentTurnIndex++;
-
-            if (consecutiveFailsCount >= maxFailsAllowed) {
-                const finalErrorMsg = `🛑 **DYNAMIC MODE TERMINATED**: Receeded maximum self-correction retries (${maxFailsAllowed}). The model keeps repeating failing actions. Please adjust your prompt, add more context manually, or switch to Assistant mode.`;
-                currentFullResponseBuffer += `\n\n<div class="message system-message" style="border-left-color:var(--vscode-charts-red); background:rgba(244,71,71,0.05); padding:10px 15px; border-radius:8px; margin-top:10px;">${finalErrorMsg}</div>\n\n`;
-                await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
-                return;
-            }
-
-            const currentData = await this._contextManager.getContextContent({ 
-                importedSkillIds: importedIds,
-                includeTree: !isContextMuted,
-                modelName: targetModel 
-            });
-
-            // --- 🔋 ACTIVE TOKEN ECONOMY GATE ---
-            // If the current context size exceeds 85% of the model's limit, intercept the run
-            // and force the LLM to prune files using remove_files before proceeding.
-            const tokenCheck = await this._lollmsAPI.tokenize(currentData.text, targetModel);
-            const limitCheck = await this._lollmsAPI.getContextSize(targetModel);
-            const usageRatio = tokenCheck.count / limitCheck.context_size;
-
-            if (usageRatio > 0.85) {
-                this.log(`[Token Economy] Active context at ${Math.round(usageRatio * 100)}% (${tokenCheck.count}/${limitCheck.context_size} tokens). Forcing prune.`);
-                const warningMsg = `⚠️ **TOKEN BUDGET EXCEEDED**: Your active context has reached **${Math.round(usageRatio * 100)}%** capacity. 
-
-You are FORBIDDEN from requesting more files or running complex tools. 
-You MUST use the \`remove_files\` tool (or \`<remove_files_from_context>\` tag) to remove at least 2-3 files that are no longer necessary for this step before you can proceed.`;
-
-                currentFullResponseBuffer += `\n\n<div class="message system-message" style="border-left-color:var(--vscode-charts-red); background:rgba(244,71,71,0.05); padding:10px 15px; border-radius:8px; margin-top:10px;">${warningMsg}</div>\n\n`;
-                await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
-
-                // Add warning to history so LLM is aware
-                completedDynamicActions.push(`⚠️ WARNING: Exceeded 85% token budget. Forced to prune.`);
-            }
-
-            // Format scratchpad near the end of the user message to maximize attention weight
-            const scratchpadBlock = completedDynamicActions.length > 0 
-                ? `\n### 🧠 MEMORY SCRATCHPAD (YOUR COMPLETED RESEARCH STEPS)\n` + 
-                  completedDynamicActions.map((a, i) => `${i+1}. ${a}`).join('\n')
-                : "";
-
-            const isFinalTurn = currentTurnIndex > 1 && !currentFullResponseBuffer.match(/<(add_files_to_context|query_architecture|lollms_tool|search_web)/);
-            const isCodeUpdate = typeof message.content === 'string' && (message.content.toLowerCase().includes('fix') || message.content.toLowerCase().includes('update') || message.content.toLowerCase().includes('write'));
-
-            const profileId = (isFinalTurn && isCodeUpdate) ? (this._discussionCapabilities.responseProfileId || 'structured') : 'minimalist';
-            const activeProfile = (config.get('responseProfiles') || []).find((p: any) => p.id === profileId) || { name: 'Minimalist', systemPrompt: '' };
-
-            const finalBaseInstructions = await getProcessedSystemPrompt(
-                'chat', 
-                this._discussionCapabilities, 
-                personaContent + `\n\n${activeProfile.systemPrompt}`, 
-                undefined, 
-                forceFullCode, 
-                { 
-                    ...context, 
-                    tree: !isContextMuted ? contextData.projectTree : '', 
-                    files: contextData.selectedFilesContent, 
-                    projectName: contextData.projectName,
-                    toolManager: this.agentManager?.['toolManager']
-                } 
-            );
-
-            const dynamicPromptUserText = `
-### 📂 TARGET CONTEXT
-${contextData.selectedFilesContent || "(Context empty - use add_files_to_context to load relevant files)"}
-${scratchpadBlock}
-
-**USER OBJECTIVE:** ${typeof message.content === 'string' ? message.content : 'Proceed with mission.'}
-${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.*" : "\n*Decide if you need to load files, search the web, or run SPARQL before writing code.*"}`;
-
-            const turnMessages: ChatMessage[] = [
-                { role: 'system', content: finalBaseInstructions },
-                ...history,
-                { role: 'user', content: dynamicPromptUserText }
-            ];
-
-            let turnResponse = "";
-            let interceptedTag: string | null = null;
-            let interceptedParams: string | null = null;
-            let streamBuffer = ""; // Lookahead buffer to prevent tag leakage (<)
-
-            this.processManager.updateDescription(processId, `Dynamic Turn ${currentTurnIndex}: Generating...`);
-            this.updateGeneratingState();
-
-            // Create a localized abort controller for this specific stream turn
-            // This prevents aborting the main process and crashing the entire loop
-            const turnStreamController = new AbortController();
-
-            // Link main cancel button to this stream's cancellation
-            const mainAbortListener = () => {
-                turnStreamController.abort();
-            };
-            controller.signal.addEventListener('abort', mainAbortListener);
-
-            try {
-                await this._lollmsAPI.sendChat(turnMessages, (chunk) => {
-                    if (turnStreamController.signal.aborted || controller.signal.aborted) return;
-                    turnResponse += chunk;
-                    streamBuffer += chunk;
-
-                    // Detect if an XML tag is opening
-                    const openIdx = streamBuffer.indexOf('<');
-
-                    if (openIdx !== -1) {
-                        // Flush any normal conversational text before the tag starts
-                        const textBefore = streamBuffer.substring(0, openIdx);
-                        if (textBefore.length > 0) {
-                            currentFullResponseBuffer += textBefore;
-                            this._panel.webview.postMessage({ 
-                                command: 'appendMessageChunk', 
-                                id: assistantMessageId, 
-                                chunk: textBefore 
-                            });
-                        }
-                        streamBuffer = streamBuffer.substring(openIdx);
-
-                    // Check if the XML tag block is fully completed in our buffer
-                    // SAFETY: Only intercept tags if we are NOT inside a think/reasoning block
-                    const isInsideThink = (() => {
-                        const openTags = ['<think>', '<thinking>', '<analysis>', '<reasoning>'];
-                        for (const tag of openTags) {
-                            const openIdx = turnResponse.lastIndexOf(tag);
-                            if (openIdx !== -1) {
-                                const closeTag = tag.replace('<', '</');
-                                const closeIdx = turnResponse.indexOf(closeTag, openIdx);
-                                if (closeIdx === -1) {
-                                    return true; // Unclosed thinking block
-                                }
-                            }
-                        }
-                        return false;
-                    })();
-
-                    let hasMatch = false;
-                    if (!isInsideThink) {
-                        // Check if the current stream buffer is inside a markdown code block (triple or single backticks)
-                        const totalTextSoFar = turnResponse;
-                        const isInsideCodeBlock = (() => {
-                            let openBackticks3 = 0;
-                            let openBackticks1 = 0;
-                            for (let idx = 0; idx < totalTextSoFar.length; idx++) {
-                                if (totalTextSoFar.substring(idx, idx + 3) === '```') {
-                                    openBackticks3 = openBackticks3 === 0 ? 3 : 0;
-                                    idx += 2;
-                                } else if (totalTextSoFar[idx] === '`' && openBackticks3 === 0) {
-                                    openBackticks1 = openBackticks1 === 0 ? 1 : 0;
-                                }
-                            }
-                            return openBackticks3 > 0 || openBackticks1 > 0;
-                        })();
-
-                        if (!isInsideCodeBlock) {
-                            // Support mid-line and unstructured tag matching.
-                            // This ensures the stream is intercepted regardless of preceding prose or inline indentation.
-                            const checkTagEndings = [
-                                { pattern: /(?:^|[\r\n])[ \t]*<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/i, tag: 'add_files_to_context' },
-                                { pattern: /(?:^|[\r\n])[ \t]*<query_architecture>([\s\S]*?)<\/query_architecture>/i, tag: 'query_architecture' },
-                                { pattern: /(?:^|[\r\n])[ \t]*<lollms_tool>([\s\S]*?)<\/lollms_tool>/i, tag: 'lollms_tool' }
-                            ];
-
-                            for (const t of checkTagEndings) {
-                                const match = streamBuffer.match(t.pattern);
-                                if (match) {
-                                    interceptedTag = t.tag;
-                                    interceptedParams = match[1];
-                                    streamBuffer = ""; // Cleared on interception
-                                    hasMatch = true;
-                                    turnStreamController.abort(); // Forcefully abort the connection to prevent token leakage
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    if (!hasMatch) {
-                        // If we are inside a think tag, or no match yet, stream normally
-                        currentFullResponseBuffer += streamBuffer;
-                        this._panel.webview.postMessage({ 
-                            command: 'appendMessageChunk', 
-                            id: assistantMessageId, 
-                            chunk: streamBuffer 
-                        });
-                        streamBuffer = "";
-                    }
-                } else {
-                    // No tag in sight, immediately stream the chunk to keep the UI smooth
-                    currentFullResponseBuffer += streamBuffer;
-                    this._panel.webview.postMessage({ 
-                        command: 'appendMessageChunk', 
-                        id: assistantMessageId, 
-                        chunk: streamBuffer 
-                    });
-                    streamBuffer = "";
-                }
-                }, turnStreamController.signal, this._currentDiscussion.model, {
-                    capabilities: this._discussionCapabilities,
-                    temperature: this._discussionCapabilities.temperature
-                });
-            } catch (err: any) {
-                // If it was cancelled due to tag interception, catch it and ignore the error
-                // so the outer loop can continue processing the tool execution
-                if (err.name !== 'AbortError' && !interceptedTag) {
-                    throw err;
-                }
-            } finally {
-                controller.signal.removeEventListener('abort', mainAbortListener);
-            }
-
-            // Flush any remaining trailing conversational text
-            if (streamBuffer.length > 0 && !interceptedTag && !controller.signal.aborted) {
-                currentFullResponseBuffer += streamBuffer;
-                this._panel.webview.postMessage({ 
-                    command: 'appendMessageChunk', 
-                    id: assistantMessageId, 
-                    chunk: streamBuffer 
-                });
-            }
-
-            if (interceptedTag) {
-                this.processManager.updateDescription(processId, `Executing intercepted tool: ${interceptedTag}...`);
-                this.updateGeneratingState();
-
-                // Sync the accumulated text to persistent history before running the tool
-                await this.updateMessage(assistantMessageId, currentFullResponseBuffer);
-
-                // --- AUTO-APPLY INTEGRATION ---
-                // If Auto-Apply is active, we MUST manifest all code rewrites written so far in this turn
-                // to disk before launching the tool, ensuring the tool runs against the updated codebase.
-                if (this._discussionCapabilities.autoApply && !controller?.signal.aborted) {
-                    this.log(`Auto-Apply: Writing files to disk before executing tool ${interceptedTag}...`);
-                    await this.executeAutomationPipeline(currentFullResponseBuffer, assistantMessageId, controller?.signal, processId);
-                }
-
-                let toolResult = "";
-                let isSuccess = true;
-
-                // Create a unique fingerprint for this tool call to detect infinite repetition
-                const currentFingerprint = `${interceptedTag}:${interceptedParams!.trim()}`;
-                const isDuplicateRepetition = (currentFingerprint === lastExecutedFingerprint);
-                lastExecutedFingerprint = currentFingerprint;
-
-                try {
-                    if (isDuplicateRepetition) {
-                        isSuccess = false;
-                        toolResult = `Error: REPETITIVE CALL DETECTED. You already attempted to call '${interceptedTag}' with these exact parameters. You are forbidden from repeating actions. Please change your tactics, search for a different term, or write the final response.`;
-                        completedDynamicActions.push(`Attempted identical duplicate tool call (BLOCKED).`);
-                    } else if (interceptedTag === 'add_files_to_context') {
-                        const filesToAdd = interceptedParams!.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
-                        
-                        // --- PREVENT PROJECT-WIDE IMPORTS ---
-                        const hasProjectRoot = filesToAdd.some(f => f === '.' || f === '/' || f === '*');
-                        if (hasProjectRoot) {
-                            toolResult = "Error: Adding the entire project root folder ('.') is forbidden to prevent context window bloating. Please specify particular subfolders (e.g. 'src/auth/') or individual files.";
-                            isSuccess = false;
-                            completedDynamicActions.push("Attempted project-wide import (BLOCKED).");
-                        } else {
-                            const added = await this._contextManager.getContextStateProvider()?.addFilesToContext(filesToAdd) || [];
-                            if (added.length > 0) {
-                                toolResult = `Success: Added ${added.join(', ')} to context.`;
-                                completedDynamicActions.push("Loaded " + added.length + " files into memory.");
-                            } else {
-                                toolResult = `Error: Could not resolve target files. Check if they exist on disk.`;
-                                isSuccess = false;
-                                completedDynamicActions.push("Failed to load requested files (not found).");
-                            }
-                        }
-                    } else if (interceptedTag === 'query_architecture') {
-                        const sparql = interceptedParams!.trim();
-                        const rawResult = this.agentManager.codeGraphManager.executeSparql(sparql);
-                        toolResult = rawResult || "No matches.";
-                        
-                        if (rawResult.includes("Error") || rawResult.includes("failed")) {
-                            isSuccess = false;
-                        }
-                        
-                        completedDynamicActions.push(`Executed SPARQL query: "${sparql.split('\n')[0]}..."`);
-                    } else if (interceptedTag === 'lollms_tool') {
-                        const rawJson = interceptedParams!.trim();
-                        let parsedCall: any = {};
-
-                        try {
-                            parsedCall = JSON.parse(rawJson);
-                        } catch (e) {
-                            try {
-                                const repaired = rawJson
-                                    .replace(/\\`/g, '`')
-                                    .replace(/[\r\n\t]/g, ' ')
-                                    .replace(/,\s*([\]}])/g, '$1');
-                                parsedCall = JSON.parse(repaired);
-                            } catch (err) {
-                                const nameMatch = rawJson.match(/"name"\s*:\s*"([^"]+)"/);
-                                const argsMatch = rawJson.match(/"(?:arguments|params)"\s*:\s*(\{[\s\S]*\})/);
-                                if (nameMatch) {
-                                    parsedCall.name = nameMatch[1];
-                                    if (argsMatch) {
-                                        try { parsedCall.arguments = JSON.parse(argsMatch[1]); } catch {}
-                                    }
-                                }
-                            }
-                        }
-
-                        const name = parsedCall.name || "unknown";
-                        const parsedParams = parsedCall.arguments || parsedCall.params || {};
-
-                        const toolDef = this.agentManager.getTools().find((t: any) => t.name === name);
-                        if (toolDef) {
-                            const env = { agentManager: this.agentManager, workspaceRoot: folders[0], contextManager: this._contextManager, lollmsApi: this._lollmsAPI };
-                            const result = await toolDef.execute(parsedParams, env, controller.signal);
-                            toolResult = result.output;
-                            isSuccess = result.success;
-                            completedDynamicActions.push(`Executed tool: ${name}`);
-                        } else {
-                            toolResult = `Error: Tool '${name}' is not equipped or does not exist.`;
-                            isSuccess = false;
-                            completedDynamicActions.push(`Failed to run tool: ${name} (not found).`);
-                        }
-                    }
-                } catch (executionErr: any) {
-                    isSuccess = false;
-                    toolResult = `Runtime Error: ${executionErr.message}`;
-                    completedDynamicActions.push(`Crashed executing tool.`);
-                }
-
-                // --- REPETITIVE & FAILURE SELF-CORRECTION PROTOCOL ---
-                if (!isSuccess) {
-                    consecutiveFailsCount++;
-                    // Inject a vivid, actionable warning into the model's memory scratchpad for the next turn
-                    completedDynamicActions.push(`⚠️ SELF-CORRECTION (Attempt ${consecutiveFailsCount}/${maxFailsAllowed}): Your previous tool call failed with message "${toolResult.substring(0, 150)}...". Adjust your parameters, try a different path, or write the final response.`);
-                } else {
-                    consecutiveFailsCount = 0; // Reset count on success
-                }
-
-                // Render beautiful visual widget inside the bubble
-                const statusIcon = isSuccess ? 'codicon-tools' : 'codicon-error';
-                const summaryColor = isSuccess ? '' : 'color:var(--vscode-charts-red);';
-                const headerPrefix = isSuccess ? 'Ran Tool' : 'Tool Failed';
-
-                if (interceptedTag === 'add_files_to_context') {
-                    const filesToAdd = interceptedParams!.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
-                    currentFullResponseBuffer += `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-cloud-download' : 'codicon-error'}"></i> ${isSuccess ? 'Loaded Files Context' : 'File Loading Failed'}: ${filesToAdd.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
-                } else if (interceptedTag === 'query_architecture') {
-                    const sparql = interceptedParams!.trim();
-                    currentFullResponseBuffer += `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${statusIcon}"></i> ${isSuccess ? 'Ran SPARQL Query' : 'SPARQL Query Failed'}</summary><div class="processing-body">\`\`\`sparql\n${sparql}\n\`\`\`\n\n**Result:**\n${toolResult}</div></details>\n\n`;
-                } else {
-                    currentFullResponseBuffer += `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${statusIcon}"></i> ${headerPrefix}: ${name}</summary><div class="processing-body">**Output:**\n${toolResult}</div></details>\n\n`;
-                }
-
-                // Update the single chat bubble with the tool widgets
-                await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
-
-                // Run next turn recursively
-                await runTurn();
-            } else {
-                // If it's a final turn with no more tools, make sure we save the final text
-                await this.updateMessage(assistantMessageId, currentFullResponseBuffer);
-            }
-        };
 
         if (isDynamicMode) {
             const initialAssistantMessage: ChatMessage = {
@@ -3181,7 +2833,7 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                 currentTurnIndex++;
 
                 if (consecutiveFailsCount >= maxFailsAllowed) {
-                    const finalErrorMsg = `\n\n🛑 **DYNAMIC MODE TERMINATED**: Exceeded maximum self-correction retries (${maxFailsAllowed}). Please adjust your prompt.`;
+                    const finalErrorMsg = `\n\n🛑 **CO-ENGINEER MODE TERMINATED**: Exceeded maximum self-correction retries (${maxFailsAllowed}). Please adjust your prompt.`;
                     currentFullResponseBuffer += finalErrorMsg;
                     await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
                     return;
@@ -3242,7 +2894,7 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                 let interceptedParams: string | null = null;
                 let streamBuffer = ""; 
 
-                this.processManager.updateDescription(processId, `Dynamic Turn ${currentTurnIndex}: Generating...`);
+                this.processManager.updateDescription(processId, `Co-Engineer Turn ${currentTurnIndex}: Generating...`);
                 this.updateGeneratingState();
 
                 const turnStreamController = new AbortController();
@@ -3376,7 +3028,7 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
                     // If Auto-Apply is active, we MUST manifest all code rewrites written so far in this turn
                     // to disk before launching the tool, ensuring the tool runs against the updated codebase.
                     if (this._discussionCapabilities.autoApply && !controller?.signal.aborted) {
-                        this.log(`Auto-Apply: Writing files to disk before executing tool ${interceptedTag}...`);
+                        this.log("Auto-Apply: Writing files to disk before executing tool...");
                         await this.executeAutomationPipeline(currentFullResponseBuffer, assistantMessageId, controller?.signal, processId);
                     }
 
@@ -3537,6 +3189,9 @@ ${isFinalTurn ? "\n*Provide your final response now. Do not call any more tools.
         if (currentPromptMessage) {
             messagesToSend.push(currentPromptMessage);
         }
+
+        // Determine if temperature override is active and configured
+        const reqTemperature = this._discussionCapabilities.enableTemperature ? (this._discussionCapabilities.temperature ?? 0.7) : undefined;
 
         // =========================================================================
         // 🛡️ CONTEXT GOVERNOR: LLM-DRIVEN SMART PRUNING
@@ -3819,11 +3474,11 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             fullResponse += chunk;
             generationSession.buffer += chunk;
             generationSession.tokenCount++;
-            
+
             // Update metrics in real-time
             const elapsed = (Date.now() - generationSession.startTime) / 1000;
             const tps = (generationSession.tokenCount / elapsed).toFixed(1);
-            
+
             this._panel.webview.postMessage({
                 command: 'updateGenerationMetrics',
                 tps: tps,
@@ -3834,7 +3489,7 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         }, controller?.signal, this._currentDiscussion.model, { 
             thinking: this._discussionCapabilities.thinkingMode,
             capabilities: this._discussionCapabilities,
-            temperature: this._discussionCapabilities.temperature
+            temperature: reqTemperature
         });
 
         // --- THE VERIFIER (GUARDIAN) ---
@@ -4843,13 +4498,16 @@ ${targetContent}
                             });
 
                             let result: any = { success: false };
+                            const isUndoMode = message.undo === true;
+
                             try {
                                 const opts = { 
                                     silent: true, 
                                     blockIndex: change.blockIndex, 
                                     hunkIndex: change.hunkIndex,
                                     autoSave: true,
-                                    isBatch: true 
+                                    isBatch: true,
+                                    undo: isUndoMode
                                 };
 
                                 if (change.type === 'file') {
@@ -4861,7 +4519,8 @@ ${targetContent}
                                 }
 
                                 if (result?.success) {
-                                    await this.updateAppliedState(messageId, change.blockIndex, change.hunkIndex);
+                                    // If undoing, remove from applied state, otherwise add it
+                                    await this.updateAppliedState(messageId, change.blockIndex, change.hunkIndex, isUndoMode);
                                 }
                             } catch (e: any) {
                                 result = { success: false, error: e.message };
@@ -4878,7 +4537,8 @@ ${targetContent}
                                 success: result?.success ?? false,
                                 error: result?.error,
                                 currentIndex: i,
-                                totalCount: changesBatch.length
+                                totalCount: changesBatch.length,
+                                undo: isUndoMode
                             });
                         }
 
@@ -5600,6 +5260,15 @@ ${targetContent}
                 break;
             case 'markHunkApplied':
                 await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex, message.undo === true);
+                // Send confirmation back to the webview to synchronize the specific Hunk tabs and Apply buttons
+                webview.postMessage({
+                    command: 'applyAllResult',
+                    messageId: message.messageId,
+                    blockIndex: message.blockIndex,
+                    hunkIndex: message.hunkIndex,
+                    success: true,
+                    alreadyApplied: true
+                });
                 break;
             case 'stopTokenCalculation':
                 if (this._tokenAbortController) {
@@ -7197,7 +6866,7 @@ Task:
                                 <label><input type="radio" name="mode-group" value="assistant" id="modeAssistantRadio"> <span>👤 Assistant Mode (Manual)</span></label>
                             </div>
                             <div class="menu-item-radio">
-                                <label><input type="radio" name="mode-group" value="dynamic" id="modeDynamicRadio"> <span>🧠 Dynamic Mode (Semi-Auto)</span></label>
+                                <label><input type="radio" name="mode-group" value="dynamic" id="modeDynamicRadio"> <span>🧠 Co-Engineer Mode (Interactive)</span></label>
                             </div>
                             <div class="menu-item-radio">
                                 <label><input type="radio" name="mode-group" value="agent" id="modeAgentRadio"> <span>🤖 Agent Mode (Autonomous)</span></label>
@@ -7282,8 +6951,9 @@ Task:
                                 <div class="control-buttons">
                                     <div class="voice-controls">
                                         <button id="sttButton" title="Listen (STT)" class="voice-btn"><i class="codicon codicon-mic"></i></button>
+                                        <button id="toggleTempSliderBtn" title="Toggle Custom Temperature" class="voice-btn"><i class="codicon codicon-thermometer"></i></button>
                                     </div>
-                                    <div class="temp-slider-container" title="Model Temperature (Creativity)">
+                                    <div class="temp-slider-container" id="inputTempContainer" title="Model Temperature (Creativity)" style="display: none;">
                                         <div class="temp-tooltip" id="temp-val-display">0.7</div>
                                         <input type="range" id="temp-slider" min="0" max="2" step="0.1" value="0.7">
                                     </div>
@@ -7301,9 +6971,8 @@ Task:
                 <i class="codicon codicon-arrow-down"></i>
             </button>
             </div>
-            <i class="codicon codicon-arrow-down"></i>
-        </button>
-
+            </div>
+            
         <div id="agent-settings-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
@@ -7486,7 +7155,11 @@ Task:
 
                     <div class="modal-section">
                         <h3>Performance & Creativity</h3>
-                        <div style="margin-bottom: 15px;">
+                        <div class="checkbox-container" style="margin-bottom: 10px;">
+                            <label class="switch"><input type="checkbox" id="cap-enableTemperature"><span class="slider"></span></label>
+                            <label for="cap-enableTemperature"><strong>Custom Temperature:</strong> Override model's default creativity parameters.</label>
+                        </div>
+                        <div style="margin-bottom: 15px; display: none;" id="modal-temperature-container">
                             <div style="display:flex; justify-content: space-between;">
                                 <label style="font-size: 11px; font-weight:bold;">Temperature (Creativity)</label>
                                 <span id="modal-temperature-val" style="font-size: 11px; opacity: 0.8;">0.7</span>

@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 
 interface HistoryItem {
     id: string;
@@ -14,7 +16,7 @@ export class CompanionPanel {
     private _history: HistoryItem[] = [];
     private _currentHistoryIndex: number = -1;
     
-    // Track the last actual file editor to prevent focus loss from clearing it
+    // Caching the last actual file editor to prevent focus loss from clearing it
     private _lastActiveEditor: vscode.TextEditor | undefined;
     private _isAttached: boolean = false;
     private _disposables: vscode.Disposable[] = [];
@@ -23,6 +25,10 @@ export class CompanionPanel {
     public readonly onDidSubmit = this._onDidSubmit.event;
 
     private _contextInfo: string = "No active context";
+    private _trustScore: number = 75;
+    // Snapshot of file content captured right before an apply, keyed by blockId,
+    // so a "Reject" decision can restore the previous state.
+    private _preApplySnapshots: Map<string, { filePath: string; content: string }> = new Map();
 
     public static createOrShow(extensionUri: vscode.Uri, title: string) {
         const column = vscode.window.activeTextEditor
@@ -90,6 +96,7 @@ export class CompanionPanel {
                     case 'webview-ready':
                         this.setContextInfo(this._contextInfo);
                         this._panel.webview.postMessage({ command: 'updateAttachState', isAttached: this._isAttached });
+                        this._panel.webview.postMessage({ command: 'updateTrustScore', score: this._trustScore });
                         this.updateHistoryList();
                         break;
                     case 'submitPrompt':
@@ -101,6 +108,25 @@ export class CompanionPanel {
                             vscode.window.setStatusBarMessage("Lollms: Copied to clipboard", 2000);
                         }
                         break;
+                    case 'toggleAttach':
+                        this.toggleAttach();
+                        break;
+                    case 'loadHistory':
+                        this.loadHistoryItem(message.id);
+                        break;
+                    case 'deleteHistory':
+                        this.deleteHistoryItem(message.id);
+                        break;
+                    case 'clearHistory':
+                        this._history = [];
+                        this._currentHistoryIndex = -1;
+                        this.updateHistoryList();
+                        this._panel.webview.postMessage({ command: 'clearResponse' });
+                        break;
+                    case 'adjustTrustScore':
+                        this._trustScore = Math.max(0, Math.min(100, this._trustScore + (message.delta || 0)));
+                        this._panel.webview.postMessage({ command: 'updateTrustScore', score: this._trustScore });
+                        break;
                     case 'replaceCode':
                         try {
                             const normalizedContent = message.content
@@ -108,32 +134,131 @@ export class CompanionPanel {
                                 .replace(/^\s*=======/gm, '=======')
                                 .replace(/^\s*>>>>>>> REPLACE/gm, '>>>>>>> REPLACE');
 
+                            await this._captureSnapshot(message.options?.blockId, message.filePath);
+
                             const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, normalizedContent, undefined, undefined, message.options);
+                            if (res?.success ?? false) {
+                                await this._revealAppliedFile(message.filePath);
+                            }
                             this._panel.webview.postMessage({
                                 command: 'applyAllResult',
                                 success: res?.success ?? false,
-                                error: res?.error
+                                error: res?.error,
+                                blockId: message.options?.blockId,
+                                hunkIndex: message.options?.hunkIndex
                             });
                         } catch (e: any) {
-                            this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message });
+                            this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message, blockId: message.options?.blockId });
                         }
                         break;
                     case 'applyFileContent':
                         try {
-                            const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content, { autoSave: true, silent: true });
+                            await this._captureSnapshot(message.options?.blockId, message.filePath);
+
+                            const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content, message.options);
+                            if (res?.success ?? false) {
+                                await this._revealAppliedFile(message.filePath);
+                            }
                             this._panel.webview.postMessage({
                                 command: 'applyAllResult',
                                 success: res?.success ?? false,
-                                error: res?.error
+                                error: res?.error,
+                                blockId: message.options?.blockId,
+                                hunkIndex: message.options?.hunkIndex
                             });
                         } catch (e: any) {
-                            this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message });
+                            this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message, blockId: message.options?.blockId });
                         }
+                        break;
+                    case 'reviewDecision':
+                        await this._handleReviewDecision(message.blockId, message.decision, message.filePath);
                         break;
                 }
             }
         );
         this._panel.webview.html = this._getHtmlForWebview();
+    }
+
+    /**
+     * After a patch is applied to disk, open/reveal the file in the editor
+     * column the user was actually working in - never in the Companion
+     * panel's own column, so the panel stays visible side-by-side.
+     * preserveFocus keeps keyboard focus on the chat input so typing isn't
+     * interrupted.
+     */
+    private async _revealAppliedFile(filePath: string | undefined) {
+        if (!filePath) {
+            return;
+        }
+        try {
+            const uri = vscode.Uri.file(filePath);
+            const companionColumn = this._panel.viewColumn;
+            let targetColumn = this._lastActiveEditor?.viewColumn ?? vscode.ViewColumn.One;
+            // Guard against the tracked column ever coinciding with the
+            // panel's own column (shouldn't happen since _lastActiveEditor
+            // is only ever a real file-scheme editor, but stay defensive).
+            if (targetColumn === companionColumn) {
+                targetColumn = companionColumn === vscode.ViewColumn.One
+                    ? vscode.ViewColumn.Two
+                    : vscode.ViewColumn.One;
+            }
+            const doc = await vscode.workspace.openTextDocument(uri);
+            const editor = await vscode.window.showTextDocument(doc, {
+                viewColumn: targetColumn,
+                preserveFocus: true,
+                preview: false
+            });
+            this._lastActiveEditor = editor;
+        } catch {
+            // File may have been deleted/renamed by the apply step, or the
+            // path is otherwise invalid - nothing more we can do here.
+        }
+    }
+
+    /**
+     * Snapshot the on-disk content of a file right before a patch is applied,
+     * so a later "Reject" can restore it exactly.
+     */
+    private async _captureSnapshot(blockId: string | undefined, filePath: string | undefined) {
+        if (!blockId || !filePath) {
+            return;
+        }
+        try {
+            const uri = vscode.Uri.file(filePath);
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            this._preApplySnapshots.set(blockId, { filePath, content: Buffer.from(bytes).toString('utf8') });
+        } catch {
+            // File may not exist yet (new file creation) - nothing to snapshot.
+        }
+    }
+
+    /**
+     * Handle the user's Accept/Reject decision from the review card.
+     * Accept: drop the snapshot (write already happened).
+     * Reject: restore the pre-apply snapshot to disk.
+     */
+    private async _handleReviewDecision(blockId: string | undefined, decision: string, filePath?: string) {
+        if (!blockId) {
+            return;
+        }
+        const snapshot = this._preApplySnapshots.get(blockId);
+        if (decision === 'reject') {
+            try {
+                if (snapshot) {
+                    const uri = vscode.Uri.file(snapshot.filePath);
+                    await vscode.workspace.fs.writeFile(uri, Buffer.from(snapshot.content, 'utf8'));
+                    vscode.window.setStatusBarMessage("Lollms: Change reverted", 2000);
+                } else if (filePath) {
+                    // No snapshot means the file didn't exist before the apply - remove it.
+                    const uri = vscode.Uri.file(filePath);
+                    await vscode.workspace.fs.delete(uri);
+                    vscode.window.setStatusBarMessage("Lollms: New file removed", 2000);
+                }
+            } catch (e: any) {
+                vscode.window.showErrorMessage("Lollms: Failed to revert change - " + e.message);
+            }
+        }
+        this._preApplySnapshots.delete(blockId);
     }
 
     public getActiveEditor(): vscode.TextEditor | undefined {
@@ -142,6 +267,11 @@ export class CompanionPanel {
             this.updateContextInfoFromEditor();
         }
         return this._lastActiveEditor;
+    }
+
+    public setActiveEditor(editor: vscode.TextEditor) {
+        this._lastActiveEditor = editor;
+        this.updateContextInfoFromEditor();
     }
 
     private toggleAttach() {
@@ -198,6 +328,9 @@ export class CompanionPanel {
 
     public setLoading(isLoading: boolean) {
         this._panel.webview.postMessage({ command: 'setLoading', isLoading });
+        if (isLoading) {
+            this._panel.webview.postMessage({ command: 'setMood', mood: 'thinking' });
+        }
     }
 
     public updateHistoryList() {
@@ -262,6 +395,7 @@ export class CompanionPanel {
         const prismCssUri = "https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css";
         const webview = this._panel.webview;
         const codiconUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
+        const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.css'));
 
         let html = "";
         html += "<!DOCTYPE html>\n";
@@ -282,7 +416,12 @@ export class CompanionPanel {
         html += "    <script src=\"" + domPurifyUri + "\"></script>\n";
         html += "    <link href=\"" + prismCssUri + "\" rel=\"stylesheet\" />\n";
         html += "    <link href=\"" + codiconUri + "\" rel=\"stylesheet\" />\n";
+        html += "    <link href=\"" + cssUri + "\" rel=\"stylesheet\" />\n";
         html += "    <script src=\"" + prismJsUri + "\"></script>\n";
+        html += "    <script src=\"https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js\"></script>\n";
+        html += "    <script src=\"https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js\"></script>\n";
+        html += "    <script src=\"https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js\"></script>\n";
+        html += "    <script src=\"https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-diff.min.js\"></script>\n";
         html += "    <style>\n";
         html += "        body {\n";
         html += "            font-family: var(--vscode-font-family);\n";
@@ -291,8 +430,6 @@ export class CompanionPanel {
         html += "            padding: 0; margin: 0;\n";
         html += "            display: flex; height: 100vh; overflow: hidden;\n";
         html += "        }\n";
-        
-        // Friendly Face Styling
         html += "        .friend-avatar-container {\n";
         html += "            display: flex; align-items: center; justify-content: center;\n";
         html += "            width: 38px; height: 38px;\n";
@@ -304,38 +441,70 @@ export class CompanionPanel {
         html += "            width: 20px; height: 16px; background: #2d2d2d; border-radius: 3px;\n";
         html += "            position: relative; display: flex; align-items: center; justify-content: space-around;\n";
         html += "            padding: 0 2px; box-sizing: border-box; border: 1px solid #9b59b6;\n";
+        html += "            transition: all 0.3s ease;\n";
+        html += "        }\n";
+        html += "        /* Micro-expressions based on active state */\n";
+        html += "        .robot-face.speaking { border-color: #ff007f; box-shadow: 0 0 10px rgba(255, 0, 127, 0.5); }\n";
+        html += "        .robot-face.thinking { border-color: #9b59b6; box-shadow: 0 0 15px rgba(155, 89, 182, 0.6); animation: float-face 2s infinite ease-in-out; }\n";
+        html += "        .robot-face.success { border-color: var(--vscode-charts-green); box-shadow: 0 0 12px rgba(46, 204, 113, 0.6); }\n";
+        html += "        .robot-face.error { border-color: var(--vscode-charts-red); box-shadow: 0 0 12px rgba(231, 76, 60, 0.6); }\n";
+        html += "        @keyframes float-face {\n";
+        html += "            0%, 100% { transform: translateY(0); }\n";
+        html += "            50% { transform: translateY(-3px); }\n";
         html += "        }\n";
         html += "        .robot-eye {\n";
         html += "            width: 4px; height: 4px; background: #00ffcc;\n";
         html += "            border-radius: 50%; box-shadow: 0 0 6px #00ffcc;\n";
         html += "            animation: eye-blink 4s infinite;\n";
+        html += "            transition: background 0.3s;\n";
         html += "        }\n";
-        html += "        .robot-face.speaking .robot-eye {\n";
-        html += "            background: #ff007f; box-shadow: 0 0 6px #ff007f;\n";
-        html += "        }\n";
+        html += "        .robot-face.speaking .robot-eye { background: #ff007f; box-shadow: 0 0 6px #ff007f; }\n";
+        html += "        .robot-face.thinking .robot-eye { background: #9b59b6; box-shadow: 0 0 6px #9b59b6; }\n";
+        html += "        .robot-face.success .robot-eye { background: var(--vscode-charts-green); box-shadow: 0 0 6px var(--vscode-charts-green); }\n";
+        html += "        .robot-face.error .robot-eye { background: var(--vscode-charts-red); box-shadow: 0 0 6px var(--vscode-charts-red); }\n";
         html += "        .robot-mouth {\n";
         html += "            position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%);\n";
         html += "            width: 8px; height: 2px; background: #00ffcc; border-radius: 1px;\n";
-        html += "            transition: height 0.1s ease;\n";
+        html += "            transition: all 0.1s ease;\n";
         html += "        }\n";
         html += "        .robot-face.speaking .robot-mouth {\n";
         html += "            animation: mouth-talk 0.2s infinite alternate;\n";
         html += "            background: #ff007f;\n";
         html += "        }\n";
+        html += "        .robot-face.thinking .robot-mouth { height: 1px; width: 6px; background: #9b59b6; }\n";
+        html += "        .robot-face.success .robot-mouth { height: 3px; width: 8px; border-radius: 0 0 4px 4px; background: var(--vscode-charts-green); }\n";
+        html += "        .robot-face.error .robot-mouth { height: 3px; width: 8px; border-radius: 4px 4px 0 0; background: var(--vscode-charts-red); }\n";
         html += "        @keyframes eye-blink {\n";
         html += "            0%, 95%, 100% { transform: scaleY(1); }\n";
         html += "            97% { transform: scaleY(0.1); }\n";
         html += "        }\n";
         html += "        @keyframes mouth-talk {\n";
         html += "            0% { height: 1px; }\n";
-        html += "            100% { height: 4px; }\n";
+        html += "            100% { height: 5px; }\n";
         html += "        }\n";
-
-        // Memory Scratchpad HUD Styling
+        html += "        /* --- AFFECTIVE MATRIX STATUS --- */\n";
+        html += "        .affective-matrix {\n";
+        html += "            margin: 0 16px 10px 16px;\n";
+        html += "            padding: 8px 12px; background: rgba(155, 89, 182, 0.05); \n";
+        html += "            border: 1px solid var(--vscode-widget-border); border-radius: 6px;\n";
+        html += "            display: flex; flex-direction: column; gap: 4px;\n";
+        html += "        }\n";
+        html += "        .matrix-header {\n";
+        html += "            display: flex; justify-content: space-between; font-size: 10px; font-weight: bold;\n";
+        html += "            color: #9b59b6; text-transform: uppercase; letter-spacing: 0.5px;\n";
+        html += "        }\n";
+        html += "        .matrix-bar {\n";
+        html += "            height: 4px; background: rgba(255, 255, 255, 0.05); border-radius: 2px;\n";
+        html += "            overflow: hidden; width: 100%;\n";
+        html += "        }\n";
+        html += "        .matrix-bar-fill {\n";
+        html += "            height: 100%; background: linear-gradient(to right, #e74c3c, #9b59b6, #2ecc71); \n";
+        html += "            width: 75%; transition: width 0.5s ease-out;\n";
+        html += "        }\n";
         html += "        .friendship-hud {\n";
         html += "            margin: 0 16px 12px 16px;\n";
         html += "            border: 1px dashed var(--vscode-widget-border);\n";
-        html += "            border-radius: 6px; background: rgba(155, 89, 182, 0.03);\n";
+        html += "            border-radius: 6px; background: rgba(155, 89, 182, 0.02);\n";
         html += "            overflow: hidden;\n";
         html += "        }\n";
         html += "        .hud-header {\n";
@@ -353,9 +522,126 @@ export class CompanionPanel {
         html += "            overflow-y: auto;\n";
         html += "            color: var(--vscode-descriptionForeground);\n";
         html += "        }\n";
-
-        this.updateContextInfoFromEditor();
-
+        html += "        /* --- COGNITIVE MODE TOOLBAR --- */\n";
+        html += "        .cognitive-toolbar {\n";
+        html += "            display: flex;\n";
+        html += "            gap: 6px;\n";
+        html += "            margin: 0 16px 10px 16px;\n";
+        html += "            background: rgba(0, 0, 0, 0.2);\n";
+        html += "            padding: 3px;\n";
+        html += "            border-radius: 20px;\n";
+        html += "            border: 1px solid var(--vscode-widget-border);\n";
+        html += "            box-sizing: border-box;\n";
+        html += "        }\n";
+        html += "        .cognitive-pill {\n";
+        html += "            flex: 1;\n";
+        html += "            padding: 6px;\n";
+        html += "            font-size: 11px;\n";
+        html += "            font-weight: bold;\n";
+        html += "            text-align: center;\n";
+        html += "            border-radius: 18px;\n";
+        html += "            cursor: pointer;\n";
+        html += "            opacity: 0.6;\n";
+        html += "            transition: all 0.25s ease-out;\n";
+        html += "            display: flex;\n";
+        html += "            align-items: center;\n";
+        html += "            justify-content: center;\n";
+        html += "            gap: 6px;\n";
+        html += "            color: var(--vscode-foreground);\n";
+        html += "            user-select: none;\n";
+        html += "        }\n";
+        html += "        .cognitive-pill:hover {\n";
+        html += "            opacity: 0.9;\n";
+        html += "            background: rgba(255, 255, 255, 0.05);\n";
+        html += "        }\n";
+        html += "        .cognitive-pill.active {\n";
+        html += "            opacity: 1;\n";
+        html += "            background: var(--vscode-button-background);\n";
+        html += "            color: var(--vscode-button-foreground);\n";
+        html += "        }\n";
+        html += "        #pill-move37.active {\n";
+        html += "            background: linear-gradient(135deg, #9b59b6, #ff007f) !important;\n";
+        html += "            color: white !important;\n";
+        html += "            box-shadow: 0 0 10px rgba(155, 89, 182, 0.5);\n";
+        html += "            animation: move37-pulse 1.5s infinite alternate;\n";
+        html += "        }\n";
+        html += "        @keyframes move37-pulse {\n";
+        html += "            from { box-shadow: 0 0 10px rgba(155, 89, 182, 0.4), 0 0 20px rgba(255, 0, 127, 0.2); }\n";
+        html += "            to { box-shadow: 0 0 15px rgba(155, 89, 182, 0.8), 0 0 30px rgba(255, 0, 127, 0.4); }\n";
+        html += "        }\n";
+        html += "        .input-container.move37-active textarea {\n";
+        html += "            border-color: #9b59b6 !important;\n";
+        html += "            box-shadow: 0 0 10px rgba(155, 89, 182, 0.3) !important;\n";
+        html += "        }\n";
+        html += "        /* --- SURGICAL REVIEW CARDS --- */\n";
+        html += "        .review-card {\n";
+        html += "            margin: 15px 0;\n";
+        html += "            border: 1.5px solid var(--vscode-focusBorder);\n";
+        html += "            border-radius: 8px; background: var(--vscode-editorWidget-background);\n";
+        html += "            overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.3);\n";
+        html += "            display: flex; flex-direction: column;\n";
+        html += "            animation: popCard 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);\n";
+        html += "        }\n";
+        html += "        @keyframes popCard {\n";
+        html += "            from { opacity: 0; transform: scale(0.95) translateY(10px); }\n";
+        html += "            to { opacity: 1; transform: scale(1) translateY(0); }\n";
+        html += "        }\n";
+        html += "        .review-header {\n";
+        html += "            background: var(--vscode-sideBarSectionHeader-background);\n";
+        html += "            padding: 8px 12px; font-size: 11px; font-weight: bold;\n";
+        html += "            color: var(--vscode-textLink-foreground); border-bottom: 1px solid var(--vscode-widget-border);\n";
+        html += "            display: flex; justify-content: space-between; align-items: center;\n";
+        html += "        }\n";
+        html += "        .review-body {\n";
+        html += "            padding: 12px 15px; font-size: 12px; line-height: 1.5;\n";
+        html += "            display: flex; align-items: center; gap: 8px;\n";
+        html += "        }\n";
+        html += "        .review-actions-row {\n";
+        html += "            display: flex; gap: 8px; padding: 8px 12px;\n";
+        html += "            border-top: 1px solid var(--vscode-widget-border); background: rgba(0,0,0,0.15);\n";
+        html += "        }\n";
+        html += "        .review-btn-accept {\n";
+        html += "            background: var(--vscode-charts-green) !important; color: white !important;\n";
+        html += "            flex: 1; justify-content: center; height: 28px;\n";
+        html += "        }\n";
+        html += "        .review-btn-reject {\n";
+        html += "            background: var(--vscode-charts-red) !important; color: white !important;\n";
+        html += "            flex: 1; justify-content: center; height: 28px;\n";
+        html += "        }\n";
+        html += "        .spinner {\n";
+        html += "            width: 14px; height: 14px; border-radius: 50%;\n";
+        html += "            border: 2px solid rgba(255,255,255,0.2); border-top-color: var(--vscode-textLink-foreground);\n";
+        html += "            animation: spin 0.8s linear infinite;\n";
+        html += "        }\n";
+        html += "        .plan-scratchpad {\n";
+        html += "            border-left: 3px solid #9b59b6;\n";
+        html += "            background: rgba(155, 13, 214, 0.03);\n";
+        html += "            margin-bottom: 12px;\n";
+        html += "            border-radius: 4px;\n";
+        html += "        }\n";
+        html += "        .code-collapsible {\n";
+        html += "            margin-top: 10px;\n";
+        html += "            border: 1px solid var(--vscode-widget-border);\n";
+        html += "            border-radius: 6px;\n";
+        html += "            background: rgba(0,0,0,0.2);\n";
+        html += "            overflow: hidden;\n";
+        html += "        }\n";
+        html += "        .scratchpad-header {\n";
+        html += "            padding: 6px 12px;\n";
+        html += "            font-weight: bold;\n";
+        html += "            color: #9b59b6;\n";
+        html += "            cursor: pointer;\n";
+        html += "            display: flex;\n";
+        html += "            align-items: center;\n";
+        html += "            gap: 6px;\n";
+        html += "            font-size: 11px;\n";
+        html += "        }\n";
+        html += "        .scratchpad-content {\n";
+        html += "            padding: 10px 15px;\n";
+        html += "            font-size: 11px;\n";
+        html += "            opacity: 0.9;\n";
+        html += "            background: rgba(0,0,0,0.05);\n";
+        html += "        }\n";
         html += "        .sidebar {\n";
         html += "            width: 300px;\n";
         html += "            border-right: 1px solid var(--vscode-panel-border);\n";
@@ -433,12 +719,13 @@ export class CompanionPanel {
         html += "        .input-container {\n";
         html += "            display: flex;\n";
         html += "            gap: 10px;\n";
+        html += "            align-items: flex-end;\n";
         html += "        }\n";
         html += "        textarea {\n";
         html += "            flex: 1;\n";
         html += "            height: 60px;\n";
         html += "            resize: vertical;\n";
-        html += "            background-color: var(--vscode-input-background);;\n";
+        html += "            background-color: var(--vscode-input-background);\n";
         html += "            color: var(--vscode-input-foreground);\n";
         html += "            border: 1px solid var(--vscode-input-border);\n";
         html += "            border-radius: 4px;\n";
@@ -460,6 +747,13 @@ export class CompanionPanel {
         html += "        }\n";
         html += "        button:hover { filter: brightness(1.2); }\n";
         html += "        button.secondary:hover { background-color: var(--vscode-button-secondaryHoverBackground); }\n";
+        html += "        /* --- INTEGRITY BADGE --- */\n";
+        html += "        .integrity-badge {\n";
+        html += "            display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px;\n";
+        html += "            border-radius: 12px; background: rgba(46, 204, 113, 0.1); border: 1px solid var(--vscode-charts-green);\n";
+        html += "            color: var(--vscode-charts-green); font-size: 9px; font-weight: bold;\n";
+        html += "            text-transform: uppercase;\n";
+        html += "        }\n";
         html += "        .icon-btn {\n";
         html += "            background: none; border: none; color: var(--vscode-icon-foreground); \n";
         html += "            cursor: pointer; padding: 2px; margin-right: 5px; min-width: 24px;\n";
@@ -472,6 +766,24 @@ export class CompanionPanel {
         html += "        pre button.copy-code:hover { opacity: 1; }\n";
         html += "        @keyframes spin { 100% { transform: rotate(360deg); } }\n";
         html += "        .spin { animation: spin 1s linear infinite; }\n";
+        html += "        /* Aider Hunk Visualizer Styles */\n";
+        html += "        .hunk-tabs-container { display: flex; flex-direction: column; background-color: var(--vscode-editor-inactiveSelectionBackground); border-top: 1px solid var(--vscode-widget-border); }\n";
+        html += "        .hunk-tabs-nav { display: flex; flex-wrap: wrap; gap: 2px; padding: 4px 8px 0 8px; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--vscode-widget-border); }\n";
+        html += "        .hunk-tab { padding: 4px 10px; font-size: 10px; font-weight: 800; cursor: pointer; border-radius: 4px 4px 0 0; border: 1px solid transparent; border-bottom: none; opacity: 0.6; display: flex; align-items: center; gap: 6px; }\n";
+        html += "        .hunk-tab:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }\n";
+        html += "        .hunk-tab.active { opacity: 1; background: var(--vscode-editor-background); border-color: var(--vscode-widget-border); margin-bottom: -1px; z-index: 2; }\n";
+        html += "        .hunk-tab.status-completed { color: var(--vscode-charts-green); }\n";
+        html += "        .hunk-tab-content { display: none; padding: 0; background: var(--vscode-editor-background); }\n";
+        html += "        .hunk-tab-content.active { display: flex; flex-direction: column; }\n";
+        html += "        .aider-hunk-bubble { width: 100%; box-sizing: border-box; display: flex; flex-direction: column; }\n";
+        html += "        .aider-hunk-content { padding: 0; max-height: 300px; overflow-y: auto; }\n";
+        html += "        .aider-hunk-header { display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; background-color: var(--vscode-keybindingTable-headerBackground); border-bottom: 1px solid var(--vscode-widget-border); font-size: 11px; font-weight: 700; color: var(--vscode-descriptionForeground); }\n";
+        html += "        .aider-hunk-actions { display: flex; gap: 6px; }\n";
+        html += "        .aider-diff-line { display: flex; width: 100%; font-family: var(--vscode-editor-font-family); font-size: 11px; line-height: 1.5; white-space: pre; }\n";
+        html += "        .aider-diff-removed { background-color: rgba(244, 71, 71, 0.15); color: var(--vscode-charts-red); }\n";
+        html += "        .aider-diff-added { background-color: rgba(15, 157, 88, 0.15); color: var(--vscode-charts-green); }\n";
+        html += "        .aider-diff-unchanged { opacity: 0.6; }\n";
+        html += "        .aider-diff-code { padding: 0 12px; }\n";
         html += "    </style>\n";
         html += "</head>\n";
         html += "<body>\n";
@@ -500,6 +812,9 @@ export class CompanionPanel {
         html += "                    </div>\n";
         html += "                </div>\n";
         html += "                <span class=\"title\">Lollms Companion</span>\n";
+        html += "                <div class=\"integrity-badge\" title=\"Operates with zero telemetry, protecting your IP.\">\n";
+        html += "                    <span class=\"codicon codicon-shield\"></span> Zero-Telemetry\n";
+        html += "                </div>\n";
         html += "            </div>\n";
         html += "            <div class=\"actions\" style=\"display:flex; gap:8px;\">\n";
         html += "                <button class=\"secondary danger\" onclick=\"clearResponse()\" title=\"Wipe Memory (Start Over)\"><span class=\"codicon codicon-trash\"></span> Wipe</button>\n";
@@ -507,7 +822,17 @@ export class CompanionPanel {
         html += "            </div>\n";
         html += "        </div>\n";
         
-        // Friendship Scratchpad HUD
+        // Friendship Scratchpad & Affective Matrix HUD
+        html += "        <div class=\"affective-matrix\">\n";
+        html += "            <div class=\"matrix-header\">\n";
+        html += "                <span>Symbiosis State: <span id=\"matrix-label-text\">Symbiotic</span></span>\n";
+        html += "                <span id=\"matrix-score-val\">75%</span>\n";
+        html += "            </div>\n";
+        html += "            <div class=\"matrix-bar\">\n";
+        html += "                <div class=\"matrix-bar-fill\" id=\"matrix-bar-fill\"></div>\n";
+        html += "            </div>\n";
+        html += "        </div>\n";
+
         html += "        <div class=\"friendship-hud\">\n";
         html += "            <details open>\n";
         html += "                <summary class=\"hud-header\">\n";
@@ -528,7 +853,15 @@ export class CompanionPanel {
         html += "                <span class=\"codicon codicon-target\"></span>\n";
         html += "                <span id=\"context-info-text\">Syncing...</span>\n";
         html += "            </div>\n";
-        html += "            <div class=\"input-container\">\n";
+        html += "            <div class=\"cognitive-toolbar\">\n";
+        html += "                <div class=\"cognitive-pill active\" id=\"pill-standard\" onclick=\"setCognitiveMode('standard')\">\n";
+        html += "                    <span class=\"codicon codicon-workspace-trusted\"></span> Focused Co-Pilot\n";
+        html += "                </div>\n";
+        html += "                <div class=\"cognitive-pill\" id=\"pill-move37\" onclick=\"setCognitiveMode('move37')\">\n";
+        html += "                    <span class=\"codicon codicon-sparkle\"></span> Move 37: Serendipity Spark\n";
+        html += "                </div>\n";
+        html += "            </div>\n";
+        html += "            <div class=\"input-container\" id=\"input-container\">\n";
         html += "                <textarea id=\"prompt-input\" placeholder=\"Ask a question or request a change...\"></textarea>\n";
         html += "                <button onclick=\"submitPrompt()\" id=\"send-btn\" style=\"height: fit-content; align-self: flex-end;\">\n";
         html += "                    <span class=\"codicon codicon-send\"></span> Send\n";
@@ -540,14 +873,33 @@ export class CompanionPanel {
         html += "        const vscode = acquireVsCodeApi();\n";
         html += "        const container = document.getElementById('markdown-content');\n";
         html += "        const promptInput = document.getElementById('prompt-input');\n";
+        html += "        const move37Btn = document.getElementById('pill-move37');\n";
+        html += "        let isMove37Active = false;\n";
         html += "        let activeContentBuffer = \"\";\n";
+        html += "        let activeMood = 'idle';\n";
+        html += "        \n";
         html += "        vscode.postMessage({ command: 'webview-ready' });\n";
+        html += "        \n";
+        html += "        function setCognitiveMode(mode) {\n";
+        html += "            isMove37Active = (mode === 'move37');\n";
+        html += "            document.getElementById('pill-standard').classList.toggle('active', !isMove37Active);\n";
+        html += "            document.getElementById('pill-move37').classList.toggle('active', isMove37Active);\n";
+        html += "            document.getElementById('input-container').classList.toggle('move37-active', isMove37Active);\n";
+        html += "            \n";
+        html += "            const inp = document.getElementById('prompt-input');\n";
+        html += "            if (isMove37Active) {\n";
+        html += "                inp.placeholder = 'Unleash a lateral leap... Propose an unexpected, elegant shortcut.';\n";
+        html += "                setMood('thinking');\n";
+        html += "                vscode.postMessage({ command: 'adjustTrustScore', delta: 2 });\n";
+        html += "            } else {\n";
+        html += "                inp.placeholder = 'Ask a question or request a change...';\n";
+        html += "                setMood('idle');\n";
+        html += "            }\n";
+        html += "        }\n";
+        html += "        \n";
         html += "        function toggleHistory() {\n";
         html += "            document.getElementById('sidebar').classList.toggle('open');\n";
         html += "            document.querySelector('.sidebar-overlay').classList.toggle('open');\n";
-        html += "        }\n";
-        html += "        function openTools() {\n";
-        html += "            vscode.postMessage({ command: 'openTools' });\n";
         html += "        }\n";
         html += "        function toggleAttach() {\n";
         html += "            vscode.postMessage({ command: 'toggleAttach' });\n";
@@ -623,8 +975,9 @@ export class CompanionPanel {
         html += "            const header = document.createElement('div');\n";
         html += "            header.style.cssText = \"font-size: 11px; font-weight: bold; margin-bottom: 8px; opacity: 0.8; display: flex; align-items: center; gap: 6px;\";\n";
         html += "            header.innerHTML = '<span class=\"codicon codicon-account\"></span> <span>You (Selection Prompt)</span>';\n";
+        const bodyEscaped = '"font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-all;"';
         html += "            const body = document.createElement('div');\n";
-        html += "            body.style.cssText = \"font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-all;\";\n";
+        html += "            body.style.cssText = " + bodyEscaped + ";\n";
         html += "            body.textContent = text;\n";
         html += "            bubble.appendChild(header);\n";
         html += "            bubble.appendChild(body);\n";
@@ -634,16 +987,46 @@ export class CompanionPanel {
 
         html += "        function setFaceMood(state) {\n";
         html += "            const face = document.getElementById('friend-face');\n";
+        if (true) {
         html += "            if (!face) return;\n";
         html += "            if (state === 'speaking') {\n";
-        html += "                face.classList.add('speaking');\n";
+        html += "                face.className = 'robot-face speaking';\n";
+        html += "            } else if (state === 'thinking') {\n";
+        html += "                face.className = 'robot-face thinking';\n";
         html += "            } else {\n";
-        html += "                face.classList.remove('speaking');\n";
+        html += "                face.className = 'robot-face idle';\n";
+        html += "            }\n";
+        }
+        html += "        }\n";
+
+        html += "        function setMood(mood) {\n";
+        html += "            const face = document.getElementById('friend-face');\n";
+        html += "            if (!face) return;\n";
+        html += "            activeMood = mood;\n";
+        html += "            face.className = 'robot-face ' + mood;\n";
+        html += "        }\n";
+
+        html += "        function updateTrustScore(score) {\n";
+        html += "            const fill = document.getElementById('matrix-bar-fill');\n";
+        html += "            const scoreVal = document.getElementById('matrix-score-val');\n";
+        html += "            const labelText = document.getElementById('matrix-label-text');\n";
+        html += "            if (!fill || !scoreVal || !labelText) return;\n";
+        html += "            fill.style.width = score + '%';\n";
+        html += "            scoreVal.textContent = score + '%';\n";
+        html += "            if (score > 80) {\n";
+        html += "                labelText.textContent = 'Symbiotic Partnership 🧬';\n";
+        html += "                labelText.style.color = 'var(--vscode-charts-green)';\n";
+        html += "            } else if (score > 60) {\n";
+        html += "                labelText.textContent = 'Trusting';\n";
+        html += "                labelText.style.color = '#9b59b6';\n";
+        html += "            } else {\n";
+        html += "                labelText.textContent = 'Unaligned / Guarded 🛡️';\n";
+        html += "                labelText.style.color = 'var(--vscode-charts-orange)';\n";
         html += "            }\n";
         html += "        }\n";
 
         html += "        function submitPrompt() {\n";
-        html += "            const text = promptInput.value.trim();\n";
+        html += "            let text = promptInput.value.trim();\n";
         html += "            if (!text) return;\n";
         html += "            container.innerHTML = \"\";\n";
         html += "            renderUserBubble(text);\n";
@@ -652,7 +1035,13 @@ export class CompanionPanel {
         html += "            waiting.style.cssText = \"display: flex; align-items: center; gap: 8px; padding: 12px; color: var(--vscode-descriptionForeground); font-style: italic;\";\n";
         html += "            waiting.innerHTML = '<span class=\"codicon codicon-sync spin\"></span> Connecting to Lollms...';\n";
         html += "            container.appendChild(waiting);\n";
-        html += "            setFaceMood('speaking');\n";
+        html += "            setMood('thinking');\n";
+        html += "            \n";
+        html += "            if (isMove37Active) {\n";
+        html += "                text = '[MOVE 37: SERENDIPITY SPARK]\\n' + text;\n";
+        html += "                setCognitiveMode('standard');\n";
+        html += "            }\n";
+        html += "            \n";
         html += "            vscode.postMessage({ command: 'submitPrompt', text: text });\n";
         html += "            promptInput.value = '';\n";
         html += "        }\n";
@@ -693,6 +1082,12 @@ export class CompanionPanel {
         html += "                        setFaceMood('idle');\n";
         html += "                    }\n";
         html += "                    break;\n";
+        html += "                case 'updateTrustScore':\n";
+        html += "                    updateTrustScore(message.score);\n";
+        html += "                    break;\n";
+        html += "                case 'setMood':\n";
+        html += "                    setMood(message.mood);\n";
+        html += "                    break;\n";
         html += "                case 'appendChunk':\n";
         html += "                    const waiting = document.getElementById('companion-waiting-placeholder');\n";
         html += "                    if (waiting) waiting.remove();\n";
@@ -701,7 +1096,7 @@ export class CompanionPanel {
         html += "                case 'renderResponse':\n";
         html += "                    const w = document.getElementById('companion-waiting-placeholder');\n";
         html += "                    if (w) w.remove();\n";
-        html += "                    renderResponse(message.text, message.prompt);\n";
+        html += "                    renderResponse(message.text, message.prompt, message.isFinal);\n";
         html += "                    setFaceMood('idle');\n";
         html += "                    break;\n";
         html += "                case 'clearResponse':\n";
@@ -725,24 +1120,42 @@ export class CompanionPanel {
         html += "                        }).join('');\n";
         html += "                    }\n";
         html += "                    break;\n";
+        html += "                case 'applyAllResult':\n";
+        html += "                    const card = document.getElementById(message.blockId);\n";
+        html += "                    if (card) {\n";
+        html += "                        const loader = card.querySelector('.spinner');\n";
+        if (true) {
+        html += "                        if (loader) loader.style.display = 'none';\n";
+        html += "                        const actions = card.querySelector('.review-actions-row');\n";
+        html += "                        const body = card.querySelector('.review-body');\n";
+        html += "                        if (actions) {\n";
+        html += "                            actions.style.display = 'flex';\n";
+        html += "                            if (message.success) {\n";
+        html += "                                if (body) body.innerHTML = '🏆 <b>Code successfully applied to disk!</b> Please review the changes live in your editor and select your final decision below:';\n";
+        html += "                                setMood('success');\n";
+        html += "                            } else {\n";
+        html += "                                if (body) body.innerHTML = '<span style=\"color:var(--vscode-charts-red); font-weight:bold;\">⚠️ Write Failure:</span> ' + (message.error || 'Unknown error');\n";
+        html += "                                setMood('error');\n";
+        html += "                            }\n";
+        html += "                        }\n";
+        }
+        html += "                    }\n";
+        html += "                    break;\n";
         html += "            }\n";
         html += "        });\n";
 
-        html += "        function renderResponse(text, prompt) {\n";
+        html += "        function renderResponse(text, prompt, isFinal) {\n";
         html += "            activeContentBuffer = text;\n";
         html += "            if (!text) {\n";
-        html += "                container.innerHTML = '<div style=\"color: var(--vscode-descriptionForeground); text-align: center; margin-top: 40px;\"><h3>👋 Lollms Companion</h3><p>Select code or place your cursor, then type below.</p></div>';\n";
+        html += "                container.innerHTML = '<div style=" + '"color: var(--vscode-descriptionForeground); text-align: center; margin-top: 40px;"' + "><h3>Layout Active</h3><p>Start a new conversation session to begin.</p></div>';\n";
         html += "                return;\n";
         html += "            }\n";
         html += "            const parsed = processThinkTags(activeContentBuffer);\n";
         html += "            let thoughtsHtml = \"\";\n";
-        
-        // Update Friendship Scratchpad HUD real-time with internal monologue thoughts
         html += "            if (parsed.thoughts.length > 0) {\n";
         html += "                const latestThought = parsed.thoughts[parsed.thoughts.length - 1].content;\n";
         html += "                const hudText = latestThought.length > 150 ? latestThought.substring(0, 150) + '...' : latestThought;\n";
         html += "                document.getElementById('hud-scratchpad-body').textContent = hudText;\n";
-        
         html += "                parsed.thoughts.forEach((t, idx) => {\n";
         html += "                    const isClosed = t.closed || true;\n";
         html += "                    const iconHtml = isClosed ? '<span class=\"codicon codicon-circuit-board\"></span>' : '<span class=\"codicon codicon-sync spin\" style=\"color:#9b59b6;\"></span>';\n";
@@ -755,7 +1168,7 @@ export class CompanionPanel {
         html += "                                '</div>' +\n";
         html += "                            '</summary>' +\n";
         html += "                            '<div class=\"scratchpad-content\">' +\n";
-        html += "                                DOMPurify.sanitize(marked.parse(t.content || \"*Contemplating...*\")) +\n";
+        html += "                                DOMPurify.sanitize(marked.parse(t.content || \"*AI is contemplating...*\")) +\n";
         html += "                            '</div>' +\n";
         html += "                        '</details>' +\n";
         html += "                    '</div>';\n";
@@ -772,38 +1185,30 @@ export class CompanionPanel {
         html += "            responseHeader.style.cssText = \"font-size: 11px; font-weight: bold; margin-bottom: 8px; opacity: 0.8; display: flex; align-items: center; gap: 6px; color: var(--vscode-textLink-foreground);\";\n";
         html += "            responseHeader.innerHTML = '<span class=\"codicon codicon-sparkle\"></span> <span>Lollms Response</span>';\n";
         html += "            const responseBody = document.createElement('div');\n";
-        html += "            responseBody.className = \"markdown-body\";\n";
+        html += "            responseBody.className = \"markdown-body message-content\";\n";
         html += "            responseBody.innerHTML = thoughtsHtml + DOMPurify.sanitize(marked.parse(finalMarkdown));\n";
         html += "            responseContainer.appendChild(responseHeader);\n";
         html += "            responseContainer.appendChild(responseBody);\n";
         html += "            container.appendChild(responseContainer);\n";
-        html += "            document.querySelectorAll('pre code').forEach((block) => {\n";
-        html += "                const pre = block.parentElement;\n";
-        html += "                const code = block.textContent;\n";
-        html += "                const copyBtn = document.createElement('button');\n";
-        html += "                copyBtn.className = 'copy-code secondary';\n";
-        html += "                copyBtn.textContent = 'Copy';\n";
-        html += "                copyBtn.onclick = () => { vscode.postMessage({ command: 'copyToClipboard', text: code }); };\n";
-        html += "                pre.appendChild(copyBtn);\n";
-        html += "                const actionsDiv = document.createElement('div');\n";
-        html += "                actionsDiv.style.marginTop = '8px'; actionsDiv.style.display = 'flex'; actionsDiv.style.gap = '8px';\n";
-        html += "                const insertBtn = document.createElement('button');\n";
-        html += "                insertBtn.innerHTML = '<span class=\"codicon codicon-arrow-right\"></span> Insert';\n";
-        html += "                insertBtn.onclick = () => vscode.postMessage({ command: 'insertAtCursor', text: code });\n";
-        html += "                const replaceBtn = document.createElement('button');\n";
-        html += "                replaceBtn.innerHTML = '<span class=" + '"codicon codicon-replace"' + "></span> Replace';\n";
-        html += "                replaceBtn.onclick = () => vscode.postMessage({ command: 'replaceSelection', text: code });\n";
-        html += "                actionsDiv.appendChild(insertBtn);\n";
-        html += "                actionsDiv.appendChild(replaceBtn);\n";
-        html += "                pre.parentNode.insertBefore(actionsDiv, pre.nextSibling);\n";
-        html += "            });\n";
-        html += "            Prism.highlightAllUnder(container);\n";
+        html += "            \n";
+        html += "            // Leverage universal webview rendering engine\n";
+        html += "            if (typeof enhanceCodeBlocks === 'function') {\n";
+        html += "                enhanceCodeBlocks(responseBody, 'companion_msg', finalMarkdown, isFinal);\n";
+        html += "            } else {\n";
+        html += "                Prism.highlightAllUnder(responseBody);\n";
+        html += "            }\n";
         html += "            container.scrollTop = container.scrollHeight;\n";
         html += "        }\n";
 
         html += "        function appendChunk(chunk) {\n";
         html += "            activeContentBuffer += chunk;\n";
-        html += "            renderResponse(activeContentBuffer, \"\");\n";
+        html += "            renderResponse(activeContentBuffer, \"\", false);\n";
+        html += "        }\n";
+
+        html += "        function clearResponse() {\n";
+        html += "            container.innerHTML = \"\";\n";
+        html += "            activeContentBuffer = \"\";\n";
+        html += "            document.getElementById('hud-scratchpad-body').textContent = 'Standing by. Ready to pair-program with you!';\n";
         html += "        }\n";
 
         html += "        function copyFullResponse() { vscode.postMessage({ command: 'copyToClipboard', text: activeContentBuffer }); }\n";
@@ -817,6 +1222,175 @@ export class CompanionPanel {
         html += "        }\n";
         html += "        function clearHistory() { vscode.postMessage({ command: 'clearHistory' }); }\n";
 
+        // Inject essential visual rendering methods from core chatPanel view bundle
+        html += "        const langMap = { 'js': 'javascript', 'ts': 'typescript', 'py': 'python', 'sh': 'bash', 'json': 'json', 'html': 'html', 'css': 'css' };\n";
+        html += "        function renderLines(lines, type) {\n";
+        html += "            return lines.map(line => {\n";
+        html += "                const escaped = line.replace(/&/g, \"&amp;\").replace(/</g, \"&lt;\").replace(/>/g, \"&gt;\");\n";
+        html += "                const safeLine = escaped.length === 0 ? ' ' : escaped;\n";
+        html += "                return '<div class=\"aider-diff-line aider-diff-' + type + '\"><span class=\"aider-diff-code\">' + safeLine + '</span></div>';\n";
+        html += "            }).join('');\n";
+        html += "        }\n";
+        html += "        function extractFilePaths(content) {\n";
+        html += "            const infos = [];\n";
+        html += "            const lines = content.split('\\n');\n";
+        html += "            let inBlock = false;\n";
+        html += "            let currentOffset = 0;\n";
+        html += "            for (let i = 0; i < lines.length; i++) {\n";
+        html += "                const line = lines[i].trim();\n";
+        html += "                if (!inBlock) {\n";
+        html += "                    if (line.startsWith('<<<<<<< SEARCH')) {\n";
+        html += "                        inBlock = true;\n";
+        html += "                        let inferredPath = '';\n";
+        html += "                        for (let k = i - 1; k >= Math.max(0, i - 10); k--) {\n";
+        html += "                            const pathMatch = lines[k].match(/[\`\"']?([a-zA-Z0-9._\\-\\/]+\\.[a-z0-9]+)[\`\"']?/);\n";
+        html += "                            if (pathMatch) { inferredPath = pathMatch[1]; break; }\n";
+        html += "                        }\n";
+        html += "                        infos.push({ type: 'replace', path: inferredPath, isClosed: false });\n";
+        html += "                    } else if (line.startsWith('```')) {\n";
+        html += "                        const match = line.match(/^(\`{3,})/);\n";
+        html += "                        if (true) {\n";
+        html += "                        const nextLine = lines[i+1] ? lines[i+1].trim() : '';\n";
+        html += "                        inBlock = true;\n";
+        html += "                        let type = 'file';\n";
+        html += "                        let pathStr = '';\n";
+        html += "                        const headerText = line.substring(match[0].length).trim();\n";
+        html += "                        if (headerText.includes(':')) {\n";
+        html += "                            const parts = headerText.split(':');\n";
+        html += "                            type = parts[0].trim();\n";
+        html += "                            pathStr = parts.slice(1).join(':').trim();\n";
+        html += "                        }\n";
+        html += "                        infos.push({ type, path: pathStr, isClosed: false });\n";
+        html += "                        }\n";
+        html += "                    }\n";
+        html += "                } else {\n";
+        html += "                    if (line.startsWith('>>>>>>> REPLACE') || line.startsWith('```')) {\n";
+        html += "                        inBlock = false;\n";
+        html += "                        infos[infos.length - 1].isClosed = true;\n";
+        html += "                    }\n";
+        html += "                }\n";
+        html += "            }\n";
+        html += "            return infos;\n";
+        html += "        }\n";
+        html += "        function enhanceCodeBlocks(container, messageId, contentSource, isFinal) {\n";
+        html += "            const pres = Array.from(container.querySelectorAll('pre'));\n";
+        html += "            const codeBlockInfos = extractFilePaths(contentSource);\n";
+        html += "            pres.forEach((pre, index) => {\n";
+        html += "                const code = pre.querySelector('code');\n";
+        html += "                if (!code) return;\n";
+        html += "                const langMatch = code.className.match(/language-(\\S+)/);\n";
+        html += "                let language = langMatch ? langMatch[1] : 'plaintext';\n";
+        html += "                if (language.includes(':')) language = language.split(':')[0];\n";
+        html += "                let filePath = '', isDiff = false;\n";
+        html += "                const info = codeBlockInfos[index];\n";
+        html += "                if (info) filePath = info.path;\n";
+        html += "                if (langMap[language.toLowerCase()]) language = langMap[language.toLowerCase()];\n";
+        html += "                let codeText = code.innerText;\n";
+        html += "                const aiderRegex = /<<<<<<< SEARCH\\r?\\n([\\s\\S]*?)\\r?\\n=======(?:\\r?\\n(?!>>>>>>> REPLACE)([\\s\\S]*?))?\\r?\\n>>>>>>> REPLACE/g;\n";
+        html += "                const aiderMatches = [...codeText.matchAll(aiderRegex)];\n";
+        html += "                const isAider = aiderMatches.length > 0;\n";
+        html += "                const details = document.createElement('details');\n";
+        html += "                details.className = 'code-collapsible';\n";
+        html += "                details.open = true;\n";
+        html += "                details.id = 'block-' + messageId + '-' + index;\n";
+        html += "                details.setAttribute('data-raw-code', codeText);\n";
+        html += "                const summary = document.createElement('summary');\n";
+        html += "                summary.className = 'code-summary';\n";
+        html += "                summary.innerHTML = '<div class=\"summary-lang-label\"><span class=\"lang-badge\" data-lang=\"' + language.toLowerCase() + '\">' + language + '</span> : <span class=\"path-display-label\" style=\"font-family: var(--vscode-editor-font-family); font-size: 11px; font-weight: bold; margin-left: 8px; color: var(--vscode-textLink-foreground);\">' + filePath + '</span></div>';\n";
+        html += "                const actions = document.createElement('div');\n";
+        html += "                actions.className = 'code-actions';\n";
+        html += "                summary.appendChild(actions);\n";
+        html += "                const copyBtn = document.createElement('button');\n";
+        html += "                copyBtn.className = 'code-action-btn';\n";
+        html += "                copyBtn.innerHTML = '<span class=\"codicon codicon-copy\"></span>';\n";
+        html += "                copyBtn.onclick = (e) => {\n";
+        html += "                    e.stopPropagation();\n";
+        html += "                    vscode.postMessage({ command: 'copyToClipboard', text: codeText });\n";
+        html += "                };\n";
+        html += "                actions.appendChild(copyBtn);\n";
+        html += "                let applyBtn = null;\n";
+        html += "                if (filePath) {\n";
+        html += "                    applyBtn = document.createElement('button');\n";
+        html += "                    applyBtn.className = 'code-action-btn apply-btn';\n";
+        html += "                    applyBtn.id = 'apply-btn-' + messageId + '-' + index;\n";
+        html += "                    applyBtn.innerHTML = '<span class=\"codicon ' + (isAider ? 'codicon-arrow-swap' : 'codicon-tools') + '\"></span>';\n";
+        html += "                    actions.appendChild(applyBtn);\n";
+        html += "                }\n";
+        html += "                details.appendChild(summary);\n";
+        html += "                if (isAider) {\n";
+        html += "                    const hunkGroup = document.createElement('div');\n";
+        html += "                    hunkGroup.className = 'aider-hunk-group';\n";
+        html += "                    aiderMatches.forEach((match, hIdx) => {\n";
+        html += "                        const sLines = (match[1] || '').replace(/\\r\\n/g, '\\n').split('\\n');\n";
+        html += "                        const rLines = (match[2] || '').replace(/\\r\\n/g, '\\n').split('\\n');\n";
+        html += "                        const bubble = document.createElement('div');\n";
+        html += "                        bubble.className = 'aider-hunk-bubble';\n";
+        html += "                        bubble.innerHTML = '<div class=\"aider-hunk-header\" onclick=\"this.closest(\\\'.aider-hunk-bubble\\\').classList.toggle(\\\'collapsed\\\')\"><div style=\"display:flex; align-items:center; gap:8px; pointer-events: none;\"><i class=\"codicon codicon-chevron-down hunk-toggle-icon\"></i><span>HUNK ' + (hIdx+1) + '</span></div></div><div class=\"aider-hunk-content\">' + renderLines(sLines, 'removed') + renderLines(rLines, 'added') + '</div>';\n";
+        html += "                        hunkGroup.appendChild(bubble);\n";
+        html += "                    });\n";
+        html += "                    details.appendChild(hunkGroup);\n";
+        html += "                    pre.replaceWith(details);\n";
+        html += "                } else {\n";
+        html += "                    pre.replaceWith(details);\n";
+        html += "                    details.appendChild(pre);\n";
+        html += "                    Prism.highlightElement(code);\n";
+        html += "                }\n";
+        html += "                // --- Review card: body + accept/reject actions (populated after apply) ---\n";
+        html += "                if (filePath) {\n";
+        html += "                    const reviewBody = document.createElement('div');\n";
+        html += "                    reviewBody.className = 'review-body';\n";
+        html += "                    const spinner = document.createElement('div');\n";
+        html += "                    spinner.className = 'spinner';\n";
+        html += "                    spinner.style.display = 'none';\n";
+        html += "                    const bodyText = document.createElement('span');\n";
+        html += "                    bodyText.className = 'review-body-text';\n";
+        html += "                    bodyText.textContent = 'Click the apply icon above to write this change to disk.';\n";
+        html += "                    reviewBody.appendChild(spinner);\n";
+        html += "                    reviewBody.appendChild(bodyText);\n";
+        html += "                    const actionsRow = document.createElement('div');\n";
+        html += "                    actionsRow.className = 'review-actions-row';\n";
+        html += "                    actionsRow.style.display = 'none';\n";
+        html += "                    const acceptBtn = document.createElement('button');\n";
+        html += "                    acceptBtn.className = 'review-btn-accept';\n";
+        html += "                    acceptBtn.innerHTML = '<span class=\"codicon codicon-check\"></span> Accept';\n";
+        html += "                    const rejectBtn = document.createElement('button');\n";
+        html += "                    rejectBtn.className = 'review-btn-reject';\n";
+        html += "                    rejectBtn.innerHTML = '<span class=\"codicon codicon-discard\"></span> Reject';\n";
+        html += "                    acceptBtn.onclick = (e) => {\n";
+        html += "                        e.stopPropagation();\n";
+        html += "                        vscode.postMessage({ command: 'reviewDecision', decision: 'accept', filePath, blockId: details.id });\n";
+        html += "                        actionsRow.style.display = 'none';\n";
+        html += "                        bodyText.textContent = '✅ Change accepted.';\n";
+        html += "                    };\n";
+        html += "                    rejectBtn.onclick = (e) => {\n";
+        html += "                        e.stopPropagation();\n";
+        html += "                        vscode.postMessage({ command: 'reviewDecision', decision: 'reject', filePath, blockId: details.id });\n";
+        html += "                        actionsRow.style.display = 'none';\n";
+        html += "                        bodyText.textContent = '↩️ Change reverted.';\n";
+        html += "                        setMood('idle');\n";
+        html += "                    };\n";
+        html += "                    actionsRow.appendChild(acceptBtn);\n";
+        html += "                    actionsRow.appendChild(rejectBtn);\n";
+        html += "                    details.appendChild(reviewBody);\n";
+        html += "                    details.appendChild(actionsRow);\n";
+        html += "                    if (applyBtn) {\n";
+        html += "                        applyBtn.onclick = (e) => {\n";
+        html += "                            e.stopPropagation();\n";
+        html += "                            spinner.style.display = 'block';\n";
+        html += "                            bodyText.textContent = 'Applying change...';\n";
+        html += "                            actionsRow.style.display = 'none';\n";
+        html += "                            const cmd = isAider ? 'replaceCode' : 'applyFileContent';\n";
+        html += "                            vscode.postMessage({\n";
+        html += "                                command: cmd,\n";
+        html += "                                filePath,\n";
+        html += "                                content: codeText,\n";
+        html += "                                options: { silent: false, blockId: details.id, hunkIndex: index }\n";
+        html += "                            });\n";
+        html += "                        };\n";
+        html += "                    }\n";
+        html += "                }\n";
+        html += "            });\n";
+        html += "        }\n";
         html += "    </script>\n";
         html += "</body>\n";
         html += "</html>";

@@ -2045,12 +2045,16 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 
 /* --- VERTICAL TEMPERATURE SLIDER --- */
 .temp-slider-container {
-    display: flex;
+    display: none;
     align-items: center;
     justify-content: center;
     width: 20px; /* Fixed width prevents shifting */
     height: 32px; /* Matches send button height */
     position: relative;
+}
+
+.temp-slider-container.active {
+    display: flex !important;
 }
 
 .temp-slider-container:hover .temp-tooltip {

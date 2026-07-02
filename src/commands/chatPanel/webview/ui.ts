@@ -1751,7 +1751,7 @@ export function updateBadges() {
 
     // Personality Badge
     if (!isAgentMode && state.personalities && state.personalities.length > 0) {
-        const currentP = state.personalities.find(p => p.id === state.currentPersonalityId);
+        const currentP = state.personalities.find(p => p && p.id === state.currentPersonalityId);
         if (currentP) {
             const wrapper = document.createElement('div');
             wrapper.className = 'badge-wrapper';
@@ -1768,6 +1768,7 @@ export function updateBadges() {
             menu.className = 'custom-menu hidden';
             
             state.personalities.forEach((p: any) => {
+                if (!p) return;
                 const item = document.createElement('div');
                 item.className = 'custom-menu-item p-menu-item';
                 item.dataset.pid = p.id;
@@ -1786,10 +1787,7 @@ export function updateBadges() {
                     // Update local state immediately for visual feedback
                     state.currentPersonalityId = p.id;
                     vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: p.id });
-                    updateBadges();
-                    menu.classList.remove('visible');
                 };
-                
                 menu.appendChild(item);
             });
 
@@ -2140,9 +2138,9 @@ export function updateBadges() {
         activeModeTitle = 'Agent Mode: Autonomous execution.';
         activeModeClass = 'active agent';
     } else if (isDynamic) {
-        activeModeLabel = '🧠 Dynamic';
+        activeModeLabel = '🧠 Co-Engineer';
         activeModeColor = 'var(--vscode-charts-orange)';
-        activeModeTitle = 'Dynamic Mode: Interactive tools loop.';
+        activeModeTitle = 'Co-Engineer Mode: Interactive tools loop.';
         activeModeClass = 'active thinking';
     }
 
@@ -3356,7 +3354,7 @@ export function updateContextFileUsage(filePath: string, tokens: number) {
 export function renderWorkspaceMatrix() {
     const container = document.getElementById('matrix-rows-container');
     const modal = document.getElementById('workspace-matrix-modal');
-    
+
     if (!container || !modal) {
         console.error("Matrix elements not found in DOM");
         return;
@@ -3369,15 +3367,18 @@ export function renderWorkspaceMatrix() {
     const folderSettings = state.capabilities?.folderSettings || {};
 
     container.innerHTML = '';
-    container.innerHTML = '';
 
-    if (workspaceFolders.length === 0) {
+    const validFolders = workspaceFolders.filter((f: any) => f && f.uri);
+
+    if (validFolders.length === 0) {
         container.innerHTML = '<div style="padding: 20px; opacity: 0.5; text-align: center;">No workspace folders open.</div>';
         return;
     }
 
-    workspaceFolders.forEach((f: any) => {
-        const uriKey = typeof f.uri === 'string' ? f.uri : (f.uri as any).toString();
+    validFolders.forEach((f: any) => {
+        const uriKey = typeof f.uri === 'string' ? f.uri : (f.uri ? f.uri.toString() : '');
+        if (!uriKey) return;
+
         const settings = folderSettings[uriKey] || { tree: true, content: true };
         const stats = state.matrixStats?.[uriKey] || { tree: 0, files: 0 };
 
@@ -3389,7 +3390,7 @@ export function renderWorkspaceMatrix() {
         row.innerHTML = `
             <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;">
                 <span class="codicon codicon-root-folder" style="opacity: 0.6; font-size: 16px;"></span>
-                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 800;">${f.name}</span>
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 800;">${f.name || 'Workspace Folder'}</span>
             </div>
             <div style="display: flex; gap: 8px;">
                 <button class="matrix-toggle-btn ${settings.tree ? 'active' : 'inactive'}" 

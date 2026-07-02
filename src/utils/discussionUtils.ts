@@ -18,6 +18,7 @@ export async function startDiscussionWithInitialPrompt(
     services.treeProviders.discussion?.refresh();
 
     const panel = ChatPanel.createOrShow(services, discussion.id);
+    panel._panel.reveal();
 
     // Check if agent exists first
     if (ChatPanel.activeAgents.has(discussion.id)) {

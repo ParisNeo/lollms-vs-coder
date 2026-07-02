@@ -1592,11 +1592,19 @@ const streamQueues = new Map<string, { buffer: string; lastRender: number }>();
 let animationFrameRequest: number | null = null;
 
 function flushStreamQueues() {
+    if (streamQueues.size === 0) {
+        if (animationFrameRequest !== null) {
+            cancelAnimationFrame(animationFrameRequest);
+            animationFrameRequest = null;
+        }
+        return;
+    }
+
     const now = Date.now();
     let hasUpdates = false;
 
     streamQueues.forEach((data, messageId) => {
-        if (now - data.lastRender >= 100) { // 100ms Throttling Window
+        if (now - data.lastRender >= 150) { // Throttled to 150ms to prevent browser thread freeze
             renderMessageContent(messageId, data.buffer);
             data.lastRender = now;
             hasUpdates = true;
@@ -1604,7 +1612,6 @@ function flushStreamQueues() {
     });
 
     if (hasUpdates) {
-        // Trigger virtual list recalculation to sync height adjustments
         triggerVirtualListRecalculation();
     }
 
@@ -1628,85 +1635,26 @@ export function scheduleRender(messageId: string) {
 
 
 // --- LIGHTWEIGHT VIRTUAL SCROLL LIST ENGINE ---
-// Tracks which message wrappers are inside the viewport and substitutes
-// off-screen nodes with padding spacers to keep active DOM nodes low.
-let virtualScrollTimer: any = null;
-const visibleHeightCache = new Map<string, number>(); // messageId -> height
-
+// Deactivated virtual windowing to resolve layout-shifting feedback loops when scrolling up.
+// Keeps scrolling 100% stable, smooth, and predictable across all views.
 export function triggerVirtualListRecalculation() {
-    if (virtualScrollTimer) return;
-    virtualScrollTimer = setTimeout(() => {
-        virtualScrollTimer = null;
-        runVirtualWindowing();
-    }, 60); // Debounce reflow calculations
+    // No-op to preserve interface compatibility
 }
 
 function runVirtualWindowing() {
     const container = dom.messagesDiv;
     if (!container) return;
-
     const wrappers = Array.from(container.querySelectorAll('.message-wrapper')) as HTMLElement[];
-    if (wrappers.length < 5) {
-        // Don't virtualize short discussions
-        wrappers.forEach(w => w.style.display = 'flex');
-        return;
-    }
-
-    const scrollTop = container.scrollTop;
-    const viewportHeight = container.clientHeight;
-    const buffer = 400; // Render buffer zone above/below viewport
-
-    let accumulatedHeight = 0;
-    let topSpacerHeight = 0;
-    let bottomSpacerHeight = 0;
-
-    wrappers.forEach(wrapper => {
-        const id = wrapper.dataset.messageId || "";
-
-        // Measure and cache heights when visible to prevent layout thrashing
-        let height = wrapper.offsetHeight;
-        if (height > 0) {
-            visibleHeightCache.set(id, height);
-        } else {
-            height = visibleHeightCache.get(id) || 120; // Fallback estimate
-        }
-
-        const startY = accumulatedHeight;
-        const endY = startY + height;
-        accumulatedHeight += height;
-
-        const isVisible = (endY >= scrollTop - buffer) && (startY <= scrollTop + viewportHeight + buffer);
-
-        if (isVisible) {
-            wrapper.style.display = 'flex';
-            // Restore actual height once re-instantiated
-            wrapper.style.height = ''; 
-        } else {
-            wrapper.style.display = 'none';
-            if (startY < scrollTop - buffer) {
-                topSpacerHeight += height;
-            } else {
-                bottomSpacerHeight += height;
-            }
-        }
+    wrappers.forEach(w => {
+        w.style.display = 'flex';
+        w.style.height = '';
     });
-
-    // Apply virtual padding to preserve scrollbar proportions
     let listContainer = document.getElementById('chat-messages-container');
     if (listContainer) {
-        listContainer.style.paddingTop = `${topSpacerHeight}px`;
-        listContainer.style.paddingBottom = `${bottomSpacerHeight}px`;
+        listContainer.style.paddingTop = '0px';
+        listContainer.style.paddingBottom = '0px';
     }
 }
-
-// Attach scroll listener to the main viewport container
-setTimeout(() => {
-    if (dom.messagesDiv) {
-        dom.messagesDiv.addEventListener('scroll', () => {
-            triggerVirtualListRecalculation();
-        }, { passive: true });
-    }
-}, 1000);
 
 function renderDebugReport(dataStr: string): string {
     try {
@@ -3544,8 +3492,12 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
             if (target.id === 'ws-all-on' || target.id === 'ws-all-off') {
                 const turnOn = target.id === 'ws-all-on';
                 const newSettings: Record<string, any> = {};
-                workspaceFolders.forEach(f => {
-                    newSettings[f.uri] = { tree: turnOn, content: turnOn };
+                const validFolders = (workspaceFolders || []).filter((f: any) => f && f.uri);
+                validFolders.forEach((f: any) => {
+                    const uriStr = typeof f.uri === 'string' ? f.uri : (f.uri ? f.uri.toString() : '');
+                    if (uriStr) {
+                        newSettings[uriStr] = { tree: turnOn, content: turnOn };
+                    }
                 });
                 vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { folderSettings: newSettings } });
             }
@@ -4335,7 +4287,7 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
     // Find all blocks that actually HAVE an Apply button. 
     // We ignore blocks that are just for display (no path header).
     const blockButtons = Array.from(wrapper.querySelectorAll('.code-actions .apply-btn'));
-    
+
     if (blockButtons.length === 0) return;
 
     const allApplied = blockButtons.every(btn => btn.classList.contains('applied'));
@@ -4346,10 +4298,8 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
         applyAllBtn.disabled = true;
         applyAllBtn.style.backgroundColor = 'var(--vscode-charts-green)';
 
-        // Also collapse the details if everything is finished to keep the view tidy
-        wrapper.querySelectorAll('details.code-collapsible').forEach(d => {
-            collapseBlockWithScrollPreservation(d as HTMLDetailsElement, dom.messagesDiv);
-        });
+        // NOTE: Preemptive auto-collapse removed to prevent visual desynchronization.
+        // Blocks will be collapsed only when the user explicitly saves the file on disk.
     } else {
         applyAllBtn.classList.remove('applied');
         applyAllBtn.disabled = false;

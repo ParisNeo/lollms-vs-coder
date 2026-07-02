@@ -210,7 +210,8 @@ export interface DiscussionCapabilities {
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     tokenEconomyMode: boolean;
     projectMemoryEnabled: boolean;
-    temperature: number;
+    enableTemperature?: boolean; // Added to enable/disable temperature control override
+    temperature?: number; // Optional temperature value
     ttftTimeout: number;
     interTokenTimeout: number;
     contextGovernorThreshold: number; // Percentage (0-100)

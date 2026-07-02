@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.10.7",
+  "version": "0.11.3",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -843,10 +843,50 @@
           "default": "",
           "description": "Slack Signing Secret (Required for Push/Events API)."
         },
+        "lollmsVsCoder.remote.telegram.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Telegram bot integration."
+        },
+        "lollmsVsCoder.remote.telegram.token": {
+          "type": "string",
+          "default": "",
+          "description": "Telegram Bot Token."
+        },
         "lollmsVsCoder.remote.whatsapp.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable WhatsApp integration (Future)."
+          "description": "Enable WhatsApp (Twilio API) integration."
+        },
+        "lollmsVsCoder.remote.whatsapp.sid": {
+          "type": "string",
+          "default": "",
+          "description": "Twilio Account SID (for WhatsApp integration)."
+        },
+        "lollmsVsCoder.remote.whatsapp.token": {
+          "type": "string",
+          "default": "",
+          "description": "Twilio Auth Token (for WhatsApp integration)."
+        },
+        "lollmsVsCoder.remote.whatsapp.number": {
+          "type": "string",
+          "default": "",
+          "description": "Twilio WhatsApp Sandbox or Production Number (e.g., 'whatsapp:+14155238886')."
+        },
+        "lollmsVsCoder.remote.requireOtp": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require a pre-shared master passphrase/challenge before allowing remote execution of administrative tools (File writes, Terminal shell, etc.)."
+        },
+        "lollmsVsCoder.remote.masterPassphrase": {
+          "type": "string",
+          "default": "",
+          "description": "Secure master passphrase/challenge word required when Remote Challenge/OTP verification is enabled."
+        },
+        "lollmsVsCoder.remote.rateLimit": {
+          "type": "number",
+          "default": 30,
+          "description": "The maximum number of remote messages allowed per user per minute (prevents spam and denial-of-service)."
         },
         "lollmsVsCoder.remote.allowedUsers": {
           "type": "array",

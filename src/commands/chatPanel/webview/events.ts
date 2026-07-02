@@ -795,7 +795,26 @@ export function initEventHandlers() {
             const val = parseFloat((e.target as HTMLInputElement).value);
             vscode.postMessage({ 
                 command: 'updateDiscussionCapabilitiesPartial', 
-                partial: { temperature: val } 
+                partial: { temperature: val, enableTemperature: true } 
+            });
+        });
+    }
+
+    if (dom.toggleTempSliderBtn) {
+        dom.toggleTempSliderBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isActive = dom.inputTempContainer.style.display === 'flex';
+            const newEnableState = !isActive;
+
+            dom.inputTempContainer.style.display = newEnableState ? 'flex' : 'none';
+            dom.toggleTempSliderBtn.classList.toggle('active', newEnableState);
+
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { 
+                    enableTemperature: newEnableState,
+                    temperature: newEnableState ? parseFloat(dom.tempSlider.value) : undefined
+                }
             });
         });
     }
@@ -941,6 +960,23 @@ export function initEventHandlers() {
         tempRange.oninput = () => { tempLabel.textContent = tempRange.value; };
     }
 
+    const modalTempCheck = document.getElementById('cap-enableTemperature') as HTMLInputElement;
+    const modalTempContainer = document.getElementById('modal-temperature-container');
+    if (modalTempCheck && modalTempContainer) {
+        modalTempCheck.addEventListener('change', () => {
+            const isChecked = modalTempCheck.checked;
+            modalTempContainer.style.display = isChecked ? 'block' : 'none';
+
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { 
+                    enableTemperature: isChecked,
+                    temperature: isChecked ? parseFloat(tempRange.value) : undefined
+                }
+            });
+        });
+    }
+
     const govRange = document.getElementById('modal-governor-threshold') as HTMLInputElement;
     const govLabel = document.getElementById('modal-governor-threshold-val');
     if (govRange && govLabel) {
@@ -959,6 +995,9 @@ export function initEventHandlers() {
                 defaultId: selectedProfileId 
             });
 
+            const enableTempInput = document.getElementById('cap-enableTemperature') as HTMLInputElement;
+            const isTempEnabled = enableTempInput ? enableTempInput.checked : false;
+
             const caps = {
                 generationFormats: {
                     fullFile: dom.capAllowFullFallback?.checked ?? true,
@@ -967,7 +1006,8 @@ export function initEventHandlers() {
                 responseProfileId: selectedProfileId,
                 language: (document.getElementById('modal-language') as HTMLSelectElement)?.value || 'auto',
                 voice: (document.getElementById('modal-voice') as HTMLSelectElement)?.value || 'default',
-                temperature: parseFloat((document.getElementById('modal-temperature') as HTMLInputElement)?.value || '0.7'),
+                enableTemperature: isTempEnabled,
+                temperature: isTempEnabled ? parseFloat((document.getElementById('modal-temperature') as HTMLInputElement)?.value || '0.7') : undefined,
                 ttftTimeout: parseInt((document.getElementById('modal-ttft-timeout') as HTMLInputElement)?.value || '0', 10),
                 interTokenTimeout: parseInt((document.getElementById('modal-inter-token-timeout') as HTMLInputElement)?.value || '0', 10),
                 contextGovernorThreshold: parseInt((document.getElementById('modal-governor-threshold') as HTMLInputElement)?.value || '90', 10),
@@ -1237,6 +1277,11 @@ export function initEventHandlers() {
     // --- Raw Code Modal Events ---
     if (dom.rawCodeCloseBtn) {
         dom.rawCodeCloseBtn.addEventListener('click', () => {
+            // Force terminate any active progressive search loop
+            if ((window as any).progressiveSearchState !== undefined) {
+                (window as any).progressiveSearchState = null;
+            }
+            dom.rawCodeModal.style.display = 'none';
             dom.rawCodeModal.classList.remove('visible');
             dom.rawSearchResultsMini.style.display = 'none';
             clearRawSearch();
@@ -1405,6 +1450,11 @@ export function initEventHandlers() {
             const hunkIndex = hunkIndexRaw === "" ? undefined : parseInt(hunkIndexRaw || "0", 10);
 
             if (messageId) {
+                // Terminate any ongoing progressive search state machine to prevent background CPU loops
+                if ((window as any).progressiveSearchState !== undefined) {
+                    (window as any).progressiveSearchState = null;
+                }
+
                 // Send signal to extension to update persistent state
                 vscode.postMessage({
                     command: 'markHunkApplied',
@@ -1425,6 +1475,12 @@ export function initEventHandlers() {
                     }
                 }));
 
+                // Reset search results mini view and close the modal completely
+                if (dom.rawSearchResultsMini) dom.rawSearchResultsMini.style.display = 'none';
+                clearRawSearch();
+                if (dom.rawSearchInput) dom.rawSearchInput.value = '';
+
+                dom.rawCodeModal.style.display = 'none';
                 dom.rawCodeModal.classList.remove('visible');
             }
         });

@@ -231,10 +231,11 @@ export class ContextManager {
   // TREE GENERATION
   // ─────────────────────────────────────────────────────────────
 
-  public async generateIsolatedProjectTree(
+    public async generateIsolatedProjectTree(
       folder: vscode.WorkspaceFolder,
       signal?: AbortSignal,
-      capabilities?: any
+      capabilities?: any,
+      onScanProgress?: (pct: number, status: string) => void
   ): Promise<string> {
       const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}`;
       if (this._cachedIsolatedTrees.has(cacheKey) && !this._isTreeDirty) {
@@ -273,7 +274,7 @@ export class ContextManager {
 
       // --- HIGH-PERFORMANCE RIPGREP PATH SCANNER ---
       if (this.contextStateProvider) {
-          const visibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
+          const visibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal, onScanProgress);
           for (const file of visibleFiles) {
               if (signal?.aborted) return "";
               const resolution = await this.resolveWorkspaceFromPath(file);
@@ -284,6 +285,9 @@ export class ContextManager {
       }
 
       let treeString = '```text\n';
+      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+      const depthLimit = config.get<number>('contextMaxDepth') || config.get<number>('context.maxDepth') || 8;
+
       const render = (obj: any, prefix: string = '', currentLocalPath: string = '', depth: number = 0): string => {
         if (!obj || typeof obj !== 'object') return '';
         let out = '';
@@ -294,10 +298,6 @@ export class ContextManager {
           if (!aIsDir && bIsDir) return 1;
           return a.localeCompare(b);
         });
-
-        // --- DEPTH GOVERNOR FOR LARGE WORKSPACES ---
-        const isBigProject = (this.contextStateProvider as any)._cachedVisibleFiles && (this.contextStateProvider as any)._cachedVisibleFiles.length > 300;
-        const depthLimit = isBigProject ? 3 : 8;
 
         if (depth >= depthLimit) {
             return prefix + '└── ... (deep hierarchy truncated to save tokens)\n';
@@ -419,6 +419,8 @@ export class ContextManager {
       }
 
       let treeString = '## 🌳 PROJECT STRUCTURE\n\n```text\n';
+      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+      const depthLimit = config.get<number>('contextMaxDepth') || config.get<number>('context.maxDepth') || 8;
 
       const render = (obj: any, prefix: string = '', currentPath: string = '', rootFolder?: vscode.WorkspaceFolder, depth: number = 0): string => {
         if (!obj || typeof obj !== 'object') return '';
@@ -430,10 +432,6 @@ export class ContextManager {
           if (!aIsDir && bIsDir) return 1;
           return a.localeCompare(b);
         });
-
-        // --- DEPTH GOVERNOR FOR LARGE WORKSPACES ---
-        const isBigProject = (this.contextStateProvider as any)._cachedVisibleFiles && (this.contextStateProvider as any)._cachedVisibleFiles.length > 300;
-        const depthLimit = isBigProject ? 3 : 8;
 
         if (depth >= depthLimit) {
             return prefix + '└── ... (deep hierarchy truncated)\n';
@@ -499,6 +497,7 @@ export class ContextManager {
     allowRLM?: boolean,
     onProgress?: (pct: number) => void,
     onLoadProgress?: (progress: { current: number, total: number, percentage: number, fileName: string }) => void,
+    onScanProgress?: (pct: number, status: string) => void,
     capabilities?: DiscussionCapabilities
   }): Promise<ContextResult> {
 
@@ -627,7 +626,7 @@ export class ContextManager {
       result.text += `${'#'.repeat(50)}\n\n`;
 
       if (includeTree && settings.tree !== false) {
-        const isolatedTree = await this.generateIsolatedProjectTree(folder, signal, options?.capabilities);
+        const isolatedTree = await this.generateIsolatedProjectTree(folder, signal, options?.capabilities, options?.onScanProgress);
         result.text += `### 🌳 ${projectName.toUpperCase()} — FILE STRUCTURE\n`;
         result.text += isolatedTree + '\n';
         result.projectTree += `### ${projectName}\n${isolatedTree}\n`;
@@ -692,22 +691,25 @@ export class ContextManager {
           const cacheKey = headerPath;
 
           const cached = this._fileContentCache.get(cacheKey);
-          const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
-          if (!stat || stat.type !== vscode.FileType.File) continue;
 
-          // STAT-FIRST VERIFICATION:
-          // Compare mtime and size. If matched, reuse cache immediately with ZERO disk reads.
-          if (cached && cached.state === contextState && cached.mtime === stat.mtime && cached.size === stat.size) {
+          // REACTIVE CACHE VERIFICATION:
+          // Because VS Code's filesystem watcher instantly invalidates our cache when files
+          // are modified, we can trust the cache 100% without blocking on physical disk I/O.
+          if (cached && cached.state === contextState) {
               // --- CACHE CORRUPTION GUARD ---
-              if (stat.size > 0 && (!cached.content || cached.content.trim() === "")) {
-                  this._fileContentCache.delete(cacheKey);
-                  Logger.warn(`[Cache Guard] Cleared corrupted empty cache entry for: ${cacheKey}`);
-              } else {
+              if (cached.content && cached.content.trim() !== "") {
                   projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${cached.content}\n\`\`\`\n\n`;
                   filesInThisFolderCount++;
                   continue;
+              } else {
+                  this._fileContentCache.delete(cacheKey);
+                  Logger.warn(`[Cache Guard] Cleared corrupted empty cache entry for: ${cacheKey}`);
               }
           }
+
+          // If not cached, we perform a single asynchronous metadata check to populate our cache.
+          const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
+          if (!stat || stat.type !== vscode.FileType.File) continue;
 
           if (this.binaryExtensions.has(ext)) {
             projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n(Binary file content excluded)\n\`\`\`\n\n`;

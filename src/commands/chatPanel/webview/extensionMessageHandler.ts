@@ -328,7 +328,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (message.currentModel) {
                         state.currentModelName = message.currentModel;
                     }
-                    if (message.currentTemperature !== undefined) {
+                    if (message.currentTemperature !== undefined && message.currentTemperature !== null) {
                         if (dom.tempSlider) {
                             dom.tempSlider.value = message.currentTemperature.toString();
                             if (dom.tempValDisplay) dom.tempValDisplay.textContent = dom.tempSlider.value;
@@ -521,12 +521,23 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (herdCheck) herdCheck.checked = !!caps.herdMode;
 
                     if (dom.tempSlider) {
-                        // Ensure 0 is treated as a valid value but undefined triggers the 0.7 default
                         const tempValue = (caps.temperature !== undefined && caps.temperature !== null) 
                             ? caps.temperature 
                             : 0.7;
                         dom.tempSlider.value = tempValue.toString();
                         if (dom.tempValDisplay) dom.tempValDisplay.textContent = dom.tempSlider.value;
+                    }
+
+                    if (dom.inputTempContainer && dom.toggleTempSliderBtn) {
+                        const isTempEnabled = !!caps.enableTemperature;
+                        dom.inputTempContainer.style.display = isTempEnabled ? 'flex' : 'none';
+                        dom.toggleTempSliderBtn.classList.toggle('active', isTempEnabled);
+                        
+                        // Also update modal toggle check if it is active
+                        const modalTempCheck = document.getElementById('cap-enableTemperature') as HTMLInputElement;
+                        if (modalTempCheck) {
+                            modalTempCheck.checked = isTempEnabled;
+                        }
                     }
                     if (dom.testModeCheckbox) dom.testModeCheckbox.checked = !!caps.testMode;
                     if (dom.docsModeCheckbox) dom.docsModeCheckbox.checked = !!caps.documentationMode;
@@ -560,6 +571,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (tempInput) {
                         tempInput.value = (caps.temperature ?? 0.7).toString();
                         if (tempVal) tempVal.textContent = tempInput.value;
+                    }
+
+                    const modalTempCheck = document.getElementById('cap-enableTemperature') as HTMLInputElement;
+                    const modalTempContainer = document.getElementById('modal-temperature-container');
+                    if (modalTempCheck && modalTempContainer) {
+                        modalTempCheck.checked = !!caps.enableTemperature;
+                        modalTempContainer.style.display = caps.enableTemperature ? 'block' : 'none';
                     }
 
                     // Trigger a re-population of voices to ensure selection matches
@@ -736,6 +754,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     
                     if (message.current && message.total) {
                         const progressStatus = `Processing: ${message.current} / ${message.total} files (${message.progress}%) [${message.fileName}]`;
+                        if (label) {
+                            label.textContent = progressStatus;
+                            label.style.opacity = '1';
+                        }
+                        if (loaderText) {
+                            loaderText.textContent = progressStatus;
+                        }
+                    } else if (message.status) {
+                        const progressStatus = `${message.status} (${message.progress}%)`;
                         if (label) {
                             label.textContent = progressStatus;
                             label.style.opacity = '1';
@@ -1376,6 +1403,26 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             }
 
+            case 'fileSavedOnDisk':
+                {
+                    const { filePath } = message;
+                    if (!filePath) break;
+
+                    // Scan the entire DOM for any code block that targets this specific file
+                    const codeBlocks = document.querySelectorAll('details.code-collapsible');
+                    const { collapseBlockWithScrollPreservation } = await import('./utils.js');
+
+                    codeBlocks.forEach((block: any) => {
+                        const inputEl = block.querySelector('.path-editor-input') as HTMLInputElement;
+                        const currentPath = inputEl ? inputEl.value.trim() : "";
+
+                        // If this block targets the saved file, collapse it gracefully
+                        if (currentPath === filePath || currentPath.replace(/\\\\/g, '/').endsWith(filePath.replace(/\\\\/g, '/'))) {
+                            collapseBlockWithScrollPreservation(block, dom.messagesDiv);
+                        }
+                    });
+                }
+                break;
             case 'applyAllResult':
                 {
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`) as HTMLElement;
@@ -1679,7 +1726,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
                     // Update main "Apply All" button state if everything is finished
-                    const resultsList = row?.closest('.apply-results-list');
+                    const resultsList = row?.closest('.apply-results-list') || document.getElementById(`results-${message.messageId}`);
                     if (resultsList) {
                         const stillPending = resultsList.querySelectorAll('.spinner, .codicon-loading').length;
 
@@ -1689,17 +1736,21 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             if (mainBtn) {
                                 mainBtn.classList.remove('stop-btn-red');
                                 mainBtn.classList.remove('sequential-applying');
-                                
+
                                 const failedCount = resultsList.querySelectorAll('.codicon-error').length;
                                 if (failedCount === 0) {
                                     if (isUndo) {
                                         // SUCCESS: Undo completed! Restore Apply All state.
                                         mainBtn.innerHTML = '<span class="codicon codicon-check-all"></span> Apply All Changes';
-                                        mainBtn.classList.remove('applied');
-                                        mainBtn.classList.remove('undo-all-btn');
+                                        mainBtn.className = 'apply-all-btn'; // Reset standard classes
                                         mainBtn.style.removeProperty('background-color');
                                         mainBtn.style.removeProperty('color');
                                         mainBtn.disabled = false;
+
+                                        // Hide progress bar and results list on successful revert
+                                        const progressBar = document.getElementById(`progress-container-${message.messageId}`);
+                                        if (progressBar) progressBar.style.display = 'none';
+                                        resultsList.style.display = 'none';
                                     } else {
                                         // SUCCESS: Apply completed! Transform to Undo All.
                                         mainBtn.innerHTML = '<span class="codicon codicon-discard"></span> Undo All Changes';

@@ -48,6 +48,8 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private workspaceFolder?: vscode.WorkspaceFolder;
     private static readonly DEPTH_THRESHOLD = 5;
     private static readonly MUTE_DEEP_WARNING_KEY = 'lollms.muteDeepFolderWarning';
+    private static readonly BUILD_DEBUG_PATTERNS = ['dist', 'build', 'out', 'bin', 'obj', 'target'];
+    private static readonly VENV_PATTERNS = ['venv', '.venv', 'env', '.env'];
 
     private _onDidChangeFileDecorations: vscode.EventEmitter<vscode.Uri | vscode.Uri[]> = new vscode.EventEmitter<vscode.Uri | vscode.Uri[]>();
     readonly onDidChangeFileDecorations: vscode.Event<vscode.Uri | vscode.Uri[]> = this._onDidChangeFileDecorations.event;
@@ -84,13 +86,25 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     public async switchWorkspace(newWorkspaceFolder: vscode.WorkspaceFolder) {
+        if (!newWorkspaceFolder || !newWorkspaceFolder.uri) return;
+
+        const isSameWorkspace = this.workspaceFolder && 
+                                this.workspaceFolder.uri && 
+                                this.workspaceFolder.uri.toString() === newWorkspaceFolder.uri.toString();
+
         this.workspaceFolder = newWorkspaceFolder;
         this.stateKey = `context-state-${newWorkspaceFolder.uri.fsPath}`;
-        this._isTreeDirty = true;
-        this._cachedVisibleFiles = null;
-        await this.cleanNonExistentFiles();
-        await this.migrateDefaultCollapsedFolders();
-        this.refresh();
+
+        if (!isSameWorkspace) {
+            this._isTreeDirty = true;
+            this._cachedVisibleFiles = null;
+            await this.cleanNonExistentFiles();
+            await this.migrateDefaultCollapsedFolders();
+            this.refresh();
+        } else {
+            // Same workspace: keep cache alive, only trigger file decoration updates
+            this._onDidChangeFileDecorations.fire(undefined);
+        }
     }
 
     refresh(): void {
@@ -232,8 +246,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const relativePath = this.normalize(path.relative(workspaceFolder.uri.fsPath, uri.fsPath));
         const segments = relativePath.split('/').map(s => s.toLowerCase());
 
-        // Unconditionally exclude internal system directories and python caches
-        if (segments.includes('__pycache__') || segments.includes('.lollms')) {
+        // Unconditionally exclude heavy dependencies, build folders, and system directories to prevent high CPU lag
+        const heavyDirs = ['__pycache__', '.lollms', 'node_modules', '.git', 'venv', '.venv', 'dist', 'build', 'bin', 'obj', 'target'];
+        if (segments.some(seg => heavyDirs.includes(seg))) {
             return true;
         }
 
@@ -579,11 +594,11 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         return this.activeScanPromise;
     }
 
-    public async getAllVisibleFiles(signal?: AbortSignal): Promise<string[]> {
+    public async getAllVisibleFiles(signal?: AbortSignal, onProgress?: (pct: number, status: string) => void): Promise<string[]> {
         if (this._cachedVisibleFiles && !this._isTreeDirty) {
             return this._cachedVisibleFiles;
         }
-        return this.triggerFullScan();
+        return this.triggerFullScan(onProgress);
     }
 
     public addFileToCache(relativeFilePath: string) {

@@ -761,9 +761,9 @@ ${originalFileContent}
         if (matches.length === 0) {
             // DEEP SCAN: If no blocks found at start of lines, try a less restrictive match 
             // for models that put chatter inside the code block
-            const permissiveRegex = /<<<<<<< SEARCH[\s\S]*?=======[\s\S]*?>>>>>>> REPLACE/g;
+            const permissiveRegex = /<<<<<<< SEARCH([\s\S]*?)=======([\s\S]*?)>>>>>>> REPLACE/g;
             matches = [...normalizedContent.matchAll(permissiveRegex)];
-            
+
             if (matches.length === 0) {
                 if (!options?.silent) vscode.window.showErrorMessage("No valid Search/Replace blocks found.");
                 return { success: false, error: "Invalid Aider block format: Markers must be on their own lines." };

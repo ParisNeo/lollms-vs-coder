@@ -2527,9 +2527,8 @@ export function addMessage(message: any, isFinal: boolean = true) {
     }
 
     const content = typeof message.content === 'string' ? message.content : "";
-    
+
     // DETECTOR: Identify PURELY technical messages to un-wrap them.
-    // If there is ANY other text (explanation, reasoning), we keep the bubble.
     const technicalPatterns = [
         '<agent_task', 
         '<milestone', 
@@ -2542,12 +2541,17 @@ export function addMessage(message: any, isFinal: boolean = true) {
     const trimmedContent = content.trim();
     const isPurelyTechnical = technicalPatterns.some(p => {
         return trimmedContent.startsWith(p) && (trimmedContent.endsWith('/>') || trimmedContent.endsWith('>') || trimmedContent.includes('</'));
-    }) && !trimmedContent.match(/^[a-zA-Z0-9]/); // If it starts with normal text, it's not purely technical.
+    }) && !trimmedContent.match(/^[a-zA-Z0-9]/);
 
     if (message.role === 'system' && content.startsWith('Attached file:')) {
         addAttachment(message);
     } else {
+        // Prevent layout shifts during appending: batch scroll metrics
+        const wasAtBottom = dom.messagesDiv && (dom.messagesDiv.scrollHeight - dom.messagesDiv.scrollTop - dom.messagesDiv.clientHeight < 40);
         addChatMessage(message, isFinal, isPurelyTechnical);
+        if (wasAtBottom && dom.messagesDiv) {
+            dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+        }
     }
 }
 
@@ -2719,7 +2723,7 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
 
         if (isWaiting && role === 'assistant') {
             const contentDiv = messageDiv.querySelector('.message-content');
-            if (contentDiv) {
+            if (contentDiv && contentDiv.innerHTML !== `<div class="waiting-animation"><div class="lollms-spinner"></div><span class="thinking-text">Thinking...</span></div>`) {
                 contentDiv.innerHTML = `<div class="waiting-animation"><div class="lollms-spinner"></div><span class="thinking-text">Thinking...</span></div>`;
             }
         }
@@ -2856,48 +2860,71 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     if (existingDashboard) {
         existingDashboard.className = `context-message ${themeClass}`;
 
-        // Update specific labels with 100% precise class queries
+        // Update specific labels with 100% precise class queries if content has changed
         const filesLabel = existingDashboard.querySelector('.files-count-label');
-        if (filesLabel) filesLabel.textContent = `Selected Files (${finalFiles.length})`;
+        if (filesLabel && filesLabel.textContent !== `Selected Files (${finalFiles.length})`) {
+            filesLabel.textContent = `Selected Files (${finalFiles.length})`;
+        }
 
         const skillsLabel = existingDashboard.querySelector('.skills-count-label');
-        if (skillsLabel) skillsLabel.textContent = `Active Skills (${finalSkills.length})`;
+        if (skillsLabel && skillsLabel.textContent !== `Active Skills (${finalSkills.length})`) {
+            skillsLabel.textContent = `Active Skills (${finalSkills.length})`;
+        }
 
         const toolsLabel = existingDashboard.querySelector('.tools-count-label');
-        if (toolsLabel) toolsLabel.textContent = `Active Tools (${finalTools.length})`;
+        if (toolsLabel && toolsLabel.textContent !== `Active Tools (${finalTools.length})`) {
+            toolsLabel.textContent = `Active Tools (${finalTools.length})`;
+        }
 
         const diagramsLabel = existingDashboard.querySelector('.diagrams-count-label');
-        if (diagramsLabel) diagramsLabel.textContent = `Active Diagrams (${(diagrams || []).length})`;
+        if (diagramsLabel && diagramsLabel.textContent !== `Active Diagrams (${(diagrams || []).length})`) {
+            diagramsLabel.textContent = `Active Diagrams (${(diagrams || []).length})`;
+        }
 
-        // Re-render only the internal scrollable lists
+        // Re-render only the internal scrollable lists surgically
         const scrollContainer = existingDashboard.querySelector('.hud-scroll-container');
         if (scrollContainer) {
             // Update the briefing/files/skills HTML content inside their specific containers
             // but keep the details open/closed state.
             const briefingBody = existingDashboard.querySelector('.briefing-content');
-            if (briefingBody) briefingBody.innerHTML = briefing ? renderDataBriefing(briefing) : '...';
+            const expectedBriefingHtml = briefing ? renderDataBriefing(briefing) : '...';
+            if (briefingBody && briefingBody.innerHTML !== expectedBriefingHtml) {
+                briefingBody.innerHTML = expectedBriefingHtml;
+            }
 
-            // Update Lists (Skills, Tools, Files)
+            // Update Lists (Skills, Tools, Files) surgically to avoid active re-selection layout flashes
             const skillsContainer = existingDashboard.querySelector('.hud-skills-list');
-            if (skillsContainer) skillsContainer.innerHTML = skillsList;
+            if (skillsContainer && skillsContainer.innerHTML !== skillsList) {
+                skillsContainer.innerHTML = skillsList;
+            }
 
             const toolsContainer = existingDashboard.querySelector('.hud-tools-list');
             if (toolsContainer) {
-                toolsContainer.innerHTML = finalTools.length > 0 
+                const expectedToolsHtml = finalTools.length > 0 
                     ? `<div class="context-file-list">${finalTools.map(t => `<div class="context-item" style="padding: 4px 8px;"><span class="codicon codicon-wrench" style="color:var(--vscode-charts-orange); opacity:0.8;"></span><span class="context-item-label" title="${t.description}">${t.name}</span><button class="remove-context-btn" data-type="tool" data-value="${t.name}"><span class="codicon codicon-close"></span></button></div>`).join('')}</div>`
                     : '<div class="empty-context-msg">No specialized tools equipped.</div>';
+                if (toolsContainer.innerHTML !== expectedToolsHtml) {
+                    toolsContainer.innerHTML = expectedToolsHtml;
+                }
             }
 
             const projFilesContainer = existingDashboard.querySelector('.hud-project-files-list');
-            if (projFilesContainer) projFilesContainer.innerHTML = renderFileList(projectFiles, "No project files selected.", false);
+            const expectedProjHtml = renderFileList(projectFiles, "No project files selected.", false);
+            if (projFilesContainer && projFilesContainer.innerHTML !== expectedProjHtml) {
+                projFilesContainer.innerHTML = expectedProjHtml;
+            }
 
             const extFilesContainer = existingDashboard.querySelector('.hud-external-files-list');
-            if (extFilesContainer) extFilesContainer.innerHTML = renderFileList(externalFiles, "No search results in context.", true);
+            const expectedExtHtml = renderFileList(externalFiles, "No search results in context.", true);
+            if (extFilesContainer && extFilesContainer.innerHTML !== expectedExtHtml) {
+                extFilesContainer.innerHTML = expectedExtHtml;
+            }
         }
 
         // Prevent the parent <details> from collapsing/expanding when interactive elements are clicked
         const hudSummary = existingDashboard.querySelector('.fused-context-details summary');
-        if (hudSummary) {
+        if (hudSummary && !hudSummary.dataset.listenerAttached) {
+            hudSummary.setAttribute('data-listener-attached', 'true');
             hudSummary.addEventListener('click', (e) => {
                 const target = e.target as HTMLElement;
                 if (
@@ -2916,76 +2943,88 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
 
         // --- LAZY FILE INGESTION GESTURE ATTACHMENT ---
         existingDashboard.querySelectorAll('.lazy-file-accordion').forEach(accordion => {
-            accordion.addEventListener('toggle', () => {
-                const details = accordion as HTMLDetailsElement;
-                const filePath = details.dataset.path;
-                const registry = (window as any).lazyFilesRegistry;
+            if (!(accordion as any)._listenerAttached) {
+                (accordion as any)._listenerAttached = true;
+                accordion.addEventListener('toggle', () => {
+                    const details = accordion as HTMLDetailsElement;
+                    const filePath = details.dataset.path;
+                    const registry = (window as any).lazyFilesRegistry;
 
-                if (details.open && filePath && registry) {
-                    const cachedFile = registry.get(filePath);
-                    if (cachedFile && !cachedFile.hasContent) {
-                        // Request the file content asynchronously from the extension host
-                        vscode.postMessage({
-                            command: 'requestLazyFileContent',
-                            filePath: filePath
-                        });
+                    if (details.open && filePath && registry) {
+                        const cachedFile = registry.get(filePath);
+                        if (cachedFile && !cachedFile.hasContent) {
+                            // Request the file content asynchronously from the extension host
+                            vscode.postMessage({
+                                command: 'requestLazyFileContent',
+                                filePath: filePath
+                            });
+                        }
                     }
-                }
-            });
+                });
+            }
         });
 
         // Add immediate event bindings to dynamically added elements in the lists
         existingDashboard.querySelectorAll('.remove-context-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const target = e.currentTarget as HTMLElement;
-                const type = target.dataset.type;
-                const value = target.dataset.value;
+            if (!(btn as any)._listenerAttached) {
+                (btn as any)._listenerAttached = true;
+                btn.addEventListener('click', (e) => {
+                    const target = e.currentTarget as HTMLElement;
+                    const type = target.dataset.type;
+                    const value = target.dataset.value;
 
-                if (type === 'file') {
-                    vscode.postMessage({ command: 'removeFileFromContext', path: value });
-                    const item = target.closest('.context-item');
-                    if (item) {
-                        item.style.opacity = '0.3';
-                        item.style.pointerEvents = 'none';
+                    if (type === 'file') {
+                        vscode.postMessage({ command: 'removeFileFromContext', path: value });
+                        const item = target.closest('.context-item');
+                        if (item) {
+                            item.style.opacity = '0.3';
+                            item.style.pointerEvents = 'none';
+                        }
+                    } else if (type === 'skill') {
+                        vscode.postMessage({ command: 'removeSkillFromContext', skillId: value });
+                        const item = target.closest('.context-item');
+                        if (item) {
+                            item.style.opacity = '0.3';
+                            item.style.pointerEvents = 'none';
+                        }
+                    } else if (type === 'tool') {
+                        vscode.postMessage({ command: 'removeToolFromContext', toolName: value });
+                        const item = target.closest('.context-item');
+                        if (item) {
+                            item.style.opacity = '0.3';
+                            item.style.pointerEvents = 'none';
+                        }
                     }
-                } else if (type === 'skill') {
-                    vscode.postMessage({ command: 'removeSkillFromContext', skillId: value });
-                    const item = target.closest('.context-item');
-                    if (item) {
-                        item.style.opacity = '0.3';
-                        item.style.pointerEvents = 'none';
-                    }
-                } else if (type === 'tool') {
-                    vscode.postMessage({ command: 'removeToolFromContext', toolName: value });
-                    const item = target.closest('.context-item');
-                    if (item) {
-                        item.style.opacity = '0.3';
-                        item.style.pointerEvents = 'none';
-                    }
-                }
-            });
+                });
+            }
         });
 
         existingDashboard.querySelectorAll('.open-context-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const target = e.currentTarget as HTMLElement;
-                const value = target.dataset.value;
-                if (value) {
-                    vscode.postMessage({ command: 'openFile', path: value });
-                }
-            });
+            if (!(btn as any)._listenerAttached) {
+                (btn as any)._listenerAttached = true;
+                btn.addEventListener('click', (e) => {
+                    const target = e.currentTarget as HTMLElement;
+                    const value = target.dataset.value;
+                    if (value) {
+                        vscode.postMessage({ command: 'openFile', path: value });
+                    }
+                });
+            }
         });
 
         existingDashboard.querySelectorAll('.summarize-context-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const target = e.currentTarget as HTMLElement;
-                const value = target.dataset.value;
-                if (value) {
-                    vscode.postMessage({ command: 'summarizeContextFile', path: value });
-                }
-            });
+            if (!(btn as any)._listenerAttached) {
+                (btn as any)._listenerAttached = true;
+                btn.addEventListener('click', (e) => {
+                    const target = e.currentTarget as HTMLElement;
+                    const value = target.dataset.value;
+                    if (value) {
+                        vscode.postMessage({ command: 'summarizeContextFile', path: value });
+                    }
+                });
+            }
         });
-        
+
         // Re-run badge logic and exit
         import('./ui.js').then(ui => ui.updateBadges());
         return;

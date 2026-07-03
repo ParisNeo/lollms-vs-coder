@@ -38,43 +38,27 @@ export class QuickEditManager {
         }));
     }
 
-    private async processInstruction(instruction: string, panel: CompanionPanel) {
+    private async processInstruction(payloadString: string, panel: CompanionPanel) {
+        let payload = { text: "", mode: "standard" };
+        try {
+            payload = JSON.parse(payloadString);
+        } catch {
+            payload = { text: payloadString, mode: "standard" };
+        }
+
+        const instruction = payload.text;
+        const isGroundingMode = payload.mode === 'grounding';
+
         const editor = panel.getActiveEditor();
-        if (!editor) {
-            vscode.window.showErrorMessage("No active text editor found to apply instructions to.");
-            return;
-        }
-
-        const document = editor.document;
-        const selection = editor.selection;
-        const selectedText = document.getText(selection);
-        const hasSelection = !selection.isEmpty && selectedText.trim().length > 0;
-        const languageId = document.languageId;
         
-        // Notebook Detection
-        const isNotebook = document.uri.scheme === 'vscode-notebook-cell';
-        let relativePath = vscode.workspace.asRelativePath(document.uri);
+        let prompt = "";
+        let contextText = "";
+        let currentFileBlock = "";
+        let hasSelection = false;
+        let isNotebook = false;
         let notebookContext = "";
-
-        if (isNotebook) {
-             const notebookEditor = vscode.window.visibleNotebookEditors.find(ne => 
-                ne.notebook.getCells().some(c => c.document.uri.toString() === document.uri.toString())
-             );
-             if (notebookEditor) {
-                 relativePath = vscode.workspace.asRelativePath(notebookEditor.notebook.uri);
-                 const currentCell = notebookEditor.notebook.getCells().find(c => c.document.uri.toString() === document.uri.toString());
-                 if (currentCell) {
-                     relativePath += ` (Cell ${currentCell.index + 1})`;
-                     
-                     for (const cell of notebookEditor.notebook.getCells()) {
-                        if (cell === currentCell) break;
-                        const content = cell.document.getText();
-                        if (content.length > 2000) continue; 
-                        notebookContext += `Cell ${cell.index + 1} (${cell.kind === vscode.NotebookCellKind.Code ? 'Code' : 'Markdown'}):\n\`\`\`\n${content}\n\`\`\`\n\n`;
-                     }
-                 }
-             }
-        }
+        let languageId = "plaintext";
+        let relativePath = "unspecified_file";
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const enableWebSearch = config.get<boolean>('companion.enableWebSearch');
@@ -83,52 +67,108 @@ export class QuickEditManager {
         const tools: ToolDefinition[] = [];
         if (enableWebSearch) tools.push(searchWebTool);
         if (enableArxivSearch) tools.push(searchArxivTool);
-        const hasTools = tools.length > 0;
 
         panel.setLoading(true);
 
         try {
-            let prompt = "";
-            const contextLines = 20;
-            
-            const currentFileCode = document.getText();
-            const currentFileBlock = `### 📄 ACTIVE FILE CONTENT [C]\n\`\`\`${languageId}:${relativePath}\n${currentFileCode}\n\`\`\`\n`;
+            if (isGroundingMode) {
+                // --- COMPANION GROUNDING MODE (ALL SELECTED FILES + COMPLETE TREE) ---
+                const activeDiscussion = panel.agentManager?.getCurrentDiscussion();
+                const importedIds = activeDiscussion?.importedSkills || [];
 
-            if (hasSelection) {
-                const startLine = selection.start.line;
-                const endLine = selection.end.line;
-                const startContextLine = Math.max(0, startLine - contextLines);
-                const endContextLine = Math.min(document.lineCount - 1, endLine + contextLines);
-                const rangeBefore = new vscode.Range(new vscode.Position(startContextLine, 0), selection.start);
-                const contextBefore = document.getText(rangeBefore);
-                const rangeAfter = new vscode.Range(selection.end, new vscode.Position(endContextLine, document.lineAt(endContextLine).text.length));
-                const contextAfter = document.getText(rangeAfter);
+                const fullContext = await this.contextManager.getContextContent({
+                    importedSkillIds: importedIds,
+                    includeTree: true,
+                    modelName: this.lollmsAPI.getModelName()
+                });
 
-                prompt = `I am working on the file \`${relativePath}\` (${languageId}).\n\n` +
-                            `I have selected code from line ${startLine + 1} to ${endLine + 1}.\n\n` +
-                            (contextBefore ? `**Context Before Selection:**\n\`\`\`${languageId}\n${contextBefore}\n\`\`\`\n\n` : '') +
-                            `**Selected Code:**\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
-                            (contextAfter ? `**Context After Selection:**\n\`\`\`${languageId}\n${contextAfter}\n\`\`\`\n\n` : '') +
-                            `**Instruction/Question:** "${instruction}"\n\n`;
+                currentFileBlock = `### 🏢 FULL CODEBASE STRUCTURE (ONTOLOGY TREE)\n${fullContext.projectTree}\n\n### 📄 GROUNDED FILE CONTENTS\n${fullContext.selectedFilesContent || "*(No files currently checked in the matrix)*"}`;
+                prompt = `**My Question / Message:** "${instruction}"\n\n` +
+                         `**COMPLIANCE RULES (MANDATORY):**\n` +
+                         `1. You are operating with **Full Grounding Mode** active. You have full vision of our tree and selected files above.\n` +
+                         `2. Use AIDER SEARCH/REPLACE blocks if asked to write or modify code for files in the workspace.\n` +
+                         `3. For non-workspace code examples, use standard markdown code blocks (e.g. \` \` \`python).\n` +
+                         `4. Use our un-validated interaction tools (<open_file />, <set_breakpoint />) proactively to control the editor window.`;
+            } else if (editor) {
+                const document = editor.document;
+                const selection = editor.selection;
+                const selectedText = document.getText(selection);
+                hasSelection = !selection.isEmpty && selectedText.trim().length > 0;
+                languageId = document.languageId;
+                relativePath = vscode.workspace.asRelativePath(document.uri);
+                
+                // Notebook Detection
+                isNotebook = document.uri.scheme === 'vscode-notebook-cell';
 
-                if (isNotebook && notebookContext) {
-                    prompt = `**NOTEBOOK CONTEXT (Preceding Cells):**\n${notebookContext}\n\n` + prompt;
+                if (isNotebook) {
+                     const notebookEditor = vscode.window.visibleNotebookEditors.find(ne => 
+                        ne.notebook.getCells().some(c => c.document.uri.toString() === document.uri.toString())
+                     );
+                     if (notebookEditor) {
+                         relativePath = vscode.workspace.asRelativePath(notebookEditor.notebook.uri);
+                         const currentCell = notebookEditor.notebook.getCells().find(c => c.document.uri.toString() === document.uri.toString());
+                         if (currentCell) {
+                             relativePath += ` (Cell ${currentCell.index + 1})`;
+                             
+                             for (const cell of notebookEditor.notebook.getCells()) {
+                                if (cell === currentCell) break;
+                                const content = cell.document.getText();
+                                if (content.length > 2000) continue; 
+                                notebookContext += `Cell ${cell.index + 1} (${cell.kind === vscode.NotebookCellKind.Code ? 'Code' : 'Markdown'}):\n\`\`\`\n${content}\n\`\`\`\n\n`;
+                             }
+                         }
+                     }
                 }
 
-                prompt += `\n**COMPLIANCE RULES:**\n` +
-                          `1. Use AIDER SEARCH/REPLACE blocks for surgical modifications to the active file.\n` +
-                          `2. Use FULL FILE blocks if you need to rewrite more than 50% of the file.\n` +
-                          `3. You may use the available tools to search the workspace, run queries, or find code.`;
+                const currentFileCode = document.getText();
+                
+                // Get all errors/warnings for the ENTIRE file
+                const rawDiagnostics = vscode.languages.getDiagnostics(document.uri);
+                let fileErrorsReport = "";
+                if (rawDiagnostics.length > 0) {
+                    fileErrorsReport = `\n### 🛡️ COMPLETE FILE ERROR & WARNING REPORT\n` +
+                        rawDiagnostics.map((d, idx) => {
+                            const severity = d.severity === vscode.DiagnosticSeverity.Error ? 'ERROR' : 
+                                             d.severity === vscode.DiagnosticSeverity.Warning ? 'WARNING' : 'INFO';
+                            return `${idx + 1}. **[Line ${d.range.start.line + 1}] [${severity}]**: \`${d.message}\` (${d.source || 'linter'})`;
+                        }).join('\n') + `\n`;
+                }
+
+                currentFileBlock = `### 📄 COMPLETE ACTIVE FILE CONTENT\n\`\`\`${languageId}:${relativePath}\n${currentFileCode}\n\`\`\`\n${fileErrorsReport}`;
+
+                if (hasSelection) {
+                    const startLine = selection.start.line;
+                    const endLine = selection.end.line;
+
+                    prompt = `I am working on the file \`${relativePath}\` (${languageId}).\n\n` +
+                             `#### 🔍 SELECTED ZOOM AREA (Lines ${startLine + 1} to ${endLine + 1})\n` +
+                             `\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
+                             `**Instruction/Question:** "${instruction}"\n\n`;
+
+                    if (isNotebook && notebookContext) {
+                        prompt = `**NOTEBOOK CONTEXT (Preceding Cells):**\n${notebookContext}\n\n` + prompt;
+                    }
+
+                    prompt += `\n**COMPLIANCE RULES:**\n` +
+                              `1. Use AIDER SEARCH/REPLACE blocks for surgical modifications to the active file.\n` +
+                              `2. Use FULL FILE blocks if you need to rewrite more than 50% of the file.\n` +
+                              `3. You may use the available tools to search the workspace, run queries, or find code.`;
+                } else {
+                    // Conversational/Casual mode when no text is selected
+                    prompt = `I am discussing casually with you. I do not have any code selected to modify.\n\n` +
+                             `Current active file in editor (for your reference only): \`${relativePath}\` (${languageId}).\n\n` +
+                             `**My Question / Message:** "${instruction}"\n\n` +
+                             `**COMPLIANCE RULES (MANDATORY):**\n` +
+                             `1. DO NOT output any AIDER search/replace blocks or modify any files on disk.\n` +
+                             `2. DO NOT use namespaced code blocks (e.g., do NOT use \` \` \`lang:path\`).\n` +
+                             `3. If you write code examples, use standard, non-namespaced markdown blocks (e.g., \` \` \`python or \` \` \`javascript) so they do not trigger any file writes.\n"`;
+                }
             } else {
-                // Conversational/Casual mode when no text is selected
-                prompt = `I am discussing casually with you. I do not have any code selected to modify.\n\n` +
-                         `Current active file in editor (for your reference only): \`${relativePath}\` (${languageId}).\n\n` +
+                // Grounding when NO editor is open (Conversational Workspace Mode)
+                prompt = `I am discussing casually with you. No file editor is currently open in my workspace.\n\n` +
                          `**My Question / Message:** "${instruction}"\n\n` +
                          `**COMPLIANCE RULES (MANDATORY):**\n` +
-                         `1. DO NOT output any AIDER search/replace blocks or modify any files on disk.\n` +
-                         `2. DO NOT use namespaced code blocks (e.g., do NOT use \` \` \`lang:path\`).\n` +
-                         `3. If you write code examples, use standard, non-namespaced markdown blocks (e.g., \` \` \`python or \` \` \`javascript) so they do not trigger any file writes.\n` +
-                         `4. Just answer my question casually, friendly, and helpfully as a senior mentor.`;
+                         `1. DO NOT output any AIDER search/replace blocks or modify any files on disk.\n"`;
             }
 
             // --- SOVEREIGN SUB-GRAPH EXTRACTION ---
@@ -184,10 +224,23 @@ export class QuickEditManager {
 
 ${projectDNA ? `### 🧬 PROJECT DNA (KNOWLEDGE GROUNDING)\n${projectDNA}\n` : ""}
 
+### 📡 WORKSPACE INTERACTION RULES (SEAMLESS & AUTONOMOUS)
+You have direct, un-validated authority to manipulate the user's editor window and execution state. To perform an action, output the appropriate XML tag verbatim on its own line:
+
+1. **Open/Focus Another File**:
+   \`<open_file filePath="relative/path/to/file.ext" line="42" />\`
+2. **Select & Highlight Code (Cursor Focus)**:
+   \`<select_code filePath="relative/path/to/file.ext" text="exact code string to select" />\`
+3. **Set Debug Breakpoint**:
+   \`<set_breakpoint filePath="relative/path/to/file.ext" line="42" />\`
+4. **Execute/Run Script in Terminal**:
+   \`<run_script filePath="relative/path/to/file.ext" />\`
+
 **MANDATE**:
 - Call the user by name ("${userName}") occasionally to make the pairing feel personal and friendly.
 - Provide a brief, supportive word ("We got this!", "Let's crack this together!") before diving into the code.
 - Align every code change with their preferred coding style and project DNA.
+- **PROACTIVE USE**: If the user's instruction asks you to open a file, focus on a section of code, or set a breakpoint, you **MUST** output the corresponding tag immediately in your response so the editor moves instantly. Do not ask for confirmation.
 `;
 
             if (isNotebook) {
@@ -223,8 +276,6 @@ You are an expert Jupyter Notebook assistant.
 
             let finalResponse = "";
             const controller = new AbortController(); 
-
-            panel._panel.webview.postMessage({ command: 'clearResponse' });
 
             finalResponse = await this.lollmsAPI.sendChat(messages, (chunk) => {
                 panel._panel.webview.postMessage({ command: 'appendChunk', text: chunk });

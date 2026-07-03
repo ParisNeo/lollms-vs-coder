@@ -49,6 +49,14 @@ export class OnboardingPanel {
         this._panel.webview.onDidReceiveMessage(async (msg) => {
             switch (msg.command) {
                 case 'submit':
+                    if (msg.data && msg.data.saveAsGlobal && msg.data.profileName) {
+                        await this.handleSaveGlobalProfile({
+                            id: `custom_${Date.now()}`,
+                            name: msg.data.profileName,
+                            objectives: msg.data.objectives,
+                            style: msg.data.style
+                        });
+                    }
                     await this.handleOnboarding(msg.data);
                     break;
                 case 'exportProfile':

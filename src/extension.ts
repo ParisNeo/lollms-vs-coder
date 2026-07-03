@@ -268,7 +268,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         Logger.info(`[Sovereign Queue] Flushing ${events.length} pending filesystem events in background.`);
 
         const caps = services.discussionManager.getLastCapabilities();
-        const isSparqlActive = caps.sparqlEnabled !== false;
+        const isSparqlActive = caps.sparqlEnabled !== false ? true : false;
 
         for (const [fsPath, type] of events) {
             const uri = vscode.Uri.file(fsPath);

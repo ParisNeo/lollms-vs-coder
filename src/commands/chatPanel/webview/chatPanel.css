@@ -312,12 +312,15 @@ body.agent-mode-active #plan-resizer {
     display: flex;
 }
 .message { 
-    display: flex; 
-    flex-direction: row; 
+    display: grid; 
+    grid-template-areas: 
+        "avatar header"
+        "content content";
+    grid-template-columns: auto 1fr;
     width: calc(100% - 24px);
     flex-grow: 1;
-    gap: 12px; 
-    padding: 16px 20px; 
+    gap: 8px 12px; 
+    padding: 12px 16px; 
     position: relative; 
     border: 1px solid var(--vscode-widget-border); 
     border-left: 4px solid transparent; /* Role-based accent */
@@ -1335,33 +1338,34 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 #scrollToBottomBtn { 
     display: none; 
     position: absolute; 
-    /* Positioned relative to the chat-main-column, floating above the input area */
-    bottom: 110px; 
-    right: 25px; 
-    width: 32px;
-    height: 32px; 
+    /* Shifted up and right to clear the native scrollbar track entirely */
+    bottom: 115px; 
+    right: 32px; 
+    width: 36px;
+    height: 36px; 
     border-radius: 50%; 
     background-color: var(--vscode-button-background); 
     color: var(--vscode-button-foreground); 
-    border: none; 
-    box-shadow: 0 4px 12px rgba(0,0,0,0.5); 
+    border: 1px solid var(--vscode-widget-border); 
+    box-shadow: 0 6px 16px rgba(0,0,0,0.6); 
     cursor: pointer; 
-    /* High z-index to stay above message actions but below the HUD */
-    z-index: 4000; 
+    /* Elevated above message-level absolute elements */
+    z-index: 15000 !important; 
     align-items: center; 
     justify-content: center; 
-    transition: transform 0.1s, opacity 0.2s;
-    opacity: 0.8;
+    transition: transform 0.1s, opacity 0.15s, background-color 0.15s;
+    opacity: 0.85;
 }
 
 #scrollToBottomBtn:hover {
     opacity: 1;
-    transform: scale(1.1);
+    transform: scale(1.08);
+    background-color: var(--vscode-button-hoverBackground);
 }
 
-/* Adjust button position when Agent Plan is visible */
+/* Adjust button position when Agent Plan is visible to prevent overlap with the right column */
 #agent-plan-zone.visible ~ #scrollToBottomBtn {
-    right: 430px;
+    right: 440px;
 }
 #scrollToBottomBtn:hover { background-color: var(--vscode-button-hoverBackground); transform: translateY(-2px); }
 #scrollToBottomBtn:active { transform: translateY(0); }
@@ -3567,19 +3571,20 @@ mark.current-match {
     align-items: center; 
     padding: 6px 12px; 
     gap: 12px; 
-    background-color: var(--vscode-editor-background);
+    background-color: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-focusBorder); 
     border-radius: 6px;
     margin: 8px 12px;
     flex-shrink: 0;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    box-shadow: none; /* Eliminated expensive drop-shadows during live streams */
     position: relative;
     overflow: hidden;
-    backdrop-filter: blur(5px);
     height: 32px;
     /* Ensure it stays above input area but stays inside the main column */
     z-index: 5000 !important;
     max-width: calc(100% - 24px);
+    /* Disable layout transitions to prevent layout thrashing */
+    transition: none !important;
 }
 
 .generating-content { 
@@ -5704,9 +5709,9 @@ details[open] > summary .folder-handle::before {
     align-items: center;
     justify-content: center;
     cursor: zoom-out;
-    backdrop-filter: blur(10px);
+    /* Removed backdrop-filter to prevent expensive GPU layer re-compositing */
     opacity: 0;
-    transition: opacity 0.3s ease;
+    transition: opacity 0.2s ease;
 }
 
 #image-zoom-overlay.active {

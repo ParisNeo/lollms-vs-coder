@@ -214,12 +214,29 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         this.saveState();
 
         const title = `${fileName} (Disk) ↔ ${fileName} (Edit Right & Save to Apply)`;
-        
+
         try {
+            // Determine the column. If we know this diff belongs to an active companion session,
+            // we must target the editor column (non-companion column) so the companion UI stays visible.
+            let targetColumn = vscode.ViewColumn.One;
+            const activeEditor = vscode.window.activeTextEditor;
+
+            // If the active editor is the companion (or we are on Column Two/Three), force diff to Column One
+            if (activeEditor && activeEditor.viewColumn && activeEditor.viewColumn !== vscode.ViewColumn.One) {
+                targetColumn = vscode.ViewColumn.One;
+            } else if (discussionId && discussionId.startsWith('remote-') === false) {
+                // If there's an active companion, force to Column One
+                targetColumn = vscode.ViewColumn.One;
+            }
+
             await vscode.commands.executeCommand('vscode.diff', 
                 originalUri, 
                 generatedUri, 
-                title
+                title,
+                {
+                    viewColumn: targetColumn,
+                    preserveFocus: true
+                }
             );
         } catch (e: any) {
             vscode.window.showErrorMessage(`Failed to open VS Code diff view: ${e.message}`);

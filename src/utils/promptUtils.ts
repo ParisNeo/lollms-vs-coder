@@ -16,16 +16,13 @@ export function normalizeToDocument(searchString: string, document: vscode.TextD
 export async function buildCodeActionPrompt(
     promptTemplate: string, 
     actionType: 'generation' | 'information' | undefined,
-    editor: vscode.TextEditor, 
+    editor: vscode.TextEditor | undefined, 
     extensionUri: vscode.Uri,
     contextManager: ContextManager,
     lollmsApi: any,
     useContext: boolean = false,
     signal?: AbortSignal
 ): Promise<{ systemPrompt: string, userPrompt: string } | null> {
-    const selection = editor.selection;
-    const document = editor.document;
-
     let processedTemplate = promptTemplate;
     const placeholders = parsePlaceholders(processedTemplate);
     if (placeholders.length > 0) {
@@ -38,15 +35,9 @@ export async function buildCodeActionPrompt(
     }
 
     const userInstruction = processedTemplate.replace('{{SELECTED_CODE}}', '').trim();
-    const selectedText = document.getText(selection);
-    const fileName = path.basename(document.fileName);
-    const languageId = document.languageId;
     
     let contextText = '';
     let contextResult: any = { text: '', images: [], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills: [] };
-
-    const currentFileText = document.getText();
-    const relPath = vscode.workspace.asRelativePath(document.uri);
 
     if (useContext) {
         // --- LEAN INITIAL CONTEXT ---
@@ -61,57 +52,64 @@ export async function buildCodeActionPrompt(
         }
     }
 
-    // --- INDENTATION DETECTION ---
-    const tabSize = editor.options.tabSize as number || 4;
-    const insertSpaces = editor.options.insertSpaces as boolean;
-    const indentStyle = insertSpaces ? `${tabSize} spaces` : "Tabs";
+    let userPrompt = `**USER OBJECTIVE:** "${userInstruction}"\n${contextText}`;
+    let systemPrompt = '';
 
-    // --- GRAPH-GROUNDED CONTEXT ---
-    const graph = contextManager['codeGraphManager'];
-    let symbolContext = "";
+    if (editor) {
+        const selection = editor.selection;
+        const document = editor.document;
+        const selectedText = document.getText(selection);
+        const languageId = document.languageId;
+        const relPath = vscode.workspace.asRelativePath(document.uri);
 
-    if (graph) {
-        if (graph.getBuildState() !== 'ready') await graph.buildGraph();
+        // --- INDENTATION DETECTION ---
+        const tabSize = editor.options.tabSize as number || 4;
+        const insertSpaces = editor.options.insertSpaces as boolean;
+        const indentStyle = insertSpaces ? `${tabSize} spaces` : "Tabs";
 
-        // Find the symbol containing the cursor
-        const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
-            'vscode.executeDocumentSymbolProvider', 
-            document.uri
-        );
+        // --- GRAPH-GROUNDED CONTEXT ---
+        const graph = contextManager['codeGraphManager'];
+        let symbolContext = "";
 
-        const findEnclosingSymbol = (syms: vscode.DocumentSymbol[]): vscode.DocumentSymbol | null => {
-            for (const s of syms) {
-                if (s.range.contains(selection.start)) {
-                    const child = findEnclosingSymbol(s.children);
-                    return child || s;
+        if (graph) {
+            if (graph.getBuildState() !== 'ready') await graph.buildGraph();
+
+            const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
+                'vscode.executeDocumentSymbolProvider', 
+                document.uri
+            );
+
+            const findEnclosingSymbol = (syms: vscode.DocumentSymbol[]): vscode.DocumentSymbol | null => {
+                for (const s of syms) {
+                    if (s.range.contains(selection.start)) {
+                        const child = findEnclosingSymbol(s.children);
+                        return child || s;
+                    }
                 }
+                return null;
+            };
+
+            const targetSymbol = findEnclosingSymbol(symbols || []);
+            if (targetSymbol) {
+                const containerCode = document.getText(targetSymbol.range);
+                symbolContext = `#### 📦 ENCLOSING SYMBOL: ${targetSymbol.name}\n\`\`\`${languageId}\n${containerCode}\n\`\`\`\n\n`;
+
+                const relations = graph.getArchitectureAnalysis(targetSymbol.name, 'dependencies');
+                const usages = graph.getArchitectureAnalysis(targetSymbol.name, 'usages');
+                symbolContext += `#### 🔗 ARCHITECTURAL RELATIONS\n${relations}\n${usages}\n\n`;
             }
-            return null;
-        };
-
-        const targetSymbol = findEnclosingSymbol(symbols || []);
-        if (targetSymbol) {
-            const containerCode = document.getText(targetSymbol.range);
-            symbolContext = `#### 📦 ENCLOSING SYMBOL: ${targetSymbol.name}\n\`\`\`${languageId}\n${containerCode}\n\`\`\`\n\n`;
-
-            // Add relations from graph
-            const relations = graph.getArchitectureAnalysis(targetSymbol.name, 'dependencies');
-            const usages = graph.getArchitectureAnalysis(targetSymbol.name, 'usages');
-            symbolContext += `#### 🔗 ARCHITECTURAL RELATIONS\n${relations}\n${usages}\n\n`;
         }
-    }
 
-    // Fallback if no symbol found
-    if (!symbolContext) {
-        const startLine = selection.start.line;
-        const contextRange = new vscode.Range(
-            new vscode.Position(Math.max(0, startLine - 15), 0),
-            new vscode.Position(Math.min(document.lineCount - 1, selection.end.line + 15), 1000)
-        );
-        symbolContext = `#### 📍 SPATIAL CONTEXT\n\`\`\`${languageId}\n${document.getText(contextRange)}\n\`\`\`\n\n`;
-    }
+        if (!symbolContext) {
+            const startLine = selection.start.line;
+            const contextRange = new vscode.Range(
+                new vscode.Position(Math.max(0, startLine - 15), 0),
+                new vscode.Position(Math.min(document.lineCount - 1, selection.end.line + 15), 1000)
+            );
+            symbolContext = `#### 📍 SPATIAL CONTEXT\n\`\`\`${languageId}\n${document.getText(contextRange)}\n\`\`\`\n\n`;
+        }
 
-    let userPrompt = `### 🎯 SURGICAL TARGET: ${relPath}\n` +
+        userPrompt = `### 🎯 SURGICAL TARGET: ${relPath}\n` +
                      `**Language:** ${languageId}\n` +
                      `**Required Indentation:** ${indentStyle}\n\n` +
                      `**STRICT INDENTATION RULE**: Your SEARCH block must match the indentation of the code below exactly. ` +
@@ -122,20 +120,16 @@ export async function buildCodeActionPrompt(
                      `**USER OBJECTIVE:** "${userInstruction}"\n` +
                      `${contextText}`;
 
-    let systemPrompt = '';
+        const baseSystemPrompt = await getProcessedSystemPrompt('surgical_agent', undefined, undefined, undefined, false, contextResult);
 
-    // Fetch unified system prompt to include Skills and Environment
-    const baseSystemPrompt = await getProcessedSystemPrompt('surgical_agent', undefined, undefined, undefined, false, contextResult);
-
-    if (actionType === 'information') {
-        userPrompt += `\n\nPlease provide a detailed answer in Markdown format.`;
-        systemPrompt = `${baseSystemPrompt}\n\nYou are an expert code analyst. Your task is to answer questions and provide explanations about a given code snippet.
+        if (actionType === 'information') {
+            userPrompt += `\n\nPlease provide a detailed answer in Markdown format.`;
+            systemPrompt = `${baseSystemPrompt}\n\nYou are an expert code analyst. Your task is to answer questions and provide explanations about a given code snippet.
 - Analyze the user's instruction and the provided code.
 - Respond with a clear, well-formatted Markdown explanation.
 - If you include code examples, use appropriate markdown code blocks.`;
-    } else { 
-        // Code Generation (Surgical Replacement)
-        userPrompt = `I am working on a \`${languageId}\` file.
+        } else { 
+            userPrompt = `I am working on a \`${languageId}\` file.
 I want to modify the following code selection:
 \`\`\`${languageId}
 ${selectedText}
@@ -151,7 +145,8 @@ Only replace the code that needs to be changed.
 \`\`\`${languageId}
 <<<<<<< SEARCH
 [Exact code to replace from the original file, including context lines]
-=======[New updated code]
+=======
+[New updated code]
 >>>>>>> REPLACE
 \`\`\`
 
@@ -159,8 +154,12 @@ Only replace the code that needs to be changed.
 - The SEARCH block MUST match the original file EXACTLY, including indentation.
 - If you are only modifying a few lines inside a large selection, do NOT replace the whole selection. Create a focused SEARCH/REPLACE block for just the changed lines.
 - NEVER include explanations, chatter, or "Here is your code". Output ONLY the SEARCH/REPLACE blocks (or tool calls if needed).`;
-        
-        systemPrompt = `${baseSystemPrompt}\n\nYou are a surgical code replacement engine. You strictly output SEARCH/REPLACE blocks with NO dialogue.`;
+            
+            systemPrompt = `${baseSystemPrompt}\n\nYou are a surgical code replacement engine. You strictly output SEARCH/REPLACE blocks with NO dialogue.`;
+        }
+    } else {
+        const baseSystemPrompt = await getProcessedSystemPrompt('chat', undefined, undefined, undefined, false, contextResult);
+        systemPrompt = `${baseSystemPrompt}\n\nYou are a helpful architectural assistant. Casual chat mode active. Provide a friendly and structured response.`;
     }
     
     return { systemPrompt, userPrompt };

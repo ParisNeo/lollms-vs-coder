@@ -26,6 +26,12 @@ export class CompanionPanel {
 
     private _contextInfo: string = "No active context";
     private _trustScore: number = 75;
+    // Set by extension.ts after CompanionPanel is created, e.g.
+    // CompanionPanel.currentPanel.agentManager = myAgentManagerInstance;
+    // Typed as `any` here since this file doesn't own the AgentManager
+    // class definition - tighten this to the real type if/when it's
+    // imported into this module.
+    public agentManager: any;
     // Snapshot of file content captured right before an apply, keyed by blockId,
     // so a "Reject" decision can restore the previous state.
     private _preApplySnapshots: Map<string, { filePath: string; content: string }> = new Map();
@@ -72,7 +78,7 @@ export class CompanionPanel {
 
         // Stable Editor Tracker: Only update if the new editor is a real file
         vscode.window.onDidChangeActiveTextEditor(editor => {
-            if (editor && editor.document.uri.scheme === 'file') {
+            if (editor && editor.document && editor.document.uri.scheme === 'file') {
                 if (!this._isAttached) {
                     this._lastActiveEditor = editor;
                     this.updateContextInfoFromEditor();
@@ -81,7 +87,7 @@ export class CompanionPanel {
         }, null, this._disposables);
 
         vscode.window.onDidChangeTextEditorSelection(e => {
-            if (this._lastActiveEditor && e.textEditor === this._lastActiveEditor) {
+            if (this._lastActiveEditor && e.textEditor && e.textEditor === this._lastActiveEditor) {
                 if (!this._isAttached) {
                     this.updateContextInfoFromEditor();
                 }
@@ -100,7 +106,12 @@ export class CompanionPanel {
                         this.updateHistoryList();
                         break;
                     case 'submitPrompt':
-                        this._onDidSubmit.fire(message.text || message.query || "");
+                        // Pack mode details with submission
+                        const payload = JSON.stringify({
+                            text: message.text || message.query || "",
+                            mode: message.mode || 'standard'
+                        });
+                        this._onDidSubmit.fire(payload);
                         break;
                     case 'copyToClipboard':
                         if (message.text) {
@@ -173,6 +184,44 @@ export class CompanionPanel {
                     case 'reviewDecision':
                         await this._handleReviewDecision(message.blockId, message.decision, message.filePath);
                         break;
+                    case 'executeLollmsCommand':
+                        const { command, params } = message.details;
+                        if (command === 'lollms-vs-coder.runSparqlQueryDirectly') {
+                            const result = this.agentManager?.codeGraphManager?.executeSparql(params.query) || "SPARQL-lite Error: Graph Engine unavailable.";
+                            this._panel.webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: params.messageId,
+                                blockId: params.blockId,
+                                success: !result.includes("Error"),
+                                sparqlResult: result
+                            });
+                        } else {
+                            await vscode.commands.executeCommand(command, params);
+                        }
+                        break;
+                    case 'workspaceAction':
+                        await this._handleWorkspaceAction(message.action, message.params);
+                        break;
+                    case 'runAgenticLoop':
+                        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0 && this.agentManager) {
+                            this._panel.webview.postMessage({ command: 'setLoading', isLoading: true });
+                            try {
+                                const discussion = {
+                                    id: 'temp-companion-' + Date.now(),
+                                    title: 'Companion Agentic Flow',
+                                    messages: [{ role: 'user', content: message.objective }],
+                                    timestamp: Date.now(),
+                                    groupId: null,
+                                    capabilities: { agentMode: true }
+                                };
+                                await this.agentManager.handleUserMessage(message.objective, discussion, vscode.workspace.workspaceFolders[0]);
+                            } catch (e: any) {
+                                vscode.window.showErrorMessage(`Agent failed: ${e.message}`);
+                            } finally {
+                                this._panel.webview.postMessage({ command: 'setLoading', isLoading: false });
+                            }
+                        }
+                        break;
                 }
             }
         );
@@ -186,26 +235,81 @@ export class CompanionPanel {
      * preserveFocus keeps keyboard focus on the chat input so typing isn't
      * interrupted.
      */
+    private async _handleWorkspaceAction(action: string, params: any) {
+        try {
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (!workspaceFolder) return;
+
+            let fileUri = vscode.Uri.file(params.filePath);
+            if (!path.isAbsolute(params.filePath)) {
+                fileUri = vscode.Uri.joinPath(workspaceFolder.uri, params.filePath);
+            }
+
+            if (action === 'openFile' || action === 'selectCode') {
+                const doc = await vscode.workspace.openTextDocument(fileUri);
+                // Oppose companion column
+                const targetColumn = this._panel.viewColumn === vscode.ViewColumn.One ? vscode.ViewColumn.Two : vscode.ViewColumn.One;
+                const editor = await vscode.window.showTextDocument(doc, { viewColumn: targetColumn, preview: false });
+
+                if (action === 'selectCode' && params.text) {
+                    const text = doc.getText();
+                    const idx = text.indexOf(params.text);
+                    if (idx !== -1) {
+                        const start = doc.positionAt(idx);
+                        const end = doc.positionAt(idx + params.text.length);
+                        editor.selection = new vscode.Selection(start, end);
+                        editor.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
+                    }
+                } else if (params.line !== undefined) {
+                    const pos = new vscode.Position(Math.max(0, params.line - 1), 0);
+                    editor.selection = new vscode.Selection(pos, pos);
+                    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+                }
+            } else if (action === 'setBreakpoint') {
+                const line = parseInt(params.line || "1", 10);
+                const position = new vscode.Position(line - 1, 0);
+                const location = new vscode.Location(fileUri, position);
+                const breakpoint = new vscode.SourceBreakpoint(location);
+                vscode.debug.addBreakpoints([breakpoint]);
+                vscode.window.showInformationMessage(`✅ Breakpoint added to ${path.basename(params.filePath)}:${line}`);
+            } else if (action === 'runScript') {
+                // Execute active python/shell script inside terminal
+                const { runCommandInTerminal } = require('../extensionState');
+                const isPy = params.filePath.endsWith('.py');
+                const cmd = isPy ? `python -u "${fileUri.fsPath}"` : `node "${fileUri.fsPath}"`;
+
+                vscode.window.showInformationMessage(`🚀 Launching script: ${path.basename(params.filePath)}`);
+                const res = await runCommandInTerminal(cmd, workspaceFolder.uri.fsPath, "Companion Runner");
+                this._panel.webview.postMessage({
+                    command: 'appendChunk',
+                    text: `\n\n### 🖥️ SCRIPT RUN RESULT:\n\`\`\`\n${res.output}\n\`\`\`\n`
+                });
+            }
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Workspace operation failed: ${e.message}`);
+        }
+    }
+
     private async _revealAppliedFile(filePath: string | undefined) {
         if (!filePath) {
             return;
         }
         try {
             const uri = vscode.Uri.file(filePath);
-            const companionColumn = this._panel.viewColumn;
-            let targetColumn = this._lastActiveEditor?.viewColumn ?? vscode.ViewColumn.One;
-            // Guard against the tracked column ever coinciding with the
-            // panel's own column (shouldn't happen since _lastActiveEditor
-            // is only ever a real file-scheme editor, but stay defensive).
-            if (targetColumn === companionColumn) {
-                targetColumn = companionColumn === vscode.ViewColumn.One
-                    ? vscode.ViewColumn.Two
-                    : vscode.ViewColumn.One;
+            const companionColumn = this._panel.viewColumn || vscode.ViewColumn.Two;
+
+            // Explicitly force the target column to be opposite of the Companion Panel.
+            // If companion is in Column Two, Besided, or Three, we target Column One.
+            // If companion is in Column One, we target Column Two.
+            let targetColumn = vscode.ViewColumn.One;
+            if (companionColumn === vscode.ViewColumn.One) {
+                targetColumn = vscode.ViewColumn.Two;
             }
+
             const doc = await vscode.workspace.openTextDocument(uri);
             const editor = await vscode.window.showTextDocument(doc, {
                 viewColumn: targetColumn,
-                preserveFocus: true,
+                preserveFocus: true, // Crucial: Keep focus in the companion panel
                 preview: false
             });
             this._lastActiveEditor = editor;
@@ -428,8 +532,20 @@ export class CompanionPanel {
         html += "            background-color: var(--vscode-editor-background);\n";
         html += "            color: var(--vscode-editor-foreground);\n";
         html += "            padding: 0; margin: 0;\n";
-        html += "            display: flex; height: 100vh; overflow: hidden;\n";
+        html += "            display: flex; height: 100vh; overflow: hidden; position: relative;\n";
         html += "        }\n";
+        html += "        /* --- COMPANION COMPACT SPACE SAVING OVERRIDES --- */\n";
+        html += "        .markdown-body { font-size: 12px !important; line-height: 1.4 !important; }\n";
+        html += "        .markdown-body p, .markdown-body ul, .markdown-body ol { margin-top: 0 !important; margin-bottom: 6px !important; }\n";
+        html += "        .markdown-body h1, .markdown-body h2, .markdown-body h3 { font-size: 13px !important; margin-top: 10px !important; margin-bottom: 6px !important; }\n";
+        html += "        .code-collapsible { margin: 6px 0 !important; }\n";
+        html += "        .code-summary { padding: 4px 8px !important; font-size: 10px !important; }\n";
+        html += "        .code-collapsible > pre { max-height: 250px !important; }\n";
+        html += "        .code-line-gutter { width: 30px !important; padding: 8px 4px !important; font-size: 10px !important; }\n";
+        html += "        .code-collapsible > pre > code { padding: 8px !important; font-size: 11px !important; }\n";
+        html += "        .processing-block { margin: 6px 0 !important; }\n";
+        html += "        .processing-header { padding: 6px 8px !important; font-size: 10px !important; }\n";
+        html += "        .processing-body { padding: 8px !important; font-size: 10px !important; max-height: 120px !important; }\n";
         html += "        .friend-avatar-container {\n";
         html += "            display: flex; align-items: center; justify-content: center;\n";
         html += "            width: 38px; height: 38px;\n";
@@ -845,27 +961,46 @@ export class CompanionPanel {
         html += "        </div>\n";
 
         html += "        <div class=\"content\" id=\"markdown-content\"></div>\n";
-        html += "        <div class=\"input-area\">\n";
-        html += "            <div class=\"context-info\">\n";
-        html += "                <button id=\"attach-btn\" class=\"icon-btn\" onclick=\"toggleAttach()\">\n";
-        html += "                    <span class=\"codicon codicon-pin\"></span>\n";
-        html += "                </button>\n";
-        html += "                <span class=\"codicon codicon-target\"></span>\n";
-        html += "                <span id=\"context-info-text\">Syncing...</span>\n";
-        html += "            </div>\n";
-        html += "            <div class=\"cognitive-toolbar\">\n";
-        html += "                <div class=\"cognitive-pill active\" id=\"pill-standard\" onclick=\"setCognitiveMode('standard')\">\n";
-        html += "                    <span class=\"codicon codicon-workspace-trusted\"></span> Focused Co-Pilot\n";
+        html += "        <div class=\"input-area-wrapper\">\n";
+        html += "            <div class=\"input-area-container\">\n";
+        html += "                <div class=\"cognitive-toolbar\" style=\"display: flex; gap: 6px; margin: 0 16px 10px 16px; justify-content: center;\">\n";
+        html += "                    <div class=\"cognitive-pill active\" id=\"pill-standard\" onclick=\"setCognitiveMode('standard')\">\n";
+        html += "                        <span class=\"codicon codicon-workspace-trusted\"></span> Focused Co-Pilot\n";
+        html += "                    </div>\n";
+        html += "                    <div class=\"cognitive-pill\" id=\"pill-grounding\" onclick=\"setCognitiveMode('grounding')\">\n";
+        html += "                        <span class=\"codicon codicon-layers\"></span> Grounding Mode\n";
+        html += "                    </div>\n";
+        html += "                    <div class=\"cognitive-pill\" id=\"pill-move37\" onclick=\"setCognitiveMode('move37')\">\n";
+        html += "                        <span class=\"codicon codicon-sparkle\"></span> Move 37\n";
+        html += "                    </div>\n";
         html += "                </div>\n";
-        html += "                <div class=\"cognitive-pill\" id=\"pill-move37\" onclick=\"setCognitiveMode('move37')\">\n";
-        html += "                    <span class=\"codicon codicon-sparkle\"></span> Move 37: Serendipity Spark\n";
+        html += "                <div class=\"input-area\">\n";
+        html += "                    <div class=\"context-info\" style=\"margin-bottom: 8px; font-size: 11px; display: flex; align-items: center; gap: 6px; color: var(--vscode-descriptionForeground);\">\n";
+        html += "                        <span class=\"codicon codicon-target\"></span>\n";
+        html += "                        <span id=\"context-info-text\">Syncing...</span>\n";
+        html += "                    </div>\n";
+        html += "                    <div class=\"rich-input-toolbar\" style=\"border: none; border-radius: 0; background: transparent; padding: 2px 0; margin-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);\">\n";
+        html += "                        <button class=\"toolbar-tool\" onclick=\"wrapText('python')\" title=\"Python Block\"><i class=\"codicon codicon-symbol-method\"></i><span>Python</span></button>\n";
+        html += "                        <button class=\"toolbar-tool\" onclick=\"wrapText('code')\" title=\"Code Block\"><i class=\"codicon codicon-code\"></i><span>Code</span></button>\n";
+        html += "                        <div class=\"toolbar-separator\"></div>\n";
+        html += "                        <button class=\"toolbar-tool\" onclick=\"wrapText('h1')\" title=\"Heading 1\"><span>H1</span></button>\n";
+        html += "                        <button class=\"toolbar-tool\" onclick=\"wrapText('h2')\" title=\"Heading 2\"><span>H2</span></button>\n";
+        html += "                        <button class=\"toolbar-tool\" onclick=\"wrapText('h3')\" title=\"Heading 3\"><span>H3</span></button>\n";
+        html += "                        <div class=\"toolbar-separator\"></div>\n";
+        html += "                        <button class=\"toolbar-tool\" onclick=\"wrapText('list')\" title=\"Bullet List\"><i class=\"codicon codicon-list-unordered\"></i></button>\n";
+        html += "                        <button class=\"toolbar-tool\" onclick=\"wrapText('bold')\" title=\"Bold\"><i class=\"codicon codicon-bold\"></i></button>\n";
+        html += "                        <button class=\"toolbar-tool\" onclick=\"wrapText('italic')\" title=\"Italic\"><i class=\"codicon codicon-italic\"></i></button>\n";
+        html += "                    </div>\n";
+        html += "                    <div class=\"input-row\">\n";
+        html += "                        <div class=\"control-buttons\">\n";
+        html += "                            <button id=\"moreActionsButton\" title=\"Menu\" onclick=\"toggleHistory()\"><i class=\"codicon codicon-menu\"></i></button>\n";
+        html += "                        </div>\n";
+        html += "                        <textarea id=\"prompt-input\" placeholder=\"Ask a question or request a change...\"></textarea>\n";
+        html += "                        <div class=\"control-buttons\">\n";
+        html += "                            <button onclick=\"submitPrompt()\" id=\"send-btn\" title=\"Send Message\"><i class=\"codicon codicon-send\"></i></button>\n";
+        html += "                        </div>\n";
+        html += "                    </div>\n";
         html += "                </div>\n";
-        html += "            </div>\n";
-        html += "            <div class=\"input-container\" id=\"input-container\">\n";
-        html += "                <textarea id=\"prompt-input\" placeholder=\"Ask a question or request a change...\"></textarea>\n";
-        html += "                <button onclick=\"submitPrompt()\" id=\"send-btn\" style=\"height: fit-content; align-self: flex-end;\">\n";
-        html += "                    <span class=\"codicon codicon-send\"></span> Send\n";
-        html += "                </button>\n";
         html += "            </div>\n";
         html += "        </div>\n";
         html += "    </div>\n";
@@ -876,14 +1011,18 @@ export class CompanionPanel {
         html += "        const move37Btn = document.getElementById('pill-move37');\n";
         html += "        let isMove37Active = false;\n";
         html += "        let activeContentBuffer = \"\";\n";
+        html += "        let activePrompt = \"\";\n";        
         html += "        let activeMood = 'idle';\n";
         html += "        \n";
         html += "        vscode.postMessage({ command: 'webview-ready' });\n";
         html += "        \n";
+        html += "        let activeMode = 'standard';\n";
         html += "        function setCognitiveMode(mode) {\n";
+        html += "            activeMode = mode;\n";
         html += "            isMove37Active = (mode === 'move37');\n";
-        html += "            document.getElementById('pill-standard').classList.toggle('active', !isMove37Active);\n";
-        html += "            document.getElementById('pill-move37').classList.toggle('active', isMove37Active);\n";
+        html += "            document.getElementById('pill-standard').classList.toggle('active', mode === 'standard');\n";
+        html += "            document.getElementById('pill-grounding').classList.toggle('active', mode === 'grounding');\n";
+        html += "            document.getElementById('pill-move37').classList.toggle('active', mode === 'move37');\n";
         html += "            document.getElementById('input-container').classList.toggle('move37-active', isMove37Active);\n";
         html += "            \n";
         html += "            const inp = document.getElementById('prompt-input');\n";
@@ -891,6 +1030,9 @@ export class CompanionPanel {
         html += "                inp.placeholder = 'Unleash a lateral leap... Propose an unexpected, elegant shortcut.';\n";
         html += "                setMood('thinking');\n";
         html += "                vscode.postMessage({ command: 'adjustTrustScore', delta: 2 });\n";
+        html += "            } else if (mode === 'grounding') {\n";
+        html += "                inp.placeholder = 'Query the entire project with full context...';\n";
+        html += "                setMood('idle');\n";
         html += "            } else {\n";
         html += "                inp.placeholder = 'Ask a question or request a change...';\n";
         html += "                setMood('idle');\n";
@@ -971,23 +1113,35 @@ export class CompanionPanel {
 
         html += "        function renderUserBubble(text) {\n";
         html += "            const bubble = document.createElement('div');\n";
-        html += "            bubble.style.cssText = \"margin-bottom: 20px; padding: 12px 16px; border-radius: 8px; border: 1px solid var(--vscode-widget-border); border-left: 4px solid var(--vscode-charts-blue); background: var(--vscode-editor-inactiveSelectionBackground);\";\n";
+        html += "            bubble.className = 'message-wrapper user-msg-wrapper';\n";
+        html += "            bubble.dataset.messageId = 'user_companion_msg';\n";
+        html += "            bubble.style.cssText = \"margin-bottom: 20px; padding: 12px 16px; border-radius: 8px; border: 1px solid var(--vscode-widget-border); border-left: 4px solid var(--vscode-charts-blue); background: var(--vscode-editor-inactiveSelectionBackground); position: relative;\";\n";
+
         html += "            const header = document.createElement('div');\n";
         html += "            header.style.cssText = \"font-size: 11px; font-weight: bold; margin-bottom: 8px; opacity: 0.8; display: flex; align-items: center; gap: 6px;\";\n";
         html += "            header.innerHTML = '<span class=\"codicon codicon-account\"></span> <span>You (Selection Prompt)</span>';\n";
-        const bodyEscaped = '"font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-all;"';
+
+        html += "            const actions = document.createElement('div');\n";
+        html += "            actions.className = 'message-actions';\n";
+        html += "            actions.style.cssText = 'position: absolute; top: 10px; right: 10px; display: flex; gap: 4px;';\n";
+        html += "            actions.innerHTML = '<button class=\"msg-action-btn edit-msg-btn\" onclick=\"event.stopPropagation(); startEdit(this.closest(\\\'.message-wrapper\\\'), \\\'user_companion_msg\\\', \\\'user\\\')\"><i class=\"codicon codicon-edit\"></i></button>';\n";
+
+        html += "            const bodyEscaped = '\"font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-all;\"';\n";
         html += "            const body = document.createElement('div');\n";
-        html += "            body.style.cssText = " + bodyEscaped + ";\n";
+        html += "            body.className = 'message-content';\n";
+        html += "            body.style.cssText = bodyEscaped;\n";
         html += "            body.textContent = text;\n";
         html += "            bubble.appendChild(header);\n";
+        html += "            bubble.appendChild(actions);\n";
         html += "            bubble.appendChild(body);\n";
         html += "            container.appendChild(bubble);\n";
         html += "            container.scrollTop = container.scrollHeight;\n";
+        html += "            // Expose original content for the editor view\n";
+        html += "            bubble.dataset.originalContent = JSON.stringify(text);\n";
         html += "        }\n";
 
-        html += "        function setFaceMood(state) {\n";
+        html += "        function setFaceMood(state) { \n";
         html += "            const face = document.getElementById('friend-face');\n";
-        if (true) {
         html += "            if (!face) return;\n";
         html += "            if (state === 'speaking') {\n";
         html += "                face.className = 'robot-face speaking';\n";
@@ -996,8 +1150,33 @@ export class CompanionPanel {
         html += "            } else {\n";
         html += "                face.className = 'robot-face idle';\n";
         html += "            }\n";
-        }
         html += "        }\n";
+        html += "        \n";
+        html += "        function wrapText(type) {\n";
+        html += "            const input = document.getElementById('prompt-input');\n";
+        html += "            if (!input) return;\n";
+        html += "            const start = input.selectionStart;\n";
+        html += "            const end = input.selectionEnd;\n";
+        html += "            const selected = input.value.substring(start, end);\n";
+        html += "            let before = '';\n";
+        html += "            let after = '';\n";
+        html += "            let replacement = selected;\n";
+        html += "            switch (type) {\n";
+        html += "                case 'python': before = '```python\\n'; after = '\\n```'; break;\n";
+        html += "                case 'code': before = '```\\n'; after = '\\n```'; break;\n";
+        html += "                case 'bold': before = '**'; after = '**'; break;\n";
+        html += "                case 'italic': before = '*'; after = '*'; break;\n";
+        html += "                case 'h1': before = '# '; break;\n";
+        html += "                case 'h2': before = '## '; break;\n";
+        html += "                case 'h3': before = '### '; break;\n";
+        html += "                case 'list': before = '- '; replacement = selected.split('\\n').join('\\n- '); break;\n";
+        html += "            }\n";
+        html += "            input.value = input.value.substring(0, start) + before + replacement + after + input.value.substring(end);\n";
+        html += "            input.focus();\n";
+        html += "            const newCursorPos = start + before.length + replacement.length + after.length;\n";
+        html += "            input.setSelectionRange(newCursorPos, newCursorPos);\n";
+        html += "        }\n";
+        html += "        window.wrapText = wrapText;\n";
 
         html += "        function setMood(mood) {\n";
         html += "            const face = document.getElementById('friend-face');\n";
@@ -1028,6 +1207,7 @@ export class CompanionPanel {
         html += "        function submitPrompt() {\n";
         html += "            let text = promptInput.value.trim();\n";
         html += "            if (!text) return;\n";
+        html += "            activePrompt = text;\n";
         html += "            container.innerHTML = \"\";\n";
         html += "            renderUserBubble(text);\n";
         html += "            const waiting = document.createElement('div');\n";
@@ -1042,7 +1222,7 @@ export class CompanionPanel {
         html += "                setCognitiveMode('standard');\n";
         html += "            }\n";
         html += "            \n";
-        html += "            vscode.postMessage({ command: 'submitPrompt', text: text });\n";
+        html += "            vscode.postMessage({ command: 'submitPrompt', text: text, mode: activeMode });\n";
         html += "            promptInput.value = '';\n";
         html += "        }\n";
 
@@ -1096,6 +1276,9 @@ export class CompanionPanel {
         html += "                case 'renderResponse':\n";
         html += "                    const w = document.getElementById('companion-waiting-placeholder');\n";
         html += "                    if (w) w.remove();\n";
+        html += "                    if (message.prompt) {\n";
+        html += "                        activePrompt = message.prompt;\n";
+        html += "                    }\n";        
         html += "                    renderResponse(message.text, message.prompt, message.isFinal);\n";
         html += "                    setFaceMood('idle');\n";
         html += "                    break;\n";
@@ -1120,25 +1303,37 @@ export class CompanionPanel {
         html += "                        }).join('');\n";
         html += "                    }\n";
         html += "                    break;\n";
+
         html += "                case 'applyAllResult':\n";
         html += "                    const card = document.getElementById(message.blockId);\n";
         html += "                    if (card) {\n";
-        html += "                        const loader = card.querySelector('.spinner');\n";
-        if (true) {
-        html += "                        if (loader) loader.style.display = 'none';\n";
-        html += "                        const actions = card.querySelector('.review-actions-row');\n";
-        html += "                        const body = card.querySelector('.review-body');\n";
-        html += "                        if (actions) {\n";
-        html += "                            actions.style.display = 'flex';\n";
-        html += "                            if (message.success) {\n";
-        html += "                                if (body) body.innerHTML = '🏆 <b>Code successfully applied to disk!</b> Please review the changes live in your editor and select your final decision below:';\n";
-        html += "                                setMood('success');\n";
-        html += "                            } else {\n";
-        html += "                                if (body) body.innerHTML = '<span style=\"color:var(--vscode-charts-red); font-weight:bold;\">⚠️ Write Failure:</span> ' + (message.error || 'Unknown error');\n";
-        html += "                                setMood('error');\n";
+        html += "                        if (card.classList.contains('sparql-block')) {\n";
+        html += "                            // Resolve the SPARQL execution view inside the Companion\n";
+        html += "                            const headerActions = card.querySelector('.generation-header .code-actions');\n";
+        html += "                            if (headerActions) {\n";
+        html += "                                headerActions.innerHTML = '<i class=\"codicon codicon-check\" style=\"color: var(--vscode-charts-green)\"></i>';\n";
+        html += "                            }\n";
+        html += "                            const renderArea = card.querySelector('.sparql-results-render-area');\n";
+        html += "                            if (renderArea && message.sparqlResult) {\n";
+        html += "                                renderArea.style.display = 'block';\n";
+        html += "                                renderArea.innerHTML = DOMPurify.sanitize(marked.parse(message.sparqlResult));\n";
+        html += "                            }\n";
+        html += "                        } else {\n";
+        html += "                            const loader = card.querySelector('.spinner');\n";
+        html += "                            if (loader) loader.style.display = 'none';\n";
+        html += "                            const actions = card.querySelector('.review-actions-row');\n";
+        html += "                            const body = card.querySelector('.review-body');\n";
+        html += "                            if (actions) {\n";
+        html += "                                actions.style.display = 'flex';\n";
+        html += "                                if (message.success) {\n";
+        html += "                                    if (body) body.innerHTML = '🏆 <b>Code successfully applied to disk!</b> Please review the changes live in your editor and select your final decision below:';\n";
+        html += "                                    setMood('success');\n";
+        html += "                                } else {\n";
+        html += "                                    if (body) body.innerHTML = '<span style=\\\"color:var(--vscode-charts-red); font-weight:bold;\\\">⚠️ Write Failure:</span> ' + (message.error || 'Unknown error');\n";
+        html += "                                    setMood('error');\n";
+        html += "                                }\n";
         html += "                            }\n";
         html += "                        }\n";
-        }
         html += "                    }\n";
         html += "                    break;\n";
         html += "            }\n";
@@ -1174,22 +1369,75 @@ export class CompanionPanel {
         html += "                    '</div>';\n";
         html += "                });\n";
         html += "            }\n";
-        html += "            const finalMarkdown = parsed.processedContent;\n";
+
+        // Parse SPARQL-lite XML tags inside incoming text streams
+        html += "            let finalMarkdown = parsed.processedContent;\n";
+        html += "            const sparqlRegex = /<query_architecture>([\\s\\S]*?)<\\/query_architecture>/gi;\n";
+        html += "            finalMarkdown = finalMarkdown.replace(sparqlRegex, (match, query) => {\n";
+        html += "                const blockId = 'sparql-companion-' + Date.now();\n";
+        html += "                return renderSparqlWidget(blockId, query.trim());\n";
+        html += "            });\n";
+
         html += "            container.innerHTML = \"\";\n";
         html += "            if (prompt) {\n";
         html += "                renderUserBubble(prompt);\n";
         html += "            }\n";
+
+
+        // --- START OF SELECTED CODE INTEGRATION ---
         html += "            const responseContainer = document.createElement('div');\n";
-        html += "            responseContainer.style.cssText = \"margin-bottom: 20px; padding: 12px 16px; border-radius: 8px; border: 1px solid var(--vscode-widget-border); border-left: 4px solid var(--vscode-charts-green); background: var(--vscode-editor-background);\";\n";
+        html += "            responseContainer.className = 'message-wrapper assistant-msg-wrapper';\n";
+        html += "            responseContainer.dataset.messageId = 'assistant_companion_msg';\n";
+        html += "            responseContainer.style.cssText = \"margin-bottom: 20px; padding: 12px 16px; border-radius: 8px; border: 1px solid var(--vscode-widget-border); border-left: 4px solid var(--vscode-charts-green); background: var(--vscode-editor-background); position: relative;\";\n";
         html += "            const responseHeader = document.createElement('div');\n";
         html += "            responseHeader.style.cssText = \"font-size: 11px; font-weight: bold; margin-bottom: 8px; opacity: 0.8; display: flex; align-items: center; gap: 6px; color: var(--vscode-textLink-foreground);\";\n";
         html += "            responseHeader.innerHTML = '<span class=\"codicon codicon-sparkle\"></span> <span>Lollms Response</span>';\n";
+        html += "            const actions = document.createElement('div');\n";
+        html += "            actions.className = 'message-actions';\n";
+        html += "            actions.style.cssText = 'position: absolute; top: 10px; right: 10px; display: flex; gap: 4px;';\n";
+        html += "            actions.innerHTML = '<button class=\"msg-action-btn edit-msg-btn\" onclick=\"event.stopPropagation(); startEdit(this.closest(\\\'.message-wrapper\\\'), \\\'assistant_companion_msg\\\', \\\'assistant\\\')\"><i class=\"codicon codicon-edit\"></i></button>';\n";
         html += "            const responseBody = document.createElement('div');\n";
         html += "            responseBody.className = \"markdown-body message-content\";\n";
-        html += "            responseBody.innerHTML = thoughtsHtml + DOMPurify.sanitize(marked.parse(finalMarkdown));\n";
+        html += "            responseBody.innerHTML = thoughtsHtml + DOMPurify.sanitize(marked.parse(finalMarkdown), {\n";
+        html += "                ADD_TAGS: ['div', 'pre', 'button', 'span', 'i'],\n";
+        html += "                ADD_ATTR: ['class', 'style', 'data-query', 'data-block-id', 'onclick']\n";
+        html += "            });\n";
         html += "            responseContainer.appendChild(responseHeader);\n";
+        html += "            responseContainer.appendChild(actions);\n";
         html += "            responseContainer.appendChild(responseBody);\n";
         html += "            container.appendChild(responseContainer);\n";
+        html += "            responseContainer.dataset.originalContent = JSON.stringify(text);\n";
+
+        // Inject Workspace Action Event Parsers inside Markdown Streams
+        html += "            let parsedHtml = thoughtsHtml + DOMPurify.sanitize(marked.parse(finalMarkdown), {\n";
+        html += "                ADD_TAGS: ['div', 'pre', 'button', 'span', 'i', 'a'],\n";
+        html += "                ADD_ATTR: ['class', 'style', 'data-query', 'data-block-id', 'onclick', 'data-action', 'data-path', 'data-line', 'data-text']\n";
+        html += "            });\n";
+        html += "            \n";
+        // Parse custom interactive links and trigger them automatically on render
+        html += "            const actionRegex = /<(open_file|select_code|set_breakpoint|run_script)\\s+([^>]*?)\\s*\\/>/gi;\n";
+        html += "            parsedHtml = parsedHtml.replace(actionRegex, (match, action, attrStr) => {\n";
+        html += "                const attrs = {};\n";
+        html += "                attrStr.replace(/(\\w+)=[\"']([^\"']*)[\"']/g, (_, k, v) => attrs[k] = v);\n";
+        html += "                \n";
+        html += "                let label = \"Action\";\n";
+        html += "                let icon = \"zap\";\n";
+        html += "                if (action === 'open_file') { label = 'Opening ' + (attrs.filePath ? attrs.filePath.split('/').pop() : 'file'); icon = 'file-code'; }\n";
+        html += "                else if (action === 'select_code') { label = 'Highlighting code...'; icon = 'selection'; }\n";
+        html += "                else if (action === 'set_breakpoint') { label = 'Breakpoint set (Line ' + attrs.line + ')'; icon = 'debug-breakpoint'; }\n";
+        html += "                else if (action === 'run_script') { label = 'Running script...'; icon = 'play'; }\n";
+        html += "                \n";
+        html += "                const serializedParams = \"JSON.stringify(attrs).replace(/'/g, \"&apos;\")\";\n";
+        html += "                setTimeout(() => {\n";
+        html += "                    vscode.postMessage({ command: 'workspaceAction', action, params: attrs });\n";
+        html += "                }, 50);\n";
+        html += "                return `<div class=\"apply-row\" style=\"background: rgba(155, 89, 182, 0.05); border-left: 3px solid var(--vscode-charts-purple); margin: 6px 0; padding: 6px 10px;\">` +\n";
+        html += "                       `  <span class=\"status-icon\"><i class=\"codicon codicon-\${icon}\" style=\"color: var(--vscode-charts-purple)\"></i></span>` +\n";
+        html += "                       `  <span style=\"font-size: 11px; font-weight: bold; opacity: 0.9; margin-left: 6px;\">\${label}</span>` +\n";
+        html += "                       `</div>`;\n";
+        html += "            });\n";
+        html += "            \n";
+        html += "            responseBody.innerHTML = parsedHtml;\n";
         html += "            \n";
         html += "            // Leverage universal webview rendering engine\n";
         html += "            if (typeof enhanceCodeBlocks === 'function') {\n";
@@ -1202,7 +1450,7 @@ export class CompanionPanel {
 
         html += "        function appendChunk(chunk) {\n";
         html += "            activeContentBuffer += chunk;\n";
-        html += "            renderResponse(activeContentBuffer, \"\", false);\n";
+        html += "            renderResponse(activeContentBuffer, activePrompt, false);\n";
         html += "        }\n";
 
         html += "        function clearResponse() {\n";
@@ -1211,6 +1459,14 @@ export class CompanionPanel {
         html += "            document.getElementById('hud-scratchpad-body').textContent = 'Standing by. Ready to pair-program with you!';\n";
         html += "        }\n";
 
+        // Global workspace action triggers
+        html += "        function triggerWorkspaceAction(button) {\n";
+        html += "            const action = button.getAttribute('data-action');\n";
+        html += "            const params = JSON.parse(button.getAttribute('data-params'));\n";
+        html += "            vscode.postMessage({ command: 'workspaceAction', action, params });\n";
+        html += "        }\n";
+        html += "        window.triggerWorkspaceAction = triggerWorkspaceAction;\n";
+        html += "        \n";
         html += "        function copyFullResponse() { vscode.postMessage({ command: 'copyToClipboard', text: activeContentBuffer }); }\n";
         html += "        function loadHistory(id) {\n";
         html += "            vscode.postMessage({ command: 'loadHistory', id: id });\n";
@@ -1223,13 +1479,44 @@ export class CompanionPanel {
         html += "        function clearHistory() { vscode.postMessage({ command: 'clearHistory' }); }\n";
 
         // Inject essential visual rendering methods from core chatPanel view bundle
-        html += "        const langMap = { 'js': 'javascript', 'ts': 'typescript', 'py': 'python', 'sh': 'bash', 'json': 'json', 'html': 'html', 'css': 'css' };\n";
+        html += "        const langMap = { 'js': 'javascript', 'ts': 'typescript', 'py': 'python', 'sh': 'bash', 'json': 'json', 'html': 'html', 'css': 'css', 'sparql': 'sparql' };\n";
         html += "        function renderLines(lines, type) {\n";
         html += "            return lines.map(line => {\n";
         html += "                const escaped = line.replace(/&/g, \"&amp;\").replace(/</g, \"&lt;\").replace(/>/g, \"&gt;\");\n";
         html += "                const safeLine = escaped.length === 0 ? ' ' : escaped;\n";
         html += "                return '<div class=\"aider-diff-line aider-diff-' + type + '\"><span class=\"aider-diff-code\">' + safeLine + '</span></div>';\n";
         html += "            }).join('');\n";
+        html += "        }\n";
+
+        // --- CUSTOM SPARQL WIDGET INJECTOR FOR COMPANION PANEL (AUTONOMOUS ON RENDERING) ---
+        html += "        function renderSparqlWidget(blockId, queryText) {\n";
+        html += "            const escapedQuery = queryText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n";
+        html += "            \n";
+        html += "            // Trigger background query immediately without blocking UI thread\n";
+        html += "            setTimeout(() => {\n";
+        html += "                vscode.postMessage({\n";
+        html += "                    command: 'executeLollmsCommand',\n";
+        html += "                    details: {\n";
+        html += "                        command: 'lollms-vs-coder.runSparqlQueryDirectly',\n";
+        html += "                        params: { query: queryText, messageId: 'companion_msg', blockId }\n";
+        html += "                    }\n";
+        html += "                });\n";
+        html += "            }, 10);\n";
+        html += "            \n";
+        html += "            return `\\n\\n<div class=\"generation-block sparql-block\" id=\"\${blockId}\" data-query=\"\${encodeURIComponent(queryText)}\" style=\"border: 1px solid var(--vscode-charts-purple); border-radius: 6px; overflow:hidden; margin: 12px 0;\">\\n` +\n";
+        html += "                   `  <div class=\"generation-header\" style=\"background: rgba(155, 89, 182, 0.1); padding: 8px 12px; display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid var(--vscode-widget-border);\">\\n` +\n";
+        html += "                   `    <span style=\"color: var(--vscode-charts-purple); font-weight: 800; font-size:11px;\"><i class=\"codicon codicon-graph\"></i> SPARQL-lite Query (Auto-executing)</span>\\n` +\n";
+        html += "                   `    <div class=\"code-actions\" style=\"display:flex; gap:6px;\">\\n` +\n";
+        html += "                   `      <span class=\"codicon codicon-sync spin\" style=\"color: var(--vscode-charts-purple)\"></span>\\n` +\n";
+        html += "                   `    </div>\\n` +\n";
+        html += "                   `  </div>\\n` +\n";
+        html += "                   `  <div class=\"generation-body\" style=\"padding:12px; background:var(--vscode-editor-background); display:flex; flex-direction:column; gap:8px;\">\\n` +\n";
+        html += "                   `    <pre style=\"margin:0; padding:8px; background:rgba(0,0,0,0.15); border-radius:4px; font-family:monospace; font-size:11px; white-space:pre-wrap;\">\text</pre>\\n` +\n"; // Use pre-escaped placeholder to bypass template literals
+        html += "                   `    <div class=\"sparql-results-render-area\" style=\"display:block; max-height:180px; overflow-y:auto; border-top:1px solid var(--vscode-widget-border); padding-top:8px; font-size:11px;\">` +\n";
+        html += "                   `       <div style=\"opacity:0.6; display:flex; gap:8px; align-items:center;\"><div class=\"spinner\"></div> Running query...</div>` +\n";
+        html += "                   `    </div>\\n` +\n";
+        html += "                   `  </div>\\n` +\n";
+        html += "                   `</div>\\n\\n`.replace('text', escapedQuery);\n";
         html += "        }\n";
         html += "        function extractFilePaths(content) {\n";
         html += "            const infos = [];\n";

@@ -24,6 +24,10 @@ export class ToolManager {
             this.tools.set(tool.name, tool);
         });
         this.tools.set(navigateToCodeTool.name, navigateToCodeTool);
+
+        // Ensure update_function is explicitly loaded
+        const { updateFunctionTool } = require('./builtins/updateFunction');
+        this.tools.set(updateFunctionTool.name, updateFunctionTool);
     }
 
     private async loadMcpTools() {

@@ -21,13 +21,20 @@ export class PromptTemplates {
         const sections: string[] = [];
 
         // ── ZERO-PLACEHOLDER MANDATE (CRITICAL RED-LINE) ────────────────────────
-        sections.push(`
-# 🛑 THE ZERO-PLACEHOLDER MANDATE (CRITICAL - ZERO-TOLERANCE)
-You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or comments to skip code (e.g., \`# (The body of this class remains logically identical to...)\`, \`// ... rest of code\`, \`# existing imports here\`, \`/* same as above */\`, or \`...\`).
-- **NO EXCEPTIONS**: Every single character that belongs in the file or the replacement block MUST be written explicitly from line 1 to the end.
-- **CONSEQUENCE**: If you use any placeholders, code-skipping comments, or ellipses, the user's file will be corrupted, the build will break, and the mission will fail immediately. 
-- **RULE**: If you are writing a new file, you MUST write out 100% of the code explicitly. Do NOT summarize or use comments to represent existing code. If you are  or duplicating/moving an existing file to a new path then use the copy/move tool instead of manually writing it.
-`);
+                sections.push(`
+        # 🛑 THE ZERO-PLACEHOLDER MANDATE (CRITICAL - ZERO-TOLERANCE)
+        You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or comments to skip code (e.g., \`# (The body of this class remains logically identical to...)\`, \`// ... rest of code\`, \`# existing imports here\`, \`/* same as above */\`, or \`...\`).
+        - **NO EXCEPTIONS**: Every single character that belongs in the file or the replacement block MUST be written explicitly from line 1 to the end.
+        - **CONSEQUENCE**: If you use any placeholders, code-skipping comments, or ellipses, the user's file will be corrupted, the build will break, and the mission will fail immediately. 
+        - **RULE**: If you are writing a new file, you MUST write out 100% of the code explicitly. Do NOT summarize or use comments to represent existing code. If you are  or duplicating/moving an existing file to a new path then use the copy/move tool instead of manually writing it.
+
+        # 🧼 STRICT CODE HYGIENE & NO INLINE COMMENTS MANDATE (ZERO-TOLERANCE)
+        You are **STRICTLY FORBIDDEN** from adding conversational comments, patch logs, or change annotations directly inside the code (e.g., do NOT write \`# Critical FIX: resolved bug here\` or \`// Modified by Architect\`).
+        - **WHY**: Inline change logs and explanation comments inside source files yield poor code hygiene, rot quickly, and pollute the active context window on subsequent turns.
+        - **PROTOCOL**: 
+          1. Keep the generated code clean, production-ready, and free of conversational comments.
+          2. If there is an important fact, architectural standard, or lesson learned that must be remembered, you **MUST** use the \`<project_memory>\` tag to save it to our Neural Memory system instead of polluting the source file.
+        `);
 
         // ── SYSTEM XML TAG HYGIENE ─────────────────────────────────────────────
         sections.push(`
@@ -44,17 +51,16 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
 - **CONSEQUENCE:** Wrapping active system tags in backticks or code fences hides them from the parser, preventing automation and memory synchronization. Always render active system tags as raw, naked XML starting on a brand new line.
 `);
 
-       // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
         // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
         sections.push(`
         ### 🚦 CODE OUTPUT DECISION TREE (STRICT EXCLUSIVITY & COMPLIANCE MANDATE)
         You MUST strictly follow this decision tree to choose the correct format for code output. Non-compliance results in parsing errors and redundant token usage. 
 
         1. **NEW FILES**: You MUST use **FORMAT 1 (FULL FILE)**.
-        2. **EXISTING FILES (Surgical Fix affecting < 50% of the file)**: You MUST use **FORMAT 2 (SEARCH/REPLACE)**. This is the preferred and mandated method to maintain project integrity and ensure optimal token economy.
-        3. **EXISTING FILES (Major Refactor affecting > 50% of the file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
-        4. **TARGETED SYMBOL REPLACEMENT (Full Address Mode)**: When writing or modifying a specific standalone function, class, or class method, you can use **FORMAT 3 (FULL ADDRESS MODE)**. Specify the path, class, and method targeted inside the language header. This is the most token-efficient way to modify large OOP modules!
-        5. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize surgical patches using AIDER FORMAT 2/3."}
+        2. **MODIFYING AN ENTIRE FUNCTION, CLASS, OR METHOD**: You **MUST** use the \`update_function\` tool (or **FORMAT 3 (FULL ADDRESS MODE)**). This is your primary coding weapon! Do NOT use Aider SEARCH/REPLACE blocks to replace a whole function, as writing the old function body is a severe waste of space and token budget.
+        3. **SMALL SURGICAL CHANGES WITHIN A FUNCTION (< 50% of the symbol)**: You MUST use **FORMAT 2 (SEARCH/REPLACE)**.
+        4. **EXISTING FILES (Major Refactor affecting > 50% of the file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
+        5. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize symbol updates or surgical patches using FORMAT 2/3."}
 
         **CRITICAL MANDATES**:
         - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
@@ -72,12 +78,21 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
 - The block **MUST** contain the complete file content from line 1 to the end.
 `);
 
+        // ── FORMAT 3: TARGETED SYMBOL REPLACEMENT (FULL ADDRESS MODE) ────────
+        sections.push(`
+### ⚡ FORMAT 3: TARGETED SYMBOL REPLACEMENT (FULL ADDRESS MODE)
+**Header**: \`\`\`[language]:path/to/file.ext:SymbolName
+- Use this when replacing an ENTIRE class, standalone function, or class method in an existing file.
+- The symbol name (e.g. \`MyClassName\` or \`MyClassName:my_method_name\`) must be appended to the namespaced path.
+- **The block content must contain ONLY the new code for the target symbol**. Do not include any surrounding code or Aider markers.
+`);
+
         // ── FORMAT 2: SEARCH/REPLACE (AIDER) ───────────────────────
         if (partialFormat === 'aider') {
             sections.push(`
 ### ⚡ FORMAT 2: SEARCH/REPLACE (AIDER)
 **Header**: \`\`\`[language]:path/to/file.ext
-- Use this for surgical modifications to existing files (<50%).
+- Use this for small surgical modifications to existing files (<50%) where you are NOT replacing a whole function.
 - Structure:
 \`\`\`[language]:path/to/file.ext
 <<<<<<< SEARCH

@@ -1423,33 +1423,42 @@ Provide your audit verdict based on the TBox schema and sanitization rules.`;
                 const idxB = updatedEngrams.findIndex(e => e.id === engramB.id);
                 if (idxA === -1 || idxB === -1) continue;
 
+                // Chronological resolution: Find which engram is newer based on its timestamp
+                const newerEngram = engramA.timestamp >= engramB.timestamp ? engramA : engramB;
+                const olderEngram = engramA.timestamp < engramB.timestamp ? engramA : engramB;
+
                 if (onProgress) {
                     onProgress({ 
                         type: 'fuse', 
-                        title: `Evaluating duplicate: "${engramA.title}" vs "${engramB.title}" (Sim: ${Math.round(similarity * 100)}%)` 
+                        title: `Evaluating duplicate: "${engramA.title}" vs "${engramB.title}" (Sim: ${Math.round(similarity * 100)}%) - Chronological Preference: "${newerEngram.title}"` 
                     });
                 }
 
-                const fusionPrompt = `You are the Neural Synaptic Architect. We have identified two highly similar memory engrams in our project graph.
-Your goal is to perform a detailed semantic audit to determine if they represent redundant/duplicate information.
+                const fusionPrompt = `You are the Neural Synaptic Architect. We have identified two highly similar memory engrams in our project graph representing redundant or overlapping facts.
+Your goal is to perform a detailed semantic audit to merge them.
 
-### ENGRAM A:
-ID: "${engramA.id}"
-Title: "${engramA.title}"
-Content: "${engramA.content}"
-Category: "${engramA.category}"
+### 🕒 CHRONOLOGICAL MATRIX (IMPORTANT):
+- **NEWER ENGRAM (More likely to contain correct, updated or refined facts)**:
+  ID: "${newerEngram.id}"
+  Title: "${newerEngram.title}"
+  Content: "${newerEngram.content}"
+  Timestamp: ${newerEngram.timestamp} (${new Date(newerEngram.timestamp).toLocaleString()})
+  Category: "${newerEngram.category}"
 
-### ENGRAM B:
-ID: "${engramB.id}"
-Title: "${engramB.title}"
-Content: "${engramB.content}"
-Category: "${engramB.category}"
+- **OLDER ENGRAM (Might contain outdated or superseded constraints)**:
+  ID: "${olderEngram.id}"
+  Title: "${olderEngram.title}"
+  Content: "${olderEngram.content}"
+  Timestamp: ${olderEngram.timestamp} (${new Date(olderEngram.timestamp).toLocaleString()})
+  Category: "${olderEngram.category}"
 
 **INSTRUCTIONS:**
 1. If they are NOT redundant and cover distinct, separate concepts, return {"is_duplicate": false}.
-2. If they are redundant, return {"is_duplicate": true} and provide a single consolidated engram that merges all facts, standards, and hashtags from both.
-3. Keep the most descriptive ID (or select a clean, lowercase merged ID).
-4. Output valid JSON only inside a code block.
+2. If they are redundant, return {"is_duplicate": true}.
+3. **CHRONOLOGICAL OVERRIDE**: You MUST let the facts in the **NEWER ENGRAM** override or refine any outdated or conflicting facts in the **OLDER ENGRAM**. 
+4. Produce a single consolidated, extremely cohesive engram that merges all facts, standards, and hashtags from both while prioritizing the latest rules.
+5. Keep the most descriptive ID (or select a clean, lowercase merged ID).
+6. Output valid JSON only inside a code block.
 
 **OUTPUT FORMAT:**
 \`\`\`json
@@ -1533,7 +1542,9 @@ Category: "${engramB.category}"
                             engramToKeep.predicates = mergedPredicates;
                             engramToKeep.historicalLog = mergedLog;
                             engramToKeep.importance = Math.min(100, Math.max(engramToKeep.importance, engramToDelete.importance) + 5); // Boost importance on fusion
-                            engramToKeep.timestamp = Date.now();
+                            // Update timestamp and lastUsed to match the newest parent for accurate decay calculations
+                            engramToKeep.timestamp = Math.max(engramToKeep.timestamp, engramToDelete.timestamp);
+                            engramToKeep.lastUsed = Math.max(engramToKeep.lastUsed, engramToDelete.lastUsed);
 
                             // Remove the deleted node from memory
                             updatedEngrams.splice(targetDeleteIdx, 1);

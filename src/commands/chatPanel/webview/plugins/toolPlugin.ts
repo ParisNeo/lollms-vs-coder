@@ -3,39 +3,71 @@ import DOMPurify from 'dompurify';
 
 export const toolPlugin: TagPlugin = {
     id: 'lollms_tool',
-    // Matches the simplified <lollms_tool>JSON</lollms_tool> format
-    tagPattern: /^[ \t]*<lollms_tool>([\s\S]*?)<\/lollms_tool>/gim,
+    // Matches both standard block format <lollms_tool>JSON</lollms_tool> and attribute-based formats (<lollms_tool name="..." params="..." />)
+    tagPattern: /^[ \t]*<lollms_tool\b([^>]*?)>([\s\S]*?)<\/lollms_tool>|^[ \t]*<lollms_tool\s+([^>]*?)\s*(?:\/>)/gim,
 
     render: (match, context) => {
-        const rawJson = match[1].trim();
-        let parsedCall: any = {};
+        let toolName = "unknown_tool";
+        let params: any = {};
 
-        try {
-            // primary parse
-            parsedCall = JSON.parse(rawJson);
-        } catch (e) {
-            try {
-                // secondary repair
-                const repaired = rawJson
-                    .replace(/\\`/g, '`')
-                    .replace(/[\r\n\t]/g, ' ')
-                    .replace(/,\s*([\]}])/g, '$1');
-                parsedCall = JSON.parse(repaired);
-            } catch (err) {
-                // tertiary key-value carving for name/arguments
-                const nameMatch = rawJson.match(/"name"\s*:\s*"([^"]+)"/);
-                const argsMatch = rawJson.match(/"(?:arguments|params)"\s*:\s*(\{[\s\S]*\})/);
-                if (nameMatch) {
-                    parsedCall.name = nameMatch[1];
-                    if (argsMatch) {
-                        try { parsedCall.arguments = JSON.parse(argsMatch[1]); } catch {}
-                    }
+        // 1. Parse Attribute-based tool call (<lollms_tool name="..." params="..." />)
+        const attrStr = (match[1] || match[3] || "").trim();
+        if (attrStr) {
+            const attrs: Record<string, string> = {};
+            const attrRegex = /(\w+)\s*=\s*(["'])([\s\S]*?)\2/gi;
+            let m;
+            while ((m = attrRegex.exec(attrStr)) !== null) {
+                attrs[m[1].toLowerCase()] = m[3];
+            }
+            if (attrs.name) {
+                toolName = attrs.name;
+            }
+            if (attrs.params || attrs.arguments) {
+                try {
+                    const cleanParams = (attrs.params || attrs.arguments)
+                        .replace(/&quot;/g, '"')
+                        .replace(/&apos;/g, "'")
+                        .replace(/&#39;/g, "'")
+                        .replace(/&amp;/g, '&');
+                    params = JSON.parse(cleanParams);
+                } catch (e) {
+                    params = { raw_params: attrs.params || attrs.arguments };
                 }
             }
         }
 
-        const toolName = parsedCall.name || "unknown_tool";
-        const params = parsedCall.arguments || parsedCall.params || {};
+        // 2. Fall back to standard Inner JSON block parser (<lollms_tool>JSON_BODY</lollms_tool>)
+        if (toolName === "unknown_tool") {
+            const rawJson = (match[2] || "").trim();
+            if (rawJson) {
+                let parsedCall: any = {};
+                try {
+                    // primary parse
+                    parsedCall = JSON.parse(rawJson);
+                } catch (e) {
+                    try {
+                        // secondary repair
+                        const repaired = rawJson
+                            .replace(/\\`/g, '`')
+                            .replace(/[\r\n\t]/g, ' ')
+                            .replace(/,\s*([\]}])/g, '$1');
+                        parsedCall = JSON.parse(repaired);
+                    } catch (err) {
+                        // tertiary key-value carving for name/arguments
+                        const nameMatch = rawJson.match(/"name"\s*:\s*"([^"]+)"/);
+                        const argsMatch = rawJson.match(/"(?:arguments|params)"\s*:\s*(\{[\s\S]*\})/);
+                        if (nameMatch) {
+                            parsedCall.name = nameMatch[1];
+                            if (argsMatch) {
+                                try { parsedCall.arguments = JSON.parse(argsMatch[1]); } catch {}
+                            }
+                        }
+                    }
+                }
+                toolName = parsedCall.name || "unknown_tool";
+                params = parsedCall.arguments || parsedCall.params || {};
+            }
+        }
 
         const blockId = `tool-req-${context.messageId}-${Math.random().toString(36).substring(7)}`;
 

@@ -135,14 +135,42 @@ export class CustomActionModal {
                     padding-top: 20px;
                 }
                 button.main-btn {
-                    flex: 2; background-color: var(--vscode-button-background);
-                    color: var(--vscode-button-foreground); border: none; padding: 10px;
-                    font-size: 13px; font-weight: 600; border-radius: 4px; cursor: pointer;
+                    flex: 2;
+                    background-color: var(--vscode-button-background);
+                    color: var(--vscode-button-foreground);
+                    border: 1px solid var(--vscode-button-border, transparent);
+                    padding: 8px 14px;
+                    font-size: 12px;
+                    font-weight: 600;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 4px;
+                    height: 28px;
+                    transition: background-color 0.15s ease;
+                }
+                button.main-btn:hover {
+                    background-color: var(--vscode-button-hoverBackground);
                 }
                 button.secondary {
-                    flex: 1; background-color: var(--vscode-button-secondaryBackground);
-                    color: var(--vscode-button-secondaryForeground); border: none; padding: 10px;
-                    border-radius: 4px; cursor: pointer;
+                    flex: 1;
+                    background-color: var(--vscode-button-secondaryBackground);
+                    color: var(--vscode-button-secondaryForeground);
+                    border: 1px solid transparent;
+                    padding: 8px 14px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 4px;
+                    height: 28px;
+                    transition: background-color 0.15s ease;
+                }
+                button.secondary:hover {
+                    background-color: var(--vscode-button-secondaryHoverBackground);
                 }
                 button:hover { filter: brightness(1.2); }
                 

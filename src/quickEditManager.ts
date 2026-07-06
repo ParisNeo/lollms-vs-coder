@@ -84,11 +84,11 @@ export class QuickEditManager {
 
                 currentFileBlock = `### 🏢 FULL CODEBASE STRUCTURE (ONTOLOGY TREE)\n${fullContext.projectTree}\n\n### 📄 GROUNDED FILE CONTENTS\n${fullContext.selectedFilesContent || "*(No files currently checked in the matrix)*"}`;
                 prompt = `**My Question / Message:** "${instruction}"\n\n` +
-                         `**COMPLIANCE RULES (MANDATORY):**\n` +
-                         `1. You are operating with **Full Grounding Mode** active. You have full vision of our tree and selected files above.\n` +
-                         `2. Use AIDER SEARCH/REPLACE blocks if asked to write or modify code for files in the workspace.\n` +
-                         `3. For non-workspace code examples, use standard markdown code blocks (e.g. \` \` \`python).\n` +
-                         `4. Use our un-validated interaction tools (<open_file />, <set_breakpoint />) proactively to control the editor window.`;
+                            `**COMPLIANCE RULES (MANDATORY):**\n` +
+                            `1. You are operating with **Full Grounding Mode** active. You have full vision of our tree and selected files above.\n` +
+                            `2. Use AIDER SEARCH/REPLACE blocks if asked to write or modify code for files in the workspace.\n` +
+                            `3. For non-workspace code examples, use standard markdown code blocks (e.g. \` \` \`python).\n` +
+                            `4. Use our un-validated interaction tools (<open_file />, <set_breakpoint />) proactively to control the editor window.`;
             } else if (editor) {
                 const document = editor.document;
                 const selection = editor.selection;
@@ -101,79 +101,98 @@ export class QuickEditManager {
                 isNotebook = document.uri.scheme === 'vscode-notebook-cell';
 
                 if (isNotebook) {
-                     const notebookEditor = vscode.window.visibleNotebookEditors.find(ne => 
+                        const notebookEditor = vscode.window.visibleNotebookEditors.find(ne => 
                         ne.notebook.getCells().some(c => c.document.uri.toString() === document.uri.toString())
-                     );
-                     if (notebookEditor) {
-                         relativePath = vscode.workspace.asRelativePath(notebookEditor.notebook.uri);
-                         const currentCell = notebookEditor.notebook.getCells().find(c => c.document.uri.toString() === document.uri.toString());
-                         if (currentCell) {
-                             relativePath += ` (Cell ${currentCell.index + 1})`;
-                             
-                             for (const cell of notebookEditor.notebook.getCells()) {
+                        );
+                        if (notebookEditor) {
+                            relativePath = vscode.workspace.asRelativePath(notebookEditor.notebook.uri);
+                            const currentCell = notebookEditor.notebook.getCells().find(c => c.document.uri.toString() === document.uri.toString());
+                            if (currentCell) {
+                                relativePath += ` (Cell ${currentCell.index + 1})`;
+                                
+                                for (const cell of notebookEditor.notebook.getCells()) {
                                 if (cell === currentCell) break;
                                 const content = cell.document.getText();
                                 if (content.length > 2000) continue; 
                                 notebookContext += `Cell ${cell.index + 1} (${cell.kind === vscode.NotebookCellKind.Code ? 'Code' : 'Markdown'}):\n\`\`\`\n${content}\n\`\`\`\n\n`;
-                             }
-                         }
-                     }
-                }
+                                }
+                            }
+                        }
+                    }
 
                 const currentFileCode = document.getText();
                 
-                // Get all errors/warnings for the ENTIRE file
+                // Get all errors/warnings for the ENTIRE file (Grounding Requirement)
                 const rawDiagnostics = vscode.languages.getDiagnostics(document.uri);
                 let fileErrorsReport = "";
                 if (rawDiagnostics.length > 0) {
                     fileErrorsReport = `\n### 🛡️ COMPLETE FILE ERROR & WARNING REPORT\n` +
                         rawDiagnostics.map((d, idx) => {
                             const severity = d.severity === vscode.DiagnosticSeverity.Error ? 'ERROR' : 
-                                             d.severity === vscode.DiagnosticSeverity.Warning ? 'WARNING' : 'INFO';
+                                                d.severity === vscode.DiagnosticSeverity.Warning ? 'WARNING' : 'INFO';
                             return `${idx + 1}. **[Line ${d.range.start.line + 1}] [${severity}]**: \`${d.message}\` (${d.source || 'linter'})`;
                         }).join('\n') + `\n`;
                 }
 
-                currentFileBlock = `### 📄 COMPLETE ACTIVE FILE CONTENT\n\`\`\`${languageId}:${relativePath}\n${currentFileCode}\n\`\`\`\n${fileErrorsReport}`;
+                // Compress active debug variables if debugger is active
+                const { debugStateManager, debugErrorManager } = require('./extensionState');
+                const lastDbgState = debugStateManager.lastState;
+                const lastDbgError = debugErrorManager.lastError;
+                const dbgLocals = lastDbgState?.locals || lastDbgError?.locals || "";
+                let debugReport = "";
+                if (dbgLocals) {
+                    const lines = dbgLocals.split('\n').filter(Boolean);
+                    const compressedLines = lines.map((line: string) => {
+                        const parts = line.split(' = ');
+                        if (parts.length < 2) return line;
+                        const name = parts[0];
+                        const valAndType = parts.slice(1).join(' = ');
+                        if (valAndType.length > 120) {
+                            return `${name} = ${valAndType.substring(0, 100)}... [truncated]`;
+                        }
+                        return line;
+                    });
+                    debugReport = `\n### 🐞 ACTIVE DEBUGGER VARIABLES (LOCALS)\n${compressedLines.join('\n')}\n`;
+                }
+
+                currentFileBlock = `### 📄 COMPLETE ACTIVE FILE CONTENT\n\`\`\`${languageId}:${relativePath}\n${currentFileCode}\n\`\`\`\n${fileErrorsReport}${debugReport}`;
 
                 if (hasSelection) {
                     const startLine = selection.start.line;
                     const endLine = selection.end.line;
 
                     prompt = `I am working on the file \`${relativePath}\` (${languageId}).\n\n` +
-                             `#### 🔍 SELECTED ZOOM AREA (Lines ${startLine + 1} to ${endLine + 1})\n` +
-                             `\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
-                             `**Instruction/Question:** "${instruction}"\n\n`;
+                                `#### 🔍 SELECTED ZOOM AREA (Lines ${startLine + 1} to ${endLine + 1})\n` +
+                                `\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
+                                `**Instruction/Question:** "${instruction}"\n\n`;
 
                     if (isNotebook && notebookContext) {
                         prompt = `**NOTEBOOK CONTEXT (Preceding Cells):**\n${notebookContext}\n\n` + prompt;
                     }
 
                     prompt += `\n**COMPLIANCE RULES:**\n` +
-                              `1. Use AIDER SEARCH/REPLACE blocks for surgical modifications to the active file.\n` +
-                              `2. Use FULL FILE blocks if you need to rewrite more than 50% of the file.\n` +
-                              `3. You may use the available tools to search the workspace, run queries, or find code.`;
+                                `1. Use AIDER SEARCH/REPLACE blocks for surgical modifications to the active file.\n` +
+                                `2. Use FULL FILE blocks if you need to rewrite more than 50% of the file.\n` +
+                                `3. You may use the available tools to search the workspace, run queries, or find code.`;
                 } else {
                     // Conversational/Casual mode when no text is selected
                     prompt = `I am discussing casually with you. I do not have any code selected to modify.\n\n` +
-                             `Current active file in editor (for your reference only): \`${relativePath}\` (${languageId}).\n\n` +
-                             `**My Question / Message:** "${instruction}"\n\n` +
-                             `**COMPLIANCE RULES (MANDATORY):**\n` +
-                             `1. DO NOT output any AIDER search/replace blocks or modify any files on disk.\n` +
-                             `2. DO NOT use namespaced code blocks (e.g., do NOT use \` \` \`lang:path\`).\n` +
-                             `3. If you write code examples, use standard, non-namespaced markdown blocks (e.g., \` \` \`python or \` \` \`javascript) so they do not trigger any file writes.\n"`;
+                                `Current active file in editor (for your reference only): \`${relativePath}\` (${languageId}).\n\n` +
+                                `**My Question / Message:** "${instruction}"\n\n` +
+                                `**COMPLIANCE RULES (MANDATORY):**\n` +
+                                `1. DO NOT output any AIDER search/replace blocks or modify any files on disk.\n` +
+                                `2. DO NOT use namespaced code blocks (e.g., do NOT use \` \` \`lang:path\`).\n` +
+                                `3. If you write code examples, use standard, non-namespaced markdown blocks (e.g., \` \` \`python or \` \` \`javascript) so they do not trigger any file writes.\n`;
                 }
             } else {
                 // Grounding when NO editor is open (Conversational Workspace Mode)
                 prompt = `I am discussing casually with you. No file editor is currently open in my workspace.\n\n` +
-                         `**My Question / Message:** "${instruction}"\n\n` +
-                         `**COMPLIANCE RULES (MANDATORY):**\n` +
-                         `1. DO NOT output any AIDER search/replace blocks or modify any files on disk.\n"`;
+                            `**My Question / Message:** "${instruction}"\n\n` +
+                            `**COMPLIANCE RULES (MANDATORY):**\n` +
+                            `1. DO NOT output any AIDER search/replace blocks or modify any files on disk.\n`;
             }
 
             // --- SOVEREIGN SUB-GRAPH EXTRACTION ---
-            // Only extract complex codebase relationships if the graph is already compiled.
-            // This prevents long-running buildGraph tasks from hanging the Companion's initial prompt.
             const graph = this.contextManager['codeGraphManager'];
             let localGraphSummary = "";
             let dependencyContent = "";
@@ -222,7 +241,7 @@ export class QuickEditManager {
 - **Friend**: "${userName}"
 - **Preferred Coding Style**: ${userStyle || "Clean, readable, well-commented code."}
 
-${projectDNA ? `### 🧬 PROJECT DNA (KNOWLEDGE GROUNDING)\n${projectDNA}\n` : ""}
+\${projectDNA ? \`### 🧬 PROJECT DNA (KNOWLEDGE GROUNDING)\\n\${projectDNA}\\n\` : ""}
 
 ### 📡 WORKSPACE INTERACTION RULES (SEAMLESS & AUTONOMOUS)
 You have direct, un-validated authority to manipulate the user's editor window and execution state. To perform an action, output the appropriate XML tag verbatim on its own line:
@@ -237,14 +256,14 @@ You have direct, un-validated authority to manipulate the user's editor window a
    \`<run_script filePath="relative/path/to/file.ext" />\`
 
 **MANDATE**:
-- Call the user by name ("${userName}") occasionally to make the pairing feel personal and friendly.
+- Call the user by name ("\${userName}") occasionally to make the pairing feel personal and friendly.
 - Provide a brief, supportive word ("We got this!", "Let's crack this together!") before diving into the code.
 - Align every code change with their preferred coding style and project DNA.
 - **PROACTIVE USE**: If the user's instruction asks you to open a file, focus on a section of code, or set a breakpoint, you **MUST** output the corresponding tag immediately in your response so the editor moves instantly. Do not ask for confirmation.
 `;
 
             if (isNotebook) {
-                systemPromptContent += `\n\n**NOTEBOOK MODE ACTIVATED**
+                systemPromptContent += `\\n\\n**NOTEBOOK MODE ACTIVATED**
 You are an expert Jupyter Notebook assistant.
 - You are editing a specific cell (or selection) within a notebook.
 - The preceding cells are provided as context.
@@ -254,10 +273,15 @@ You are an expert Jupyter Notebook assistant.
 `;
             }
 
-            // Companion is strictly conversational/non-agentic: No tools described or executed.
+            // Append only the clean user instruction to the persistent history so the UI stays beautiful
+            panel.chatHistory.push({ role: 'user', content: instruction });
+
+            // Construct the final outbound messages array, embedding the full context block specifically
+            // into the current turn's payload so the LLM receives the grounding but the UI stays clean.
             const messages: ChatMessage[] = [
                 { role: 'system', content: systemPromptContent },
-                { role: 'user', content: prompt }
+                ...panel.chatHistory.slice(0, -1), // Previous turns
+                { role: 'user', content: prompt }  // Current turn with full context
             ];
 
             // Resolve any active images in a lightweight background pass
@@ -271,14 +295,25 @@ You are an expert Jupyter Notebook assistant.
                     type: 'image_url',
                     image_url: { url: `data:image/jpeg;base64,${img.data}` }
                 }));
-                messages.splice(1, 0, { role: 'user', content: imageContent as any });
+                // Ingest images as user message parts if multi-modal
+                const lastUserMsg = messages[messages.length - 1];
+                if (lastUserMsg && typeof lastUserMsg.content === 'string') {
+                    lastUserMsg.content = [
+                        { type: 'text', text: lastUserMsg.content },
+                        ...imageContent
+                    ] as any;
+                }
             }
 
             let finalResponse = "";
             const controller = new AbortController(); 
 
+            // Render all previous history bubbles on the webview, plus an empty active streaming bubble
+            panel._panel.webview.postMessage({ command: 'updateChat', history: panel.chatHistory, streamingText: "" });
+
             finalResponse = await this.lollmsAPI.sendChat(messages, (chunk) => {
-                panel._panel.webview.postMessage({ command: 'appendChunk', text: chunk });
+                finalResponse += chunk;
+                panel._panel.webview.postMessage({ command: 'updateChat', history: panel.chatHistory, streamingText: finalResponse });
             }, controller.signal);
 
             const { content: cleanedResponse, memory = null } = extractAndStripMemory(stripThinkingTags(finalResponse));
@@ -286,7 +321,13 @@ You are an expert Jupyter Notebook assistant.
                 await this.memoryManager.updateMemory(memory);
             }
 
-            // Sync with history drawer and set final completed layout with copy/insert/replace controls
+            // Commit the complete assistant response to panel's conversation history
+            panel.chatHistory.push({ role: 'assistant', content: finalResponse });
+
+            // Send full completed history to webview to replace the temporary streaming bubble with the final styled bubble
+            panel._panel.webview.postMessage({ command: 'updateChat', history: panel.chatHistory, streamingText: "" });
+
+            // Also keep standard history logging active
             panel.addHistory(instruction, finalResponse); 
 
         } catch (error: any) {

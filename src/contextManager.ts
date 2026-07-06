@@ -275,11 +275,31 @@ export class ContextManager {
       // --- HIGH-PERFORMANCE RIPGREP PATH SCANNER ---
       if (this.contextStateProvider) {
           const visibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal, onScanProgress);
+          const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
+          const folderNameLower = folder.name.toLowerCase();
+
           for (const file of visibleFiles) {
               if (signal?.aborted) return "";
-              const resolution = await this.resolveWorkspaceFromPath(file);
-              if (resolution && resolution.folder?.uri.toString() === folder.uri.toString()) {
-                  injectPathIntoTree(resolution.relativePath);
+
+              // Highly optimized synchronous path matching to prevent massive sequential promise lag on large projects
+              let relativePath = file;
+              let fileBelongsToFolder = false;
+
+              if (isMultiRoot) {
+                  const firstSlash = file.indexOf('/');
+                  if (firstSlash !== -1) {
+                      const prefix = file.substring(0, firstSlash).toLowerCase();
+                      if (prefix === folderNameLower) {
+                          relativePath = file.substring(firstSlash + 1);
+                          fileBelongsToFolder = true;
+                      }
+                  }
+              } else {
+                  fileBelongsToFolder = true;
+              }
+
+              if (fileBelongsToFolder) {
+                  injectPathIntoTree(relativePath);
               }
           }
       }
@@ -406,14 +426,27 @@ export class ContextManager {
           injectPath(file.path, root?.name);
         }
 
-        const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
-        for (const filePath of allVisibleFiles) {
-          const root = folders.find(f =>
-            filePath.startsWith(f.name + '/') ||
-            this.normalize(vscode.workspace.asRelativePath(vscode.Uri.joinPath(f.uri, filePath), false)) === filePath
-          );
-          injectPath(filePath, root?.name);
-        }
+          const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
+          const isMultiRoot = folders.length > 1;
+          for (const filePath of allVisibleFiles) {
+            if (signal?.aborted) return "";
+            
+            // Highly optimized synchronous root folder detection to prevent expensive nested VS Code API/IO calls in large loops
+            let rootFolderName: string | undefined;
+            if (isMultiRoot) {
+                const firstSlash = filePath.indexOf('/');
+                if (firstSlash !== -1) {
+                    const prefix = filePath.substring(0, firstSlash);
+                    const matchedFolder = folders.find(f => f.name === prefix);
+                    if (matchedFolder) {
+                        rootFolderName = matchedFolder.name;
+                    }
+                }
+            } else {
+                rootFolderName = folders[0]?.name;
+            }
+            injectPath(filePath, rootFolderName);
+          }
 
         this._isTreeDirty = false;
       }
@@ -794,7 +827,9 @@ export class ContextManager {
             });
           }
 
-          projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${fileContent}\n\`\`\`\n\n`;
+          // Ensure fileContent ends with a newline before appending the closing fence to avoid layout issues
+          const formattedContent = fileContent.endsWith('\n') ? fileContent : fileContent + '\n';
+          projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${formattedContent}\`\`\`\n\n`;
           filesInThisFolderCount++;
 
         } catch (error) {

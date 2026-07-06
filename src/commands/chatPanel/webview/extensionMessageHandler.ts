@@ -41,6 +41,53 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }, 200);
                 }
                 break;
+            case 'startCountdown':
+                {
+                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`) as HTMLElement;
+                    if (!wrapper) break;
+
+                    const waitingAnim = wrapper.querySelector('.waiting-animation');
+                    if (waitingAnim) {
+                        const countdownSpan = document.createElement('span');
+                        countdownSpan.className = 'countdown-timer-hud';
+                        countdownSpan.style.cssText = "font-weight: bold; margin-left: 8px; color: var(--vscode-charts-orange); font-family: monospace;";
+                        waitingAnim.appendChild(countdownSpan);
+
+                        let remainingSecs = Math.max(1, Math.round(message.timeoutMs / 1000));
+                        countdownSpan.textContent = `(${remainingSecs}s remaining before timeout)`;
+
+                        const intervalId = setInterval(() => {
+                            if (wrapper.dataset.firstTokenReceived === 'true' || !document.body.contains(wrapper)) {
+                                clearInterval(intervalId);
+                                countdownSpan.remove();
+                                return;
+                            }
+
+                            remainingSecs--;
+                            if (remainingSecs <= 0) {
+                                clearInterval(intervalId);
+                                countdownSpan.textContent = `(Timeout reached)`;
+                                countdownSpan.style.color = "var(--vscode-charts-red)";
+                                const thinkingText = waitingAnim.querySelector('.thinking-text');
+                                if (thinkingText) {
+                                    thinkingText.textContent = "The LLM server failed to respond within the timeout limit. Please verify connection or optimize context size.";
+                                    thinkingText.style.color = "var(--vscode-charts-red)";
+                                }
+                                const spinner = waitingAnim.querySelector('.lollms-spinner') as HTMLElement;
+                                if (spinner) {
+                                    spinner.style.animation = 'none';
+                                    spinner.style.borderColor = 'var(--vscode-charts-red)';
+                                }
+                            } else {
+                                countdownSpan.textContent = `(${remainingSecs}s remaining before timeout)`;
+                            }
+                        }, 1000);
+
+                        // Attach interval to wrapper dataset for reference cleanup
+                        (wrapper as any)._countdownIntervalId = intervalId;
+                    }
+                }
+                break;
             case 'appendMessageChunk':
                 {
                     const stream = state.streamingMessages[message.id];
@@ -50,9 +97,18 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (!wrapper.dataset.firstTokenReceived) {
                         wrapper.dataset.firstTokenReceived = 'true';
                         wrapper.dataset.firstTokenTime = String(Date.now());
-                        const waitingAnim = wrapper.querySelector('.waiting-animation');
-                        if (waitingAnim) waitingAnim.remove();
-                        
+
+                        // Clear background countdown timer interval
+                        if ((wrapper as any)._countdownIntervalId) {
+                            clearInterval((wrapper as any)._countdownIntervalId);
+                        }
+
+                        // Hide the pre-allocated spinner smoothly without wiping the inner content, preventing a layout flash
+                        const waitingAnim = wrapper.querySelector('.waiting-animation') as HTMLElement;
+                        if (waitingAnim) {
+                            waitingAnim.style.display = 'none';
+                        }
+
                         const startTime = parseInt(wrapper.dataset.startTime || '0', 10);
                         const ttft = ((Date.now() - startTime) / 1000).toFixed(1);
                         const modelName = wrapper.dataset.model || 'Default';
@@ -1613,8 +1669,24 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             });
                         }
 
+                        // Automatically collapse the code block upon successful application to keep the viewport clean
+                        setTimeout(() => {
+                            if (blockEl && blockEl.open) {
+                                import('./utils.js').then(utils => {
+                                    utils.collapseBlockWithScrollPreservation(blockEl, document.getElementById('messages'));
+                                });
+                            }
+                        }, 500);
+
                         // Re-sync main button state for the entire message
                         checkAndSyncMessageAppliedState(message.messageId);
+
+                        // Collapse block automatically if applied (hunk-specific or full block)
+                        if (!isUndo && blockEl.open) {
+                            import('./utils.js').then(utils => {
+                                utils.collapseBlockWithScrollPreservation(blockEl, document.getElementById('messages'));
+                            });
+                        }
                     } else if (message.success && message.blockIndex === undefined) {
                         // --- AUTO-APPLY FALLBACK ---
                         // If applied without a blockIndex (e.g. from background automation pipeline),

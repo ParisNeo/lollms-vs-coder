@@ -358,7 +358,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
             // Open Diff View: Original (Disk) vs Proposed (Virtual)
             // Open Diff View: Original (Disk) vs Proposed (Virtual)
-            if (options?.autoSave && document) {
+            if (document) {
                 const edit = new vscode.WorkspaceEdit();
                 const lastLine = document.lineCount > 0 ? document.lineCount - 1 : 0;
                 const fullRange = new vscode.Range(
@@ -372,14 +372,14 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 }
             }
 
-            // The user must review and Save the diff tab to apply changes.
+            // The user must review and Save the diff tab to apply changes if not in silent/auto mode.
             if (!options?.silent) {
                 // Determine discussionId from active panel if available
                 const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
                 await services.diffManager.openDiff(fileUri, finalWriteContent, discussionId);
             }
 
-            return { success: true, alreadyApplied: !!options?.autoSave };
+            return { success: true, alreadyApplied: true };
 
         } catch (e: any) {
         Logger.error(`Error applying file content: ${e.message}`, e);

@@ -56,6 +56,7 @@ import { searchStackOverflowTool } from './searchStackOverflow';
 import { testWebPageTool } from './testWebPage';
 import { generateCodeTool } from './generateCode';
 import { editCodeTool } from './editCode';
+import { updateFunctionTool } from './updateFunction';
 
 export const allTools: ToolDefinition[] = [
     searchWebTool,
@@ -63,7 +64,8 @@ export const allTools: ToolDefinition[] = [
     navigateToCodeTool,
     testWebPageTool,
     generateCodeTool,
-    editCodeTool
+    editCodeTool,
+    updateFunctionTool
 ];
 
 export const enabledToolsList = [
@@ -71,6 +73,7 @@ export const enabledToolsList = [
     'read_files',
     'edit_code',
     'generate_code',
+    'update_function',
     'execute_command',
     'submit_response',
     'read_code_graph'

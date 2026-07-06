@@ -909,7 +909,7 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
     const cleanContent = (window as any).processThinkTags ? (window as any).processThinkTags(content).processedContent : content;
 
     const infos: any[] = [];
-    const lines = cleanContent.split('\n');
+    const lines = cleanContent.split(/\r?\n/);
     let inBlock = false;
     let fenceLength = 0;
     let depth = 0;
@@ -939,7 +939,7 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
             const xmlRename = line.match(/<rename\s+old=["']([^"']+)["']\s+new=["']([^"']+)["']\s*\/>/i);
             const xmlDelete = line.match(/<delete\s+path=["']([^"']+)["']\s*\/>/i);
             const xmlSelect = line.match(/<select\s+path=["']([^"']+)["']\s*\/>/i);
-            
+
             if (xmlRename || xmlDelete || xmlSelect) {
                 const type = xmlRename ? 'rename' : (xmlDelete ? 'file_delete' : 'select');
                 const path = xmlRename ? `${xmlRename[1]} -> ${xmlRename[2]}` : (xmlDelete ? xmlDelete[1] : xmlSelect![1]);
@@ -966,7 +966,7 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                 if (headerText.includes(':')) {
                     const parts = headerText.split(':');
                     let prefix = parts[0].trim().toLowerCase();
-                    
+
                     if ((prefix === 'language' || prefix === 'lang') && parts.length > 2) {
                         prefix = parts[1].trim().toLowerCase();
                         pathStr = parts.slice(2).join(':').trim();
@@ -1070,6 +1070,23 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
     const pres = Array.from(container.querySelectorAll('pre')).filter(pre => !pre.closest('.plan-scratchpad'));
     if (pres.length === 0) return;
 
+    // Capture the existing details expansion states before we modify the DOM
+    const preservedStates = new Map<string, { open: boolean, activeTabIdx: number }>();
+    container.querySelectorAll('.code-collapsible').forEach((el: any) => {
+        if (el.id) {
+            const activeTab = el.querySelector('.hunk-tab.active');
+            let activeTabIdx = 0;
+            if (activeTab) {
+                const tabIndexMatch = activeTab.className.match(/hunk-tab-(\d+)/);
+                if (tabIndexMatch) activeTabIdx = parseInt(tabIndexMatch[1], 10);
+            }
+            preservedStates.set(el.id, {
+                open: el.open,
+                activeTabIdx
+            });
+        }
+    });
+
     let originalContentText = '';
     if (contentSource !== undefined) {
         if (Array.isArray(contentSource)) {
@@ -1082,8 +1099,10 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         if (messageDiv && messageDiv.dataset.originalContent) {
             try {
                 const raw = JSON.parse(messageDiv.dataset.originalContent);
-                originalContentText = Array.isArray(raw) ? raw.map(p => p.type === 'text' ? p.text : '').join('\n') : raw;
-            } catch(e) {}
+                originalContentText = Array.isArray(raw) ? raw.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n') : String(raw);
+            } catch (e) {
+                originalContentText = "";
+            }
         }
     }
 
@@ -1318,8 +1337,26 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             return; // Exit early to prevent duplicate raw code rendering
         }
 
+        // Ensure Carriage Returns (\r\n) from Windows/editor environments are normalized 
+        // to UNIX Newlines (\n) before evaluating any markers.
+        const normalizedCodeText = codeText.replace(/\r\n/g, '\n');
+
+        // Capture indices of all primary markers in the normalized text
+        const searchPos = normalizedCodeText.indexOf('<<<<<<< SEARCH');
+        const sepPos = normalizedCodeText.indexOf('=======');
+        const replacePos = normalizedCodeText.indexOf('>>>>>>> REPLACE');
+
+        // Robust structural verification of Aider segments
+        if (hasAiderMarkers) {
+            if (searchPos === -1 || sepPos === -1 || replacePos === -1 || searchPos > sepPos || sepPos > replacePos) {
+                isMalformedAider = true;
+                details.className = 'code-collapsible malformed';
+            }
+        }
+
         // Assemble Header (Summary)
         details.appendChild(summary);
+
 
         // Attach listener for the Goto and double-click Path Edit buttons
         if (pathVal) {
@@ -1351,7 +1388,8 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             }
         }
 
-        if (isAider) {
+
+        if (isAider && !isMalformedAider) {
             // --- AIDER MODE: TABBED HUNK NAVIGATION ---
             const tabContainer = document.createElement('div');
             tabContainer.className = 'hunk-tabs-container';
@@ -1367,7 +1405,15 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             const currentMsgId = messageId;
             const blockIdx = index;
 
-            aiderMatches.forEach((m, hIdx) => {
+            // Retrieve previously active tab for this block if it was selected by the user
+            const savedState = preservedStates.get(details.id);
+            const initialActiveTabIdx = savedState ? savedState.activeTabIdx : 0;
+
+            // Use the normalized code text to parse hunks reliably
+            const robustAiderRegex = /<<<<<<< SEARCH\n([\s\S]*?)\n=======\n([\s\S]*?)\n>>>>>>> REPLACE/g;
+            const robustMatches = [...normalizedCodeText.matchAll(robustAiderRegex)];
+
+            robustMatches.forEach((m, hIdx) => {
                 const appliedHunks = state.appliedState?.[currentMsgId]?.[blockIdx] || [];
                 const isHunkApplied = appliedHunks.includes(hIdx) || appliedHunks.includes(-1);
 
@@ -1384,10 +1430,16 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
 
                 const sLines = (m[1] || "").replace(/\r\n/g, '\n').split('\n');
                 const rLines = (m[2] || "").replace(/\r\n/g, '\n').split('\n');
+
+                // Calculate common prefix and suffix lines to minimize diff highlight area
                 let pref = 0;
-                while (pref < sLines.length && pref < rLines.length && sLines[pref] === rLines[pref]) pref++;
+                while (pref < sLines.length && pref < rLines.length && sLines[pref].trim() === rLines[pref].trim()) {
+                    pref++;
+                }
                 let suff = 0;
-                while (suff < (sLines.length - pref) && suff < (rLines.length - pref) && sLines[sLines.length - 1 - suff] === rLines[rLines.length - 1 - suff]) suff++;
+                while (suff < (sLines.length - pref) && suff < (rLines.length - pref) && sLines[sLines.length - 1 - suff].trim() === rLines[rLines.length - 1 - suff].trim()) {
+                    suff++;
+                }
 
                 pane.innerHTML = `
                     <div class="aider-hunk-bubble">
@@ -1410,6 +1462,8 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
                     contentWrapper.querySelectorAll('.hunk-tab-content').forEach(p => p.classList.remove('active'));
                     tab.classList.add('active');
                     pane.classList.add('active');
+                    // Store selection inside the details DOM element to retain state during fast re-renders
+                    details.dataset.activeTabIdx = String(hIdx);
                 };
 
                 // 4. Action Logic
@@ -1428,9 +1482,21 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
                     vscode.postMessage({ command: 'replaceCode', filePath: finalPath, content: m[0], messageId: currentMsgId, blockIndex: blockIdx, hunkIndex: hIdx, options: { undo: true } });
                 };
 
-                if (hIdx === 0) { tab.classList.add('active'); pane.classList.add('active'); }
+                if (hIdx === initialActiveTabIdx) { tab.classList.add('active'); pane.classList.add('active'); }
                 contentWrapper.appendChild(pane);
             });
+
+            // Restore active tab selection from preserved states
+            if (savedState) {
+                const activeTab = nav.querySelector(`.hunk-tab-${savedState.activeTabIdx}`) as HTMLElement;
+                const activePane = contentWrapper.querySelector(`.hunk-pane-${savedState.activeTabIdx}`) as HTMLElement;
+                if (activeTab && activePane) {
+                    nav.querySelectorAll('.hunk-tab').forEach(t => t.classList.remove('active'));
+                    contentWrapper.querySelectorAll('.hunk-tab-content').forEach(p => p.classList.remove('active'));
+                    activeTab.classList.add('active');
+                    activePane.classList.add('active');
+                }
+            }
 
             details.appendChild(tabContainer);
             pre.replaceWith(details);
@@ -1442,16 +1508,22 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
 
             const gutter = document.createElement('div');
             gutter.className = 'code-line-gutter';
-            const lineCount = codeText.split('\n').length;
+            const lineCount = normalizedCodeText.split('\n').length;
             gutter.innerHTML = Array.from({ length: lineCount }, (_, i) => i + 1).join('<br>');
 
             pre.insertBefore(gutter, pre.firstChild);
-            
+
             // Move the original pre inside the details
             parent.replaceChild(details, pre);
             details.appendChild(pre);
 
             Prism.highlightElement(code);
+        }
+
+        // Restore details toggled state
+        const savedState = preservedStates.get(details.id);
+        if (savedState) {
+            details.open = savedState.open;
         }
     });
 }
@@ -2723,8 +2795,14 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
 
         if (isWaiting && role === 'assistant') {
             const contentDiv = messageDiv.querySelector('.message-content');
-            if (contentDiv && contentDiv.innerHTML !== `<div class="waiting-animation"><div class="lollms-spinner"></div><span class="thinking-text">Thinking...</span></div>`) {
-                contentDiv.innerHTML = `<div class="waiting-animation"><div class="lollms-spinner"></div><span class="thinking-text">Thinking...</span></div>`;
+            if (contentDiv && !contentDiv.querySelector('.waiting-animation')) {
+                // Ensure a stable, non-flickering, pre-allocated layout block is used for the thinking state
+                contentDiv.innerHTML = `
+                    <div class="waiting-animation" style="display:flex; align-items:center; gap:10px; opacity:0.95; padding:6px 0;">
+                        <div class="lollms-spinner" style="flex-shrink:0;"></div>
+                        <span class="thinking-text" style="font-style:italic; font-size:12px;">Thinking...</span>
+                    </div>
+                `;
             }
         }
     });

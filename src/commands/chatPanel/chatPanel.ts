@@ -243,7 +243,7 @@ export class ChatPanel {
 
             if (isAiderInside) {
                 const normalizedAider = blockContent.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
-                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
+                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, { ...opts, autoSave: true });
 
                 // If the patch application failed, trigger automated self-correction (Mute for system IDs to prevent infinite loops)
                 const isSystemId = messageId.startsWith('self_correction') || messageId.startsWith('guardian') || messageId.startsWith('system') || messageId.startsWith('inspection');
@@ -255,6 +255,11 @@ export class ChatPanel {
                 const resolution = await this.contextManager.resolveWorkspaceFromPath(filePath);
                 if (resolution) {
                     await vscode.workspace.fs.writeFile(resolution.uri, Buffer.from(blockContent, 'utf8'));
+                    // Notify webview to collapse the newly written file
+                    this._panel.webview.postMessage({
+                        command: 'fileSavedOnDisk',
+                        filePath: filePath
+                    });
                 }
             }
         }
@@ -1057,6 +1062,10 @@ export class ChatPanel {
             const isBackground = options?.isBackgroundSync === true;
             const forceFull = options?.forceFullScan === true;
 
+            // Scope Hoisting: Move declarations out of the try block so they are safe to use in the catch block on network failures
+            let diagramText = "";
+            let briefingText = "";
+
             try {
                 if (forceFull && this.contextStateProvider) {
                     this._panel.webview.postMessage({ command: 'showProjectLoader', projectName: this._currentDiscussion?.title || "Workspace" });
@@ -1070,7 +1079,7 @@ export class ChatPanel {
                             stats: { files: pct, tokens: -1 }
                         });
                     });
-                    
+
                     this._panel.webview.postMessage({ command: 'hideProjectLoader' });
                 }
 
@@ -1125,9 +1134,6 @@ export class ChatPanel {
 
                 this._isTokenizing = true;
                 const modelForTokenization = (this._currentDiscussion?.model || this._lollmsAPI.getModelName() || "default").trim();
-
-                let diagramText = "";
-                let briefingText = "";
 
                 try {
                     this.log("Fetching context content...");
@@ -1634,18 +1640,17 @@ export class ChatPanel {
     */
     private async _getFilteredFilesContent(contextData: ContextResult, folderSettings: any): Promise<string> {
         const folders = vscode.workspace.workspaceFolders || [];
-        // The block format is ```lang:path\ncontent\n```. Use a robust regex split to handle both CRLF and LF line endings.
-        const blocks = contextData.selectedFilesContent.split(/```\r?\n\s*\r?\n/).filter(b => b.trim().length > 0);
+        // Parse the raw markdown blocks reliably using a regex that captures the entire fenced code block
+        const blockRegex = /```([\w-]+)?:([^\r\n]+)[\r\n]+([\s\S]*?)[\r\n]+```/g;
+        const filteredBlocks: string[] = [];
+        let match;
 
-        const filteredBlocks = blocks.filter(block => {
-            // Re-add the closing backticks stripped by split for regex matching
-            const testBlock = block.endsWith('```') ? block : block + '```';
-            const match = testBlock.match(/```(?:\w+)?:([^\r\n]+)/);
-            if (!match) return true; // Keep blocks without headers (like global notes)
+        while ((match = blockRegex.exec(contextData.selectedFilesContent)) !== null) {
+            const lang = match[1] || '';
+            const filePath = match[2].trim();
+            const content = match[3];
 
-            const filePath = match[1].trim();
             const isMultiRoot = folders.length > 1;
-
             const ownerFolder = folders.find(f => {
                 if (isMultiRoot) {
                     return filePath.startsWith(f.name + '/');
@@ -1653,16 +1658,22 @@ export class ChatPanel {
                 return true;
             });
 
+            let shouldInclude = true;
             if (ownerFolder) {
                 const settings = folderSettings[ownerFolder.uri.toString()];
                 if (settings && settings.content === false) {
-                    return false;
+                    shouldInclude = false;
                 }
             }
-            return true;
-        });
 
-        return filteredBlocks.length > 0 ? filteredBlocks.join('```\n\n') : "";
+            if (shouldInclude) {
+                // Reconstruct the block ensuring it has a clean trailing newline and the required closing backticks
+                const formattedContent = content.endsWith('\n') ? content : content + '\n';
+                filteredBlocks.push(`\`\`\`${lang}:${filePath}\n${formattedContent}\`\`\``);
+            }
+        }
+
+        return filteredBlocks.join('\n\n');
     }
 
     private async waitForWebviewReady() { if (this._isWebviewReady) return; return this._viewReadyPromise; }
@@ -2084,9 +2095,15 @@ Please provide the **FULL CONTENT** of the file instead using the format:
               const folderSettings = this._discussionCapabilities.folderSettings || {};
               const filteredFilesContent = await this._getFilteredFilesContent(contextData, folderSettings);
 
+              // Ensure that if the filtered files content is missing a final closing code fence, we append it
+              let safeFilesContent = filteredFilesContent;
+              if (safeFilesContent && !safeFilesContent.trim().endsWith('```')) {
+                  safeFilesContent = safeFilesContent.trim() + '\n```';
+              }
+
               const context = {
                   tree: contextData.projectTree,
-                  files: filteredFilesContent,
+                  files: safeFilesContent,
                   skills: contextData.skillsContent,
                   toolManager: this.agentManager?.['toolManager'] // Pass the toolbelt reference
               };
@@ -2416,15 +2433,19 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     const processId = proc.id;
     let controller = proc.controller; // Use 'let' so it can be re-assigned during multi-turn loops
 
-    // --- 1. PRESERVE USER CONTENT IMMEDIATELY ---
+    // --- 1. PRESERVE USER CONTENT IMMEDIATELY (INSTANT MATERIALIZATION) ---
     const userMessage: ChatMessage = { 
         ...message, 
         id: message.id || 'user_' + Date.now() + Math.random().toString(36).substring(2),
         timestamp: Date.now()
     };
 
-    // Add user message to discussion history and render it in the webview
+    // Add user message to discussion history and render it in the webview instantly
     await this.addMessageToDiscussion(userMessage);
+
+    // Turn off the webview's input loading state and trigger immediate "Thinking" display
+    this.processManager.updateDescription(processId, "Preparing workspace context...");
+    this.updateGeneratingState();
 
     // Route to Agent Manager if Agent Mode is active
     if (this._discussionCapabilities.agentMode && folders && folders.length > 0) {
@@ -2434,12 +2455,14 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
                 ? message.content.find((p: any) => p.type === 'text')?.text || "Run task"
                 : "Run task");
 
-        // Hand off control to the Agent's ReAct planning loop
-        await this.agentManager.handleUserMessage(
-            objectiveText,
-            this._currentDiscussion,
-            folders[0]
-        );
+        // Hand off control to the Agent's ReAct planning loop asynchronously to prevent blocking the thread
+        setImmediate(async () => {
+            await this.agentManager.handleUserMessage(
+                objectiveText,
+                this._currentDiscussion,
+                folders[0]
+            );
+        });
         return;
     }
 
@@ -2469,7 +2492,12 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         }
     }
 
-    this.processManager.updateDescription(processId, "Preparing workspace context...");
+    // --- 2. DEFER EXPENSIVE CONTEXT ASSEMBLY TO BACKGROUND EVENT LOOP ---
+    // Using a yielding delay lets the VS Code main thread paint the UI, clear the text box,
+    // and reveal the "Thinking..." status instantly without any lagging or stuttering.
+    await new Promise(resolve => setTimeout(resolve, 30));
+
+    this.processManager.updateDescription(processId, "Scouting codebase structure...");
     this.updateGeneratingState();
 
     const importedIds = this._currentDiscussion?.importedSkills || [];
@@ -2479,7 +2507,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
     const activeDiagramIds = this._currentDiscussion?.activeDiagrams || [];
     const diagrams: { type: string, mermaid: string }[] = [];
-    
+
     for (const diagId of activeDiagramIds) {
         const mermaidCode = this.agentManager.codeGraphManager.generateMermaid(diagId);
         diagrams.push({ type: diagId, mermaid: mermaidCode });
@@ -2491,12 +2519,18 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName(),
         onLoadProgress: (progress) => {
             if (processId) {
-                const statusMessage = `Loading file content [${progress.current}/${progress.total}]: ${progress.fileName} (${progress.percentage}%)`;
+                const statusMessage = `Librarian: Assembling ${progress.fileName} [${progress.current}/${progress.total}] (${progress.percentage}%)`;
                 this.processManager.updateDescription(processId, statusMessage);
                 this.updateGeneratingState();
             }
         }
     });
+
+    if (signal.aborted) {
+        this.processManager.unregister(processId);
+        this.updateGeneratingState();
+        return;
+    }
 
     // Append diagrams to the text sent to the AI
     if (diagrams.length > 0) {
@@ -3384,6 +3418,10 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         generationSession.listeners.add(panelListener);
         ChatPanel.activeGenerations.set(this.discussionId, generationSession);
 
+        // Fetch user-defined timeout or fallback to an extended 180s (3 minutes) to support high-context models
+        const configTimeout = config.get<number>('requestTimeout') || 180000;
+        const ttftTimeoutValue = this._discussionCapabilities.ttftTimeout || configTimeout;
+
         if (!this._isDisposed) {
             this._panel.webview.postMessage({ 
                 command: 'addMessage', 
@@ -3393,9 +3431,15 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     content: '', 
                     startTime: Date.now(), 
                     model: generationSession.model,
-                    personalityName: personaName,
+                    personalityName: 'Lollms',
                     timestamp: Date.now()
                 } 
+            });
+            // Initiate the countdown timer in the webview
+            this._panel.webview.postMessage({
+                command: 'startCountdown',
+                id: assistantMessageId,
+                timeoutMs: ttftTimeoutValue
             });
         }
 
@@ -4447,7 +4491,7 @@ ${targetContent}
                                     silent: true, 
                                     blockIndex: change.blockIndex, 
                                     hunkIndex: change.hunkIndex,
-                                    autoSave: true,
+                                    autoSave: true, // Forces file to save on disk immediately [2]
                                     isBatch: true,
                                     undo: isUndoMode
                                 };
@@ -4463,6 +4507,12 @@ ${targetContent}
                                 if (result?.success) {
                                     // If undoing, remove from applied state, otherwise add it
                                     await this.updateAppliedState(messageId, change.blockIndex, change.hunkIndex, isUndoMode);
+                                    
+                                    // Collapse the newly applied file directly to keep the workspace clean [2]
+                                    this._panel.webview.postMessage({
+                                        command: 'fileSavedOnDisk',
+                                        filePath: change.path
+                                    });
                                 }
                             } catch (e: any) {
                                 result = { success: false, error: e.message };

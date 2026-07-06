@@ -796,9 +796,10 @@ export class LollmsAPI {
     const controller = new AbortController();
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     
-    // Resolve timeout values from capabilities or global config
+    // Resolve timeout values from capabilities or global config with extended default limit (180s)
     // 0 = Infinity (no timer started)
-    const ttftTimeoutValue = options?.capabilities?.ttftTimeout ?? config.get<number>('requestTimeout') ?? 0;
+    const globalTimeout = config.get<number>('requestTimeout') || 180000;
+    const ttftTimeoutValue = options?.capabilities?.ttftTimeout ?? globalTimeout;
     const interTokenTimeoutValue = options?.capabilities?.interTokenTimeout ?? 0;
     
     let timedOut = false;

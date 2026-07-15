@@ -54,16 +54,17 @@ export function initEventHandlers() {
         });
 
     window.addEventListener('mouseup', () => {
-            if (isResizing) {
-                isResizing = false;
-                resizer.classList.remove('resizing');
-                document.body.style.cursor = '';
-                document.querySelectorAll('iframe, .messages').forEach(el => (el as HTMLElement).style.pointerEvents = 'auto');
-            }
-        });
-    }
+        if (isResizing) {
+            isResizing = false;
+            resizer.classList.remove('resizing');
+            document.body.style.cursor = '';
+            document.querySelectorAll('iframe, .messages').forEach(el => (el as HTMLElement).style.pointerEvents = 'auto');
+        }
+    });
+}
 
-    if (dom.sendButton) dom.sendButton.addEventListener('click', () => {
+if (dom.sendButton) {
+    dom.sendButton.addEventListener('click', () => {
         if (state.isGenerating) return; // Prevent sending another message while processing
         const text = dom.messageInput.value.trim();
         if (text || state.pendingImages.length > 0) {
@@ -647,6 +648,14 @@ export function initEventHandlers() {
     }
 
     if (dom.fileSearchCloseBtn) dom.fileSearchCloseBtn.addEventListener('click', () => dom.fileSearchModal.classList.remove('visible'));
+
+    // Handle Wizard Cancel button (close panel if on temp wizard view)
+    if (dom.wizardCancelBtn) {
+        dom.wizardCancelBtn.onclick = () => {
+            dom.wizardModal.style.display = 'none';
+            dom.wizardModal.classList.remove('visible');
+        };
+    }
 
     if (dom.fileSearchSelectAll) {
         dom.fileSearchSelectAll.addEventListener('change', () => {
@@ -1513,6 +1522,99 @@ export function initEventHandlers() {
         };
     }
 
+    // --- NEW DISCUSSION WIZARD EVENT HANDLERS ---
+    if (dom.wizardCancelBtn) {
+        dom.wizardCancelBtn.onclick = () => {
+            dom.wizardModal.style.display = 'none';
+            dom.wizardModal.classList.remove('visible');
+        };
+    }
+
+    const wizardClose = document.getElementById('wizard-close-btn');
+    if (wizardClose) {
+        wizardClose.onclick = () => {
+            dom.wizardModal.style.display = 'none';
+            dom.wizardModal.classList.remove('visible');
+        };
+    }
+
+    const handleWizardSubmit = (sendToAi: boolean) => {
+        const prompt = dom.wizardPrompt.value.trim();
+        if (sendToAi && !prompt) {
+            vscode.postMessage({ command: 'showError', message: 'You must provide a first prompt/instruction to start the discussion!' });
+            dom.wizardPrompt.focus();
+            return;
+        }
+
+        const title = dom.wizardTitle.value.trim() || undefined;
+        const personalityId = dom.wizardPersonality.value;
+        const profileId = dom.wizardProfile.value;
+        const contextSelectEl = document.getElementById('wizard-context-selection') as HTMLSelectElement;
+        const contextSelection = contextSelectEl ? contextSelectEl.value : 'current';
+
+        const selectedFolders: string[] = [];
+        dom.wizardMatrixContainer.querySelectorAll('.ws-matrix-row').forEach((row: any) => {
+            const settings = state.capabilities?.folderSettings?.[row.dataset.uri] || { tree: true, content: true };
+            if (settings.tree || settings.content) {
+                selectedFolders.push(row.dataset.uri);
+            }
+        });
+
+        vscode.postMessage({
+            command: 'executeLollmsCommand',
+            details: {
+                command: 'lollms-vs-coder.initializeNewDiscussionWithWizard',
+                params: {
+                    title,
+                    prompt,
+                    personalityId,
+                    profileId,
+                    selectedFolders,
+                    contextSelection,
+                    sendToAi
+                }
+            }
+        });
+
+        dom.wizardTitle.value = '';
+        dom.wizardPrompt.value = '';
+        dom.wizardModal.style.display = 'none';
+        dom.wizardModal.classList.remove('visible');
+    };
+
+    if (dom.wizardSubmitBtn) {
+        dom.wizardSubmitBtn.onclick = () => handleWizardSubmit(true);
+    }
+
+    const wizardCreateBtn = document.getElementById('wizard-create-btn');
+    if (wizardCreateBtn) {
+        wizardCreateBtn.onclick = () => handleWizardSubmit(false);
+    }
+
+    const wizardAllOn = document.getElementById('wizard-matrix-all-on');
+    if (wizardAllOn) {
+        wizardAllOn.onclick = (e) => {
+            e.preventDefault();
+            const folders = (window as any).workspaceFolders || [];
+            const newSettings = { ... (state.capabilities?.folderSettings || {}) };
+            folders.forEach((f: any) => newSettings[f.uri.toString()] = { tree: true, content: true });
+            state.capabilities!.folderSettings = newSettings;
+            renderWizardMatrix();
+        };
+    }
+
+    const wizardAllOff = document.getElementById('wizard-matrix-all-off');
+    if (wizardAllOff) {
+        wizardAllOff.onclick = (e) => {
+            e.preventDefault();
+            const folders = (window as any).workspaceFolders || [];
+            const newSettings = { ... (state.capabilities?.folderSettings || {}) };
+            folders.forEach((f: any) => newSettings[f.uri.toString()] = { tree: false, content: false });
+            state.capabilities!.folderSettings = newSettings;
+            renderWizardMatrix();
+        };
+    }
+
     const matrixAllOn = document.getElementById('matrix-all-on');
     const matrixAllOff = document.getElementById('matrix-all-off');
     if (matrixAllOn) {
@@ -2358,4 +2460,5 @@ export function initEventHandlers() {
             }
         }
     }
+}
 }

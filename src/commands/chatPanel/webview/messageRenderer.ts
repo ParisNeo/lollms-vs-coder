@@ -909,7 +909,7 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
     const cleanContent = (window as any).processThinkTags ? (window as any).processThinkTags(content).processedContent : content;
 
     const infos: any[] = [];
-    const lines = cleanContent.split(/\r?\n/);
+    const lines = cleanContent.split('\n');
     let inBlock = false;
     let fenceLength = 0;
     let depth = 0;
@@ -1067,7 +1067,7 @@ function looksLikeDiff(text: string): boolean {
 }
 
 function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSource?: any, isFinal: boolean = false) {
-    const pres = Array.from(container.querySelectorAll('pre')).filter(pre => !pre.closest('.plan-scratchpad'));
+    const pres = Array.from(container.querySelectorAll('pre.lollms-placeholder'));
     if (pres.length === 0) return;
 
     // Capture the existing details expansion states before we modify the DOM
@@ -1109,12 +1109,12 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
     const codeBlockInfos = extractFilePaths(originalContentText);
     let actionableBlockCount = 0;
 
-    pres.forEach((pre, index) => {
+    pres.forEach((pre) => {
         const code = pre.querySelector('code');
         if (!code || pre.parentElement?.classList.contains('code-collapsible') || pre.closest('.skill-preview')) return;
 
-        const langMatch = code.className.match(/language-(\S+)/);
-        let language = langMatch ? langMatch[1] : 'plaintext';
+        const preLang = pre.getAttribute('data-lang') || '';
+        let language = preLang || 'plaintext';
 
         // --- LANGUAGE SANITIZATION ---
         // If Prism captures the path (e.g. language-python:main.py), strip it
@@ -1124,7 +1124,8 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
 
         let filePath = '', isDiff = false, diffFilePath = '';
 
-        const info = codeBlockInfos[index];
+        const blockIdx = parseInt(pre.getAttribute('data-block-index') || '0', 10);
+        const info = codeBlockInfos[blockIdx];
         if (info) {
             if (info.type === 'file' || info.type === 'insert' || info.type === 'replace' || info.type === 'delete') filePath = info.path;
             else if (info.type === 'diff') { diffFilePath = info.path; isDiff = true; }
@@ -1156,7 +1157,6 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             }
         }
 
-        // Auto-detect graph structures inside JSON code blocks
         const isCytoscapeJson = language === 'json' && codeText.includes('"nodes"') && codeText.includes('"edges"');
         const isDiagram = language === 'mermaid' || language === 'svg' || language === 'cytoscape' || isCytoscapeJson;
 
@@ -1166,7 +1166,7 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         details.className = 'code-collapsible' + (isMalformedAider ? ' malformed' : '');
         details.open = true;
         details.dataset.rawCode = codeText;
-        details.id = `block-${messageId}-${index}`;
+        details.id = `block-${messageId}-${blockIdx}`;
 
         // Format path representation to display targeted OOP members beautifully if present
         let displayPathVal = pathVal;
@@ -1195,7 +1195,7 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
                     dom.rawCodeFilename.textContent = pathVal || "Unspecified File";
                     dom.rawCodeDisplay.textContent = codeText;
                     dom.rawCodeDisplay.dataset.messageId = messageId;
-                    dom.rawCodeDisplay.dataset.blockIndex = String(index);
+                    dom.rawCodeDisplay.dataset.blockIndex = String(blockIdx);
                     dom.rawCodeModal.classList.add('visible');
                 }
             }, 'code-action-btn', 'Open manual stitching view'));
@@ -1210,13 +1210,13 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         // ADDED: Inspect Code Block Button
         if (pathVal) {
             actions.appendChild(createButton('Inspect', 'codicon-eye', () => {
-                const isApplied = state.appliedState?.[messageId]?.[index]?.includes(-1) || false;
+                const isApplied = state.appliedState?.[messageId]?.[blockIdx]?.includes(-1) || false;
                 vscode.postMessage({ 
                     command: 'inspectPatch', 
                     filePath: pathVal, 
                     content: codeText, 
                     messageId: messageId,
-                    blockIndex: index,
+                    blockIndex: blockIdx,
                     type: isAider ? 'replace' : (isDiff ? 'diff' : 'file'),
                     isApplied: isApplied
                 });
@@ -1226,7 +1226,6 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         if (pathVal && ['file', 'replace', 'insert', 'diff'].includes(info?.type || (isAider ? 'replace' : ''))) {
             actionableBlockCount++;
             const currentMsgId = messageId;
-            const blockIdx = index;
             const applyBtnId = `apply-btn-${currentMsgId}-${blockIdx}`;
 
             // Re-apply logic: Check if it's already applied to set initial visual state
@@ -1358,37 +1357,6 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         details.appendChild(summary);
 
 
-        // Attach listener for the Goto and double-click Path Edit buttons
-        if (pathVal) {
-            const gotoBtn = summary.querySelector('.goto-file-btn') as HTMLElement;
-            if (gotoBtn) {
-                gotoBtn.onclick = (e) => {
-                    e.stopPropagation();
-                    const currentPath = (summary.querySelector('.path-editor-input') as HTMLInputElement).value;
-                    vscode.postMessage({ command: 'openFile', path: currentPath.split(':')[0] });
-                };
-            }
-
-            const pathDisplayLabel = summary.querySelector('.path-display-label') as HTMLElement;
-            const pathEditorInput = summary.querySelector('.path-editor-input') as HTMLInputElement;
-            if (pathDisplayLabel && pathEditorInput) {
-                pathDisplayLabel.ondblclick = (e) => {
-                    e.stopPropagation();
-                    pathDisplayLabel.style.display = 'none';
-                    pathEditorInput.style.display = 'inline-block';
-                    pathEditorInput.focus();
-                };
-                pathEditorInput.onblur = () => {
-                    pathEditorInput.style.display = 'none';
-                    pathDisplayLabel.style.display = 'inline-block';
-                    
-                    const newVal = pathEditorInput.value.trim();
-                    pathDisplayLabel.textContent = newVal.includes(':') ? newVal.split(':').join(' › ') : newVal;
-                };
-            }
-        }
-
-
         if (isAider && !isMalformedAider) {
             // --- AIDER MODE: TABBED HUNK NAVIGATION ---
             const tabContainer = document.createElement('div');
@@ -1403,7 +1371,6 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             tabContainer.appendChild(contentWrapper);
 
             const currentMsgId = messageId;
-            const blockIdx = index;
 
             // Retrieve previously active tab for this block if it was selected by the user
             const savedState = preservedStates.get(details.id);
@@ -1450,7 +1417,7 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
                             <div style="font-size: 10px; opacity:0.7;">Actions for Hunk ${hIdx + 1}</div>
                             <div class="aider-hunk-actions">
                                 <button class="code-action-btn delete-btn undo-hunk-btn" style="display: ${isHunkApplied ? 'flex' : 'none'}" title="Undo this hunk"><i class="codicon codicon-discard"></i> UNDO</button>
-                                <button class="code-action-btn apply-btn ${isHunkApplied ? 'applied' : ''}" title="Apply this hunk"><i class="codicon ${isHunkApplied ? 'codicon-check' : 'codicon-arrow-swap'}"></i> APPLY</button>
+                                <button class="code-action-btn apply-btn ${isHunkApplied ? 'applied' : ''}" title="Apply this hunk"><i class="codicon ${isHunkApplied ? 'codicon-check' : 'codicon-git-commit'}"></i> APPLY</button>
                             </div>
                         </div>
                     </div>
@@ -2218,18 +2185,44 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         });
     }
 
-    // 2. EXCLUDE BACKTICK CODE FENCES FROM PLUGIN PARSING
-    const forbidden: {start: number, end: number}[] = [];
-    const fenceRegex = /```[\s\S]*?(?:```|$)|`[^`\n\r]+`/g;
-    let fMatch;
-    while ((fMatch = fenceRegex.exec(mainProcessedContent)) !== null) {
-        forbidden.push({ start: fMatch.index, end: fMatch.index + fMatch[0].length });
-    }
-
-    // 3. EXTRACT VALID LINE-START ACTIVE PLUGINS (WIDGETS)
+    // 2. EXTRACT CODE BLOCKS AS SOVEREIGN SEGMENTS (Bypasses marked.parse and resolves nesting bugs)
+    const codeBlocks = extractFilePaths(mainProcessedContent);
     const segments: MessageSegment[] = [];
     const ctx: PluginContext = { messageId, isFinal, capabilities: state.capabilities, vscode };
 
+    codeBlocks.forEach((block, idx) => {
+        const blockText = mainProcessedContent.substring(block.start, block.end);
+        const lines = blockText.split(/\r?\n/);
+        if (lines.length === 0) return;
+
+        if (lines.length > 1 && lines[lines.length - 1] === '') {
+            lines.pop();
+        }
+
+        const firstLine = lines[0].trim();
+        const match = firstLine.match(/^`{3,}(\S*)/);
+        const language = match ? match[1] : '';
+
+        const rawCode = block.isClosed 
+            ? lines.slice(1, lines.length - 1).join('\n') 
+            : lines.slice(1).join('\n');
+
+        const escapedCode = rawCode
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+
+        const placeholderHtml = `<pre class="lollms-placeholder" data-block-index="${idx}" data-lang="${language.replace(/"/g, '&quot;')}"><code>${escapedCode}</code></pre>`;
+
+        segments.push({
+            type: 'plugin', // Treated as plugin to prevent any marked parsing
+            content: placeholderHtml,
+            start: block.start,
+            end: block.end
+        });
+    });
+
+    // 3. EXTRACT VALID LINE-START ACTIVE PLUGINS (WIDGETS)
     pluginRegistry.forEach(plugin => {
         if (!plugin.tagPattern) return;
         plugin.tagPattern.lastIndex = 0;
@@ -2237,9 +2230,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         while ((pMatch = plugin.tagPattern.exec(mainProcessedContent)) !== null) {
             const matchIndex = pMatch.index;
             const fullMatch = pMatch[0];
-
-            const isInside = forbidden.some(r => matchIndex >= r.start && matchIndex < r.end);
-            if (isInside) continue;
 
             // Strict Line-Start check: verify the match begins at the start of a line
             const hasLineStart = matchIndex === 0 || mainProcessedContent[matchIndex - 1] === '\n' || mainProcessedContent[matchIndex - 1] === '\r';
@@ -2253,6 +2243,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 if (!hasClosingLineStart) continue;
             }
 
+            // Exclude matching if it overlaps with any Code Blocks or previously matched plugins!
             const isOverlapping = segments.some(s => 
                 (matchIndex >= s.start && matchIndex < s.end) ||
                 (matchIndex + fullMatch.length > s.start && matchIndex + fullMatch.length <= s.end) ||
@@ -2825,54 +2816,20 @@ const renderDataBriefing = (briefing: string) => {
     } catch { return raw; }
 };
 
-export function updateContext(contextText?: string, files?: string[], skills?: any[], tools?: any[], diagrams?: any[], briefing?: string, selections?: string[]) {
-    if(!dom.contextContainer) return;
+// --- presenters/ContextPresenter.ts ---
+// Structural layout generator decoupled from visual rendering nodes & interactive binders.
+export class ContextPresenter {
+    public static renderModelSelectorBadge(currentModel: string, models: any[]): string {
+        return `
+        <div class="badge-wrapper" style="position: relative;">
+            <span id="hud-model-badge" class="mode-badge model clickable" title="Current Model: ${currentModel}. Click to change model.">
+                <span class="codicon codicon-hubot"></span> <span class="badge-label">${currentModel}</span>
+            </span>
+            <div id="hud-model-menu" class="custom-menu hidden"></div>
+        </div>`;
+    }
 
-    // 0. CAPTURE CURRENT EXPANSION STATE
-    const openStates: Record<string, boolean> = {};
-    dom.contextContainer.querySelectorAll('details').forEach((d, i) => {
-        const summary = d.querySelector('summary')?.innerText || i.toString();
-        openStates[summary] = d.open;
-    });
-
-    // 1. MERGE WITH EXISTING STATE (Partial updates)
-    const prev = state.lastContextData || { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "", selections: [] };
-
-    state.lastContextData = {
-        context: contextText !== undefined ? contextText : (prev.context || ""),
-        files: files !== undefined ? files : (prev.files || []),
-        skills: skills !== undefined ? skills : (prev.skills || []),
-        tools: tools !== undefined ? tools : (prev.tools || []),
-        diagrams: diagrams !== undefined ? diagrams : (prev.diagrams || []),
-        briefing: briefing !== undefined ? briefing : (prev.briefing || ""),
-        selections: selections !== undefined ? selections : ((prev as any).selections || [])
-    };
-
-    const finalFiles = state.lastContextData.files || [];
-    const finalTools = state.lastContextData.tools || [];
-    const finalSkills = state.lastContextData.skills || [];
-    const finalSelections = (state.lastContextData as any).selections || [];
-    const finalDiagrams = state.lastContextData.diagrams || [];
-    const finalBriefing = state.lastContextData.briefing || "";
-
-    const hasMetadata = (finalFiles.length > 0) || 
-                        (finalTools.length > 0) || 
-                        (finalSkills.length > 0) || 
-                        (finalDiagrams.length > 0) || 
-                        (finalBriefing.trim().length > 0);
-
-    // Detection for Welcome Message integration
-    const isNewDiscussion = !document.querySelector('.message-wrapper:not(.context-message)');
-
-    const isProjectFile = (f: string) => {
-        const isInternal = f.includes('.lollms/') || f.startsWith('http') || f.startsWith('external/');
-        return !isInternal;
-    };
-
-    const projectFiles = finalFiles.filter(isProjectFile);
-    const externalFiles = finalFiles.filter(f => !isProjectFile(f));
-
-    const renderFileList = (list: string[], emptyMsg: string, allowSummarize: boolean = false) => {
+    public static renderFileList(list: string[], emptyMsg: string, allowSummarize: boolean = false): string {
         if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
         return `<ul class="context-file-list">
             ${list.map(f => {
@@ -2903,106 +2860,277 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                     </div>
                 </li>`}).join('')}
            </ul>`;
-    };
+    }
 
-    const skillsList = finalSkills && finalSkills.length > 0
-        ? `<div class="context-skill-list">
-            ${finalSkills.map(s => `
-                <div class="context-item skill-item" style="display: flex; align-items: flex-start; gap: 8px; border-bottom: 1px solid var(--vscode-widget-border); padding: 4px 0;">
-                    <details class="info-collapsible" style="flex: 1; border: none; padding: 0;">
-                        <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600;">${sanitizer.sanitize(s.name)}</summary>
-                        <div class="skill-content" style="padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 4px; font-family: var(--vscode-editor-font-family); font-size: 10px; max-height: 150px; overflow-y: auto;">
-                            ${sanitizer.sanitize(s.content)}
+    public static renderSkills(skills: any[]): string {
+        return skills && skills.length > 0
+            ? `<div class="context-skill-list">
+                ${skills.map(s => `
+                    <div class="context-item skill-item" style="display: flex; align-items: flex-start; gap: 8px; border-bottom: 1px solid var(--vscode-widget-border); padding: 4px 0;">
+                        <details class="info-collapsible" style="flex: 1; border: none; padding: 0;">
+                            <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600;">${DOMPurify.sanitize(s.name)}</summary>
+                            <div class="skill-content" style="padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 4px; font-family: var(--vscode-editor-font-family); font-size: 10px; max-height: 150px; overflow-y: auto;">
+                                ${DOMPurify.sanitize(s.content)}
+                            </div>
+                        </details>
+                        <button class="remove-context-btn" data-type="skill" data-value="${s.id}" title="Remove skill" style="padding: 2px; opacity: 0.6;">
+                            <span class="codicon codicon-close"></span>
+                        </button>
+                    </div>
+                `).join('')}
+               </div>`
+            : '<div class="empty-context-msg">No specialized skills currently active.</div>';
+    }
+
+    public static getDashboardHtml(
+        themeClass: string,
+        isAgentActive: boolean,
+        isNewDiscussion: boolean,
+        finalSelections: string[],
+        finalFilesCount: number,
+        projectFilesHtml: string,
+        externalFilesHtml: string,
+        finalDiagrams: any[],
+        finalTools: any[],
+        briefing: string,
+        skillsHtml: string,
+        briefingHtml: string
+    ): string {
+        return `
+        <div class="context-message ${themeClass}" id="fused-context-dashboard">
+            <details class="fused-context-details">
+                <summary>
+                    <div class="fused-hud-header" style="display: flex; flex-direction: column; gap: 10px; padding: 12px; background: rgba(0,0,0,0.2);">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div id="badge-dashboard-panel" style="display: flex; align-items: center; gap: 10px;">
+                                ${isAgentActive 
+                                    ? `<div class="agent-active-indicator">
+                                        <div class="genie-orb-portal" style="transform: scale(0.55);">
+                                            <div class="orb-ring-outer"></div>
+                                            <div class="orb-ring-inner"></div>
+                                            <div class="orb-core"></div>
+                                        </div>
+                                       </div>` 
+                                    : '<span class="codicon codicon-library" style="opacity:0.6;"></span>'}
+                                <div class="active-badges" id="active-badges"></div>
+                            </div>
                         </div>
-                    </details>
-                    <button class="remove-context-btn" data-type="skill" data-value="${s.id}" title="Remove skill" style="padding: 2px; opacity: 0.6;">
-                        <span class="codicon codicon-close"></span>
-                    </button>
+
+                        <div class="token-fused-bar" style="display: flex; flex-direction: column; gap: 4px;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <button id="hud-quick-refresh-btn" class="icon-btn" title="Refresh Token Count" style="padding: 0; color: var(--vscode-descriptionForeground); opacity: 0.6;">
+                                    <i class="codicon codicon-refresh" style="font-size: 10px;"></i>
+                                </button>
+                                <div class="token-progress-container" id="token-progress-container" style="flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.03);">
+                                    <div class="token-progress-bar" id="token-progress-bar"></div>
+                                </div>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span id="token-count-label" style="font-size: 9px; opacity: 0.4; font-family: var(--vscode-editor-font-family);">Calculating...</span>
+                                <div id="token-bar-legend" class="token-legend" style="display: none; gap: 10px;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </summary>
+
+                <div class="message-body">
+                    <div id="welcome-message" style="display: ${isNewDiscussion ? 'block' : 'none'}; padding: 12px; margin-bottom: 20px; background: rgba(0,0,0,0.15); border-radius: 6px; border: 1px dashed var(--vscode-widget-border);">
+                        <h3 style="margin:0 0 8px 0; font-size:13px; color: var(--vscode-textLink-foreground); display:flex; align-items:center; gap:8px;">
+                            <i class="codicon codicon-rocket"></i> Welcome to Lollms VS Coder
+                        </h3>
+                        <ul style="padding-left: 20px; margin: 0; font-size: 11px; opacity: 0.85; display: flex; flex-direction: column; gap: 4px;">
+                            <li>Right-click files in the explorer to <b>Include in AI Context</b>.</li>
+                            <li>Toggle 🤖 <b>Agent Mode</b> for complex autonomous missions.</li>
+                            <li>Toggle 🧠 <b>Auto-Context</b> to let the AI scout relevant files for you.</li>
+                            <li>Select your preferred 🔌 <b>Model and Persona</b> in the header above.</li>
+                        </ul>
+                    </div>
+
+                    <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 12px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span class="role-name">Intelligence Context</span>
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
+                            <select id="hud-selections-dropdown" ${finalSelections.length === 0 ? 'disabled' : ''} style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: ${finalSelections.length === 0 ? 'default' : 'pointer'}; height: 22px; max-width: 150px; outline: none; display: inline-block; opacity: ${finalSelections.length === 0 ? '0.5' : '1'};">
+                                <option value="">${finalSelections.length > 0 ? '📁 Select Saved Context...' : '📁 No Saved Contexts'}</option>
+                                ${finalSelections.map((s: string) => `<option value="${s}">${s.replace('.lollms-ctx', '')}</option>`).join('')}
+                            </select>                        
+                            <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
+                            <button id="load-context-btn" class="icon-btn" title="Load Context (Replace Selection)" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
+                            <button id="add-context-btn" class="icon-btn" title="Add Context (Append to Selection)" style="padding: 2px; color: var(--vscode-charts-green);"><i class="codicon codicon-folder-active"></i></button>
+                            <button id="reset-context-bubble-btn" class="icon-btn" title="Full Context Reset" style="padding: 2px; color: var(--vscode-errorForeground);"><i class="codicon codicon-clear-all"></i></button>
+                        </div>
+                    </div>
+                    <div class="hud-scroll-container">
+                        <details class="info-collapsible briefing-details" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);">
+                            <summary>
+                                <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                    <span>Mission Briefing & Constraints</span>
+                                    <button id="edit-briefing-btn" class="icon-btn" title="Edit Briefing" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-shield"></i></button>
+                                </div>
+                            </summary>
+                            <div class="collapsible-content">
+                                <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5; color: var(--vscode-editor-foreground);">
+                                    ${briefingHtml}
+                                </div>
+                            </div>
+                        </details>
+
+                        <details class="info-collapsible files-details" style="margin-bottom: 6px;">
+                            <summary>
+                                <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                    <span class="files-count-label">Selected Files (${finalFilesCount})</span>
+                                    <div style="display: flex; gap: 8px; align-items: center;">
+                                        <button id="view-usage-context-btn" class="icon-btn" title="Verify File Sizes / Token Usage"><i class="codicon codicon-dashboard"></i></button>
+                                        <div style="width: 1px; height: 12px; background: var(--vscode-widget-border);"></div>
+                                        <button id="add-file-context-btn" class="icon-btn" title="Add File"><i class="codicon codicon-add"></i></button>
+                                        <button id="web-context-btn" class="icon-btn" title="Web Discovery"><i class="codicon codicon-globe"></i></button>
+                                        <button id="search-add-context-btn" class="icon-btn" title="Power Search"><i class="codicon codicon-search"></i></button>
+                                    </div>
+                                </div>
+                            </summary>
+                            <div class="collapsible-content hud-files-container" style="padding-top: 8px;">
+                                <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+                                    <span>Project Files</span>
+                                    ${finalFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn"><span class="codicon codicon-checklist"></span> Bulk Remove</button>` : ''}
+                                </h4>
+                                <div class="hud-project-files-list">${projectFilesHtml}</div>
+                                <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+                                    <span>External & Research</span>
+                                    ${externalFilesHtml.includes('context-item') ? `<div style="display: flex; gap: 4px;"><button id="bulk-process-external-btn" class="section-bulk-btn"><span class="codicon codicon-wand"></span> Process</button><button id="bulk-delete-external-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Delete</button></div>` : ''}
+                                </h4>
+                                <div class="hud-external-files-list">${externalFilesHtml}</div>
+                            </div>
+                        </details>
+                        <details class="info-collapsible diagrams-details" style="margin-bottom: 6px;">
+                            <summary>
+                                <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                    <span class="diagrams-count-label">Active Diagrams (${(finalDiagrams || []).length})</span>
+                                    <button id="add-diagram-context-btn" class="icon-btn" title="Add Diagram"><i class="codicon codicon-add"></i></button>
+                                </div>
+                            </summary>
+                            <div class="collapsible-content">
+                                ${finalDiagrams && finalDiagrams.length > 0 ? finalDiagrams.map(d => `<div class="context-item" style="flex-direction:column; align-items:stretch;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;"><span style="font-weight:bold; font-size:11px;">${d.type.replace('_', ' ').toUpperCase()}</span><button class="remove-context-btn" data-type="diagram" data-value="${d.type}"><span class="codicon codicon-close"></span></button></div><pre class="mermaid" style="background:var(--vscode-editor-background); border-radius:4px; padding:5px;">${d.mermaid}</pre></div>`).join('') : '<div class="empty-context-msg">No diagrams included.</div>'}
+                            </div>
+                        </details>
+                        <details class="info-collapsible tools-details" style="margin-bottom: 6px;">
+                            <summary>
+                                <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                    <span class="tools-count-label">Active Tools (${finalTools.length})</span>
+                                    <div style="display: flex; gap: 8px; align-items: center;">
+                                        <button id="add-tool-context-btn" class="icon-btn" title="Equip Tool"><i class="codicon codicon-add"></i></button>
+                                        ${finalTools.length > 0 ? `<button id="bulk-remove-tools-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Clear</button>` : ''}
+                                    </div>
+                                </div>
+                            </summary>
+                            <div class="collapsible-content collapsible-content-inner-tools" style="padding-top: 8px;">
+                                <div class="hud-tools-list">
+                                    ${finalTools && finalTools.length > 0
+                                        ? `<div class="context-file-list">
+                                            ${finalTools.map(t => `
+                                                <div class="context-item" style="padding: 4px 8px;">
+                                                    <span class="codicon codicon-wrench" style="color:var(--vscode-charts-orange); opacity:0.8;"></span>
+                                                    <span class="context-item-label" title="${t.description}">${t.name}</span>
+                                                    <button class="remove-context-btn" data-type="tool" data-value="${t.name}" title="Unequip Tool">
+                                                        <span class="codicon codicon-close"></span>
+                                                    </button>
+                                                </div>
+                                            `).join('')}
+                                           </div>`
+                                        : '<div class="empty-context-msg">No specialized tools equipped. Using defaults only.</div>'
+                                    }
+                                </div>
+                            </div>
+                        </details>
+
+                        <details class="info-collapsible skills-details">
+                            <summary>
+                                <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                    <span class="skills-count-label">Active Skills (${skillsHtml.includes('skill-item') ? 'Active' : '0'})</span>
+                                    <div style="display: flex; gap: 8px; align-items: center;">
+                                        <button id="add-skill-context-btn" class="icon-btn" title="Import Skill"><i class="codicon codicon-add"></i></button>
+                                        ${skillsHtml.includes('skill-item') ? `<button id="bulk-delete-skills-btn" class="section-bulk-btn delete" style="margin-right: 5px;"><span class="codicon codicon-trash"></span> Bulk Remove</button>` : ''}
+                                    </div>
+                                </div>
+                            </summary>
+                            <div class="collapsible-content collapsible-content-inner-skills" style="padding-top: 8px;">
+                                <div class="hud-skills-list">
+                                    ${skillsHtml}
+                                </div>
+                            </div>
+                        </details>
+                    </div>
                 </div>
-            `).join('')}
-           </div>`
-        : '<div class="empty-context-msg">No specialized skills currently active.</div>';
+            </details>
+        </div>`;
+    }
+}
 
-    const isAgentActive = state.capabilities?.agentMode === true;
+// --- presenters/ContextBinder.ts ---
+// Dedicated DOM binding system decoupled from HTML templates.
+export class ContextBinder {
+    public static bindModelMenu(wrapper: HTMLElement, models: any[], currentModel: string) {
+        const badge = wrapper.querySelector('#hud-model-badge') as HTMLElement;
+        const menu = wrapper.querySelector('#hud-model-menu') as HTMLElement;
+        if (!badge || !menu) return;
 
-    // THEME LOGIC:
-    // Agent Mode = Red (Genie has taken over)
-    // Standard = Blue (Librarian/Architect mode)
-    const themeClass = isAgentActive ? 'agent-mode-bubble' : 'standard-mode-bubble';
+        let menuHtml = `
+            <div class="custom-menu-item manual-model-item" style="border-bottom: 1px solid var(--vscode-menu-separatorBackground); padding-bottom: 8px; margin-bottom: 4px;">
+                <span class="codicon codicon-edit"></span> Enter model name manually...
+            </div>`;
 
-    // --- SMART PERSISTENCE ---
-    // If the dashboard already exists, we target sub-containers instead of nuking the innerHTML.
-    // This prevents the "Badges Disappearing" flicker.
-    const existingDashboard = document.getElementById('fused-context-dashboard');
+        menuHtml += models.map(m => {
+            const isSel = m.id === currentModel;
+            const icon = isSel ? 'codicon-check' : 'codicon-circle-outline';
+            const extraStyle = isSel ? 'style="font-weight: bold; color: var(--vscode-textLink-foreground);"' : '';
+            return `<div class="custom-menu-item model-opt-item" data-id="${m.id}" ${extraStyle}><span class="codicon ${icon}"></span> ${m.id}</div>`;
+        }).join('');
 
-    if (existingDashboard) {
-        existingDashboard.className = `context-message ${themeClass}`;
+        menu.innerHTML = menuHtml;
 
-        // Update specific labels with 100% precise class queries if content has changed
-        const filesLabel = existingDashboard.querySelector('.files-count-label');
-        if (filesLabel && filesLabel.textContent !== `Selected Files (${finalFiles.length})`) {
-            filesLabel.textContent = `Selected Files (${finalFiles.length})`;
-        }
-
-        const skillsLabel = existingDashboard.querySelector('.skills-count-label');
-        if (skillsLabel && skillsLabel.textContent !== `Active Skills (${finalSkills.length})`) {
-            skillsLabel.textContent = `Active Skills (${finalSkills.length})`;
-        }
-
-        const toolsLabel = existingDashboard.querySelector('.tools-count-label');
-        if (toolsLabel && toolsLabel.textContent !== `Active Tools (${finalTools.length})`) {
-            toolsLabel.textContent = `Active Tools (${finalTools.length})`;
-        }
-
-        const diagramsLabel = existingDashboard.querySelector('.diagrams-count-label');
-        if (diagramsLabel && diagramsLabel.textContent !== `Active Diagrams (${(diagrams || []).length})`) {
-            diagramsLabel.textContent = `Active Diagrams (${(diagrams || []).length})`;
-        }
-
-        // Re-render only the internal scrollable lists surgically
-        const scrollContainer = existingDashboard.querySelector('.hud-scroll-container');
-        if (scrollContainer) {
-            // Update the briefing/files/skills HTML content inside their specific containers
-            // but keep the details open/closed state.
-            const briefingBody = existingDashboard.querySelector('.briefing-content');
-            const expectedBriefingHtml = briefing ? renderDataBriefing(briefing) : '...';
-            if (briefingBody && briefingBody.innerHTML !== expectedBriefingHtml) {
-                briefingBody.innerHTML = expectedBriefingHtml;
-            }
-
-            // Update Lists (Skills, Tools, Files) surgically to avoid active re-selection layout flashes
-            const skillsContainer = existingDashboard.querySelector('.hud-skills-list');
-            if (skillsContainer && skillsContainer.innerHTML !== skillsList) {
-                skillsContainer.innerHTML = skillsList;
-            }
-
-            const toolsContainer = existingDashboard.querySelector('.hud-tools-list');
-            if (toolsContainer) {
-                const expectedToolsHtml = finalTools.length > 0 
-                    ? `<div class="context-file-list">${finalTools.map(t => `<div class="context-item" style="padding: 4px 8px;"><span class="codicon codicon-wrench" style="color:var(--vscode-charts-orange); opacity:0.8;"></span><span class="context-item-label" title="${t.description}">${t.name}</span><button class="remove-context-btn" data-type="tool" data-value="${t.name}"><span class="codicon codicon-close"></span></button></div>`).join('')}</div>`
-                    : '<div class="empty-context-msg">No specialized tools equipped.</div>';
-                if (toolsContainer.innerHTML !== expectedToolsHtml) {
-                    toolsContainer.innerHTML = expectedToolsHtml;
+        const manual = menu.querySelector('.manual-model-item') as HTMLElement;
+        if (manual) {
+            manual.onclick = (e) => {
+                e.stopPropagation();
+                const name = prompt("Enter model name/id (e.g. ollama/mistral):");
+                if (name) {
+                    vscode.postMessage({ command: 'updateDiscussionModel', model: name.trim() });
+                    vscode.postMessage({ command: 'calculateTokens' });
                 }
-            }
-
-            const projFilesContainer = existingDashboard.querySelector('.hud-project-files-list');
-            const expectedProjHtml = renderFileList(projectFiles, "No project files selected.", false);
-            if (projFilesContainer && projFilesContainer.innerHTML !== expectedProjHtml) {
-                projFilesContainer.innerHTML = expectedProjHtml;
-            }
-
-            const extFilesContainer = existingDashboard.querySelector('.hud-external-files-list');
-            const expectedExtHtml = renderFileList(externalFiles, "No search results in context.", true);
-            if (extFilesContainer && extFilesContainer.innerHTML !== expectedExtHtml) {
-                extFilesContainer.innerHTML = expectedExtHtml;
-            }
+                menu.classList.remove('visible');
+            };
         }
 
-        // Prevent the parent <details> from collapsing/expanding when interactive elements are clicked
-        const hudSummary = existingDashboard.querySelector('.fused-context-details summary');
-        if (hudSummary && !hudSummary.dataset.listenerAttached) {
-            hudSummary.setAttribute('data-listener-attached', 'true');
+        menu.querySelectorAll('.model-opt-item').forEach((item: any) => {
+            item.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'updateDiscussionModel', model: item.dataset.id });
+                menu.classList.remove('visible');
+            };
+        });
+
+        badge.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const isOpening = !menu.classList.contains('visible');
+            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+            if (isOpening) {
+                const adjustFn = (window as any).adjustMenuPosition || ((trig: HTMLElement, mn: HTMLElement) => {
+                    mn.style.top = '100%';
+                    mn.style.bottom = 'auto';
+                });
+                adjustFn(badge, menu);
+                menu.classList.add('visible');
+            }
+        };
+    }
+
+    public static bindGestures(dashboard: HTMLElement, files: string[], skills: any[]) {
+        // Prevent collapse when clicking details elements inside HUD header panels
+        const hudSummary = dashboard.querySelector('.fused-context-details summary');
+        if (hudSummary) {
             hudSummary.addEventListener('click', (e) => {
                 const target = e.target as HTMLElement;
                 if (
@@ -3019,285 +3147,224 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
             });
         }
 
-        // --- LAZY FILE INGESTION GESTURE ATTACHMENT ---
-        existingDashboard.querySelectorAll('.lazy-file-accordion').forEach(accordion => {
-            if (!(accordion as any)._listenerAttached) {
-                (accordion as any)._listenerAttached = true;
-                accordion.addEventListener('toggle', () => {
-                    const details = accordion as HTMLDetailsElement;
-                    const filePath = details.dataset.path;
-                    const registry = (window as any).lazyFilesRegistry;
+        // Bind accordion toggles dynamically
+        dashboard.querySelectorAll('.lazy-file-accordion').forEach(accordion => {
+            accordion.addEventListener('toggle', () => {
+                const details = accordion as HTMLDetailsElement;
+                const filePath = details.dataset.path;
+                const registry = (window as any).lazyFilesRegistry;
 
-                    if (details.open && filePath && registry) {
-                        const cachedFile = registry.get(filePath);
-                        if (cachedFile && !cachedFile.hasContent) {
-                            // Request the file content asynchronously from the extension host
-                            vscode.postMessage({
-                                command: 'requestLazyFileContent',
-                                filePath: filePath
-                            });
-                        }
+                if (details.open && filePath && registry) {
+                    const cachedFile = registry.get(filePath);
+                    if (cachedFile && !cachedFile.hasContent) {
+                        vscode.postMessage({
+                            command: 'requestLazyFileContent',
+                            filePath: filePath
+                        });
                     }
-                });
-            }
+                }
+            });
         });
 
-        // Add immediate event bindings to dynamically added elements in the lists
-        existingDashboard.querySelectorAll('.remove-context-btn').forEach(btn => {
-            if (!(btn as any)._listenerAttached) {
-                (btn as any)._listenerAttached = true;
-                btn.addEventListener('click', (e) => {
-                    const target = e.currentTarget as HTMLElement;
-                    const type = target.dataset.type;
-                    const value = target.dataset.value;
+        // Bind deletion / removal buttons natively
+        dashboard.querySelectorAll('.remove-context-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const target = e.currentTarget as HTMLElement;
+                const type = target.dataset.type;
+                const value = target.dataset.value;
 
-                    if (type === 'file') {
-                        vscode.postMessage({ command: 'removeFileFromContext', path: value });
-                        const item = target.closest('.context-item');
-                        if (item) {
-                            item.style.opacity = '0.3';
-                            item.style.pointerEvents = 'none';
-                        }
-                    } else if (type === 'skill') {
-                        vscode.postMessage({ command: 'removeSkillFromContext', skillId: value });
-                        const item = target.closest('.context-item');
-                        if (item) {
-                            item.style.opacity = '0.3';
-                            item.style.pointerEvents = 'none';
-                        }
-                    } else if (type === 'tool') {
-                        vscode.postMessage({ command: 'removeToolFromContext', toolName: value });
-                        const item = target.closest('.context-item');
-                        if (item) {
-                            item.style.opacity = '0.3';
-                            item.style.pointerEvents = 'none';
-                        }
-                    }
-                });
-            }
+                if (type === 'file') {
+                    vscode.postMessage({ command: 'removeFileFromContext', path: value });
+                } else if (type === 'skill') {
+                    vscode.postMessage({ command: 'removeSkillFromContext', skillId: value });
+                } else if (type === 'diagram') {
+                    vscode.postMessage({ 
+                        command: 'updateDiscussionCapabilitiesPartial', 
+                        partial: { removeDiagram: value } 
+                    });
+                } else if (type === 'tool') {
+                    vscode.postMessage({ command: 'removeToolFromContext', toolName: value });
+                }
+            });
         });
 
-        existingDashboard.querySelectorAll('.open-context-btn').forEach(btn => {
-            if (!(btn as any)._listenerAttached) {
-                (btn as any)._listenerAttached = true;
-                btn.addEventListener('click', (e) => {
-                    const target = e.currentTarget as HTMLElement;
-                    const value = target.dataset.value;
-                    if (value) {
-                        vscode.postMessage({ command: 'openFile', path: value });
-                    }
-                });
-            }
+        // Open Files natively
+        dashboard.querySelectorAll('.open-context-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const target = e.currentTarget as HTMLElement;
+                const value = target.dataset.value;
+                if (value) {
+                    vscode.postMessage({ command: 'openFile', path: value });
+                }
+            });
         });
 
-        existingDashboard.querySelectorAll('.summarize-context-btn').forEach(btn => {
-            if (!(btn as any)._listenerAttached) {
-                (btn as any)._listenerAttached = true;
-                btn.addEventListener('click', (e) => {
-                    const target = e.currentTarget as HTMLElement;
-                    const value = target.dataset.value;
-                    if (value) {
-                        vscode.postMessage({ command: 'summarizeContextFile', path: value });
-                    }
-                });
-            }
+        // Bind Summarizers natively
+        dashboard.querySelectorAll('.summarize-context-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const target = e.currentTarget as HTMLElement;
+                const value = target.dataset.value;
+                if (value) {
+                    vscode.postMessage({ command: 'summarizeContextFile', path: value });
+                }
+            });
         });
 
-        // Re-run badge logic and exit
-        import('./ui.js').then(ui => ui.updateBadges());
-        return;
-    }
+        // Bind Toolbar buttons
+        const bindClick = (id: string, action: () => void) => {
+            const el = document.getElementById(id);
+            if (el) el.onclick = (e) => { e.stopPropagation(); action(); };
+        };
 
-    const innerHTML = `
-    <div class="context-message ${themeClass}" id="fused-context-dashboard">
-        <details class="fused-context-details">
-            <summary>
-                <div class="fused-hud-header" style="display: flex; flex-direction: column; gap: 10px; padding: 12px; background: rgba(0,0,0,0.2);">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div id="badge-dashboard-panel" style="display: flex; align-items: center; gap: 10px;">
-                            ${isAgentActive 
-                                ? `<div class="agent-active-indicator">
-                                    <div class="genie-orb-portal" style="transform: scale(0.55);">
-                                        <div class="orb-ring-outer"></div>
-                                        <div class="orb-ring-inner"></div>
-                                        <div class="orb-core"></div>
-                                    </div>
-                                   </div>` 
-                                : '<span class="codicon codicon-library" style="opacity:0.6;"></span>'}
-                            <div class="active-badges" id="active-badges"></div>
-                        </div>
-                    </div>
+        bindClick('refresh-context-btn', () => vscode.postMessage({ command: 'calculateTokens' }));
+        bindClick('save-context-btn', () => vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'saveContext', params: {} } }));
+        bindClick('load-context-btn', () => vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'loadContext', params: {} } }));
+        bindClick('add-context-btn', () => vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'addContext', params: {} } }));
+        bindClick('reset-context-bubble-btn', () => vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } }));
+        bindClick('add-file-context-btn', () => vscode.postMessage({ command: 'requestAddFileToContext' }));
+        bindClick('add-skill-context-btn', () => vscode.postMessage({ command: 'importSkills' }));
+        bindClick('add-tool-context-btn', () => vscode.postMessage({ command: 'requestToolPicker' }));
+        bindClick('edit-briefing-btn', () => vscode.postMessage({ command: 'requestMissionBriefingUI' }));
 
-                    <div class="token-fused-bar" style="display: flex; flex-direction: column; gap: 4px;">
-                        <div style="display: flex; align-items: center; gap: 8px;">
-                            <button id="hud-quick-refresh-btn" class="icon-btn" title="Refresh Token Count" style="padding: 0; color: var(--vscode-descriptionForeground); opacity: 0.6;">
-                                <i class="codicon codicon-refresh" style="font-size: 10px;"></i>
-                            </button>
-                            <div class="token-progress-container" id="token-progress-container" style="flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.03);">
-                                <div class="token-progress-bar" id="token-progress-bar"></div>
-                            </div>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span id="token-count-label" style="font-size: 9px; opacity: 0.4; font-family: var(--vscode-editor-font-family);">Calculating...</span>
-                            <div id="token-bar-legend" class="token-legend" style="display: none; gap: 10px;"></div>
-                        </div>
-                    </div>
-                </div>
-            </summary>
+        bindClick('view-usage-context-btn', () => {
+            dom.usageModal.classList.add('visible');
+            dom.usageListContainer.innerHTML = '<div style="text-align:center; padding: 20px;"><div class="spinner"></div> Calculating individual file tokens...</div>';
+            vscode.postMessage({ command: 'requestContextUsage' });
+        });
 
-            <div class="message-body">
-                <div id="welcome-message" style="display: ${isNewDiscussion ? 'block' : 'none'}; padding: 12px; margin-bottom: 20px; background: rgba(0,0,0,0.15); border-radius: 6px; border: 1px dashed var(--vscode-widget-border);">
-                    <h3 style="margin:0 0 8px 0; font-size:13px; color: var(--vscode-textLink-foreground); display:flex; align-items:center; gap:8px;">
-                        <i class="codicon codicon-rocket"></i> Welcome to Lollms VS Coder
-                    </h3>
-                    <ul style="padding-left: 20px; margin: 0; font-size: 11px; opacity: 0.85; display: flex; flex-direction: column; gap: 4px;">
-                        <li>Right-click files in the explorer to <b>Include in AI Context</b>.</li>
-                        <li>Toggle 🤖 <b>Agent Mode</b> for complex autonomous missions.</li>
-                        <li>Toggle 🧠 <b>Auto-Context</b> to let the AI scout relevant files for you.</li>
-                        <li>Select your preferred 🔌 <b>Model and Persona</b> in the header above.</li>
-                    </ul>
-                </div>
+        const selectionsDropdown = document.getElementById('hud-selections-dropdown') as HTMLSelectElement;
+        if (selectionsDropdown) {
+            selectionsDropdown.onchange = () => {
+                const selectedVal = selectionsDropdown.value;
+                if (selectedVal) {
+                    vscode.postMessage({
+                        command: 'executeLollmsCommand',
+                        details: {
+                            command: 'lollms-vs-coder.loadContextSelectionDirect',
+                            params: [selectedVal]
+                        }
+                    });
+                }
+            };
+        }
 
-                <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 12px;">
-                    <div style="display:flex; align-items:center; gap:8px;">
-                        <span class="role-name">Intelligence Context</span>
-                    </div>
-                    <div style="display: flex; gap: 8px; align-items: center;">
-                        <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
-                        <select id="hud-selections-dropdown" ${finalSelections.length === 0 ? 'disabled' : ''} style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: ${finalSelections.length === 0 ? 'default' : 'pointer'}; height: 22px; max-width: 150px; outline: none; display: inline-block; opacity: ${finalSelections.length === 0 ? '0.5' : '1'};">
-                            <option value="">${finalSelections.length > 0 ? '📁 Select Saved Context...' : '📁 No Saved Contexts'}</option>
-                            ${finalSelections.map((s: string) => `<option value="${s}">${s.replace('.lollms-ctx', '')}</option>`).join('')}
-                        </select>                        
-                        <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
-                        <button id="load-context-btn" class="icon-btn" title="Load Context (Replace Selection)" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
-                        <button id="add-context-btn" class="icon-btn" title="Add Context (Append to Selection)" style="padding: 2px; color: var(--vscode-charts-green);"><i class="codicon codicon-folder-active"></i></button>
-                        <button id="reset-context-bubble-btn" class="icon-btn" title="Full Context Reset" style="padding: 2px; color: var(--vscode-errorForeground);"><i class="codicon codicon-clear-all"></i></button>
-                    </div>
-                </div>
-                <div class="hud-scroll-container">
-                    <details class="info-collapsible briefing-details" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);">
-                        <summary>
-                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span>Mission Briefing & Constraints</span>
-                                <button id="edit-briefing-btn" class="icon-btn" title="Edit Briefing" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-shield"></i></button>
-                            </div>
-                        </summary>
-                        <div class="collapsible-content">
-                            <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5; color: var(--vscode-editor-foreground);">
-                                ${briefing ? renderDataBriefing(briefing) : '<div style="font-style:italic; opacity:0.5;">No specific task constraints defined. Click the shield to add instructions.</div>'}
-                            </div>
-                        </div>
-                    </details>
-
-                    <details class="info-collapsible files-details" style="margin-bottom: 6px;">
-                        <summary>
-                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span class="files-count-label">Selected Files (${files.length})</span>
-                                <div style="display: flex; gap: 8px; align-items: center;">
-                                    <button id="view-usage-context-btn" class="icon-btn" title="Verify File Sizes / Token Usage"><i class="codicon codicon-dashboard"></i></button>
-                                    <div style="width: 1px; height: 12px; background: var(--vscode-widget-border);"></div>
-                                    <button id="add-file-context-btn" class="icon-btn" title="Add File"><i class="codicon codicon-add"></i></button>
-                                    <button id="web-context-btn" class="icon-btn" title="Web Discovery"><i class="codicon codicon-globe"></i></button>
-                                    <button id="search-add-context-btn" class="icon-btn" title="Power Search"><i class="codicon codicon-search"></i></button>
-                                </div>
-                            </div>
-                        </summary>
-                        <div class="collapsible-content hud-files-container" style="padding-top: 8px;">
-                            <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
-                                <span>Project Files</span>
-                                ${projectFiles.length > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn"><span class="codicon codicon-checklist"></span> Bulk Remove</button>` : ''}
-                            </h4>
-                            <div class="hud-project-files-list">${renderFileList(projectFiles, "No project files selected.", false)}</div>
-                            <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
-                                <span>External & Research</span>
-                                ${externalFiles.length > 0 ? `<div style="display: flex; gap: 4px;"><button id="bulk-process-external-btn" class="section-bulk-btn"><span class="codicon codicon-wand"></span> Process</button><button id="bulk-delete-external-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Delete</button></div>` : ''}
-                            </h4>
-                            <div class="hud-external-files-list">${renderFileList(externalFiles, "No search results or external data in context.", true)}</div>
-                        </div>
-                    </details>
-                    <details class="info-collapsible diagrams-details" style="margin-bottom: 6px;">
-                        <summary>
-                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span class="diagrams-count-label">Active Diagrams (${diagrams?.length || 0})</span>
-                                <button id="add-diagram-context-btn" class="icon-btn" title="Add Diagram"><i class="codicon codicon-add"></i></button>
-                            </div>
-                        </summary>
-                        <div class="collapsible-content">
-                            ${diagrams && diagrams.length > 0 ? diagrams.map(d => `<div class="context-item" style="flex-direction:column; align-items:stretch;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;"><span style="font-weight:bold; font-size:11px;">${d.type.replace('_', ' ').toUpperCase()}</span><button class="remove-context-btn" data-type="diagram" data-value="${d.type}"><span class="codicon codicon-close"></span></button></div><pre class="mermaid" style="background:var(--vscode-editor-background); border-radius:4px; padding:5px;">${d.mermaid}</pre></div>`).join('') : '<div class="empty-context-msg">No diagrams included.</div>'}
-                        </div>
-                    </details>
-                    <details class="info-collapsible tools-details" style="margin-bottom: 6px;">
-                        <summary>
-                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span class="tools-count-label">Active Tools (${finalTools.length})</span>
-                                <div style="display: flex; gap: 8px; align-items: center;">
-                                    <button id="add-tool-context-btn" class="icon-btn" title="Equip Tool"><i class="codicon codicon-add"></i></button>
-                                    ${finalTools.length > 0 ? `<button id="bulk-remove-tools-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Clear</button>` : ''}
-                                </div>
-                            </div>
-                        </summary>
-                        <div class="collapsible-content collapsible-content-inner-tools" style="padding-top: 8px;">
-                            <div class="hud-tools-list">
-                                ${tools && tools.length > 0
-                                    ? `<div class="context-file-list">
-                                        ${tools.map(t => `
-                                            <div class="context-item" style="padding: 4px 8px;">
-                                                <span class="codicon codicon-wrench" style="color:var(--vscode-charts-orange); opacity:0.8;"></span>
-                                                <span class="context-item-label" title="${t.description}">${t.name}</span>
-                                                <button class="remove-context-btn" data-type="tool" data-value="${t.name}" title="Unequip Tool">
-                                                    <span class="codicon codicon-close"></span>
-                                                </button>
-                                            </div>
-                                        `).join('')}
-                                       </div>`
-                                    : '<div class="empty-context-msg">No specialized tools equipped. Using defaults only.</div>'
-                                }
-                            </div>
-                        </div>
-                    </details>
-
-                    <details class="info-collapsible skills-details">
-                        <summary>
-                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span class="skills-count-label">Active Skills (${finalSkills.length})</span>
-                                <div style="display: flex; gap: 8px; align-items: center;">
-                                    <button id="add-skill-context-btn" class="icon-btn" title="Import Skill"><i class="codicon codicon-add"></i></button>
-                                    ${finalSkills.length > 0 ? `<button id="bulk-delete-skills-btn" class="section-bulk-btn delete" style="margin-right: 5px;"><span class="codicon codicon-trash"></span> Bulk Remove</button>` : ''}
-                                </div>
-                            </div>
-                        </summary>
-                        <div class="collapsible-content collapsible-content-inner-skills" style="padding-top: 8px;">
-                            <div class="hud-skills-list">
-                                ${skillsList}
-                            </div>
-                        </div>
-                    </details>
-                </div>
-            </div>
-        </details>
-    </div>`;
-    
-    // Always render the HUD shell in Discussion Mode so the toolbar remains visible to add files
-    dom.contextContainer.innerHTML = innerHTML;
-
-    // Prevent the parent <details> from collapsing/expanding when interactive elements are clicked (First-time rendering path)
-    const newDashboard = document.getElementById('fused-context-dashboard');
-    const newSummary = newDashboard?.querySelector('.fused-context-details summary');
-    if (newSummary) {
-        newSummary.addEventListener('click', (e) => {
-            const target = e.target as HTMLElement;
-            if (
-                target.closest('button') || 
-                target.closest('select') || 
-                target.closest('input') || 
-                target.closest('.active-badges') || 
-                target.closest('.token-progress-container') ||
-                target.closest('.token-legend')
-            ) {
+        // Bind matrix details
+        const matrixBtn = dashboard.querySelector('#hud-matrix-btn');
+        if (matrixBtn) {
+            matrixBtn.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-            }
-        });
+                import('./ui.js').then(ui => {
+                    ui.renderWorkspaceMatrix();
+                    const modal = document.getElementById('workspace-matrix-modal');
+                    if (modal) {
+                        modal.style.display = 'flex';
+                        modal.classList.add('visible');
+                    }
+                });
+            });
+        }
+    }
+}
+
+export function updateContext(contextText?: string, files?: string[], skills?: any[], tools?: any[], diagrams?: any[], briefing?: string, selections?: string[]) {
+    if(!dom.contextContainer) return;
+
+    // 0. CAPTURE CURRENT EXPANSION STATE
+    const openStates: Record<string, boolean> = {};
+    dom.contextContainer.querySelectorAll('details').forEach((d, i) => {
+        const summary = d.querySelector('summary')?.innerText || i.toString();
+        openStates[summary] = d.open;
+    });
+
+    // 1. MERGE WITH EXISTING STATE (Partial updates)
+    const prev = state.lastContextData || { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "", selections: [] };
+
+    state.lastContextData = {
+        context: contextText !== undefined ? contextText : (prev.context || ""),
+        files: files !== undefined ? files : (prev.files || []),
+        skills: skills !== undefined ? skills : (prev.skills || []),
+        tools: tools !== undefined ? tools : (prev.tools || []),
+        diagrams: diagrams !== undefined ? diagrams : (prev.diagrams || []),
+        briefing: briefing !== undefined ? briefing : (prev.briefing || ""),
+        selections: selections !== undefined ? selections : ((prev as any).selections || [])
+    };
+
+    const finalFiles = state.lastContextData.files || [];
+    const finalTools = state.lastContextData.tools || [];
+    const finalSkills = state.lastContextData.skills || [];
+    const finalSelections = (state.lastContextData as any).selections || [];
+    const finalDiagrams = state.lastContextData.diagrams || [];
+    const finalBriefing = state.lastContextData.briefing || "";
+
+    // Detection for Welcome Message integration
+    const isNewDiscussion = !document.querySelector('.message-wrapper:not(.context-message)');
+
+    const isProjectFile = (f: string) => {
+        const isInternal = f.includes('.lollms/') || f.startsWith('http') || f.startsWith('external/');
+        return !isInternal;
+    };
+
+    const projectFiles = finalFiles.filter(isProjectFile);
+    const externalFiles = finalFiles.filter(f => !isProjectFile(f));
+
+    try {
+        // Decoupled templates generated via ContextPresenter with strict fallback guards
+        const safeProjectFiles = Array.isArray(projectFiles) ? projectFiles : [];
+        const safeExternalFiles = Array.isArray(externalFiles) ? externalFiles : [];
+        const safeFinalSkills = Array.isArray(finalSkills) ? finalSkills : [];
+        const safeFinalDiagrams = Array.isArray(finalDiagrams) ? finalDiagrams : [];
+        const safeFinalTools = Array.isArray(finalTools) ? finalTools : [];
+        const safeFinalSelections = Array.isArray(finalSelections) ? finalSelections : [];
+
+        const projectFilesHtml = ContextPresenter.renderFileList(safeProjectFiles, "No project files selected.", false);
+        const externalFilesHtml = ContextPresenter.renderFileList(safeExternalFiles, "No search results in context.", true);
+        const skillsHtml = ContextPresenter.renderSkills(safeFinalSkills);
+        const briefingHtml = finalBriefing ? renderDataBriefing(finalBriefing) : '<div style="font-style:italic; opacity:0.5;">No specific task constraints defined. Click the shield to add instructions.</div>';
+
+        const isAgentActive = state.capabilities?.agentMode === true;
+        const themeClass = isAgentActive ? 'agent-mode-bubble' : 'standard-mode-bubble';
+
+        // Update outer HUD presentation content decoupled from binds
+        dom.contextContainer.innerHTML = ContextPresenter.getDashboardHtml(
+            themeClass,
+            isAgentActive,
+            isNewDiscussion,
+            safeFinalSelections,
+            safeProjectFiles.length + safeExternalFiles.length,
+            projectFilesHtml,
+            externalFilesHtml,
+            safeFinalDiagrams,
+            safeFinalTools,
+            finalBriefing,
+            skillsHtml,
+            briefingHtml
+        );
+
+        const dashboard = document.getElementById('fused-context-dashboard');
+        if (dashboard) {
+            // Run dedicated DOM binding system (Layer 2)
+            ContextBinder.bindGestures(dashboard, finalFiles, finalSkills);
+        }
+    } catch (renderError: any) {
+        console.error("❌ FAILED HUD PRESENTATION RENDERING:", renderError);
+
+        // Output a highly visible error diagnostic report directly inside the visual container so it never hangs silently!
+        dom.contextContainer.innerHTML = `
+            <div style="padding: 15px; background: var(--vscode-inputValidation-errorBackground); border: 2px solid var(--vscode-charts-red); border-radius: 8px; color: var(--vscode-errorForeground); font-family: var(--vscode-editor-font-family); font-size: 11px; margin: 10px;">
+                <h3 style="margin: 0 0 8px 0; font-size: 13px; font-weight: bold; display: flex; align-items: center; gap: 8px;">
+                    <i class="codicon codicon-warning" style="color: var(--vscode-charts-red);"></i> Sovereign HUD Rendering Exception
+                </h3>
+                <p style="margin: 0 0 10px 0; opacity: 0.9;">The presentation layer failed to construct the intelligence dashboard dynamically.</p>
+                <div style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05); font-family: monospace; white-space: pre-wrap; overflow-x: auto;">${renderError.stack || renderError.message || renderError}</div>
+                <button onclick="vscode.postMessage({ command: 'calculateTokens' })" style="margin-top: 10px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer;">
+                    <i class="codicon codicon-sync"></i> Re-Calculate State
+                </button>
+            </div>
+        `;
     }
 
     // 2. RESTORE EXPANSION STATE
@@ -3308,399 +3375,9 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
         }
     });
 
-    // Trigger Mermaid rendering for diagrams in the context bubble
-    if (diagrams.length > 0) {
-        const nodes = dom.contextContainer.querySelectorAll('.mermaid');
-        nodes.forEach(async (node) => {
-            const rawText = node.textContent || '';
-            // Quote labels in brackets to prevent syntax errors
-            const sanitizedText = rawText.split('\n').map(line => {
-                const trimmed = line.trim();
-                if (trimmed.match(/^(subgraph|end|class|state|note|participant|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|gitGraph|flowchart|graph|class)/i)) {
-                    return line;
-                }
-                return line.replace(/([a-zA-Z0-9_-]+)\s*([\[\(\{]{1,2})\s*([^"'\n\r\t]+?)\s*([\]\)\}]{1,2})/g, (match, id, open, label, close) => {
-                    const safeLabel = label.replace(/"/g, "'");
-                    return `${id}${open}"${safeLabel.trim()}"${close}`;
-                });
-            }).join('\n');
-
-            node.textContent = sanitizedText;
-            
-            try {
-                await (window as any).mermaid.run({ nodes: [node] });
-            } catch (e: any) {
-                console.error("📊 Context Mermaid Error:", e);
-                node.parentElement!.innerHTML = `
-                    <div style="color:var(--vscode-errorForeground); padding:10px; background:var(--vscode-inputValidation-errorBackground); border:1px solid var(--vscode-errorForeground); border-radius:4px; font-size:10px;">
-                        <strong>Mermaid Syntax Error:</strong> ${e.message || e}
-                        <details style="margin-top:5px;"><summary>View Code</summary><pre style="font-size:9px; white-space:pre-wrap; margin-top:5px;">${sanitizedText}</pre></details>
-                    </div>`;
-            }
-        });
-    }
-
-    dom.contextContainer.querySelectorAll('.remove-context-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const target = e.currentTarget as HTMLElement;
-            const type = target.dataset.type;
-            const value = target.dataset.value;
-            
-            if (type === 'file') {
-                vscode.postMessage({ command: 'removeFileFromContext', path: value });
-            } else if (type === 'skill') {
-                vscode.postMessage({ command: 'removeSkillFromContext', skillId: value });
-            } else if (type === 'diagram') {
-                vscode.postMessage({ 
-                    command: 'updateDiscussionCapabilitiesPartial', 
-                    partial: { 
-                        // Note: We'll filter the activeDiagrams list on the extension side
-                        // but we send the command to trigger the update.
-                        removeDiagram: value 
-                    } 
-                });
-            }
-        });
-    });
-
-    dom.contextContainer.querySelectorAll('.open-context-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const target = e.currentTarget as HTMLElement;
-            const value = target.dataset.value;
-            if (value) {
-                vscode.postMessage({ command: 'openFile', path: value });
-            }
-        });
-    });
-
-    dom.contextContainer.querySelectorAll('.summarize-context-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const target = e.currentTarget as HTMLElement;
-            const value = target.dataset.value;
-            if (value) {
-                vscode.postMessage({ command: 'summarizeContextFile', path: value });
-            }
-        });
-    });
-
-    const bulkBtn = document.getElementById('bulk-process-external-btn');
-    if (bulkBtn) {
-        bulkBtn.addEventListener('click', () => {
-            showBulkProcessModal(externalFiles);
-        });
-    }
-
-    const bulkDeleteBtn = document.getElementById('bulk-delete-external-btn');
-    if (bulkDeleteBtn) {
-        bulkDeleteBtn.addEventListener('click', () => {
-            showBulkDeleteModal(externalFiles);
-        });
-    }
-
-    const addFileBtn = document.getElementById('add-file-context-btn');
-    if (addFileBtn) {
-        addFileBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'requestAddFileToContext' });
-        });
-    }
-
-    const addSkillBtn = document.getElementById('add-skill-context-btn');
-    if (addSkillBtn) {
-        addSkillBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'importSkills' });
-        });
-    }
-
-    const addToolBtn = document.getElementById('add-tool-context-btn');
-    if (addToolBtn) {
-        addToolBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'requestToolPicker' });
-        });
-    }
-
-    const clearToolsBtn = document.getElementById('bulk-remove-tools-btn');
-    if (clearToolsBtn) {
-        clearToolsBtn.onclick = () => {
-            vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { importedTools: [] } });
-        };
-    }
-
-    const webBtn = document.getElementById('web-context-btn');
-    if (webBtn) {
-        webBtn.addEventListener('click', () => {
-            if (dom.webModal) {
-                dom.webModal.classList.add('visible');
-            }
-        });
-    }
-
-    const addDiagramBtn = document.getElementById('add-diagram-context-btn');
-    if (addDiagramBtn) {
-        addDiagramBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'requestAddDiagramToContext' });
-        });
-    }
-
-    const searchAddBtn = document.getElementById('search-add-context-btn');
-    if (searchAddBtn) {
-        searchAddBtn.addEventListener('click', () => {
-            if (dom.fileSearchModal) {
-                dom.fileSearchModal.classList.add('visible');
-                dom.fileSearchInput.focus();
-            }
-        });
-    }
-
-    const saveBtn = document.getElementById('save-context-btn');
-    if (saveBtn) {
-        saveBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'saveContext', params: {} } });
-        });
-    }
-
-    const loadBtn = document.getElementById('load-context-btn');
-    if (loadBtn) {
-        loadBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'loadContext', params: {} } });
-        });
-    }
-
-    const addBtn = document.getElementById('add-context-btn');
-    if (addBtn) {
-        addBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'addContext', params: {} } });
-        });
-    }
-
-    const viewFullBtn = document.getElementById('view-full-context-btn');
-    if (viewFullBtn) {
-        viewFullBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'requestViewFullContext' });
-        });
-    }
-
-    const briefingBtn = document.getElementById('edit-briefing-btn');
-    if (briefingBtn) {
-        briefingBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'requestMissionBriefingUI' });
-        });
-    }
-
-
-    const usageBtn = document.getElementById('view-usage-context-btn');
-    if (usageBtn) {
-        usageBtn.addEventListener('click', () => {
-            dom.usageModal.classList.add('visible');
-            dom.usageListContainer.innerHTML = '<div style="text-align:center; padding: 20px;"><div class="spinner"></div> Calculating individual file tokens...</div>';
-            vscode.postMessage({ command: 'requestContextUsage' });
-        });
-    }
-
-    if (dom.usageCloseBtn) dom.usageCloseBtn.onclick = () => dom.usageModal.classList.remove('visible');
-    if (dom.usageRefreshBtn) dom.usageRefreshBtn.onclick = () => {
-        dom.usageListContainer.innerHTML = '<div style="text-align:center; padding: 20px;"><div class="spinner"></div> Recalculating...</div>';
-        vscode.postMessage({ command: 'requestContextUsage' });
-    };
-
-    const resetBtn = document.getElementById('reset-context-bubble-btn');
-    if (resetBtn) {
-        resetBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
-        });
-    }
-
-    // Bind event for the new Saved Selections Dropdown
-    const selectionsDropdown = document.getElementById('hud-selections-dropdown') as HTMLSelectElement;
-    if (selectionsDropdown) {
-        selectionsDropdown.onchange = () => {
-            const selectedVal = selectionsDropdown.value;
-            if (selectedVal) {
-                vscode.postMessage({
-                    command: 'executeLollmsCommand',
-                    details: {
-                        command: 'lollms-vs-coder.loadContextSelectionDirect',
-                        params: [selectedVal]
-                    }
-                });
-            }
-        };
-    }
-
-    const bulkRemoveProjectBtn = document.getElementById('bulk-remove-project-btn');
-    if (bulkRemoveProjectBtn) {
-        bulkRemoveProjectBtn.onclick = () => {
-            // Re-use the existing bulk delete modal logic but for project files
-            if (typeof (window as any).showBulkDeleteModal === 'function') {
-                (window as any).showBulkDeleteModal(projectFiles);
-            }
-        };
-    }
-
-    const muteBtn = document.getElementById('mute-context-btn');
-    // --- HUD REACTIVE BINDING ---
-    // Since the HUD is inside innerHTML, we must re-bind these every time it renders.
-    const matrixBtn = dom.contextContainer.querySelector('#hud-matrix-btn');
-    if (matrixBtn) {
-        matrixBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            import('./ui.js').then(ui => {
-                ui.renderWorkspaceMatrix();
-                const modal = document.getElementById('workspace-matrix-modal');
-                if (modal) {
-                    modal.style.display = 'flex';
-                    modal.classList.add('visible');
-                }
-            });
-        });
-    }
-
-    const hudRefresh = dom.contextContainer.querySelector('#hud-quick-refresh-btn');
-    if (hudRefresh) {
-        hudRefresh.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const icon = hudRefresh.querySelector('.codicon');
-            if (icon) icon.classList.add('spin');
-            vscode.postMessage({ command: 'calculateTokens' });
-            setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1000);
-        });
-    }
-
-    // Workspace Matrix Logic (Inside Modal)
-    const container = dom.contextContainer;
-    if (container) {
-        container.addEventListener('click', (e) => {
-            const target = e.target as HTMLElement;
-            const toggleBtn = target.closest('.matrix-toggle') as HTMLButtonElement;
-            const row = target.closest('.ws-matrix-row') as HTMLElement;
-
-            if (toggleBtn && row) {
-                const uri = row.dataset.uri!;
-                const type = toggleBtn.dataset.type as 'tree' | 'content';
-
-                const currentSettings = state.capabilities?.folderSettings || {};
-                const settings = currentSettings[uri] || { tree: true, content: true };
-
-                // Toggle the specific setting
-                settings[type] = !settings[type];
-
-                // Debounce matrix updates
-                if ((window as any).matrixUpdateTimer) clearTimeout((window as any).matrixUpdateTimer);
-                (window as any).matrixUpdateTimer = setTimeout(() => {
-                // Locally update state so updateBadges() sees it immediately
-                if (state.capabilities) {
-                    state.capabilities.folderSettings = { ...currentSettings, [uri]: settings };
-                }
-
-                // Sync with extension
-                vscode.postMessage({ 
-                    command: 'updateDiscussionCapabilitiesPartial', 
-                    partial: { 
-                        folderSettings: { ...currentSettings, [uri]: settings }
-                    } 
-                });
-
-                // Force badge refresh because Matrix might have changed "Librarian" status
-                updateBadges();
-                }, 150);            
-            }
-
-            if (target.id === 'ws-all-on' || target.id === 'ws-all-off') {
-                const turnOn = target.id === 'ws-all-on';
-                const newSettings: Record<string, any> = {};
-                const validFolders = (workspaceFolders || []).filter((f: any) => f && f.uri);
-                validFolders.forEach((f: any) => {
-                    const uriStr = typeof f.uri === 'string' ? f.uri : (f.uri ? f.uri.toString() : '');
-                    if (uriStr) {
-                        newSettings[uriStr] = { tree: turnOn, content: turnOn };
-                    }
-                });
-                vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { folderSettings: newSettings } });
-            }
-        });
-    }
-
-    // --- REACTIVE CONTEXT SYNC FOR EXPANSION BLOCKS ---
-    // Find all <add_files> blocks in the history and update them if files were added elsewhere
-    const expansionBlocks = document.querySelectorAll('.expansion-request-block');
-    expansionBlocks.forEach(block => {
-        try {
-            const blockId = block.id;
-            const blockFiles = JSON.parse(block.getAttribute('data-files') || '[]');
-            const currentFiles = files || [];
-            let allIncluded = true;
-
-            const listContainer = document.getElementById(`list-${blockId}`);
-            if (listContainer) {
-                const items = listContainer.querySelectorAll('.expansion-file-item');
-                items.forEach((item: any, idx) => {
-                    const path = blockFiles[idx];
-                    const isIncluded = currentFiles.includes(path);
-                    if (!isIncluded) allIncluded = false;
-
-                    if (isIncluded) {
-                        item.style.borderColor = 'var(--vscode-charts-green)';
-                        item.style.background = 'rgba(15, 157, 88, 0.1)';
-                        const icon = item.querySelector('.codicon');
-                        if (icon) {
-                            icon.className = 'codicon codicon-check';
-                            icon.style.color = 'var(--vscode-charts-green)';
-                        }
-                    }
-                });
-            }
-
-            const actionBtn = document.getElementById(`btn-${blockId}`) as HTMLButtonElement;
-            if (actionBtn && allIncluded && !actionBtn.classList.contains('applied')) {
-                actionBtn.innerHTML = `<span class="codicon codicon-check"></span> Added to Context`;
-                actionBtn.className = 'code-action-btn applied';
-                actionBtn.disabled = true;
-            }
-
-            const repromptBtn = document.getElementById(`btn-reprompt-${blockId}`) as HTMLButtonElement;
-            if (repromptBtn && allIncluded) {
-                repromptBtn.innerHTML = `<span class="codicon codicon-play"></span> Reprompt AI`;
-                repromptBtn.className = 'code-action-btn apply-btn'; // Keep it looking active/green
-                repromptBtn.disabled = false;
-            }
-            } catch (e) {
-            console.error("Failed to sync expansion block:", e);
-        }
-    });
-
-    const handleRefresh = (btn: HTMLElement | null) => {
-        if (!btn) return;
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const icon = btn.querySelector('.codicon');
-            if (icon) icon.classList.add('spin');
-            vscode.postMessage({ command: 'calculateTokens' });
-            setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1000);
-        });
-    };
-
-    handleRefresh(document.getElementById('refresh-context-btn'));
-    handleRefresh(document.getElementById('hud-quick-refresh-btn'));
-    
-    const bulkDeleteSkillsBtn = document.getElementById('bulk-delete-skills-btn');
-    if (bulkDeleteSkillsBtn) {
-        bulkDeleteSkillsBtn.addEventListener('click', () => {
-            showBulkDeleteSkillsModal(skills);
-        });
-    }
-
-    const cancelCtxBtn = document.getElementById('cancel-tokens-btn');
-    if (cancelCtxBtn) {
-        cancelCtxBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'stopTokenCalculation' });
-        });
-    }
-
-    // CRITICAL: Force badge rendering immediately after injecting the Dashboard HTML
-    const { updateBadges } = require('./ui.js');
-    updateBadges();
-    }
+    // Run badge layout UI updates
+    import('./ui.js').then(ui => ui.updateBadges());
+}
 
 
 /**

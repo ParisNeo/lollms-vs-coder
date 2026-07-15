@@ -1,0 +1,1439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'none';
+        connect-src {{cspSource}} https:;
+        style-src {{cspSource}} 'unsafe-inline' https://cdn.jsdelivr.net;
+        font-src {{cspSource}} https://cdn.jsdelivr.net;
+        img-src {{cspSource}} data: blob:;
+        script-src {{cspSource}} 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
+        worker-src {{cspSource}} 'self' blob: https://cdnjs.cloudflare.com;
+    ">
+    <title>Lollms Chat</title>
+    <!-- Secure KaTeX Math typesetting with Subresource Integrity -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+    <script nonce="{{nonce}}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
+    <script nonce="{{nonce}}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
+
+    <!-- PDF.js for local rendering (Pure TS/JS, no backend required) -->
+    <script nonce="{{nonce}}" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script nonce="{{nonce}}">
+        // Disable worker to avoid cross-origin/blob CSP issues in VS Code webview
+        if (typeof pdfjsLib !== 'undefined') {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+        }
+    </script>
+    <link href="{{codiconsUri}}" rel="stylesheet" />
+    <link href="{{cssUri}}" rel="stylesheet" />
+    <link href="{{prismThemeUri}}" rel="stylesheet" />
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-content-wrapper">
+            <!-- 🤖 Sidebar ON THE LEFT -->
+            <div id="agent-plan-zone"></div>
+            <div id="plan-resizer"></div>
+
+            <!-- 💬 Main Chat ON THE RIGHT -->
+            <div class="chat-main-column">
+                <!-- 🚀 PERSISTENT SURGICAL HUD -->
+                <div id="context-container" class="persistent-hud"></div>
+
+                <div class="messages" id="messages">
+                    <div class="search-bar" id="search-bar" style="display: none;">
+                        <input type="text" id="searchInput" placeholder="Search discussion...">
+                        <span id="search-results-count"></span>
+                        <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
+                        <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
+                        <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>
+                    </div>
+
+                    <div class="message special-zone-message" style="display: none;">
+                        <div class="message-avatar">
+                            <span class="codicon codicon-file-text"></span>
+                        </div>
+                        <div class="message-body">
+                            <div class="message-header"><span class="role-name">Attached Files</span></div>
+                            <div class="message-content">
+                                <div id="attachments-container"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="chat-messages-container">
+                        <div id="message-insertion-controls">
+                            <button id="add-user-message-btn"><i class="codicon codicon-add"></i> Add User Message</button>
+                            <button id="add-ai-message-btn"><i class="codicon codicon-add"></i> Add AI Message</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="generating-overlay" class="generating-overlay" style="display: none; height: auto; min-height: 40px; padding: 8px 12px; flex-direction: column; align-items: stretch; gap: 8px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                        <div class="generating-content" style="flex: 1; min-width: 0;">
+                            <div class="ai-orb-container" style="margin-right: 8px;">
+                                <div class="genie-orb-portal" style="transform: scale(0.65);">
+                                    <div class="orb-ring-outer"></div>
+                                    <div class="orb-ring-inner"></div>
+                                    <div class="orb-core"></div>
+                                </div>
+                            </div>
+                            <span id="generating-status-text" style="font-size: 12px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Processing...</span>
+                        </div>
+                        <div style="display: flex; gap: 8px; flex-shrink: 0;">
+                            <button id="raiseHandButton" class="stop-btn-red" style="display: none; height: 24px; font-size: 11px; padding: 2px 8px; background-color: var(--vscode-charts-orange) !important; border-color: var(--vscode-charts-orange) !important; color: white !important;" title="Pause and provide feedback">
+                                <i class="codicon codicon-hand"></i>
+                                <span>Raise Hand</span>
+                            </button>
+                            <button id="stopButton" class="stop-btn-red" style="height: 24px; font-size: 11px; padding: 2px 8px;">
+                                <i class="codicon codicon-primitive-square"></i>
+                                <span>Cancel Task</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 📈 REAL-TIME PROGRESS BAR & DETAILED SUB-STEP LOGS -->
+                    <div id="fused-scout-loader-bar" style="display: none; flex-direction: column; gap: 4px; border-top: 1px solid var(--vscode-widget-border); padding-top: 6px;">
+                        <div class="token-progress-container" style="height: 4px; border-radius: 2px; background: rgba(255,255,255,0.03);">
+                            <div class="token-progress-bar calculating" id="scout-progress-fill" style="width: 0%;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 9px; opacity: 0.6; font-family: var(--vscode-editor-font-family);">
+                            <span id="scout-progress-details">Initializing scan...</span>
+                            <span id="scout-progress-percent">0%</span>
+                        </div>
+                    </div>
+
+                    <div class="generating-details" style="display: none;">
+                        <div class="step-timeline" id="step-timeline">
+                            <div class="step-dot active"></div>
+                            <div class="step-dot"></div>
+                            <div class="step-dot"></div>
+                            <div class="step-dot"></div>
+                        </div>
+                        <div id="generating-metrics" class="generating-metrics" style="display: none;">
+                            <div class="metric-item">
+                                <i class="codicon codicon-dashboard"></i>
+                                <span id="metrics-tps" class="metric-value">0.0</span> <span class="metric-label">t/s</span>
+                            </div>
+                            <div class="metric-item">
+                                <i class="codicon codicon-symbol-parameter"></i>
+                                <span id="metrics-count" class="metric-value">0</span> <span class="metric-label">tokens</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="input-area-wrapper">
+                    <div id="more-actions-menu">
+                        <div class="menu-view" id="menu-main">
+                            <div class="menu-item has-submenu" data-target="menu-modes">
+                                <i class="codicon codicon-settings-gear"></i>
+                                <span>Sovereign Modes</span>
+                                <span class="menu-arrow">›</span>
+                            </div>
+                            <div class="menu-item has-submenu" data-target="menu-protocols">
+                                <i class="codicon codicon-beaker"></i>
+                                <span>Auxiliary Protocols</span>
+                                <span class="menu-arrow">›</span>
+                            </div>
+                            <div class="menu-item has-submenu" data-target="menu-ai">
+                                <i class="codicon codicon-hubot"></i>
+                                <span>AI Configuration</span>
+                                <span class="menu-arrow">›</span>
+                            </div>
+                            <div class="menu-separator"></div>
+                            <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-settings"></i><span>Discussion Settings</span></button>
+                            <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Settings</span></button>
+                            <div class="menu-separator"></div>
+                            <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
+                            <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
+                            <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
+                            <button class="menu-item" id="copySystemPromptButton"><i class="codicon codicon-shield"></i><span>Copy System Prompt Only</span></button>
+                            <button class="menu-item" id="copyTreeAndContentButton"><i class="codicon codicon-clippy"></i><span>Copy Tree & Content</span></button>
+                            <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
+                            <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project Entry Point</span></button>
+                            <button class="menu-item" id="debugProjectButton" title="Run entry point in background and feed stdout/stderr back to LLM"><i class="codicon codicon-debug"></i><span>Debug Project Entry Point (Auto-Audit)</span></button>
+                            <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
+                            <button class="menu-item" id="showDebugLogButton"><i class="codicon codicon-output"></i><span>Show Debug Log</span></button>
+                        </div>
+
+                        <div class="menu-view hidden" id="menu-modes">
+                            <div class="menu-header">
+                                <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
+                                <span>Sovereign Modes</span>
+                            </div>
+                            <div class="menu-item-radio">
+                                <label><input type="radio" name="mode-group" value="assistant" id="modeAssistantRadio"> <span>👤 Assistant Mode (Manual)</span></label>
+                            </div>
+                            <div class="menu-item-radio">
+                                <label><input type="radio" name="mode-group" value="dynamic" id="modeDynamicRadio"> <span>🧠 Co-Engineer Mode (Interactive)</span></label>
+                            </div>
+                            <div class="menu-item-radio">
+                                <label><input type="radio" name="mode-group" value="agent" id="modeAgentRadio"> <span>🤖 Agent Mode (Autonomous)</span></label>
+                            </div>
+                        </div>
+
+                        <div class="menu-view hidden" id="menu-protocols">
+                            <div class="menu-header">
+                                <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
+                                <span>Auxiliary Protocols</span>
+                            </div>
+                            <div class="menu-item-toggle">
+                                <span>🐞 Debug Protocol</span>
+                                <label class="switch"><input type="checkbox" id="protoDebugCheckbox"><span class="slider"></span></label>
+                            </div>
+                            <div class="menu-item-toggle">
+                                <span>🛡️ Verifier Protocol</span>
+                                <label class="switch"><input type="checkbox" id="protoVerifierCheckbox"><span class="slider"></span></label>
+                            </div>
+                            <div class="menu-item-toggle">
+                                <span>🧪 Test Protocol</span>
+                                <label class="switch"><input type="checkbox" id="protoTestCheckbox"><span class="slider"></span></label>
+                            </div>
+                            <div class="menu-item-toggle">
+                                <span>📖 Docs Protocol</span>
+                                <label class="switch"><input type="checkbox" id="protoDocsCheckbox"><span class="slider"></span></label>
+                            </div>
+                            <div class="menu-item-toggle">
+                                <span>📖 Git Auto-Workflow</span>
+                                <label class="switch"><input type="checkbox" id="protoGitCheckbox"><span class="slider"></span></label>
+                            </div>
+                            <div class="menu-item-toggle">
+                                <span>🐂 Multi-Agent (Herd)</span>
+                                <label class="switch"><input type="checkbox" id="protoHerdCheckbox"><span class="slider"></span></label>
+                            </div>
+                        </div>
+
+                        <div class="menu-view hidden" id="menu-ai">
+                            <div class="menu-header">
+                                <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
+                                <span>AI Configuration</span>
+                            </div>
+                            <label style="margin-left:12px; margin-top:8px; display:block; font-size:11px; font-weight:600;">Model</label>
+                            <select id="model-selector" class="menu-select"></select>
+                            
+                            <label style="margin-left:12px; margin-top:8px; display:block; font-size:11px; font-weight:600;">Persona</label>
+                            <select id="personality-selector" class="menu-select"></select>
+                            
+                            <div style="padding: 0 12px 12px 12px;">
+                                <button id="refresh-models-btn" class="code-action-btn" style="width:100%; justify-content:center;"><i class="codicon codicon-refresh"></i> Refresh Models</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="input-area-container">
+                        <div class="rich-input-toolbar">
+                            <button class="toolbar-tool" id="jump-to-context-btn" title="Jump to Project Context / Dashboard"><i class="codicon codicon-dashboard"></i><span>Context</span></button>
+                            <div class="toolbar-separator"></div>
+                            <button class="toolbar-tool" data-wrap-type="python" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
+                            <button class="toolbar-tool" data-wrap-type="code" title="Code Block"><i class="codicon codicon-code"></i><span>Code</span></button>
+                            <div class="toolbar-separator"></div>
+                            <button class="toolbar-tool" data-wrap-type="h1" title="Heading 1"><span>H1</span></button>
+                            <button class="toolbar-tool" data-wrap-type="h2" title="Heading 2"><span>H2</span></button>
+                            <button class="toolbar-tool" data-wrap-type="h3" title="Heading 3"><span>H3</span></button>
+                            <div class="toolbar-separator"></div>
+                            <button class="toolbar-tool" data-wrap-type="list" title="Bullet List"><i class="codicon codicon-list-unordered"></i></button>
+                            <button class="toolbar-tool" data-wrap-type="bold" title="Bold"><i class="codicon codicon-bold"></i></button>
+                            <button class="toolbar-tool" data-wrap-type="italic" title="Italic"><i class="codicon codicon-italic"></i></button>
+                        </div>
+                        <div class="input-area">
+                            <div id="attachment-preview-area" class="attachment-preview-area"></div>
+                            <div class="input-row">
+                                <div class="control-buttons">
+                                    <button id="moreActionsButton" title="Menu"><i class="codicon codicon-menu"></i></button>
+                                    <button id="addDrawingButton" title="Add Empty Drawing"><i class="codicon codicon-edit"></i></button>
+                                </div>
+                                
+                                <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..."></textarea>
+
+                                <div class="control-buttons">
+                                    <div class="voice-controls">
+                                        <button id="sttButton" title="Listen (STT)" class="voice-btn"><i class="codicon codicon-mic"></i></button>
+                                        <button id="toggleTempSliderBtn" title="Toggle Custom Temperature" class="voice-btn"><i class="codicon codicon-thermometer"></i></button>
+                                    </div>
+                                    <div class="temp-slider-container" id="inputTempContainer" title="Model Temperature (Creativity)" style="display: none;">
+                                        <div class="temp-tooltip" id="temp-val-display">0.7</div>
+                                        <input type="range" id="temp-slider" min="0" max="2" step="0.1" value="0.7">
+                                    </div>
+                                    <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="plan-resizer"></div>
+            <div id="agent-plan-zone"></div>
+            <button id="scrollToBottomBtn" title="Scroll to bottom">
+                <i class="codicon codicon-arrow-down"></i>
+            </button>
+        </div>
+    </div>
+            
+    <div id="agent-settings-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 style="display:flex; align-items:center; gap:8px;"><i class="codicon codicon-robot"></i> Agent Mission Configuration</h2>
+                <span class="close-btn" id="close-agent-settings-modal">&times;</span>
+            </div>
+            <div class="modal-body" style="padding:0; overflow:hidden;">
+                <div class="settings-grid-layout">
+                    <div class="settings-sidebar">
+                        <div class="modal-section" style="border:none; background:transparent; padding:0;">
+                            <h3 style="color:var(--vscode-charts-blue);"><i class="codicon codicon-dashboard"></i> Mission Budgets</h3>
+
+                            <label style="margin-top:10px;">Task Turn Limit</label>
+                            <input type="number" id="setting-maxSteps" min="1" max="500" style="margin-bottom:4px;">
+                            <p class="help-text">Max turns before mission timeout.</p>
+
+                            <label style="margin-top:15px;">File Edit Retries</label>
+                            <input type="number" id="setting-maxEditRetries" min="0" max="10" style="margin-bottom:4px;">
+                            <p class="help-text">Attempts to fix failed patches/marker leaks.</p>
+
+                            <div class="checkbox-container" style="margin-top:15px; border:none; background:transparent; padding:0;">
+                                <label class="switch" style="width:24px; height:14px;"><input type="checkbox" id="setting-autoProfileSwitch"><span class="slider"></span></label>
+                                <label for="setting-autoProfileSwitch" style="font-size:11px; font-weight:bold;">Auto Profile Switch</label>
+                            </div>
+                            <p class="help-text">AI auto-selects best mission protocol.</p>
+                        </div>
+
+                        <div style="flex:1"></div>
+
+                        <div class="security-warning" style="font-size:10px; padding:10px; margin:0;">
+                            <i class="codicon codicon-shield"></i> <strong>Sovereign Guard</strong><br>
+                            The harness automatically reverts files if Aider markers are detected in the code body.
+                        </div>
+                    </div>
+                    <div class="settings-main-content" style="padding:15px; overflow-y:auto;">
+                        <h3 style="margin-top:0;"><i class="codicon codicon-target"></i> Genie Mission Profiles</h3>
+                        <p class="help-text">Switch or customize the Architect's core operational logic.</p>
+
+                        <div style="display:flex; gap:10px; margin-bottom:15px;">
+                            <select id="setting-activeProfile" class="menu-select" style="flex:1; margin:0;"></select>
+                            <button id="add-agent-profile-btn" class="code-action-btn apply-btn" style="width:auto; height:32px;"><i class="codicon codicon-add"></i> New</button>
+                        </div>
+
+                        <div id="agent-profiles-list" style="display:flex; flex-direction:column; gap:8px; margin-bottom:24px;"></div>
+
+                        <!-- Profile Editor (Hidden) -->
+                        <div id="agent-profile-editor" style="display:none; border: 1px solid var(--vscode-focusBorder); padding:15px; border-radius:8px; background: rgba(0,0,0,0.2); margin-bottom:24px;">
+                            <h4 style="margin-top:0; font-size:12px;">Edit Mission Protocol</h4>
+                            <label>Display Name</label>
+                            <input type="text" id="ap-name" style="margin-bottom:8px;">
+                            <label>Architect Protocol (System Instructions)</label>
+                            <textarea id="ap-protocol" rows="8" style="font-family:monospace; font-size:11px;"></textarea>
+                            <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:10px;">
+                                <button id="ap-cancel" class="code-action-btn">Cancel</button>
+                                <button id="ap-save" class="code-action-btn apply-btn">Update Protocol</button>
+                            </div>
+                        </div>
+
+                        <h3 style="margin-top:0;"><i class="codicon codicon-tools"></i> Tool Permissions & Policies</h3>
+                        <div id="tools-list"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="save-agent-settings-btn" class="code-action-btn apply-btn" style="width:120px; justify-content:center;">Save Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="staging-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Stage Files for Commit</h2>
+                <span class="close-btn" id="staging-close-btn">&times;</span>
+            </div>
+            <div class="modal-body" id="staging-list"></div>
+            <div class="modal-footer">
+                <button id="staging-next-btn">Next (Generate Message)</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="commit-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Commit Changes</h2>
+                <span class="close-btn" id="commit-cancel-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <textarea id="commit-message-input" class="commit-textarea" placeholder="Generating commit message..."></textarea>
+            </div>
+            <div class="modal-footer">
+                <button id="commit-confirm-btn">Commit</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="history-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Git History</h2>
+                <span class="close-btn" id="history-close-btn">&times;</span>
+            </div>
+            <div class="modal-body" id="history-list"></div>
+        </div>
+    </div>
+
+    <div id="skills-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Apply Skills to Context</h2>
+                <span class="close-btn" id="skills-close-btn">&times;</span>
+            </div>
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:12px; height: 100%;">
+                <div class="skills-search-ribbon" style="display:flex; flex-direction:column; gap:8px;">
+                    <div style="display:flex; align-items:center; gap:8px; background: var(--vscode-editor-inactiveSelectionBackground); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border);">
+                         <div style="display:flex; gap:12px; margin-left: auto;">
+                            <div style="display:flex; align-items:center; gap:4px;" title="Match Case">
+                                <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">Ab</span>
+                                <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                    <input type="checkbox" id="skills-search-case">
+                                    <span class="slider" style="border-radius: 14px;"></span>
+                                </label>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:4px;" title="Use Regular Expression">
+                                <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">.*</span>
+                                <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                    <input type="checkbox" id="skills-search-regex">
+                                    <span class="slider" style="border-radius: 14px;"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <input type="text" id="skills-search-input" class="search-modal-input" placeholder="Search skills (e.g. pip.* or best_practices)..." style="width: 100%;">
+                </div>
+                <div id="skills-tree-container" style="flex:1;"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="skills-import-btn">Apply Selected</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="tool-picker-modal" class="modal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h2 style="display:flex; align-items:center; gap:8px;"><i class="codicon codicon-wrench"></i> Equip Agent Tools</h2>
+                <span class="close-btn" id="tool-picker-close-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p style="font-size:11px; opacity:0.7; margin-bottom:12px;">Equipped tools will be described to the AI. Keep the list small to save context tokens.</p>
+
+                <div style="margin-bottom: 12px; position: sticky; top: 0; background: var(--vscode-editorWidget-background); z-index: 10;">
+                    <input type="text" id="tool-picker-search" class="search-modal-input" placeholder="Search tools by name or description..." style="width: 100%;">
+                </div>
+
+                <div id="tool-picker-list" style="max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="tool-picker-apply-btn" class="code-action-btn apply-btn" style="width:100%; justify-content:center; height:32px;">Update Intelligence Capabilities</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="discussion-tools-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Discussion Settings</h2>
+                <span class="close-btn" id="close-discussion-tools-modal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="modal-section">
+                    <h3>Performance & Creativity</h3>
+                    <div class="checkbox-container" style="margin-bottom: 10px;">
+                        <label class="switch"><input type="checkbox" id="cap-enableTemperature"><span class="slider"></span></label>
+                        <label for="cap-enableTemperature"><strong>Custom Temperature:</strong> Override model's default creativity parameters.</label>
+                    </div>
+                    <div style="margin-bottom: 15px; display: none;" id="modal-temperature-container">
+                        <div style="display:flex; justify-content: space-between;">
+                            <label style="font-size: 11px; font-weight:bold;">Temperature (Creativity)</label>
+                            <span id="modal-temperature-val" style="font-size: 11px; opacity: 0.8;">0.7</span>
+                        </div>
+                        <input type="range" id="modal-temperature" min="0" max="2" step="0.1" style="width:100%; margin: 8px 0;">
+                        <p style="font-size: 10px; opacity: 0.7; margin:0;">0.0 = Precise/Deterministic, 1.0+ = Creative/Random.</p>
+                    </div>
+                    
+                    <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Timeouts (ms). Set to 0 for Infinity.</p>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                        <div class="form-group">
+                            <label style="font-size: 11px; font-weight:bold;">First Token (TTFT)</label>
+                            <input type="number" id="modal-ttft-timeout" min="0" step="1000" style="width:100%;">
+                        </div>
+                        <div class="form-group">
+                            <label style="font-size: 11px; font-weight:bold;">Inter-Token</label>
+                            <input type="number" id="modal-inter-token-timeout" min="0" step="100" style="width:100%;">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-section">
+                    <h3>Language & Speech</h3>
+                    <div class="checkbox-grid" style="margin-bottom: 12px;">
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-enableTTS"><span class="slider"></span></label>
+                            <label for="cap-enableTTS">Enable TTS (Megaphone)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-enableSTT"><span class="slider"></span></label>
+                            <label for="cap-enableSTT">Enable STT (Microphone)</label>
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                        <div class="form-group">
+                            <label style="font-size: 11px; font-weight:bold;">Response Language</label>
+                            <select id="modal-language" class="menu-select" style="width:100%; margin:4px 0;">
+                                <option value="auto">Auto-detect</option>
+                                <option value="en">English</option>
+                                <option value="fr">French</option>
+                                <option value="es">Spanish</option>
+                                <option value="de">German</option>
+                                <option value="zh-cn">Chinese</option>
+                                <option value="ar">Arabic</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label style="font-size: 11px; font-weight:bold;">Speaker Voice</label>
+                            <select id="modal-voice" class="menu-select" style="width:100%; margin:4px 0;">
+                                <option value="default">System Default</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-section">
+                    <h3>Response Style (Profile)</h3>
+                    <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Customize how the AI talks and thinks.</p>
+                    
+                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                        <select id="modal-default-profile-select" class="menu-select" style="flex:1; margin:0;"></select>
+                        <button id="modal-add-profile-btn" class="code-action-btn apply-btn" style="margin:0; width: auto; height: 32px;"><i class="codicon codicon-add"></i> New</button>
+                    </div>
+
+                    <div id="modal-profiles-container" style="display:flex; flex-direction:column; gap:8px; max-height: 200px; overflow-y: auto; padding: 2px;"></div>
+
+                    <!-- Profile Editor (Hidden) -->
+                    <div id="modal-profile-editor" style="display:none; border: 1px solid var(--vscode-focusBorder); padding: 12px; border-radius: 4px; margin-top: 10px; background: var(--vscode-editor-inactiveSelectionBackground);">
+                        <h4 style="margin: 0 0 10px 0; font-size: 12px;">Edit Profile</h4>
+                        <div style="display:flex; flex-direction:column; gap:8px;">
+                            <div>
+                                <label style="font-size: 11px; font-weight:bold;">Name</label>
+                                <input type="text" id="modal-p-name" style="width:100%; padding:4px; margin-top:2px;">
+                            </div>
+                            <div>
+                                <label style="font-size: 11px; font-weight:bold;">Description</label>
+                                <input type="text" id="modal-p-desc" style="width:100%; padding:4px; margin-top:2px;">
+                            </div>
+                            <div>
+                                <label style="font-size: 11px; font-weight:bold;">Prefix (Optional command)</label>
+                                <input type="text" id="modal-p-prefix" placeholder="/no_think" style="width:100%; padding:4px; margin-top:2px;">
+                            </div>
+                            <div>
+                                <label style="font-size: 11px; font-weight:bold;">System Instructions</label>
+                                <textarea id="modal-p-prompt" rows="4" style="width:100%; padding:4px; margin-top:2px; font-family:var(--vscode-editor-font-family); font-size:11px;"></textarea>
+                            </div>
+                            <div style="display:flex; gap:8px; margin-top:10px; justify-content: flex-end;">
+                                <button id="modal-p-cancel" class="code-action-btn" style="width: auto;">Cancel</button>
+                                <button id="modal-p-save" class="code-action-btn apply-btn" style="width: auto;">Update</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="modal-section">
+                    <h3>Context Management</h3>
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <label style="font-size: 11px; font-weight: bold; display: block; margin-bottom: 4px;">Auto-Context Aggression</label>
+                        <select id="modal-context-aggression" class="menu-select" style="width: 100%; margin: 0;">
+                            <option value="respect">Respect Context (75% Max)</option>
+                            <option value="none">No Restrictions (Recover Max)</option>
+                            <option value="minimal">Minimal (Smallest useful set)</option>
+                            <option value="signatures">Smart Signatures (Full for Edit, Defs for Context)</option>
+                        </select>
+                        <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Controls how many files the Auto-Context agent tries to pack into the prompt.</p>
+                    </div>
+
+                    <div style="margin-bottom: 15px;">
+                        <div style="display:flex; justify-content: space-between;">
+                            <label style="font-size: 11px; font-weight:bold;">Governor Trigger Threshold</label>
+                            <span id="modal-governor-threshold-val" style="font-size: 11px; opacity: 0.8;">90%</span>
+                        </div>
+                        <input type="range" id="modal-governor-threshold" min="10" max="98" step="1" style="width:100%; margin: 8px 0;">
+                        <p style="font-size: 10px; opacity: 0.7; margin:0;">Context filling percentage that triggers automatic pruning.</p>
+                    </div>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-sparqlEnabled"><span class="slider"></span></label>
+                        <label for="cap-sparqlEnabled"><strong>📊 SPARQL Engine:</strong> Enable background Code Graph parsing.</label>
+                    </div>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-grepEnabled"><span class="slider"></span></label>
+                        <label for="cap-grepEnabled"><strong>🔍 GREP Indexer:</strong> Enable high-speed on-disk regex search.</label>
+                    </div>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-projectMemoryEnabled"><span class="slider"></span></label>
+                        <label for="cap-projectMemoryEnabled"><strong>🧠 Project Memory:</strong> Discreetly save technical facts.</label>
+                    </div>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-tokenEconomyMode"><span class="slider"></span></label>
+                        <label for="cap-tokenEconomyMode"><strong>💎 Token Economy:</strong> Purge-first & efficient patching.</label>
+                    </div>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-debugMode"><span class="slider"></span></label>
+                        <label for="cap-debugMode"><strong>🐞 Debug Mode:</strong> Autonomous live debugging loop.</label>
+                    </div>
+                    <div id="debug-config-section" style="display:none; margin: 8px 0 0 40px; border-left: 2px solid var(--vscode-charts-red); padding-left: 12px;">
+                        <label style="font-size:11px;">Max Debug Steps: <input type="number" id="cap-maxDebugSteps" value="10" min="1" max="50" style="width:40px; float:right;"></label>
+                    </div>
+
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-herdMode"><span class="slider"></span></label>
+                        <label for="cap-herdMode"><strong>🐂 Herd Mode:</strong> Multiple agents brainstorm the answer.</label>
+                    </div>
+                    <div id="herd-config-section" style="display:none; margin: 8px 0 0 40px; border-left: 2px solid var(--vscode-charts-purple); padding-left: 12px;">
+                        <div style="display:flex; flex-direction:column; gap:8px;">
+                            <label style="font-size:11px;">Debate Rounds: <input type="number" id="cap-herdRounds" min="1" max="10" style="width:40px; float:right;"></label>
+                            <label style="font-size:11px;">Brainstorm Agents: <input type="number" id="cap-herdPreCount" min="1" max="5" style="width:40px; float:right;"></label>
+                            <label style="font-size:11px;">Review Agents: <input type="number" id="cap-herdPostCount" min="1" max="5" style="width:40px; float:right;"></label>
+                        </div>
+                        
+                        <label style="font-size: 10px; font-weight: bold; margin-top: 10px; display: block; opacity: 0.7;">ACTIVE MODEL POOL</label>
+                        <div id="herd-models-list" style="max-height: 100px; overflow-y: auto; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); padding: 4px; border-radius: 4px; margin-top: 4px;"></div>
+
+                        <div class="checkbox-container" style="margin-top:8px; border:none; background:transparent; padding:0;">
+                            <label class="switch" style="width:24px; height:14px;"><input type="checkbox" id="cap-herdParallelGeneration"><span class="slider"></span></label>
+                            <label for="cap-herdParallelGeneration" style="font-size:11px; opacity:0.8;">Parallel Generation (Fast Servers)</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-section">
+                    <h3>Code Generation Strategy</h3>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-forceFullCode"><span class="slider"></span></label>
+                        <label for="cap-forceFullCode"><strong>Force Full Code</strong> (Disable partial updates)</label>
+                    </div>
+                    
+                    <div id="partial-strategy-container" style="margin-top:12px; padding-left: 10px; border-left: 2px solid var(--vscode-widget-border);">
+                        <label style="font-size:11px; font-weight:bold; display:block; margin-bottom:4px;">Preferred Partial Update Format</label>
+                        <div class="radio-group">
+                            <label class="radio-option"><input type="radio" name="cap-partialFormat" value="aider" checked> Aider (Robust Search/Replace)</label>
+                            <label class="radio-option"><input type="radio" name="cap-partialFormat" value="diff"> Unified Diff (.patch)</label>
+                        </div>
+                        <div class="checkbox-container" style="border:none; background:transparent; padding:0; margin-top:8px;">
+                            <label class="switch" style="width:24px; height:14px;"><input type="checkbox" id="cap-allowFullFallback" checked><span class="slider"></span></label>
+                            <label for="cap-allowFullFallback" style="font-size:11px; opacity:0.8;">Allow full-file fallback for large changes</label>
+                        </div>
+                    </div>
+
+                    <div class="checkbox-container" style="margin-top:12px;">
+                        <label class="switch"><input type="checkbox" id="cap-explainCode" checked><span class="slider"></span></label>
+                        <label for="cap-explainCode">AI explains changes (Discover/Explain/Think/Act)</label>
+                    </div>
+
+                    <h3 style="margin-top:20px; color:var(--vscode-charts-orange);">🚀 Automation</h3>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-autoFix" checked><span class="slider"></span></label>
+                        <label for="cap-autoFix"><strong>Auto Fix:</strong> Autonomous repair of failed patches</label>
+                    </div>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-autoApply"><span class="slider"></span></label>
+                        <label for="cap-autoApply"><strong>Auto Apply:</strong> Automatically apply code blocks</label>
+                    </div>
+                    <div id="automation-sub-options" style="margin-left: 25px; opacity: 0.5; pointer-events: none;">
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-autoBranch"><span class="slider"></span></label>
+                            <label for="cap-autoBranch">Auto Branch (Git)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-autoFix"><span class="slider"></span></label>
+                            <label for="cap-autoFix">Auto Fix (Repair linting errors)</label>
+                        </div>
+                        <div style="margin-top:8px; display:flex; align-items:center; gap:10px;">
+                            <label style="font-size:11px;">Max Fix Retries:</label>
+                            <input type="number" id="cap-maxFixRetries" value="3" min="1" max="10" style="width:50px;">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-section">
+                    <h3>Response Instructions</h3>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-addPedagogicalInstruction"><span class="slider"></span></label>
+                        <label for="cap-addPedagogicalInstruction">Add Pedagogical Context</label>
+                    </div>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-forceFullCodePath"><span class="slider"></span></label>
+                        <label for="cap-forceFullCodePath">Strict <code>\`\`\`lang:path</code> blocks</label>
+                    </div>
+                </div>
+                <div class="modal-section">
+                    <h3>📋 Monitored Log Paths</h3>
+                    <div class="form-group">
+                        <label style="font-size: 11px; font-weight: bold;">Custom Log Files (one per line)</label>
+                        <textarea id="cap-monitoredLogPaths" class="commit-textarea" style="height: 60px; font-family: monospace; font-size: 11px; margin-top: 4px;" placeholder="e.g. logs/app.log&#10;debug.log"></textarea>
+                        <p class="help-text" style="font-size: 10px; opacity: 0.7; margin-top: 4px;">These files will be analyzed and summarized alongside stdout/stderr when clicking 'Run App & Monitor Logs'.</p>
+                    </div>
+                </div>
+                <div class="modal-section">
+                    <h3>📋 Clipboard Management</h3>
+                    <div class="form-group">
+                        <label style="font-size: 11px; font-weight: bold;">New Chat Entry Role</label>
+                        <select id="cap-clipboardInsertRole" class="menu-select" style="width: 100%; margin: 0;">
+                            <option value="user">User (Prompt)</option>
+                            <option value="assistant">AI (Reference Response)</option>
+                        </select>
+                        <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Determines the role used for content when starting a new discussion from the clipboard.</p>
+                    </div>
+                </div>
+
+                <div class="modal-section">
+                    <h3>Allowed UI Actions</h3>
+                    <div class="checkbox-grid">
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="fmt-fullFile" checked><span class="slider"></span></label>
+                            <label for="fmt-fullFile">Full File (Apply)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="fmt-insert" checked><span class="slider"></span></label>
+                            <label for="fmt-insert">Insert Snippet</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="fmt-replace" checked><span class="slider"></span></label>
+                            <label for="fmt-replace">Replace Snippet</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="fmt-delete" checked><span class="slider"></span></label>
+                            <label for="fmt-delete">Delete Code</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-section">
+                    <h3>Search & Web Tools</h3>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-webSearch"><span class="slider"></span></label>
+                        <label for="cap-webSearch"><strong>Enable Web Search Agent</strong></label>
+                    </div>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-searchInCacheFirst"><span class="slider"></span></label>
+                        <label for="cap-searchInCacheFirst">Search in local cache first (.lollms)</label>
+                    </div>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-distillWebResults"><span class="slider"></span></label>
+                        <label for="cap-distillWebResults">Distill/Refactor web results using AI</label>
+                    </div>
+                    <div class="checkbox-container" style="margin-bottom: 10px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 10px;">
+                        <label class="switch"><input type="checkbox" id="cap-antiPromptInjection"><span class="slider"></span></label>
+                        <label for="cap-antiPromptInjection">Anti-Prompt Injection cleaning</label>
+                    </div>
+                    <div style="font-size: 11px; margin-bottom: 8px; opacity: 0.8;">Active Sources:</div>
+                    <div class="checkbox-grid" id="search-sources-grid">
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-google" data-source="google">
+                            <label for="src-google">Google (Custom)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-arxiv" data-source="arxiv">
+                            <label for="src-arxiv">ArXiv (Papers)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-wikipedia" data-source="wikipedia">
+                            <label for="src-wikipedia">Wikipedia</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-stackoverflow" data-source="stackoverflow">
+                            <label for="src-stackoverflow">StackOverflow</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-youtube" data-source="youtube">
+                            <label for="src-youtube">YouTube (Transcripts)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-github" data-source="github">
+                            <label for="src-github">GitHub (Search)</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-section">
+                    <h3>Agent & Vision Permissions</h3>
+                    <div class="checkbox-grid">
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-enableImages" checked><span class="slider"></span></label>
+                            <label for="cap-enableImages">Enable Vision (Images)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-useImageModeForDocs"><span class="slider"></span></label>
+                            <label for="cap-useImageModeForDocs" title="Convert PDF/PPTX to Images">Visual Doc Mode</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-imageGen" checked><span class="slider"></span></label>
+                            <label for="cap-imageGen">Image Gen</label>
+                        </div>
+                        <div class="checkbox-container" id="cap-gitWorkflowContainer">
+                            <label class="switch"><input type="checkbox" id="cap-gitWorkflow"><span class="slider"></span></label>
+                            <label for="cap-gitWorkflow">Git Workflow</label>
+                        </div>
+                        <div class="checkbox-container" id="cap-includeGitInfoContainer">
+                            <label class="switch"><input type="checkbox" id="cap-includeGitInfo"><span class="slider"></span></label>
+                            <label for="cap-includeGitInfo">Include Git Info</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-section">
+                    <h3>File Operations</h3>
+                    <div class="checkbox-grid">
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-fileRename" checked><span class="slider"></span></label>
+                            <label for="cap-fileRename">Rename/Move</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-fileDelete" checked><span class="slider"></span></label>
+                            <label for="cap-fileDelete">Delete</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-fileSelect" checked><span class="slider"></span></label>
+                            <label for="cap-fileSelect">Context Selection</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-fileReset" checked><span class="slider"></span></label>
+                            <label for="cap-fileReset">Context Reset</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-section" style="border:none;">
+                    <h3>Misc</h3>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="mode-funMode"><span class="slider"></span></label>
+                        <label for="mode-funMode">Fun Mode 🤪</label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="save-discussion-tools-btn" class="code-action-btn apply-btn" style="width:100px; justify-content:center;">Apply</button>
+            </div>
+        </div>
+    </div>
+    
+    <div id="token-counting-overlay" class="token-counting-overlay" style="display: none;">
+        <div class="spinner"></div>
+        <span>Counting tokens...</span>
+    </div>
+
+    <div id="usage-modal" class="modal">
+        <div class="modal-content" style="max-width: 800px; width: 90%;">
+            <div class="modal-header">
+                <h2>Context Token Usage</h2>
+                <span class="close-btn" id="usage-close-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p style="font-size: 11px; opacity: 0.8; margin-bottom: 15px;">Detailed breakdown of tokens per file using the currently selected model.</p>
+                <div id="usage-list-container" style="max-height: 400px; overflow-y: auto;">
+                    <div style="text-align:center; padding: 20px;"><div class="spinner"></div> Calculating...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="usage-refresh-btn" class="code-action-btn apply-btn" style="width:auto; height:32px;"><span class="codicon codicon-refresh"></span> Recalculate</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="bulk-process-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Bulk Big Data Processing</h2>
+                <span class="close-btn" id="bulk-process-close-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p style="font-size: 12px; opacity: 0.8; margin-bottom: 12px;">Select files to process and enter your instructions. Each file will be processed and updated.</p>
+                <div class="checkbox-container" style="margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
+                    <input type="checkbox" id="bulk-process-select-all" checked>
+                    <label for="bulk-process-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select / Deselect All</label>
+                </div>
+                <div id="bulk-files-list" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px;"></div>
+                <label for="bulk-process-prompt">Instructions</label>
+                <textarea id="bulk-process-prompt" class="commit-textarea" style="height: 100px;" placeholder="e.g. Summarize this document and extract key insights."></textarea>
+            </div>
+            <div class="modal-footer">
+                <button id="bulk-process-run-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;">Start Bulk Processing</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="bulk-delete-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Bulk Delete Files</h2>
+                <span class="close-btn" id="bulk-delete-close-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p style="font-size: 12px; opacity: 0.8; margin-bottom: 12px; color: var(--vscode-errorForeground);">Warning: This will permanently delete the selected files from your workspace.</p>
+                <div class="checkbox-container" style="margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
+                    <input type="checkbox" id="bulk-delete-select-all" checked>
+                    <label for="bulk-delete-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select / Deselect All</label>
+                </div>
+                <div id="bulk-delete-files-list" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px;"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="bulk-delete-run-btn" class="code-action-btn delete-btn" style="width: 100%; justify-content: center;">Delete Selected Files</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="file-search-modal" class="modal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h2 style="font-size: 14px; font-weight: 600;"><i class="codicon codicon-search" style="margin-right: 8px;"></i>Search & Add Files</h2>
+                <span class="close-btn" id="file-search-close-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:12px;">
+                    <div style="display:flex; justify-content: space-between; align-items: center; background: var(--vscode-editor-inactiveSelectionBackground); padding: 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border);">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <label style="font-size:11px; font-weight: 600; opacity:0.9; margin: 0;">Scope:</label>
+                            <select id="file-search-mode" class="menu-select" style="width: 130px; margin: 0; height: 24px;">
+                                <option value="content" selected>Code Content</option>
+                                <option value="path">Filenames</option>
+                            </select>
+                        </div>
+                        <div style="display:flex; gap:12px;">
+                            <div style="display:flex; align-items:center; gap:4px;" title="Match Case">
+                                <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">Ab</span>
+                                <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                    <input type="checkbox" id="file-search-case">
+                                    <span class="slider" style="border-radius: 14px;"></span>
+                                </label>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:4px;" title="Match Whole Word">
+                                <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">\b</span>
+                                <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                    <input type="checkbox" id="file-search-word">
+                                    <span class="slider" style="border-radius: 14px;"></span>
+                                </label>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:4px;" title="Fuzzy Search (Filename only)">
+                                <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">~</span>
+                                <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                    <input type="checkbox" id="file-search-fuzzy" checked>
+                                    <span class="slider" style="border-radius: 14px;"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <input type="text" id="file-search-input" class="search-modal-input" placeholder="Type query and press Enter..." style="flex:1;">
+                    
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                        <div class="form-group" style="margin:0;">
+                            <label style="font-size: 10px; opacity: 0.7; margin-bottom: 2px;">Include (e.g. src/, *.ts)</label>
+                            <input type="text" id="file-search-include" class="search-modal-input" placeholder="Files to include..." style="font-size: 11px; height: 24px;">
+                        </div>
+                        <div class="form-group" style="margin:0;">
+                            <label style="font-size: 10px; opacity: 0.7; margin-bottom: 2px;">Exclude (e.g. tests/, *.log)</label>
+                            <input type="text" id="file-search-exclude" class="search-modal-input" placeholder="Files to hide..." style="font-size: 11px; height: 24px;">
+                        </div>
+                    </div>
+
+                    <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap; line-height: 1.5;">
+                        <span>Pro Search:</span>
+                        <code>A B (AND)</code>
+                        <code>A | B (OR)</code>
+                        <code>-ignore (NOT)</code>
+                    </div>
+                </div>
+                <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-widget-border);">
+                    <input type="checkbox" id="file-search-select-all">
+                    <label for="file-search-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select All Results</label>
+                </div>
+                <div id="file-search-results" style="max-height: 350px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
+                    <div style="opacity:0.6; text-align:center; padding: 20px;">Type to start searching...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="file-search-add-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;">Add Selected Files</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 🚀 UNIFIED GROUNDING & INGESTION CENTER -->
+    <div id="web-modal" class="modal">
+        <div class="modal-content" style="max-width: 850px; width: 95%; height: 85vh;">
+            <div class="modal-header" style="border-bottom: 1px solid var(--vscode-widget-border);">
+                <h2 style="margin:0; display:flex; align-items:center; gap:10px;"><i class="codicon codicon-cloud-upload"></i> Sovereign Grounding Center</h2>
+                <span class="close-btn" id="web-modal-close-btn">&times;</span>
+            </div>
+            <div class="web-tabs-nav">
+                <button class="web-tab-btn active" data-tab="tab-local-upload">📂 Local Document Ingestion</button>
+                <button class="web-tab-btn" data-tab="tab-url">🌐 Web Scraper</button>
+                <button class="web-tab-btn" data-tab="tab-search">🔍 Web Search Engines</button>
+                <button class="web-tab-btn" data-tab="tab-arxiv">🎓 Academic Databases</button>
+            </div>
+            <div class="modal-body" style="flex:1; overflow-y:auto; padding: 20px;">
+
+                <!-- Tab 1: Local Document Ingestion -->
+                <div id="tab-local-upload" class="web-tab-content active">
+                    <div class="ingestion-drag-zone" id="drag-drop-zone">
+                        <i class="codicon codicon-cloud-upload" style="font-size:40px; color:var(--vscode-textLink-foreground);"></i>
+                        <h3>Drag & Drop Ingestion</h3>
+                        <p style="font-size:11px; opacity:0.7; margin:0 0 10px 0;">Supports PDF, DOCX, Markdown, Notebooks, and Images.</p>
+                        <button class="code-action-btn apply-btn" onclick="document.getElementById('fileInput').click()">Browse Local Storage</button>
+                    </div>
+
+                    <div class="ingestion-strategy-card" style="margin-top:20px;">
+                        <h4>Configure Parsing Strategy</h4>
+                        <p class="help-text">Define how non-text files (PDF/Office) should be mapped into the Knowledge Graph.</p>
+                        <div class="ingestion-strategy-grid">
+                            <label class="strategy-option-card">
+                                <input type="radio" name="pdf-parse-strategy" value="text" checked>
+                                <div class="strategy-details">
+                                    <strong>📝 Standard Extraction</strong>
+                                    <span>Highly efficient text-only extraction with layout preservation.</span>
+                                </div>
+                            </label>
+                            <label class="strategy-option-card">
+                                <input type="radio" name="pdf-parse-strategy" value="mixed">
+                                <div class="strategy-details">
+                                    <strong>📷 Mixed Vision</strong>
+                                    <span>Extracts text and copies high-res diagrams into the Vision Stream.</span>
+                                </div>
+                            </label>
+                            <label class="strategy-option-card">
+                                <input type="radio" name="pdf-parse-strategy" value="images">
+                                <div class="strategy-details">
+                                    <strong>🖼️ Full Multimodal</strong>
+                                    <span>Converts entire PDF pages into images. Best for charts and slides.</span>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 2: Web Scraper -->
+                <div id="tab-url" class="web-tab-content">
+                    <div class="web-form-group">
+                        <label>Target URL to Ingest</label>
+                        <input type="text" id="web-url-input" placeholder="https://example.com/api/docs">
+                    </div>
+                    <div class="web-form-group">
+                        <label>Crawl Depth</label>
+                        <div class="web-form-row" style="gap:10px;">
+                            <input type="number" id="web-url-depth" value="0" min="0" max="3" style="width: 80px;">
+                            <span class="help-text">0 = target page only. Depth > 0 triggers recursive domain indexing.</span>
+                        </div>
+                    </div>
+                    <button class="code-action-btn apply-btn web-submit-btn" data-action="scrape" style="width:100%; justify-content:center; height:32px;">Start Ingestion & Graph Indexing</button>
+                </div>
+
+                <!-- Tab 3: Web Search Engines -->
+                <div id="tab-search" class="web-tab-content">
+                    <div class="web-form-group">
+                        <label>Query Search Stream</label>
+                        <div class="web-form-row">
+                            <input type="text" id="web-search-query" placeholder="e.g. latest changes in React Server Components 2026" style="flex:1;">
+                            <select id="web-search-provider" style="width:140px; margin:0;">
+                                <option value="ddg">DuckDuckGo</option>
+                                <option value="google">Google Custom</option>
+                                <option value="so">StackOverflow</option>
+                            </select>
+                            <button class="code-action-btn apply-btn web-submit-btn" data-action="search_provider" style="width:90px; justify-content:center;">Query</button>
+                        </div>
+                    </div>
+                    <div id="web-search-results" class="web-search-results" style="max-height:280px; overflow-y:auto; border: 1px solid var(--vscode-widget-border); border-radius:4px; margin-top:10px;">
+                        <div style="padding:20px; opacity:0.5; text-align:center;">Results stream will populate here. Select pages to index.</div>
+                    </div>
+                </div>
+
+                <!-- Tab 4: Academic Databases -->
+                <div id="tab-arxiv" class="web-tab-content">
+                    <div class="web-form-group">
+                        <label>Scholarly Search Query (ArXiv/HAL)</label>
+                        <div class="web-form-row">
+                            <input type="text" id="web-arxiv-input" placeholder="e.g. GraphRAG entity extraction" style="flex:1;">
+                            <select id="web-academic-provider" style="width:120px; margin:0;">
+                                <option value="arxiv">ArXiv</option>
+                                <option value="hal">HAL Archive</option>
+                            </select>
+                            <button class="code-action-btn apply-btn web-submit-btn" data-action="academic_provider" style="width:90px; justify-content:center;">Search</button>
+                        </div>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+                        <div class="radio-group" style="flex-direction:row; gap:15px; display:flex;">
+                            <label class="radio-option"><input type="radio" name="arxiv-mode" id="arxiv-abstract" value="abstract" checked> <span>Abstract only (Fast)</span></label>
+                            <label class="radio-option"><input type="radio" name="arxiv-mode" id="arxiv-full" value="full"> <span>Retrieve full PDF (Deep Analysis)</span></label>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <label style="margin:0; font-size:10px;">Limit:</label>
+                            <input type="number" id="web-arxiv-limit" value="5" min="1" max="25" style="width:50px;">
+                        </div>
+                    </div>
+                    <div id="web-arxiv-results" class="web-search-results" style="max-height:240px; overflow-y:auto; border: 1px solid var(--vscode-widget-border); border-radius:4px; margin-top:10px;">
+                        <div style="padding:20px; opacity:0.5; text-align:center;">Search publications...</div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- Mission Briefing Modal -->
+    <div id="mission-briefing-modal" class="modal">
+        <div class="modal-content" style="max-width: 800px; width: 90%;">
+            <div class="modal-header">
+                <h2 style="margin:0; display:flex; align-items:center; gap:8px;"><span class="codicon codicon-shield"></span> Mission Briefing</h2>
+                <span class="close-btn" id="mission-briefing-close-btn">&times;</span>
+            </div>
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:15px;">
+                <div>
+                    <label style="margin-top:0;">Scope</label>
+                    <div class="radio-group" style="flex-direction: row; gap:20px; margin-top:5px; display: flex;">
+                        <label class="radio-option" style="flex:1; display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="radio" name="briefing-scope" value="local" checked style="margin:0;"> <span>Current Discussion Only</span>
+                        </label>
+                        <label class="radio-option" style="flex:1; display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="radio" name="briefing-scope" value="global" style="margin:0;"> <span>Persistent (All Discussions)</span>
+                        </label>
+                    </div>
+                </div>
+                
+                <div>
+                    <label style="margin-top:0;">Input Method</label>
+                    <div style="display:flex; gap:10px; margin-top:5px;">
+                        <button class="code-action-btn secondary-btn" id="briefing-upload-btn" style="flex:1; justify-content:center; height:32px;"><i class="codicon codicon-file-add"></i> Upload Document (PDF, DOCX, MD)</button>
+                        <button class="code-action-btn secondary-btn" id="briefing-clipboard-btn" style="flex:1; justify-content:center; height:32px;"><i class="codicon codicon-clippy"></i> Paste from Clipboard</button>
+                    </div>
+                </div>
+                
+                <div>
+                    <label style="margin-top:0; display:flex; justify-content:space-between;">
+                        <span>Briefing Content (Task Constraints)</span>
+                    </label>
+                    <textarea id="briefing-content-input" rows="8" placeholder="Enter task-specific constraints, rules, or paste documentation..." style="margin-top:5px; font-family:var(--vscode-editor-font-family); font-size:12px; width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); resize: vertical; outline: none;"></textarea>
+                </div>
+                
+                <div style="border-top: 1px solid var(--vscode-widget-border); padding-top: 15px;">
+                    <label style="margin-top:0;">🧬 Project DNA (Live Memory)</label>
+                    <p style="font-size:10px; opacity:0.7; margin-top:0; margin-bottom:5px;">These facts are automatically extracted from Project Memory and appended to every prompt.</p>
+                    <div id="briefing-dna-preview" style="font-size: 11px; opacity: 0.8; background: var(--vscode-editor-inactiveSelectionBackground); padding: 10px; border-radius: 4px; max-height: 150px; overflow-y: auto; white-space: pre-wrap; border: 1px solid var(--vscode-widget-border);">
+                        Loading DNA...
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="display:flex; justify-content: space-between;">
+                <button id="briefing-clear-btn" class="code-action-btn delete-btn" style="width:120px; justify-content:center; height:32px; font-weight:bold;">Clear Briefing</button>
+                <button id="briefing-save-btn" class="code-action-btn apply-btn" style="width:120px; justify-content:center; height:32px; font-weight:bold;"><i class="codicon codicon-save"></i> Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Global Discussion Search Modal -->
+    <div id="discussion-search-modal" class="modal">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="modal-header">
+                <h2>Advanced Discussion Search</h2>
+                <span class="close-btn" id="discussion-search-close-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div style="display:flex; gap:8px; margin-bottom:12px;">
+                    <input type="text" id="discussion-search-input" placeholder="Search across all discussions (supports * and ?)..." style="flex:1;">
+                    <button id="discussion-search-run-btn" class="code-action-btn apply-btn" style="width:auto; height: 32px;">Search</button>
+                </div>
+                <div id="discussion-search-results" style="max-height: 500px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
+                    <div style="opacity:0.6; text-align:center; padding: 20px;">Enter keywords to search in titles and message history.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 🚀 NEW DISCUSSION WIZARD MODAL -->
+    <div id="new-discussion-wizard-modal" class="modal">
+        <div class="modal-content" style="max-width: 600px; width: 90%;">
+            <div class="modal-header">
+                <h2 style="margin:0; display:flex; align-items:center; gap:8px;"><span class="codicon codicon-add"></span> Initialize New Discussion</h2>
+                <span class="close-btn" id="wizard-close-btn">&times;</span>
+            </div>
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:14px; overflow-y:auto; max-height: 70vh;">
+
+                <div class="form-group">
+                    <label for="wizard-title" style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8;">Discussion Title (Optional)</label>
+                    <input type="text" id="wizard-title" placeholder="e.g. Implement Jwt Authentication (Leave empty for AI Auto-Title)" style="width:100%; box-sizing:border-box;">
+                    <p class="help-text" style="font-size:10px; opacity:0.6; margin:4px 0 0 0;">If left blank, the AI will automatically name this session based on your first prompt.</p>
+                </div>
+
+                <div class="form-group">
+                    <label for="wizard-prompt" style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8;">First Prompt / Instruction</label>
+                    <textarea id="wizard-prompt" rows="4" placeholder="What is the objective or question for this discussion? (Shift+Enter for new line)..." style="width:100%; box-sizing:border-box; font-family:inherit;"></textarea>
+                </div>
+
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+                    <div class="form-group">
+                        <label for="wizard-personality" style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8;">Specialist Persona</label>
+                        <select id="wizard-personality" style="width:100%; margin-top:4px;"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="wizard-profile" style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8;">Response Style (Profile)</label>
+                        <select id="wizard-profile" style="width:100%; margin-top:4px;"></select>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="wizard-context-selection" style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8;">Initial Context Selection</label>
+                    <select id="wizard-context-selection" style="width:100%; margin-top:4px;">
+                        <option value="current" selected>Current Active Selection (Default)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8; display:block; margin-bottom:6px;">Workspace Access Matrix</label>
+                    <div style="display: flex; justify-content: space-between; align-items:center; background: var(--vscode-editor-inactiveSelectionBackground); padding: 6px 12px; border: 1px solid var(--vscode-widget-border); border-radius:4px 4px 0 0; border-bottom:none;">
+                        <span style="font-size:10px; opacity:0.7;">Select folders to enable:</span>
+                        <div style="display:flex; gap:10px;">
+                            <button id="wizard-matrix-all-on" style="background:none; border:none; color: var(--vscode-textLink-foreground); font-size:10px; cursor: pointer; padding: 0; font-weight: bold;">Enable All</button>
+                            <button id="wizard-matrix-all-off" style="background:none; border:none; color: var(--vscode-errorForeground); font-size:10px; cursor: pointer; padding: 0; font-weight: bold;">Mute All</button>
+                        </div>
+                    </div>
+                    <div id="wizard-matrix-container" style="max-height: 150px; overflow-y:auto; border:1px solid var(--vscode-widget-border); border-radius:0 0 4px 4px; background: var(--vscode-editor-background); padding:4px 0;"></div>
+                </div>
+
+            </div>
+            <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center;">
+                <p style="font-size:10px; opacity:0.6; margin:0; max-width:40%;">Settings can be changed later.</p>
+                <div style="display:flex; gap:8px;">
+                    <button id="wizard-cancel-btn" class="code-action-btn secondary" style="width:75px; height:32px;">Cancel</button>
+                    <button id="wizard-create-btn" class="code-action-btn secondary" style="width:90px; height:32px; border-color:var(--vscode-charts-blue); color:var(--vscode-textLink-foreground);" title="Create session, populate prompt and title but DO NOT send to AI">Create</button>
+                    <button id="wizard-submit-btn" class="code-action-btn apply-btn" style="width:130px; height:32px;" title="Create session and immediately start AI generation">Create & Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="workspace-matrix-modal" class="modal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h2 style="margin:0; font-size: 14px; display:flex; align-items:center; gap:8px;"><i class="codicon codicon-layers"></i> Workspace Access Matrix</h2>
+                <span class="close-btn" id="matrix-close-btn">&times;</span>
+            </div>
+            <div class="modal-body" style="padding: 0;">
+                <div style="display: flex; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--vscode-widget-border); background: var(--vscode-editor-inactiveSelectionBackground);">
+                    <span style="font-size: 10px; font-weight: 800; opacity: 0.7; text-transform: uppercase;">Project Selection</span>
+                    <div style="display: flex; gap: 12px;">
+                        <button id="matrix-all-on" style="background:none; border:none; color: var(--vscode-textLink-foreground); font-size: 11px; cursor: pointer; padding: 0; font-weight: bold;">Enable All</button>
+                        <button id="matrix-all-off" style="background:none; border:none; color: var(--vscode-errorForeground); font-size: 11px; cursor: pointer; padding: 0; font-weight: bold;">Mute All</button>
+                    </div>
+                </div>
+                <div id="matrix-rows-container" style="max-height: 400px; overflow-y: auto;"></div>
+            </div>
+            <div class="modal-footer">
+                <p style="font-size: 10px; opacity: 0.6; margin: 0; text-align: left; float: left; max-width: 60%;">Changes take effect on the next context sync.</p>
+                <button id="matrix-done-btn" class="code-action-btn apply-btn" style="width: 80px;">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 🖼️ SOVEREIGN IMAGE ZOOM OVERLAY -->
+    <div id="image-zoom-overlay">
+        <div class="zoom-controls">
+            <button class="code-action-btn secondary-btn" id="zoom-copy-btn" title="Copy to clipboard">
+                <i class="codicon codicon-copy"></i>
+            </button>
+            <button class="code-action-btn secondary-btn" id="zoom-close-btn" title="Close">
+                <i class="codicon codicon-close"></i>
+            </button>
+        </div>
+        <img id="zoomed-image-display" alt="Zoomed View">
+    </div>
+
+    <div id="raw-code-modal" class="modal">
+        <div class="modal-content" style="max-width: 95%; width: 1100px;">
+            <div class="modal-header">
+                <div style="display:flex; align-items:center; gap:15px; flex:1;">
+                    <div style="display:flex; flex-direction:column; gap:2px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <h2 style="margin:0; white-space:nowrap; font-size: 14px;">Raw Aider Block</h2>
+                            <span id="raw-hunk-id" style="background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: bold;"></span>
+                            <button class="icon-btn" id="raw-stitch-help-btn" title="How to stitch manually?">
+                                <i class="codicon codicon-question" style="font-size: 12px;"></i>
+                            </button>
+                        </div>
+                        <span id="raw-code-filename" style="font-size:10px; opacity:0.7; font-family:var(--vscode-editor-font-family); font-weight: bold; color: var(--vscode-textLink-foreground);"></span>
+                    </div>
+                    <div class="raw-search-container" style="display:flex; align-items:center; gap:5px; background:var(--vscode-input-background); border:1px solid var(--vscode-input-border); padding:2px 8px; border-radius:4px; flex:1; max-width:350px;">
+                        <i class="codicon codicon-search" style="font-size:12px; opacity:0.7;"></i>
+                        <input type="text" id="raw-search-input" placeholder="Search for manual stitch site..." style="background:transparent; border:none; color:var(--vscode-input-foreground); outline:none; font-size:11px; flex:1; padding:2px 0;">
+                        <span id="raw-search-count" style="font-size:10px; opacity:0.6; min-width:35px; text-align:center;"></span>
+                        <button id="raw-search-prev" class="icon-btn" style="padding:0; width:18px; height:18px;"><i class="codicon codicon-arrow-up" style="font-size:12px;"></i></button>
+                        <button id="raw-search-next" class="icon-btn" style="padding:0; width:18px; height:18px;"><i class="codicon codicon-arrow-down" style="font-size:12px;"></i></button>
+                    </div>
+                </div>
+                <span class="close-btn" id="raw-code-close-btn">&times;</span>
+            </div>
+
+            <!-- Hunk tabs container for multi-hunk view inside Raw Block modal -->
+            <div id="modal-hunk-tabs" class="hunk-tabs-nav" style="padding: 6px 16px 0 16px; border-bottom: 1px solid var(--vscode-widget-border); display: flex; gap: 4px; overflow-x: auto;"></div>
+
+            <div class="modal-body" style="display:flex; gap:10px; height: 60vh; padding: 10px;">
+                <pre id="raw-code-display" style="flex: 2; margin: 0; user-select: text; white-space: pre-wrap; word-break: break-all; background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 12px;"></pre>
+                <div id="raw-search-results" class="search-results-mini" style="flex: 1; display: none; flex-direction: column; overflow-y: auto; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 5px;"></div>
+            </div>
+            <div class="modal-footer" style="display:flex; gap:10px; flex-wrap: wrap;">
+                <button id="search-selection-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 150px; justify-content: center; height: 32px; border-color: var(--vscode-charts-blue);"><span class="codicon codicon-search"></span> Search Selection</button>
+                <button id="copy-search-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy SEARCH</button>
+                <button id="copy-replace-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy REPLACE</button>
+                <button id="copy-raw-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy Full Block</button>
+                <button id="raw-fix-ai-btn" class="code-action-btn apply-btn" style="flex:1; min-width: 150px; justify-content: center; height: 32px; border-color: var(--vscode-charts-purple);"><span class="codicon codicon-sparkle"></span> Fix with AI</button>
+                <button id="mark-applied-btn" class="code-action-btn apply-btn" style="flex:1; min-width: 180px; justify-content: center; height: 32px; background-color: var(--vscode-charts-green) !important;"><span class="codicon codicon-check"></span> Mark as Applied Manually</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Editor Modal -->
+    <div id="image-editor-modal" class="image-editor-modal">
+        <div class="editor-toolbar">
+            <div class="tool-group" id="vector-tools">
+                <label>Annotate Tools</label>
+                <button class="code-action-btn" id="tool-select" title="Select / Move / Resize Shapes"><i class="codicon codicon-pointer"></i> Select</button>
+                <button class="code-action-btn" id="tool-pan" title="Pan Canvas"><i class="codicon codicon-move"></i> Pan</button>
+                <button class="code-action-btn" id="tool-brush" title="Free Brush"><i class="codicon codicon-edit"></i> Brush</button>
+                <button class="code-action-btn" id="tool-arrow" title="Draw Single Arrow"><i class="codicon codicon-arrow-right"></i> Arrow</button>
+                <button class="code-action-btn" id="tool-dual-arrow" title="Draw Dual Arrow"><i class="codicon codicon-arrow-swap"></i> Dual Arrow</button>
+                <button class="code-action-btn" id="tool-spline-arrow" title="Draw Curved Spline Arrow"><i class="codicon codicon-call-outgoing"></i> Spline Arrow</button>
+                <button class="code-action-btn" id="tool-spline-dual-arrow" title="Draw Curved Dual Spline Arrow"><i class="codicon codicon-git-compare"></i> Spline Dual</button>
+                <button class="code-action-btn" id="tool-rect" title="Draw Rectangle"><i class="codicon codicon-primitive-square"></i> Rectangle</button>
+                <button class="code-action-btn" id="tool-oval" title="Draw Oval"><i class="codicon codicon-circle-large-outline"></i> Oval</button>
+                <button class="code-action-btn" id="tool-text" title="Write Text Layer"><i class="codicon codicon-symbol-class"></i> Text</button>
+                <button class="code-action-btn" id="tool-webcam" title="Import Webcam Snapshot"><i class="codicon codicon-device-camera"></i> Webcam</button>
+            </div>
+            <div class="tool-group">
+                <label>Zoom</label>
+                <button class="code-action-btn" id="editor-zoom-in" title="Zoom In"><i class="codicon codicon-zoom-in"></i></button>
+                <button class="code-action-btn" id="editor-zoom-out" title="Zoom Out"><i class="codicon codicon-zoom-out"></i></button>
+                <button class="code-action-btn" id="editor-zoom-fit" title="Fit to Screen"><i class="codicon codicon-screen-full"></i> Fit</button>
+            </div>
+            <div class="tool-group">
+                <button class="code-action-btn" id="editor-shadow-in" title="Undo"><i class="codicon codicon-discard"></i></button>
+                <button class="code-action-btn" id="editor-redo" title="Redo"><i class="codicon codicon-redo"></i></button>
+            </div>
+            <div class="tool-group">
+                <label>Color</label>
+                <input type="color" id="editor-color" value="#e74c3c">
+            </div>
+            <div class="tool-group">
+                <label>Width</label>
+                <input type="number" id="editor-width" value="3" min="1" max="50">
+            </div>
+            <div class="tool-group">
+                <label>Font Size</label>
+                <input type="number" id="editor-font-size" value="18" min="8" max="100">
+            </div>
+            <div style="flex:1"></div>
+            <button class="code-action-btn" id="editor-delete-shape" style="color:var(--vscode-charts-red); display:none;" title="Delete selected annotation shape"><i class="codicon codicon-trash"></i> Delete Shape</button>
+            <button class="code-action-btn" id="editor-clear">Clear</button>
+            <button class="code-action-btn" id="editor-cancel">Cancel</button>
+            <button class="code-action-btn apply-btn" id="editor-save">Inject to Chat</button>
+        </div>
+        <div class="editor-canvas-container">
+            <div id="webcam-container" style="display: none; position: absolute; z-index: 10001; background: black; flex-direction: column; align-items: center; gap: 10px; padding: 10px; border-radius: 8px;">
+                <video id="webcam-feed" autoplay playsinline style="max-width: 100%; border-radius: 4px;"></video>
+                <div style="display: flex; gap: 10px;">
+                    <button class="code-action-btn secondary-btn" id="webcam-cancel">Cancel</button>
+                    <button class="code-action-btn apply-btn" id="webcam-capture">Capture Photo</button>
+                </div>
+            </div>
+            <canvas id="image-editor-canvas"></canvas>
+            <input type="text" id="canvas-text-input" placeholder="Type annotation...">
+        </div>
+    </div>
+
+    <div id="bulk-delete-skills-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Bulk Remove Skills</h2>
+                <span class="close-btn" id="bulk-delete-skills-close-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p style="font-size: 12px; opacity: 0.8; margin-bottom: 12px;">Select skills to remove from the current context.</p>
+                <div class="checkbox-container" style="margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
+                    <input type="checkbox" id="bulk-skills-select-all" checked>
+                    <label for="bulk-skills-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select / Deselect All</label>
+                </div>
+                <div id="bulk-delete-skills-list" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px;"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="bulk-delete-skills-run-btn" class="code-action-btn delete-btn" style="width: 100%; justify-content: center;">Remove Selected Skills</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 🚀 REVAMPED STAGING MODAL -->
+    <div id="staging-revamp-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 style="display:flex; align-items:center; gap:10px;"><i class="codicon codicon-git-pull-request-go-to-changes"></i> Review Proposed Changes</h2>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <span id="staging-stats" style="font-size:11px; opacity:0.7;"></span>
+                    <span class="close-btn" id="staging-revamp-close">&times;</span>
+                </div>
+            </div>
+            <div class="modal-body" style="padding:0; flex:1;">
+                <div class="staging-layout">
+                    <div class="staging-sidebar" id="staging-files-list"></div>
+                    <div class="staging-diff-viewer">
+                        <div class="diff-scroll-container" id="staging-diff-content"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="staging-footer-actions">
+                <button class="code-action-btn secondary-btn" id="staging-cancel-btn">Discard All</button>
+                <button class="code-action-btn apply-btn" id="staging-apply-current-btn">Apply This File</button>
+                <button class="code-action-btn apply-btn" id="staging-apply-all-btn" style="background: var(--vscode-charts-green) !important; color: white !important;">
+                    <i class="codicon codicon-check-all"></i> Apply All Valid Files
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="context-viewer-modal" class="modal">
+        <div class="modal-content" style="max-width: 900px; width: 95%; height: 80vh;">
+            <div class="modal-header">
+                <h2 id="context-viewer-title" style="margin:0; font-size: 14px;">Context Preview</h2>
+                <span class="close-btn" id="context-viewer-close-btn">&times;</span>
+            </div>
+            <div class="modal-body" style="flex: 1; padding: 0; overflow: hidden; display: flex; flex-direction: column;">
+                <div id="context-viewer-display" class="markdown-body" style="padding: 20px; overflow-y: auto; flex: 1; font-family: var(--vscode-editor-font-family); font-size: 12px; line-height: 1.5; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground);"></div>
+            </div>
+            <div class="modal-footer" style="display:flex; justify-content: flex-end; gap: 10px;">
+                <button id="context-viewer-copy-btn" class="code-action-btn secondary-btn" style="width: auto;"><span class="codicon codicon-copy"></span> Copy Content</button>
+                <button id="context-viewer-done-btn" class="code-action-btn apply-btn" style="width: 100px;">Done</button>
+            </div>
+        </div>
+    </div>
+    <input type="file" id="fileInput" style="display: none;" multiple accept=".md,.txt,.msg,.docx,.pdf,.pptx,.xlsx,.csv,.png,.jpg,.jpeg,.bmp,.webp">
+
+    <script nonce="{{nonce}}">
+        try {
+            const vscode = acquireVsCodeApi();
+            window.vscode = vscode;
+            
+            window.onerror = function(message, source, lineno, colno, error) {
+                vscode.postMessage({
+                    command: 'showError',
+                    message: 'Webview Runtime Error: ' + message + ' (' + source + ':' + lineno + ')'
+                });
+                console.error("Webview Error:", message, error);
+            };
+
+            console.log("Webview Bootstrap: API acquired");
+            vscode.postMessage({ command: 'webview-bootstrap-ok' });
+        } catch (e) {
+            console.error("Webview Bootstrap Failed:", e);
+        }
+        window.l10n = {{l10nStrings}};
+    </script>
+    <script src="{{jsUri}}" src="{{jsUri}}"></script>
+</body>
+</html>

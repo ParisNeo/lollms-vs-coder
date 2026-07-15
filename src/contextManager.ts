@@ -101,6 +101,11 @@ export class ContextManager {
         if (!current[part]) current[part] = index === parts.length - 1 ? null : {};
         current = current[part];
       });
+      // Incrementally add to list cache to prevent re-scanning the disk [5]
+      if (this._cachedVisibleFiles && !this._cachedVisibleFiles.includes(relPath)) {
+          this._cachedVisibleFiles.push(relPath);
+          this._cachedVisibleFiles.sort();
+      }
     } else if (type === 'delete') {
       let current = this._fileTreeObject;
       for (let i = 0; i < parts.length - 1; i++) {
@@ -108,9 +113,12 @@ export class ContextManager {
         current = current[parts[i]];
       }
       delete current[parts[parts.length - 1]];
+      // Incrementally remove from list cache [5]
+      if (this._cachedVisibleFiles) {
+          this._cachedVisibleFiles = this._cachedVisibleFiles.filter(f => f !== relPath);
+      }
     }
     this._cachedTreeString = null;
-    this._cachedVisibleFiles = null;
     this._isTreeDirty = false;
   }
 
@@ -277,11 +285,18 @@ export class ContextManager {
           const visibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal, onScanProgress);
           const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
           const folderNameLower = folder.name.toLowerCase();
+          const totalFiles = visibleFiles.length;
 
-          for (const file of visibleFiles) {
+          for (let idx = 0; idx < totalFiles; idx++) {
               if (signal?.aborted) return "";
+              const file = visibleFiles[idx];
 
-              // Highly optimized synchronous path matching to prevent massive sequential promise lag on large projects
+              // Periodically report micro-progress during list loading
+              if (onScanProgress && idx % 20 === 0) {
+                  const pct = 40 + Math.round((idx / totalFiles) * 40);
+                  onScanProgress(pct, `Assembling file tree: ${path.basename(file)} [${idx}/${totalFiles}]`);
+              }
+
               let relativePath = file;
               let fileBelongsToFolder = false;
 
@@ -426,12 +441,21 @@ export class ContextManager {
           injectPath(file.path, root?.name);
         }
 
-          const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
+          const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal, (pct, status) => {
+              if (onProgress) onProgress(Math.round(pct * 0.5));
+          });
           const isMultiRoot = folders.length > 1;
-          for (const filePath of allVisibleFiles) {
+          const totalFiles = allVisibleFiles.length;
+
+          for (let idx = 0; idx < totalFiles; idx++) {
             if (signal?.aborted) return "";
-            
-            // Highly optimized synchronous root folder detection to prevent expensive nested VS Code API/IO calls in large loops
+            const filePath = allVisibleFiles[idx];
+
+            if (onProgress && idx % 25 === 0) {
+                const pct = 50 + Math.round((idx / totalFiles) * 40);
+                onProgress(pct);
+            }
+
             let rootFolderName: string | undefined;
             if (isMultiRoot) {
                 const firstSlash = filePath.indexOf('/');
@@ -521,7 +545,65 @@ export class ContextManager {
   // MAIN CONTEXT ASSEMBLY
   // ─────────────────────────────────────────────────────────────
 
+  private _pendingContextPromise: Promise<ContextResult> | null = null;
+
   async getContextContent(options?: {
+    includeTree?: boolean,
+    signal?: AbortSignal,
+    importedSkillIds?: string[],
+    activeDiagramIds?: string[],
+    modelName?: string,
+    allowRLM?: boolean,
+    onProgress?: (pct: number) => void,
+    onLoadProgress?: (progress: { current: number, total: number, percentage: number, fileName: string }) => void,
+    onScanProgress?: (pct: number, status: string) => void,
+    capabilities?: DiscussionCapabilities
+  }): Promise<ContextResult> {
+    const signal = options?.signal;
+
+    if (signal?.aborted) {
+      throw new Error("Operation cancelled");
+    }
+
+    if (!this._pendingContextPromise) {
+      // Create the shared promise without letting any single abort signal reject the shared background task
+      this._pendingContextPromise = (async () => {
+        try {
+          return await this._executeGetContextContent({ ...options, signal: undefined });
+        } finally {
+          this._pendingContextPromise = null;
+        }
+      })();
+    }
+
+    const sharedPromise = this._pendingContextPromise;
+
+    // Return a promise that resolves when the shared promise resolves,
+    // but rejects immediately if the caller's specific signal is aborted.
+    if (signal) {
+      return new Promise<ContextResult>((resolve, reject) => {
+        const onAbort = () => {
+          reject(new Error("Operation cancelled"));
+        };
+        signal.addEventListener('abort', onAbort);
+
+        sharedPromise.then(
+          res => {
+            signal.removeEventListener('abort', onAbort);
+            if (!signal.aborted) resolve(res);
+          },
+          err => {
+            signal.removeEventListener('abort', onAbort);
+            if (!signal.aborted) reject(err);
+          }
+        );
+      });
+    }
+
+    return sharedPromise;
+  }
+
+  private async _executeGetContextContent(options?: {
     includeTree?: boolean,
     signal?: AbortSignal,
     importedSkillIds?: string[],

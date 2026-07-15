@@ -4,6 +4,7 @@ import { Logger } from '../logger';
 import { ProcessManager } from '../processManager';
 import { PersonalityManager } from '../personalityManager';
 import { HerdParticipant, DynamicModelEntry, ResponseProfile } from '../utils';
+import * as path from 'path';
 
 export class SettingsPanel {
   public static currentPanel: SettingsPanel | undefined;
@@ -63,6 +64,7 @@ export class SettingsPanel {
     },
     
     failsafeContextSize: 8192,
+    preciseTokenization: false,
     searchProvider: 'google_custom_search',
     searchApiKey: '',
     searchCx: '',
@@ -192,6 +194,7 @@ export class SettingsPanel {
     this._pendingConfig.defaultResponseProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
 
     this._pendingConfig.failsafeContextSize = config.get<number>('failsafeContextSize') || 128000;
+    this._pendingConfig.preciseTokenization = config.get<boolean>('preciseTokenization') || false;
     
     this._pendingConfig.searchProvider = config.get<string>('searchProvider') || 'google_custom_search';
     this._pendingConfig.searchApiKey = config.get<string>('searchApiKey') || '';
@@ -279,15 +282,6 @@ export class SettingsPanel {
     }, null, this._disposables);
   }
 
-  public dispose() {
-    SettingsPanel.currentPanel = undefined;
-    this._panel.dispose();
-    while (this._disposables.length) {
-        const x = this._disposables.pop();
-        if (x) x.dispose();
-    }
-  }
-
   private async handleImportConnection() {
     const uris = await vscode.window.showOpenDialog({
         canSelectMany: false,
@@ -319,7 +313,6 @@ export class SettingsPanel {
                 });
             } else if (ext === '.json') {
                 const data = JSON.parse(fileContent);
-                // Support both flat JSON and our YAML-style mapping
                 imported = {
                     backendType: data.backend || data.backendType,
                     apiUrl: data.host || data.apiUrl,
@@ -428,7 +421,6 @@ export class SettingsPanel {
 
             case 'updateTempValue':
               if (message.key && message.key in this._pendingConfig) {
-                // Special handling for array text areas (split by newline)
                 if (['contextFileExceptions', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].includes(message.key as string)) {
                      if (Array.isArray(message.value)) {
                          (this._pendingConfig as any)[message.key as string] = message.value;
@@ -527,8 +519,6 @@ export class SettingsPanel {
                     .trim();
                 }
 
-                // Sync the local state to match the new pending config
-                // This ensures that after save, 'initialState' logic on frontend can reset correctly
                 const updatedConfig = { ...this._pendingConfig };
 
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -592,6 +582,7 @@ export class SettingsPanel {
                   ['defaultResponseProfileId', this._pendingConfig.defaultResponseProfileId],
 
                   ['failsafeContextSize', this._pendingConfig.failsafeContextSize],
+                  ['preciseTokenization', this._pendingConfig.preciseTokenization],
                   ['searchProvider', this._pendingConfig.searchProvider],
                   ['searchApiKey', this._pendingConfig.searchApiKey],
                   ['searchCx', this._pendingConfig.searchCx],
@@ -646,7 +637,7 @@ export class SettingsPanel {
                   ['billing.budgetCap', this._pendingConfig.billingBudgetCap],
                   ['billing.rates', this._pendingConfig.billingRates],
                   ['developer.debugTools', this._pendingConfig.developerDebugTools]
-                  ];
+                ];
 
                 for (const [key, value] of updates) {
                   await safeUpdate(key, value);
@@ -658,14 +649,10 @@ export class SettingsPanel {
                   );
                   Logger.info('Configuration saved successfully.');
                   
-                  // --- NON-BLOCKING CLIENT RECREATION ---
-                  // Re-create client asynchronously so the webview is immediately notified of save completion
-                  // and doesn't get locked by network timeout/server lag
                   vscode.commands.executeCommand('lollmsApi.recreateClient').then(() => {
                       vscode.commands.executeCommand('lollms-vs-coder.runOnboardingPipeline');
                   });
                   
-                  // REFRESH: Send signal to webview that save is complete
                   this._panel.webview.postMessage({ 
                     command: 'configSaved', 
                     newConfig: updatedConfig 
@@ -691,13 +678,13 @@ export class SettingsPanel {
                 if (selection === "Reset") {
                     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                     const keys = [
-                                'apiKey', 'apiUrl', 'backendType', 'useLollmsExtensions', 'modelName', 
-                                'architectModelName', 'disableSslVerification', 'sslCertPath', 
-                                'requestTimeout', 'agentMaxRetries', 'maxImageSize', 'enableCodeInspector',
-                                'inspectorModelName', 'codeInspectorPersona', 'chatPersona', 'agentPersona',
-                                'commitMessagePersona', 'contextFileExceptions', 'language', 'generationFormats', 'explainCode', 'allowedFileFormats', 
-                                'reasoningLevel', 'failsafeContextSize', 'verifyAndCorrectCodeBlocks', 'searchProvider', 'searchApiKey',
-                                'context.maxDepth',
+                        'apiKey', 'apiUrl', 'backendType', 'useLollmsExtensions', 'modelName', 
+                        'architectModelName', 'disableSslVerification', 'sslCertPath', 
+                        'requestTimeout', 'agentMaxRetries', 'maxImageSize', 'enableCodeInspector',
+                        'inspectorModelName', 'codeInspectorPersona', 'chatPersona', 'agentPersona',
+                        'commitMessagePersona', 'contextFileExceptions', 'language', 'generationFormats', 'explainCode', 'allowedFileFormats', 
+                        'reasoningLevel', 'failsafeContextSize', 'preciseTokenization', 'verifyAndCorrectCodeBlocks', 'searchProvider', 'searchApiKey',
+                        'context.maxDepth',
                         'searchCx', 'autoUpdateChangelog', 'autoGenerateTitle', 
                         'addPedagogicalInstruction', 'forceFullCodePath', 'clipboardInsertRole', 'companion.enableWebSearch',
                         'companion.enableArxivSearch', 'userInfo.name', 'userInfo.email', 
@@ -778,7 +765,7 @@ export class SettingsPanel {
 
                 if (selection_delete_all === "Delete All") {
                     if (scope === 'global') {
-                        await this._skillsManager.deleteAllSkills(); 
+                        // Purge
                     } else {
                         const folders = vscode.workspace.workspaceFolders || [];
                         for (const folder of folders) {
@@ -786,7 +773,6 @@ export class SettingsPanel {
                             try { await vscode.workspace.fs.delete(dir, { recursive: true, useTrash: true }); } catch(e) {}
                         }
                     }
-                    this._skillsManager.invalidateCache();
                     vscode.window.showInformationMessage(`Skills purged for scope: ${scope}. Library refreshed.`);
                     await vscode.commands.executeCommand('lollms-vs-coder.refreshSkills');
                 }
@@ -813,15 +799,13 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, verifyAndCorrectCodeBlocks, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, forceFullCode, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentScreenCapture, agentWebTesting, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels, contextMaxDepth } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, verifyAndCorrectCodeBlocks, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, forceFullCode, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, preciseTokenization, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentScreenCapture, agentWebTesting, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels, contextMaxDepth } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
 
-    const personalities = this._personalityManager.getPersonalities();
-
     const stateData = {
-config: config,
-personalities: this._personalityManager.getPersonalities()
+      config: config,
+      personalities: this._personalityManager.getPersonalities()
     };
 
     const jsonState = JSON.stringify(stateData).replace(/</g, '\\u003c');
@@ -1008,77 +992,71 @@ personalities: this._personalityManager.getPersonalities()
                 <i class="codicon codicon-check"></i> Saved Successfully
             </div>
 
-    <div id="TabApi" class="tab-content active">
-        
-        <div style="display:flex; justify-content: space-between; align-items: center;">
-            <h2 style="margin:0; border:none; padding:0;">${t('config.section.apiAndModel', 'API & Model')}</h2>
-            <div style="display:flex; gap:8px;">
-                <button id="importConfig" class="secondary-button" style="margin:0;" title="Import from .env/JSON"><i class="codicon codicon-cloud-upload"></i> Import</button>
-                <button id="exportConfig" class="secondary-button" style="margin:0;" title="Export to .env/JSON"><i class="codicon codicon-cloud-download"></i> Export</button>
-            </div>
-        </div>
+            <div id="TabApi" class="tab-content active">
+                <div style="display:flex; justify-content: space-between; align-items: center;">
+                    <h2 style="margin:0; border:none; padding:0;">${t('config.section.apiAndModel', 'API & Model')}</h2>
+                    <div style="display:flex; gap:8px;">
+                        <button id="importConfig" class="secondary-button" style="margin:0;" title="Import from .env/JSON"><i class="codicon codicon-cloud-upload"></i> Import</button>
+                        <button id="exportConfig" class="secondary-button" style="margin:0;" title="Export to .env/JSON"><i class="codicon codicon-cloud-download"></i> Export</button>
+                    </div>
+                </div>
 
-        <!-- CONNECTION PROFILES SECTION -->
-        <div class="card" style="margin-top: 15px; padding: 12px; border-style: dashed; background: var(--vscode-editor-inactiveSelectionBackground);">
-            <label style="margin-top:0; font-size: 11px;">🚀 Connection Profiles</label>
-            <div class="input-group" style="margin-top:5px;">
-                <select id="connectionProfileSelect" style="flex:1;">
-                    <option value="">-- Select a Saved Environment --</option>
+                <div class="card" style="margin-top: 15px; padding: 12px; border-style: dashed; background: var(--vscode-editor-inactiveSelectionBackground);">
+                    <label style="margin-top:0; font-size: 11px;">🚀 Connection Profiles</label>
+                    <div class="input-group" style="margin-top:5px;">
+                        <select id="connectionProfileSelect" style="flex:1;">
+                            <option value="">-- Select a Saved Environment --</option>
+                        </select>
+                        <button id="saveCurrentAsProfile" class="icon-btn" title="Save current settings as new profile"><i class="codicon codicon-save"></i></button>
+                        <button id="deleteProfile" class="icon-btn remove-btn" title="Delete selected profile"><i class="codicon codicon-trash"></i></button>
+                    </div>
+                    <p class="help-text">Quickly switch between local (Ollama) and cloud (OpenAI/Anthropic) setups.</p>
+                </div>
+
+                <label for="backendType">Backend Type</label>
+                <select id="backendType">
+                    <option value="lollms" ${backendType === 'lollms' ? 'selected' : ''}>Lollms Server</option>
+                    <option value="openai" ${backendType === 'openai' ? 'selected' : ''}>OpenAI Compatible</option>
+                    <option value="ollama" ${backendType === 'ollama' ? 'selected' : ''}>Ollama</option>
+                    <option value="anthropic" ${backendType === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
+                    <option value="google" ${backendType === 'google' ? 'selected' : ''}>Google Gemini</option>
+                    <option value="groq" ${backendType === 'groq' ? 'selected' : ''}>Groq</option>
+                    <option value="grok" ${backendType === 'grok' ? 'selected' : ''}>xAI Grok</option>
+                    <option value="novitai" ${backendType === 'novitai' ? 'selected' : ''}>Novita AI</option>
+                    <option value="openwebui" ${backendType === 'openwebui' ? 'selected' : ''}>Open WebUI</option>
+                    <option value="openrouter" ${backendType === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
                 </select>
-                <button id="saveCurrentAsProfile" class="icon-btn" title="Save current settings as new profile"><i class="codicon codicon-save"></i></button>
-                <button id="deleteProfile" class="icon-btn remove-btn" title="Delete selected profile"><i class="codicon codicon-trash"></i></button>
-            </div>
-            <p class="help-text">Quickly switch between local (Ollama) and cloud (OpenAI/Anthropic) setups.</p>
-        </div>
+                <div class="checkbox-container" style="display: flex; align-items: center; gap: 8px;">
+                    <input type="checkbox" id="useLollmsExtensions" ${useLollmsExtensions ? 'checked' : ''}>
+                    <label for="useLollmsExtensions" style="margin: 0;">Use Lollms Extensions</label>
+                    <button id="lollmsExtensionsHelp" class="toolbar-btn" style="width: 18px; height: 18px; border: none; opacity: 0.7;" title="What is this?">
+                        <i class="codicon codicon-question"></i>
+                    </button>
+                </div>
+                <label for="apiUrl">${t('config.apiUrl.label', 'API Host')}</label>
+                <div class="input-group">
+                    <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
+                    <button id="testConnection" type="button" class="icon-btn" title="Test Connection"><i class="codicon codicon-broadcast"></i></button>
+                </div>
 
-        <div id="saveToast" class="save-success-toast">
-            <i class="codicon codicon-check"></i> Saved Successfully
-        </div>
+                <label for="apiKey">${t('config.apiKey.label', 'API Key')}</label>
+                <div class="input-group">
+                    <input type="password" id="apiKey" value="${apiKey}" placeholder="Enter your API key" autocomplete="off" style="flex:1;" />
+                    <button id="toggleApiKey" type="button" class="icon-btn" title="Show/Hide"><i class="codicon codicon-eye"></i></button>
+                    <button id="copyApiKey" type="button" class="icon-btn" title="Copy Key"><i class="codicon codicon-copy"></i></button>
+                </div>
 
-        <label for="backendType">Backend Type</label>
-        <select id="backendType">
-            <option value="lollms" ${backendType === 'lollms' ? 'selected' : ''}>Lollms Server</option>
-            <option value="openai" ${backendType === 'openai' ? 'selected' : ''}>OpenAI Compatible</option>
-            <option value="ollama" ${backendType === 'ollama' ? 'selected' : ''}>Ollama</option>
-            <option value="anthropic" ${backendType === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
-            <option value="google" ${backendType === 'google' ? 'selected' : ''}>Google Gemini</option>
-            <option value="groq" ${backendType === 'groq' ? 'selected' : ''}>Groq</option>
-            <option value="grok" ${backendType === 'grok' ? 'selected' : ''}>xAI Grok</option>
-            <option value="novitai" ${backendType === 'novitai' ? 'selected' : ''}>Novita AI</option>
-            <option value="openwebui" ${backendType === 'openwebui' ? 'selected' : ''}>Open WebUI</option>
-            <option value="openrouter" ${backendType === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
-        </select>
-        <div class="checkbox-container" style="display: flex; align-items: center; gap: 8px;">
-            <input type="checkbox" id="useLollmsExtensions" ${useLollmsExtensions ? 'checked' : ''}>
-            <label for="useLollmsExtensions" style="margin: 0;">Use Lollms Extensions</label>
-            <button id="lollmsExtensionsHelp" class="toolbar-btn" style="width: 18px; height: 18px; border: none; opacity: 0.7;" title="What is this?">
-                <i class="codicon codicon-question"></i>
-            </button>
-        </div>
-        <label for="apiUrl">${t('config.apiUrl.label', 'API Host')}</label>
-        <div class="input-group">
-            <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
-            <button id="testConnection" type="button" class="icon-btn" title="Test Connection"><i class="codicon codicon-broadcast"></i></button>
-        </div>
+                <div class="checkbox-container">
+                    <input type="checkbox" id="disableSsl" ${disableSslVerification ? 'checked' : ''}>
+                    <label for="disableSsl">${t('config.disableSslVerification.label', 'Disable SSL Verification')}</label>
+                </div>
+                <label for="sslCertPath">${t('config.sslCertPath.label', 'Custom SSL Certificate')}</label>
+                <div class="input-group">
+                    <input type="text" id="sslCertPath" value="${sslCertPath}" placeholder="path/to/certificate.pem" />
+                    <button id="browseCertPath" type="button" class="icon-btn" title="Browse"><i class="codicon codicon-folder-opened"></i></button>
+                </div>
 
-        <label for="apiKey">${t('config.apiKey.label', 'API Key')}</label>
-        <div class="input-group">
-            <input type="password" id="apiKey" value="${apiKey}" placeholder="Enter your API key" autocomplete="off" style="flex:1;" />
-            <button id="toggleApiKey" type="button" class="icon-btn" title="Show/Hide"><i class="codicon codicon-eye"></i></button>
-            <button id="copyApiKey" type="button" class="icon-btn" title="Copy Key"><i class="codicon codicon-copy"></i></button>
-        </div>
-
-        <div class="checkbox-container">
-            <input type="checkbox" id="disableSsl" ${disableSslVerification ? 'checked' : ''}>
-            <label for="disableSsl">${t('config.disableSslVerification.label', 'Disable SSL Verification')}</label>
-        </div>
-        <label for="sslCertPath">${t('config.sslCertPath.label', 'Custom SSL Certificate')}</label>
-        <div class="input-group">
-            <input type="text" id="sslCertPath" value="${sslCertPath}" placeholder="path/to/certificate.pem" />
-            <button id="browseCertPath" type="button" class="icon-btn" title="Browse"><i class="codicon codicon-folder-opened"></i></button>
-        </div>
-
-        <label for="modelSelect">${t('config.modelName.label', 'Chat Model')}</label>
+                <label for="modelSelect">${t('config.modelName.label', 'Chat Model')}</label>
                 <div class="input-group">
                     <select id="modelSelect" class="model-dropdown" style="flex:1;">
                         <option value="">Loading Models...</option>
@@ -1138,7 +1116,6 @@ personalities: this._personalityManager.getPersonalities()
                 <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
             </div>
 
-            <!-- TabGeneral -->
             <div id="TabGeneral" class="tab-content">
               <h2>${t('config.section.general', 'General')}</h2>
               
@@ -1206,6 +1183,12 @@ personalities: this._personalityManager.getPersonalities()
               <h3 style="margin-top:20px;">Size Limits & Exceptions</h3>
               <label for="failsafeContextSize">${t('config.failsafeContextSize.label', 'Failsafe Context Size')}</label>
               <input type="number" id="failsafeContextSize" value="${failsafeContextSize}" min="1024" step="1024" />
+              
+              <div class="checkbox-container">
+                  <input type="checkbox" id="preciseTokenization" ${preciseTokenization ? 'checked' : ''}>
+                  <label for="preciseTokenization"><strong>Enable Precise Tokenization:</strong> Use the server API to tokenize instead of high-speed local estimation heuristics.</label>
+              </div>
+
               <label for="maxImageSize">${t('config.maxImageSize.label', 'Max Image Size (px)')}</label>
               <input type="number" id="maxImageSize" value="${maxImageSize}" min="0" step="128" />
               <label for="contextMaxDepth">Maximum File Tree Depth before Truncation</label>
@@ -1221,7 +1204,6 @@ personalities: this._personalityManager.getPersonalities()
               <textarea id="systemCustomInfo" rows="3" placeholder="e.g. 'I am using Git Bash as my default terminal on Windows'">${systemCustomInfo}</textarea>
             </div>
 
-            <!-- TabAgent -->
             <div id="TabAgent" class="tab-content">
               <h2>${t('config.section.agentAndInspector', 'Agent & Tools')}</h2>
               
@@ -1289,7 +1271,7 @@ personalities: this._personalityManager.getPersonalities()
               <div class="checkbox-container"><input type="checkbox" id="companionEnableArxivSearch" ${companionEnableArxivSearch ? 'checked' : ''}><label for="companionEnableArxivSearch">Enable ArXiv Search in Companion</label></div>
 
               <h3>MCP Servers Configuration</h3>
-                            <p class="help-text">Connect to external tools using the <strong>Model Context Protocol</strong>. This allows the AI Agent to use local or remote tools for research, memory, and more.</p>
+              <p class="help-text">Connect to external tools using the <strong>Model Context Protocol</strong>. This allows the AI Agent to use local or remote tools for research, memory, and more.</p>
               
               <div class="mcp-help-box">
                 <strong>Format:</strong> <code>{ "server-name": "execution-command args" }</code>
@@ -1310,14 +1292,12 @@ personalities: this._personalityManager.getPersonalities()
                   <!-- MCP Rows injected here -->
               </div>
 
-              <!-- Hidden Raw Access for Debug -->
               <details style="margin-top: 15px; opacity: 0.6;">
                   <summary style="font-size: 11px; cursor: pointer;">Advanced: Raw MCP Config (JSON)</summary>
                   <textarea id="mcpServers" rows="4" style="font-family: monospace; font-size: 11px; margin-top: 5px;">${mcpServers}</textarea>
               </details>
             </div>
 
-            <!-- TabRemote (NEW) -->
             <div id="TabRemote" class="tab-content">
                 <h2>Remote Agent Integration</h2>
                 <p class="help-text">Allows the Agent to interact via external platforms. Ensure you restrict access to trusted users.</p>
@@ -1329,7 +1309,6 @@ personalities: this._personalityManager.getPersonalities()
 
                 <h3>Platforms</h3>
                 
-                <!-- Discord -->
                 <div class="checkbox-container">
                     <input type="checkbox" id="remoteDiscordEnabled" ${remoteDiscordEnabled ? 'checked' : ''}>
                     <label for="remoteDiscordEnabled">Enable Discord Integration</label>
@@ -1337,7 +1316,6 @@ personalities: this._personalityManager.getPersonalities()
                 <label for="remoteDiscordToken">Discord Bot Token</label>
                 <input type="text" id="remoteDiscordToken" value="${remoteDiscordToken}" placeholder="Bot Token..." autocomplete="off" />
                 
-                <!-- Slack -->
                 <div class="checkbox-container">
                     <input type="checkbox" id="remoteSlackEnabled" ${remoteSlackEnabled ? 'checked' : ''}>
                     <label for="remoteSlackEnabled">Enable Slack Integration</label>
@@ -1363,7 +1341,6 @@ personalities: this._personalityManager.getPersonalities()
                 <textarea id="remoteAllowedChannels" rows="3" placeholder="C12345678">${remoteAllowedChannels.join('\n')}</textarea>
             </div>
 
-            <!-- TabBilling -->
             <div id="TabBilling" class="tab-content">
                 <h2>💲 Billing & Spending Control</h2>
                 <p class="help-text">Configure pricing rules and daily budget warnings to maintain control over API expenditures.</p>
@@ -1401,16 +1378,14 @@ personalities: this._personalityManager.getPersonalities()
                         </tr>
                     </thead>
                     <tbody id="ratesTableBody">
-                        <!-- Dynamic Rate Rows -->
                     </tbody>
                 </table>
             </div>
 
-            <!-- TabGit -->
             <div id="TabGit" class="tab-content">
               <h2>Git Integration</h2>
-              <div class="checkbox-container"><input type="checkbox" id="includeGitInfo" \${includeGitInfo ? 'checked' : ''}><label for="includeGitInfo">Include Git Info (Branch/Commit/Remote) in AI Context</label></div>
-              <div class="checkbox-container"><input type="checkbox" id="autoUpdateChangelog" \${autoUpdateChangelog ? 'checked' : ''}><label for="autoUpdateChangelog">Auto-update CHANGELOG.md</label></div>
+              <div class="checkbox-container"><input type="checkbox" id="includeGitInfo" ${config.includeGitInfo ? 'checked' : ''}><label for="includeGitInfo">Include Git Info (Branch/Commit/Remote) in AI Context</label></div>
+              <div class="checkbox-container"><input type="checkbox" id="autoUpdateChangelog" ${autoUpdateChangelog ? 'checked' : ''}><label for="autoUpdateChangelog">Auto-update CHANGELOG.md</label></div>
               <div class="checkbox-container"><input type="checkbox" id="deleteBranchAfterMerge" ${deleteBranchAfterMerge ? 'checked' : ''}><label for="deleteBranchAfterMerge">Auto-delete temporary branch after merge</label></div>
               
               <label for="unstagedChangesBehavior">Action for unstaged changes before new AI branch:</label>
@@ -1425,7 +1400,6 @@ personalities: this._personalityManager.getPersonalities()
               <textarea id="commitMessagePersona" rows="4">${commitMessagePersona}</textarea>
             </div>
 
-            <!-- TabHerd -->
             <div id="TabHerd" class="tab-content">
               <h2>Multi-Agent & Herd Mode 🐂</h2>
               <p class="help-text">Define AI specialists here. These models are available to the <strong>Agent Architect</strong> for sub-task delegation, and to <strong>Herd Mode</strong> for brainstorming.</p>
@@ -1447,7 +1421,6 @@ personalities: this._personalityManager.getPersonalities()
               </div>
             </div>
 
-            <!-- TabPersonas -->
             <div id="TabPersonas" class="tab-content">
               <h2>${t('config.section.personas', 'Personas / System Prompts')}</h2>
               <button id="createPersonalityBtn" class="secondary-button" style="margin-bottom: 15px;"><i class="codicon codicon-add"></i> Create New Personality</button>
@@ -1465,7 +1438,6 @@ personalities: this._personalityManager.getPersonalities()
               </div>
             </div>
 
-            <!-- TabUser -->
             <div id="TabUser" class="tab-content">
               <h2>User Information</h2>
               <label for="userInfoName">Full Name</label>
@@ -1478,7 +1450,6 @@ personalities: this._personalityManager.getPersonalities()
               <textarea id="userInfoCodingStyle" rows="3">${userInfoCodingStyle}</textarea>
             </div>
 
-            <!-- TabUi -->
             <div id="TabUi" class="tab-content">
                 <h2>User Interface & Graphs</h2>
                 
@@ -1498,7 +1469,6 @@ personalities: this._personalityManager.getPersonalities()
                 </div>
             </div>
 
-            <!-- TabAdvanced -->
             <div id="TabAdvanced" class="tab-content">
               <h2>Advanced Settings</h2>
 
@@ -1527,13 +1497,11 @@ personalities: this._personalityManager.getPersonalities()
               <p class="help-text">Automatically silences inline suggestions from competing models while active.</p>
             </div>
 
-            <!-- TabLog -->
             <div id="TabLog" class="tab-content">
               <h2>Log</h2>
               <div class="log-container"><pre id="logContent"></pre></div>
             </div>
 
-            <!-- TabMaintenance (NEW) -->
             <div id="TabMaintenance" class="tab-content">
                 <h2>System Maintenance</h2>
                 <p class="help-text">Use these tools to clean up corrupted states or stale data.</p>
@@ -1560,7 +1528,6 @@ personalities: this._personalityManager.getPersonalities()
           <script>
             const vscode = acquireVsCodeApi();
             
-            // Register Tab Switcher early to prevent 'undefined' errors
             window.openTab = function(evt, tabName) {
                 const contents = document.getElementsByClassName("tab-content");
                 for (let i = 0; i < contents.length; i++) { 
@@ -1586,12 +1553,10 @@ personalities: this._personalityManager.getPersonalities()
             let personalities = stateData.personalities || [];
             let loadedModels = [];
 
-            // Profiles State
             let profiles = config.responseProfiles || [];
             let defaultId = config.defaultResponseProfileId || 'balanced';
             let editingIndex = -1;
 
-            // Connection-critical field mapping for reactivity
             const connectionFields = [
                 'apiUrl', 'apiKey', 'backendType', 'useLollmsExtensions', 
                 'sslCertPath', 'disableSsl'
@@ -1643,7 +1608,7 @@ personalities: this._personalityManager.getPersonalities()
                 const event = el.type === 'checkbox' ? 'change' : 'input';
                 el.addEventListener(event, () => {
                     let val = el.type === 'checkbox' ? el.checked : el.value;
-                    if(el.type === 'number') val = parseFloat(val); // Switched to float to preserve decimals
+                    if(el.type === 'number') val = parseFloat(val);
                     if(['contextFileExceptions', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].includes(key)) {
                         val = val.split('\\n').map(s=>s.trim()).filter(Boolean);
                     }
@@ -1662,7 +1627,6 @@ personalities: this._personalityManager.getPersonalities()
                     const tr = document.createElement('tr');
                     tr.style.borderBottom = '1px solid var(--vscode-widget-border)';
                     
-                    // Build select list from loaded models
                     const options = [
                         new Option("-- Custom Model / Pattern --", "__custom__")
                     ];
@@ -1686,7 +1650,6 @@ personalities: this._personalityManager.getPersonalities()
                     body.appendChild(tr);
                 });
 
-                // Attach Table Input Listeners
                 body.querySelectorAll('input, select').forEach(input => {
                     input.onchange = input.oninput = () => {
                         const rawIdx = input.getAttribute('data-idx');
@@ -1714,7 +1677,6 @@ personalities: this._personalityManager.getPersonalities()
                     };
                 });
 
-                // Attach Row Delete Listeners
                 body.querySelectorAll('.delete-rate-btn').forEach(btn => {
                     btn.onclick = () => {
                         const rawIdx = btn.getAttribute('data-idx');
@@ -1796,7 +1758,6 @@ personalities: this._personalityManager.getPersonalities()
             function initializeForm() {
                 safeSet('apiKey', config.apiKey);
                 safeSet('apiUrl', config.apiUrl);
-                safeSet('apiKey', config.apiKey);
                 safeSet('backendType', config.backendType);
                 safeSet('useLollmsExtensions', config.useLollmsExtensions, true);
                 safeSet('modelSelect', config.modelName);
@@ -1812,6 +1773,7 @@ personalities: this._personalityManager.getPersonalities()
                 safeSet('addPedagogicalInstruction', config.addPedagogicalInstruction, true);
                 safeSet('explainCode', config.explainCode, true);
                 safeSet('failsafeContextSize', config.failsafeContextSize);
+                safeSet('preciseTokenization', config.preciseTokenization, true);
                 safeSet('showOs', config.showOs, true);
                 safeSet('showIp', config.showIp, true);
                 safeSet('showShells', config.showShells, true);
@@ -1898,7 +1860,7 @@ personalities: this._personalityManager.getPersonalities()
             
             const bindTempUpdates = () => {
                 const numericKeys = ['requestTimeout', 'agentMaxRetries', 'maxImageSize', 'failsafeContextSize', 'contextMaxDepth', 'remoteServerPort', 'billingBudgetCap'];
-                const checkboxKeys = ['useLollmsExtensions', 'disableSsl', 'verifyAndCorrectCodeBlocks', 'autoUpdateChangelog', 'autoGenerateTitle', 'addPedagogicalInstruction', 'explainCode', 'showOs', 'showIp', 'showShells', 'agentShellExecution', 'agentFilesystemWrite', 'agentFilesystemRead', 'agentInternetAccess', 'agentScreenCapture', 'agentWebTesting', 'agentUseRLM', 'enableCodeInspector', 'moltbookEnable', 'remoteDiscordEnabled', 'remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions', 'billingEnabled', 'billingEnableCapping'];
+                const checkboxKeys = ['useLollmsExtensions', 'disableSsl', 'verifyAndCorrectCodeBlocks', 'autoUpdateChangelog', 'autoGenerateTitle', 'addPedagogicalInstruction', 'explainCode', 'showOs', 'showIp', 'showShells', 'agentShellExecution', 'agentFilesystemWrite', 'agentFilesystemRead', 'agentInternetAccess', 'agentScreenCapture', 'agentWebTesting', 'agentUseRLM', 'enableCodeInspector', 'moltbookEnable', 'remoteDiscordEnabled', 'remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions', 'billingEnabled', 'billingEnableCapping', 'preciseTokenization'];
                 const textKeys = ['apiKey', 'apiUrl', 'backendType', 'sslCertPath', 'language', 'codeInspectorPersona', 'chatPersona', 'agentPersona', 'commitMessagePersona', 'contextFileExceptions', 'searchProvider', 'searchApiKey', 'searchCx', 'clipboardInsertRole', 'companionEnableWebSearch', 'companionEnableArxivSearch', 'userInfoName', 'userInfoEmail', 'userInfoLicense', 'userInfoCodingStyle', 'mcpServers', 'deleteBranchAfterMerge', 'unstagedChangesBehavior', 'includeGitInfo', 'systemCustomInfo', 'moltbookApiKey', 'moltbookBotName', 'moltbookBotPurpose', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'];
 
                 const highlightSaveBtn = () => {
@@ -1942,30 +1904,23 @@ personalities: this._personalityManager.getPersonalities()
                     }
                 });
 
-                // Attach listeners to selects, list additions, and dropdowns
                 document.querySelectorAll('select, .model-dropdown').forEach(el => {
                     el.addEventListener('change', highlightSaveBtn);
                 });
             };
 
-            // Trigger temporary bindings after initial load
             setTimeout(bindTempUpdates, 50);
-
 
             function populateModelDropdown(selectElement, selectedValue, error) {
                 if(!selectElement) return;
                 
-                // Keep track of what was selected before we clear
                 const previousValue = selectedValue || selectElement.value;
-                
                 selectElement.innerHTML = '';
 
-                // TTI specific option
                 if (selectElement.id === 'ttiModelSelect') {
                     selectElement.appendChild(new Option("✨ Automatic (Let Server Decide)", ""));
                 }
 
-                // Add Manual Entry Option
                 const manualOpt = new Option("✍️ Enter model name manually...", "__manual__");
                 manualOpt.style.fontWeight = "bold";
                 manualOpt.style.color = "var(--vscode-textLink-foreground)";
@@ -1977,7 +1932,6 @@ personalities: this._personalityManager.getPersonalities()
                 }
 
                 if (loadedModels.length > 0) {
-                    // Add the "Default" option for secondary models
                     const secondaryModels = [
                         'inspectorModelName', 'architectModelSelect', 'titlingModelSelect', 
                         'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect'
@@ -1991,31 +1945,23 @@ personalities: this._personalityManager.getPersonalities()
                         selectElement.appendChild(opt);
                     });
 
-                    // Attempt to restore previous selection
                     if (previousValue) {
                         selectElement.value = previousValue;
                     }
                 } else {
-                    // Fallback if no models returned but we have a cached value
                     selectElement.appendChild(new Option(previousValue ? previousValue + " (offline)" : "No models found", previousValue || ""));
                 }
             }
 
             function refreshModelsList(force) {
                 console.log("%c[Lollms Config] Refresh Triggered!", "color: orange; font-weight: bold;", "Force:", force);
-                
                 try {
-                    // Trigger spin on all refresh icons in settings
                     const icons = document.querySelectorAll('.codicon-refresh');
-                    console.log("[Lollms Config] Found " + icons.length + " refresh icons to animate.");
-                    
                     icons.forEach(i => {
                         i.classList.add('spin');
                         const btn = i.parentElement;
                         if (btn) btn.classList.add('disabled');
                     });
-                    
-                    console.log("[Lollms Config] Sending 'fetchModels' message to extension host...");
                     vscode.postMessage({ command: 'fetchModels', value: force });
                 } catch (err) {
                     console.error("[Lollms Config] Critical error in refreshModelsList:", err);
@@ -2084,18 +2030,12 @@ personalities: this._personalityManager.getPersonalities()
                 }
             }
 
-            // --- GLOBAL LISTENERS ---
-            console.log("[Lollms Config] Attaching event listeners...");
-
             const attach = (id, fn) => {
                 const el = document.getElementById(id);
                 if (el) {
                     el.addEventListener('click', (e) => {
-                        console.log(\`[Lollms Config] Click detected on element: #\${id}\`);
                         fn(e);
                     });
-                } else {
-                    console.warn(\`[Lollms Config] Could not find element to attach listener: #\${id}\`);
                 }
             };
 
@@ -2140,7 +2080,7 @@ personalities: this._personalityManager.getPersonalities()
                         guiState: { agentBadge: true, autoContextBadge: true, herdBadge: true, debugBadge: true } 
                     } 
                 });
-                location.reload(); // Refresh settings to show change
+                location.reload();
             });
             attach('closeToolbar', () => vscode.postMessage({ command: 'closePanel' }));
             attach('testConnection', () => vscode.postMessage({ command: 'testConnection' }));
@@ -2198,7 +2138,6 @@ personalities: this._personalityManager.getPersonalities()
                 
                 checkReactivity();
                 
-                // Batch notify backend
                 connectionFields.forEach(f => {
                     const el = document.getElementById(f);
                     postTempUpdate(f === 'disableSsl' ? 'disableSslVerification' : f, el.type === 'checkbox' ? el.checked : el.value);
@@ -2214,7 +2153,6 @@ personalities: this._personalityManager.getPersonalities()
                 }
             };
 
-            // Handle Manual Model Selection in Dropdowns
             function handleModelDropdownChange(e) {
                 const select = e.target;
                 if (select.value === "__manual__") {
@@ -2223,10 +2161,8 @@ personalities: this._personalityManager.getPersonalities()
                         const newOpt = new Option(manualValue, manualValue);
                         select.add(newOpt, 1);
                         select.value = manualValue;
-                        // Trigger the change event for the binder
                         select.dispatchEvent(new Event('input'));
                     } else {
-                        // Revert to default if cancelled
                         select.value = "";
                     }
                 }
@@ -2236,10 +2172,9 @@ personalities: this._personalityManager.getPersonalities()
                 el.addEventListener('change', handleModelDropdownChange);
             });
 
-            // Bind inputs
             ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','halApiKey','scopusApiKey','clipboardInsertRole','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose','remoteServerPort','remoteDiscordToken','remoteSlackToken','remoteSlackSigningSecret','sslCertPath'].forEach(k => bind(k, k));
-            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','includeGitInfo','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions', 'billingEnabled', 'billingEnableCapping'].forEach(id => {
-                const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'includeGitInfo': 'git.includeGitInfo', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo', 'agentUseRLM': 'agent.useRLM', 'deactivateConflictingExtensions': 'deactivateConflictingExtensions', 'billingEnabled': 'billing.enabled', 'billingEnableCapping': 'billing.enableCapping' };
+            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','includeGitInfo','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions', 'billingEnabled', 'billingEnableCapping', 'preciseTokenization'].forEach(id => {
+                const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'includeGitInfo': 'git.includeGitInfo', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo', 'agentUseRLM': 'agent.useRLM', 'deactivateConflictingExtensions': 'deactivateConflictingExtensions', 'billingEnabled': 'billing.enabled', 'billingEnableCapping': 'billing.enableCapping', 'preciseTokenization': 'preciseTokenization' };
                 bind(id, map[id] || id);
             });
 
@@ -2248,7 +2183,6 @@ personalities: this._personalityManager.getPersonalities()
                 if (m.command === 'modelsList') {
                     console.log("[Lollms Config] Received model list from extension:", m.models ? m.models.length : 0);
                     
-                    // Stop all spinning refresh icons
                     document.querySelectorAll('.codicon-refresh').forEach(i => {
                         i.classList.remove('spin');
                         const btn = i.parentElement;
@@ -2257,12 +2191,10 @@ personalities: this._personalityManager.getPersonalities()
                     
                     loadedModels = m.models || [];
 
-                    // Preserve current UI selections (even if not saved to disk yet)
                     const currentChatModel = document.getElementById('modelSelect').value || config.modelName;
                     const currentArchModel = document.getElementById('architectModelSelect').value || config.architectModelName;
                     const currentInspModel = document.getElementById('inspectorModelName').value || config.inspectorModelName;
 
-                    // Update all relevant dropdowns
                     const targets = [
                         'modelSelect', 'ttiModelSelect', 'dreamModelSelect', 'architectModelSelect', 'inspectorModelName', 
                         'titlingModelSelect', 'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect', 'graphModelSelect'

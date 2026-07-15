@@ -18,6 +18,7 @@ import { BigDataProcessor } from '../../bigDataProcessing';
 import { AutomationPanel } from '../../panels/automationPanel';
 import { LocalizationManager } from '../../utils/localizationManager';
 import { LollmsServices } from '../../lollmsContext';
+import { ChatPanelMessageHandler } from './chatPanelMessageHandler';
 
 
 interface ActiveGeneration {
@@ -39,6 +40,7 @@ export class ChatPanel {
   public static _tokenCountCache: Map<string, number> = new Map();
 
   public static currentPanel: ChatPanel | undefined;
+  public static isBatchApplying = false;
   public readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
   public readonly _lollmsAPI: LollmsAPI;
@@ -74,6 +76,8 @@ export class ChatPanel {
   // Tracks failing patches to prevent infinite repetition loops
   private _failedPatchesRegistry: Map<string, Set<string>> = new Map();
 
+  private _initialPrompt?: string;
+
   private _activeTokenizationPromise: Promise<void> | null = null;
   private _tokenizationPendingRerun = false;
   private _tokenizationPendingOptions: any = null;
@@ -88,6 +92,8 @@ export class ChatPanel {
       return existingPanel;
     }
 
+    const preciseTokenizationVal = vscode.workspace.getConfiguration('lollmsVsCoder').get<boolean>('preciseTokenization', false);
+
     const panel = vscode.window.createWebviewPanel(
       'lollmsChat',
       'Lollms Chat',
@@ -95,9 +101,13 @@ export class ChatPanel {
       {
         enableScripts: true,
         localResourceRoots: [
+            services.extensionUri,
             vscode.Uri.joinPath(services.extensionUri, 'out'),
+            vscode.Uri.joinPath(services.extensionUri, 'out', 'webview'),
+            vscode.Uri.joinPath(services.extensionUri, 'out', 'styles'),
+            services.extensionUri,
             vscode.Uri.joinPath(services.extensionUri, 'media'),
-            vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri: services.extensionUri
+            vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri : services.extensionUri
         ],
         retainContextWhenHidden: true // Enabled with optimized state-hydration to speed up tab switching significantly
       }
@@ -105,22 +115,6 @@ export class ChatPanel {
     panel.iconPath = vscode.Uri.joinPath(services.extensionUri, 'media', 'lollms-icon.svg');
 
     const newPanel = new ChatPanel(panel, services, discussionId);
-
-    // --- HIGH-SPEED WATCHDOG ---
-    // Reduced delay to 350ms to instantly recover if an update/restart corrupts the panel state.
-    let bootstrapTimeout = setTimeout(() => {
-        if (!newPanel._isWebviewReady) {
-            Logger.warn(`[Immunizer] Webview bootstrap timeout detected on ${discussionId}. Quick re-hydration.`);
-            newPanel.dispose();
-            vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', discussionId);
-        }
-    }, 350);
-
-    panel.webview.onDidReceiveMessage((m) => {
-        if (m.command === 'webview-bootstrap-ok' || m.command === 'webview-ready') {
-            clearTimeout(bootstrapTimeout);
-        }
-    });
 
     ChatPanel.panels.set(discussionId, newPanel);
     ChatPanel.currentPanel = newPanel;
@@ -146,6 +140,9 @@ export class ChatPanel {
     this._viewReadyPromise = new Promise<void>((resolve) => {
         this._viewReadyResolver = resolve;
     });
+
+    // Ensure load pending state is initialized to true on panel creation
+    this._isLoadPending = true;
 
     panel.onDidChangeViewState(e => {
         if (e.webviewPanel.active) {
@@ -705,151 +702,105 @@ export class ChatPanel {
   }
 
     public async loadDiscussion(): Promise<void> {
-        if (this._isDisposed) return;
+          if (this._isDisposed || !this._panel || !this._panel.webview) return;
 
-        if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
-            let discussion: Discussion | null;
-            if (this.discussionId.startsWith('temp-')) {
-                discussion = {
-                    id: this.discussionId,
-                    title: 'Temporary Discussion',
-                    messages: [],
-                    timestamp: Date.now(),
-                    groupId: null,
-                    plan: null,
-                    capabilities: { ...this._discussionCapabilities, agentMode: false }, 
-                    personalityId: 'default_coder',
-                    importedSkills: []
-                };
-            } else {
-                discussion = await this._discussionManager.getDiscussion(this.discussionId);
-            }
+          // Guard against accessing properties of a webview panel that is already disposed
+          try {
+              if ((this._panel as any)._disposed === true || !this._panel.title) {
+                  this.dispose();
+                  return;
+              }
+          } catch (e) {
+              this.dispose();
+              return;
+          }
 
-            if (discussion) {
-                if (!discussion.messages || !Array.isArray(discussion.messages)) {
-                    discussion.messages = [];
-                }
+          if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
+              let discussion: Discussion | null;
+              if (this.discussionId.startsWith('temp-')) {
+                  discussion = {
+                      id: this.discussionId,
+                      title: 'Temporary Discussion',
+                      messages: [],
+                      timestamp: Date.now(),
+                      groupId: null,
+                      plan: null,
+                      capabilities: { ...this._discussionCapabilities, agentMode: false, preciseTokenization: preciseTokenizationVal }, 
+                      personalityId: 'default_coder',
+                      importedSkills: []
+                  };
+              } else {
+                  discussion = await this._discussionManager.getDiscussion(this.discussionId);
+              }
 
-                discussion.messages.forEach(msg => {
-                    if (!msg.id) {
-                        msg.id = Date.now().toString() + Math.random().toString(36).substring(2);
-                    }
-                });
+              if (discussion) {
+                  if (!discussion.messages || !Array.isArray(discussion.messages)) {
+                      discussion.messages = [];
+                  }
 
-                if (!('plan' in discussion)) {
-                    discussion.plan = null;
-                }
+                  discussion.messages.forEach(msg => {
+                      if (!msg.id) {
+                          msg.id = Date.now().toString() + Math.random().toString(36).substring(2);
+                      }
+                  });
 
-                if (discussion.capabilities) {
-                    this._discussionCapabilities = discussion.capabilities;
-                } else {
-                    discussion.capabilities = this._discussionCapabilities;
-                }
+                  if (!('plan' in discussion)) {
+                      discussion.plan = null;
+                  }
 
-                if (!discussion.personalityId) {
-                    discussion.personalityId = 'default_coder';
-                }
+                  if (discussion.capabilities) {
+                      this._discussionCapabilities = discussion.capabilities;
+                  } else {
+                      discussion.capabilities = this._discussionCapabilities;
+                  }
 
-                if (!discussion.importedSkills) {
-                    discussion.importedSkills = [];
-                }
+                  if (!discussion.personalityId) {
+                      discussion.personalityId = 'default_coder';
+                  }
 
-                this._currentDiscussion = discussion;
-                this._panel.title = this._currentDiscussion.title;
+                  if (!discussion.importedSkills) {
+                      discussion.importedSkills = [];
+                  }
 
-                if (this.agentManager) {
-                    const savedAgentMode = !!this._discussionCapabilities.agentMode;
-                    if (this.agentManager.getIsActive() !== savedAgentMode) {
-                        (this.agentManager as any).isActive = savedAgentMode;
-                    }
-                }
-            } else {
-                this.log(`Discussion ${this.discussionId} not found.`, 'ERROR');
-                this._panel.webview.postMessage({ command: 'updateTokenProgress' });
-                vscode.window.showErrorMessage(`Lollms: Could not load discussion ${this.discussionId}. It may have been deleted.`);
-                this.dispose();
-                return;
-            }
-        }
+                  this._currentDiscussion = discussion;
 
-        if (!this._isWebviewReady) {
-            this.log("Webview not ready, queuing load.");
-            this._isLoadPending = true;
-            return;
-        }
-        this._isLoadPending = false;
+                  if (this._panel) {
+                      this._panel.title = this._currentDiscussion.title;
+                  }
+
+                  if (this.agentManager) {
+                      const savedAgentMode = !!this._discussionCapabilities.agentMode;
+                      if (this.agentManager.getIsActive() !== savedAgentMode) {
+                          (this.agentManager as any).isActive = savedAgentMode;
+                      }
+                  }
+              } else {
+                  this.log(`Discussion ${this.discussionId} not found.`, 'ERROR');
+                  if (this._panel && this._panel.webview && !this._isDisposed) {
+                      this._panel.webview.postMessage({ command: 'updateTokenProgress' });
+                  }
+                  vscode.window.showErrorMessage(`Lollms: Could not load discussion ${this.discussionId}. It may have been deleted.`);
+                  this.dispose();
+                  return;
+              }
+          }
+
+          if (!this._isWebviewReady) {
+              this.log("Webview not ready, queuing load.");
+              this._isLoadPending = true;
+              return;
+          }
+          this._isLoadPending = false;
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
         const profiles = config.get('responseProfiles') || [];
 
-        if (this._contextManager) {
-            const cachedContext = this._contextManager.getLastContext();
-            let includedFiles: string[] = [];
-            try {
-                const provider = this._contextManager.getContextStateProvider();
-                const rawFiles = provider ? provider.getIncludedFiles() : [];
-                includedFiles = rawFiles.filter(f => f && f.path).map(f => f.path);
-            } catch (e) {
-                Logger.warn("Safeguard caught error reading included files.");
-            }
-            const projectSkills = await this._contextManager.getActiveProjectSkills();
-            const discussionSkills = this._currentDiscussion.importedSkills || [];
-
-            const allSkillIds = Array.from(new Set([...projectSkills, ...discussionSkills]));
-            const UI_PREVIEW_LIMIT = 10000;
-
-            let savedSelections: string[] = [];
-            const folders = vscode.workspace.workspaceFolders;
-            if (folders && folders.length > 0) {
-                const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
-                try {
-                    const entries = await vscode.workspace.fs.readDirectory(selectionDir);
-                    savedSelections = entries
-                        .filter(([name]) => name.endsWith('.lollms-ctx'))
-                        .map(([name]) => name);
-                } catch (e) {}
-            }
-
-            if (cachedContext) {
-                const contextTextToSend = cachedContext.text.length > UI_PREVIEW_LIMIT 
-                    ? cachedContext.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Preview truncated for UI performance. Total: ${cachedContext.text.length} chars]`
-                    : cachedContext.text;
-
-                const discussionTools = this._currentDiscussion?.importedTools || [];
-                const projectTools = await this._contextManager.getActiveProjectTools();
-                const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
-                const equippedTools = this.agentManager.getTools()
-                    .filter(t => allEquippedNames.includes(t.name))
-                    .map(t => ({ name: t.name, description: t.description }));
-
-                this._panel.webview.postMessage({ 
-                    command: 'updateContext', 
-                    context: contextTextToSend,
-                    files: includedFiles,
-                    skills: cachedContext.importedSkills || [],
-                    tools: equippedTools || [],
-                    diagrams: cachedContext.diagrams || [],
-                    briefing: this._currentDiscussion?.discussion_data_zone || "",
-                    selections: savedSelections
-                });
-                this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
-            } else {
-                this._panel.webview.postMessage({ 
-                    command: 'updateContext', 
-                    context: '', 
-                    files: includedFiles,
-                    skills: allSkillIds.map(id => ({ id, name: '...' })),
-                    diagrams: (this._currentDiscussion.activeDiagrams || []).map(type => ({ type, mermaid: '' })),
-                    briefing: this._currentDiscussion?.discussion_data_zone || "",
-                    selections: savedSelections
-                });
-            }
-        }
-
+        // --- PHASE 1: IMMEDIATE DISCUSSION MATERIALIZATION (NO BLOCKING I/O) ---
         const currentP = this._personalityManager?.getPersonality(this._currentDiscussion.personalityId || 'default_coder');
         const safeMessages = (this._currentDiscussion.messages || []).map(m => ({
             ...m,
+            id: m.id || 'msg_' + Math.random().toString(36).substring(2, 9),
             personalityName: m.role === 'assistant' ? (m.personalityName || currentP?.name || 'Lollms') : undefined
         }));
 
@@ -859,6 +810,13 @@ export class ChatPanel {
         })).filter(item => item.uri !== "");
 
         const { AGENT_MISSION_PROFILES } = require('../../registries/agentProfiles');
+
+        // Immediately update capabilities and render discussion layout on the main thread
+        this._panel.webview.postMessage({
+            command: 'updateDiscussionCapabilities',
+            capabilities: this._discussionCapabilities
+        });
+
         this._panel.webview.postMessage({ 
             command: 'loadDiscussion', 
             messages: safeMessages,
@@ -868,7 +826,78 @@ export class ChatPanel {
             currentModel: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
             currentTemperature: this._discussionCapabilities.enableTemperature ? (this._discussionCapabilities.temperature ?? 0.7) : undefined,
             workspaceFolders: workspaceFolders,
-            agentProfiles: AGENT_MISSION_PROFILES
+            agentProfiles: AGENT_MISSION_PROFILES,
+            initialPrompt: this._initialPrompt
+        });
+        this._initialPrompt = undefined;
+
+        // --- PHASE 2: DEFERRED CONTEXT ASSEMBLY & DISK I/O (NON-BLOCKING) ---
+        setImmediate(async () => {
+            if (this._isDisposed || !this._panel || !this._panel.webview) return;
+
+            if (this._contextManager) {
+                const cachedContext = this._contextManager.getLastContext();
+                let includedFiles: string[] = [];
+                try {
+                    const provider = this._contextManager.getContextStateProvider();
+                    const rawFiles = provider ? provider.getIncludedFiles() : [];
+                    includedFiles = rawFiles.filter(f => f && f.path).map(f => f.path);
+                } catch (e) {
+                    Logger.warn("Safeguard caught error reading included files.");
+                }
+                const projectSkills = await this._contextManager.getActiveProjectSkills();
+                const discussionSkills = this._currentDiscussion?.importedSkills || [];
+
+                const allSkillIds = Array.from(new Set([...projectSkills, ...discussionSkills]));
+                const UI_PREVIEW_LIMIT = 10000;
+
+                let savedSelections: string[] = [];
+                const folders = vscode.workspace.workspaceFolders;
+                if (folders && folders.length > 0) {
+                    const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+                    try {
+                        const entries = await vscode.workspace.fs.readDirectory(selectionDir);
+                        savedSelections = entries
+                            .filter(([name]) => name.endsWith('.lollms-ctx'))
+                            .map(([name]) => name);
+                    } catch (e) {}
+                }
+
+                if (cachedContext) {
+                    const contextTextToSend = cachedContext.text.length > UI_PREVIEW_LIMIT 
+                        ? cachedContext.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Preview truncated for UI performance. Total: ${cachedContext.text.length} chars]`
+                        : cachedContext.text;
+
+                    const discussionTools = this._currentDiscussion?.importedTools || [];
+                    const projectTools = await this._contextManager.getActiveProjectTools();
+                    const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
+                    const equippedTools = this.agentManager.getTools()
+                        .filter(t => allEquippedNames.includes(t.name))
+                        .map(t => ({ name: t.name, description: t.description }));
+
+                    this._panel.webview.postMessage({ 
+                        command: 'updateContext', 
+                        context: contextTextToSend,
+                        files: includedFiles,
+                        skills: cachedContext.importedSkills || [],
+                        tools: equippedTools || [],
+                        diagrams: cachedContext.diagrams || [],
+                        briefing: this._currentDiscussion?.discussion_data_zone || "",
+                        selections: savedSelections
+                    });
+                    this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
+                } else {
+                    this._panel.webview.postMessage({ 
+                        command: 'updateContext', 
+                        context: '', 
+                        files: includedFiles,
+                        skills: allSkillIds.map(id => ({ id, name: '...' })),
+                        diagrams: (this._currentDiscussion?.activeDiagrams || []).map(type => ({ type, mermaid: '' })),
+                        briefing: this._currentDiscussion?.discussion_data_zone || "",
+                        selections: savedSelections
+                    });
+                }
+            }
         });
 
         this._panel.webview.postMessage({ 
@@ -980,12 +1009,32 @@ export class ChatPanel {
         } 
 
         // Non-blocking deferred calculations to prevent UI render blocking
-        setTimeout(() => {
-            // Only trigger calculation if we have no cached metrics, or run it quietly as a background sync
-            const hasCachedMetrics = !!this._currentDiscussion?.lastTokenMetrics;
-            this.updateContextAndTokens({ isBackgroundSync: hasCachedMetrics });
+        setTimeout(async () => {
+            // --- LAZY NON-BLOCKING HYDRATION ---
+            // If we have previously cached metrics for this discussion, restore them immediately
+            if (this._currentDiscussion && this._currentDiscussion.lastTokenMetrics) {
+                const m = this._currentDiscussion.lastTokenMetrics;
+                if (this._panel && this._panel.webview && !this._isDisposed) {
+                    this._panel.webview.postMessage({
+                        command: 'updateTokenProgress',
+                        totalTokens: m.total,
+                        contextSize: m.contextSize,
+                        isApproximate: false,
+                        segments: m.segments
+                    });
+                }
+            } else if (this._panel && this._panel.webview && !this._isDisposed) {
+                // Otherwise, trigger a silent, low-priority background calculation pass [2]
+                // This populates the HUD bar automatically on load without hanging the interface
+                this.updateContextAndTokens({ isBackgroundSync: true });
+            }
+
+            if (this._panel && this._panel.webview && !this._isDisposed) {
+                this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+            }
             this._fetchAndSetModels(false);
-        }, 10);
+        }, 300); // 300ms cushion allows the main UI thread to finish painting completely
     }
 
   public async sendGitBranchState(folder: vscode.WorkspaceFolder) {
@@ -1038,26 +1087,29 @@ export class ChatPanel {
   }
 
   public async updateContextAndTokens(options?: { isBackgroundSync?: boolean, forceFullScan?: boolean }): Promise<void> {
-    if (this._isDisposed) return;
+    const self = this;
+    if (self._isDisposed || !self._panel || !self._panel.webview) return;
 
     // Enhanced High-Performance Debouncing Gate:
     // If a calculation is requested within 400ms of another, we clear the timer 
     // and reschedule to completely avoid redundant parallel calculations.
-    if ((this as any)._tokenDebounceTimeout) {
-        clearTimeout((this as any)._tokenDebounceTimeout);
+    if ((self as any)._tokenDebounceTimeout) {
+        clearTimeout((self as any)._tokenDebounceTimeout);
     }
 
     return new Promise<void>((resolvePromise) => {
-        (this as any)._tokenDebounceTimeout = setTimeout(async () => {
-            if (this._isDisposed) return resolvePromise();
-
-            // Concurrency Abort: Force-cancel any running tokenization promise immediately
-            if (this._tokenAbortController) {
-                this._tokenAbortController.abort();
+        (self as any)._tokenDebounceTimeout = setTimeout(async () => {
+            if (self._isDisposed || !self._panel || !self._panel.webview) {
+                return resolvePromise();
             }
 
-            this._tokenAbortController = new AbortController();
-            const signal = this._tokenAbortController.signal;
+            // Concurrency Abort: Force-cancel any running tokenization promise immediately
+            if (self._tokenAbortController) {
+                self._tokenAbortController.abort();
+            }
+
+            self._tokenAbortController = new AbortController();
+            const signal = self._tokenAbortController.signal;
 
             const isBackground = options?.isBackgroundSync === true;
             const forceFull = options?.forceFullScan === true;
@@ -1065,32 +1117,33 @@ export class ChatPanel {
             // Scope Hoisting: Move declarations out of the try block so they are safe to use in the catch block on network failures
             let diagramText = "";
             let briefingText = "";
+            let systemText = "";
 
             try {
-                if (forceFull && this.contextStateProvider) {
-                    this._panel.webview.postMessage({ command: 'showProjectLoader', projectName: this._currentDiscussion?.title || "Workspace" });
-                    this._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Librarian: Indexing files. Please stand by...' });
+                if (forceFull && self.contextStateProvider) {
+                    self._panel.webview.postMessage({ command: 'showProjectLoader', projectName: self._currentDiscussion?.title || "Workspace" });
+                    self._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Librarian: Indexing files. Please stand by...' });
 
-                    await this.contextStateProvider.triggerFullScan((pct, status) => {
+                    await self.contextStateProvider.triggerFullScan((pct, status) => {
                         if (signal.aborted) return;
-                        this._panel.webview.postMessage({ 
+                        self._panel.webview.postMessage({ 
                             command: 'updateLoaderStatus', 
                             status: `${status} Please stand by...`,
                             stats: { files: pct, tokens: -1 }
                         });
                     });
 
-                    this._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                    self._panel.webview.postMessage({ command: 'hideProjectLoader' });
                 }
 
                 if (signal.aborted) return resolvePromise();
 
                 // --- IMMEDIATE INSTANT HYDRATION / REACTION ---
-                const provider = this.contextStateProvider || this._contextManager.getContextStateProvider();
+                const provider = self.contextStateProvider || self._contextManager.getContextStateProvider();
                 const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
 
                 if (includedFiles.length === 0) {
-                    this._panel.webview.postMessage({ 
+                    self._panel.webview.postMessage({ 
                         command: 'updateContext', 
                         files: [],
                         skills: [],
@@ -1099,7 +1152,7 @@ export class ChatPanel {
                         briefing: ""
                     });
 
-                    const oldMetrics = this._currentDiscussion?.lastTokenMetrics;
+                    const oldMetrics = self._currentDiscussion?.lastTokenMetrics;
                     const fallbackSize = oldMetrics?.contextSize || 128000;
                     const fallbackSegments = {
                         system: oldMetrics?.segments?.system || 0,
@@ -1113,7 +1166,7 @@ export class ChatPanel {
                         images: 0
                     };
 
-                    this._panel.webview.postMessage({
+                    self._panel.webview.postMessage({
                         command: 'updateTokenProgress',
                         totalTokens: Object.values(fallbackSegments).reduce((a, b) => a + b, 0),
                         contextSize: fallbackSize,
@@ -1121,43 +1174,43 @@ export class ChatPanel {
                         segments: fallbackSegments
                     });
 
-                    this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
-                    this._panel.webview.postMessage({ command: 'hideProjectLoader' }); // Failsafe dismiss
+                    self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                    self._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+                    self._panel.webview.postMessage({ command: 'hideProjectLoader' }); // Failsafe dismiss
                     return resolvePromise();
                 } else if (!isBackground) {
-                    this._panel.webview.postMessage({ 
+                    self._panel.webview.postMessage({ 
                         command: 'updateContext', 
                         files: includedFiles
                     });
                 }
 
-                this._isTokenizing = true;
-                const modelForTokenization = (this._currentDiscussion?.model || this._lollmsAPI.getModelName() || "default").trim();
+                self._isTokenizing = true;
+                const modelForTokenization = (self._currentDiscussion?.model || self._lollmsAPI.getModelName() || "default").trim();
 
                 try {
-                    this.log("Fetching context content...");
-                    const importedIds = this._currentDiscussion?.importedSkills || [];
-                    const activeDiagramIds = this._currentDiscussion?.activeDiagrams || [];
+                    self.log("Fetching context content...");
+                    const importedIds = self._currentDiscussion?.importedSkills || [];
+                    const activeDiagramIds = self._currentDiscussion?.activeDiagrams || [];
 
-                    this._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Assembling Codebase Map...' });
+                    self._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Assembling Codebase Map...' });
 
                     let currentTokenEstimate = 0;
-                    const context = await this._contextManager.getContextContent({ 
+                    const context = await self._contextManager.getContextContent({ 
                         signal, 
-                        capabilities: this._discussionCapabilities,
+                        capabilities: self._discussionCapabilities,
                         importedSkillIds: importedIds,
                         activeDiagramIds: activeDiagramIds,
                         modelName: modelForTokenization,
                         onProgress: (progressData: any) => {
-                            if (!this._isDisposed) {
+                            if (!self._isDisposed) {
                                 const pct = typeof progressData === 'object' ? progressData.percentage : progressData;
                                 const current = progressData?.current || 0;
                                 const total = progressData?.total || 0;
                                 const name = progressData?.fileName || '';
 
                                 // 1. Send detailed progress data to the webview
-                                this._panel.webview.postMessage({ 
+                                self._panel.webview.postMessage({ 
                                     command: 'tokenCalculationProgress', 
                                     progress: pct,
                                     current: current,
@@ -1166,7 +1219,7 @@ export class ChatPanel {
                                 });
 
                                 // 2. Update the big Blueprint loader with "Live" stats
-                                this._panel.webview.postMessage({
+                                self._panel.webview.postMessage({
                                     command: 'updateLoaderStatus',
                                     status: `Indexing: ${pct}% complete...`,
                                     stats: { 
@@ -1177,13 +1230,13 @@ export class ChatPanel {
                             }
                         },
                         onScanProgress: (pct: number, status: string) => {
-                            if (!this._isDisposed && this._panel.webview) {
-                                this._panel.webview.postMessage({
+                            if (!self._isDisposed && self._panel.webview) {
+                                self._panel.webview.postMessage({
                                     command: 'tokenCalculationProgress',
                                     progress: pct,
                                     status: status
                                 });
-                                this._panel.webview.postMessage({
+                                self._panel.webview.postMessage({
                                     command: 'updateLoaderStatus',
                                     status: `${status}...`,
                                     stats: { files: -1, tokens: -1 }
@@ -1193,15 +1246,15 @@ export class ChatPanel {
                     });
 
                     if (signal.aborted) {
-                        this.log("token calculation aborted.");
+                        self.log("token calculation aborted.");
                         return;
                     }
 
-                    if (this._isDisposed) return;
+                    if (self._isDisposed) return;
 
                     let includedFiles: string[] = [];
                     try {
-                        const provider = this._contextManager.getContextStateProvider();
+                        const provider = self._contextManager.getContextStateProvider();
                         const rawFiles = provider ? provider.getIncludedFiles() : [];
                         includedFiles = rawFiles.filter(f => f && f.path).map(f => f.path);
                     } catch (e) {}
@@ -1214,7 +1267,7 @@ export class ChatPanel {
 
                     const { estimateImageTokens } = require('../../utils');
 
-                    const historyText = this._currentDiscussion!.messages.map(msg => {
+                    const historyText = self._currentDiscussion!.messages.map(msg => {
                         const content = msg.content;
                         if (typeof content === 'string') return content;
                         if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => item.text).join('\n');
@@ -1222,14 +1275,28 @@ export class ChatPanel {
                     }).join('\n');
 
                     // --- Extract Project Memory early for tokenization ---
-                    const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
-                        ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, this._skillsManager)
+                    const projectMemory = (self._discussionCapabilities.projectMemoryEnabled !== false && self.agentManager?.projectMemoryManager)
+                        ? await self.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, self._skillsManager)
                         : "";
 
-                    const rawBriefing = this._currentDiscussion?.discussion_data_zone || "";
-                    briefingText = (rawBriefing.startsWith('{')) ? this._contextManager.renderBriefing(this._currentDiscussion) : rawBriefing;
+                    const rawBriefing = self._currentDiscussion?.discussion_data_zone || "";
+                    briefingText = (rawBriefing.startsWith('{')) ? self._contextManager.renderBriefing(self._currentDiscussion) : rawBriefing;
 
-                    if (!this._isDisposed) {
+                    systemText = await getProcessedSystemPrompt(
+                        'chat', 
+                        self._discussionCapabilities, 
+                        self.getCurrentPersonaSystemPrompt(), 
+                        undefined, 
+                        self._discussionCapabilities.forceFullCode, 
+                        { 
+                            tree: context.projectTree, 
+                            files: context.selectedFilesContent, 
+                            skills: context.skillsContent, 
+                            memory: projectMemory 
+                        }
+                    );
+
+                    if (!self._isDisposed) {
                         // Scan .lollms/selection/ folder for saved selections
                         let savedSelections: string[] = [];
                         const folders = vscode.workspace.workspaceFolders;
@@ -1244,7 +1311,7 @@ export class ChatPanel {
                         }
 
                         // --- LAZY INGESTION & DELTA STATE CACHE ---
-                        const provider = this._contextManager.getContextStateProvider();
+                        const provider = self._contextManager.getContextStateProvider();
                         const includedFiles = provider ? provider.getIncludedFiles().map(f => ({
                             path: f.path,
                             state: f.state,
@@ -1252,23 +1319,30 @@ export class ChatPanel {
                         })) : [];
                         const currentSkills = context.importedSkills || []; 
 
-                        this._panel.webview.postMessage({ 
+                        const discussionTools = self._currentDiscussion?.importedTools || [];
+                        const projectTools = await self._contextManager.getActiveProjectTools();
+                        const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
+                        const equippedTools = self.agentManager.getTools()
+                            .filter(t => allEquippedNames.includes(t.name))
+                            .map(t => ({ name: t.name, description: t.description }));
+
+                        self._panel.webview.postMessage({ 
                             command: 'updateContextDelta', 
                             action: 'sync_all',
                             files: includedFiles,
                             skills: (currentSkills || []).map(s => ({ id: s.id, name: s.name, description: s.description })), // Lightweight descriptors
                             tools: equippedTools || [],
-                            briefing: this._currentDiscussion?.discussion_data_zone || "" ,
+                            briefing: self._currentDiscussion?.discussion_data_zone || "" ,
                             selections: savedSelections || []
                         });
                     }
-                    this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
+                    self._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
 
-                    this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
-                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
+                    self._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
+                    self._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
 
                     let imageTokens = 0;
-                    const visionEnabled = this._discussionCapabilities.enableImages !== false;
+                    const visionEnabled = self._discussionCapabilities.enableImages !== false;
 
                     if (visionEnabled) {
                         // Determine a base cost per image. 
@@ -1280,7 +1354,7 @@ export class ChatPanel {
                             imageTokens += safeImgCost;
                         });
                         // Calculate from Discussion History
-                        this._currentDiscussion.messages.forEach(m => {
+                        self._currentDiscussion.messages.forEach(m => {
                             if (Array.isArray(m.content)) {
                                 m.content.forEach((p: any) => { 
                                     if (p.type === 'image_url') imageTokens += safeImgCost; 
@@ -1288,7 +1362,7 @@ export class ChatPanel {
                             }
                         });
                     }
-                    // 🛡️ INDEPENDENT TOKENIZATION (Soft-Fail Protocol with High-Performance Cache)
+                    // 🛡️ INDEPENDENT TOKENIZATION (Heuristic-First with Opt-In Precise Server-Side Calls)
                     const getFastHash = (str: string): string => {
                         let hash = 0;
                         for (let i = 0; i < str.length; i++) {
@@ -1298,8 +1372,15 @@ export class ChatPanel {
                         return `${str.length}_${hash}`;
                     };
 
+                    const preciseTokenizationConfig = vscode.workspace.getConfiguration('lollmsVsCoder').get<boolean>('preciseTokenization', false);
+
                     const getTokenCount = async (text: string) => {
                         if (!text) return { count: 0, isEstimation: false };
+
+                        if (!preciseTokenizationConfig) {
+                            // High-speed local estimation completely bypasses network-bound processing
+                            return { count: Math.ceil(text.length / 3.5), isEstimation: true };
+                        }
 
                         const cacheKey = `${modelForTokenization}_${getFastHash(text)}`;
                         if (ChatPanel._tokenCountCache.has(cacheKey)) {
@@ -1307,9 +1388,9 @@ export class ChatPanel {
                         }
 
                         try {
-                            const res = await this._lollmsAPI.tokenize(text, modelForTokenization);
+                            const res = await self._lollmsAPI.tokenize(text, modelForTokenization);
                             ChatPanel._tokenCountCache.set(cacheKey, res.count);
-                            return { count: res.count, isEstimation: !!res.isEstimation };
+                            return { count: res.count, isEstimation: false };
                         } catch (e) {
                             return { count: Math.ceil(text.length / 3.5), isEstimation: true };
                         }
@@ -1318,16 +1399,16 @@ export class ChatPanel {
                     // --- GRANULAR FOLDER STATS CALCULATION (PARALLEL) ---
                     const folderStats: Record<string, { tree: number, files: number }> = {};
                     const activeFolders = vscode.workspace.workspaceFolders || [];
-                    const folderSettings = this._discussionCapabilities.folderSettings || {};
+                    const folderSettings = self._discussionCapabilities.folderSettings || {};
                     const statsPromises: Promise<void>[] = [];
 
                     // Sync active files list to workspaceState
-                    if (this._contextManager) {
+                    if (self._contextManager) {
                         try {
-                            const provider = this._contextManager.getContextStateProvider();
+                            const provider = self._contextManager.getContextStateProvider();
                             const rawFiles = provider ? provider.getIncludedFiles() : [];
                             const activeFilesList = rawFiles.filter(f => f && f.path);
-                            await this._discussionManager.context.workspaceState.update('lollms_active_context_files', activeFilesList);
+                            await self._discussionManager.context.workspaceState.update('lollms_active_context_files', activeFilesList);
                         } catch (e) {}
                     }
 
@@ -1343,20 +1424,20 @@ export class ChatPanel {
 
                                 // 1. Tree Weight
                                 if (settings.tree) {
-                                    const folderTree = await this._contextManager.generateIsolatedProjectTree(folder, signal, this._discussionCapabilities);
+                                    const folderTree = await self._contextManager.generateIsolatedProjectTree(folder, signal, self._discussionCapabilities);
                                     const res = await getTokenCount(folderTree);
                                     treeTokens = res.count;
                                 }
 
                                 // 2. Content Weight (Fast Heuristic from Cache/Stats)
                                 if (settings.content) {
-                                    const provider = this._contextManager.getContextStateProvider();
+                                    const provider = self._contextManager.getContextStateProvider();
                                     const included = provider?.getIncludedFiles() || [];
 
                                     for (const file of included) {
-                                        const resolution = await this._contextManager.resolveWorkspaceFromPath(file.path);
+                                        const resolution = await self._contextManager.resolveWorkspaceFromPath(file.path);
                                         if (resolution?.folder?.uri.toString() === uriKey) {
-                                            const cached = (this._contextManager as any)._fileContentCache.get(file.path);
+                                            const cached = (self._contextManager as any)._fileContentCache.get(file.path);
                                             if (cached) {
                                                 filesTokens += Math.ceil(cached.content.length / 3.5);
                                             } else {
@@ -1377,7 +1458,7 @@ export class ChatPanel {
                     });
 
                     // --- SYNC WITH MATRIX ---
-                    const filteredFilesText = await this._getFilteredFilesContent(context, folderSettings);
+                    const filteredFilesText = await self._getFilteredFilesContent(context, folderSettings);
 
                     if (context.diagrams && context.diagrams.length > 0) {
                         context.diagrams.forEach(d => {
@@ -1395,7 +1476,7 @@ export class ChatPanel {
                             getTokenCount(projectMemory || ""),
                             getTokenCount(briefingText || ""),
                             diagramText,
-                            this._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
+                            self._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
                                 Logger.error(`[TokenStats] Context Size API critically failed: ${e.message}`);
                                 return { context_size: 128000, isEstimation: true }; 
                             }),
@@ -1403,8 +1484,8 @@ export class ChatPanel {
                         ]);
                     } catch (e: any) {
                         if (e.name === 'AbortError' || signal.aborted) {
-                            this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                            this._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                            self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                            self._panel.webview.postMessage({ command: 'hideProjectLoader' });
                             return resolvePromise();
                         }
                         throw e;
@@ -1412,9 +1493,9 @@ export class ChatPanel {
 
                     const [systemRes, historyRes, treeRes, skillsRes, memoryRes, briefingRes, diagramRes, contextSizeRes] = results;
 
-                    if (this._isDisposed || signal.aborted) {
-                        this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                        this._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                    if (self._isDisposed || signal.aborted) {
+                        self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                        self._panel.webview.postMessage({ command: 'hideProjectLoader' });
                         return resolvePromise();
                     }
 
@@ -1442,53 +1523,56 @@ export class ChatPanel {
                         }
                     }
 
-                    const contentTokens = Math.ceil(filteredFilesText.length / 3.5);
-                    const skillTokens = (skillsRes as any).count;
-                    const systemTokens = (systemRes as any).count;
-                    const historyTokens = (historyRes as any).count;
-                    const treeTokens = (treeRes as any).count;
-                    const memoryTokens = (memoryRes as any).count;
-                    const briefingTokens = (briefingRes as any).count;
-                    const diagramTokens = (diagramRes as any).count;
+                    const contentTokens = Math.ceil((filteredFilesText || '').length / 3.5) || 0;
+                    const skillTokens = Number((skillsRes as any)?.count) || 0;
+                    const systemTokens = Number((systemRes as any)?.count) || 0;
+                    const historyTokens = Number((historyRes as any)?.count) || 0;
+                    const treeTokens = Number((treeRes as any)?.count) || 0;
+                    const memoryTokens = Number((memoryRes as any)?.count) || 0;
+                    const briefingTokens = Number((briefingRes as any)?.count) || 0;
+                    const diagramTokens = Number((diagramRes as any)?.count) || 0;
+                    const safeImageTokens = Number(imageTokens) || 0;
 
-                    const totalTokens = systemTokens + 
-                                        briefingTokens +
-                                        historyTokens + 
-                                        treeTokens + 
-                                        contentTokens + 
-                                        skillTokens + 
-                                        memoryTokens +
-                                        diagramTokens +
-                                        imageTokens;
+                    const totalTokens = Math.max(0, 
+                        (Number(systemTokens) || 0) + 
+                        (Number(briefingTokens) || 0) +
+                        (Number(historyTokens) || 0) + 
+                        (Number(treeTokens) || 0) + 
+                        (Number(contentTokens) || 0) + 
+                        (Number(skillTokens) || 0) + 
+                        (Number(memoryTokens) || 0) + 
+                        (Number(diagramTokens) || 0) + 
+                        (Number(safeImageTokens) || 0)
+                    );
 
                     const segments = {
-                        system: systemTokens,
-                        briefing: briefingTokens,
-                        tree: treeTokens,
-                        skills: skillTokens,
-                        memory: memoryTokens,
-                        diagrams: diagramTokens,
-                        files: contentTokens,
-                        history: historyTokens,
-                        images: imageTokens
+                        system: Number(systemTokens) || 0,
+                        briefing: Number(briefingTokens) || 0,
+                        tree: Number(treeTokens) || 0,
+                        skills: Number(skillTokens) || 0,
+                        memory: Number(memoryTokens) || 0,
+                        diagrams: Number(diagramTokens) || 0,
+                        files: Number(contentTokens) || 0,
+                        history: Number(historyTokens) || 0,
+                        images: Number(safeImageTokens) || 0
                     };
 
-                    if (this._currentDiscussion) {
-                        this._currentDiscussion.lastTokenMetrics = {
+                    if (self._currentDiscussion) {
+                        self._currentDiscussion.lastTokenMetrics = {
                             total: totalTokens,
                             contextSize: finalCtxSize,
                             segments: segments
                         };
-                        if (!this._currentDiscussion.id.startsWith('temp-')) {
-                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                        if (!self._currentDiscussion.id.startsWith('temp-')) {
+                            await self._discussionManager.saveDiscussion(self._currentDiscussion);
                         }
                     }
 
-                    if (this._panel && this._panel.webview) {
+                    if (self._panel && self._panel.webview) {
                         const metricsStr = JSON.stringify({ totalTokens, finalCtxSize, segments });
-                        if ((this as any)._lastSentMetricsStr !== metricsStr) {
-                            (this as any)._lastSentMetricsStr = metricsStr;
-                            this._panel.webview.postMessage({
+                        if ((self as any)._lastSentMetricsStr !== metricsStr) {
+                            (self as any)._lastSentMetricsStr = metricsStr;
+                            self._panel.webview.postMessage({
                                 command: 'updateTokenProgress',
                                 totalTokens: totalTokens,
                                 contextSize: finalCtxSize,
@@ -1498,7 +1582,7 @@ export class ChatPanel {
                         }
 
                         if (!isBackground) {
-                            this._panel.webview.postMessage({
+                            self._panel.webview.postMessage({
                                 command: 'updateLoaderStatus',
                                 status: 'Context Grounding Complete',
                                 stats: { files: includedFiles.length, tokens: totalTokens }
@@ -1507,29 +1591,31 @@ export class ChatPanel {
                     }
 
                     if (isLimitApproximate) {
-                        this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
+                        self._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
                     } else {
-                        this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+                        self._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
                     }
 
-                    this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                    this._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                    self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                    self._panel.webview.postMessage({ command: 'hideProjectLoader' });
                     resolvePromise();
 
                 } catch (error: any) {
                     if (error.name === "Operation cancelled" || signal.aborted) {
-                        this.log("Context update cancelled.", 'INFO');
-                        this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                        this._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                        self.log("Context update cancelled.", 'INFO');
+                        if (self._panel && self._panel.webview && !self._isDisposed) {
+                            self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                            self._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                        }
                         return resolvePromise();
                     }
 
                     Logger.error(`[TokenStats] API Pipeline Failed! Error: ${error.message}`);
 
-                    if (this._isDisposed) return resolvePromise();
+                    if (self._isDisposed) return resolvePromise();
 
                     try {
-                        const contextSizeRes = await this._lollmsAPI.getContextSize(modelForTokenization).catch(() => null);
+                        const contextSizeRes = await self._lollmsAPI.getContextSize(modelForTokenization).catch(() => null);
                         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                         let finalCtxSize = 128000;
                         let isLimitApproximate = true;
@@ -1552,19 +1638,21 @@ export class ChatPanel {
                         const activeFolders = vscode.workspace.workspaceFolders || [];
                         activeFolders.forEach(f => folderStats[f.uri.toString()] = { tree: 0, files: 0 });
 
-                        this.log("updateContextAndTokens: Building context fallback...");
-                        const context = await this._contextManager.getContextContent({ signal }).catch(() => ({
+                        self.log("updateContextAndTokens: Building context fallback...");
+                        const context = await self._contextManager.getContextContent({ signal }).catch(() => ({
                             text: '', projectTree: '', selectedFilesContent: '', skillsContent: '', images: [], importedSkills: []
                         }));
 
                         if (signal.aborted) {
-                            this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                            this._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                            if (self._panel && self._panel.webview && !self._isDisposed) {
+                                self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                                self._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                            }
                             return resolvePromise();
                         }
 
-                        const historyText = this._currentDiscussion!.messages.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
-                        const systemText = await getProcessedSystemPrompt('chat', this._discussionCapabilities, undefined, undefined, false, { ...context, tree: '', files: '' });
+                        const historyText = self._currentDiscussion!.messages.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
+                        const systemText = await getProcessedSystemPrompt('chat', self._discussionCapabilities, undefined, undefined, false, { ...context, tree: '', files: '' });
 
                         const wordCount = (context.text + '\n' + historyText + '\n' + (systemText || '')).trim().split(/\s+/).length;
                         const estimatedTokens = Math.ceil(wordCount * 1.35);
@@ -1578,58 +1666,62 @@ export class ChatPanel {
                         const briefingTokens = Math.ceil((briefingText?.length || 0) / 3.5);
                         const diagramTokens = Math.ceil((diagramText?.length || 0) / 3.5);
 
-                        const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
-                            ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, this._skillsManager)
+                        const projectMemory = (self._discussionCapabilities.projectMemoryEnabled !== false && self.agentManager?.projectMemoryManager)
+                            ? await self.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, self._skillsManager)
                             : "";
                         const memoryTokens = Math.ceil((projectMemory.length || 0) / 3.5);
 
                         const totalTokens = systemTokens + historyTokens + treeTokens + filesTokens + skillsTokens + memoryTokens + briefingTokens + diagramTokens;
 
-                        this._panel.webview.postMessage({
-                            command: 'updateTokenProgress',
-                            totalTokens: totalTokens,
-                            contextSize: finalCtxSize,
-                            isApproximate: isLimitApproximate,
-                            folderStats: folderStats,
-                            segments: {
-                                system: systemTokens,
-                                briefing: briefingTokens,
-                                tree: treeTokens,
-                                skills: skillsTokens,
-                                memory: memoryTokens,
-                                diagrams: diagramTokens,
-                                files: filesTokens,
-                                history: historyTokens,
-                                images: 0
-                            }
-                        });
+                        if (self._panel && self._panel.webview && !self._isDisposed) {
+                            self._panel.webview.postMessage({
+                                command: 'updateTokenProgress',
+                                totalTokens: totalTokens,
+                                contextSize: finalCtxSize,
+                                isApproximate: isLimitApproximate,
+                                folderStats: folderStats,
+                                segments: {
+                                    system: systemTokens,
+                                    briefing: briefingTokens,
+                                    tree: treeTokens,
+                                    skills: skillsTokens,
+                                    memory: memoryTokens,
+                                    diagrams: diagramTokens,
+                                    files: filesTokens,
+                                    history: historyTokens,
+                                    images: 0
+                                }
+                            });
 
-                        this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
+                            self._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
+                        }
 
                     } catch (fallbackError: any) {
-                        this.log(`Fallback token calculation failed: ${fallbackError.message}`, 'ERROR');
-                        if (!this._isDisposed) {
-                            this._panel.webview.postMessage({
+                        self.log(`Fallback token calculation failed: ${fallbackError.message}`, 'ERROR');
+                        if (self._panel && self._panel.webview && !self._isDisposed) {
+                            self._panel.webview.postMessage({
                                 command: 'updateTokenProgress',
                                 error: `API Error`
                             });
-                            this._panel.webview.postMessage({ command: 'updateStatus', status: 'Error scanning context', type: 'error' });
+                            self._panel.webview.postMessage({ command: 'updateStatus', status: 'Error scanning context', type: 'error' });
                         }
                     } finally {
-                        this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                        this._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                        if (self._panel && self._panel.webview && !self._isDisposed) {
+                            self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                            self._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                        }
                         resolvePromise();
                     }
                 } finally {
-                    this._isTokenizing = false;
-                    if (this._tokenAbortController === signal) {
-                        this._tokenAbortController = null;
+                    self._isTokenizing = false;
+                    if (self._tokenAbortController === signal) {
+                        self._tokenAbortController = null;
                     }
                 }
             } catch (outerErr: any) {
                 Logger.error(`[TokenStats] Outer API Pipeline error: ${outerErr.message}`);
-                this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                this._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                self._panel.webview.postMessage({ command: 'hideProjectLoader' });
                 resolvePromise();
             }
         }, 400); // 400ms High-Performance debouncing interval
@@ -1679,6 +1771,7 @@ export class ChatPanel {
     private async waitForWebviewReady() { if (this._isWebviewReady) return; return this._viewReadyPromise; }
   
   public async setInputText(text: string) {
+      this._initialPrompt = text;
       if (this._isDisposed) return;
       await this.waitForWebviewReady();
       if (!this._isDisposed) {
@@ -2204,6 +2297,12 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         this.log(`Deleted messages starting from index ${index}.`);
     }
 
+    // Explicitly update in-memory caches to align with the deleted state
+    this.chatHistory = [...this._currentDiscussion.messages];
+    if (this.agentManager) {
+        this.agentManager.chatHistory = [...this._currentDiscussion.messages];
+    }
+
     // 3. Persist to disk
     if (!this._currentDiscussion.id.startsWith('temp-')) {
         await this._discussionManager.saveDiscussion(this._currentDiscussion);
@@ -2418,20 +2517,34 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
   }
 
 
-  public async sendMessage(message: ChatMessage) {
-    if (this._isDisposed || !this.processManager || !this._currentDiscussion) return;
+  public async sendMessage(message: ChatMessage, autoContext: boolean = false) {
+    if (this._isDisposed || !this._currentDiscussion || !this.processManager) return;
 
     await this.waitForWebviewReady();
+
+    // Force strict alignment of conversation state caches before building prompts
+    this.chatHistory = [...this._currentDiscussion.messages];
+    if (this.agentManager) {
+        this.agentManager.chatHistory = [...this._currentDiscussion.messages];
+    }
 
     // Declare configuration, targetModel, and folders at the outer scope of the function so they are universally accessible to all nested closures and blocks
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
     const folders = vscode.workspace.workspaceFolders;
 
+    // 1. Immediately extract the active persona and its system prompt to avoid temporal dead zone errors
+    const currentP = this.getCurrentPersona();
+    const personaContent = currentP?.systemPrompt || "";
+    const personaName = currentP?.name || "Lollms";
+
     // Register process and instantiate AbortController so cancel buttons work reliably
     const proc = this.processManager.register(this.discussionId, 'Lollms: Preparing workspace context...');
     const processId = proc.id;
-    let controller = proc.controller; // Use 'let' so it can be re-assigned during multi-turn loops
+    let controller = proc.controller; // Use 'let' so it can be re-assigned in self-correction
+
+    // 1.5 Sync capabilities to catch any changes from background tasks
+    this._discussionCapabilities = this._currentDiscussion.capabilities || this._discussionCapabilities;
 
     // --- 1. PRESERVE USER CONTENT IMMEDIATELY (INSTANT MATERIALIZATION) ---
     const userMessage: ChatMessage = { 
@@ -2496,59 +2609,6 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     // Using a yielding delay lets the VS Code main thread paint the UI, clear the text box,
     // and reveal the "Thinking..." status instantly without any lagging or stuttering.
     await new Promise(resolve => setTimeout(resolve, 30));
-
-    this.processManager.updateDescription(processId, "Scouting codebase structure...");
-    this.updateGeneratingState();
-
-    const importedIds = this._currentDiscussion?.importedSkills || [];
-
-    // Check if context is explicitly disabled for this turn
-    const isContextMuted = this._discussionCapabilities.disableProjectContext;
-
-    const activeDiagramIds = this._currentDiscussion?.activeDiagrams || [];
-    const diagrams: { type: string, mermaid: string }[] = [];
-
-    for (const diagId of activeDiagramIds) {
-        const mermaidCode = this.agentManager.codeGraphManager.generateMermaid(diagId);
-        diagrams.push({ type: diagId, mermaid: mermaidCode });
-    }
-
-    const contextData = await this._contextManager.getContextContent({ 
-        importedSkillIds: importedIds,
-        includeTree: !isContextMuted,
-        modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName(),
-        onLoadProgress: (progress) => {
-            if (processId) {
-                const statusMessage = `Librarian: Assembling ${progress.fileName} [${progress.current}/${progress.total}] (${progress.percentage}%)`;
-                this.processManager.updateDescription(processId, statusMessage);
-                this.updateGeneratingState();
-            }
-        }
-    });
-
-    if (signal.aborted) {
-        this.processManager.unregister(processId);
-        this.updateGeneratingState();
-        return;
-    }
-
-    // Append diagrams to the text sent to the AI
-    if (diagrams.length > 0) {
-        contextData.text += `\n## Project Architecture Diagrams\n`;
-        for (const d of diagrams) {
-            contextData.text += `### ${d.type.replace('_', ' ').toUpperCase()}\n\`\`\`mermaid\n${d.mermaid}\n\`\`\`\n\n`;
-        }
-    }
-    const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager.projectMemoryManager)
-    ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(typeof message.content === 'string' ? message.content : '', this._skillsManager)
-    : "";
-
-    const context = { 
-        tree: contextData.projectTree, 
-        files: contextData.selectedFilesContent, 
-        skills: contextData.skillsContent,
-        memory: projectMemory
-    };
 
     if (this._discussionCapabilities.herdMode && this.herdManager) {
         this.processManager.updateDescription(processId, "🐂 Planning herd...");
@@ -2664,14 +2724,31 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         this.processManager.updateDescription(processId, "Waiting for model...");
         this.updateGeneratingState();
 
-        // Identify current personality and its specific prompt
-        const currentP = this.getCurrentPersona();
-        const personaContent = currentP?.systemPrompt || "";
-        const personaName = currentP?.name || "Lollms";
-
         const forceFullCode = this._discussionCapabilities?.forceFullCode || false;
 
-        // 1. Get Base System Instructions (VS Code Interface Tools, Skills, Rules)
+        const importedIds = this._currentDiscussion?.importedSkills || [];
+        const isContextMuted = this._discussionCapabilities?.disableProjectContext === true;
+
+        // Fetch contextData lexically before utilizing it in sendMessage
+        const contextData = await this._contextManager.getContextContent({
+            importedSkillIds: importedIds,
+            includeTree: !isContextMuted,
+            modelName: targetModel,
+            signal: controller.signal
+        });
+
+        const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
+            ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(typeof message.content === 'string' ? message.content : '', this._skillsManager)
+            : "";
+
+        const localContext = { 
+            tree: contextData.projectTree, 
+            files: contextData.selectedFilesContent, 
+            skills: contextData.skillsContent,
+            memory: projectMemory
+        };
+
+        // 1. Get Base System Instructions (VS Code Interface Tools, Skills, Rules) using localContext [1]
         const baseInstructions = await getProcessedSystemPrompt(
             'chat', 
             this._discussionCapabilities, 
@@ -2679,7 +2756,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
             undefined, 
             forceFullCode, 
             { 
-                ...context, 
+                ...localContext, 
                 tree: '', 
                 files: '', 
                 projectName: contextData.projectName,
@@ -2690,15 +2767,15 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         // 2. Prepare the Bundled Project Context Message (User role)
         // Extract technical briefing from Librarian findings (includes Global + Local data zones)
         const briefing = this._contextManager.renderBriefing(this._currentDiscussion);
-        
+
         const projectStateText = `
 ### 📂 ATTACHED PROJECT CONTEXT
 I am providing you with the current, ground-truth state of my project files and the Librarian's technical briefing. 
 Use this information as your current "vision" of the workspace.
 
 ${briefing && !briefing.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefing}\n` : ""}
-${context.tree ? `#### 🌳 PROJECT STRUCTURE\n${context.tree}\n` : ""}
-${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files currently selected)*"}
+${localContext.tree ? `#### 🌳 PROJECT STRUCTURE\n${localContext.tree}\n` : ""}
+${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No files currently selected)*"}
 --------------------------------------------------
 `.trim();
 
@@ -2831,10 +2908,10 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     undefined, 
                     forceFullCode, 
                     { 
-                        ...context, 
+                        ...localContext, 
                         tree: !isContextMuted ? currentData.projectTree : '', 
                         files: currentData.selectedFilesContent, 
-                        projectName: contextData.projectName,
+                        projectName: currentData.projectName || folders?.[0]?.name || "Workspace",
                         toolManager: this.agentManager?.['toolManager']
                     } 
                 );
@@ -3442,41 +3519,81 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                 timeoutMs: ttftTimeoutValue
             });
         }
-
+        let processedResponse ;
         let firstTokenReceived = false;
-        await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
-            if (!firstTokenReceived) {
-                firstTokenReceived = true;
-                if (processId) this.processManager.updateDescription(processId, "Worker: Drafting solution...");
-                this.updateGeneratingState();
+        this.log(`Outbound Stream: Initiating API call to Lollms Server at ${this._lollmsAPI.config.apiUrl}. Model: ${this._currentDiscussion.model || 'default'}.`);
+
+        // 🛡️ SANITIZE OPTIONS: Strip complex local options map before sending to external API providers (like Kimi or Groq)
+        // to prevent silent connection drop failures.
+        const cleanOptions: any = {};
+        if (reqTemperature !== undefined && !isNaN(reqTemperature)) {
+            cleanOptions.temperature = reqTemperature;
+        }
+        if (this._discussionCapabilities.thinkingMode) {
+            cleanOptions.thinking = true;
+        }
+
+        try {
+            await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
+                if (controller?.signal.aborted) {
+                    this.log("Outbound Stream: Execution signal was aborted during chunk reception.");
+                    return;
+                }
+
+                if (!firstTokenReceived) {
+                    firstTokenReceived = true;
+                    this.log("Outbound Stream: First token chunk successfully received from API server.");
+                    if (processId) this.processManager.updateDescription(processId, "Worker: Drafting solution...");
+                    this.updateGeneratingState();
+                }
+
+                fullResponse += chunk;
+                generationSession.buffer += chunk;
+                generationSession.tokenCount++;
+
+                const elapsed = (Date.now() - generationSession.startTime) / 1000;
+                const tps = (generationSession.tokenCount / elapsed).toFixed(1);
+
+                this._panel.webview.postMessage({
+                    command: 'updateGenerationMetrics',
+                    tps: tps,
+                    count: generationSession.tokenCount
+                });
+
+                generationSession.listeners.forEach(listener => {
+                    try {
+                        listener(chunk);
+                    } catch (listenerErr: any) {
+                        this.log(`Outbound Stream Listener Exception: ${listenerErr.message}`, 'ERROR');
+                    }
+                });
+            }, controller?.signal, this._currentDiscussion.model, cleanOptions);
+
+            this.log(`Outbound Stream: Completed successfully. Total tokens generated: ${generationSession.tokenCount}.`);
+
+            // If we still get 0 tokens, check for connection parameter errors
+            if (generationSession.tokenCount === 0 && !controller?.signal.aborted) {
+                this.log(`Outbound Stream: Empty stream response. Checking connection settings...`, 'WARN');
+
+                const connectionWarning = `
+### 🔌 Connection Refused / Empty Response (0 tokens)
+The API endpoint returned an empty response.
+
+**🔍 DIAGNOSTICS & SOLUTIONS:**
+1.  **Strict API Schema**: Ensure your API key is correctly configured inside Settings for the **${this._currentDiscussion.model || 'active'}** model.
+2.  **Verify Server Endpoint**: If using a local proxy or custom API path, test the connection via the **Test Connection** button inside the Lollms Settings Panel.
+`.trim();
+
+                processedResponse = connectionWarning;
+                fullResponse = connectionWarning;
             }
-
-            // 🧠 THOUGHT NOTIFICATIONS (REAL-TIME)
-            // If the model starts thinking using tags, show a preview notification
-            if (fullResponse.length === 0 && chunk.includes('<think')) {
-                vscode.window.showInformationMessage("🧠 Lollms is contemplating a solution...");
+        } catch (streamErr: any) {
+            this.log(`Outbound Stream: API call threw a fatal exception: ${streamErr.message}`, 'ERROR');
+            if (streamErr.stack) {
+                this.log(`Stack Trace: ${streamErr.stack}`, 'ERROR');
             }
-
-            fullResponse += chunk;
-            generationSession.buffer += chunk;
-            generationSession.tokenCount++;
-
-            // Update metrics in real-time
-            const elapsed = (Date.now() - generationSession.startTime) / 1000;
-            const tps = (generationSession.tokenCount / elapsed).toFixed(1);
-
-            this._panel.webview.postMessage({
-                command: 'updateGenerationMetrics',
-                tps: tps,
-                count: generationSession.tokenCount
-            });
-
-            generationSession.listeners.forEach(listener => listener(chunk));
-        }, controller?.signal, this._currentDiscussion.model, { 
-            thinking: this._discussionCapabilities.thinkingMode,
-            capabilities: this._discussionCapabilities,
-            temperature: reqTemperature
-        });
+            throw streamErr; // Escalate to the main outer error handler
+        }
 
         // --- THE VERIFIER (GUARDIAN) ---
         let inspectedResponse = fullResponse;
@@ -3528,7 +3645,7 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         if (processId) this.processManager.updateDescription(processId, "Verifying code block integrity...");
         this.updateGeneratingState();
 
-        const processedResponse = await this.verifyAndProcessCodeBlocks(
+        processedResponse = await this.verifyAndProcessCodeBlocks(
             assistantMessageId, 
             inspectedResponse, 
             controller?.signal,
@@ -3549,14 +3666,26 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             this.log(`AI issued context expansion request. Waiting for user interaction.`);
         }
 
-        // --- PROJECT MEMORY PROCESSING ---
-        if (this._discussionCapabilities.projectMemoryEnabled !== false && !controller.signal.aborted) {
-            await this.processProjectMemoryTags(processedResponse);
+        // --- PROJECT MEMORY PROCESSING (NON-BLOCKING DEFERRED - ONLY WHEN SPARQL IS ACTIVE) ---
+        if (this._discussionCapabilities.projectMemoryEnabled !== false && this._discussionCapabilities.sparqlEnabled !== false && !controller.signal.aborted) {
+            setImmediate(async () => {
+                try {
+                    await this.processProjectMemoryTags(processedResponse);
+                } catch (e) {
+                    console.error("Deferred project memory tagging failed safely:", e);
+                }
+            });
         }
 
-        // Initialize the Agentic Systems Code Book in Memory if it's a new project
-        if (message.role === 'user' && this._currentDiscussion?.messages.length === 1) {
-             await this.processProjectMemoryTags(`<project_memory action="add" id="core_manifesto" title="Agentic Systems Code Book">The project follows the 10 core principles of the Agentic Systems Code Book, prioritizing composition, explicit tool use, and safety.</project_memory>`);
+        // Initialize the Agentic Systems Code Book in Memory if it's a new project (Only when SPARQL is active)
+        if (message.role === 'user' && this._currentDiscussion?.messages.length === 1 && this._discussionCapabilities.sparqlEnabled !== false) {
+            setImmediate(async () => {
+                try {
+                    await this.processProjectMemoryTags(`<project_memory action="add" id="core_manifesto" title="Agentic Systems Code Book">The project follows the 10 core principles of the Agentic Systems Code Book, prioritizing composition, explicit tool use, and safety.</project_memory>`);
+                } catch (e) {
+                    console.error("Deferred core manifesto tagging failed safely:", e);
+                }
+            });
         }
 
         // --- AUTOMATION PIPELINE ---
@@ -3566,8 +3695,8 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             this.updateContextAndTokens();
         }
 
-        // --- PHASE 6: DEBUGGER (THE ITERATIVE LOOP) ---
-        // Runs only after code is written, verified, and applied to disk.
+    // --- PHASE 6: DEBUGGER (THE ITERATIVE LOOP) ---
+    // Runs only after code is written, verified, and applied to disk.
         if (this._discussionCapabilities.debugMode && !controller?.signal.aborted && processId) {
             this.processManager.updateDescription(processId, "Debugger: Starting runtime validation...");
             this.updateGeneratingState();
@@ -4329,7 +4458,207 @@ ${targetContent}
           this.updateGeneratingState();
       }
   }
-  
+      /**
+     * Completes the generation workflow after background context assembly finishes.
+     */
+    private async proceedWithGeneration(
+        messagesToSend: ChatMessage[],
+        context: { tree: string; files: string; skills: string; memory: string },
+        processId: string,
+        controller: any,
+        targetModel: string,
+        reqTemperature: number | undefined,
+        personaName: string
+    ) {
+        if (controller.signal.aborted) return;
+
+        // Force clear any active progress states in the loader
+        this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+
+        this.processManager.updateDescription(processId, "Waiting for model response...");
+        this.updateGeneratingState();
+
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        let assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
+        let fullResponse = "";
+
+        const generationSession: ActiveGeneration = {
+            messageId: assistantMessageId, 
+            buffer: '', 
+            model: targetModel,
+            startTime: Date.now(), 
+            tokenCount: 0,
+            listeners: new Set(), 
+            onComplete: new Set()
+        };
+
+        const panelListener = (chunk: string) => { 
+            if (!this._isDisposed && this._panel.webview) {
+                this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk }); 
+            }
+        };
+
+        this._activeGenerationListener = panelListener;
+        generationSession.listeners.add(panelListener);
+        ChatPanel.activeGenerations.set(this.discussionId, generationSession);
+
+        const configTimeout = config.get<number>('requestTimeout') || 180000;
+        const ttftTimeoutValue = this._discussionCapabilities.ttftTimeout || configTimeout;
+
+        if (!this._isDisposed) {
+            this._panel.webview.postMessage({ 
+                command: 'addMessage', 
+                message: { 
+                    id: assistantMessageId, 
+                    role: 'assistant', 
+                    content: '', 
+                    startTime: Date.now(), 
+                    model: generationSession.model,
+                    personalityName: personaName,
+                    timestamp: Date.now()
+                } 
+            });
+            this._panel.webview.postMessage({
+                command: 'startCountdown',
+                id: assistantMessageId,
+                timeoutMs: ttftTimeoutValue
+            });
+        }
+
+        let firstTokenReceived = false;
+        try {
+            await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
+                if (controller.signal.aborted) return;
+                if (!firstTokenReceived) {
+                    firstTokenReceived = true;
+                    if (processId) this.processManager.updateDescription(processId, "Worker: Drafting solution...");
+                    this.updateGeneratingState();
+                }
+
+                fullResponse += chunk;
+                generationSession.buffer += chunk;
+                generationSession.tokenCount++;
+
+                const elapsed = (Date.now() - generationSession.startTime) / 1000;
+                const tps = (generationSession.tokenCount / elapsed).toFixed(1);
+
+                this._panel.webview.postMessage({
+                    command: 'updateGenerationMetrics',
+                    tps: tps,
+                    count: generationSession.tokenCount
+                });
+
+                generationSession.listeners.forEach(listener => listener(chunk));
+            }, controller.signal, targetModel, { 
+                thinking: this._discussionCapabilities.thinkingMode,
+                capabilities: this._discussionCapabilities,
+                temperature: reqTemperature
+            });
+
+            if (controller.signal.aborted) return;
+
+            // --- THE VERIFIER (GUARDIAN) ---
+            let inspectedResponse = fullResponse;
+            if (this._discussionCapabilities.verifierMode && processId) {
+                this.processManager.updateDescription(processId, "Verifier: Performing logical audit & linting...");
+                this.updateGeneratingState();
+
+                const auditedResponse = await this.runVerificationAgent(fullResponse, controller.signal);
+                const cleanOrig = stripThinkingTags(fullResponse).trim();
+                const cleanAudit = stripThinkingTags(auditedResponse).trim();
+
+                if (cleanOrig !== cleanAudit) {
+                    this.log("Verifier detected flaws in the initial draft.");
+                    const verifiedMsgId = 'assistant_verified_' + Date.now();
+                    inspectedResponse = auditedResponse;
+
+                    await this.addMessageToDiscussion({
+                        id: verifiedMsgId,
+                        role: 'assistant',
+                        content: auditedResponse,
+                        model: generationSession.model,
+                        personalityName: '🛡️ Verifier (Guardian)',
+                        timestamp: Date.now()
+                    });
+
+                    if (!this._isDisposed) {
+                        this._panel.webview.postMessage({ 
+                            command: 'finalizeMessage', 
+                            id: verifiedMsgId, 
+                            fullContent: auditedResponse,
+                            personalityName: '🛡️ Verifier (Guardian)'
+                        });
+                    }
+                    assistantMessageId = verifiedMsgId;
+                }
+            }
+
+            if (processId) this.processManager.updateDescription(processId, "Verifying code block integrity...");
+            this.updateGeneratingState();
+
+            const processedResponse = await this.verifyAndProcessCodeBlocks(
+                assistantMessageId, 
+                inspectedResponse, 
+                controller.signal,
+                (status) => {
+                    if (processId) this.processManager.updateDescription(processId, status);
+                    this.updateGeneratingState();
+                }
+            );
+
+            // --- PROJECT MEMORY PROCESSING ---
+            if (this._discussionCapabilities.projectMemoryEnabled !== false && !controller.signal.aborted) {
+                await this.processProjectMemoryTags(processedResponse);
+            }
+
+            // --- AUTOMATION PIPELINE ---
+            if (this._discussionCapabilities.autoApply && !controller.signal.aborted && processId) {
+                await this.executeAutomationPipeline(processedResponse, assistantMessageId, controller.signal, processId);
+                this.updateContextAndTokens();
+            }
+
+            const elapsed = (Date.now() - generationSession.startTime) / 1000;
+            const finalTps = (generationSession.tokenCount / elapsed).toFixed(1);
+
+            const assistantMessage: ChatMessage = { 
+                id: assistantMessageId, 
+                role: 'assistant', 
+                content: processedResponse, 
+                model: generationSession.model,
+                personalityName: personaName,
+                timestamp: Date.now()
+            };
+            await this.addMessageToDiscussion(assistantMessage, false);
+
+            if (!this._isDisposed) {
+                this._panel.webview.postMessage({ 
+                    command: 'finalizeMessage', 
+                    id: assistantMessageId, 
+                    fullContent: processedResponse,
+                    tps: finalTps,
+                    personalityName: personaName
+                });
+            }
+
+            // --- PHASE 6: DEBUGGER (THE ITERATIVE LOOP) ---
+            if (this._discussionCapabilities.debugMode && !controller.signal.aborted && processId) {
+                this.processManager.updateDescription(processId, "Debugger: Starting runtime validation...");
+                this.updateGeneratingState();
+                const debugObjective = typeof messagesToSend[messagesToSend.length - 1].content === 'string' ? messagesToSend[messagesToSend.length - 1].content : "Verify.";
+                await this.agentManager.runDebuggerAgent(debugObjective, controller.signal);
+                this.updateContextAndTokens();
+            }
+
+        } catch (err: any) {
+            throw err;
+        } finally {
+            ChatPanel.activeGenerations.delete(this.discussionId);
+            this._activeGenerationListener = undefined;
+            if (processId) this.processManager.unregister(processId);
+            this.updateGeneratingState();
+            this.updateContextAndTokens();
+        }
+    }
 
   public async addMessageToDiscussion(message: ChatMessage, updateWebview: boolean = true) {
       if (this._currentDiscussion) {
@@ -4370,13 +4699,35 @@ ${targetContent}
   
   public dispose() {
     this._isDisposed = true;
+
+    // Clear any active context and token calculation timeouts immediately to prevent disposed webview crashes
+    if ((this as any)._tokenDebounceTimeout) {
+        clearTimeout((this as any)._tokenDebounceTimeout);
+        (this as any)._tokenDebounceTimeout = undefined;
+    }
+    if (this._tokenAbortController) {
+        this._tokenAbortController.abort();
+        this._tokenAbortController = null;
+    }
+
+    // Unregister any active background loading tasks to release the Extension Host thread instantly
+    if (this.processManager) {
+        this.processManager.cancelForDiscussion(this.discussionId);
+    }
+
     ChatPanel.currentPanel = undefined;
     ChatPanel.panels.delete(this.discussionId);
-    this._panel.dispose();
+
+    if (this._panel) {
+        try {
+            this._panel.dispose();
+        } catch (e) {}
+    }
+
     while (this._executionLogs.length) { this._executionLogs.pop(); }
   }
   
-  private _setWebviewMessageListener(webview: vscode.Webview) {
+private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
         if (message.command !== 'webview-ready' && message.command !== 'webview-bootstrap-ok') {
             console.log("Lollms: Received message from webview:", message.command);
@@ -4385,12 +4736,15 @@ ${targetContent}
         switch (message.command) {
             case 'webview-bootstrap-ok':
             case 'webview-html-loaded':
-                break;
             case 'webview-ready':
+                console.log(`[Lollms Debug:Handshake] Processing webview bootstrap handshake: ${message.command}`);
                 this._isWebviewReady = true;
-                this._viewReadyResolver();
+                
+                // Resolve view ready promise safely if it exists
+                if (typeof this._viewReadyResolver === 'function') {
+                    this._viewReadyResolver();
+                }
 
-                // CRITICAL: Re-sync the agent's current plan immediately on ready
                 if (this.agentManager) {
                     const plan = (this.agentManager as any).currentPlan;
                     if (plan) {
@@ -4398,10 +4752,10 @@ ${targetContent}
                     }
                 }
 
-                if (this._isLoadPending) {
-                    this.loadDiscussion();
-                }
-                return;
+                // Force load discussion on startup/handshake
+                console.log("[Lollms Debug:Handshake] Handshake complete. Force loading discussion history...");
+                await this.loadDiscussion();
+                break;
             case 'showError':
                 vscode.window.showErrorMessage(message.message);
                 break;
@@ -4464,74 +4818,79 @@ ${targetContent}
 
                     // SEQUENTIAL HIGH-SPEED BATCH APPLY ENGINE (ORDER-PRESERVING)
                     const runBatch = async () => {
-                        for (let i = 0; i < changesBatch.length; i++) {
-                            if (applyCtrl.signal.aborted) {
-                                this.log("Batch apply aborted by user.");
-                                break;
-                            }
+                        ChatPanel.isBatchApplying = true;
+                        try {
+                            for (let i = 0; i < changesBatch.length; i++) {
+                                if (applyCtrl.signal.aborted) {
+                                    this.log("Batch apply aborted by user.");
+                                    break;
+                                }
 
-                            const change = changesBatch[i];
-                            const fileName = path.basename(change.path);
+                                const change = changesBatch[i];
+                                const fileName = path.basename(change.path);
 
-                            // 1. Notify UI: Item processing started
-                            this._panel.webview.postMessage({ 
-                                command: 'applyAllStart', 
-                                messageId: messageId, 
-                                blockIndex: change.blockIndex,
-                                hunkIndex: change.hunkIndex,
-                                currentIndex: i,
-                                totalCount: changesBatch.length
-                            });
-
-                            let result: any = { success: false };
-                            const isUndoMode = message.undo === true;
-
-                            try {
-                                const opts = { 
-                                    silent: true, 
-                                    blockIndex: change.blockIndex, 
+                                // 1. Notify UI: Item processing started
+                                this._panel.webview.postMessage({ 
+                                    command: 'applyAllStart', 
+                                    messageId: messageId, 
+                                    blockIndex: change.blockIndex,
                                     hunkIndex: change.hunkIndex,
-                                    autoSave: true, // Forces file to save on disk immediately [2]
-                                    isBatch: true,
+                                    currentIndex: i,
+                                    totalCount: changesBatch.length
+                                });
+
+                                let result: any = { success: false };
+                                const isUndoMode = message.undo === true;
+
+                                try {
+                                    const opts = { 
+                                        silent: true, 
+                                        blockIndex: change.blockIndex, 
+                                        hunkIndex: change.hunkIndex,
+                                        autoSave: true, // Forces file to save on disk immediately [2]
+                                        isBatch: true,
+                                        undo: isUndoMode
+                                    };
+
+                                    if (change.type === 'file') {
+                                        result = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
+                                    } else if (change.type === 'replace') {
+                                        result = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, messageId, opts);
+                                    } else if (change.type === 'diff') {
+                                        result = await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
+                                    }
+
+                                    if (result?.success) {
+                                        // If undoing, remove from applied state, otherwise add it
+                                        await this.updateAppliedState(messageId, change.blockIndex, change.hunkIndex, isUndoMode);
+
+                                        // Collapse the newly applied file directly to keep the workspace clean [2]
+                                        this._panel.webview.postMessage({
+                                            command: 'fileSavedOnDisk',
+                                            filePath: change.path
+                                        });
+                                    }
+                                } catch (e: any) {
+                                    result = { success: false, error: e.message };
+                                    this.log(`Batch failure on ${change.path}: ${e.message}`, 'ERROR');
+                                }
+
+                                // 2. Notify UI: Item result
+                                this._panel.webview.postMessage({
+                                    command: 'applyAllResult',
+                                    messageId: messageId,
+                                    filePath: change.path,
+                                    blockIndex: change.blockIndex,
+                                    hunkIndex: change.hunkIndex,
+                                    success: result?.success ?? false,
+                                    error: result?.error,
+                                    currentIndex: i,
+                                    totalCount: changesBatch.length,
                                     undo: isUndoMode
-                                };
-
-                                if (change.type === 'file') {
-                                    result = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
-                                } else if (change.type === 'replace') {
-                                    result = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, messageId, opts);
-                                } else if (change.type === 'diff') {
-                                    result = await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
-                                }
-
-                                if (result?.success) {
-                                    // If undoing, remove from applied state, otherwise add it
-                                    await this.updateAppliedState(messageId, change.blockIndex, change.hunkIndex, isUndoMode);
-                                    
-                                    // Collapse the newly applied file directly to keep the workspace clean [2]
-                                    this._panel.webview.postMessage({
-                                        command: 'fileSavedOnDisk',
-                                        filePath: change.path
-                                    });
-                                }
-                            } catch (e: any) {
-                                result = { success: false, error: e.message };
-                                this.log(`Batch failure on ${change.path}: ${e.message}`, 'ERROR');
+                                });
                             }
-
-                            // 2. Notify UI: Item result
-                            this._panel.webview.postMessage({
-                                command: 'applyAllResult',
-                                messageId: messageId,
-                                filePath: change.path,
-                                blockIndex: change.blockIndex,
-                                hunkIndex: change.hunkIndex,
-                                success: result?.success ?? false,
-                                error: result?.error,
-                                currentIndex: i,
-                                totalCount: changesBatch.length,
-                                undo: isUndoMode
-                            });
+                        } finally {
+                            ChatPanel.isBatchApplying = false;
                         }
 
                         this.processManager.unregister(applyProcId);
@@ -5912,6 +6271,11 @@ Task:
                         }
                     }
 
+                    // --- SYNC PRECISE TOKENIZATION SETTING ---
+                    if (partial.preciseTokenization !== undefined) {
+                        await vscode.workspace.getConfiguration('lollmsVsCoder').update('preciseTokenization', partial.preciseTokenization, vscode.ConfigurationTarget.Global);
+                    }
+
                     this._discussionCapabilities = { ...this._discussionCapabilities, ...partial };
 
                     if (partial.agentMode !== undefined) {
@@ -6682,1448 +7046,37 @@ Task:
           }
       }
   }
-  private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
-    const nonce = getNonce();
-
-    const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
-    const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.css'));
-    const prismThemeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'prism-tomorrow.css'));
-    const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.bundle.js'));
-    const lollmsIconUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'lollms-icon.svg'));
-
-    const l10nStrings = LocalizationManager.getBundleForWebview();
-
-    return `<!DOCTYPE html>
-    <html lang="en">
-    <head>
-    <meta charset="UTF-8" />
-     <meta http-equiv="Content-Security-Policy" content="
-        default-src 'none';
-        connect-src ${webview.cspSource} https:;
-        style-src ${webview.cspSource} 'unsafe-inline' https://cdn.jsdelivr.net;
-        font-src ${webview.cspSource} https://cdn.jsdelivr.net;
-        img-src ${webview.cspSource} data: blob:;
-        script-src 'nonce-${nonce}' 'unsafe-eval' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
-        worker-src 'self' blob: https://cdnjs.cloudflare.com;
-    ">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Lollms Chat</title>
-    <script nonce="${nonce}">
-        // --- SOVEREIGN SERVICE WORKER SHIELD ---
-        // Forcefully intercept and reject any service worker registrations inside the webview iframe.
-        // This immunizes the document frame against the VS Code 'The document is in an invalid state' error.
-        if (navigator.serviceWorker) {
-            navigator.serviceWorker.register = function() {
-                return new Promise((resolve, reject) => {
-                    reject(new DOMException("Service Workers are blocked in this secure sandboxed context.", "InvalidStateError"));
-                });
-            };
-        }
-    </script>
-    <!-- Secure KaTeX Math typesetting with Subresource Integrity -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
-    <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
-    <script nonce="${nonce}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
-
-    <!-- PDF.js for local rendering (Pure TS/JS, no backend required) -->
-    <script nonce="${nonce}" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    <script nonce="${nonce}">
-        // Disable worker to avoid cross-origin/blob CSP issues in VS Code webview
-        if (typeof pdfjsLib !== 'undefined') {
-            pdfjsLib.GlobalWorkerOptions.workerSrc = '';
-        }
-    </script>
-    <link href="${codiconsUri}" rel="stylesheet" />
-    <link href="${cssUri}" rel="stylesheet" />
-    <link href="${prismThemeUri}" rel="stylesheet" />
-    </head>
-    <body>
-    <div class="chat-container">
-
-        <div class="chat-content-wrapper">
-            <!-- 🤖 Sidebar ON THE LEFT -->
-            <div id="agent-plan-zone"></div>
-            <div id="plan-resizer"></div>
-
-            <!-- 💬 Main Chat ON THE RIGHT -->
-            <div class="chat-main-column">
-                <!-- 🚀 PERSISTENT SURGICAL HUD -->
-                <div id="context-container" class="persistent-hud"></div>
-
-                <div class="messages" id="messages">
-                    <div class="search-bar" id="search-bar" style="display: none;">
-                        <input type="text" id="searchInput" placeholder="Search discussion...">
-                        <span id="search-results-count"></span>
-                        <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
-                        <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
-                        <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>
-                    </div>
-
-                    <div class="message special-zone-message" style="display: none;">
-                        <div class="message-avatar">
-                            <span class="codicon codicon-file-text"></span>
-                        </div>
-                        <div class="message-body">
-                            <div class="message-header"><span class="role-name">Attached Files</span></div>
-                            <div class="message-content">
-                                <div id="attachments-container"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div id="chat-messages-container">
-                        <div id="message-insertion-controls">
-                            <button id="add-user-message-btn"><i class="codicon codicon-add"></i> Add User Message</button>
-                            <button id="add-ai-message-btn"><i class="codicon codicon-add"></i> Add AI Message</button>
-                        </div>
-                    </div>
-                </div>
-
-                <div id="generating-overlay" class="generating-overlay" style="display: none;">
-                    <div class="generating-content">
-                        <div class="ai-orb-container">
-                            <div class="ai-orb"></div>
-                        </div>
-                        <span id="generating-status-text">Processing...</span>
-                        <div class="generating-details">
-                            <div class="step-timeline" id="step-timeline">
-                                <div class="step-dot active"></div>
-                                <div class="step-dot"></div>
-                                <div class="step-dot"></div>
-                                <div class="step-dot"></div>
-                            </div>
-                            <div id="generating-metrics" class="generating-metrics" style="display: none;">
-                                <div class="metric-item">
-                                    <i class="codicon codicon-dashboard"></i>
-                                    <span id="metrics-tps" class="metric-value">0.0</span> <span class="metric-label">t/s</span>
-                                </div>
-                                <div class="metric-item">
-                                    <i class="codicon codicon-symbol-parameter"></i>
-                                    <span id="metrics-count" class="metric-value">0</span> <span class="metric-label">tokens</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div style="display: flex; gap: 8px;">
-                        <button id="raiseHandButton" class="stop-btn-red" style="background-color: var(--vscode-charts-orange) !important; border-color: var(--vscode-charts-orange) !important; color: white !important;" title="Pause and provide feedback">
-                            <i class="codicon codicon-hand"></i>
-                            <span>Raise Hand</span>
-                        </button>
-                        <button id="stopButton" class="stop-btn-red">
-                            <i class="codicon codicon-primitive-square"></i>
-                            <span>Cancel Task</span>
-                        </button>
-                    </div>
-                </div>
-
-                <div class="input-area-wrapper">
-                    <div id="more-actions-menu">
-                        <div class="menu-view" id="menu-main">
-                            <div class="menu-item has-submenu" data-target="menu-modes">
-                                <i class="codicon codicon-settings-gear"></i>
-                                <span>Sovereign Modes</span>
-                                <span class="menu-arrow">›</span>
-                            </div>
-                            <div class="menu-item has-submenu" data-target="menu-protocols">
-                                <i class="codicon codicon-beaker"></i>
-                                <span>Auxiliary Protocols</span>
-                                <span class="menu-arrow">›</span>
-                            </div>
-                            <div class="menu-item has-submenu" data-target="menu-ai">
-                                <i class="codicon codicon-hubot"></i>
-                                <span>AI Configuration</span>
-                                <span class="menu-arrow">›</span>
-                            </div>
-                            <div class="menu-separator"></div>
-                            <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-settings"></i><span>Discussion Settings</span></button>
-                            <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Settings</span></button>
-                            <div class="menu-separator"></div>
-                            <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
-                            <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
-                            <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
-                            <button class="menu-item" id="copySystemPromptButton"><i class="codicon codicon-shield"></i><span>Copy System Prompt Only</span></button>
-                            <button class="menu-item" id="copyTreeAndContentButton"><i class="codicon codicon-clippy"></i><span>Copy Tree & Content</span></button>
-                            <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
-                            <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project Entry Point</span></button>
-                            <button class="menu-item" id="debugProjectButton" title="Run entry point in background and feed stdout/stderr back to LLM"><i class="codicon codicon-debug"></i><span>Debug Project Entry Point (Auto-Audit)</span></button>
-                            <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
-                            <button class="menu-item" id="showDebugLogButton"><i class="codicon codicon-output"></i><span>Show Debug Log</span></button>
-                        </div>
-
-                        <div class="menu-view hidden" id="menu-modes">
-                            <div class="menu-header">
-                                <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
-                                <span>Sovereign Modes</span>
-                            </div>
-                            <div class="menu-item-radio">
-                                <label><input type="radio" name="mode-group" value="assistant" id="modeAssistantRadio"> <span>👤 Assistant Mode (Manual)</span></label>
-                            </div>
-                            <div class="menu-item-radio">
-                                <label><input type="radio" name="mode-group" value="dynamic" id="modeDynamicRadio"> <span>🧠 Co-Engineer Mode (Interactive)</span></label>
-                            </div>
-                            <div class="menu-item-radio">
-                                <label><input type="radio" name="mode-group" value="agent" id="modeAgentRadio"> <span>🤖 Agent Mode (Autonomous)</span></label>
-                            </div>
-                        </div>
-
-                        <div class="menu-view hidden" id="menu-protocols">
-                            <div class="menu-header">
-                                <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
-                                <span>Auxiliary Protocols</span>
-                            </div>
-                            <div class="menu-item-toggle">
-                                <span>🐞 Debug Protocol</span>
-                                <label class="switch"><input type="checkbox" id="protoDebugCheckbox"><span class="slider"></span></label>
-                            </div>
-                            <div class="menu-item-toggle">
-                                <span>🛡️ Verifier Protocol</span>
-                                <label class="switch"><input type="checkbox" id="protoVerifierCheckbox"><span class="slider"></span></label>
-                            </div>
-                            <div class="menu-item-toggle">
-                                <span>🧪 Test Protocol</span>
-                                <label class="switch"><input type="checkbox" id="protoTestCheckbox"><span class="slider"></span></label>
-                            </div>
-                            <div class="menu-item-toggle">
-                                <span>📖 Docs Protocol</span>
-                                <label class="switch"><input type="checkbox" id="protoDocsCheckbox"><span class="slider"></span></label>
-                            </div>
-                            <div class="menu-item-toggle">
-                                <span>🐙 Git Auto-Workflow</span>
-                                <label class="switch"><input type="checkbox" id="protoGitCheckbox"><span class="slider"></span></label>
-                            </div>
-                            <div class="menu-item-toggle">
-                                <span>🐂 Multi-Agent (Herd)</span>
-                                <label class="switch"><input type="checkbox" id="protoHerdCheckbox"><span class="slider"></span></label>
-                            </div>
-                        </div>
-
-                        <div class="menu-view hidden" id="menu-ai">
-                            <div class="menu-header">
-                                <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
-                                <span>AI Configuration</span>
-                            </div>
-                            <label style="margin-left:12px; margin-top:8px; display:block; font-size:11px; font-weight:600;">Model</label>
-                            <select id="model-selector" class="menu-select"></select>
-                            
-                            <label style="margin-left:12px; margin-top:8px; display:block; font-size:11px; font-weight:600;">Persona</label>
-                            <select id="personality-selector" class="menu-select"></select>
-                            
-                            <div style="padding: 0 12px 12px 12px;">
-                                <button id="refresh-models-btn" class="code-action-btn" style="width:100%; justify-content:center;"><i class="codicon codicon-refresh"></i> Refresh Models</button>
-                            </div>
-                        </div>
-
-                    </div>
-
-
-                    <div class="input-area-container">
-                        <div class="rich-input-toolbar">
-                            <button class="toolbar-tool" id="jump-to-context-btn" title="Jump to Project Context / Dashboard"><i class="codicon codicon-dashboard"></i><span>Context</span></button>
-                            <div class="toolbar-separator"></div>
-                            <button class="toolbar-tool" data-wrap-type="python" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
-                            <button class="toolbar-tool" data-wrap-type="code" title="Code Block"><i class="codicon codicon-code"></i><span>Code</span></button>
-                            <div class="toolbar-separator"></div>
-                            <button class="toolbar-tool" data-wrap-type="h1" title="Heading 1"><span>H1</span></button>
-                            <button class="toolbar-tool" data-wrap-type="h2" title="Heading 2"><span>H2</span></button>
-                            <button class="toolbar-tool" data-wrap-type="h3" title="Heading 3"><span>H3</span></button>
-                            <div class="toolbar-separator"></div>
-                            <button class="toolbar-tool" data-wrap-type="list" title="Bullet List"><i class="codicon codicon-list-unordered"></i></button>
-                            <button class="toolbar-tool" data-wrap-type="bold" title="Bold"><i class="codicon codicon-bold"></i></button>
-                            <button class="toolbar-tool" data-wrap-type="italic" title="Italic"><i class="codicon codicon-italic"></i></button>
-                        </div>
-                        <div class="input-area">
-                            <div id="attachment-preview-area" class="attachment-preview-area"></div>
-                            <div class="input-row">
-                                <div class="control-buttons">
-                                    <button id="moreActionsButton" title="Menu"><i class="codicon codicon-menu"></i></button>
-                                    <button id="addDrawingButton" title="Add Empty Drawing"><i class="codicon codicon-edit"></i></button>
-                                </div>
-                                
-                                <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..."></textarea>
-
-                                <div class="control-buttons">
-                                    <div class="voice-controls">
-                                        <button id="sttButton" title="Listen (STT)" class="voice-btn"><i class="codicon codicon-mic"></i></button>
-                                        <button id="toggleTempSliderBtn" title="Toggle Custom Temperature" class="voice-btn"><i class="codicon codicon-thermometer"></i></button>
-                                    </div>
-                                    <div class="temp-slider-container" id="inputTempContainer" title="Model Temperature (Creativity)" style="display: none;">
-                                        <div class="temp-tooltip" id="temp-val-display">0.7</div>
-                                        <input type="range" id="temp-slider" min="0" max="2" step="0.1" value="0.7">
-                                    </div>
-                                    <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div id="plan-resizer"></div>
-            <div id="agent-plan-zone"></div>
-            <button id="scrollToBottomBtn" title="Scroll to bottom">
-                <i class="codicon codicon-arrow-down"></i>
-            </button>
-            </div>
-            </div>
-            
-        <div id="agent-settings-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2 style="display:flex; align-items:center; gap:8px;"><i class="codicon codicon-robot"></i> Agent Mission Configuration</h2>
-                    <span class="close-btn" id="close-agent-settings-modal">&times;</span>
-                </div>
-                <div class="modal-body" style="padding:0; overflow:hidden;">
-                    <div class="settings-grid-layout">
-                        <div class="settings-sidebar">
-                            <div class="modal-section" style="border:none; background:transparent; padding:0;">
-                                <h3 style="color:var(--vscode-charts-blue);"><i class="codicon codicon-dashboard"></i> Mission Budgets</h3>
-
-                                <label style="margin-top:10px;">Task Turn Limit</label>
-                                <input type="number" id="setting-maxSteps" min="1" max="500" style="margin-bottom:4px;">
-                                <p class="help-text">Max turns before mission timeout.</p>
-
-                                <label style="margin-top:15px;">File Edit Retries</label>
-                                <input type="number" id="setting-maxEditRetries" min="0" max="10" style="margin-bottom:4px;">
-                                <p class="help-text">Attempts to fix failed patches/marker leaks.</p>
-
-                                <div class="checkbox-container" style="margin-top:15px; border:none; background:transparent; padding:0;">
-                                    <label class="switch" style="width:24px; height:14px;"><input type="checkbox" id="setting-autoProfileSwitch"><span class="slider"></span></label>
-                                    <label for="setting-autoProfileSwitch" style="font-size:11px; font-weight:bold;">Auto Profile Switch</label>
-                                </div>
-                                <p class="help-text">AI auto-selects best mission protocol.</p>
-                            </div>
-
-                            <div style="flex:1"></div>
-
-                            <div class="security-warning" style="font-size:10px; padding:10px; margin:0;">
-                                <i class="codicon codicon-shield"></i> <strong>Sovereign Guard</strong><br>
-                                The harness automatically reverts files if Aider markers are detected in the code body.
-                            </div>
-                        </div>
-                        <div class="settings-main-content" style="padding:15px; overflow-y:auto;">
-                            <h3 style="margin-top:0;"><i class="codicon codicon-target"></i> Genie Mission Profiles</h3>
-                            <p class="help-text">Switch or customize the Architect's core operational logic.</p>
-
-                            <div style="display:flex; gap:10px; margin-bottom:15px;">
-                                <select id="setting-activeProfile" class="menu-select" style="flex:1; margin:0;"></select>
-                                <button id="add-agent-profile-btn" class="code-action-btn apply-btn" style="width:auto; height:32px;"><i class="codicon codicon-add"></i> New</button>
-                            </div>
-
-                            <div id="agent-profiles-list" style="display:flex; flex-direction:column; gap:8px; margin-bottom:24px;">
-                                <!-- Dynamic list of profiles -->
-                            </div>
-
-                            <!-- Profile Editor (Hidden) -->
-                            <div id="agent-profile-editor" style="display:none; border: 1px solid var(--vscode-focusBorder); padding:15px; border-radius:8px; background: rgba(0,0,0,0.2); margin-bottom:24px;">
-                                <h4 style="margin-top:0; font-size:12px;">Edit Mission Protocol</h4>
-                                <label>Display Name</label>
-                                <input type="text" id="ap-name" style="margin-bottom:8px;">
-                                <label>Architect Protocol (System Instructions)</label>
-                                <textarea id="ap-protocol" rows="8" style="font-family:monospace; font-size:11px;"></textarea>
-                                <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:10px;">
-                                    <button id="ap-cancel" class="code-action-btn">Cancel</button>
-                                    <button id="ap-save" class="code-action-btn apply-btn">Update Protocol</button>
-                                </div>
-                            </div>
-
-                            <h3 style="margin-top:0;"><i class="codicon codicon-tools"></i> Tool Permissions & Policies</h3>
-                            <div id="tools-list"></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button id="save-agent-settings-btn" class="code-action-btn apply-btn" style="width:120px; justify-content:center;">Save Settings</button>
-                </div>
-            </div>
-        </div>
-
-        <div id="staging-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>Stage Files for Commit</h2>
-                    <span class="close-btn" id="staging-close-btn">&times;</span>
-                </div>
-                <div class="modal-body" id="staging-list">
-                </div>
-                <div class="modal-footer">
-                    <button id="staging-next-btn">Next (Generate Message)</button>
-                </div>
-            </div>
-        </div>
-
-        <div id="commit-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>Commit Changes</h2>
-                    <span class="close-btn" id="commit-cancel-btn">&times;</span>
-                </div>
-                <div class="modal-body">
-                    <textarea id="commit-message-input" class="commit-textarea" placeholder="Generating commit message..."></textarea>
-                </div>
-                <div class="modal-footer">
-                    <button id="commit-confirm-btn">Commit</button>
-                </div>
-            </div>
-        </div>
-
-        <div id="history-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>Git History</h2>
-                    <span class="close-btn" id="history-close-btn">&times;</span>
-                </div>
-                <div class="modal-body" id="history-list">
-                </div>
-            </div>
-        </div>
-
-        <div id="skills-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>Apply Skills to Context</h2>
-                    <span class="close-btn" id="skills-close-btn">&times;</span>
-                </div>
-                <div class="modal-body" style="display:flex; flex-direction:column; gap:12px; height: 100%;">
-                    <div class="skills-search-ribbon" style="display:flex; flex-direction:column; gap:8px;">
-                        <div style="display:flex; align-items:center; gap:8px; background: var(--vscode-editor-inactiveSelectionBackground); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border);">
-                             <div style="display:flex; gap:12px; margin-left: auto;">
-                                <div style="display:flex; align-items:center; gap:4px;" title="Match Case">
-                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">Ab</span>
-                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
-                                        <input type="checkbox" id="skills-search-case">
-                                        <span class="slider" style="border-radius: 14px;"></span>
-                                    </label>
-                                </div>
-                                <div style="display:flex; align-items:center; gap:4px;" title="Use Regular Expression">
-                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">.*</span>
-                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
-                                        <input type="checkbox" id="skills-search-regex">
-                                        <span class="slider" style="border-radius: 14px;"></span>
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-                        <input type="text" id="skills-search-input" class="search-modal-input" placeholder="Search skills (e.g. pip.* or best_practices)..." style="width: 100%;">
-                    </div>
-                    <div id="skills-tree-container" style="flex:1;">
-                        <!-- Tree generated dynamically -->
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button id="skills-import-btn">Apply Selected</button>
-                </div>
-            </div>
-        </div>
-
-        <div id="tool-picker-modal" class="modal">
-            <div class="modal-content" style="max-width: 500px;">
-                <div class="modal-header">
-                    <h2 style="display:flex; align-items:center; gap:8px;"><i class="codicon codicon-wrench"></i> Equip Agent Tools</h2>
-                    <span class="close-btn" id="tool-picker-close-btn">&times;</span>
-                </div>
-                <div class="modal-body">
-                    <p style="font-size:11px; opacity:0.7; margin-bottom:12px;">Equipped tools will be described to the AI. Keep the list small to save context tokens.</p>
-
-                    <div style="margin-bottom: 12px; position: sticky; top: 0; background: var(--vscode-editorWidget-background); z-index: 10;">
-                        <input type="text" id="tool-picker-search" class="search-modal-input" placeholder="Search tools by name or description..." style="width: 100%;">
-                    </div>
-
-                    <div id="tool-picker-list" style="max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;">
-                        <!-- Tools list injected here -->
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button id="tool-picker-apply-btn" class="code-action-btn apply-btn" style="width:100%; justify-content:center; height:32px;">Update Intelligence Capabilities</button>
-                </div>
-            </div>
-        </div>
-
-        <div id="discussion-tools-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>Discussion Settings</h2>
-                    <span class="close-btn" id="close-discussion-tools-modal">&times;</span>
-                </div>
-                <div class="modal-body">
-
-                    <div class="modal-section">
-                        <h3>Performance & Creativity</h3>
-                        <div class="checkbox-container" style="margin-bottom: 10px;">
-                            <label class="switch"><input type="checkbox" id="cap-enableTemperature"><span class="slider"></span></label>
-                            <label for="cap-enableTemperature"><strong>Custom Temperature:</strong> Override model's default creativity parameters.</label>
-                        </div>
-                        <div style="margin-bottom: 15px; display: none;" id="modal-temperature-container">
-                            <div style="display:flex; justify-content: space-between;">
-                                <label style="font-size: 11px; font-weight:bold;">Temperature (Creativity)</label>
-                                <span id="modal-temperature-val" style="font-size: 11px; opacity: 0.8;">0.7</span>
-                            </div>
-                            <input type="range" id="modal-temperature" min="0" max="2" step="0.1" style="width:100%; margin: 8px 0;">
-                            <p style="font-size: 10px; opacity: 0.7; margin:0;">0.0 = Precise/Deterministic, 1.0+ = Creative/Random.</p>
-                        </div>
-                        
-                        <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Timeouts (ms). Set to 0 for Infinity.</p>
-                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
-                            <div class="form-group">
-                                <label style="font-size: 11px; font-weight:bold;">First Token (TTFT)</label>
-                                <input type="number" id="modal-ttft-timeout" min="0" step="1000" style="width:100%;">
-                            </div>
-                            <div class="form-group">
-                                <label style="font-size: 11px; font-weight:bold;">Inter-Token</label>
-                                <input type="number" id="modal-inter-token-timeout" min="0" step="100" style="width:100%;">
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="modal-section">
-                        <h3>Language & Speech</h3>
-                        <div class="checkbox-grid" style="margin-bottom: 12px;">
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="cap-enableTTS"><span class="slider"></span></label>
-                                <label for="cap-enableTTS">Enable TTS (Megaphone)</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="cap-enableSTT"><span class="slider"></span></label>
-                                <label for="cap-enableSTT">Enable STT (Microphone)</label>
-                            </div>
-                        </div>
-                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
-                            <div class="form-group">
-                                <label style="font-size: 11px; font-weight:bold;">Response Language</label>
-                                <select id="modal-language" class="menu-select" style="width:100%; margin:4px 0;">
-                                    <option value="auto">Auto-detect</option>
-                                    <option value="en">English</option>
-                                    <option value="fr">French</option>
-                                    <option value="es">Spanish</option>
-                                    <option value="de">German</option>
-                                    <option value="zh-cn">Chinese</option>
-                                    <option value="ar">Arabic</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label style="font-size: 11px; font-weight:bold;">Speaker Voice</label>
-                                <select id="modal-voice" class="menu-select" style="width:100%; margin:4px 0;">
-                                    <option value="default">System Default</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="modal-section">
-                        <h3>Response Style (Profile)</h3>
-                        <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Customize how the AI talks and thinks.</p>
-                        
-                        <div style="display:flex; gap:10px; margin-bottom:10px;">
-                            <select id="modal-default-profile-select" class="menu-select" style="flex:1; margin:0;"></select>
-                            <button id="modal-add-profile-btn" class="code-action-btn apply-btn" style="margin:0; width: auto; height: 32px;"><i class="codicon codicon-add"></i> New</button>
-                        </div>
-
-                        <div id="modal-profiles-container" style="display:flex; flex-direction:column; gap:8px; max-height: 200px; overflow-y: auto; padding: 2px;">
-                            <!-- Profiles list injected here -->
-                        </div>
-
-                        <!-- Profile Editor (Hidden) -->
-                        <div id="modal-profile-editor" style="display:none; border: 1px solid var(--vscode-focusBorder); padding: 12px; border-radius: 4px; margin-top: 10px; background: var(--vscode-editor-inactiveSelectionBackground);">
-                            <h4 style="margin: 0 0 10px 0; font-size: 12px;">Edit Profile</h4>
-                            <div style="display:flex; flex-direction:column; gap:8px;">
-                                <div>
-                                    <label style="font-size: 11px; font-weight:bold;">Name</label>
-                                    <input type="text" id="modal-p-name" style="width:100%; padding:4px; margin-top:2px;">
-                                </div>
-                                <div>
-                                    <label style="font-size: 11px; font-weight:bold;">Description</label>
-                                    <input type="text" id="modal-p-desc" style="width:100%; padding:4px; margin-top:2px;">
-                                </div>
-                                <div>
-                                    <label style="font-size: 11px; font-weight:bold;">Prefix (Optional command)</label>
-                                    <input type="text" id="modal-p-prefix" placeholder="/no_think" style="width:100%; padding:4px; margin-top:2px;">
-                                </div>
-                                <div>
-                                    <label style="font-size: 11px; font-weight:bold;">System Instructions</label>
-                                    <textarea id="modal-p-prompt" rows="4" style="width:100%; padding:4px; margin-top:2px; font-family:var(--vscode-editor-font-family); font-size:11px;"></textarea>
-                                </div>
-                                <div style="display:flex; gap:8px; margin-top:10px; justify-content: flex-end;">
-                                    <button id="modal-p-cancel" class="code-action-btn" style="width: auto;">Cancel</button>
-                                    <button id="modal-p-save" class="code-action-btn apply-btn" style="width: auto;">Update</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="modal-section">
-                        <h3>Context Management</h3>
-                        <div class="form-group" style="margin-bottom: 12px;">
-                            <label style="font-size: 11px; font-weight: bold; display: block; margin-bottom: 4px;">Auto-Context Aggression</label>
-                            <select id="modal-context-aggression" class="menu-select" style="width: 100%; margin: 0;">
-                                <option value="respect">Respect Context (75% Max)</option>
-                                <option value="none">No Restrictions (Recover Max)</option>
-                                <option value="minimal">Minimal (Smallest useful set)</option>
-                                <option value="signatures">Smart Signatures (Full for Edit, Defs for Context)</option>
-                            </select>
-                            <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Controls how many files the Auto-Context agent tries to pack into the prompt.</p>
-                        </div>
-
-                        <div style="margin-bottom: 15px;">
-                            <div style="display:flex; justify-content: space-between;">
-                                <label style="font-size: 11px; font-weight:bold;">Governor Trigger Threshold</label>
-                                <span id="modal-governor-threshold-val" style="font-size: 11px; opacity: 0.8;">90%</span>
-                            </div>
-                            <input type="range" id="modal-governor-threshold" min="10" max="98" step="1" style="width:100%; margin: 8px 0;">
-                            <p style="font-size: 10px; opacity: 0.7; margin:0;">Context filling percentage that triggers automatic pruning.</p>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-sparqlEnabled"><span class="slider"></span></label>
-                            <label for="cap-sparqlEnabled"><strong>📊 SPARQL Engine:</strong> Enable background Code Graph parsing.</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-grepEnabled"><span class="slider"></span></label>
-                            <label for="cap-grepEnabled"><strong>🔍 GREP Indexer:</strong> Enable high-speed on-disk regex search.</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-projectMemoryEnabled"><span class="slider"></span></label>
-                            <label for="cap-projectMemoryEnabled"><strong>🧠 Project Memory:</strong> Discreetly save technical facts.</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-tokenEconomyMode"><span class="slider"></span></label>
-                            <label for="cap-tokenEconomyMode"><strong>💎 Token Economy:</strong> Purge-first & efficient patching.</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-debugMode"><span class="slider"></span></label>
-                            <label for="cap-debugMode"><strong>🐞 Debug Mode:</strong> Autonomous live debugging loop.</label>
-                        </div>
-                        <div id="debug-config-section" style="display:none; margin: 8px 0 0 40px; border-left: 2px solid var(--vscode-charts-red); padding-left: 12px;">
-                            <label style="font-size:11px;">Max Debug Steps: <input type="number" id="cap-maxDebugSteps" value="10" min="1" max="50" style="width:40px; float:right;"></label>
-                        </div>
-
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-herdMode"><span class="slider"></span></label>
-                            <label for="cap-herdMode"><strong>🐂 Herd Mode:</strong> Multiple agents brainstorm the answer.</label>
-                        </div>
-                        <div id="herd-config-section" style="display:none; margin: 8px 0 0 40px; border-left: 2px solid var(--vscode-charts-purple); padding-left: 12px;">
-                            <div style="display:flex; flex-direction:column; gap:8px;">
-                                <label style="font-size:11px;">Debate Rounds: <input type="number" id="cap-herdRounds" min="1" max="10" style="width:40px; float:right;"></label>
-                                <label style="font-size:11px;">Brainstorm Agents: <input type="number" id="cap-herdPreCount" min="1" max="5" style="width:40px; float:right;"></label>
-                                <label style="font-size:11px;">Review Agents: <input type="number" id="cap-herdPostCount" min="1" max="5" style="width:40px; float:right;"></label>
-                            </div>
-                            
-                            <label style="font-size: 10px; font-weight: bold; margin-top: 10px; display: block; opacity: 0.7;">ACTIVE MODEL POOL</label>
-                            <div id="herd-models-list" style="max-height: 100px; overflow-y: auto; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); padding: 4px; border-radius: 4px; margin-top: 4px;">
-                                <!-- Checkboxes injected here -->
-                            </div>
-
-                            <div class="checkbox-container" style="margin-top:8px; border:none; background:transparent; padding:0;">
-                                <label class="switch" style="width:24px; height:14px;"><input type="checkbox" id="cap-herdParallelGeneration"><span class="slider"></span></label>
-                                <label for="cap-herdParallelGeneration" style="font-size:11px; opacity:0.8;">Parallel Generation (Fast Servers)</label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="modal-section">
-                        <h3>Code Generation Strategy</h3>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-forceFullCode"><span class="slider"></span></label>
-                            <label for="cap-forceFullCode"><strong>Force Full Code</strong> (Disable partial updates)</label>
-                        </div>
-                        
-                        <div id="partial-strategy-container" style="margin-top:12px; padding-left: 10px; border-left: 2px solid var(--vscode-widget-border);">
-                            <label style="font-size:11px; font-weight:bold; display:block; margin-bottom:4px;">Preferred Partial Update Format</label>
-                            <div class="radio-group">
-                                <label class="radio-option"><input type="radio" name="cap-partialFormat" value="aider" checked> Aider (Robust Search/Replace)</label>
-                                <label class="radio-option"><input type="radio" name="cap-partialFormat" value="diff"> Unified Diff (.patch)</label>
-                            </div>
-                            <div class="checkbox-container" style="border:none; background:transparent; padding:0; margin-top:8px;">
-                                <label class="switch" style="width:24px; height:14px;"><input type="checkbox" id="cap-allowFullFallback" checked><span class="slider"></span></label>
-                                <label for="cap-allowFullFallback" style="font-size:11px; opacity:0.8;">Allow full-file fallback for large changes</label>
-                            </div>
-                        </div>
-
-                        <div class="checkbox-container" style="margin-top:12px;">
-                            <label class="switch"><input type="checkbox" id="cap-explainCode" checked><span class="slider"></span></label>
-                            <label for="cap-explainCode">AI explains changes (Discover/Explain/Think/Act)</label>
-                        </div>
-
-                        <h3 style="margin-top:20px; color:var(--vscode-charts-orange);">🚀 Automation</h3>
-                    <div class="checkbox-container">
-                        <label class="switch"><input type="checkbox" id="cap-autoFix" checked><span class="slider"></span></label>
-                        <label for="cap-autoFix"><strong>Auto Fix:</strong> Autonomous repair of failed patches</label>
-                    </div>
-                    <div class="checkbox-container">
-                        <label class="switch"><input type="checkbox" id="cap-autoApply"><span class="slider"></span></label>
-                        <label for="cap-autoApply"><strong>Auto Apply:</strong> Automatically apply code blocks</label>
-                    </div>
-                    <div id="automation-sub-options" style="margin-left: 25px; opacity: 0.5; pointer-events: none;">
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="cap-autoBranch"><span class="slider"></span></label>
-                                <label for="cap-autoBranch">Auto Branch (Git)</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="cap-autoFix"><span class="slider"></span></label>
-                                <label for="cap-autoFix">Auto Fix (Repair linting errors)</label>
-                            </div>
-                            <div style="margin-top:8px; display:flex; align-items:center; gap:10px;">
-                                <label style="font-size:11px;">Max Fix Retries:</label>
-                                <input type="number" id="cap-maxFixRetries" value="3" min="1" max="10" style="width:50px;">
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="modal-section">
-                        <h3>Response Instructions</h3>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-addPedagogicalInstruction"><span class="slider"></span></label>
-                            <label for="cap-addPedagogicalInstruction">Add Pedagogical Context</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-forceFullCodePath"><span class="slider"></span></label>
-                            <label for="cap-forceFullCodePath">Strict <code>\`\`\`lang:path</code> blocks</label>
-                        </div>
-                    </div>
-                    <div class="modal-section">
-                        <h3>📋 Monitored Log Paths</h3>
-                        <div class="form-group">
-                            <label style="font-size: 11px; font-weight: bold;">Custom Log Files (one per line)</label>
-                            <textarea id="cap-monitoredLogPaths" class="commit-textarea" style="height: 60px; font-family: monospace; font-size: 11px; margin-top: 4px;" placeholder="e.g. logs/app.log&#10;debug.log"></textarea>
-                            <p class="help-text" style="font-size: 10px; opacity: 0.7; margin-top: 4px;">These files will be analyzed and summarized alongside stdout/stderr when clicking 'Run App & Monitor Logs'.</p>
-                        </div>
-                    </div>
-                    <div class="modal-section">
-                        <h3>📋 Clipboard Management</h3>
-                        <div class="form-group">
-                            <label style="font-size: 11px; font-weight: bold;">New Chat Entry Role</label>
-                            <select id="cap-clipboardInsertRole" class="menu-select" style="width: 100%; margin: 0;">
-                                <option value="user">User (Prompt)</option>
-                                <option value="assistant">AI (Reference Response)</option>
-                            </select>
-                            <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Determines the role used for content when starting a new discussion from the clipboard.</p>
-                        </div>
-                    </div>
-
-                    <div class="modal-section">
-                        <h3>Allowed UI Actions</h3>
-                        <div class="checkbox-grid">
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="fmt-fullFile" checked><span class="slider"></span></label>
-                                <label for="fmt-fullFile">Full File (Apply)</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="fmt-insert" checked><span class="slider"></span></label>
-                                <label for="fmt-insert">Insert Snippet</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="fmt-replace" checked><span class="slider"></span></label>
-                                <label for="fmt-replace">Replace Snippet</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="fmt-delete" checked><span class="slider"></span></label>
-                                <label for="fmt-delete">Delete Code</label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="modal-section">
-                        <h3>Search & Web Tools</h3>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-webSearch"><span class="slider"></span></label>
-                            <label for="cap-webSearch"><strong>Enable Web Search Agent</strong></label>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-searchInCacheFirst"><span class="slider"></span></label>
-                            <label for="cap-searchInCacheFirst">Search in local cache first (.lollms)</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-distillWebResults"><span class="slider"></span></label>
-                            <label for="cap-distillWebResults">Distill/Refactor web results using AI</label>
-                        </div>
-                        <div class="checkbox-container" style="margin-bottom: 10px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 10px;">
-                            <label class="switch"><input type="checkbox" id="cap-antiPromptInjection"><span class="slider"></span></label>
-                            <label for="cap-antiPromptInjection">Anti-Prompt Injection cleaning</label>
-                        </div>
-                        <div style="font-size: 11px; margin-bottom: 8px; opacity: 0.8;">Active Sources:</div>
-                        <div class="checkbox-grid" id="search-sources-grid">
-                            <div class="checkbox-container">
-                                <input type="checkbox" id="src-google" data-source="google">
-                                <label for="src-google">Google (Custom)</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <input type="checkbox" id="src-arxiv" data-source="arxiv">
-                                <label for="src-arxiv">ArXiv (Papers)</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <input type="checkbox" id="src-wikipedia" data-source="wikipedia">
-                                <label for="src-wikipedia">Wikipedia</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <input type="checkbox" id="src-stackoverflow" data-source="stackoverflow">
-                                <label for="src-stackoverflow">StackOverflow</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <input type="checkbox" id="src-youtube" data-source="youtube">
-                                <label for="src-youtube">YouTube (Transcripts)</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <input type="checkbox" id="src-github" data-source="github">
-                                <label for="src-github">GitHub (Search)</label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="modal-section">
-                        <h3>Agent & Vision Permissions</h3>
-                        <div class="checkbox-grid">
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="cap-enableImages" checked><span class="slider"></span></label>
-                                <label for="cap-enableImages">Enable Vision (Images)</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="cap-useImageModeForDocs"><span class="slider"></span></label>
-                                <label for="cap-useImageModeForDocs" title="Convert PDF/PPTX to Images">Visual Doc Mode</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="cap-imageGen" checked><span class="slider"></span></label>
-                                <label for="cap-imageGen">Image Gen</label>
-                            </div>
-                            <div class="checkbox-container" id="cap-gitWorkflowContainer">
-                                <label class="switch"><input type="checkbox" id="cap-gitWorkflow"><span class="slider"></span></label>
-                                <label for="cap-gitWorkflow">Git Workflow</label>
-                            </div>
-                            <div class="checkbox-container" id="cap-includeGitInfoContainer">
-                                <label class="switch"><input type="checkbox" id="cap-includeGitInfo"><span class="slider"></span></label>
-                                <label for="cap-includeGitInfo">Include Git Info</label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="modal-section">
-                        <h3>File Operations</h3>
-                        <div class="checkbox-grid">
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="cap-fileRename" checked><span class="slider"></span></label>
-                                <label for="cap-fileRename">Rename/Move</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="cap-fileDelete" checked><span class="slider"></span></label>
-                                <label for="cap-fileDelete">Delete</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="cap-fileSelect" checked><span class="slider"></span></label>
-                                <label for="cap-fileSelect">Context Selection</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="cap-fileReset" checked><span class="slider"></span></label>
-                                <label for="cap-fileReset">Context Reset</label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="modal-section" style="border:none;">
-                        <h3>Misc</h3>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="mode-funMode"><span class="slider"></span></label>
-                            <label for="mode-funMode">Fun Mode 🤪</label>
-                        </div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button id="save-discussion-tools-btn" class="code-action-btn apply-btn" style="width:100px; justify-content:center;">Apply</button>
-                </div>
-            </div>
-        </div>
-        
-        <div id="token-counting-overlay" class="token-counting-overlay" style="display: none;">
-            <div class="spinner"></div>
-            <span>Counting tokens...</span>
-        </div>
-
-        <div id="usage-modal" class="modal">
-            <div class="modal-content" style="max-width: 800px; width: 90%;">
-                <div class="modal-header">
-                    <h2>Context Token Usage</h2>
-                    <span class="close-btn" id="usage-close-btn">&times;</span>
-                </div>
-                <div class="modal-body">
-                    <p style="font-size: 11px; opacity: 0.8; margin-bottom: 15px;">Detailed breakdown of tokens per file using the currently selected model.</p>
-                    <div id="usage-list-container" style="max-height: 400px; overflow-y: auto;">
-                        <div style="text-align:center; padding: 20px;"><div class="spinner"></div> Calculating...</div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button id="usage-refresh-btn" class="code-action-btn apply-btn" style="width:auto; height:32px;"><span class="codicon codicon-refresh"></span> Recalculate</button>
-                </div>
-            </div>
-        </div>
-
-        <div id="bulk-process-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>Bulk Big Data Processing</h2>
-                    <span class="close-btn" id="bulk-process-close-btn">&times;</span>
-                </div>
-                <div class="modal-body">
-                    <p style="font-size: 12px; opacity: 0.8; margin-bottom: 12px;">Select files to process and enter your instructions. Each file will be processed and updated.</p>
-                    <div class="checkbox-container" style="margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
-                        <input type="checkbox" id="bulk-process-select-all" checked>
-                        <label for="bulk-process-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select / Deselect All</label>
-                    </div>
-                    <div id="bulk-files-list" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px;">
-                        <!-- List of checkboxes injected here -->
-                    </div>
-                    <label for="bulk-process-prompt">Instructions</label>
-                    <textarea id="bulk-process-prompt" class="commit-textarea" style="height: 100px;" placeholder="e.g. Summarize this document and extract key insights."></textarea>
-                </div>
-                <div class="modal-footer">
-                    <button id="bulk-process-run-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;">Start Bulk Processing</button>
-                </div>
-            </div>
-        </div>
-
-        <div id="bulk-delete-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>Bulk Delete Files</h2>
-                    <span class="close-btn" id="bulk-delete-close-btn">&times;</span>
-                </div>
-                <div class="modal-body">
-                    <p style="font-size: 12px; opacity: 0.8; margin-bottom: 12px; color: var(--vscode-errorForeground);">Warning: This will permanently delete the selected files from your workspace.</p>
-                    <div class="checkbox-container" style="margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
-                        <input type="checkbox" id="bulk-delete-select-all" checked>
-                        <label for="bulk-delete-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select / Deselect All</label>
-                    </div>
-                    <div id="bulk-delete-files-list" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px;">
-                        <!-- List of checkboxes injected here -->
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button id="bulk-delete-run-btn" class="code-action-btn delete-btn" style="width: 100%; justify-content: center;">Delete Selected Files</button>
-                </div>
-            </div>
-        </div>
-
-        <div id="file-search-modal" class="modal">
-            <div class="modal-content" style="max-width: 500px;">
-                <div class="modal-header">
-                    <h2 style="font-size: 14px; font-weight: 600;"><i class="codicon codicon-search" style="margin-right: 8px;"></i>Search & Add Files</h2>
-                    <span class="close-btn" id="file-search-close-btn">&times;</span>
-                </div>
-                <div class="modal-body">
-                    <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:12px;">
-                        <div style="display:flex; justify-content: space-between; align-items: center; background: var(--vscode-editor-inactiveSelectionBackground); padding: 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border);">
-                            <div style="display:flex; align-items:center; gap:8px;">
-                                <label style="font-size:11px; font-weight: 600; opacity:0.9; margin: 0;">Scope:</label>
-                                <select id="file-search-mode" class="menu-select" style="width: 130px; margin: 0; height: 24px;">
-                                    <option value="content" selected>Code Content</option>
-                                    <option value="path">Filenames</option>
-                                </select>
-                            </div>
-                            <div style="display:flex; gap:12px;">
-                                <div style="display:flex; align-items:center; gap:4px;" title="Match Case">
-                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">Ab</span>
-                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
-                                        <input type="checkbox" id="file-search-case">
-                                        <span class="slider" style="border-radius: 14px;"></span>
-                                    </label>
-                                </div>
-                                <div style="display:flex; align-items:center; gap:4px;" title="Match Whole Word">
-                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">\b</span>
-                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
-                                        <input type="checkbox" id="file-search-word">
-                                        <span class="slider" style="border-radius: 14px;"></span>
-                                    </label>
-                                </div>
-                                <div style="display:flex; align-items:center; gap:4px;" title="Fuzzy Search (Filename only)">
-                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">~</span>
-                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
-                                        <input type="checkbox" id="file-search-fuzzy" checked>
-                                        <span class="slider" style="border-radius: 14px;"></span>
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-                        <input type="text" id="file-search-input" class="search-modal-input" placeholder="Type query and press Enter..." style="flex:1;">
-                        
-                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                            <div class="form-group" style="margin:0;">
-                                <label style="font-size: 10px; opacity: 0.7; margin-bottom: 2px;">Include (e.g. src/, *.ts)</label>
-                                <input type="text" id="file-search-include" class="search-modal-input" placeholder="Files to include..." style="font-size: 11px; height: 24px;">
-                            </div>
-                            <div class="form-group" style="margin:0;">
-                                <label style="font-size: 10px; opacity: 0.7; margin-bottom: 2px;">Exclude (e.g. tests/, *.log)</label>
-                                <input type="text" id="file-search-exclude" class="search-modal-input" placeholder="Files to hide..." style="font-size: 11px; height: 24px;">
-                            </div>
-                        </div>
-
-                        <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap; line-height: 1.5;">
-                            <span>Pro Search:</span>
-                            <code>A B (AND)</code>
-                            <code>A | B (OR)</code>
-                            <code>-ignore (NOT)</code>
-                        </div>
-                    </div>
-                    <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-widget-border);">
-                        <input type="checkbox" id="file-search-select-all">
-                        <label for="file-search-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select All Results</label>
-                    </div>
-                    <div id="file-search-results" style="max-height: 350px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
-                        <div style="opacity:0.6; text-align:center; padding: 20px;">Type to start searching...</div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button id="file-search-add-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;">Add Selected Files</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- 🚀 UNIFIED GROUNDING & INGESTION CENTER -->
-        <div id="web-modal" class="modal">
-            <div class="modal-content" style="max-width: 850px; width: 95%; height: 85vh;">
-                <div class="modal-header" style="border-bottom: 1px solid var(--vscode-widget-border);">
-                    <h2 style="margin:0; display:flex; align-items:center; gap:10px;"><i class="codicon codicon-cloud-upload"></i> Sovereign Grounding Center</h2>
-                    <span class="close-btn" id="web-modal-close-btn">&times;</span>
-                </div>
-                <div class="web-tabs-nav">
-                    <button class="web-tab-btn active" data-tab="tab-local-upload">📂 Local Document Ingestion</button>
-                    <button class="web-tab-btn" data-tab="tab-url">🌐 Web Scraper</button>
-                    <button class="web-tab-btn" data-tab="tab-search">🔍 Web Search Engines</button>
-                    <button class="web-tab-btn" data-tab="tab-arxiv">🎓 Academic Databases</button>
-                </div>
-                <div class="modal-body" style="flex:1; overflow-y:auto; padding: 20px;">
-
-                    <!-- Tab 1: Local Document Ingestion -->
-                    <div id="tab-local-upload" class="web-tab-content active">
-                        <div class="ingestion-drag-zone" id="drag-drop-zone">
-                            <i class="codicon codicon-cloud-upload" style="font-size:40px; color:var(--vscode-textLink-foreground);"></i>
-                            <h3>Drag & Drop Ingestion</h3>
-                            <p style="font-size:11px; opacity:0.7; margin:0 0 10px 0;">Supports PDF, DOCX, Markdown, Notebooks, and Images.</p>
-                            <button class="code-action-btn apply-btn" onclick="document.getElementById('fileInput').click()">Browse Local Storage</button>
-                        </div>
-
-                        <div class="ingestion-strategy-card" style="margin-top:20px;">
-                            <h4>Configure Parsing Strategy</h4>
-                            <p class="help-text">Define how non-text files (PDF/Office) should be mapped into the Knowledge Graph.</p>
-                            <div class="ingestion-strategy-grid">
-                                <label class="strategy-option-card">
-                                    <input type="radio" name="pdf-parse-strategy" value="text" checked>
-                                    <div class="strategy-details">
-                                        <strong>📝 Standard Extraction</strong>
-                                        <span>Highly efficient text-only extraction with layout preservation.</span>
-                                    </div>
-                                </label>
-                                <label class="strategy-option-card">
-                                    <input type="radio" name="pdf-parse-strategy" value="mixed">
-                                    <div class="strategy-details">
-                                        <strong>📷 Mixed Vision</strong>
-                                        <span>Extracts text and copies high-res diagrams into the Vision Stream.</span>
-                                    </div>
-                                </label>
-                                <label class="strategy-option-card">
-                                    <input type="radio" name="pdf-parse-strategy" value="images">
-                                    <div class="strategy-details">
-                                        <strong>🖼️ Full Multimodal</strong>
-                                        <span>Converts entire PDF pages into images. Best for charts and slides.</span>
-                                    </div>
-                                </label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Tab 2: Web Scraper -->
-                    <div id="tab-url" class="web-tab-content">
-                        <div class="web-form-group">
-                            <label>Target URL to Ingest</label>
-                            <input type="text" id="web-url-input" placeholder="https://example.com/api/docs">
-                        </div>
-                        <div class="web-form-group">
-                            <label>Crawl Depth</label>
-                            <div class="web-form-row" style="gap:10px;">
-                                <input type="number" id="web-url-depth" value="0" min="0" max="3" style="width: 80px;">
-                                <span class="help-text">0 = target page only. Depth > 0 triggers recursive domain indexing.</span>
-                            </div>
-                        </div>
-                        <button class="code-action-btn apply-btn web-submit-btn" data-action="scrape" style="width:100%; justify-content:center; height:32px;">Start Ingestion & Graph Indexing</button>
-                    </div>
-
-                    <!-- Tab 3: Web Search Engines -->
-                    <div id="tab-search" class="web-tab-content">
-                        <div class="web-form-group">
-                            <label>Query Search Stream</label>
-                            <div class="web-form-row">
-                                <input type="text" id="web-search-query" placeholder="e.g. latest changes in React Server Components 2026" style="flex:1;">
-                                <select id="web-search-provider" style="width:140px; margin:0;">
-                                    <option value="ddg">DuckDuckGo</option>
-                                    <option value="google">Google Custom</option>
-                                    <option value="so">StackOverflow</option>
-                                </select>
-                                <button class="code-action-btn apply-btn web-submit-btn" data-action="search_provider" style="width:90px; justify-content:center;">Query</button>
-                            </div>
-                        </div>
-                        <div id="web-search-results" class="web-search-results" style="max-height:280px; overflow-y:auto; border: 1px solid var(--vscode-widget-border); border-radius:4px; margin-top:10px;">
-                            <div style="padding:20px; opacity:0.5; text-align:center;">Results stream will populate here. Select pages to index.</div>
-                        </div>
-                    </div>
-
-                    <!-- Tab 4: Academic Databases -->
-                    <div id="tab-arxiv" class="web-tab-content">
-                        <div class="web-form-group">
-                            <label>Scholarly Search Query (ArXiv/HAL)</label>
-                            <div class="web-form-row">
-                                <input type="text" id="web-arxiv-input" placeholder="e.g. GraphRAG entity extraction" style="flex:1;">
-                                <select id="web-academic-provider" style="width:120px; margin:0;">
-                                    <option value="arxiv">ArXiv</option>
-                                    <option value="hal">HAL Archive</option>
-                                </select>
-                                <button class="code-action-btn apply-btn web-submit-btn" data-action="academic_provider" style="width:90px; justify-content:center;">Search</button>
-                            </div>
-                        </div>
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
-                            <div class="radio-group" style="flex-direction:row; gap:15px; display:flex;">
-                                <label class="radio-option"><input type="radio" name="arxiv-mode" id="arxiv-abstract" value="abstract" checked> <span>Abstract only (Fast)</span></label>
-                                <label class="radio-option"><input type="radio" name="arxiv-mode" id="arxiv-full" value="full"> <span>Retrieve full PDF (Deep Analysis)</span></label>
-                            </div>
-                            <div style="display:flex; align-items:center; gap:6px;">
-                                <label style="margin:0; font-size:10px;">Limit:</label>
-                                <input type="number" id="web-arxiv-limit" value="5" min="1" max="25" style="width:50px;">
-                            </div>
-                        </div>
-                        <div id="web-arxiv-results" class="web-search-results" style="max-height:240px; overflow-y:auto; border: 1px solid var(--vscode-widget-border); border-radius:4px; margin-top:10px;">
-                            <div style="padding:20px; opacity:0.5; text-align:center;">Search publications...</div>
-                        </div>
-                    </div>
-
-                </div>
-            </div>
-        </div>
-
-        <!-- Mission Briefing Modal -->
-        <div id="mission-briefing-modal" class="modal">
-            <div class="modal-content" style="max-width: 800px; width: 90%;">
-                <div class="modal-header">
-                    <h2 style="margin:0; display:flex; align-items:center; gap:8px;"><span class="codicon codicon-shield"></span> Mission Briefing</h2>
-                    <span class="close-btn" id="mission-briefing-close-btn">&times;</span>
-                </div>
-                <div class="modal-body" style="display:flex; flex-direction:column; gap:15px;">
-                    <div>
-                        <label style="margin-top:0;">Scope</label>
-                        <div class="radio-group" style="flex-direction: row; gap:20px; margin-top:5px; display: flex;">
-                            <label class="radio-option" style="flex:1; display:flex; align-items:center; gap:8px; cursor:pointer;">
-                                <input type="radio" name="briefing-scope" value="local" checked style="margin:0;"> <span>Current Discussion Only</span>
-                            </label>
-                            <label class="radio-option" style="flex:1; display:flex; align-items:center; gap:8px; cursor:pointer;">
-                                <input type="radio" name="briefing-scope" value="global" style="margin:0;"> <span>Persistent (All Discussions)</span>
-                            </label>
-                        </div>
-                    </div>
-                    
-                    <div>
-                        <label style="margin-top:0;">Input Method</label>
-                        <div style="display:flex; gap:10px; margin-top:5px;">
-                            <button class="code-action-btn secondary-btn" id="briefing-upload-btn" style="flex:1; justify-content:center; height:32px;"><i class="codicon codicon-file-add"></i> Upload Document (PDF, DOCX, MD)</button>
-                            <button class="code-action-btn secondary-btn" id="briefing-clipboard-btn" style="flex:1; justify-content:center; height:32px;"><i class="codicon codicon-clippy"></i> Paste from Clipboard</button>
-                        </div>
-                    </div>
-                    
-                    <div>
-                        <label style="margin-top:0; display:flex; justify-content:space-between;">
-                            <span>Briefing Content (Task Constraints)</span>
-                        </label>
-                        <textarea id="briefing-content-input" rows="8" placeholder="Enter task-specific constraints, rules, or paste documentation..." style="margin-top:5px; font-family:var(--vscode-editor-font-family); font-size:12px; width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); resize: vertical; outline: none;"></textarea>
-                    </div>
-                    
-                    <div style="border-top: 1px solid var(--vscode-widget-border); padding-top: 15px;">
-                        <label style="margin-top:0;">🧬 Project DNA (Live Memory)</label>
-                        <p style="font-size:10px; opacity:0.7; margin-top:0; margin-bottom:5px;">These facts are automatically extracted from Project Memory and appended to every prompt.</p>
-                        <div id="briefing-dna-preview" style="font-size: 11px; opacity: 0.8; background: var(--vscode-editor-inactiveSelectionBackground); padding: 10px; border-radius: 4px; max-height: 150px; overflow-y: auto; white-space: pre-wrap; border: 1px solid var(--vscode-widget-border);">
-                            Loading DNA...
-                        </div>
-                    </div>
-                </div>
-                <div class="modal-footer" style="display:flex; justify-content: space-between;">
-                    <button id="briefing-clear-btn" class="code-action-btn delete-btn" style="width:120px; justify-content:center; height:32px; font-weight:bold;">Clear Briefing</button>
-                    <button id="briefing-save-btn" class="code-action-btn apply-btn" style="width:120px; justify-content:center; height:32px; font-weight:bold;"><i class="codicon codicon-save"></i> Save</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Global Discussion Search Modal -->
-        <div id="discussion-search-modal" class="modal">
-            <div class="modal-content" style="max-width: 800px;">
-                <div class="modal-header">
-                    <h2>Advanced Discussion Search</h2>
-                    <span class="close-btn" id="discussion-search-close-btn">&times;</span>
-                </div>
-                <div class="modal-body">
-                    <div style="display:flex; gap:8px; margin-bottom:12px;">
-                        <input type="text" id="discussion-search-input" placeholder="Search across all discussions (supports * and ?)..." style="flex:1;">
-                        <button id="discussion-search-run-btn" class="code-action-btn apply-btn" style="width:auto; height: 32px;">Search</button>
-                    </div>
-                    <div id="discussion-search-results" style="max-height: 500px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
-                        <div style="opacity:0.6; text-align:center; padding: 20px;">Enter keywords to search in titles and message history.</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- NEW: Raw Code Preview Modal -->
-        <div id="workspace-matrix-modal" class="modal">
-            <div class="modal-content" style="max-width: 500px;">
-                <div class="modal-header">
-                    <h2 style="margin:0; font-size: 14px; display:flex; align-items:center; gap:8px;"><i class="codicon codicon-layers"></i> Workspace Access Matrix</h2>
-                    <span class="close-btn" id="matrix-close-btn">&times;</span>
-                </div>
-                <div class="modal-body" style="padding: 0;">
-                    <div style="display: flex; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--vscode-widget-border); background: var(--vscode-editor-inactiveSelectionBackground);">
-                        <span style="font-size: 10px; font-weight: 800; opacity: 0.7; text-transform: uppercase;">Project Selection</span>
-                        <div style="display: flex; gap: 12px;">
-                            <button id="matrix-all-on" style="background:none; border:none; color: var(--vscode-textLink-foreground); font-size: 11px; cursor: pointer; padding: 0; font-weight: bold;">Enable All</button>
-                            <button id="matrix-all-off" style="background:none; border:none; color: var(--vscode-errorForeground); font-size: 11px; cursor: pointer; padding: 0; font-weight: bold;">Mute All</button>
-                        </div>
-                    </div>
-                    <div id="matrix-rows-container" style="max-height: 400px; overflow-y: auto;">
-                        <!-- Rows injected here -->
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <p style="font-size: 10px; opacity: 0.6; margin: 0; text-align: left; float: left; max-width: 60%;">Changes take effect on the next context sync.</p>
-                    <button id="matrix-done-btn" class="code-action-btn apply-btn" style="width: 80px;">Done</button>
-                </div>
-            </div>
-        </div>
-        <!-- 🖼️ SOVEREIGN IMAGE ZOOM OVERLAY -->
-        <div id="image-zoom-overlay">
-            <div class="zoom-controls">
-                <button class="code-action-btn secondary-btn" id="zoom-copy-btn" title="Copy to clipboard">
-                    <i class="codicon codicon-copy"></i>
-                </button>
-                <button class="code-action-btn secondary-btn" id="zoom-close-btn" title="Close">
-                    <i class="codicon codicon-close"></i>
-                </button>
-            </div>
-            <img id="zoomed-image-display" alt="Zoomed View">
-        </div>
-
-        <div id="raw-code-modal" class="modal">
-            <div class="modal-content" style="max-width: 95%; width: 1100px;">
-                <div class="modal-header">
-                    <div style="display:flex; align-items:center; gap:15px; flex:1;">
-                        <div style="display:flex; flex-direction:column; gap:2px;">
-                            <div style="display:flex; align-items:center; gap:8px;">
-                                <h2 style="margin:0; white-space:nowrap; font-size: 14px;">Raw Aider Block</h2>
-                                <span id="raw-hunk-id" style="background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: bold;"></span>
-                                <button class="icon-btn" id="raw-stitch-help-btn" title="How to stitch manually?">
-                                    <i class="codicon codicon-question" style="font-size: 12px;"></i>
-                                </button>
-                            </div>
-                            <span id="raw-code-filename" style="font-size:10px; opacity:0.7; font-family:var(--vscode-editor-font-family); font-weight: bold; color: var(--vscode-textLink-foreground);"></span>
-                        </div>
-                        <div class="raw-search-container" style="display:flex; align-items:center; gap:5px; background:var(--vscode-input-background); border:1px solid var(--vscode-input-border); padding:2px 8px; border-radius:4px; flex:1; max-width:350px;">
-                            <i class="codicon codicon-search" style="font-size:12px; opacity:0.7;"></i>
-                            <input type="text" id="raw-search-input" placeholder="Search for manual stitch site..." style="background:transparent; border:none; color:var(--vscode-input-foreground); outline:none; font-size:11px; flex:1; padding:2px 0;">
-                            <span id="raw-search-count" style="font-size:10px; opacity:0.6; min-width:35px; text-align:center;"></span>
-                            <button id="raw-search-prev" class="icon-btn" style="padding:0; width:18px; height:18px;"><i class="codicon codicon-arrow-up" style="font-size:12px;"></i></button>
-                            <button id="raw-search-next" class="icon-btn" style="padding:0; width:18px; height:18px;"><i class="codicon codicon-arrow-down" style="font-size:12px;"></i></button>
-                        </div>
-                    </div>
-                    <span class="close-btn" id="raw-code-close-btn">&times;</span>
-                </div>
-
-                <!-- Hunk tabs container for multi-hunk view inside Raw Block modal -->
-                <div id="modal-hunk-tabs" class="hunk-tabs-nav" style="padding: 6px 16px 0 16px; border-bottom: 1px solid var(--vscode-widget-border); display: flex; gap: 4px; overflow-x: auto;"></div>
-
-                <div class="modal-body" style="display:flex; gap:10px; height: 60vh; padding: 10px;">
-                    <pre id="raw-code-display" style="flex: 2; margin: 0; user-select: text; white-space: pre-wrap; word-break: break-all; background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 12px;"></pre>
-                    <div id="raw-search-results" class="search-results-mini" style="flex: 1; display: none; flex-direction: column; overflow-y: auto; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 5px;"></div>
-                </div>
-                <div class="modal-footer" style="display:flex; gap:10px; flex-wrap: wrap;">
-                    <button id="search-selection-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 150px; justify-content: center; height: 32px; border-color: var(--vscode-charts-blue);"><span class="codicon codicon-search"></span> Search Selection</button>
-                    <button id="copy-search-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy SEARCH</button>
-                    <button id="copy-replace-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy REPLACE</button>
-                    <button id="copy-raw-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy Full Block</button>
-                    <button id="raw-fix-ai-btn" class="code-action-btn apply-btn" style="flex:1; min-width: 150px; justify-content: center; height: 32px; border-color: var(--vscode-charts-purple);"><span class="codicon codicon-sparkle"></span> Fix with AI</button>
-                    <button id="mark-applied-btn" class="code-action-btn apply-btn" style="flex:1; min-width: 180px; justify-content: center; height: 32px; background-color: var(--vscode-charts-green) !important;"><span class="codicon codicon-check"></span> Mark as Applied Manually</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Image Editor Modal -->
-        <div id="image-editor-modal" class="editor-modal">
-            <div class="editor-toolbar">
-                <div class="tool-group" id="vector-tools">
-                    <label>Annotate Tools</label>
-                    <button class="code-action-btn" id="tool-select" title="Select / Move / Resize Shapes"><i class="codicon codicon-pointer"></i> Select</button>
-                    <button class="code-action-btn" id="tool-pan" title="Pan Canvas"><i class="codicon codicon-move"></i> Pan</button>
-                    <button class="code-action-btn" id="tool-brush" title="Free Brush"><i class="codicon codicon-edit"></i> Brush</button>
-                    <button class="code-action-btn" id="tool-arrow" title="Draw Single Arrow"><i class="codicon codicon-arrow-right"></i> Arrow</button>
-                    <button class="code-action-btn" id="tool-dual-arrow" title="Draw Dual Arrow"><i class="codicon codicon-arrow-swap"></i> Dual Arrow</button>
-                    <button class="code-action-btn" id="tool-spline-arrow" title="Draw Curved Spline Arrow"><i class="codicon codicon-call-outgoing"></i> Spline Arrow</button>
-                    <button class="code-action-btn" id="tool-spline-dual-arrow" title="Draw Curved Dual Spline Arrow"><i class="codicon codicon-git-compare"></i> Spline Dual</button>
-                    <button class="code-action-btn" id="tool-rect" title="Draw Rectangle"><i class="codicon codicon-primitive-square"></i> Rectangle</button>
-                    <button class="code-action-btn" id="tool-oval" title="Draw Oval"><i class="codicon codicon-circle-large-outline"></i> Oval</button>
-                    <button class="code-action-btn" id="tool-text" title="Write Text Layer"><i class="codicon codicon-symbol-class"></i> Text</button>
-                    <button class="code-action-btn" id="tool-webcam" title="Import Webcam Snapshot"><i class="codicon codicon-device-camera"></i> Webcam</button>
-                </div>
-                <div class="tool-group">
-                    <label>Zoom</label>
-                    <button class="code-action-btn" id="editor-zoom-in" title="Zoom In"><i class="codicon codicon-zoom-in"></i></button>
-                    <button class="code-action-btn" id="editor-zoom-out" title="Zoom Out"><i class="codicon codicon-zoom-out"></i></button>
-                    <button class="code-action-btn" id="editor-zoom-fit" title="Fit to Screen"><i class="codicon codicon-screen-full"></i> Fit</button>
-                </div>
-                <div class="tool-group">
-                    <button class="code-action-btn" id="editor-undo" title="Undo"><i class="codicon codicon-discard"></i></button>
-                    <button class="code-action-btn" id="editor-redo" title="Redo"><i class="codicon codicon-redo"></i></button>
-                </div>
-                <div class="tool-group">
-                    <label>Color</label>
-                    <input type="color" id="editor-color" value="#e74c3c">
-                </div>
-                <div class="tool-group">
-                    <label>Width</label>
-                    <input type="number" id="editor-width" value="3" min="1" max="50">
-                </div>
-                <div class="tool-group">
-                    <label>Font Size</label>
-                    <input type="number" id="editor-font-size" value="18" min="8" max="100">
-                </div>
-                <div style="flex:1"></div>
-                <button class="code-action-btn" id="editor-delete-shape" style="color:var(--vscode-charts-red); display:none;" title="Delete selected annotation shape"><i class="codicon codicon-trash"></i> Delete Shape</button>
-                <button class="code-action-btn" id="editor-clear">Clear</button>
-                <button class="code-action-btn" id="editor-cancel">Cancel</button>
-                <button class="code-action-btn apply-btn" id="editor-save">Inject to Chat</button>
-            </div>
-            <div class="editor-canvas-container">
-                <div id="webcam-container" style="display: none; position: absolute; z-index: 10001; background: black; flex-direction: column; align-items: center; gap: 10px; padding: 10px; border-radius: 8px;">
-                    <video id="webcam-feed" autoplay playsinline style="max-width: 100%; border-radius: 4px;"></video>
-                    <div style="display: flex; gap: 10px;">
-                        <button class="code-action-btn secondary-btn" id="webcam-cancel">Cancel</button>
-                        <button class="code-action-btn apply-btn" id="webcam-capture">Capture Photo</button>
-                    </div>
-                </div>
-                <canvas id="image-editor-canvas"></canvas>
-                <input type="text" id="canvas-text-input" placeholder="Type annotation...">
-            </div>
-        </div>
-
-        <div id="bulk-delete-skills-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>Bulk Remove Skills</h2>
-                    <span class="close-btn" id="bulk-delete-skills-close-btn">&times;</span>
-                </div>
-                <div class="modal-body">
-                    <p style="font-size: 12px; opacity: 0.8; margin-bottom: 12px;">Select skills to remove from the current context.</p>
-                    <div class="checkbox-container" style="margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
-                        <input type="checkbox" id="bulk-skills-select-all" checked>
-                        <label for="bulk-skills-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select / Deselect All</label>
-                    </div>
-                    <div id="bulk-delete-skills-list" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px;">
-                        <!-- List of checkboxes injected here -->
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button id="bulk-delete-skills-run-btn" class="code-action-btn delete-btn" style="width: 100%; justify-content: center;">Remove Selected Skills</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- 🚀 REVAMPED STAGING MODAL -->
-        <div id="staging-revamp-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2 style="display:flex; align-items:center; gap:10px;"><i class="codicon codicon-git-pull-request-go-to-changes"></i> Review Proposed Changes</h2>
-                    <div style="display:flex; gap:10px; align-items:center;">
-                        <span id="staging-stats" style="font-size:11px; opacity:0.7;"></span>
-                        <span class="close-btn" id="staging-revamp-close">&times;</span>
-                    </div>
-                </div>
-                <div class="modal-body" style="padding:0; flex:1;">
-                    <div class="staging-layout">
-                        <div class="staging-sidebar" id="staging-files-list"></div>
-                        <div class="staging-diff-viewer">
-                            <div class="diff-scroll-container" id="staging-diff-content"></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="staging-footer-actions">
-                    <button class="code-action-btn secondary-btn" id="staging-cancel-btn">Discard All</button>
-                    <button class="code-action-btn apply-btn" id="staging-apply-current-btn">Apply This File</button>
-                    <button class="code-action-btn apply-btn" id="staging-apply-all-btn" style="background: var(--vscode-charts-green) !important; color: white !important;">
-                        <i class="codicon codicon-check-all"></i> Apply All Valid Files
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- NEW: Raw Code Preview Modal -->
-        <div id="workspace-matrix-modal" class="modal" style="display: none; z-index: 1000000;">
-            <div class="modal-content" style="max-width: 500px;">
-                <div class="modal-header">
-                    <h2 style="margin:0; font-size: 14px; display:flex; align-items:center; gap:8px;"><i class="codicon codicon-layers"></i> Workspace Access Matrix</h2>
-                    <span class="close-btn" id="matrix-close-btn">&times;</span>
-                </div>
-                <div class="modal-body" style="padding: 0;">
-                    <div id="matrix-rows-container" style="max-height: 400px; overflow-y: auto;"></div>
-                </div>
-                <div class="modal-footer">
-                    <button id="matrix-done-btn" class="code-action-btn apply-btn" style="width: 80px;">Done</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- NEW: Context Viewer Modal -->
-        <div id="workspace-matrix-modal" class="modal">
-            <div class="modal-content" style="max-width: 500px;">
-                <div class="modal-header">
-                    <h2 style="margin:0; font-size: 14px; display:flex; align-items:center; gap:8px;"><i class="codicon codicon-layers"></i> Workspace Access Matrix</h2>
-                    <span class="close-btn" id="matrix-close-btn">&times;</span>
-                </div>
-                <div class="modal-body" style="padding: 0;">
-                    <div id="matrix-rows-container" style="max-height: 400px; overflow-y: auto;"></div>
-                </div>
-                <div class="modal-footer">
-                    <button id="matrix-done-btn" class="code-action-btn apply-btn" style="width: 80px;">Done</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- NEW: Context Viewer Modal -->
-        <div id="context-viewer-modal" class="modal">
-            <div class="modal-content" style="max-width: 900px; width: 95%; height: 80vh;">
-                <div class="modal-header">
-                    <h2 id="context-viewer-title" style="margin:0; font-size: 14px;">Context Preview</h2>
-                    <span class="close-btn" id="context-viewer-close-btn">&times;</span>
-                </div>
-                <div class="modal-body" style="flex: 1; padding: 0; overflow: hidden; display: flex; flex-direction: column;">
-                    <div id="context-viewer-display" class="markdown-body" style="padding: 20px; overflow-y: auto; flex: 1; font-family: var(--vscode-editor-font-family); font-size: 12px; line-height: 1.5; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground);">
-                    </div>
-                </div>
-                <div class="modal-footer" style="display:flex; justify-content: flex-end; gap: 10px;">
-                    <button id="context-viewer-copy-btn" class="code-action-btn secondary-btn" style="width: auto;"><span class="codicon codicon-copy"></span> Copy Content</button>
-                    <button id="context-viewer-done-btn" class="code-action-btn apply-btn" style="width: 100px;">Done</button>
-                </div>
-            </div>
-        </div>
-        </div>
-    <input type="file" id="fileInput" style="display: none;" multiple accept=".md,.txt,.msg,.docx,.pdf,.pptx,.xlsx,.csv,.png,.jpg,.jpeg,.bmp,.webp">
-
-    <script nonce="${nonce}">
+private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
+        const nonce = getNonce();
+
+        const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css')).toString();
+        const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.css')).toString();
+        const prismThemeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'prism-tomorrow.css')).toString();
+        const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.bundle.js')).toString();
+        const lollmsIconUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'lollms-icon.svg')).toString();
+
+        const l10nStrings = JSON.stringify(LocalizationManager.getBundleForWebview());
+
+        // Resolve path to chatPanel.html safely in a multi-platform environment
+        const htmlPath = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.html');
+        let htmlContent = "";
         try {
-            const vscode = acquireVsCodeApi();
-            window.vscode = vscode;
-            
-            window.onerror = function(message, source, lineno, colno, error) {
-                vscode.postMessage({
-                    command: 'showError',
-                    message: 'Webview Runtime Error: ' + message + ' (' + source + ':' + lineno + ')'
-                });
-                console.error("Webview Error:", message, error);
-            };
-
-            console.log("Webview Bootstrap: API acquired");
-            vscode.postMessage({ command: 'webview-bootstrap-ok' });
-        } catch (e) {
-            console.error("Webview Bootstrap Failed:", e);
+            const rawBytes = await vscode.workspace.fs.readFile(htmlPath);
+            htmlContent = Buffer.from(rawBytes).toString('utf8');
+        } catch (err: any) {
+            return `<h3>Error loading Chat Panel layout. Details: ${err.message}</h3>`;
         }
-        window.l10n = ${JSON.stringify(l10nStrings)};
-    </script>
-    <script nonce="${nonce}" src="${jsUri}"></script>
-</body>
-</html>`;
-  }
+
+        return htmlContent
+            .replace(/\{\{cspSource\}\}/g, webview.cspSource)
+            .replace(/\{\{nonce\}\}/g, nonce)
+            .replace(/\{\{codiconsUri\}\}/g, codiconsUri)
+            .replace(/\{\{cssUri\}\}/g, cssUri)
+            .replace(/\{\{prismThemeUri\}\}/g, prismThemeUri)
+            .replace(/\{\{jsUri\}\}/g, jsUri)
+            .replace(/\{\{lollmsIconUri\}\}/g, lollmsIconUri)
+            .replace(/\{\{l10nStrings\}\}/g, l10nStrings);
+    }
     
     /**
      * Core loop that fixes errors in a set of files using Aider blocks.

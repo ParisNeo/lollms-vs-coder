@@ -253,7 +253,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         const p = uri.fsPath;
         // Allow .lollms/skills to pass through so we can refresh the library
         if (p.includes(path.join('.lollms', 'skills'))) return false;
-        return p.includes('.lollms') || p.includes('.git') || p.includes('node_modules') || p.includes('venv');
+        const segments = p.split(/[\\/]/).map(s => s.toLowerCase());
+        return segments.some(s => ['.lollms', '.git', 'node_modules', 'venv', '.venv', 'data', 'data_workspace'].includes(s));
     };
 
     let watcherDebounceTimer: NodeJS.Timeout | undefined;
@@ -302,7 +303,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         }
 
         // Trigger single, unified background recount after batch completes
-        if (ChatPanel.currentPanel) {
+        if (ChatPanel.currentPanel && !ChatPanel.isBatchApplying) {
             ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: true });
         }
     };

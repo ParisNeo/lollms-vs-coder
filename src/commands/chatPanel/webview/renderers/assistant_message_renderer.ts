@@ -2,14 +2,17 @@ import { vscode, state } from '../dom.js';
 import { renderMessageContent } from '../messageRenderer.js';
 
 export function renderAssistantMessage(messageId: string, rawContent: any, isFinal: boolean) {
-    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`) as HTMLElement;
+    const safeMessageId = String(messageId || '');
+    if (!safeMessageId) return;
+
+    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${safeMessageId}']`) as HTMLElement;
     if (!wrapper) return;
 
     const bodyDiv = wrapper.querySelector('.message-body') as HTMLElement;
     if (!bodyDiv) return;
 
     // Detect if the message belongs to the user or the assistant
-    const isUser = messageId.startsWith('user_') || messageId.startsWith('msg_') || wrapper.querySelector('.message')?.classList.contains('user-message');
+    const isUser = safeMessageId.startsWith('user_') || safeMessageId.startsWith('msg_') || wrapper.querySelector('.message')?.classList.contains('user-message');
 
     // Check if we need to initialize the assistant-specific layout
     let layout = bodyDiv.querySelector('.assistant-layout');

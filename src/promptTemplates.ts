@@ -85,6 +85,7 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
 - Use this when replacing an ENTIRE class, standalone function, or class method in an existing file.
 - The symbol name (e.g. \`MyClassName\` or \`MyClassName:my_method_name\`) must be appended to the namespaced path.
 - **The block content must contain ONLY the new code for the target symbol**. Do not include any surrounding code or Aider markers.
+- **⚠️ WARNING (CRITICAL)**: If you output a partial code snippet (like a single function) under a standard file header (\`\`\`[language]:path/to/file.ext\`) without appending the \`:SymbolName\` or using Aider search/replace markers, **the system will interpret it as a complete file rewrite and overwrite the entire file with your snippet, erasing all other code.** You must ALWAYS append the \`:SymbolName\` when providing standalone classes or functions!
 `);
 
         // ── FORMAT 2: SEARCH/REPLACE (AIDER) ───────────────────────

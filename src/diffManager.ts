@@ -11,6 +11,7 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
     private generatedToOriginal = new Map<string, string>(); // generatedFsPath -> originalFsPath
     private originalToGenerated = new Map<string, string>(); // originalFsPath -> generatedFsPath
     private generatedToDiscussionId = new Map<string, string>(); // generatedFsPath -> discussionId
+    private generatedToMetadata = new Map<string, { messageId?: string, blockIndex?: number, hunkIndex?: number }>();
     // Caches the user's active cursor selection and scroll viewport position before launching the diff
     private lastPositions = new Map<string, { selection: vscode.Selection, visibleRange: vscode.Range }>();
     private context: vscode.ExtensionContext | undefined;
@@ -61,9 +62,13 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
                             panel._panel.reveal();
                             // Notify webview to collapse all blocks associated with the saved file path
                             const relativeSavedPath = vscode.workspace.asRelativePath(originalUri);
+                            const meta = this.generatedToMetadata.get(fsPath);
                             panel._panel.webview.postMessage({
                                 command: 'fileSavedOnDisk',
-                                filePath: relativeSavedPath
+                                filePath: relativeSavedPath,
+                                messageId: meta?.messageId,
+                                blockIndex: meta?.blockIndex,
+                                hunkIndex: meta?.hunkIndex
                             });
                         } else {
                             vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', discussionId);
@@ -168,7 +173,7 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         }
     }
 
-    public async openDiff(originalUri: vscode.Uri, newContent: string, discussionId?: string) {
+    public async openDiff(originalUri: vscode.Uri, newContent: string, discussionId?: string, metadata?: { messageId?: string, blockIndex?: number, hunkIndex?: number }) {
         const activeEditor = vscode.window.activeTextEditor;
         if (activeEditor && activeEditor.document.uri.toString() === originalUri.toString()) {
             this.lastPositions.set(originalUri.toString(), {
@@ -210,6 +215,9 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         this.originalToGenerated.set(originalUri.fsPath, generatedUri.fsPath);
         if (discussionId) {
             this.generatedToDiscussionId.set(generatedUri.fsPath, discussionId);
+        }
+        if (metadata) {
+            this.generatedToMetadata.set(generatedUri.fsPath, metadata);
         }
         this.saveState();
 
@@ -301,6 +309,7 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
             const originalPath = this.generatedToOriginal.get(fsPath);
             this.generatedToOriginal.delete(fsPath);
             this.generatedToDiscussionId.delete(fsPath);
+            this.generatedToMetadata.delete(fsPath);
             if (originalPath) this.originalToGenerated.delete(originalPath);
             
             this.saveState();

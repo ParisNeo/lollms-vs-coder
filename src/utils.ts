@@ -19,11 +19,31 @@ export async function hardenWorkspace(folder: vscode.WorkspaceFolder): Promise<v
     const filesToExclude = config.get<Record<string, boolean>>('files.exclude') || {};
     const searchToExclude = config.get<Record<string, boolean>>('search.exclude') || {};
 
-    filesToExclude['**/.lollms/**'] = true;
-    searchToExclude['**/.lollms/**'] = true;
+    // Aggressively append all build, environmental, and hidden directory patterns to VS Code's indexers
+    const targetExcludes = [
+        '**/.lollms/**',
+        '**/.git/**',
+        '**/.vscode/**',
+        '**/node_modules/**',
+        '**/venv/**',
+        '**/.venv/**',
+        '**/env/**',
+        '**/.env/**',
+        '**/dist/**',
+        '**/build/**',
+        '**/bin/**',
+        '**/obj/**',
+        '**/target/**',
+        '**/.*/**' // Blocks all hidden dot-folders/files completely
+    ];
+
+    targetExcludes.forEach(pattern => {
+        filesToExclude[pattern] = true;
+        searchToExclude[pattern] = true;
+    });
 
     // 2. Python Language Server Hardening
-    const pythonExclude = ['**/.lollms/**', '**/venv/**', '**/node_modules/**'];
+    const pythonExclude = ['**/.lollms/**', '**/venv/**', '**/node_modules/**', '**/.*/**'];
 
     try {
         await Promise.all([
@@ -300,8 +320,6 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     const isCrlf = content.includes('\r\n');
     const normalizedContent = content.replace(/\r\n/g, '\n');
 
-    // CRITICAL: We DO NOT trimEnd() here because trailing newlines 
-    // are often used as anchors in AIDER blocks.
     let normalizedSearch = (searchBlock || "").replace(/\r\n/g, '\n');
     let normalizedReplace = (replaceBlock || "").replace(/\r\n/g, '\n');
 
@@ -315,80 +333,54 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     const searchLines = normalizedSearch.split('\n');
     const replaceLines = normalizedReplace.split('\n');
 
-    // 2. Find Match using a "Sliding Window" 
-    // We iterate through every line of the file looking for the start of the block
+    // 2. Find Match using an optimized and secure sliding window
     for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
         let match = true;
-        let indentDelta: string | null = null;
 
         for (let j = 0; j < searchLines.length; j++) {
             const cLine = contentLines[i + j];
             const sLine = searchLines[j];
 
-            // --- IMPROVED COMPARISON ---
-            // We compare trimmed versions to ignore trailing spaces/tabs
-            // but we also allow for the AI to have missed an empty line 
-            // if the original file has one (lenient blank line matching)
+            if (cLine === undefined || sLine === undefined) {
+                match = false;
+                break;
+            }
+
             const cTrim = cLine.trim();
             const sTrim = sLine.trim();
 
-            if (cTrim !== sTrim) {
-                // Special case: if both are empty-ish, it's a match
-                if (cTrim === "" && sTrim === "") {
-                    // Match
-                } else {
-                    match = false;
-                    break;
-                }
-            }
-
-            // Detect Indentation Shift (e.g., file has 4 spaces, AI provided 2)
-            if (sTrim.length > 0 && indentDelta === null) {
-                const cIndent = cLine.match(/^\s*/)?.[0] || "";
-                const sIndent = sLine.match(/^\s*/)?.[0] || "";
-                
-                // We store the original file's indentation to re-apply it to the replacement
-                indentDelta = cIndent; 
+            // Direct comparison or soft white-space check
+            if (cTrim !== sTrim && !(cTrim === "" && sTrim === "")) {
+                match = false;
+                break;
             }
         }
 
         if (match) {
-            // SUCCESS: Match found. Now reconstruct the file with strict indentation re-basing.
+            // Find first non-empty line inside the match window to evaluate indentation delta
+            let matchedFileIndent = "";
+            let matchedAiIndent = "";
+            for (let j = 0; j < searchLines.length; j++) {
+                if (searchLines[j].trim().length > 0) {
+                    matchedFileIndent = contentLines[i + j].match(/^\s*/)?.[0] || "";
+                    matchedAiIndent = searchLines[j].match(/^\s*/)?.[0] || "";
+                    break;
+                }
+            }
 
-            // 1. Find the first non-empty line index in the SEARCH block to use as anchor
-            const firstContentIdx = searchLines.findIndex(l => l.trim().length > 0);
-            const anchorIdx = firstContentIdx === -1 ? 0 : firstContentIdx;
-
-            // 2. Calculate actual file indentation at the match site
-            const fileAnchorLine = contentLines[i + anchorIdx];
-            const fileIndent = fileAnchorLine?.match(/^\s*/)?.[0] || "";
-
-            // 3. Calculate AI's search anchor indentation
-            const aiAnchorLine = searchLines[anchorIdx];
-            const aiIndent = aiAnchorLine?.match(/^\s*/)?.[0] || "";
-
-            // 4. Calculate the rigid indentation delta
-            // If file has 8 spaces and AI used 4, delta is +4.
-            // If file has 4 spaces and AI used 8, delta is -4.
-            const indentDelta = fileIndent.length - aiIndent.length;
+            const indentDelta = matchedFileIndent.length - matchedAiIndent.length;
 
             const adjustedReplace = replaceLines.map(line => {
                 if (line.trim().length === 0) return "";
-
-                const currentIndentMatch = line.match(/^\s*/);
-                const currentIndentStr = currentIndentMatch ? currentIndentMatch[0] : "";
-
-                // Calculate the new indentation length by applying the fixed delta
-                const newIndentLength = Math.max(0, currentIndentStr.length + indentDelta);
-
-                // Reconstruct the line with the shifted indentation
+                const currentLineIndent = line.match(/^\s*/)?.[0] || "";
+                const newIndentLength = Math.max(0, currentLineIndent.length + indentDelta);
                 return " ".repeat(newIndentLength) + line.trimStart();
             });
 
             const before = contentLines.slice(0, i);
             const after = contentLines.slice(i + searchLines.length);
             const finalResult = [...before, ...adjustedReplace, ...after].join('\n');
-            
+
             return { 
                 success: true, 
                 result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult 

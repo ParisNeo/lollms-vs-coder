@@ -2,7 +2,10 @@ import { vscode, state } from '../dom.js';
 import { renderMessageContent } from '../messageRenderer.js';
 
 export function renderAgentMessage(messageId: string, rawContent: any, isFinal: boolean) {
-    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`) as HTMLElement;
+    const safeMessageId = String(messageId || '');
+    if (!safeMessageId) return;
+
+    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${safeMessageId}']`) as HTMLElement;
     if (!wrapper) return;
 
     const bodyDiv = wrapper.querySelector('.message-body') as HTMLElement;

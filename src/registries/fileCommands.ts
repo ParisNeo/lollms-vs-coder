@@ -288,6 +288,58 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     vscode.window.showErrorMessage(`Targeted symbol replacement failed: ${err.message}`);
                     return { success: false, error: err.message };
                 }
+            } else if (fileExists && targetMember.length === 0 && document) {
+                // --- SURGICAL SHIELD: PREVENT ACCIDENTAL OVERWRITE ---
+                const isPython = relativePath.endsWith('.py');
+                const isJsTs = relativePath.endsWith('.js') || relativePath.endsWith('.ts') || relativePath.endsWith('.tsx') || relativePath.endsWith('.jsx');
+                
+                let detectedSymbol: string | undefined;
+                if (isPython) {
+                    const matchFunc = content.match(/^\s*(?:@\w+[\s\S]*?)?(?:async\s+)?def\s+(\w+)\b/m);
+                    const matchClass = content.match(/^\s*class\s+(\w+)\b/m);
+                    if (matchClass) detectedSymbol = matchClass[1];
+                    else if (matchFunc) detectedSymbol = matchFunc[1];
+                } else if (isJsTs) {
+                    const matchFunc = content.match(/^\s*(?:async\s+)?function\s+(\w+)\b/m) || content.match(/^\s*(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?\((?:[^)]*)\)\s*=>/m);
+                    const matchClass = content.match(/^\s*(?:export\s+)?class\s+(\w+)\b/m);
+                    if (matchClass) detectedSymbol = matchClass[1];
+                    else if (matchFunc) detectedSymbol = matchFunc[1];
+                }
+
+                if (detectedSymbol) {
+                    const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', document.uri);
+                    const hasSymbol = (syms: vscode.DocumentSymbol[]): boolean => {
+                        return syms.some(s => s.name === detectedSymbol || (s.children && hasSymbol(s.children)));
+                    };
+
+                    if (symbols && symbols.length > 0 && hasSymbol(symbols)) {
+                        const countLinesOrig = originalContent.split('\n').length;
+                        const countLinesNew = content.split('\n').length;
+
+                        // If the new content is significantly smaller (e.g. < 70% of lines) and original has other code
+                        if (countLinesNew < countLinesOrig * 0.7 && countLinesOrig > 15) {
+                            const choice = await vscode.window.showWarningMessage(
+                                `⚠️ SURGICAL SHIELD: The code block for '${relativePath}' looks like a replacement for the symbol '${detectedSymbol}', but the header is missing the ':SymbolName' suffix. Overwriting will erase other functions!`,
+                                { modal: true },
+                                `Surgically Replace '${detectedSymbol}'`,
+                                "Overwrite Full File",
+                                "Cancel"
+                            );
+
+                            if (choice === `Surgically Replace '${detectedSymbol}'`) {
+                                try {
+                                    finalWriteContent = await replaceSymbolContent(document, [detectedSymbol], content);
+                                    Logger.info(`Surgical Shield: Redirected full write to symbol replacement for '${detectedSymbol}' in ${relativePath}`);
+                                } catch (err: any) {
+                                    vscode.window.showErrorMessage(`Surgical redirect failed: ${err.message}`);
+                                    return { success: false, error: err.message };
+                                }
+                            } else if (choice === "Cancel" || !choice) {
+                                return { success: false, error: "Aborted by user to prevent file erasure." };
+                            }
+                        }
+                    }
+                }
             }
 
             // --- SOVEREIGN PROTECTION SHIELD: AUTOMATED WRITE INTERRUPT ---
@@ -357,29 +409,31 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             }
 
             // Open Diff View: Original (Disk) vs Proposed (Virtual)
-            // Open Diff View: Original (Disk) vs Proposed (Virtual)
-            if (document) {
-                const edit = new vscode.WorkspaceEdit();
-                const lastLine = document.lineCount > 0 ? document.lineCount - 1 : 0;
-                const fullRange = new vscode.Range(
-                    new vscode.Position(0, 0),
-                    document.lineAt(lastLine).range.end
-                );
-                edit.replace(fileUri, fullRange, finalWriteContent);
-                const applied = await vscode.workspace.applyEdit(edit);
-                if (applied) {
-                    await document.save();
+            if (options?.silent) {
+                if (document) {
+                    const edit = new vscode.WorkspaceEdit();
+                    const lastLine = document.lineCount > 0 ? document.lineCount - 1 : 0;
+                    const fullRange = new vscode.Range(
+                        new vscode.Position(0, 0),
+                        document.lineAt(lastLine).range.end
+                    );
+                    edit.replace(fileUri, fullRange, finalWriteContent);
+                    const applied = await vscode.workspace.applyEdit(edit);
+                    if (applied) {
+                        await document.save();
+                        Logger.info(`applyFileContent: Successfully persisted complete rewrite to disk for ${relativePath}`);
+                    }
                 }
-            }
-
-            // The user must review and Save the diff tab to apply changes if not in silent/auto mode.
-            if (!options?.silent) {
+            } else {
                 // Determine discussionId from active panel if available
                 const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
-                await services.diffManager.openDiff(fileUri, finalWriteContent, discussionId);
+                await services.diffManager.openDiff(fileUri, finalWriteContent, discussionId, {
+                    messageId: options?.messageId,
+                    blockIndex: options?.blockIndex
+                });
             }
 
-            return { success: true, alreadyApplied: true };
+            return { success: true, alreadyApplied: !!options?.silent };
 
         } catch (e: any) {
         Logger.error(`Error applying file content: ${e.message}`, e);
@@ -935,7 +989,7 @@ ${originalContent}
                 const wasActuallyModified = currentContent !== originalContent;
 
                 if (wasActuallyModified) {
-                    if (options?.autoSave) {
+                    if (options?.silent) {
                         const edit = new vscode.WorkspaceEdit();
                         const fullRange = new vscode.Range(
                             new vscode.Position(0, 0),
@@ -945,14 +999,16 @@ ${originalContent}
                         const applied = await vscode.workspace.applyEdit(edit);
                         if (applied) {
                             await document.save();
+                            Logger.info(`replaceCode: Successfully persisted modifications to disk for ${sanitizedFilePath}`);
                         }
-                    }
-
-                    // Use the DiffManager to show the result of the surgical patch
-                    if (!options?.silent) {
+                    } else {
                         // Determine discussionId from active panel if available
                         const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
-                        await services.diffManager.openDiff(fileUri, currentContent, discussionId);
+                        await services.diffManager.openDiff(fileUri, currentContent, discussionId, {
+                            messageId: messageId,
+                            blockIndex: options?.blockIndex,
+                            hunkIndex: options?.hunkIndex
+                        });
                     }
                 }
 

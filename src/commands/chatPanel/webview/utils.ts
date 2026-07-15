@@ -115,148 +115,112 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         return { success: true, result: isCrlf ? result.replace(/\n/g, '\r\n') : result, strategy: 'append' };
     }
 
-    // Pass 1-4: Systematic matching attempts
-    const strategies = ['strict', 'trim_trailing', 'skip_placeholders', 'indent_agnostic'];
+    const searchLines = normalizedSearch.split('\n');
 
-    for (const strategy of strategies) {
-        // Strip trailing whitespaces from individual search lines to prevent matching misses
-        let searchLines = normalizedSearch.split('\n').map(l => l.trimEnd());
-        
-        // Strategy Modifier: Skip AI meta-comments that break literal matching
-        if (strategy === 'skip_placeholders') {
-            searchLines = searchLines.filter(line => !isMetaPlaceholder(line));
-            if (searchLines.length === 0) continue;
+    // 2. Find Match using an optimized and bounds-safe sliding window
+    for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+        let match = true;
+
+        for (let j = 0; j < searchLines.length; j++) {
+            const cLine = contentLines[i + j];
+            const sLine = searchLines[j];
+
+            if (cLine === undefined || sLine === undefined) {
+                match = false;
+                break;
+            }
+
+            const cTrim = cLine.trim();
+            const sTrim = sLine.trim();
+
+            // Direct comparison or soft white-space check
+            if (cTrim !== sTrim && !(cTrim === "" && sTrim === "")) {
+                match = false;
+                break;
+            }
         }
 
-        for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
-            let match = true;
-            let indentDelta: string | null = null;
-            let matchedContentIndices: number[] = [];
-
-            let searchIdx = 0;
-            let contentOffset = 0;
-
-            while (searchIdx < searchLines.length) {
-                if (i + contentOffset >= contentLines.length) {
-                    match = false; break;
-                }
-
-                const cLine = contentLines[i + contentOffset];
-                const sLine = searchLines[searchIdx];
-
-                const cTrim = cLine.trim();
-                const sTrim = sLine.trim();
-
-                let lineMatch = false;
-
-                if (strategy === 'strict') {
-                    lineMatch = (cLine === sLine);
-                } else if (strategy === 'trim_trailing') {
-                    lineMatch = (cLine.trimEnd() === sLine.trimEnd());
-                } else if (strategy === 'skip_placeholders' || strategy === 'indent_agnostic') {
-                    // Indentation agnostic: compare trimmed content
-                    lineMatch = (cTrim === sTrim);
-                }
-
-                if (lineMatch || (cTrim === "" && sTrim === "")) {
-                    // Capture first indentation of actual code to re-apply later
-                    if (sTrim.length > 0 && indentDelta === null) {
-                        indentDelta = cLine.match(/^\s*/)?.[0] || "";
-                    }
-                    matchedContentIndices.push(i + contentOffset);
-                    searchIdx++;
-                } else if (strategy === 'skip_placeholders' && isMetaPlaceholder(cLine)) {
-                    // If file has a comment where we didn't expect one, but we are in skip mode, 
-                    // we skip the FILE line and stay on the same SEARCH line
-                    contentOffset++;
-                    continue;
-                } else {
-                    match = false;
+        if (match) {
+            // Find first non-empty line inside the match window to evaluate indentation delta
+            let matchedFileIndent = "";
+            let matchedAiIndent = "";
+            for (let j = 0; j < searchLines.length; j++) {
+                if (searchLines[j].trim().length > 0) {
+                    matchedFileIndent = contentLines[i + j].match(/^\s*/)?.[0] || "";
+                    matchedAiIndent = searchLines[j].match(/^\s*/)?.[0] || "";
                     break;
                 }
-                contentOffset++;
             }
 
-            if (match) {
-                // SUCCESS: Match found. Now reconstruct the file with strict indentation re-basing.
-                
-                // 1. Find the first non-empty line index in the SEARCH block to use as anchor
-                const firstContentIdx = searchLines.findIndex(l => l.trim().length > 0);
-                const anchorIdx = firstContentIdx === -1 ? 0 : firstContentIdx;
+            const indentDelta = matchedFileIndent.length - matchedAiIndent.length;
 
-                // 2. Calculate actual file indentation at the match site
-                const fileAnchorLine = contentLines[i + anchorIdx];
-                const fileIndent = fileAnchorLine?.match(/^\s*/)?.[0] || "";
+            const adjustedReplace = replaceLines.map(line => {
+                if (line.trim().length === 0) return "";
+                const currentLineIndent = line.match(/^\s*/)?.[0] || "";
+                const newIndentLength = Math.max(0, currentLineIndent.length + indentDelta);
+                return " ".repeat(newIndentLength) + line.trimStart();
+            });
 
-                // 3. Calculate AI's search anchor indentation
-                const aiAnchorLine = searchLines[anchorIdx];
-                const aiIndent = aiAnchorLine?.match(/^\s*/)?.[0] || "";
-                
-                // 4. Re-apply the delta to every line of the replacement
-                const adjustedReplace = replaceLines.map(line => {
-                    if (line.trim().length === 0) return "";
-                    
-                    const currentLineIndent = line.match(/^\s*/)?.[0] || "";
-                    
-                    // --- RELATIVE SHIFT LOGIC ---
-                    // We calculate how far this line is indented relative to the AI's anchor line,
-                    // then apply that same offset to the file's real indentation level.
-                    if (currentLineIndent.startsWith(aiIndent)) {
-                        const relativeNesting = currentLineIndent.substring(aiIndent.length);
-                        return fileIndent + relativeNesting + line.trimStart();
-                    } else if (aiIndent.startsWith(currentLineIndent)) {
-                        // Handle cases where replacement lines are less indented than the anchor
-                        const negativeOffset = aiIndent.length - currentLineIndent.length;
-                        const newIndentLen = Math.max(0, fileIndent.length - negativeOffset);
-                        return " ".repeat(newIndentLen) + line.trimStart();
-                    }
-                    
-                    // Default: Match the file's base level if the AI's internal spacing is chaotic
-                    return fileIndent + line.trimStart();
-                });
-
-                const before = contentLines.slice(0, i);
-                const after = contentLines.slice(i + contentOffset);
-                const finalResult = [...before, ...adjustedReplace, ...after].join('\n');
-                
-                return { 
-                    success: true, 
-                    result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult,
-                    strategy
-                };
-            }
+            const before = contentLines.slice(0, i);
+            const after = contentLines.slice(i + searchLines.length);
+            const finalResult = [...before, ...adjustedReplace, ...after].join('\n');
+            
+            return { 
+                success: true, 
+                result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult 
+            };
         }
     }
 
-    // Pass 5: Fuzzy Matching
+    // Pass 5: Fuzzy Matching Fallback
     let bestScore = 0;
     let bestMatchStart = -1;
     let bestMatchEnd = -1;
-    const searchLines = normalizedSearch.split('\n').filter(l => !isMetaPlaceholder(l));
+    const fuzzySearchLines = searchLines.filter(l => {
+        // Safe check for metadata placeholder
+        const trimmed = l.trim();
+        if (/^(\.{3,}|#\s*\.{3,}|(\/\/|--|;)\s*\.{3,})$/.test(trimmed)) return false;
+        if (/(#|\/\/|--)\s*(\.{3,}|existing|rest of|same as)/i.test(trimmed)) return false;
+        return true;
+    });
 
-    for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+    for (let i = 0; i <= contentLines.length - fuzzySearchLines.length; i++) {
         let totalScore = 0;
-        for (let j = 0; j < searchLines.length; j++) {
-            totalScore += calculateLineSimilarity(contentLines[i + j], searchLines[j]);
+        for (let j = 0; j < fuzzySearchLines.length; j++) {
+            const line1 = contentLines[i + j] || "";
+            const line2 = fuzzySearchLines[j] || "";
+            
+            const l1 = line1.trim();
+            const l2 = line2.trim();
+            let score = 0;
+            if (l1 === l2) {
+                score = 1.0;
+            } else if (l1 === "" || l2 === "") {
+                score = 0.0;
+            } else {
+                const maxLen = Math.max(l1.length, l2.length);
+                score = maxLen > 0 ? (1.0 - (Math.abs(l1.length - l2.length) / maxLen)) : 1.0;
+            }
+            totalScore += score;
         }
-        const avgScore = totalScore / searchLines.length;
+        const avgScore = totalScore / (fuzzySearchLines.length || 1);
         if (avgScore > bestScore) {
             bestScore = avgScore;
             bestMatchStart = i;
-            bestMatchEnd = i + searchLines.length;
+            bestMatchEnd = i + fuzzySearchLines.length;
         }
     }
 
-    if (bestScore > 0.8) {
+    if (bestScore > 0.8 && bestMatchStart !== -1) {
         const before = contentLines.slice(0, bestMatchStart);
         const after = contentLines.slice(bestMatchEnd);
         const finalResult = [...before, normalizedReplace, ...after].join('\n');
-        return { success: true, result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult, strategy: 'fuzzy' };
+        return { success: true, result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult };
     }
 
     return { 
         success: false, 
         result: content, 
-        error: `Matching failed after trying strict, trimmed, placeholder-aware, and fuzzy strategies. Best match score: ${Math.round(bestScore * 100)}%.` 
+        error: `Matching failed. Best match score: ${Math.round(bestScore * 100)}%.` 
     };
 }

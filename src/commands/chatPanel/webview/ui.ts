@@ -1342,6 +1342,12 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
             raiseHandBtn.style.display = showRaiseHand ? 'flex' : 'none';
         }
 
+        // Clear progress bar state on completion
+        if (!isGenerating) {
+            const barContainer = document.getElementById('fused-scout-loader-bar');
+            if (barContainer) barContainer.style.display = 'none';
+        }
+
         if (stopBtn) {
             // The stop button should only be visible while generating
             stopBtn.style.display = isGenerating ? 'flex' : 'none';
@@ -1409,7 +1415,7 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
  * Detects if the menu will go off-screen and flips it if necessary.
  * Optimized for Sovereign HUD placement at the top of the viewport.
  */
-function adjustMenuPosition(trigger: HTMLElement, menu: HTMLElement) {
+export function adjustMenuPosition(trigger: HTMLElement, menu: HTMLElement) {
     // Reset classes first
     menu.classList.remove('open-up');
 
@@ -1440,6 +1446,7 @@ function adjustMenuPosition(trigger: HTMLElement, menu: HTMLElement) {
     menu.style.display = '';
     menu.style.visibility = '';
 }
+(window as any).adjustMenuPosition = adjustMenuPosition;
 
 function createToggleBadge(
     text: string, 
@@ -1697,289 +1704,514 @@ export function closeSovereignZoom() {
     }
 }
 
+// --- presenters/BadgesPresenter.ts ---
+// Presentation templates decoupled from direct DOM bindings and layout managers.
+export class BadgesPresenter {
+    public static renderModelBadge(model: string): string {
+        return `<span class="mode-badge model clickable" title="Current Model (Click to change)"><span class="codicon codicon-hubot"></span> ${model}</span>`;
+    }
+
+    public static renderPersonalityBadge(currentPName: string): string {
+        return `
+        <div class="badge-wrapper" style="position: relative;">
+            <span id="personality-badge" class="mode-badge personality clickable" title="Active Personality: ${currentPName}. Click to switch.">
+                <span class="codicon codicon-account"></span> <span class="badge-label">${currentPName}</span>
+            </span>
+            <div id="personality-menu" class="custom-menu hidden"></div>
+        </div>`;
+    }
+
+    public static renderResponseProfileBadge(profileName: string, profileDesc: string): string {
+        return `
+        <div class="badge-wrapper" style="position: relative;">
+            <span class="mode-badge active clickable response-profile-trigger" style="background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);" title="Current Mode: ${profileName}\n${profileDesc}">
+                <span class="codicon codicon-settings"></span> <span class="badge-label">${profileName}</span>
+            </span>
+            <div id="profile-menu" class="custom-menu hidden"></div>
+        </div>`;
+    }
+
+    public static renderOptionsHubBadge(iconsLabel: string): string {
+        return `
+        <div class="badge-group hud-options-parent">
+            <span class="mode-badge active clickable hud-options-trigger" style="background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border-color: var(--vscode-widget-border);" title="Sovereign HUD Options (Hover/Click to configure protocols)">
+                <span class="codicon codicon-settings-gear"></span> 
+                <span class="badge-label" style="margin-left: 4px; letter-spacing: 0.5px; font-weight: bold;">HUD: ${iconsLabel}</span>
+            </span>
+            <div class="hud-options-popup" style="display: none; position: absolute; top: calc(100% + 5px); left: 0; z-index: 10001; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); box-shadow: 0 10px 30px rgba(0,0,0,0.5); padding: 10px; border-radius: 8px; flex-direction: column; gap: 8px; min-width: 240px; max-height: 70vh; overflow-y: auto;"></div>
+        </div>`;
+    }
+
+    public static renderOperationalModeBadge(activeModeClass: string, activeModeColor: string, activeModeLabel: string, activeModeTitle: string): string {
+        const customStyle = (activeModeClass !== 'inactive') ? `style="background-color: ${activeModeColor}; color: white;"` : '';
+        return `
+        <div class="badge-wrapper" style="position: relative;">
+            <span class="mode-badge ${activeModeClass} clickable mode-dropdown-trigger" ${customStyle} title="${activeModeTitle} Click to switch modes.">
+                <span class="codicon codicon-unfold"></span> <span class="badge-label">${activeModeLabel}</span>
+            </span>
+            <div id="mode-dropdown-menu" class="custom-menu hidden"></div>
+        </div>`;
+    }
+
+    public static renderAgentProfileBadge(currentProfileName: string): string {
+        return `
+        <div class="badge-wrapper" style="position: relative;">
+            <span class="mode-badge active clickable genie-profile-trigger" style="background-color: var(--vscode-charts-orange); color: white;" title="Genie Mission: ${currentProfileName}. Click to change protocol.">
+                <span class="codicon codicon-target"></span> <span class="badge-label">${currentProfileName}</span>
+            </span>
+            <div class="custom-menu" id="genie-profile-menu"></div>
+        </div>`;
+    }
+
+    public static renderGitBadge(branchName: string): string {
+        return `
+        <div class="badge-group">
+            <div class="badge-wrapper" style="position: relative;">
+                <span class="mode-badge active clickable git-badge-trigger" style="background-color: var(--vscode-gitDecoration-modifiedResourceForeground); color: white;" title="Git Management (Click to switch branch/commit)">
+                    <span class="codicon codicon-git-branch" style="margin-right: 4px;"></span>
+                    <span class="badge-label">${branchName}</span>
+                </span>
+                <div id="git-badge-menu" class="custom-menu hidden"></div>
+            </div>
+        </div>`;
+    }
+}
+
+// --- presenters/BadgesBinder.ts ---
+// Decoupled Controller binding system for custom HUD menu gestures.
+export class BadgesBinder {
+    public static bindPersonalityMenu(wrapper: HTMLElement, personalities: any[], currentId: string) {
+        const badge = wrapper.querySelector('#personality-badge') as HTMLElement;
+        const menu = wrapper.querySelector('#personality-menu') as HTMLElement;
+        if (!badge || !menu) return;
+
+        // Build list elements
+        menu.innerHTML = personalities.map(p => {
+            if (!p) return '';
+            const isSel = p.id === currentId;
+            const icon = isSel ? 'codicon-check' : 'codicon-account';
+            const extraStyle = isSel ? 'style="font-weight: bold; color: var(--vscode-textLink-foreground);"' : '';
+            return `<div class="custom-menu-item p-menu-item" data-pid="${p.id}" ${extraStyle}><span class="codicon ${icon}"></span> ${p.name}</div>`;
+        }).join('');
+
+        // Bind clicks
+        menu.querySelectorAll('.p-menu-item').forEach((item: any) => {
+            item.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                state.currentPersonalityId = item.dataset.pid;
+                vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: item.dataset.pid });
+                menu.classList.remove('visible');
+            };
+        });
+
+        badge.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const isOpening = !menu.classList.contains('visible');
+            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+            if (isOpening) {
+                adjustMenuPosition(badge, menu);
+                menu.classList.add('visible');
+            }
+        };
+    }
+
+    public static bindResponseProfileMenu(wrapper: HTMLElement, profiles: any[], currentId: string) {
+        const badge = wrapper.querySelector('.response-profile-trigger') as HTMLElement;
+        const menu = wrapper.querySelector('#profile-menu') as HTMLElement;
+        if (!badge || !menu) return;
+
+        let menuHtml = `
+            <div class="custom-menu-item manual-model-item" style="border-bottom: 1px solid var(--vscode-menu-separatorBackground); padding-bottom: 8px; margin-bottom: 4px;">
+                <span class="codicon codicon-edit"></span> Enter model name manually...
+            </div>`;
+
+        menuHtml += profiles.map(p => {
+            const isSel = p.id === currentId;
+            const icon = isSel ? 'codicon-check' : 'codicon-circle-outline';
+            return `<div class="custom-menu-item profile-sel-item" data-id="${p.id}"><span class="codicon ${icon}"></span> ${p.name}</div>`;
+        }).join('');
+
+        menuHtml += `
+            <div class="custom-menu-item configure-styles-item" style="border-top: 1px solid var(--vscode-menu-separatorBackground); margin-top: 4px; padding-top: 8px;">
+                <span class="codicon codicon-settings"></span> Configure Styles...
+            </div>`;
+
+        menu.innerHTML = menuHtml;
+
+        // Bind Actions
+        const manual = menu.querySelector('.manual-model-item') as HTMLElement;
+        if (manual) {
+            manual.onclick = (e) => {
+                e.stopPropagation();
+                const name = prompt("Enter model name/id (e.g. ollama/mistral):");
+                if (name) {
+                    vscode.postMessage({ command: 'updateDiscussionModel', model: name.trim() });
+                    vscode.postMessage({ command: 'calculateTokens' });
+                }
+                menu.classList.remove('visible');
+            };
+        }
+
+        menu.querySelectorAll('.profile-sel-item').forEach((item: any) => {
+            item.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ 
+                    command: 'updateDiscussionCapabilitiesPartial', 
+                    partial: { responseProfileId: item.dataset.id } 
+                });
+                menu.classList.remove('visible');
+            };
+        });
+
+        const config = menu.querySelector('.configure-styles-item') as HTMLElement;
+        if (config) {
+            config.onclick = (e) => {
+                e.stopPropagation();
+                if (dom.discussionToolsModal) {
+                    dom.discussionToolsModal.classList.add('visible');
+                    renderProfilesInModal();
+                    if (typeof (window as any).refreshVoiceList === 'function') {
+                        (window as any).refreshVoiceList();
+                    }
+                }
+                menu.classList.remove('visible');
+            };
+        }
+
+        badge.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const isOpening = !menu.classList.contains('visible');
+            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+            if (isOpening) {
+                adjustMenuPosition(badge, menu);
+                menu.classList.add('visible');
+            }
+        };
+    }
+
+    public static bindOptionsHubMenu(group: HTMLElement, caps: any) {
+        const badge = group.querySelector('.hud-options-trigger') as HTMLElement;
+        const menu = group.querySelector('.hud-options-popup') as HTMLElement;
+        if (!badge || !menu) return;
+
+        // Render checkbox layouts defensively
+        const optionsList = [
+            { label: '🧠 Thinking Mode', icon: 'codicon-circuit-board', key: 'thinkingMode', val: !caps.thinkingMode },
+            { label: '📊 SPARQL Engine', icon: 'codicon-graph', key: 'sparqlEnabled', val: caps.sparqlEnabled === false },
+            { label: '🔍 GREP Indexer', icon: 'codicon-search', key: 'grepEnabled', val: caps.grepEnabled === false },
+            { label: '🌍 Web Research', icon: 'codicon-globe', key: 'webSearch', val: !caps.webSearch },
+            { label: '🧬 Project DNA', icon: 'codicon-chip', key: 'projectMemoryEnabled', val: caps.projectMemoryEnabled === false },
+            { label: '💡 Skills Library', icon: 'codicon-lightbulb', key: 'autoSkillMode', val: !caps.autoSkillMode },
+            { label: '⚡ Auto-Apply Blocks', icon: 'codicon-zap', key: 'autoApply', val: !caps.autoApply },
+            { label: '🐞 Debug Protocol', icon: 'codicon-bug', key: 'debugMode', val: !caps.debugMode },
+            { label: '🛡️ Verifier Protocol', icon: 'codicon-shield', key: 'verifierMode', val: !caps.verifierMode },
+            { label: '🧪 Test Protocol', icon: 'codicon-beaker', key: 'testMode', val: !caps.testMode },
+            { label: '📖 Docs Protocol', icon: 'codicon-book', key: 'documentationMode', val: !caps.documentationMode },
+            { label: '🐙 Git Integration', icon: 'codicon-git-branch', key: 'gitAutoWorkflow', val: !caps.gitAutoWorkflow },
+            { label: '🐂 Multi-Agent (Herd)', icon: 'codicon-organization', key: 'herdMode', val: !caps.herdMode }
+        ];
+
+        menu.innerHTML = optionsList.map(opt => {
+            const checked = opt.key === 'sparqlEnabled' ? caps.sparqlEnabled !== false :
+                            opt.key === 'grepEnabled' ? caps.grepEnabled !== false :
+                            opt.key === 'projectMemoryEnabled' ? caps.projectMemoryEnabled !== false :
+                            !!(caps as any)[opt.key];
+
+            return `
+            <div class="hud-opt-row" style="display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 4px 8px; border-radius: 4px; font-size: 12px;">
+                <div style="display: flex; align-items: center; gap: 8px; opacity: 0.9;">
+                    <span class="codicon ${opt.icon || 'codicon-gear'}"></span>
+                    <span>${opt.label}</span>
+                </div>
+                <label class="switch" style="width: 28px; height: 16px; margin: 0; flex-shrink: 0;">
+                    <input type="checkbox" data-key="${opt.key}" ${checked ? 'checked' : ''} style="margin: 0; cursor: pointer;">
+                    <span class="slider" style="border-radius: 16px;"></span>
+                </label>
+            </div>`;
+        }).join('');
+
+        // Bind Change triggers
+        menu.querySelectorAll('input[type="checkbox"]').forEach((cb: any) => {
+            cb.onchange = (e: Event) => {
+                e.stopPropagation();
+                const key = cb.dataset.key;
+                const opt = optionsList.find(o => o.key === key);
+                if (opt) {
+                    vscode.postMessage({
+                        command: 'updateDiscussionCapabilitiesPartial',
+                        partial: { [key]: opt.val }
+                    });
+                }
+            };
+        });
+
+        badge.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const isVisible = menu.style.display === 'flex';
+            document.querySelectorAll('.hud-options-popup').forEach((m: any) => m.style.display = 'none');
+            menu.style.display = isVisible ? 'none' : 'flex';
+        };
+
+        const closeHandler = () => {
+            menu.style.display = 'none';
+            window.removeEventListener('click', closeHandler);
+        };
+        badge.addEventListener('click', () => {
+            setTimeout(() => window.addEventListener('click', closeHandler), 50);
+        });
+    }
+
+    public static bindOperationalModeMenu(wrapper: HTMLElement, isAssistant: boolean, isDynamic: boolean, isAgent: boolean) {
+        const badge = wrapper.querySelector('.mode-dropdown-trigger') as HTMLElement;
+        const menu = wrapper.querySelector('#mode-dropdown-menu') as HTMLElement;
+        if (!badge || !menu) return;
+
+        menu.innerHTML = `
+            <div class="custom-menu-item mode-opt" data-mode="assistant"><span class="codicon ${isAssistant ? 'codicon-check' : 'codicon-account'}"></span> 👤 Assistant (Manual)</div>
+            <div class="custom-menu-item mode-opt" data-mode="dynamic"><span class="codicon ${isDynamic ? 'codicon-check' : 'codicon-circuit-board'}"></span> 🧠 Co-Engineer (Semi-Auto)</div>
+            <div class="custom-menu-item mode-opt" data-mode="agent"><span class="codicon ${isAgent ? 'codicon-check' : 'codicon-robot'}"></span> 🤖 Agent (Autonomous)</div>
+        `;
+
+        menu.querySelectorAll('.mode-opt').forEach((item: any) => {
+            item.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const mode = item.dataset.mode;
+                const partialUpdate = mode === 'assistant' ? { agentMode: false, dynamicMode: false } :
+                                      mode === 'dynamic' ? { agentMode: false, dynamicMode: true } :
+                                      { agentMode: true, dynamicMode: false };
+
+                vscode.postMessage({ 
+                    command: 'updateDiscussionCapabilitiesPartial', 
+                    partial: partialUpdate 
+                });
+                updateBadges();
+                menu.classList.remove('visible');
+            };
+        });
+
+        badge.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const isOpening = !menu.classList.contains('visible');
+            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+            if (isOpening) {
+                adjustMenuPosition(badge, menu);
+                menu.classList.add('visible');
+            }
+        };
+    }
+
+    public static bindAgentProfileMenu(wrapper: HTMLElement, profiles: any[], currentId: string) {
+        const badge = wrapper.querySelector('.genie-profile-trigger') as HTMLElement;
+        const menu = wrapper.querySelector('#genie-profile-menu') as HTMLElement;
+        if (!badge || !menu) return;
+
+        menu.innerHTML = profiles.map(p => {
+            const isSel = p.id === currentId;
+            const icon = isSel ? 'codicon-check' : 'codicon-symbol-property';
+            const extraStyle = isSel ? 'style="font-weight: bold; color: var(--vscode-textLink-foreground);"' : '';
+            return `<div class="custom-menu-item profile-opt" data-id="${p.id}" ${extraStyle}><span class="codicon ${icon}"></span> ${p.name}</div>`;
+        }).join('');
+
+        menu.querySelectorAll('.profile-opt').forEach((item: any) => {
+            item.onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                vscode.postMessage({ 
+                    command: 'updateDiscussionCapabilitiesPartial', 
+                    partial: { activeAgentProfileId: item.dataset.id } 
+                });
+                menu.classList.remove('visible');
+            };
+        });
+
+        badge.onclick = (e) => {
+            e.stopPropagation();
+            const isOpening = !menu.classList.contains('visible');
+            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+            if (isOpening) {
+                adjustMenuPosition(badge, menu);
+                menu.classList.add('visible');
+            }
+        };
+    }
+
+    public static bindGitMenu(group: HTMLElement) {
+        const badge = group.querySelector('.git-badge-trigger') as HTMLElement;
+        const menu = group.querySelector('#git-badge-menu') as HTMLElement;
+        if (!badge || !menu) return;
+
+        menu.innerHTML = `
+            <div class="custom-menu-item git-opt" data-action="branch"><span class="codicon codicon-git-branch"></span> New Branch</div>
+            <div class="custom-menu-item git-opt" data-action="switch"><span class="codicon codicon-arrow-swap"></span> Switch Branch</div>
+            <div class="custom-menu-item git-opt" data-action="commit"><span class="codicon codicon-check"></span> Commit</div>
+            <div class="custom-menu-item git-opt" data-action="merge"><span class="codicon codicon-git-merge"></span> Fuse Branch</div>
+            <div class="custom-menu-item git-opt" data-action="revert"><span class="codicon codicon-history"></span> Revert / Motion</div>
+        `;
+
+        if (state.lastCommitHash) {
+            const last = state.lastCommitHash;
+            const copy = document.createElement('div');
+            copy.className = 'custom-menu-item';
+            copy.style.borderTop = '1px solid var(--vscode-menu-separatorBackground)';
+            copy.innerHTML = `<span class="codicon codicon-copy"></span> Copy Last Hash (${last.substring(0,7)})`;
+            copy.onclick = () => {
+                vscode.postMessage({ command: 'copyToClipboard', text: last });
+            };
+            menu.appendChild(copy);
+        }
+
+        menu.querySelectorAll('.git-opt').forEach((item: any) => {
+            item.onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const act = item.dataset.action;
+                if (act === 'commit') vscode.postMessage({ command: 'requestCommitStaging' });
+                else if (act === 'revert') vscode.postMessage({ command: 'requestGitHistory' });
+                else if (act === 'branch') vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.createGitBranch', params: {} } });
+                else if (act === 'switch') vscode.postMessage({ command: 'openGitWorkflowMenu' });
+                else if (act === 'merge') vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.mergeGitBranch', params: {} } });
+                menu.classList.remove('visible');
+            };
+        });
+
+        badge.onclick = (e) => {
+            e.stopPropagation();
+            const isOpening = !menu.classList.contains('visible');
+            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+            if (isOpening) {
+                adjustMenuPosition(badge, menu);
+                menu.classList.add('visible');
+            }
+        };
+    }
+}
+
 export function updateBadges() {
-    // RESILIENT TARGETING: Look for the container in the Fused Dashboard
     const container = document.getElementById('active-badges');
 
     if (!container) {
-        console.warn("[UI] updateBadges: active-badges container not found in DOM.");
+        console.log("[Lollms Debug] updateBadges deferred: active-badges container not yet present in DOM.");
+        if (!(window as any)._badgeRetryTimeout) {
+            (window as any)._badgeRetryTimeout = setTimeout(() => {
+                (window as any)._badgeRetryTimeout = null;
+                updateBadges();
+            }, 100);
+        }
         return;
     }
 
-    if (!state.capabilities) return;
+    // Defensive Guard: If capabilities are not ready yet, supply fallback defaults instead of returning early and hanging
+    if (!state.capabilities) {
+        console.log("[Lollms Debug] updateBadges: using fallback empty capabilities for early rendering.");
+        state.capabilities = {
+            generationFormats: { fullFile: true, partialFormat: 'aider' },
+            autoApply: false,
+            autoFix: false,
+            autoBranch: false,
+            maxFixRetries: 3,
+            thinkingMode: false,
+            forceFullCode: false,
+            allowedFormats: { fullFile: true, insert: true, replace: true, delete: true },
+            responseProfileId: 'balanced',
+            language: 'auto',
+            voice: '',
+            explainCode: false,
+            addPedagogicalInstruction: false,
+            forceFullCodePath: false,
+            fileRename: false,
+            fileDelete: false,
+            fileSelect: false,
+            fileReset: false,
+            imageGen: false,
+            enableImages: false,
+            enableTTS: false,
+            enableSTT: false,
+            useImageModeForDocs: false,
+            webSearch: false,
+            distillWebResults: false,
+            antiPromptInjection: false,
+            searchInCacheFirst: false,
+            clipboardInsertRole: 'user',
+            searchSources: { google: false, arxiv: false, wikipedia: false, stackoverflow: false, youtube: false, github: false },
+            gitWorkflow: false,
+            herdMode: false,
+            herdParallelGeneration: false,
+            herdPreAnswerCount: 1,
+            herdPostAnswerCount: 1,
+            agentMode: false,
+            debugMode: false,
+            verifierMode: false,
+            testMode: false,
+            documentationMode: false,
+            gitAutoWorkflow: false,
+            maxDebugSteps: 10,
+            contextAggression: 'respect',
+            tokenEconomyMode: false,
+            projectMemoryEnabled: true,
+            ttftTimeout: 180000,
+            interTokenTimeout: 10000,
+            contextGovernorThreshold: 90
+        };
+    }
 
     const caps = state.capabilities;
     container.innerHTML = '';
 
-    const isAgentMode = caps.agentMode === true;
     const isAgentActive = caps.agentMode === true;
-
-    // Set high-level presence on body for HUD-aware styling
     document.body.classList.toggle('agent-mode-active', isAgentActive);
 
-    // Hide or display the standard Chat HUD in Agent Mode to prevent clutter
     const chatHud = document.getElementById('fused-context-dashboard');
     if (chatHud) {
         chatHud.style.display = isAgentActive ? 'none' : 'block';
     }
 
-    // --- GROUP A: INFRASTRUCTURE ---
-    if (true) {
-        const infraGroup = document.createElement('div');
-        infraGroup.className = 'badge-group';
-        container.appendChild(infraGroup);
+    // --- INFRASTRUCTURE BADGE GROUP ---
+    const infraGroup = document.createElement('div');
+    infraGroup.className = 'badge-group';
+    container.appendChild(infraGroup);
 
-        // Model Badge
-        if (dom.modelSelector && dom.modelSelector.value) {
-            const model = dom.modelSelector.value;
-            const span = document.createElement('span');
-            span.className = 'mode-badge model clickable';
-            span.title = 'Current Model (Click to change)';
-            span.innerHTML = `<span class="codicon codicon-hubot"></span> ${model}`;
-            span.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (dom.modelSelector) {
-                    dom.modelSelector.focus();
-                    const event = document.createEvent('MouseEvents');
-                    event.initMouseEvent('mousedown', true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
-                    dom.modelSelector.dispatchEvent(event);
-                }
-            };
-            infraGroup.appendChild(span);
-        }
+    // Render & Bind Model Selector Badge (Directly in HUD)
+    const currentModelName = state.currentModelName || (dom.modelSelector ? dom.modelSelector.value : '') || 'Default Model';
+    const modelsList = Array.from(dom.modelSelector ? dom.modelSelector.options : []).map((opt: any) => ({ id: opt.value })).filter(m => m.id);
 
-    // Personality Badge
-    if (!isAgentMode && state.personalities && state.personalities.length > 0) {
+    const modelDiv = document.createElement('div');
+    // Use dynamic import pathing safe reference or native call
+    import('./messageRenderer.js').then(module => {
+        modelDiv.innerHTML = module.ContextPresenter.renderModelSelectorBadge(currentModelName, modelsList);
+        const badgeWrapper = modelDiv.firstElementChild as HTMLElement;
+        module.ContextBinder.bindModelMenu(badgeWrapper, modelsList, currentModelName);
+        infraGroup.appendChild(badgeWrapper);
+    });
+
+    // Render & Bind Personality
+    if (!caps.agentMode && state.personalities && state.personalities.length > 0) {
         const currentP = state.personalities.find(p => p && p.id === state.currentPersonalityId);
         if (currentP) {
-            const wrapper = document.createElement('div');
-            wrapper.className = 'badge-wrapper';
-            wrapper.style.position = 'relative';
-
-            const pBadge = document.createElement('span');
-            pBadge.id = 'personality-badge';
-            pBadge.className = 'mode-badge personality clickable';
-            pBadge.title = `Active Personality: ${currentP.name}. Click to switch.`;
-            pBadge.innerHTML = `<span class="codicon codicon-account"></span> <span class="badge-label">${currentP.name}</span>`;
-            
-            const menu = document.createElement('div');
-            menu.id = 'personality-menu';
-            menu.className = 'custom-menu hidden';
-            
-            state.personalities.forEach((p: any) => {
-                if (!p) return;
-                const item = document.createElement('div');
-                item.className = 'custom-menu-item p-menu-item';
-                item.dataset.pid = p.id;
-                
-                const icon = (p.id === state.currentPersonalityId) ? 'codicon-check' : 'codicon-account';
-                item.innerHTML = `<span class="codicon ${icon}"></span> ${p.name}`;
-                
-                if (p.id === state.currentPersonalityId) {
-                    item.style.fontWeight = 'bold';
-                    item.style.color = 'var(--vscode-textLink-foreground)';
-                }
-                
-                item.onclick = (e: MouseEvent) => {
-                    e.preventDefault(); // BLOCK <details> toggle
-                    e.stopPropagation();
-                    // Update local state immediately for visual feedback
-                    state.currentPersonalityId = p.id;
-                    vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: p.id });
-                };
-                menu.appendChild(item);
-            });
-
-            pBadge.onclick = (e) => {
-                e.preventDefault(); // BLOCK <details> toggle
-                e.stopPropagation();
-                const isOpening = !menu.classList.contains('visible');
-                document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
-
-                if (isOpening) {
-                    adjustMenuPosition(pBadge, menu);
-                    menu.classList.add('visible');
-                }
-            };
-
-            wrapper.appendChild(pBadge);
-            wrapper.appendChild(menu);
-            infraGroup.appendChild(wrapper);
+            const div = document.createElement('div');
+            div.innerHTML = BadgesPresenter.renderPersonalityBadge(currentP.name);
+            const badgeWrapper = div.firstElementChild as HTMLElement;
+            BadgesBinder.bindPersonalityMenu(badgeWrapper, state.personalities, state.currentPersonalityId);
+            infraGroup.appendChild(badgeWrapper);
         }
     }
 
-    if (!state.capabilities) return;
-    
-    const caps = state.capabilities;
-    // Robust merge: ensures new keys (like debugBadge) exist even if guiState was saved previously
-    const guiState = {
-        agentBadge: true,
-        debugBadge: true,
-        autoContextBadge: true,
-        herdBadge: true,
-        webSearchBadge: true,
-        autoSkillBadge: true,
-        testBadge: true,
-        docsBadge: true,
-        ...(caps.guiState || {})
-    };
-
-    // Initialize capability UI elements
-    if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
-    if (dom.capHerdParallelGeneration) dom.capHerdParallelGeneration.checked = !!caps.herdParallelGeneration;
-    if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds?.toString() || '2';
-    if (dom.capProjectMemory) dom.capProjectMemory.checked = caps.projectMemoryEnabled !== false;
-    const economyCheck = document.getElementById('cap-tokenEconomyMode');
-    if (economyCheck) economyCheck.checked = !!caps.tokenEconomyMode;
-    if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
-    if (dom.contextAggressionSelect) dom.contextAggressionSelect.value = caps.contextAggression || 'respect';
-    if (dom.capGitWorkflow) dom.capGitWorkflow.checked = !!caps.gitWorkflow;
-    if (dom.capEnableTTS) dom.capEnableTTS.checked = !!caps.enableTTS;
-    if (dom.capEnableSTT) dom.capEnableSTT.checked = !!caps.enableSTT;
-    if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = !!caps.herdMode;
-    if (dom.herdConfigSection) {
-        dom.herdConfigSection.style.display = caps.herdMode ? 'block' : 'none';
-    }
-
-    const debugConfig = document.getElementById('debug-config-section');
-    if (debugConfig) {
-        debugConfig.style.display = caps.debugMode ? 'block' : 'none';
-    }
-
-    if (dom.capDebugMode) dom.capDebugMode.checked = !!caps.debugMode;
-    if (dom.capMaxDebugSteps) dom.capMaxDebugSteps.value = (caps.maxDebugSteps || 10).toString();
-
-    // Initialize TTS/STT capability UI elements
-    const ttsCheck = document.getElementById('cap-enableTTS') as HTMLInputElement;
-    if (ttsCheck) ttsCheck.checked = !!caps.enableTTS;
-    const sttCheck = document.getElementById('cap-enableSTT') as HTMLInputElement;
-    if (sttCheck) sttCheck.checked = !!caps.enableSTT;
-
-    const sttBtn = document.getElementById('sttButton');
-    if (sttBtn) {
-        sttBtn.style.display = caps.enableSTT ? 'flex' : 'none';
-    }
-
-    // Render Dynamic Model Pool Selection inside herd config (if present)
-    if (dom.herdModelsList) {
-        const globalPool = (window as any).herdDynamicModelPool || [];
-        const activeModels = caps.herdParticipantModels || [];
-
-        dom.herdModelsList.innerHTML = globalPool.map((m: any) => `
-            <div class="checkbox-container" style="border:none; background:transparent; padding:2px 0;">
-                <input type="checkbox" value="${m.model}" class="herd-pool-check" ${activeModels.includes(m.model) ? 'checked' : ''}>
-                <label style="font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${m.model}</label>
-            </div>
-        `).join('');
-    }
-
-    // Response Profile Badge (Mode)
+    // Render & Bind Response Style Mode (Balanced/Structured/Minimalist)
     const currentProfileId = caps.responseProfileId || 'balanced';
     const currentProfile = state.profiles.find(p => p.id === currentProfileId) || state.profiles[0];
-    
-    // REDUNDANT IN AGENT MODE: Hide Profile/Personality as the Agent uses a fixed Architect protocol
     if (currentProfile && !caps.agentMode) {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'badge-wrapper';
-        wrapper.style.position = 'relative';
-
-        const modeBadge = document.createElement('span');
-        modeBadge.className = 'mode-badge active clickable';
-        modeBadge.style.backgroundColor = 'var(--vscode-button-secondaryBackground)';
-        modeBadge.style.color = 'var(--vscode-button-secondaryForeground)';
-        modeBadge.title = `Current Mode: ${currentProfile.name}\n${currentProfile.description}`;
-        modeBadge.innerHTML = `<span class="codicon codicon-settings"></span> <span class="badge-label">${currentProfile.name}</span>`;
-
-        const menu = document.createElement('div');
-        menu.id = 'profile-menu';
-        menu.className = 'custom-menu hidden';
-        
-        // 1. Manual Entry Option
-        const manualItem = document.createElement('div');
-        manualItem.className = 'custom-menu-item';
-        manualItem.style.borderBottom = '1px solid var(--vscode-menu-separatorBackground)';
-        manualItem.style.paddingBottom = '8px';
-        manualItem.style.marginBottom = '4px';
-        manualItem.innerHTML = `<span class="codicon codicon-edit"></span> Enter model name manually...`;
-        manualItem.onclick = (e) => {
-            e.stopPropagation();
-            const manualName = prompt("Enter model name/id (e.g. ollama/mistral):");
-            if (manualName) {
-                vscode.postMessage({ command: 'updateDiscussionModel', model: manualName.trim() });
-                // We also trigger a token refresh because the model changed
-                vscode.postMessage({ command: 'calculateTokens' });
-            }
-            menu.classList.remove('visible');
-        };
-        menu.appendChild(manualItem);
-
-        state.profiles.forEach(p => {
-             const item = document.createElement('div');
-             item.className = 'custom-menu-item';
-             item.innerHTML = `<span class="codicon ${p.id === currentProfileId ? 'codicon-check' : 'codicon-circle-outline'}"></span> ${p.name}`;
-             item.onclick = (e: MouseEvent) => {
-                 e.preventDefault(); // BLOCK <details> toggle
-                 e.stopPropagation();
-                 vscode.postMessage({ 
-                     command: 'updateDiscussionCapabilitiesPartial', 
-                     partial: { responseProfileId: p.id } 
-                 });
-                 menu.classList.remove('visible');
-             };
-             menu.appendChild(item);
-        });
-        
-        const configItem = document.createElement('div');
-        configItem.className = 'custom-menu-item';
-        configItem.style.borderTop = '1px solid var(--vscode-menu-separatorBackground)';
-        configItem.style.marginTop = '4px';
-        configItem.style.paddingTop = '8px';
-        configItem.innerHTML = `<span class="codicon codicon-settings"></span> Configure Styles...`;
-        configItem.onclick = (e) => {
-            e.stopPropagation();
-            // Open the Discussion Settings modal directly
-            if (dom.discussionToolsModal) {
-                dom.discussionToolsModal.classList.add('visible');
-                renderProfilesInModal(); // Refresh the profiles list
-                
-                // REFRESH VOICES
-                if (typeof (window as any).refreshVoiceList === 'function') {
-          (window as any).refreshVoiceList();
-                }
-            }
-            menu.classList.remove('visible');
-        };
-        menu.appendChild(configItem);
-
-        modeBadge.onclick = (e) => {
-            e.preventDefault(); // BLOCK <details> toggle
-            e.stopPropagation();
-            const isOpening = !menu.classList.contains('visible');
-            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
-
-            if (isOpening) {
-                adjustMenuPosition(modeBadge, menu);
-                menu.classList.add('visible');
-            }
-        };
-
-        wrapper.appendChild(modeBadge);
-        wrapper.appendChild(menu);
-        infraGroup.appendChild(wrapper);
+        const div = document.createElement('div');
+        div.innerHTML = BadgesPresenter.renderResponseProfileBadge(currentProfile.name, currentProfile.description);
+        const badgeWrapper = div.firstElementChild as HTMLElement;
+        BadgesBinder.bindResponseProfileMenu(badgeWrapper, state.profiles, currentProfileId);
+        infraGroup.appendChild(badgeWrapper);
     }
 
-    // --- THEME: TASK & TEAM ---
-    // --- THEME: THINKING & REASONING ---
-    // Suppress Reasoning/Task/Research groups in Agent Mode to reduce clutter
-    // Duplicated Think Badge logic safely purged!
-
-    // --- GROUNDING COGNITION & AUXILIARY PROTOCOLS (COLLAPSED DROP-DOWN HUB) ---
-    const optionsParentGroup = document.createElement('div');
-    optionsParentGroup.className = 'badge-group hud-options-parent';
-    container.appendChild(optionsParentGroup);
-
-    // 1. Gather all active visual icons representing enabled protocols
+    // --- Auxiliary HUD Options Dropdown Hub ---
     const activeIcons: string[] = [];
     if (caps.thinkingMode) activeIcons.push('🧠');
     if (caps.sparqlEnabled !== false) activeIcons.push('📊');
@@ -1996,137 +2228,17 @@ export function updateBadges() {
     if (caps.herdMode === true) activeIcons.push('🐂');
 
     const iconsLabel = activeIcons.length > 0 ? activeIcons.join(' ') : '⚙️';
+    const optDiv = document.createElement('div');
+    optDiv.innerHTML = BadgesPresenter.renderOptionsHubBadge(iconsLabel);
+    const optionsParentGroup = optDiv.firstElementChild as HTMLElement;
+    BadgesBinder.bindOptionsHubMenu(optionsParentGroup, caps);
+    container.appendChild(optionsParentGroup);
 
-    // 2. Render Consolidated Trigger Badge
-    const optionsTriggerBadge = document.createElement('span');
-    optionsTriggerBadge.className = 'mode-badge active clickable';
-    optionsTriggerBadge.style.background = 'var(--vscode-button-secondaryBackground)';
-    optionsTriggerBadge.style.color = 'var(--vscode-button-secondaryForeground)';
-    optionsTriggerBadge.style.borderColor = 'var(--vscode-widget-border)';
-    optionsTriggerBadge.title = `Sovereign HUD Options (Hover/Click to configure protocols)`;
-    optionsTriggerBadge.innerHTML = `
-        <span class="codicon codicon-settings-gear"></span> 
-        <span class="badge-label" style="margin-left: 4px; letter-spacing: 0.5px; font-weight: bold;">HUD: ${iconsLabel}</span>
-    `;
-    optionsParentGroup.appendChild(optionsTriggerBadge);
-
-    // 3. Render Vertical Options Popup
-    const optionsDropdownMenu = document.createElement('div');
-    optionsDropdownMenu.className = 'hud-options-popup';
-    optionsDropdownMenu.style.cssText = `
-        display: none;
-        position: absolute;
-        top: calc(100% + 5px);
-        left: 0;
-        z-index: 10001;
-        background: var(--vscode-editorWidget-background);
-        border: 1px solid var(--vscode-widget-border);
-        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-        padding: 10px;
-        border-radius: 8px;
-        flex-direction: column;
-        gap: 8px;
-        min-width: 240px;
-        max-height: 70vh;
-        overflow-y: auto;
-    `;
-    optionsParentGroup.appendChild(optionsDropdownMenu);
-
-    // Prevent closing details/accordions when clicking inside the popup menu
-    optionsDropdownMenu.onclick = (e) => {
-        e.stopPropagation();
-    };
-
-    // Toggle menu visibility on left click of the trigger badge
-    optionsTriggerBadge.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const isVisible = optionsDropdownMenu.style.display === 'flex';
-        document.querySelectorAll('.hud-options-popup').forEach((m: any) => m.style.display = 'none');
-        optionsDropdownMenu.style.display = isVisible ? 'none' : 'flex';
-    };
-
-    // Auto-close menu when clicking anywhere else on window
-    const closeMenuHandler = () => {
-        optionsDropdownMenu.style.display = 'none';
-        window.removeEventListener('click', closeMenuHandler);
-    };
-    optionsTriggerBadge.addEventListener('click', () => {
-        setTimeout(() => window.addEventListener('click', closeMenuHandler), 50);
-    });
-
-    // Helper to generate checkboxes inside the options dropdown list
-    const appendToggleOption = (label: string, icon: string, checked: boolean, onToggle: () => void) => {
-        const optionRow = document.createElement('div');
-        optionRow.style.cssText = "display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 4px 8px; border-radius: 4px; font-size: 12px;";
-        optionRow.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 8px; opacity: 0.9;">
-                <span class="codicon ${icon}"></span>
-                <span>${label}</span>
-            </div>
-            <label class="switch" style="width: 28px; height: 16px; margin: 0; flex-shrink: 0;">
-                <input type="checkbox" ${checked ? 'checked' : ''} style="margin: 0; cursor: pointer;">
-                <span class="slider" style="border-radius: 16px;"></span>
-            </label>
-        `;
-        optionRow.querySelector('input')!.onchange = (e) => {
-            e.stopPropagation();
-            onToggle();
-        };
-        optionsDropdownMenu.appendChild(optionRow);
-    };
-
-    // Populate all original options vertical style
-    appendToggleOption('🧠 Thinking Mode', 'codicon-circuit-board', !!caps.thinkingMode, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { thinkingMode: !caps.thinkingMode } });
-    });
-    appendToggleOption('📊 SPARQL Engine', 'codicon-graph', caps.sparqlEnabled !== false, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { sparqlEnabled: caps.sparqlEnabled === false } });
-    });
-    appendToggleOption('🔍 GREP Indexer', 'codicon-search', caps.grepEnabled !== false, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { grepEnabled: caps.grepEnabled === false } });
-    });
-    appendToggleOption('🌍 Web Research', 'codicon-globe', !!caps.webSearch, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { webSearch: !caps.webSearch } });
-    });
-    appendToggleOption('🧬 Project DNA', 'codicon-chip', caps.projectMemoryEnabled !== false, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { projectMemoryEnabled: caps.projectMemoryEnabled === false } });
-    });
-    appendToggleOption('💡 Skills Library', 'codicon-lightbulb', !!caps.autoSkillMode, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { autoSkillMode: !caps.autoSkillMode } });
-    });
-    appendToggleOption('⚡ Auto-Apply Blocks', 'codicon-zap', !!caps.autoApply, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { autoApply: !caps.autoApply } });
-    });
-    appendToggleOption('🐞 Debug Protocol', 'codicon-bug', !!caps.debugMode, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { debugMode: !caps.debugMode } });
-    });
-    appendToggleOption('🛡️ Verifier Protocol', 'codicon-shield', !!caps.verifierMode, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { verifierMode: !caps.verifierMode } });
-    });
-    appendToggleOption('🧪 Test Protocol', 'codicon-beaker', !!caps.testMode, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { testMode: !caps.testMode } });
-    });
-    appendToggleOption('📖 Docs Protocol', 'codicon-book', !!caps.documentationMode, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { documentationMode: !caps.documentationMode } });
-    });
-    appendToggleOption('🐙 Git Integration', 'codicon-git-branch', !!caps.gitAutoWorkflow, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { gitAutoWorkflow: !caps.gitAutoWorkflow } });
-    });
-    appendToggleOption('🐂 Multi-Agent (Herd)', 'codicon-organization', !!caps.herdMode, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
-    });
-
-    // --- GROUP C: SOVEREIGN OPERATIONAL MODE (Mutually Exclusive Unified Dropdown) ---
-    const modeGroup = document.createElement('div');
-    modeGroup.className = 'badge-group';
-    container.appendChild(modeGroup);
-
+    // --- OPERATIONAL MODE GROUP (Assistant/Co-Engineer/Agent) ---
     const isAgent = caps.agentMode === true;
     const isDynamic = caps.dynamicMode === true && !isAgent;
     const isAssistant = !isAgent && !isDynamic;
 
-    // Define properties based on the active mode
     let activeModeLabel = '👤 Assistant';
     let activeModeColor = 'var(--vscode-button-secondaryBackground)';
     let activeModeTitle = 'Assistant Mode: Manual code execution.';
@@ -2144,205 +2256,41 @@ export function updateBadges() {
         activeModeClass = 'active thinking';
     }
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'badge-wrapper';
-    wrapper.style.position = 'relative';
+    const modeGroupDiv = document.createElement('div');
+    modeGroupDiv.className = 'badge-group';
+    modeGroupDiv.innerHTML = BadgesPresenter.renderOperationalModeBadge(activeModeClass, activeModeColor, activeModeLabel, activeModeTitle);
+    const operationalModeWrapper = modeGroupDiv.firstElementChild as HTMLElement;
+    BadgesBinder.bindOperationalModeMenu(operationalModeWrapper, isAssistant, isDynamic, isAgent);
+    modeGroupDiv.appendChild(operationalModeWrapper);
+    container.appendChild(modeGroupDiv);
 
-    const mainBadge = document.createElement('span');
-    mainBadge.className = `mode-badge ${activeModeClass} clickable`;
-    if (isAgent || isDynamic) {
-        mainBadge.style.backgroundColor = activeModeColor;
-        mainBadge.style.color = 'white';
-    }
-    mainBadge.title = `${activeModeTitle} Click to switch modes.`;
-    mainBadge.innerHTML = `<span class="codicon codicon-unfold"></span> <span class="badge-label">${activeModeLabel}</span>`;
-
-    const menu = document.createElement('div');
-    menu.id = 'mode-dropdown-menu';
-    menu.className = 'custom-menu hidden';
-
-    const appendModeOption = (label: string, icon: string, isActive: boolean, partialUpdate: any) => {
-        const item = document.createElement('div');
-        item.className = `custom-menu-item ${isActive ? 'current-head' : ''}`;
-        item.innerHTML = `<span class="codicon ${isActive ? 'codicon-check' : icon}"></span> ${label}`;
-        item.onclick = (e: MouseEvent) => {
-            e.preventDefault();
-            e.stopPropagation();
-            vscode.postMessage({ 
-                command: 'updateDiscussionCapabilitiesPartial', 
-                partial: partialUpdate 
-            });
-            updateBadges();
-            menu.classList.remove('visible');
-        };
-        menu.appendChild(item);
-    };
-
-    appendModeOption('👤 Assistant (Manual)', 'codicon-account', isAssistant, { agentMode: false, dynamicMode: false });
-    appendModeOption('🧠 Dynamic (Semi-Auto)', 'codicon-circuit-board', isDynamic, { agentMode: false, dynamicMode: true });
-    appendModeOption('🤖 Agent (Autonomous)', 'codicon-robot', isAgent, { agentMode: true, dynamicMode: false });
-
-    mainBadge.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const isOpening = !menu.classList.contains('visible');
-        document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
-
-        if (isOpening) {
-            adjustMenuPosition(mainBadge, menu);
-            menu.classList.add('visible');
-        }
-    };
-
-    wrapper.appendChild(mainBadge);
-    wrapper.appendChild(menu);
-    modeGroup.appendChild(wrapper);
-
-    // --- AGENT MISSION PROFILE SELECTOR (Only in Agent Mode) ---
+    // --- AGENT CRITICAL SPECIFIC PROFILE ---
     if (isAgent && state.agentProfiles && state.agentProfiles.length > 0) {
-        const currentProfileId = state.capabilities?.activeAgentProfileId || 'software_architect';
+        const currentProfileId = caps.activeAgentProfileId || 'software_architect';
         const currentProfile = state.agentProfiles.find(p => p.id === currentProfileId) || state.agentProfiles[0];
-
         if (currentProfile) {
-            const wrapper = document.createElement('div');
-            wrapper.className = 'badge-wrapper';
-            wrapper.style.position = 'relative';
-
-            const genieBadge = document.createElement('span');
-            genieBadge.className = 'mode-badge active clickable';
-            genieBadge.style.backgroundColor = 'var(--vscode-charts-orange)';
-            genieBadge.style.color = 'white';
-            genieBadge.title = `Genie Mission: ${currentProfile.name}. Click to change protocol.`;
-            genieBadge.innerHTML = `<span class="codicon codicon-target"></span> <span class="badge-label">${currentProfile.name}</span>`;
-
-            const menu = document.createElement('div');
-            menu.className = 'custom-menu';
-            menu.id = 'genie-profile-menu';
-
-            state.agentProfiles.forEach(p => {
-                const item = document.createElement('div');
-                item.className = 'custom-menu-item';
-                const icon = (p.id === currentProfileId) ? 'codicon-check' : 'codicon-symbol-property';
-                item.innerHTML = `<span class="codicon ${icon}"></span> ${p.name}`;
-
-                if (p.id === currentProfileId) {
-                    item.style.fontWeight = 'bold';
-                    item.style.color = 'var(--vscode-textLink-foreground)';
-                }
-
-                item.onclick = (e) => {
-                    e.stopPropagation();
-                    vscode.postMessage({ 
-                        command: 'updateDiscussionCapabilitiesPartial', 
-                        partial: { activeAgentProfileId: p.id } 
-                    });
-                    menu.classList.remove('visible');
-                };
-                menu.appendChild(item);
-            });
-
-            genieBadge.onclick = (e) => {
-                e.stopPropagation();
-                const isOpening = !menu.classList.contains('visible');
-                document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
-
-                if (isOpening) {
-                    adjustMenuPosition(genieBadge, menu);
-                    menu.classList.add('visible');
-                }
-            };
-
-            wrapper.appendChild(genieBadge);
-            wrapper.appendChild(menu);
-            container.appendChild(wrapper);
+            const pDiv = document.createElement('div');
+            pDiv.innerHTML = BadgesPresenter.renderAgentProfileBadge(currentProfile.name);
+            const profileWrapper = pDiv.firstElementChild as HTMLElement;
+            BadgesBinder.bindAgentProfileMenu(profileWrapper, state.agentProfiles, currentProfileId);
+            container.appendChild(profileWrapper);
         }
     }
 
-    if (caps.gitWorkflow) {
-        const branchName = state.currentBranch || 'git-workflow';
-        const lastHash = state.lastCommitHash;
-        
-        const wrapper = document.createElement('div');
-        wrapper.id = 'git-badge-wrapper';
-        wrapper.className = 'badge-wrapper';
-        wrapper.style.position = 'relative';
+    // --- GIT FLOW DETAILS ---
+    if (caps.gitWorkflow && state.currentBranch) {
+        const gitDiv = document.createElement('div');
+        gitDiv.innerHTML = BadgesPresenter.renderGitBadge(state.currentBranch);
+        const gitWrapper = gitDiv.firstElementChild as HTMLElement;
+        BadgesBinder.bindGitMenu(gitWrapper);
+        container.appendChild(gitWrapper);
+    }
 
-        const badge = document.createElement('span');
-        badge.className = 'mode-badge active clickable';
-        badge.style.backgroundColor = 'var(--vscode-gitDecoration-modifiedResourceForeground)'; 
-        badge.style.color = 'white';
-        badge.title = `Current Branch: ${branchName}. Click for actions.`;
-        badge.id = 'git-badge';
-        
-        const iconEl = document.createElement('span');
-        iconEl.className = 'codicon codicon-git-branch';
-        iconEl.style.marginRight = '4px';
-        
-        const label = document.createElement('span');
-        label.className = 'badge-label';
-        label.textContent = branchName;
-        
-        badge.appendChild(iconEl);
-        badge.appendChild(label);
-        
-        wrapper.appendChild(badge);
-        
-        const menu = document.createElement('div');
-        menu.id = 'git-menu';
-        menu.className = 'custom-menu hidden';
-        
-        const createMenuItem = (id: string, iconClass: string, text: string, command: string, params?: any) => {
-            const item = document.createElement('div');
-            item.id = id;
-            item.className = 'custom-menu-item';
-            item.innerHTML = `<span class="codicon ${iconClass}"></span> ${text}`;
-            
-            item.onclick = (e: MouseEvent) => {
-                e.stopPropagation();
-                if (command.startsWith('lollms-vs-coder')) {
-                    vscode.postMessage({ command: 'executeLollmsCommand', details: { command: command, params: params } });
-                } else {
-                    vscode.postMessage({ command: command, ...params });
-                }
-                menu.classList.remove('visible');
-            };
-
-            return item;
-        };
-
-        menu.appendChild(createMenuItem('git-menu-branch', 'codicon-git-branch', 'New Branch', 'lollms-vs-coder.createGitBranch'));
-        menu.appendChild(createMenuItem('git-menu-switch', 'codicon-arrow-swap', 'Switch Branch', 'lollms-vs-coder.switchGitBranch'));
-        menu.appendChild(createMenuItem('git-menu-commit', 'codicon-check', 'Commit', 'requestCommitStaging'));
-        menu.appendChild(createMenuItem('git-menu-merge', 'codicon-git-merge', 'Fuse Branch', 'lollms-vs-coder.mergeGitBranch'));
-        menu.appendChild(createMenuItem('git-menu-revert', 'codicon-history', 'Revert / Motion', 'requestGitHistory'));
-        
-        if (state.lastCommitHash) {
-            const lastHash = state.lastCommitHash;
-            const copyItem = document.createElement('div');
-            copyItem.className = 'custom-menu-item';
-            copyItem.style.borderTop = '1px solid var(--vscode-menu-separatorBackground)';
-            copyItem.innerHTML = `<span class="codicon codicon-copy"></span> Copy Last Hash (${lastHash.substring(0,7)})`;
-            copyItem.onclick = () => {
-                vscode.postMessage({ command: 'copyToClipboard', text: lastHash });
-            };
-            menu.appendChild(copyItem);
-        }
-
-        wrapper.appendChild(menu);
-        container.appendChild(wrapper);
-
-        badge.onclick = (e) => {
-            e.stopPropagation();
-            const isOpening = !menu.classList.contains('visible');
-            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
-
-            if (isOpening) {
-                adjustMenuPosition(badge, menu);
-                menu.classList.add('visible');
-            }
-        };
-        }
-    }  
+    // Initialize capability bindings
+    if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
+    if (dom.capHerdParallelGeneration) dom.capHerdParallelGeneration.checked = !!caps.herdParallelGeneration;
+    if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds?.toString() || '2';
+    if (dom.capProjectMemory) dom.capProjectMemory.checked = caps.projectMemoryEnabled !== false;
 }
 // Global exposure for events.ts
 (window as any).closeProfileEditor = () => {
@@ -3351,6 +3299,137 @@ export function updateContextFileUsage(filePath: string, tokens: number) {
 /**
  * Renders the Workspace Access Matrix rows inside the HUD modal.
  */
+// --- NEW DISCUSSION WIZARD RENDERING ---
+export function openNewDiscussionWizard(selections: string[] = []) {
+    if (!dom.wizardModal) return;
+
+    // 1. Populate Personalities Select
+    if (dom.wizardPersonality && state.personalities && state.personalities.length > 0) {
+        dom.wizardPersonality.innerHTML = state.personalities.map(p => 
+            `<option value="${p.id}" ${p.id === state.currentPersonalityId ? 'selected' : ''}>${p.name}</option>`
+        ).join('');
+    } else if (dom.wizardPersonality) {
+        dom.wizardPersonality.innerHTML = `<option value="default_coder">Lollms Coder (Default)</option>`;
+    }
+
+    // 2. Populate Response Profiles Select
+    if (dom.wizardProfile && state.profiles && state.profiles.length > 0) {
+        const defaultProfileId = state.capabilities?.responseProfileId || 'balanced';
+        dom.wizardProfile.innerHTML = state.profiles.map(p => 
+            `<option value="${p.id}" ${p.id === defaultProfileId ? 'selected' : ''}>${p.name}</option>`
+        ).join('');
+    } else if (dom.wizardProfile) {
+        dom.wizardProfile.innerHTML = `
+            <option value="balanced" selected>Balanced (Default)</option>
+            <option value="structured">Structured (Analytical)</option>
+            <option value="minimalist">Minimalist (Surgical)</option>
+            <option value="pedagogical">Pedagogical (Teacher)</option>
+        `;
+    }
+
+    // Populate Context Selections Dropdown
+    const ctxSelect = document.getElementById('wizard-context-selection') as HTMLSelectElement;
+    if (ctxSelect) {
+        ctxSelect.innerHTML = `<option value="current" selected>Current Active Selection (Default)</option>`;
+        (selections || []).forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s;
+            opt.textContent = s.replace('.lollms-ctx', '');
+            ctxSelect.appendChild(opt);
+        });
+    }
+
+    // 3. Render Matrix Folder Rows inside Wizard
+    renderWizardMatrix();
+
+    // 4. Reveal Modal and focus the input field
+    dom.wizardModal.style.display = 'flex';
+    dom.wizardModal.classList.add('visible');
+
+    setTimeout(() => {
+        if (dom.wizardPrompt) dom.wizardPrompt.focus();
+    }, 100);
+}
+
+export function renderWizardMatrix() {
+    const container = dom.wizardMatrixContainer;
+    if (!container) return;
+
+    const workspaceFolders = (window as any).workspaceFolders || (state as any).workspaceFolders || [];
+    const folderSettings = state.capabilities?.folderSettings || {};
+
+    container.innerHTML = '';
+    const validFolders = workspaceFolders.filter((f: any) => f && f.uri);
+
+    if (validFolders.length === 0) {
+        container.innerHTML = '<div style="padding: 15px; opacity: 0.5; text-align: center; font-size:11px;">No workspace folders open.</div>';
+        return;
+    }
+
+    validFolders.forEach((f: any) => {
+        const uriKey = typeof f.uri === 'string' ? f.uri : (f.uri ? f.uri.toString() : '');
+        if (!uriKey) return;
+
+        const settings = folderSettings[uriKey] || { tree: true, content: true };
+
+        const row = document.createElement('div');
+        row.className = 'ws-matrix-row';
+        row.dataset.uri = uriKey;
+        row.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--vscode-widget-border); gap: 15px;";
+
+        row.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;">
+                <span class="codicon codicon-root-folder" style="opacity: 0.6; font-size: 16px;"></span>
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700;">${f.name || 'Folder'}</span>
+            </div>
+            <div style="display: flex; gap: 8px;">
+                <button class="matrix-toggle-btn ${settings.tree ? 'active' : 'inactive'}" 
+                        data-type="tree" 
+                        style="display: flex; align-items: center; gap: 6px; font-size: 10px; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); cursor: pointer; transition: all 0.1s;
+                        background: ${settings.tree ? 'var(--vscode-button-background)' : 'var(--vscode-button-secondaryBackground)'}; 
+                        color: ${settings.tree ? 'var(--vscode-button-foreground)' : 'var(--vscode-button-secondaryForeground)'};"
+                        title="${settings.tree ? 'Hide project structure (Tree)' : 'Include project structure (Tree)'}">
+                        <i class="codicon ${settings.tree ? 'codicon-check' : 'codicon-circle-slash'}"></i>
+                        <span>Tree</span>
+                </button>
+                <button class="matrix-toggle-btn ${settings.content ? 'active' : 'inactive'}" 
+                        data-type="content" 
+                        style="display: flex; align-items: center; gap: 6px; font-size: 10px; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); cursor: pointer; transition: all 0.1s;
+                        background: ${settings.content ? 'var(--vscode-button-background)' : 'var(--vscode-button-secondaryBackground)'}; 
+                        color: ${settings.content ? 'var(--vscode-button-foreground)' : 'var(--vscode-button-secondaryForeground)'};"
+                        title="${settings.content ? 'Mute file contents (Files)' : 'Include file contents (Files)'}">
+                        <i class="codicon ${settings.content ? 'codicon-check' : 'codicon-circle-slash'}"></i>
+                        <span>Content</span>
+                </button>
+            </div>
+        `;
+
+        row.querySelectorAll('.matrix-toggle-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e) => {
+                e.stopPropagation();
+                const type = (btn as HTMLElement).dataset.type as 'tree' | 'content';
+                const currentSettings = { ... (state.capabilities?.folderSettings || {}) };
+                const nodeSettings = currentSettings[uriKey] || { tree: true, content: true };
+
+                nodeSettings[type] = !nodeSettings[type];
+                currentSettings[uriKey] = nodeSettings;
+
+                if (state.capabilities) {
+                    state.capabilities.folderSettings = currentSettings;
+                }
+
+                // Render local changes instantly in wizard
+                renderWizardMatrix();
+            };
+        });
+
+        container.appendChild(row);
+    });
+}
+
+// Expose globally for events handler
+(window as any).openNewDiscussionWizard = openNewDiscussionWizard;
+
 export function renderWorkspaceMatrix() {
     const container = document.getElementById('matrix-rows-container');
     const modal = document.getElementById('workspace-matrix-modal');

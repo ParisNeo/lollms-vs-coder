@@ -75,7 +75,7 @@ svg {width:100%;height:100%}
 <button onclick="request()">Rebuild</button>
 </div>
 <div id="canvas"></div>
-<script src="${base}/webview/explorer.js"></script>
+<script src="${base}/out/webview/explorer.js"></script>
 </body>
 </html>`;
     }

@@ -102,6 +102,7 @@ import { processThinkTags } from './messageRenderer.js';
 (window as any).processThinkTags = processThinkTags;
 
 // --- Initialize Mermaid ---
+console.log("[Lollms Debug] Starting Mermaid initialization check...");
 try {
     mermaid.initialize({ 
         startOnLoad: false,
@@ -109,11 +110,13 @@ try {
         securityLevel: 'strict',
         fontFamily: 'var(--vscode-font-family)'
     });
+    console.log("[Lollms Debug] Mermaid initialized successfully.");
 } catch(e) { 
-    console.warn("Mermaid init error:", e); 
+    console.error("[Lollms Debug] Mermaid init failed:", e); 
 }
 
 // Logic Imports
+console.log("[Lollms Debug] Loading event handlers and message loop...");
 import { initEventHandlers } from './events.js'; 
 import { handleExtensionMessage } from './extensionMessageHandler.js';
 
@@ -347,24 +350,28 @@ document.getElementById('ttsButton')?.addEventListener('click', () => {
 };
 
 
-// --- Initialization ---
+// --- Sample Initialization ---
 (function() {
+    console.log("[Lollms Debug] Invoking Webview Self-Executing Lifecycle wrapper...");
     try {
         if (!(window as any).vscode) {
             throw new Error("VS Code API missing on window object.");
         }
+        console.log("[Lollms Debug] VS Code API verified on window object.");
 
-        window.addEventListener('message', handleExtensionMessage);
+        window.addEventListener('message', (event) => {
+            console.log("[Lollms Debug] Webview inbound IPC message intercepted:", event.data?.command);
+            handleExtensionMessage(event);
+        });
         
         document.addEventListener('DOMContentLoaded', () => {
-            
+            console.log("[Lollms Debug] DOMContentLoaded Fired. Binding layout and components...");
             const strings = (window as any).l10n || {};
             
             if(dom.contextLoadingSpinner) {
                     const textSpan = dom.contextLoadingSpinner.querySelector('#loading-files-text');
                     if(textSpan) textSpan.textContent = l10n.progressLoadingFiles || "Loading...";
             }
-
             if(dom.refreshContextBtn) dom.refreshContextBtn.title = l10n.tooltipRefreshContext || "Refresh";
 
             try {
@@ -381,6 +388,7 @@ document.getElementById('ttsButton')?.addEventListener('click', () => {
             } catch (e) {}
 
             // Notify extension that webview is ready
+            console.log("[Lollms Debug] Emitting webview-ready bootstrap handshake to extension host...");
             vscode.postMessage({ command: 'webview-ready' });
 
             // High-frequency live timer updater for active thinking engrams
@@ -397,7 +405,7 @@ document.getElementById('ttsButton')?.addEventListener('click', () => {
         });
 
     } catch (e: any) {
-        console.error("Main Init Error:", e);
+        console.error("[Lollms Debug] Main Webview Bootstrapper Exception:", e);
         if((window as any).vscode) {
             (window as any).vscode.postMessage({ command: 'showError', message: 'Init Error: ' + e.message });
         }

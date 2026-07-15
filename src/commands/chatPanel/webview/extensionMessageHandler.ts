@@ -2,10 +2,12 @@ import { dom, vscode, state } from './dom.js';
 import DOMPurify from 'dompurify';
 import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender, checkAndSyncMessageAppliedState } from './messageRenderer.js';
 import { collapseBlockWithScrollPreservation, isScrolledToBottom } from './utils.js';
-import { setCalculatingTokens,
+import { 
+    setCalculatingTokens,
     showProjectLoader,
     hideProjectLoader,
-    updateLoaderStatus}from './ui.js';
+    updateLoaderStatus
+} from './ui.js';
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 import { 
     setGeneratingState, 
@@ -335,9 +337,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         // Store descriptors in our local view cache
                         (window as any).lazyFilesRegistry = new Map(files.map((f: any) => [f.path, f]));
 
-                        import('./ui.js').then(ui => {
-                            ui.updateBadges();
-                            ui.renderContextDashboard(); // Renders lightweight UI skeleton
+                        // Use the decoupled updater pathway
+                        import('./messageRenderer.js').then(mRenderer => {
+                            mRenderer.updateContext();
                         });
                     } else if (action === 'lazy_load_file') {
                         const registry = (window as any).lazyFilesRegistry;
@@ -375,6 +377,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 displayPlan(message.plan);
                 break;
 
+            case 'openNewDiscussionWizard':
+                import('./ui.js').then(ui => {
+                    if (typeof ui.openNewDiscussionWizard === 'function') {
+                        ui.openNewDiscussionWizard(message.selections || []);
+                    }
+                });
+                break;
             case 'loadDiscussion':
                 {
                     if (message.workspaceFolders) {
@@ -429,6 +438,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         dom.welcomeMessage.style.display = hasChatContent ? 'none' : 'block';
                     }
 
+                    if (message.initialPrompt !== undefined && message.initialPrompt !== null) {
+                        if (dom.messageInput) {
+                            dom.messageInput.value = message.initialPrompt;
+                            dom.messageInput.dispatchEvent(new Event('input'));
+                            dom.messageInput.focus();
+                        }
+                    }
+
                     if (dom.attachmentsContainer) {
                         const wrapper = dom.attachmentsContainer.closest('.special-zone-message');
                         if (wrapper) {
@@ -447,13 +464,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         syncExpansionBlocks();
                     }, 100);
 
-                    // Only request a fresh scan if we have no cached metrics
-                    if (this._currentDiscussion && !this._currentDiscussion.lastTokenMetrics) {
-                        this._panel.webview.postMessage({ command: 'calculateTokens' });
-                    } else if (this._currentDiscussion) {
-                        // Tell the UI we are done with the hydration phase
-                        this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                    }
+                    // Webview-safe finish indicators: Always release the progress overlay once the discussion loads
+                    setCalculatingTokens(false);
+                    hideProjectLoader();
 
                     if (dom.messagesDiv) {
                         dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
@@ -477,6 +490,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
                 if (message.workspaceFolders) {
                     (window as any).workspaceFolders = message.workspaceFolders;
+                    (state as any).workspaceFolders = message.workspaceFolders;
+                }
+                // Dynamic refresh of Wizard folders list if open
+                if (dom.wizardModal.classList.contains('visible')) {
+                    renderWizardMatrix();
                 }
                 if (caps) {
                     const oldSettings = JSON.stringify(state.capabilities?.folderSettings || {});
@@ -575,6 +593,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (docsCheck) docsCheck.checked = !!caps.documentationMode;
                     if (gitCheck) gitCheck.checked = !!caps.gitAutoWorkflow;
                     if (herdCheck) herdCheck.checked = !!caps.herdMode;
+
+                    const preciseTokenizationCheck = document.getElementById('cap-preciseTokenization') as HTMLInputElement;
+                    if (preciseTokenizationCheck) {
+                        preciseTokenizationCheck.checked = caps.preciseTokenization === true;
+                    }
 
                     if (dom.tempSlider) {
                         const tempValue = (caps.temperature !== undefined && caps.temperature !== null) 
@@ -765,14 +788,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 state.personalities = message.personalities || [];
                 state.currentPersonalityId = message.currentPersonalityId || 'default_coder';
                 if (dom.personalitySelector) {
-                    dom.personalitySelector.innerHTML = '';
-                    state.personalities.forEach((p: any) => {
-                        const option = document.createElement('option');
-                        option.value = p.id;
-                        option.textContent = p.name;
-                        dom.personalitySelector.appendChild(option);
-                    });
-                    dom.personalitySelector.value = state.currentPersonalityId;
+                    dom.personalitySelector.value = message.currentPersonalityId;
+                }
+                // Refresh wizard select if modal is open
+                if (dom.wizardModal.classList.contains('visible') && dom.wizardPersonality) {
+                    dom.wizardPersonality.innerHTML = state.personalities.map(p => 
+                        `<option value="${p.id}" ${p.id === state.currentPersonalityId ? 'selected' : ''}>${p.name}</option>`
+                    ).join('');
                 }
                 updateBadges();
                 break;
@@ -804,10 +826,28 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         bar.style.width = `${message.progress}%`;
                     }
 
+                    // --- ACTIVE PROCESS STATUS OVERLAY (LOWER PANEL) ---
+                    const scoutBarContainer = document.getElementById('fused-scout-loader-bar');
+                    const scoutBarFill = document.getElementById('scout-progress-fill');
+                    const scoutDetails = document.getElementById('scout-progress-details');
+                    const scoutPercent = document.getElementById('scout-progress-percent');
+
+                    if (scoutBarContainer && scoutBarFill && scoutDetails && scoutPercent) {
+                        scoutBarContainer.style.display = 'flex';
+                        scoutBarFill.style.width = `${message.progress}%`;
+                        scoutPercent.textContent = `${Math.round(message.progress)}%`;
+
+                        if (message.current && message.total) {
+                            scoutDetails.textContent = `Scouting: ${message.current} / ${message.total} files [${message.fileName}]`;
+                        } else if (message.status) {
+                            scoutDetails.textContent = message.status;
+                        }
+                    }
+
                     // Dynamically update the active text labels during calculation with precise metrics
                     const label = document.getElementById('token-count-label');
                     const loaderText = document.getElementById('loading-files-text');
-                    
+
                     if (message.current && message.total) {
                         const progressStatus = `Processing: ${message.current} / ${message.total} files (${message.progress}%) [${message.fileName}]`;
                         if (label) {
@@ -843,6 +883,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 updateLoaderStatus(message.status, message.stats);
                 break;
             case 'updateTokenProgress':
+                console.log("[Lollms Debug:Token] Received updateTokenProgress payload:", message);
+                console.log("[Lollms Debug:Token] Current text label element:", dom.tokenCountLabel);
+
                 if (dom.tokenCountLabel) {
                     const { totalTokens, contextSize, error, isApproximate, folderStats, files } = message;
 
@@ -861,14 +904,19 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
                     if (error) {
+                        console.log("[Lollms Debug:Token] Setting token label to error state.");
                         dom.tokenCountLabel.textContent = `Tokens: ${error}`;
                         if (dom.tokenProgressBar) {
                             dom.tokenProgressBar.style.width = '100%';
                             dom.tokenProgressBar.className = 'token-progress-bar range-danger';
                         }
-                    } else if (typeof totalTokens === 'number') {
+                    } else {
+                        // Coerce null/undefined/NaN values to 0 to prevent interface rendering hangs
+                        const normalizedTotal = (typeof totalTokens === 'number' && !isNaN(totalTokens)) ? totalTokens : 0;
                         const size = (contextSize > 0) ? contextSize : 128000;
-                        dom.tokenCountLabel.textContent = `${isApproximate ? 'Est. ' : ''}Tokens: ${totalTokens.toLocaleString()} / ${size.toLocaleString()}`;
+                        const finalLabel = `${isApproximate ? 'Est. ' : ''}Tokens: ${normalizedTotal.toLocaleString()} / ${size.toLocaleString()}`;
+                        console.log("[Lollms Debug:Token] Setting label text successfully to:", finalLabel);
+                        dom.tokenCountLabel.textContent = finalLabel;
 
                         // Clean calculating class on new data load
                         if (dom.tokenProgressBar && dom.tokenProgressBar.classList.contains('calculating')) {
@@ -876,10 +924,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
 
                         // Pass segments to the progress bar
-                        updateProgressBar(dom.tokenProgressContainer, totalTokens, size, message.segments);
+                        console.log("[Lollms Debug:Token] Injecting segments to updateProgressBar:", message.segments);
+                        updateProgressBar(dom.tokenProgressContainer, normalizedTotal, size, message.segments);
 
                         // Visual indicator on label for overflow
-                        if (totalTokens > size) {
+                        if (normalizedTotal > size) {
                             dom.tokenCountLabel.style.color = 'var(--vscode-charts-red)';
                             dom.tokenCountLabel.style.fontWeight = 'bold';
                         } else {
@@ -887,6 +936,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             dom.tokenCountLabel.style.fontWeight = 'normal';
                         }
                     }
+                } else {
+                    console.error("[Lollms Debug:Token] CRITICAL: Label container #token-count-label was null in the DOM!");
                 }
                 break;
             case 'updateAgentMode':
@@ -1461,10 +1512,35 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
             case 'fileSavedOnDisk':
                 {
-                    const { filePath } = message;
+                    const { filePath, messageId, blockIndex, hunkIndex } = message;
                     if (!filePath) break;
 
-                    // Scan the entire DOM for any code block that targets this specific file
+                    // 1. If we have precise block index, update its applied state so it turns green!
+                    if (messageId && blockIndex !== undefined) {
+                        // Mark as applied in state
+                        if (!state.appliedState[messageId]) state.appliedState[messageId] = {};
+                        if (!state.appliedState[messageId][blockIndex]) state.appliedState[messageId][blockIndex] = [];
+
+                        const hunkVal = hunkIndex !== undefined ? hunkIndex : -1;
+                        if (!state.appliedState[messageId][blockIndex].includes(hunkVal)) {
+                            state.appliedState[messageId][blockIndex].push(hunkVal);
+                        }
+
+                        // Trigger applyAllResult visually for this block to set the checkmark and green color!
+                        const event = new MessageEvent('message', {
+                            data: {
+                                command: 'applyAllResult',
+                                messageId,
+                                blockIndex,
+                                hunkIndex,
+                                success: true,
+                                alreadyApplied: true
+                            }
+                        });
+                        window.dispatchEvent(event);
+                    }
+
+                    // 2. Scan the entire DOM for any code block that targets this specific file to collapse it gracefully
                     const codeBlocks = document.querySelectorAll('details.code-collapsible');
                     const { collapseBlockWithScrollPreservation } = await import('./utils.js');
 
@@ -1603,33 +1679,51 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
                     if (blockEl && message.success) {
-                        if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
-                        if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
-
                         const hunkVal = message.hunkIndex !== undefined ? message.hunkIndex : -1;
-                        if (isUndo) {
-                            state.appliedState[message.messageId][message.blockIndex] = state.appliedState[message.messageId][message.blockIndex].filter(v => v !== hunkVal);
-                            if (hunkVal === -1) state.appliedState[message.messageId][message.blockIndex] = [];
-                        } else {
-                            if (!state.appliedState[message.messageId][message.blockIndex].includes(hunkVal)) {
-                                state.appliedState[message.messageId][message.blockIndex].push(hunkVal);
+
+                        if (message.alreadyApplied) {
+                            if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
+                            if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
+
+                            if (isUndo) {
+                                state.appliedState[message.messageId][message.blockIndex] = state.appliedState[message.messageId][message.blockIndex].filter(v => v !== hunkVal);
+                                if (hunkVal === -1) state.appliedState[message.messageId][message.blockIndex] = [];
+                            } else {
+                                if (!state.appliedState[message.messageId][message.blockIndex].includes(hunkVal)) {
+                                    state.appliedState[message.messageId][message.blockIndex].push(hunkVal);
+                                }
                             }
                         }
 
                         const restoreBtn = (btn: HTMLButtonElement) => {
                             if (!btn) return;
                             const bubble = btn.closest('.aider-hunk-bubble, .code-collapsible');
-                            const undoBtn = bubble?.querySelector('.undo-hunk-btn') as HTMLElement;
+                            const undoBtn = bubble?.querySelector('.undo-hunk-btn, .undo-block-btn') as HTMLElement;
 
                             btn.disabled = false; // ALWAYS keep enabled for re-apply
+
+                            const isMainBtn = btn.id && btn.id.startsWith('apply-btn-');
 
                             if (isUndo) {
                                 btn.classList.remove('applied');
                                 const isAider = bubble?.classList.contains('aider-diff-container') || bubble?.querySelector('.aider-hunk-group');
-                                const icon = btn.classList.contains('apply-all-btn') ? 'codicon-tools' : (isAider ? 'codicon-arrow-swap' : 'codicon-tools');
+                                let icon = 'codicon-tools';
+                                if (isMainBtn) {
+                                    icon = btn.classList.contains('apply-all-btn') ? 'codicon-check-all' : (isAider ? 'codicon-diff-modified' : 'codicon-tools');
+                                } else {
+                                    icon = 'codicon-git-commit';
+                                }
                                 btn.innerHTML = `<i class="codicon ${icon}"></i>`;
-                                if (undoBtn) undoBtn.style.display = 'none';
-                            } else {
+                                if (undoBtn) {
+                                    if (undoBtn.classList.contains('undo-block-btn')) {
+                                        undoBtn.remove();
+                                    } else {
+                                        undoBtn.style.display = 'none';
+                                        undoBtn.innerHTML = '<i class="codicon codicon-discard"></i> UNDO';
+                                        (undoBtn as HTMLButtonElement).disabled = false;
+                                    }
+                                }
+                            } else if (message.alreadyApplied) {
                                 btn.classList.add('applied');
                                 btn.innerHTML = '<i class="codicon codicon-check"></i>';
                                 btn.title = "Successfully applied. Click to apply again.";
@@ -1637,6 +1731,19 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                     undoBtn.style.display = 'flex';
                                     undoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
                                 }
+                            } else {
+                                btn.classList.remove('applied');
+                                const isAider = bubble?.classList.contains('aider-diff-container') || bubble?.querySelector('.aider-hunk-group');
+                                let icon = 'codicon-tools';
+                                if (isMainBtn) {
+                                    icon = isAider ? 'codicon-diff-modified' : 'codicon-tools';
+                                } else {
+                                    icon = 'codicon-git-commit';
+                                }
+                                btn.innerHTML = `<i class="codicon ${icon}"></i>`;
+                                btn.title = isMainBtn 
+                                    ? "Interactive diff opened. Edit right side and save (Ctrl+S) to apply."
+                                    : "Apply this hunk surgically.";
                             }
                         };
 
@@ -1649,8 +1756,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             const pane = blockEl.querySelector(`.hunk-pane-${message.hunkIndex}`) as HTMLElement;
 
                             if (tab) {
-                                tab.classList.add('status-completed');
-                                tab.querySelector('.hunk-status-icon i')!.className = 'codicon codicon-check';
+                                if (message.alreadyApplied) {
+                                    tab.classList.add('status-completed');
+                                    tab.querySelector('.hunk-status-icon i')!.className = 'codicon codicon-check';
+                                } else {
+                                    tab.classList.remove('status-completed');
+                                    tab.querySelector('.hunk-status-icon i')!.className = 'codicon codicon-primitive-dot';
+                                }
                             }
 
                             if (pane) {
@@ -1669,20 +1781,22 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             });
                         }
 
-                        // Automatically collapse the code block upon successful application to keep the viewport clean
-                        setTimeout(() => {
-                            if (blockEl && blockEl.open) {
-                                import('./utils.js').then(utils => {
-                                    utils.collapseBlockWithScrollPreservation(blockEl, document.getElementById('messages'));
-                                });
-                            }
-                        }, 500);
+                        // Automatically collapse the code block upon successful automatic application to keep the viewport clean
+                        if (message.alreadyApplied) {
+                            setTimeout(() => {
+                                if (blockEl && blockEl.open) {
+                                    import('./utils.js').then(utils => {
+                                        utils.collapseBlockWithScrollPreservation(blockEl, document.getElementById('messages'));
+                                    });
+                                }
+                            }, 500);
+                        }
 
                         // Re-sync main button state for the entire message
                         checkAndSyncMessageAppliedState(message.messageId);
 
                         // Collapse block automatically if applied (hunk-specific or full block)
-                        if (!isUndo && blockEl.open) {
+                        if (message.alreadyApplied && !isUndo && blockEl.open) {
                             import('./utils.js').then(utils => {
                                 utils.collapseBlockWithScrollPreservation(blockEl, document.getElementById('messages'));
                             });

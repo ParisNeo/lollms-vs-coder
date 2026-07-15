@@ -391,5 +391,15 @@ export const dom = {
     get matrixModal() { return document.getElementById('workspace-matrix-modal') as HTMLDivElement; },
     get matrixRowsContainer() { return document.getElementById('matrix-rows-container') as HTMLDivElement; },
     get matrixCloseBtn() { return document.getElementById('matrix-close-btn') as HTMLSpanElement; },
-    get matrixDoneBtn() { return document.getElementById('matrix-done-btn') as HTMLButtonElement; }
+    get matrixDoneBtn() { return document.getElementById('matrix-done-btn') as HTMLButtonElement; },
+
+    // New Discussion Wizard Modal
+    get wizardModal() { return document.getElementById('new-discussion-wizard-modal') as HTMLDivElement; },
+    get wizardTitle() { return document.getElementById('wizard-title') as HTMLInputElement; },
+    get wizardPrompt() { return document.getElementById('wizard-prompt') as HTMLTextAreaElement; },
+    get wizardPersonality() { return document.getElementById('wizard-personality') as HTMLSelectElement; },
+    get wizardProfile() { return document.getElementById('wizard-profile') as HTMLSelectElement; },
+    get wizardMatrixContainer() { return document.getElementById('wizard-matrix-container') as HTMLDivElement; },
+    get wizardCancelBtn() { return document.getElementById('wizard-cancel-btn') as HTMLButtonElement; },
+    get wizardSubmitBtn() { return document.getElementById('wizard-submit-btn') as HTMLButtonElement; }
     };

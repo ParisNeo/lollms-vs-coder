@@ -245,9 +245,18 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         const relativePath = this.normalize(path.relative(workspaceFolder.uri.fsPath, uri.fsPath));
         const segments = relativePath.split('/').map(s => s.toLowerCase());
+        const basename = path.basename(uri.fsPath).toLowerCase();
 
-        // Unconditionally exclude heavy dependencies, build folders, and system directories to prevent high CPU lag
-        const heavyDirs = ['__pycache__', '.lollms', 'node_modules', '.git', 'venv', '.venv', 'dist', 'build', 'bin', 'obj', 'target'];
+        // 1. Aggressively block hidden files and directories (dot-folders/files like .git, .vscode, .lollms)
+        if (basename.startsWith('.') && basename !== '.gitignore') {
+            return true;
+        }
+        if (segments.some(seg => seg.startsWith('.') && seg !== '.gitignore')) {
+            return true;
+        }
+
+        // 2. Unconditionally exclude heavy dependencies, build folders, and system directories to prevent high CPU lag
+        const heavyDirs = ['__pycache__', '.lollms', 'node_modules', '.git', '.vscode', 'venv', '.venv', 'env', '.env', 'dist', 'build', 'bin', 'obj', 'target', 'data', 'data_workspace'];
         if (segments.some(seg => heavyDirs.includes(seg))) {
             return true;
         }
@@ -328,7 +337,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             }
 
             // Standard heavy folders
-            if (['node_modules', '.git', '__pycache__', 'venv', '.venv', 'dist', 'build', 'bin', 'obj'].includes(basename)) {
+            if (['node_modules', '.git', '__pycache__', 'venv', '.venv', 'dist', 'build', 'bin', 'obj', 'data', 'data_workspace'].includes(basename)) {
                 return true;
             }
 
@@ -552,7 +561,11 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 if (onProgress) onProgress(50, "Librarian: Scanning folders manually...");
                 const fallbackFiles: vscode.Uri[] = [];
                 const walk = async (uri: vscode.Uri, depth: number) => {
-                    if (depth > 4) return;
+                    if (depth > 5) return; // Allow up to 5 levels for fallback but stop immediately on exclusions
+
+                    // Verify if current directory itself is excluded before reading its contents
+                    if (this.isExcluded(uri)) return;
+
                     try {
                         const entries = await vscode.workspace.fs.readDirectory(uri);
                         for (const [name, type] of entries) {

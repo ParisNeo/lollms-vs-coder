@@ -96,7 +96,7 @@ export class CompanionPanel {
             return this._htmlCache;
         }
 
-        const htmlPath = vscode.Uri.joinPath(this._extensionUri, 'src', 'commands', 'companion', 'companionPanel.html');
+        const htmlPath = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'companionPanel.html');
         let htmlContent = "";
         try {
             htmlContent = fs.readFileSync(htmlPath.fsPath, 'utf8');

@@ -5767,3 +5767,91 @@ details[open] > summary .folder-handle::before {
     border-radius: 4px;
     border: 1px solid var(--vscode-widget-border);
 }
+
+/* ============================================================
+   🚀 NEW DISCUSSION WIZARD (SOVEREIGN EDITOR STYLING)
+   ============================================================ */
+#new-discussion-wizard-modal .modal-content {
+    background-color: var(--vscode-editorWidget-background);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+}
+
+#new-discussion-wizard-modal label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 6px;
+    display: block;
+}
+
+#new-discussion-wizard-modal input[type="text"],
+#new-discussion-wizard-modal textarea,
+#new-discussion-wizard-modal select {
+    background-color: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-family: var(--vscode-font-family);
+    font-size: 13px;
+    box-sizing: border-box;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+#new-discussion-wizard-modal input[type="text"]:focus,
+#new-discussion-wizard-modal textarea:focus,
+#new-discussion-wizard-modal select:focus {
+    border-color: var(--vscode-focusBorder);
+    box-shadow: 0 0 0 2px rgba(0, 122, 204, 0.25);
+}
+
+#new-discussion-wizard-modal select {
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23cccccc' d='M8 10.5l-4-4h8z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 12px;
+    padding-right: 30px;
+    cursor: pointer;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+}
+
+#new-discussion-wizard-modal select option {
+    background-color: var(--vscode-dropdown-background);
+    color: var(--vscode-dropdown-foreground);
+}
+
+#wizard-matrix-container {
+    background-color: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 4px;
+}
+
+#wizard-matrix-container .ws-matrix-row {
+    border-bottom: 1px solid var(--vscode-widget-border);
+    transition: background-color 0.15s ease;
+}
+
+#wizard-matrix-container .ws-matrix-row:hover {
+    background-color: var(--vscode-list-hoverBackground);
+}
+
+#wizard-matrix-container .ws-matrix-row:last-child {
+    border-bottom: none;
+}
+
+#new-discussion-wizard-modal .help-text {
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground);
+    margin-top: 4px;
+    opacity: 0.8;
+}

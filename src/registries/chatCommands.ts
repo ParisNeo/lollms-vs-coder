@@ -42,24 +42,136 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         vscode.commands.executeCommand('lollms-vs-coder.newDiscussion');
     }));
 
+    // --- HOOKED NEW DISCUSSION: REPLACES BLIND DIRECT WRITING WITH MODAL TRIGGER ---
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
-        const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
-        const discussion = services.discussionManager.createNewDiscussion(groupId);
+        const panel = ChatPanel.currentPanel || Array.from(ChatPanel.panels.values())[0];
+        if (panel) {
+            panel._panel.reveal();
 
-        // Force standard mode for explicit new discussion
-        if (discussion.capabilities) {
-            discussion.capabilities.agentMode = false;
+            // Read selections from disk
+            let savedSelections: string[] = [];
+            const folders = vscode.workspace.workspaceFolders;
+            if (folders && folders.length > 0) {
+                const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+                try {
+                    const entries = await vscode.workspace.fs.readDirectory(selectionDir);
+                    savedSelections = entries
+                        .filter(([name]) => name.endsWith('.lollms-ctx'))
+                        .map(([name]) => name);
+                } catch (e) {}
+            }
+
+            panel._panel.webview.postMessage({ 
+                command: 'openNewDiscussionWizard',
+                selections: savedSelections
+            });
+        } else {
+            // If no panel is active, trigger newTempDiscussion.
+            // This is a stable, fully-initialized command. We append a query flag so it knows to open the wizard on load.
+            vscode.commands.executeCommand('lollms-vs-coder.newTempDiscussion').then(() => {
+                // We attach a one-time listener to wait for webview ready before showing the modal, preventing the race condition
+                const panel = ChatPanel.currentPanel || Array.from(ChatPanel.panels.values())[0];
+                if (panel) {
+                    const checkInterval = setInterval(async () => {
+                        if (panel['_isWebviewReady'] && panel._panel && panel._panel.webview && !panel['_isDisposed']) {
+                            clearInterval(checkInterval);
+
+                            // Read selections from disk in fallback block too!
+                            let savedSelections: string[] = [];
+                            const folders = vscode.workspace.workspaceFolders;
+                            if (folders && folders.length > 0) {
+                                const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+                                try {
+                                    const entries = await vscode.workspace.fs.readDirectory(selectionDir);
+                                    savedSelections = entries
+                                        .filter(([name]) => name.endsWith('.lollms-ctx'))
+                                        .map(([name]) => name);
+                                } catch (e) {}
+                            }
+
+                            panel._panel.webview.postMessage({ 
+                                command: 'openNewDiscussionWizard',
+                                selections: savedSelections
+                            });
+                        }
+                    }, 100);
+                    // Clear check interval after 10 seconds to prevent hanging
+                    setTimeout(() => clearInterval(checkInterval), 10000);
+                }
+            });
+        }
+    }));
+
+    // --- WIZARD COMPILATION HANDLER ---
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.initializeNewDiscussionWithWizard', async (params: {
+        title?: string,
+        prompt: string,
+        personalityId: string,
+        profileId: string,
+        selectedFolders: string[],
+        contextSelection?: string,
+        sendToAi: boolean
+    }) => {
+        const workspaceFolder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
+        if (!workspaceFolder) {
+            vscode.window.showErrorMessage("Workspace required to initialize discussion.");
+            return;
         }
 
-        await services.discussionManager.saveDiscussion(discussion);
-        const panel = ChatPanel.createOrShow(services, discussion.id);
+        const discussion = services.discussionManager.createNewDiscussion(null);
+        discussion.title = params.title || "New Discussion";
+        discussion.personalityId = params.personalityId;
 
-        // Use the setAgentManager which handles reconnection logic internally
+        // Sync custom capabilities chosen in the wizard
+        if (discussion.capabilities) {
+            discussion.capabilities.responseProfileId = params.profileId;
+            discussion.capabilities.selectedFolders = params.selectedFolders;
+
+            // Build localized Folder Settings based on selected folders
+            const folderSettings: Record<string, any> = {};
+            const allFolders = vscode.workspace.workspaceFolders || [];
+            allFolders.forEach(f => {
+                const uriStr = f.uri.toString();
+                const isSelected = params.selectedFolders.includes(uriStr);
+                folderSettings[uriStr] = { tree: isSelected, content: isSelected };
+            });
+            discussion.capabilities.folderSettings = folderSettings;
+        }
+
+        // If a specific saved context selection was chosen, ensure those folder structures are enabled
+        if (params.contextSelection && params.contextSelection !== 'current') {
+            try {
+                const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'selection', params.contextSelection);
+                const content = await vscode.workspace.fs.readFile(fileUri);
+                const files = JSON.parse(Buffer.from(content).toString('utf8'));
+                if (Array.isArray(files) && discussion.capabilities) {
+                    const newSettings = { ... (discussion.capabilities.folderSettings || {}) };
+                    const folders = vscode.workspace.workspaceFolders || [];
+
+                    files.forEach(f => {
+                        const segments = f.split('/');
+                        const projFolder = folders.find(fd => fd.name === segments[0]);
+                        if (projFolder) {
+                            newSettings[projFolder.uri.toString()] = { tree: true, content: true };
+                        }
+                    });
+                    discussion.capabilities.folderSettings = newSettings;
+                }
+            } catch (e) {}
+        }
+
+        // Save to disk immediately
+        await services.discussionManager.saveDiscussion(discussion);
+
+        // Spawn panel
+        const panel = ChatPanel.createOrShow(services, discussion.id);
+        panel._panel.reveal();
+
         const agent = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
-            services.toolManager, // Passed correctly in 9th position
-            services.rlmDb 
+            services.toolManager,
+            services.rlmDb
         );
         agent.projectMemoryManager = services.projectMemoryManager;
         agent.personalityManager = services.personalityManager;
@@ -69,13 +181,68 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         panel.setProcessManager(services.processManager);
         panel.setContextManager(services.contextManager);
         panel.setPersonalityManager(services.personalityManager);
-        panel.setHerdManager(services.herdManager); 
+        panel.setHerdManager(services.herdManager);
 
-        // Offload document loading to a non-blocking macrotask so the panel renders instantly
-        setTimeout(async () => {
-            await panel.loadDiscussion();
-            services.treeProviders.discussion?.refresh();
-        }, 5);
+        // Load the chosen saved context selection if specified
+        if (params.contextSelection && params.contextSelection !== 'current') {
+            await vscode.commands.executeCommand('lollms-vs-coder.loadContextSelectionDirect', params.contextSelection);
+        }
+
+        await panel.loadDiscussion();
+        services.treeProviders.discussion?.refresh();
+
+        // 🎯 DUAL-PATH TRIGGER DISPATCHER
+        if (params.sendToAi) {
+            setImmediate(async () => {
+                const initialMessage: ChatMessage = {
+                    id: 'msg_' + Date.now(),
+                    role: 'user',
+                    content: params.prompt,
+                    timestamp: Date.now()
+                };
+
+                await panel.sendMessage(initialMessage);
+
+                // AUTO-TITLING PASS [4]
+                if (!params.title) {
+                    try {
+                        const generatedTitle = await services.discussionManager.generateDiscussionTitle({
+                            ...discussion,
+                            messages: [initialMessage]
+                        });
+                        if (generatedTitle) {
+                            discussion.title = generatedTitle.trim();
+                            await services.discussionManager.saveDiscussion(discussion);
+                            panel._panel.title = discussion.title;
+                            services.treeProviders.discussion?.refresh();
+                        }
+                    } catch (err) {
+                        console.warn("Background auto-titling failed.", err);
+                    }
+                }
+            });
+        } else {
+            // PATH 2: "CREATE ONLY"
+            // Set input field content and generate title asynchronously in background [4]
+            panel.setInputText(params.prompt);
+
+            if (!params.title && params.prompt) {
+                setImmediate(async () => {
+                    try {
+                        const generatedTitle = await services.discussionManager.generateDiscussionTitle({
+                            ...discussion,
+                            messages: [{ role: 'user', content: params.prompt } as ChatMessage]
+                        });
+                        if (generatedTitle) {
+                            discussion.title = generatedTitle.trim();
+                            await services.discussionManager.saveDiscussion(discussion);
+                            panel._panel.title = discussion.title;
+                            services.treeProviders.discussion?.refresh();
+                        }
+                    } catch (e) {}
+                });
+            }
+        }
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newAgentDiscussion', async (item?: DiscussionGroupItem) => {
@@ -215,14 +382,28 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
 
         if (!cleanId) {
             Logger.error("switchDiscussion: Could not resolve discussion ID from argument", arg);
-            // Don't show a ghost error to the user, just abort
+            return;
+        }
+
+        // 🛑 COGNITIVE DE-DUPLICATION SHIELD
+        // If the current active panel is already displaying this exact discussion ID, 
+        // simply reveal it and exit immediately to prevent redundant loading cycles.
+        const existingPanel = ChatPanel.panels.get(cleanId);
+        if (existingPanel) {
+            existingPanel._panel.reveal();
+            ChatPanel.currentPanel = existingPanel;
+            return;
+        }
+
+        if (ChatPanel.currentPanel && ChatPanel.currentPanel.getCurrentDiscussion()?.id === cleanId) {
+            ChatPanel.currentPanel._panel.reveal();
             return;
         }
 
         // 1. Create or show panel (sets internal discussionId)
         const panel = ChatPanel.createOrShow(services, cleanId);
         panel._panel.reveal();
-        
+
         // 2. Inject dependencies BEFORE loading
         panel.setProcessManager(services.processManager);
         panel.setContextManager(services.contextManager);
@@ -230,8 +411,8 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         panel.setHerdManager(services.herdManager); 
 
         // 3. Connect/Create Agent
-        if (ChatPanel.activeAgents.has(discussionId)) {
-            const agent = ChatPanel.activeAgents.get(discussionId)!;
+        if (ChatPanel.activeAgents.has(cleanId)) {
+            const agent = ChatPanel.activeAgents.get(cleanId)!;
             panel.setAgentManager(agent);
         } else {
             const agent = new AgentManager(

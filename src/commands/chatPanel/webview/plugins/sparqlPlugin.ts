@@ -86,14 +86,5 @@ export const sparqlPlugin: TagPlugin = {
                 runQuery(repromptBtn, true);
             };
         }
-
-        // AUTO-APPLY: If autoApply is active, or we are in Dynamic/Agent mode, execute and reprompt instantly!
-        const isAutoExecute = context.capabilities?.autoApply === true || 
-                             context.capabilities?.dynamicMode === true || 
-                             context.capabilities?.agentMode === true;
-
-        if (isAutoExecute && repromptBtn && !repromptBtn.disabled) {
-            setTimeout(() => runQuery(repromptBtn, true), 100);
-        }
     }
 };

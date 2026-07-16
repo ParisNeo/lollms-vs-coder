@@ -558,13 +558,23 @@
                         <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Controls how many files the Auto-Context agent tries to pack into the prompt.</p>
                     </div>
 
-                    <div style="margin-bottom: 15px;">
-                        <div style="display:flex; justify-content: space-between;">
+                    <div class="checkbox-container" style="margin-bottom: 12px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 12px;">
+                        <label class="switch"><input type="checkbox" id="cap-contextGovernorEnabled" checked><span class="slider"></span></label>
+                        <label for="cap-contextGovernorEnabled"><strong>Context Governor:</strong> Smart LLM-driven context pruning when token limits approach.</label>
+                    </div>
+
+                    <div style="margin-bottom: 15px;" id="governor-config-section">
+                        <div style="display:flex; justify-content:space-between;">
                             <label style="font-size: 11px; font-weight:bold;">Governor Trigger Threshold</label>
                             <span id="modal-governor-threshold-val" style="font-size: 11px; opacity: 0.8;">90%</span>
                         </div>
                         <input type="range" id="modal-governor-threshold" min="10" max="98" step="1" style="width:100%; margin: 8px 0;">
                         <p style="font-size: 10px; opacity: 0.7; margin:0;">Context filling percentage that triggers automatic pruning.</p>
+
+                        <div class="checkbox-container" style="margin-top: 12px;">
+                            <label class="switch"><input type="checkbox" id="cap-contextGovernorPermanentPruning"><span class="slider"></span></label>
+                            <label for="cap-contextGovernorPermanentPruning"><strong>Permanent File Pruning:</strong> Evicted files are permanently removed from context explorer selection.</label>
+                        </div>
                     </div>
                     <div class="checkbox-container">
                         <label class="switch"><input type="checkbox" id="cap-sparqlEnabled"><span class="slider"></span></label>
@@ -617,7 +627,11 @@
                         <label class="switch"><input type="checkbox" id="cap-forceFullCode"><span class="slider"></span></label>
                         <label for="cap-forceFullCode"><strong>Force Full Code</strong> (Disable partial updates)</label>
                     </div>
-                    
+                    <div class="checkbox-container" style="margin-top:12px;">
+                        <label class="switch"><input type="checkbox" id="cap-enableSymbolMode" checked><span class="slider"></span></label>
+                        <label for="cap-enableSymbolMode"><strong>Enable Symbol Mode:</strong> Surgically replace classes/functions instead of full files</label>
+                    </div>
+
                     <div id="partial-strategy-container" style="margin-top:12px; padding-left: 10px; border-left: 2px solid var(--vscode-widget-border);">
                         <label style="font-size:11px; font-weight:bold; display:block; margin-bottom:4px;">Preferred Partial Update Format</label>
                         <div class="radio-group">

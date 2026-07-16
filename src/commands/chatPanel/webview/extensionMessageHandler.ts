@@ -21,7 +21,9 @@ import {
     updateProgressBar,
     updateContextFileUsage,
     renderAdvancedToolsList,
-    renderWorkspaceMatrix
+    renderWorkspaceMatrix,
+    openNewDiscussionWizard,
+    syncExpansionBlocks
 } from './ui.js';
 
 export async function handleExtensionMessage(event: MessageEvent) {
@@ -312,11 +314,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'updateContext':
                 updateContext(message.context, message.files, message.skills, message.tools, message.diagrams, message.briefing, message.selections);
                 // Optimized sync: Wait for DOM to stabilize before matching UI blocks
-                import('./ui.js').then(ui => {
-                    ui.updateBadges();
-                    if ((window as any)._syncTimer) clearTimeout((window as any)._syncTimer);
-                    (window as any)._syncTimer = setTimeout(() => ui.syncExpansionBlocks(), 800);
-                });
+                updateBadges();
+                if ((window as any)._syncTimer) clearTimeout((window as any)._syncTimer);
+                (window as any)._syncTimer = setTimeout(() => syncExpansionBlocks(), 800);
                 break;
             case 'updateContextDelta':
                 {
@@ -378,11 +378,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
 
             case 'openNewDiscussionWizard':
-                import('./ui.js').then(ui => {
-                    if (typeof ui.openNewDiscussionWizard === 'function') {
-                        ui.openNewDiscussionWizard(message.selections || []);
-                    }
-                });
+                openNewDiscussionWizard(message.selections || []);
                 break;
             case 'loadDiscussion':
                 {
@@ -516,6 +512,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
                     if (dom.capForceFullCode) dom.capForceFullCode.checked = !!caps.forceFullCode;
+                    const symbolModeCheck = document.getElementById('cap-enableSymbolMode') as HTMLInputElement;
+                    if (symbolModeCheck) {
+                        symbolModeCheck.checked = caps.enableSymbolMode !== false;
+                    }
                     if (dom.capAllowFullFallback) dom.capAllowFullFallback.checked = caps.generationFormats?.fullFile !== false;
                     if (dom.capExplainCode) dom.capExplainCode.checked = caps.explainCode !== false;
                     if (dom.capAddPedagogicalInstruction) dom.capAddPedagogicalInstruction.checked = !!caps.addPedagogicalInstruction;
@@ -717,7 +717,26 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         devGroup.appendChild(bugBtn);
                         container.appendChild(devGroup);
                     }
-                    
+
+                    const govRange = document.getElementById('modal-governor-threshold') as HTMLInputElement;
+                    const govLabel = document.getElementById('modal-governor-threshold-val');
+                    if (govRange && govLabel) {
+                        govRange.oninput = () => { govLabel.textContent = govRange.value + '%'; };
+                    }
+
+                    const govCheck = document.getElementById('cap-contextGovernorEnabled') as HTMLInputElement;
+                    const govSection = document.getElementById('governor-config-section');
+                    if (govCheck && govSection) {
+                        govCheck.addEventListener('change', () => {
+                            govSection.style.display = govCheck.checked ? 'block' : 'none';
+                        });
+                    }
+
+                    const permanentPruningCheck = document.getElementById('cap-contextGovernorPermanentPruning') as HTMLInputElement;
+                    if (permanentPruningCheck) {
+                        permanentPruningCheck.checked = !!caps.contextGovernorPermanentPruning;
+                    }
+
                     updateBadges();
                     renderProfilesInModal();
 
@@ -1542,7 +1561,6 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     // 2. Scan the entire DOM for any code block that targets this specific file to collapse it gracefully
                     const codeBlocks = document.querySelectorAll('details.code-collapsible');
-                    const { collapseBlockWithScrollPreservation } = await import('./utils.js');
 
                     codeBlocks.forEach((block: any) => {
                         const inputEl = block.querySelector('.path-editor-input') as HTMLInputElement;

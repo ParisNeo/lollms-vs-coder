@@ -986,12 +986,6 @@ if (dom.sendButton) {
         });
     }
 
-    const govRange = document.getElementById('modal-governor-threshold') as HTMLInputElement;
-    const govLabel = document.getElementById('modal-governor-threshold-val');
-    if (govRange && govLabel) {
-        govRange.oninput = () => { govLabel.textContent = govRange.value + '%'; };
-    }
-
     if (dom.saveDiscussionToolsBtn) {
         dom.saveDiscussionToolsBtn.addEventListener('click', () => {
             const partialFormat = (document.querySelector('input[name="cap-partialFormat"]:checked') as HTMLInputElement)?.value || 'aider';
@@ -1019,9 +1013,12 @@ if (dom.sendButton) {
                 temperature: isTempEnabled ? parseFloat((document.getElementById('modal-temperature') as HTMLInputElement)?.value || '0.7') : undefined,
                 ttftTimeout: parseInt((document.getElementById('modal-ttft-timeout') as HTMLInputElement)?.value || '0', 10),
                 interTokenTimeout: parseInt((document.getElementById('modal-inter-token-timeout') as HTMLInputElement)?.value || '0', 10),
+                contextGovernorEnabled: (document.getElementById('cap-contextGovernorEnabled') as HTMLInputElement)?.checked ?? true,
                 contextGovernorThreshold: parseInt((document.getElementById('modal-governor-threshold') as HTMLInputElement)?.value || '90', 10),
+                contextGovernorPermanentPruning: (document.getElementById('cap-contextGovernorPermanentPruning') as HTMLInputElement)?.checked ?? false,
                 contextAggression: dom.contextAggressionSelect?.value || 'respect',
                 forceFullCode: dom.capForceFullCode?.checked ?? false,
+                enableSymbolMode: (document.getElementById('cap-enableSymbolMode') as HTMLInputElement)?.checked ?? true,
                 allowedFormats: {
                     fullFile: dom.fmtFullFile?.checked ?? true,
                     insert: dom.fmtInsert?.checked ?? true,

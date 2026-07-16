@@ -235,6 +235,9 @@ export interface DiscussionCapabilities {
     ttftTimeout: number;
     interTokenTimeout: number;
     contextGovernorThreshold: number; // Percentage (0-100)
+    contextGovernorEnabled?: boolean; // New key
+    contextGovernorPermanentPruning?: boolean; // New key
+    enableSymbolMode?: boolean; // New key
     guiState?: {
         agentBadge: boolean;
         dynamicBadge?: boolean;

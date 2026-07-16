@@ -188,34 +188,118 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
     }
 
     /**
+     * Regex fallback helper to locate symbol ranges when the symbol provider is offline.
+     */
+    function findSymbolRegex(text: string, name: string, isPython: boolean): { start: number, end: number } | null {
+        const lines = text.split('\n');
+        let startLineIdx = -1;
+        let indent = 0;
+
+        const regexPat = isPython 
+            ? new RegExp(`^(\\s*)(?:@\\w+[\\s\\S]*?)?(?:async\\s+)?(?:def|class)\\s+${name}\\b`)
+            : new RegExp(`^(\\s*)(?:export\\s+)?(?:async\\s+)?(?:function|class|const|let|var)\\s+${name}\\b`);
+
+        for (let i = 0; i < lines.length; i++) {
+            const m = lines[i].match(regexPat);
+            if (m) {
+                startLineIdx = i;
+                indent = m[1].length;
+                break;
+            }
+        }
+
+        if (startLineIdx === -1) return null;
+
+        let endLineIdx = startLineIdx;
+        
+        if (isPython) {
+            for (let i = startLineIdx + 1; i < lines.length; i++) {
+                const line = lines[i];
+                if (line.trim().length === 0) continue;
+                
+                const curIndent = line.match(/^\s*/)?.[0].length || 0;
+                if (curIndent <= indent && !line.trim().startsWith('#')) {
+                    endLineIdx = i - 1;
+                    break;
+                }
+                endLineIdx = i;
+            }
+        } else {
+            let braceCount = 0;
+            let foundFirstBrace = false;
+            for (let i = startLineIdx; i < lines.length; i++) {
+                const line = lines[i];
+                for (let ch of line) {
+                    if (ch === '{') {
+                        braceCount++;
+                        foundFirstBrace = true;
+                    } else if (ch === '}') {
+                        braceCount--;
+                    }
+                }
+                endLineIdx = i;
+                if (foundFirstBrace && braceCount === 0) {
+                    break;
+                }
+            }
+        }
+
+        let startOffset = 0;
+        for (let i = 0; i < startLineIdx; i++) startOffset += lines[i].length + 1;
+        
+        let endOffset = startOffset;
+        for (let i = startLineIdx; i <= endLineIdx; i++) endOffset += lines[i].length + 1;
+
+        return { start: startOffset, end: endOffset };
+    }
+
+    /**
      * Resolves a nested list of symbols recursively to find the exact target range for replacement.
      */
     async function replaceSymbolContent(document: vscode.TextDocument, targetMember: string[], newContent: string): Promise<string> {
-        const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', document.uri);
-        if (!symbols || symbols.length === 0) {
-            throw new Error("No symbols resolved in this document. Ensure language services/extensions are active.");
+        const text = document.getText();
+        const isPython = document.languageId === 'python';
+        const isJsTs = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact'].includes(document.languageId);
+
+        let matchedRange: { start: number, end: number } | null = null;
+
+        try {
+            const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', document.uri);
+            if (symbols && symbols.length > 0) {
+                const findSymbol = (syms: vscode.DocumentSymbol[], pathIdx: number): vscode.DocumentSymbol | null => {
+                    const targetName = targetMember[pathIdx].toLowerCase();
+                    const match = syms.find(s => {
+                        const cleanName = s.name.split('(')[0].split('<')[0].trim().toLowerCase();
+                        return cleanName === targetName;
+                    });
+                    if (!match) return null;
+                    if (pathIdx === targetMember.length - 1) return match;
+                    return findSymbol(match.children, pathIdx + 1);
+                };
+
+                const matchedSymbol = findSymbol(symbols, 0);
+                if (matchedSymbol) {
+                    matchedRange = {
+                        start: document.offsetAt(matchedSymbol.range.start),
+                        end: document.offsetAt(matchedSymbol.range.end)
+                    };
+                }
+            }
+        } catch (symError) {
+            Logger.warn("Document symbol provider failed. Falling back to regex parser.", symError);
         }
 
-        const findSymbol = (syms: vscode.DocumentSymbol[], pathIdx: number): vscode.DocumentSymbol | null => {
-            const targetName = targetMember[pathIdx];
-            const match = syms.find(s => s.name === targetName);
-            if (!match) return null;
-            if (pathIdx === targetMember.length - 1) return match;
-            return findSymbol(match.children, pathIdx + 1);
-        };
+        // Regex Fallback
+        if (!matchedRange && targetMember.length === 1 && (isPython || isJsTs)) {
+            matchedRange = findSymbolRegex(text, targetMember[0], isPython);
+        }
 
-        const matchedSymbol = findSymbol(symbols, 0);
-        if (!matchedSymbol) {
+        if (!matchedRange) {
             throw new Error(`Could not find symbol: ${targetMember.join(' -> ')}`);
         }
 
-        const text = document.getText();
-        const startOffset = document.offsetAt(matchedSymbol.range.start);
-        const endOffset = document.offsetAt(matchedSymbol.range.end);
-
-        return text.substring(0, startOffset) + newContent + text.substring(endOffset);
+        return text.substring(0, matchedRange.start) + newContent + text.substring(matchedRange.end);
     }
-
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean, autoSave?: boolean }) => {
         // Clean up hallucinated metadata like "(2 hunks)" from the file path
         const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
@@ -224,7 +308,10 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         let targetMember: string[] = [];
         let cleanPath = sanitizedFilePath;
 
-        if (sanitizedFilePath.includes(':')) {
+        const caps = services.discussionManager.getLastCapabilities();
+        const symbolModeEnabled = caps?.enableSymbolMode !== false;
+
+        if (symbolModeEnabled && sanitizedFilePath.includes(':')) {
             const parts = sanitizedFilePath.split(':');
             cleanPath = parts[0];
             targetMember = parts.slice(1).map(p => p.trim()).filter(p => p);
@@ -288,7 +375,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     vscode.window.showErrorMessage(`Targeted symbol replacement failed: ${err.message}`);
                     return { success: false, error: err.message };
                 }
-            } else if (fileExists && targetMember.length === 0 && document) {
+            } else if (symbolModeEnabled && fileExists && targetMember.length === 0 && document) {
                 // --- SURGICAL SHIELD: PREVENT ACCIDENTAL OVERWRITE ---
                 const isPython = relativePath.endsWith('.py');
                 const isJsTs = relativePath.endsWith('.js') || relativePath.endsWith('.ts') || relativePath.endsWith('.tsx') || relativePath.endsWith('.jsx');

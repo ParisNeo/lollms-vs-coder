@@ -60,6 +60,9 @@ export class ChatPanel {
   private _skillsManager: SkillsManager;
   private _personalityManager?: PersonalityManager;
   private _isDisposed = false;
+
+  public get isWebviewReady(): boolean { return this._isWebviewReady; }
+  public get isDisposed(): boolean { return this._isDisposed; }
   
   private _viewReadyPromise: Promise<void>;
   private _viewReadyResolver!: () => void;
@@ -2660,6 +2663,16 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
             this.processManager.updateDescription(processId, "🐂 Herd thinking...");
 
+            // Fetch context data safely
+            const importedIds = this._currentDiscussion?.importedSkills || [];
+            const isContextMuted = this._discussionCapabilities?.disableProjectContext === true;
+            const contextData = await this._contextManager.getContextContent({
+                importedSkillIds: importedIds,
+                includeTree: !isContextMuted,
+                modelName: targetModel,
+                signal: controller.signal
+            });
+
             const synthesisResult = await this.herdManager.run(
                 promptText,
                 plan.pre,                   // brainstorming participants (with personas)
@@ -2748,7 +2761,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
             memory: projectMemory
         };
 
-        // 1. Get Base System Instructions (VS Code Interface Tools, Skills, Rules) using localContext [1]
+        // 1. Get Base System Instructions (VS Code Interface Tools, Skills, Rules) using localContext
         const baseInstructions = await getProcessedSystemPrompt(
             'chat', 
             this._discussionCapabilities, 
@@ -2765,7 +2778,6 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         );
 
         // 2. Prepare the Bundled Project Context Message (User role)
-        // Extract technical briefing from Librarian findings (includes Global + Local data zones)
         const briefing = this._contextManager.renderBriefing(this._currentDiscussion);
 
         const projectStateText = `
@@ -2780,8 +2792,6 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
 `.trim();
 
         // --- MULTIMODAL INJECTION ---
-        // If vision is enabled, we bundle the images from the context directly 
-        // into the project context message as a multipart content array.
         let projectContextContent: any = projectStateText;
         if (this._discussionCapabilities.enableImages !== false && contextData.images.length > 0) {
             projectContextContent = [
@@ -2790,7 +2800,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
             contextData.images.forEach(img => {
                 projectContextContent.push({
                     type: 'image_url',
-                    image_url: { url: img.data } // img.data is already a base64 Data URI
+                    image_url: { url: img.data }
                 });
             });
         }
@@ -2801,7 +2811,6 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
         };
 
         // 3. Prepare Chronological History
-        // We isolate the final user prompt to ensure the Bundled Context sits right before it.
         const allMessages = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
         const lastUserIdx = [...allMessages].reverse().findIndex(m => m.role === 'user');
         const actualLastUserIdx = lastUserIdx === -1 ? -1 : (allMessages.length - 1 - lastUserIdx);
@@ -2898,7 +2907,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                 const isFinalTurn = currentTurnIndex > 1 && !currentFullResponseBuffer.match(/<(add_files_to_context|query_architecture|lollms_tool|search_web)/);
                 const isCodeUpdate = typeof message.content === 'string' && (message.content.toLowerCase().includes('fix') || message.content.toLowerCase().includes('update') || message.content.toLowerCase().includes('write'));
 
-                const profileId = (isFinalTurn && isCodeUpdate) ? (this._discussionCapabilities.responseProfileId || 'structured') : 'minimalist';
+                const profileId = (isFinalTurn && isCodeUpdate) ? (this._discussionCapabilities.responseProfileId || 'balanced') : 'minimalist';
                 const activeProfile = (config.get('responseProfiles') || []).find((p: any) => p.id === profileId) || { name: 'Minimalist', systemPrompt: '' };
 
                 const finalBaseInstructions = await getProcessedSystemPrompt(
@@ -2920,170 +2929,80 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                 loopMessages[0] = { role: 'system', content: finalBaseInstructions };
 
                 let turnResponse = "";
-                let interceptedTag: string | null = null;
-                let interceptedParams: string | null = null;
-                let streamBuffer = ""; 
-
                 this.processManager.updateDescription(processId, `Co-Engineer Turn ${currentTurnIndex}: Generating...`);
                 this.updateGeneratingState();
 
-                const turnStreamController = new AbortController();
-                const mainAbortListener = () => {
-                    turnStreamController.abort();
-                };
-                controller.signal.addEventListener('abort', mainAbortListener);
-
                 try {
-                    // Start and attach the streaming session
-                    const generationSession: ActiveGeneration = {
-                        messageId: assistantMessageId,
-                        buffer: '',
-                        model: targetModel,
-                        startTime: Date.now(),
-                        tokenCount: 0,
-                        listeners: new Set(),
-                        onComplete: new Set()
-                    };
-
-                    const chunkListener = (chunk: string) => {
-                        if (turnStreamController.signal.aborted || controller.signal.aborted) return;
+                    // Standard generation pass: Webview is used ONLY for streaming the letters
+                    await this._lollmsAPI.sendChat(loopMessages, (chunk) => {
+                        if (controller?.signal.aborted) return;
                         turnResponse += chunk;
-                        streamBuffer += chunk;
+                        currentFullResponseBuffer += chunk;
 
-                        // Sync streaming buffer in real-time
-                        const activeMsg = this._currentDiscussion?.messages.find(m => m.id === assistantMessageId);
-                        if (activeMsg) {
-                            activeMsg.content = currentFullResponseBuffer + streamBuffer;
-                        }
-
-                        const openIdx = streamBuffer.indexOf('<');
-                        if (openIdx !== -1) {
-                            const textBefore = streamBuffer.substring(0, openIdx);
-                            if (textBefore.length > 0) {
-                                currentFullResponseBuffer += textBefore;
-                                this._panel.webview.postMessage({ 
-                                    command: 'appendMessageChunk', 
-                                    id: assistantMessageId, 
-                                    chunk: textBefore 
-                                });
-                            }
-                            streamBuffer = streamBuffer.substring(openIdx);
-
-                            const isInsideThink = (() => {
-                                const openTags = ['<think>', '<thinking>', '<analysis>', '<reasoning>'];
-                                for (const tag of openTags) {
-                                    const openIdx = turnResponse.lastIndexOf(tag);
-                                    if (openIdx !== -1) {
-                                        const closeTag = tag.replace('<', '</');
-                                        const closeIdx = turnResponse.indexOf(closeTag, openIdx);
-                                        if (closeIdx === -1) return true;
-                                    }
-                                }
-                                return false;
-                            })();
-
-                            let hasMatch = false;
-                            if (!isInsideThink) {
-                                const isInsideCodeBlock = (() => {
-                                    let openBackticks3 = 0;
-                                    let openBackticks1 = 0;
-                                    for (let idx = 0; idx < turnResponse.length; idx++) {
-                                        if (turnResponse.substring(idx, idx + 3) === '```') {
-                                            openBackticks3 = openBackticks3 === 0 ? 3 : 0;
-                                            idx += 2;
-                                        } else if (turnResponse[idx] === '`' && openBackticks3 === 0) {
-                                            openBackticks1 = openBackticks1 === 0 ? 1 : 0;
-                                        }
-                                    }
-                                    return openBackticks3 > 0 || openBackticks1 > 0;
-                                })();
-
-                                if (!isInsideCodeBlock) {
-                                    const checkTagEndings = [
-                                        { pattern: /<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/i, tag: 'add_files_to_context' },
-                                        { pattern: /<query_architecture>([\s\S]*?)<\/query_architecture>/i, tag: 'query_architecture' },
-                                        { pattern: /<lollms_tool>([\s\S]*?)<\/lollms_tool>/i, tag: 'lollms_tool' }
-                                    ];
-
-                                    for (const t of checkTagEndings) {
-                                        const match = streamBuffer.match(t.pattern);
-                                        if (match) {
-                                            interceptedTag = t.tag;
-                                            interceptedParams = match[1];
-
-                                            // Extract and retain any preceding text that occurred before the tag
-                                            const tagIndex = streamBuffer.indexOf(match[0]);
-                                            const precedingText = streamBuffer.substring(0, tagIndex);
-                                            currentFullResponseBuffer += precedingText;
-
-                                            streamBuffer = ""; 
-                                            hasMatch = true;
-
-                                            // 🛑 CRITICAL SYNCHRONOUS STOP: Force-abort stream and immediately clean active generations
-                                            turnStreamController.abort(); 
-                                            ChatPanel.activeGenerations.delete(this.discussionId);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (!hasMatch) {
-                                currentFullResponseBuffer += streamBuffer;
-                                this._panel.webview.postMessage({ 
-                                    command: 'appendMessageChunk', 
-                                    id: assistantMessageId, 
-                                    chunk: streamBuffer 
-                                });
-                                streamBuffer = "";
-                            }
-                        } else {
-                            currentFullResponseBuffer += streamBuffer;
-                            this._panel.webview.postMessage({ 
-                                command: 'appendMessageChunk', 
-                                id: assistantMessageId, 
-                                chunk: streamBuffer 
-                            });
-                            streamBuffer = "";
-                        }
-                    };
-
-                    ChatPanel.activeGenerations.set(this.discussionId, generationSession);
-
-                    await this._lollmsAPI.sendChat(loopMessages, chunkListener, turnStreamController.signal, this._currentDiscussion.model, {
+                        // Stream chunk to UI
+                        this._panel.webview.postMessage({ 
+                            command: 'appendMessageChunk', 
+                            id: assistantMessageId, 
+                            chunk: chunk 
+                        });
+                    }, controller.signal, this._currentDiscussion!.model, {
                         capabilities: this._discussionCapabilities,
                         temperature: this._discussionCapabilities.temperature
                     });
                 } catch (err: any) {
-                    if (err.name !== 'AbortError' && !interceptedTag) {
+                    if (err.name !== 'AbortError') {
                         throw err;
                     }
-                } finally {
-                    controller.signal.removeEventListener('abort', mainAbortListener);
-                    ChatPanel.activeGenerations.delete(this.discussionId);
                 }
 
-                if (streamBuffer.length > 0 && !interceptedTag && !controller.signal.aborted) {
-                    currentFullResponseBuffer += streamBuffer;
-                    this._panel.webview.postMessage({ 
-                        command: 'appendMessageChunk', 
-                        id: assistantMessageId, 
-                        chunk: streamBuffer 
-                    });
+                if (controller?.signal.aborted) return;
+
+                // --- POST-STREAM PARSING & EXECUTION SHIELD ---
+                // Only now that the generation is fully complete, we parse the completed response
+                // for naked tag patterns outside of markdown fences.
+                
+                // Helper to identify boundaries of triple backtick fences in the text to ignore them
+                const protectedRanges: { start: number, end: number }[] = [];
+                const fenceRegex = /```[\s\S]*?(?:```|$)/g;
+                let fMatch;
+                while ((fMatch = fenceRegex.exec(turnResponse)) !== null) {
+                    protectedRanges.push({ start: fMatch.index, end: fMatch.index + fMatch[0].length });
+                }
+
+                const isIndexInsideFence = (index: number) => {
+                    return protectedRanges.some(r => index >= r.start && index < r.end);
+                };
+
+                // Find valid file manipulation or query actions on a line-start basis
+                const patterns = [
+                    { tag: 'add_files_to_context', pattern: /^[ \t]*<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/gim },
+                    { tag: 'remove_files_from_context', pattern: /^[ \t]*<remove_files_from_context>([\s\S]*?)<\/remove_files_from_context>/gim },
+                    { tag: 'query_architecture', pattern: /^[ \t]*<query_architecture>([\s\S]*?)<\/query_architecture>/gim },
+                    { tag: 'lollms_tool', pattern: /^[ \t]*<lollms_tool>([\s\S]*?)<\/lollms_tool>/gim }
+                ];
+
+                let interceptedTag: string | null = null;
+                let interceptedParams: string | null = null;
+
+                for (const item of patterns) {
+                    item.pattern.lastIndex = 0;
+                    let pMatch;
+                    while ((pMatch = item.pattern.exec(turnResponse)) !== null) {
+                        if (!isIndexInsideFence(pMatch.index)) {
+                            interceptedTag = item.tag;
+                            interceptedParams = pMatch[1].trim();
+                            break;
+                        }
+                    }
+                    if (interceptedTag) break;
                 }
 
                 if (interceptedTag) {
                     this.processManager.updateDescription(processId, `Executing tool: ${interceptedTag}...`);
                     this.updateGeneratingState();
 
-                    // Sync the accumulated text to persistent history before running the tool
+                    // Synchronize the current text buffer to the persistent database before running
                     await this.updateMessage(assistantMessageId, currentFullResponseBuffer);
-
-                    // --- AUTO-APPLY INTEGRATION ---
-                    if (this._discussionCapabilities.autoApply && !controller?.signal.aborted) {
-                        this.log("Auto-Apply: Writing files to disk before executing tool...");
-                        await this.executeAutomationPipeline(currentFullResponseBuffer, assistantMessageId, controller?.signal, processId);
-                    }
 
                     let toolResult = "";
                     let isSuccess = true;
@@ -3115,6 +3034,16 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                                     completedDynamicActions.push("Failed to load requested files (not found).");
                                 }
                             }
+                        } else if (interceptedTag === 'remove_files_from_context') {
+                            const filesToRemove = interceptedParams!.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
+                            const uris = [];
+                            for (const p of filesToRemove) {
+                                const res = await this._contextManager.resolveWorkspaceFromPath(p);
+                                uris.push(res ? res.uri : vscode.Uri.file(p));
+                            }
+                            await this._contextManager.getContextStateProvider()?.setStateForUris(uris, 'tree-only');
+                            toolResult = `Success: Removed ${filesToRemove.join(', ')} from context.`;
+                            completedDynamicActions.push(`Removed ${filesToRemove.length} files from active attention.`);
                         } else if (interceptedTag === 'query_architecture') {
                             const sparql = interceptedParams!.trim();
                             const rawResult = this.agentManager.codeGraphManager.executeSparql(sparql);
@@ -3138,7 +3067,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                             const toolDef = this.agentManager.getTools().find((t: any) => t.name === name);
                             if (toolDef) {
                                 const env = { agentManager: this.agentManager, workspaceRoot: folders[0], contextManager: this._contextManager, lollmsApi: this._lollmsAPI };
-                                const result = await toolDef.execute(parsedParams, env, signal);
+                                const result = await toolDef.execute(parsedParams, env, controller.signal);
                                 toolResult = result.output;
                                 isSuccess = result.success;
                                 completedDynamicActions.push(`Executed tool: ${name}`);
@@ -3156,29 +3085,33 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
 
                     if (!isSuccess) {
                         consecutiveFailsCount++;
-                        completedDynamicActions.push(`⚠️ SELF-CORRECTION (Attempt ${consecutiveFailsCount}/${maxFailsAllowed}): Tool failed with "${toolResult.substring(0, 100)}...".`);
+                        completedDynamicActions.push(`Refining... Tool failed with: "${toolResult.substring(0, 100)}..."`);
                     } else {
                         consecutiveFailsCount = 0;
                     }
 
-                    // Render collapsible widget into the active webview bubble
-                    const statusIcon = isSuccess ? 'codicon-tools' : 'codicon-error';
+                    // Append the visual widget tag representation of the executed tool block directly into the chat stream buffer
                     const summaryColor = isSuccess ? '' : 'color:var(--vscode-charts-red);';
                     const headerPrefix = isSuccess ? 'Ran Tool' : 'Tool Failed';
 
+                    let blockWidgetHtml = "";
                     if (interceptedTag === 'add_files_to_context') {
                         const filesToAdd = interceptedParams!.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
-                        currentFullResponseBuffer += `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-cloud-download' : 'codicon-error'}"></i> ${isSuccess ? 'Loaded Files Context' : 'File Loading Failed'}: ${filesToAdd.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-cloud-download' : 'codicon-error'}"></i> ${isSuccess ? 'Loaded Files Context' : 'File Loading Failed'}: ${filesToAdd.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                    } else if (interceptedTag === 'remove_files_from_context') {
+                        const filesToRemove = interceptedParams!.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
+                        blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-trash' : 'codicon-error'}"></i> ${isSuccess ? 'Pruned Files Context' : 'Pruning Failed'}: ${filesToRemove.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
                     } else if (interceptedTag === 'query_architecture') {
                         const sparql = interceptedParams!.trim();
-                        currentFullResponseBuffer += `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${statusIcon}"></i> ${isSuccess ? 'Ran SPARQL Query' : 'SPARQL Query Failed'}</summary><div class="processing-body">\`\`\`sparql\n${sparql}\n\`\`\`\n\n**Result:**\n${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-graph"></i> ${isSuccess ? 'Ran SPARQL Query' : 'SPARQL Query Failed'}</summary><div class="processing-body">\`\`\`sparql\n${sparql}\n\`\`\`\n\n**Result:**\n${toolResult}</div></details>\n\n`;
                     } else {
-                        currentFullResponseBuffer += `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${statusIcon}"></i> ${headerPrefix}: ${interceptedTag}</summary><div class="processing-body">**Output:**\n${toolResult}</div></details>\n\n`;
+                        blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-tools"></i> ${headerPrefix}: ${interceptedTag}</summary><div class="processing-body">**Output:**\n${toolResult}</div></details>\n\n`;
                     }
 
+                    currentFullResponseBuffer += blockWidgetHtml;
                     await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
 
-                    // Hydrate internal prompt history thread for the next iteration step
+                    // Add the results to the internal loop context and trigger next turn
                     loopMessages.push({ role: 'assistant', content: turnResponse });
                     loopMessages.push({ 
                         role: 'user', 
@@ -3252,10 +3185,12 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
 
         const fileBlocks: { fullMatch: string, path: string, tokens: number, keep: boolean, reason?: string }[] = [];
 
+        const isGovernorEnabled = this._discussionCapabilities.contextGovernorEnabled !== false;
+
         try {
             const metrics = this._currentDiscussion?.lastTokenMetrics;
 
-            if (metrics) {
+            if (isGovernorEnabled && metrics) {
                 const totalEstimated = metrics.total;
                 const maxTokens = metrics.contextSize;
 
@@ -3294,17 +3229,23 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                         skipInPrompt: true
                     });
 
-                    // 2. Parse file blocks to identify candidates for eviction
+                    // 2. Parse file blocks and build peeks
                     const blockRegex = /```(?:\w+)?[:]?([^\n]+)[\r\n]([\s\S]*?)[\r\n]```/g;
                     let fileMatch;
-                    while ((fileMatch = blockRegex.exec(context.files)) !== null) {
+                    while ((fileMatch = blockRegex.exec(contextData.selectedFilesContent)) !== null) {
                         const filePath = fileMatch[1].trim();
                         if (filePath.includes('<<<<<<< SEARCH')) continue;
+
+                        const fileBody = fileMatch[2];
+                        const lines = fileBody.split('\n');
+                        const peekLines = lines.slice(0, 40).join('\n');
+                        const peek = lines.length > 40 ? `${peekLines}\n... [Truncated ${lines.length - 40} lines. Use grep_search if you need more context]` : peekLines;
 
                         fileBlocks.push({
                             fullMatch: fileMatch[0],
                             path: filePath,
                             tokens: Math.ceil(fileMatch[0].length / 3.5),
+                            peek: peek,
                             keep: true 
                         });
                     }
@@ -3322,7 +3263,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
             You must select which files to evict from the 'possessed' context to liberate at least **${Math.round(overflow).toLocaleString()}** tokens.
 
             ### 🌳 PROJECT STRUCTURE & CONTEXT STATUS
-            ${context.tree}
+            ${contextData.projectTree}
             *(Legend: [C] = Content in memory, No marker = path only)*
 
             ### 🕒 RECENT MISSION HISTORY
@@ -3331,9 +3272,15 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
             ### 🎯 CURRENT USER PROMPT
             "${userPromptText}"
 
-            ### 📄 LOADED FILES (MEMOIZED CONTENT)
+            ### 📄 LOADED FILES (MEMOIZED CONTENT & PEEKS)
             Analyze their relevance to the current mission and history.
-            ${fileBlocks.map(b => `- ${b.path} (${b.tokens} tokens)`).join('\n')}
+            ${fileBlocks.map(b => `
+            - **File**: \`${b.path}\` (${b.tokens} tokens)
+              **Content Peek (First 40 lines)**:
+              \`\`\`
+              ${b.peek}
+              \`\`\`
+            `).join('\n')}
 
             ### 📝 PRUNING RULES:
             1. **PROTECT CORE**: Do NOT evict files containing "core", "mixin", "types", or "api" unless they are explicitly unrelated to the prompt.
@@ -3396,7 +3343,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                         b.keep = false;
                         liberatedTokens += b.tokens;
                         const reason = decision.evict.find((e:any) => e.path === b.path)?.reason || "Irrelevant to current prompt.";
-                        evictedReport.push(`- ✂️ \`${b.path}\`: ${reason}`);
+                        evictedReport.push(`- ✂ \`${b.path}\`: ${reason}`);
                     } else {
                         keptList.push(`- ✅ \`${b.path}\``);
                     }
@@ -3404,7 +3351,20 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
 
                 // 5. UPDATE CONTEXT
                 const keptBlocks = fileBlocks.filter(b => b.keep);
-                context.files = keptBlocks.map(b => b.fullMatch).join('\n\n');
+                contextData.selectedFilesContent = keptBlocks.map(b => b.fullMatch).join('\n\n');
+
+                // 5.5 PERMANENT PRUNING SYNC
+                if (this._discussionCapabilities.contextGovernorPermanentPruning && evictedPaths.length > 0) {
+                    this.log(`Governor: Performing permanent eviction of ${evictedPaths.length} files from Workspace State...`);
+                    const urisToEvict: vscode.Uri[] = [];
+                    for (const p of evictedPaths) {
+                        const res = await this._contextManager.resolveWorkspaceFromPath(p);
+                        if (res) urisToEvict.push(res.uri);
+                    }
+                    if (urisToEvict.length > 0) {
+                        await this._contextManager.getContextStateProvider()?.setStateForUris(urisToEvict, 'tree-only');
+                    }
+                }
 
                 // 6. DETAILED REPORT
                 const newTotal = metrics ? (metrics.total - liberatedTokens) : 0;
@@ -3428,8 +3388,8 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
 I am providing you with the current, ground-truth state of my project files and the Librarian's technical briefing. 
 
 ${briefingContent && !briefingContent.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefingContent}\n` : ""}
-${context.tree ? `#### 🌳 PROJECT STRUCTURE\n${context.tree}\n` : ""}
-${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files currently selected)*"}
+${contextData.projectTree ? `#### 🌳 PROJECT STRUCTURE\n${contextData.projectTree}\n` : ""}
+${contextData.selectedFilesContent ? `#### 📄 FILE CONTENTS\n${contextData.selectedFilesContent}` : "*(No files currently selected)*"}
 --------------------------------------------------
 `.trim();
 
@@ -4054,8 +4014,6 @@ If there are no meaningful docs to update, find the README.md and add a "Latest 
             }); 
 
             // 3. CRITICAL: Force a full UI reload. 
-            // This removes the "Thinking..." placeholder and ensures the error is rendered 
-            // as a separate bubble, leaving the user's original prompt untouched above it.
             await this.loadDiscussion();
         }
     }

@@ -68,12 +68,11 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         } else {
             // If no panel is active, trigger newTempDiscussion.
             // This is a stable, fully-initialized command. We append a query flag so it knows to open the wizard on load.
-            vscode.commands.executeCommand('lollms-vs-coder.newTempDiscussion').then(() => {
+            vscode.commands.executeCommand<ChatPanel>('lollms-vs-coder.newTempDiscussion').then((panel) => {
                 // We attach a one-time listener to wait for webview ready before showing the modal, preventing the race condition
-                const panel = ChatPanel.currentPanel || Array.from(ChatPanel.panels.values())[0];
                 if (panel) {
                     const checkInterval = setInterval(async () => {
-                        if (panel['_isWebviewReady'] && panel._panel && panel._panel.webview && !panel['_isDisposed']) {
+                        if (panel.isWebviewReady && panel._panel && panel._panel.webview && !panel.isDisposed) {
                             clearInterval(checkInterval);
 
                             // Read selections from disk in fallback block too!
@@ -286,9 +285,9 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newTempDiscussion', async () => {
         const tempId = 'temp-' + Date.now().toString() + Math.random().toString(36).substring(2);
-        
+
         const panel = ChatPanel.createOrShow(services, tempId);
-        
+
         const agent = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager
@@ -302,8 +301,9 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         panel.setContextManager(services.contextManager);
         panel.setPersonalityManager(services.personalityManager);
         panel.setHerdManager(services.herdManager); 
-        
+
         await panel.loadDiscussion();
+        return panel;
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionFromClipboard', async (textOverride?: any) => {

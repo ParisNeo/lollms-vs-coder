@@ -15,15 +15,25 @@ export const storeKnowledgeTool: ToolDefinition = {
         if (!env.agentManager || !(env.agentManager as any).rlmDb) {
             return { success: false, output: "Error: RLM Database Manager not found in Agent environment." };
         }
-        
+
+        let rawPath: string[] = [];
+        if (Array.isArray(params.path)) rawPath = params.path;
+        else if (typeof params.path === 'string') rawPath = (params.path as string).split(/[/>]/).map(s => s.trim()).filter(s => s);
+        else if (Array.isArray((params as any).categories)) rawPath = (params as any).categories;
+        else rawPath = ['general'];
+
+        const content = String(params.content || (params as any).body || (params as any).text || '');
+        const summary = String(params.summary || (params as any).description || content.substring(0, 100));
+        const isGlobal = !!(params.is_global || (params as any).isGlobal || (params as any).global);
+
         try {
             await (env.agentManager as any).rlmDb.storeKnowledge(
-                params.path, 
-                params.content, 
-                params.summary, 
-                !!params.is_global
+                rawPath, 
+                content, 
+                summary, 
+                isGlobal
             );
-            return { success: true, output: `✅ Successfully committed knowledge to ${params.is_global ? 'Global' : 'Local'} zone at: ${params.path.join(' > ')}` };
+            return { success: true, output: `✅ Successfully committed knowledge to ${isGlobal ? 'Global' : 'Local'} zone at: ${rawPath.join(' > ')}` };
         } catch (e: any) {
             return { success: false, output: `Failed to store knowledge: ${e.message}` };
         }

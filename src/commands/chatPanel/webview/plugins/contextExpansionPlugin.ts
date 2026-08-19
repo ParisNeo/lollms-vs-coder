@@ -57,11 +57,14 @@ export const contextExpansionPlugin: TagPlugin = {
             const isIncluded = isPathInContext(f);
             if (!isIncluded) allIncluded = false;
 
-            const itemStyle = isIncluded ? 'border-color: var(--vscode-charts-green); background: rgba(15, 157, 88, 0.1); border-left: 4px solid var(--vscode-charts-green);' : '';
-            const iconStyle = isIncluded ? 'color: var(--vscode-charts-green);' : '';
+            const itemClass = isIncluded ? 'status-in-context' : 'status-not-in-context';
+            const itemStyle = isIncluded 
+                ? 'border-color: var(--vscode-charts-green, #388e3c); background: rgba(15, 157, 88, 0.1); border-left: 4px solid var(--vscode-charts-green, #388e3c); color: var(--vscode-charts-green, #388e3c);' 
+                : 'border-color: var(--vscode-widget-border); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground, #000000);';
+            const iconStyle = isIncluded ? 'color: var(--vscode-charts-green, #388e3c);' : 'color: var(--vscode-editor-foreground, #000000);';
 
             return `
-            <div class="expansion-file-item" data-path="${f}" data-message-id="${context.messageId}" style="display:flex; align-items:center; padding: 6px 12px; margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; ${itemStyle}">
+            <div class="expansion-file-item ${itemClass}" data-path="${f}" data-message-id="${context.messageId}" style="display:flex; align-items:center; padding: 6px 12px; margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; ${itemStyle}">
                 <div style="display:flex; align-items:center; gap:8px;">
                     <span class="codicon ${isIncluded ? 'codicon-check' : 'codicon-file-add'}" style="${iconStyle}"></span>
                     <span class="file-label" style="font-family: var(--vscode-editor-font-family); font-size: 12px;">${f}</span>
@@ -78,13 +81,13 @@ export const contextExpansionPlugin: TagPlugin = {
         const repromptIcon = allIncluded ? 'codicon-play' : 'codicon-sync';
 
         return `
-        <div class="context-expansion-block expansion-request-block" id="${blockId}" data-files="${fileListJson}">
+        <div class="context-expansion-block expansion-request-block" id="${blockId}" data-files="${fileListJson}" data-block-id="${blockId}">
             <div class="expansion-header">
                 <span class="codicon codicon-library"></span>
                 <span>Context Expansion Requested</span>
             </div>
             <div class="expansion-body">
-                <div class="expansion-file-list" style="margin-bottom:12px;">
+                <div class="expansion-file-list" id="list-${blockId}" style="margin-bottom:12px;">
                     ${fileItems}
                 </div>
                 <div style="display:flex; gap: 8px; flex-wrap: wrap;">
@@ -109,7 +112,21 @@ export const contextExpansionPlugin: TagPlugin = {
     },
 
     initialize: (container, context) => {
-        // Immediate sync for the whole DOM since we just injected new elements
+        // Immediately query backend for exact on-disk existence and inclusion status
+        container.querySelectorAll('.context-expansion-block').forEach((block: any) => {
+            try {
+                const files = JSON.parse(block.dataset.files || '[]');
+                if (files.length > 0 && block.id) {
+                    context.vscode.postMessage({
+                        command: 'checkFilesStatus',
+                        files,
+                        blockId: block.id
+                    });
+                }
+            } catch (e) {}
+        });
+
+        // Immediate sync for the whole DOM
         import('../ui.js').then(ui => ui.syncExpansionBlocks());
 
         const handleAdd = (btn: HTMLButtonElement, reprompt: boolean) => {

@@ -145,91 +145,124 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
      * Enforces that paths must start with the Project Name if multiple roots exist.
      */
     async function resolveWorkspaceFromPath(namespacedPath: string): Promise<{ folder: vscode.WorkspaceFolder | undefined, relativePath: string, uri: vscode.Uri } | null> {
-        const folders = vscode.workspace.workspaceFolders || [];
-        const normalized = namespacedPath.replace(/\\/g, '/').trim();
-        const segments = normalized.split('/');
+        return services.contextManager.resolveWorkspaceFromPath(namespacedPath);
+    }
 
-        // 1. Path Traversal Blocking
-        if (normalized.includes('../') || normalized.includes('..\\')) {
-            Logger.warn(`Blocked traversal attempt: ${namespacedPath}`);
-            return null;
-        }
-
-        let resolvedPath = normalized;
-        if (!path.isAbsolute(resolvedPath)) {
-            // Check if the first segment matches an open workspace folder
-            const projectFolder = folders.length > 1
-                ? folders.find(f => f.name === segments[0])
-                : undefined;
-            if (projectFolder && segments.length > 1) {
-                resolvedPath = path.resolve(projectFolder.uri.fsPath, segments.slice(1).join('/'));
-            } else {
-                const base = folders[0]?.uri.fsPath || "";
-                resolvedPath = path.resolve(base, resolvedPath);
-            }
-        } else {
-            resolvedPath = path.resolve(resolvedPath);
-        }
-
-        // 2. Strict Boundary Check: Verify resolved path resides inside an open workspace folder
-        const ownerFolder = folders.find(folder => {
-            const folderPath = path.resolve(folder.uri.fsPath);
-            return resolvedPath.startsWith(folderPath + path.sep) || resolvedPath === folderPath;
-        });
-
-        if (!ownerFolder) {
-            Logger.warn(`Blocked out-of-bounds path resolution: ${namespacedPath}`);
-            return null;
-        }
-
-        const relativePath = path.relative(ownerFolder.uri.fsPath, resolvedPath).replace(/\\/g, '/');
-        const uri = vscode.Uri.file(resolvedPath);
-        return { folder: ownerFolder, relativePath, uri };
+    function normalizeSymbolIdentifier(raw: string): string {
+        return raw
+            .replace(/^(?:export\s+|default\s+|declare\s+|async\s+|public\s+|private\s+|protected\s+|static\s+|readonly\s+|override\s+|get\s+|set\s+|function\s+|class\s+|def\s+|fn\s+)+/gi, '')
+            .split('(')[0]
+            .split('<')[0]
+            .split(':')[0]
+            .split('=')[0]
+            .replace(/^[#_]/, '')
+            .trim()
+            .toLowerCase();
     }
 
     /**
-     * Regex fallback helper to locate symbol ranges when the symbol provider is offline.
+     * Resilient AST & line scanner fallback to locate symbol range in document.
      */
-    function findSymbolRegex(text: string, name: string, isPython: boolean): { start: number, end: number } | null {
-        const lines = text.split('\n');
+    function findSymbolInDocumentText(document: vscode.TextDocument, targetMember: string[]): vscode.Range | null {
+        const isPython = document.languageId === 'python';
+        const lineCount = document.lineCount;
+        const targetLeaf = targetMember[targetMember.length - 1].trim();
+        const targetParent = targetMember.length > 1 ? targetMember[0].trim() : null;
+
+        let searchStartLine = 0;
+        let searchEndLine = lineCount;
+
+        // 1. If hierarchical (e.g. Class:method), locate the parent container first
+        if (targetParent) {
+            const parentRegex = isPython
+                ? new RegExp(`^(\\s*)class\\s+${targetParent}\\b`)
+                : new RegExp(`^(\\s*)(?:export\\s+)?(?:abstract\\s+)?class\\s+${targetParent}\\b`);
+
+            for (let i = 0; i < lineCount; i++) {
+                const lineText = document.lineAt(i).text;
+                const m = lineText.match(parentRegex);
+                if (m) {
+                    searchStartLine = i;
+                    if (isPython) {
+                        const classIndent = m[1].length;
+                        searchEndLine = lineCount;
+                        for (let j = i + 1; j < lineCount; j++) {
+                            const curText = document.lineAt(j).text;
+                            if (curText.trim().length === 0 || curText.trim().startsWith('#')) continue;
+                            const curIndent = curText.match(/^\s*/)?.[0].length || 0;
+                            if (curIndent <= classIndent) {
+                                searchEndLine = j;
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // 2. Search for the target symbol in the target range
+        const pythonDefRegex = new RegExp(`^(\\s*)(?:async\\s+)?(?:def|class)\\s+${targetLeaf}\\b`);
+        const jsMethodRegex = new RegExp(`^(\\s*)(?:(?:public|private|protected|static|readonly|async|get|set|override)\\s+)*(?:function\\s+)?${targetLeaf}\\s*(?:=\\s*(?:async\\s*)?\\([^)]*\\)\\s*=>|\\()`);
+        const jsVarFuncRegex = new RegExp(`^(\\s*)(?:export\\s+)?(?:const|let|var)\\s+${targetLeaf}\\s*=\\s*`);
+        const generalBraceRegex = new RegExp(`\\b${targetLeaf}\\b`);
+
+        let declLineIdx = -1;
         let startLineIdx = -1;
-        let indent = 0;
+        let baseIndent = 0;
 
-        const regexPat = isPython 
-            ? new RegExp(`^(\\s*)(?:@\\w+[\\s\\S]*?)?(?:async\\s+)?(?:def|class)\\s+${name}\\b`)
-            : new RegExp(`^(\\s*)(?:export\\s+)?(?:async\\s+)?(?:function|class|const|let|var)\\s+${name}\\b`);
+        for (let i = searchStartLine; i < searchEndLine; i++) {
+            const lineText = document.lineAt(i).text;
+            const trimmed = lineText.trim();
+            if (trimmed.length === 0) continue;
 
-        for (let i = 0; i < lines.length; i++) {
-            const m = lines[i].match(regexPat);
-            if (m) {
+            const isMatch = isPython 
+                ? pythonDefRegex.test(lineText)
+                : (jsMethodRegex.test(lineText) || jsVarFuncRegex.test(lineText) || generalBraceRegex.test(lineText));
+
+            if (isMatch) {
+                declLineIdx = i;
+                baseIndent = lineText.match(/^\s*/)?.[0].length || 0;
                 startLineIdx = i;
-                indent = m[1].length;
+
+                // Backtrack to capture preceding decorator lines or docstrings attached directly
+                let backtrack = i - 1;
+                while (backtrack >= searchStartLine) {
+                    const prevText = document.lineAt(backtrack).text.trim();
+                    if (prevText.startsWith('@') || prevText.startsWith('/**') || prevText.startsWith('*') || prevText.startsWith('//')) {
+                        startLineIdx = backtrack;
+                        backtrack--;
+                    } else {
+                        break;
+                    }
+                }
                 break;
             }
         }
 
-        if (startLineIdx === -1) return null;
+        if (declLineIdx === -1) return null;
 
-        let endLineIdx = startLineIdx;
-        
+        let endLineIdx = declLineIdx;
+
         if (isPython) {
-            for (let i = startLineIdx + 1; i < lines.length; i++) {
-                const line = lines[i];
-                if (line.trim().length === 0) continue;
-                
-                const curIndent = line.match(/^\s*/)?.[0].length || 0;
-                if (curIndent <= indent && !line.trim().startsWith('#')) {
-                    endLineIdx = i - 1;
+            for (let j = declLineIdx + 1; j < searchEndLine; j++) {
+                const curText = document.lineAt(j).text;
+                if (curText.trim().length === 0) {
+                    endLineIdx = j;
+                    continue;
+                }
+                const curIndent = curText.match(/^\s*/)?.[0].length || 0;
+                if (curIndent <= baseIndent && !curText.trim().startsWith('#')) {
                     break;
                 }
-                endLineIdx = i;
+                endLineIdx = j;
             }
         } else {
             let braceCount = 0;
             let foundFirstBrace = false;
-            for (let i = startLineIdx; i < lines.length; i++) {
-                const line = lines[i];
-                for (let ch of line) {
+            for (let j = declLineIdx; j < searchEndLine; j++) {
+                const lineText = document.lineAt(j).text;
+                for (let ch of lineText) {
                     if (ch === '{') {
                         braceCount++;
                         foundFirstBrace = true;
@@ -237,84 +270,159 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                         braceCount--;
                     }
                 }
-                endLineIdx = i;
-                if (foundFirstBrace && braceCount === 0) {
+                endLineIdx = j;
+                if (foundFirstBrace && braceCount <= 0) {
                     break;
                 }
             }
         }
 
-        let startOffset = 0;
-        for (let i = 0; i < startLineIdx; i++) startOffset += lines[i].length + 1;
-        
-        let endOffset = startOffset;
-        for (let i = startLineIdx; i <= endLineIdx; i++) endOffset += lines[i].length + 1;
-
-        return { start: startOffset, end: endOffset };
+        const startPos = document.lineAt(startLineIdx).range.start;
+        const endPos = document.lineAt(endLineIdx).range.end;
+        return new vscode.Range(startPos, endPos);
     }
 
     /**
      * Resolves a nested list of symbols recursively to find the exact target range for replacement.
      */
     async function replaceSymbolContent(document: vscode.TextDocument, targetMember: string[], newContent: string): Promise<string> {
-        const text = document.getText();
-        const isPython = document.languageId === 'python';
-        const isJsTs = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact'].includes(document.languageId);
-
-        let matchedRange: { start: number, end: number } | null = null;
+        let matchedRange: vscode.Range | null = null;
 
         try {
             const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', document.uri);
             if (symbols && symbols.length > 0) {
-                const findSymbol = (syms: vscode.DocumentSymbol[], pathIdx: number): vscode.DocumentSymbol | null => {
+                const findHierarchical = (syms: vscode.DocumentSymbol[], pathIdx: number): vscode.DocumentSymbol | null => {
                     const targetName = targetMember[pathIdx].toLowerCase();
-                    const match = syms.find(s => {
-                        const cleanName = s.name.split('(')[0].split('<')[0].trim().toLowerCase();
-                        return cleanName === targetName;
-                    });
-                    if (!match) return null;
-                    if (pathIdx === targetMember.length - 1) return match;
-                    return findSymbol(match.children, pathIdx + 1);
+                    const targetNorm = normalizeSymbolIdentifier(targetMember[pathIdx]);
+
+                    for (const s of syms) {
+                        const sNorm = normalizeSymbolIdentifier(s.name);
+                        const sClean = s.name.split('(')[0].split('<')[0].split(':')[0].trim().toLowerCase();
+
+                        const isMatch = sNorm === targetNorm || sClean === targetName || sClean.endsWith('.' + targetName) || sClean.endsWith('::' + targetName);
+                        if (isMatch) {
+                            if (pathIdx === targetMember.length - 1) {
+                                return s;
+                            }
+                            if (s.children && s.children.length > 0) {
+                                const childMatch = findHierarchical(s.children, pathIdx + 1);
+                                if (childMatch) return childMatch;
+                            }
+                        }
+                    }
+
+                    // Recursive search in children if top-level lookup was single-part
+                    if (pathIdx === 0 && targetMember.length === 1) {
+                        for (const s of syms) {
+                            if (s.children && s.children.length > 0) {
+                                const found = findHierarchical(s.children, 0);
+                                if (found) return found;
+                            }
+                        }
+                    }
+                    return null;
                 };
 
-                const matchedSymbol = findSymbol(symbols, 0);
+                const matchedSymbol = findHierarchical(symbols, 0);
                 if (matchedSymbol) {
-                    matchedRange = {
-                        start: document.offsetAt(matchedSymbol.range.start),
-                        end: document.offsetAt(matchedSymbol.range.end)
-                    };
+                    matchedRange = matchedSymbol.range;
                 }
             }
         } catch (symError) {
-            Logger.warn("Document symbol provider failed. Falling back to regex parser.", symError);
+            Logger.warn("Document symbol provider failed. Falling back to text scanner.", symError);
         }
 
-        // Regex Fallback
-        if (!matchedRange && targetMember.length === 1 && (isPython || isJsTs)) {
-            matchedRange = findSymbolRegex(text, targetMember[0], isPython);
+        // Resilient Scanner Fallback
+        if (!matchedRange) {
+            matchedRange = findSymbolInDocumentText(document, targetMember);
         }
 
         if (!matchedRange) {
-            throw new Error(`Could not find symbol: ${targetMember.join(' -> ')}`);
+            throw new Error(`Could not find symbol: '${targetMember.join(' -> ')}' in ${vscode.workspace.asRelativePath(document.uri)}`);
         }
 
-        return text.substring(0, matchedRange.start) + newContent + text.substring(matchedRange.end);
+        // Expand replacement range to column 0 if prefix on start line is purely whitespace
+        const startLine = matchedRange.start.line;
+        const startLineText = document.lineAt(startLine).text;
+        const prefixBeforeMatch = startLineText.substring(0, matchedRange.start.character);
+        const existingIndent = startLineText.match(/^\s*/)?.[0] || "";
+
+        let effectiveRange = matchedRange;
+        if (prefixBeforeMatch.trim() === "") {
+            effectiveRange = new vscode.Range(
+                new vscode.Position(startLine, 0),
+                matchedRange.end
+            );
+        }
+
+        // Calculate indentation delta to align newContent with the document's scope
+        const newLines = newContent.replace(/\r\n/g, '\n').split('\n');
+        const firstNonEmptyLine = newLines.find(l => l.trim().length > 0);
+        const firstLineIndent = firstNonEmptyLine ? (firstNonEmptyLine.match(/^\s*/)?.[0] || "") : "";
+        const targetBaseIndent = existingIndent;
+
+        let adjustedContent = newContent;
+        if (firstNonEmptyLine && firstLineIndent !== targetBaseIndent) {
+            const indentDelta = targetBaseIndent.length - firstLineIndent.length;
+            if (indentDelta > 0) {
+                const addSpaces = " ".repeat(indentDelta);
+                adjustedContent = newLines.map(line => line.trim().length > 0 ? addSpaces + line : line).join('\n');
+            } else if (indentDelta < 0) {
+                const removeCount = Math.abs(indentDelta);
+                adjustedContent = newLines.map(line => {
+                    if (line.trim().length === 0) return line;
+                    const curLeading = line.match(/^\s*/)?.[0].length || 0;
+                    const toRemove = Math.min(curLeading, removeCount);
+                    return line.substring(toRemove);
+                }).join('\n');
+            }
+        }
+
+        const text = document.getText();
+        const isCrlf = text.includes('\r\n');
+        if (isCrlf && !adjustedContent.includes('\r\n')) {
+            adjustedContent = adjustedContent.replace(/\n/g, '\r\n');
+        }
+
+        const startOffset = document.offsetAt(effectiveRange.start);
+        const endOffset = document.offsetAt(effectiveRange.end);
+
+        return text.substring(0, startOffset) + adjustedContent + text.substring(endOffset);
     }
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean, autoSave?: boolean }) => {
         // Clean up hallucinated metadata like "(2 hunks)" from the file path
         const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
-        
+        const ext = path.extname(sanitizedFilePath).toLowerCase();
+
+        const readOnlyDocExts = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.zip', '.tar', '.gz', '.exe', '.bin', '.pkl', '.onnx', '.db', '.sqlite']);
+        if (readOnlyDocExts.has(ext)) {
+            const err = `🛑 Cannot apply code content to read-only document/binary file '${sanitizedFilePath}'. Modify documents programmatically via scripts (e.g. Python with pandas/openpyxl/python-docx).`;
+            if (!options?.silent) vscode.window.showErrorMessage(err);
+            return { success: false, error: err };
+        }
+
         // Handle Member-Targeted Replacement (path/to/file:ClassName:MethodName)
         let targetMember: string[] = [];
         let cleanPath = sanitizedFilePath;
 
-        const caps = services.discussionManager.getLastCapabilities();
+        const currentDiscussion = ChatPanel.currentPanel?.getCurrentDiscussion();
+        const caps = currentDiscussion?.capabilities || services.discussionManager.getLastCapabilities();
         const symbolModeEnabled = caps?.enableSymbolMode !== false;
 
-        if (symbolModeEnabled && sanitizedFilePath.includes(':')) {
-            const parts = sanitizedFilePath.split(':');
-            cleanPath = parts[0];
-            targetMember = parts.slice(1).map(p => p.trim()).filter(p => p);
+        if (symbolModeEnabled) {
+            // Protect Windows drive letters (e.g. C:/path) from being treated as symbol colons
+            let workingPath = sanitizedFilePath;
+            let drivePrefix = "";
+            if (/^[a-zA-Z]:[\\/]/.test(workingPath)) {
+                drivePrefix = workingPath.substring(0, 2);
+                workingPath = workingPath.substring(2);
+            }
+
+            if (workingPath.includes(':')) {
+                const parts = workingPath.split(':');
+                cleanPath = drivePrefix + parts[0];
+                targetMember = parts.slice(1).map(p => p.trim()).filter(p => p);
+            }
         }
 
         const resolution = await services.contextManager.resolveWorkspaceFromPath(cleanPath);
@@ -429,13 +537,16 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 }
             }
 
-            // --- SOVEREIGN PROTECTION SHIELD: AUTOMATED WRITE INTERRUPT ---
-            if (fileExists && options?.autoSave) {
-                const sizeRatio = content.length / (originalContent.length || 1);
+            // --- SOVEREIGN PROTECTION SHIELD & PLACEHOLDER CHECK ---
+            // For targeted symbol replacements, evaluate final merged document size rather than snippet length
+            const evaluatedContent = targetMember.length > 0 ? finalWriteContent : content;
+
+            if (fileExists && options?.autoSave && targetMember.length === 0) {
+                const sizeRatio = evaluatedContent.length / (originalContent.length || 1);
                 const isSubstantialShrink = sizeRatio < 0.4 && originalContent.length > 500;
 
                 if (isSubstantialShrink) {
-                    const warningMsg = `An automated "Apply All" or "Auto Apply" operation is attempting to apply modifications that reduce this file to ${Math.round(sizeRatio * 100)}% of its original size (losing ${originalContent.length - content.length} characters). This might destroy critical code!`;
+                    const warningMsg = `An automated "Apply All" or "Auto Apply" operation is attempting to apply modifications that reduce this file to ${Math.round(sizeRatio * 100)}% of its original size (losing ${originalContent.length - evaluatedContent.length} characters). This might destroy critical code!`;
 
                     const choices = ["Apply Changes Anyway", "Halt & Protect File"];
                     const result = await vscode.window.showWarningMessage(
@@ -451,28 +562,24 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 }
             }
 
-            // --- PLACEHOLDER & SIZE SAFETY CHECK ---
+            // --- PLACEHOLDER & SIZE SAFETY CHECK (MANUAL APPLY) ---
             if (fileExists && !options?.autoSave) {
-                // Improved detection: Only flag "..." if it's on a line by itself or in a comment, 
-                // not inside a long string like print("Phase 2...")
                 const lines = content.split('\n');
                 const hasPlaceholder = lines.some(line => {
                     const trimmed = line.trim();
-                    // 1. Line is just "..." or a comment followed by "..." (e.g. # ...)
                     if (/^(\.{3,}|#\s*\.{3,}|(\/\/|--|;)\s*\.{3,})$/.test(trimmed)) return true;
-                    // 2. Specific "rest of code" markers commonly used by AI
                     if (/(#|\/\/)\s*\.{3,}\s*(rest|same|logic|etc)/i.test(trimmed)) return true;
                     return false;
                 });
 
-                const sizeRatio = content.length / (originalContent.length || 1);
+                const sizeRatio = evaluatedContent.length / (originalContent.length || 1);
 
-                // If content is < 40% of original or has a structural placeholder
-                if (hasPlaceholder || sizeRatio < 0.4) {
+                // Only check shrink on full-file replacements
+                if (hasPlaceholder || (targetMember.length === 0 && sizeRatio < 0.4)) {
                     const warningMsg = hasPlaceholder 
                         ? `The AI generated code contains potential placeholders (like '...') which will break your file.`
                         : `The new code is significantly smaller than the original (${Math.round(sizeRatio * 100)}% of original size). It might be incomplete.`;
-                    
+
                     const choices = ["Apply Anyway", "Ask AI for Full Code", "Cancel"];
                     const result = await vscode.window.showWarningMessage(
                         `⚠️ Potential Placeholder Detected in ${filePath}: ${warningMsg}`,
@@ -707,6 +814,15 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number, autoSave?: boolean, undo?: boolean }): Promise<{ success: boolean; error?: string; repaired?: boolean; alreadyApplied?: boolean }> => {
         // Clean up hallucinated metadata
         const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
+        const ext = path.extname(sanitizedFilePath).toLowerCase();
+
+        const readOnlyDocExts = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.zip', '.tar', '.gz', '.exe', '.bin', '.pkl', '.onnx', '.db', '.sqlite']);
+        if (readOnlyDocExts.has(ext)) {
+            const err = `🛑 Cannot patch read-only document/binary file '${sanitizedFilePath}'. Modify documents programmatically via scripts (e.g. Python with pandas/openpyxl/python-docx).`;
+            if (!options?.silent) vscode.window.showErrorMessage(err);
+            return { success: false, error: err };
+        }
+
         const isUndo = options?.undo === true;
         Logger.info(`Executing replaceCode (${isUndo ? 'UNDO' : 'APPLY'}) for: ${sanitizedFilePath}`);
 
@@ -1303,7 +1419,15 @@ ${originalContent}
          try {
              const activeWorkspace = getActiveWorkspace();
              if(!activeWorkspace) return { success: false, error: "No active workspace" };
-             
+
+             const ext = path.extname(filePath).toLowerCase();
+             const readOnlyDocExts = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.zip', '.tar', '.gz', '.exe', '.bin', '.pkl', '.onnx', '.db', '.sqlite']);
+             if (readOnlyDocExts.has(ext)) {
+                 const err = `🛑 Cannot apply unified diff patch to read-only document/binary file '${filePath}'.`;
+                 if (!options?.silent) vscode.window.showErrorMessage(err);
+                 return { success: false, error: err };
+             }
+
              const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
              const doc = await vscode.workspace.openTextDocument(fileUri);
              const originalContent = doc.getText();

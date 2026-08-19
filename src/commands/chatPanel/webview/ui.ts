@@ -1,5 +1,5 @@
 import { dom, state, vscode } from "./dom.js";
-import { isScrolledToBottom, applySearchReplace } from "./utils.js";
+import { isScrolledToBottom, applySearchReplace, normalizeAiderContent } from "./utils.js";
 import DOMPurify from 'dompurify';
 
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
@@ -1610,47 +1610,40 @@ export function syncExpansionBlocks() {
         return cleanA === cleanB || cleanA.endsWith('/' + cleanB) || cleanB.endsWith('/' + cleanA);
     };
 
+    // 1. Synchronize local items against active context files
     const items = document.querySelectorAll('.expansion-file-item');
-    console.log(`[UI:Sync] Syncing ${items.length} UI items against ${globalFiles.length} context files.`);
-
     items.forEach((item: any) => {
         const pathAttr = item.getAttribute('data-path');
         if (!pathAttr) return;
 
         const isIncluded = globalFiles.some((cf: string) => isPathMatch(cf, pathAttr));
-
         if (isIncluded) {
-            const icon = item.querySelector('.codicon');
-            item.style.borderColor = 'var(--vscode-charts-green)';
+            item.classList.remove('status-not-in-context', 'status-not-exist');
+            item.classList.add('status-in-context');
+            item.style.color = 'var(--vscode-charts-green, #388e3c)';
+            item.style.borderColor = 'var(--vscode-charts-green, #388e3c)';
+            item.style.borderLeft = '4px solid var(--vscode-charts-green, #388e3c)';
             item.style.background = 'rgba(15, 157, 88, 0.1)';
-            item.style.borderLeft = '4px solid var(--vscode-charts-green)';
+            const icon = item.querySelector('.codicon');
             if (icon) {
                 icon.className = 'codicon codicon-check';
-                icon.style.color = 'var(--vscode-charts-green)';
+                icon.style.color = 'var(--vscode-charts-green, #388e3c)';
             }
         }
     });
 
-    // Also update buttons with the same robust matching logic
+    // 2. Query extension host to check both on-disk existence and context inclusion
     document.querySelectorAll('.context-expansion-block').forEach((block: any) => {
-        const files = JSON.parse(block.dataset.files || '[]');
-        const allIncluded = files.every((f: string) => 
-            globalFiles.some((cf: string) => isPathMatch(cf, f))
-        );
-
-        const addBtn = block.querySelector('.add-btn') as HTMLButtonElement;
-        if (addBtn && allIncluded) {
-            addBtn.innerHTML = '<span class="codicon codicon-check"></span> Added to Context';
-            addBtn.className = 'code-action-btn applied';
-            addBtn.disabled = true;
-        }
-
-        const repromptBtn = block.querySelector('.add-reprompt-btn') as HTMLButtonElement;
-        if (repromptBtn && allIncluded) {
-            repromptBtn.innerHTML = '<span class="codicon codicon-play"></span> Reprompt AI';
-            repromptBtn.className = 'code-action-btn apply-btn';
-            repromptBtn.disabled = false;
-        }
+        try {
+            const files = JSON.parse(block.dataset.files || '[]');
+            if (files.length > 0 && block.id) {
+                vscode.postMessage({
+                    command: 'checkFilesStatus',
+                    files,
+                    blockId: block.id
+                });
+            }
+        } catch (e) {}
     });
 }
 
@@ -3700,9 +3693,12 @@ export function openRawCodeModal(messageId: string, blockIndex: number, filePath
     display.dataset.messageId = messageId;
     display.dataset.blockIndex = String(blockIndex);
 
+    // Normalize rawCode to handle lone ======= separators seamlessly
+    const normalizedRawCode = normalizeAiderContent(rawCode);
+
     // Extract all hunks
     const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
-    const matches = [...rawCode.matchAll(aiderRegex)];
+    const matches = [...normalizedRawCode.matchAll(aiderRegex)];
 
     tabBar.innerHTML = '';
 
@@ -3891,8 +3887,9 @@ function renderSplitDiff(oldText: string, patch: string) {
 
     // 1. Calculate the final state as intended by the patch
     let newText = oldText;
+    const normalizedPatch = normalizeAiderContent(patch);
     const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
-    const matches = [...patch.matchAll(aiderRegex)];
+    const matches = [...normalizedPatch.matchAll(aiderRegex)];
 
     if (matches.length > 0) {
         for (const match of matches) {

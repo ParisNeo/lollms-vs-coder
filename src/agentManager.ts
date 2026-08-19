@@ -415,108 +415,134 @@ Keep it strictly technical and extremely concise.`
         }
 
         if (!isRepo) {
-            const formPrompt = `
-        <lollms_form id="no_git_repo" title="No Git Repository Detected">
-        <input type="radio" name="decision" label="Stop" value="stop" checked="true" />
-        <input type="radio" name="decision" label="Continue anyway (No automatic rollbacks)" value="continue" />
-        <input type="radio" name="decision" label="Create a new repository locally and start" value="init" />
-        <submit label="Confirm Action" />
-        </lollms_form>`.trim();
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const autoGit = this.currentDiscussion?.capabilities?.gitAutoWorkflow || config.get<boolean>('gitAutoWorkflow');
 
-            const safetyTask: Task = {
-                id: -1,
-                task_type: 'safety_check',
-                description: "🛡️ Git missing. Decision required.",
-                action: "safety_check",
-                parameters: { lollms_form: formPrompt },
-                status: 'pending',
-                result: null,
-                retries: 0
-            };
-            this.currentPlan!.tasks.push(safetyTask);
-            await this.displayPlan(this.currentPlan);
-
-            const response = await this.ui.requestUserInput(formPrompt, signal, { isAgentZone: true });
-
-            if (this.currentPlan) {
-                this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.id !== -1);
-                await this.displayPlan(this.currentPlan);
-            }
-
-            let choice = this.parseFormResponse(response, "no_git_repo");
-            const safeChoice = (choice || "").toLowerCase().trim();
-
-            if (safeChoice === 'init') {
-                this.ui.addMessageToDiscussion({ role: 'system', content: `⚙️ **Initializing Atomic Clean Repository...**` });
-
-                const initPromise = this.runCommand('git init', signal);
-                let timeoutHandle: NodeJS.Timeout;
-                const timeoutP = new Promise<any>((_, reject) => timeoutHandle = setTimeout(() => reject(new Error("Git init timed out")), 15000));
-                
+            if (autoGit) {
+                // Auto-initialize clean repository
+                this.ui.addMessageToDiscussion({ role: 'system', content: `⚙️ **Auto-Initializing Clean Git Repository...**` });
                 try {
-                    await Promise.race([initPromise, timeoutP]);
-                } finally {
-                    // @ts-ignore
-                    clearTimeout(timeoutHandle);
+                    await this.runCommand('git init', signal);
+                    const ignoreContent = [
+                        "# Lollms Internal State",
+                        ".lollms/",
+                        ".lollms_workspaces/",
+                        ".lollms_scripts/",
+                        ".lollms_snapshots/",
+                        "",
+                        "# Dependencies (Strict)",
+                        "venv/",
+                        ".venv/",
+                        "env/",
+                        "node_modules/",
+                        "__pycache__/",
+                        "*.pyc",
+                        "*.pyo",
+                        "*.pyd",
+                        "",
+                        "# Build & System",
+                        "dist/",
+                        "build/",
+                        "out/",
+                        "target/",
+                        ".vscode/",
+                        ".idea/",
+                        ".DS_Store"
+                    ].join('\n');
+
+                    const ignorePath = path.join(folder.uri.fsPath, '.gitignore');
+                    await fs.writeFile(ignorePath, ignoreContent, 'utf8');
+
+                    await this.runCommand('git add .gitignore', signal);
+                    await this.runCommand('git commit -m "chore: initial gitignore"', signal);
+                    await this.runCommand('git add .', signal);
+                    await this.runCommand('git commit -m "chore: initial repository baseline"', signal);
+                    isRepo = true;
+                } catch (err: any) {
+                    Logger.warn(`Auto git init failed: ${err.message}`);
+                }
+            } else {
+                const formPrompt = `
+<lollms_form id="no_git_repo" title="No Git Repository Detected">
+<input type="radio" name="decision" label="Stop" value="stop" checked="true" />
+<input type="radio" name="decision" label="Continue anyway (No automatic rollbacks)" value="continue" />
+<input type="radio" name="decision" label="Create a new repository locally and start" value="init" />
+<submit label="Confirm Action" />
+</lollms_form>`.trim();
+
+                const safetyTask: Task = {
+                    id: -1,
+                    task_type: 'safety_check',
+                    description: "🛡️ Git missing. Decision required.",
+                    action: "safety_check",
+                    parameters: { lollms_form: formPrompt },
+                    status: 'pending',
+                    result: null,
+                    retries: 0
+                };
+                this.currentPlan!.tasks.push(safetyTask);
+                await this.displayPlan(this.currentPlan);
+
+                const response = await this.ui.requestUserInput(formPrompt, signal, { isAgentZone: true });
+
+                if (this.currentPlan) {
+                    this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.id !== -1);
+                    await this.displayPlan(this.currentPlan);
                 }
 
-                const ignoreContent = [
-                "# Lollms Internal State",
-                ".lollms/",
-                ".lollms_workspaces/",
-                ".lollms_scripts/",
-                ".lollms_snapshots/",
-                "",
-                "# Dependencies (Strict)",
-                "venv/",
-                ".venv/",
-                "env/",
-                "node_modules/",
-                "__pycache__/",
-                "*.pyc",
-                "*.pyo",
-                "*.pyd",
-                "/bin/",
-                "/lib/",
-                "/include/",
-                "/share/",
-                "pyvenv.cfg",
-                "",
-                "# Build & System",
-                "dist/",
-                "build/",
-                "out/",
-                "target/",
-                ".vscode/",
-                ".idea/",
-                ".DS_Store",
-                "Thumbs.db",
-                "",
-                "# Temp Files",
-                "*.log",
-                "*.tmp",
-                "*.bak"
-                ].join('\n');
+                let choice = this.parseFormResponse(response, "no_git_repo");
+                const safeChoice = (choice || "").toLowerCase().trim();
 
-                const ignorePath = path.join(folder.uri.fsPath, '.gitignore');
+                if (safeChoice === 'init') {
+                    this.ui.addMessageToDiscussion({ role: 'system', content: `⚙️ **Initializing Atomic Clean Repository...**` });
 
-                await fs.writeFile(ignorePath, ignoreContent, 'utf8');
+                    await this.runCommand('git init', signal);
 
-                await this.runCommand('git add .gitignore', signal);
-                await this.runCommand('git commit -m "chore: establish ignore rules"', signal);
+                    const ignoreContent = [
+                        "# Lollms Internal State",
+                        ".lollms/",
+                        ".lollms_workspaces/",
+                        ".lollms_scripts/",
+                        ".lollms_snapshots/",
+                        "",
+                        "# Dependencies (Strict)",
+                        "venv/",
+                        ".venv/",
+                        "env/",
+                        "node_modules/",
+                        "__pycache__/",
+                        "*.pyc",
+                        "*.pyo",
+                        "*.pyd",
+                        "",
+                        "# Build & System",
+                        "dist/",
+                        "build/",
+                        "out/",
+                        "target/",
+                        ".vscode/",
+                        ".idea/",
+                        ".DS_Store"
+                    ].join('\n');
 
-                await this.runCommand('git reset', signal);
-                await this.runCommand('git add .', signal);
-                await this.runCommand('git commit -m "Initial commit (clean content)"', signal);
+                    const ignorePath = path.join(folder.uri.fsPath, '.gitignore');
+                    await fs.writeFile(ignorePath, ignoreContent, 'utf8');
 
-                this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Repository Secured**: Ignore rules established and confirmed. \`venv\` is excluded.` });
-                isRepo = true;
-            } else if (safeChoice === 'continue') {
-                this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Proceeding without Git.** Automatic rollbacks are disabled.` });
-                return true;
-            } else {
-                this.ui.addMessageToDiscussion({ role: 'system', content: `🛑 **Operation cancelled** — no Git repository and user declined to continue.` });
-                return false;
+                    await this.runCommand('git add .gitignore', signal);
+                    await this.runCommand('git commit -m "chore: establish ignore rules"', signal);
+                    await this.runCommand('git reset', signal);
+                    await this.runCommand('git add .', signal);
+                    await this.runCommand('git commit -m "Initial commit (clean content)"', signal);
+
+                    this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Repository Secured**: Ignore rules established and confirmed.` });
+                    isRepo = true;
+                } else if (safeChoice === 'continue') {
+                    this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Proceeding without Git.** Automatic rollbacks are disabled.` });
+                    return true;
+                } else {
+                    this.ui.addMessageToDiscussion({ role: 'system', content: `🛑 **Operation cancelled** — no Git repository and user declined to continue.` });
+                    return false;
+                }
             }
         }
 
@@ -526,68 +552,81 @@ Keep it strictly technical and extremely concise.`
 
         let currentBranch = await this.gitIntegration.getCurrentBranch(folder);
         const isClean = await this.gitIntegration.isClean(folder);
-        const isMain = ['main', 'master', 'prod', 'production'].includes(currentBranch.toLowerCase());
 
         if (!isClean) {
-            const formPrompt = `
-        <lollms_form id="preflight_safety" title="Uncommitted Changes Detected">
-        <input type="radio" name="decision" label="Stash changes and create a clean AI branch" value="stash" checked="true" />
-        <input type="radio" name="decision" label="Commit them now" value="commit" />
-        <input type="radio" name="decision" label="Proceed anyway (Dangerous)" value="proceed" />
-        <submit label="Confirm Safety Action" />
-        </lollms_form>`.trim();
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const autoGit = this.currentDiscussion?.capabilities?.gitAutoWorkflow || config.get<boolean>('gitAutoWorkflow');
+            const unstagedBehavior = config.get<string>('git.unstagedChangesBehavior') || 'stash';
 
-            const safetyTask: Task = {
-                id: -1,
-                task_type: 'safety_check',
-                description: "🛡️ Uncommitted changes detected. Please choose a safety action to continue.",
-                action: "safety_check",
-                parameters: { lollms_form: formPrompt },
-                status: 'pending',
-                result: null,
-                retries: 0
-            };
-
-            this.currentPlan!.tasks = [safetyTask];
-            await this.displayPlan(this.currentPlan);
-
-            Logger.info(`[Phase 0] Emitting Safety Form to Discussion Stream...`);
-            const response = await this.ui.requestUserInput(`🛡️ **Safety Gate**: Uncommitted changes detected.\n\n${formPrompt}`, signal, { isAgentZone: false });
-            Logger.info(`[Phase 0] Raw response received from UI: "${response}"`);
-
-            if (this.currentPlan) {
-                this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.id !== -1);
-                await this.displayPlan(this.currentPlan);
-            }
-
-            let choice = this.parseFormResponse(response, "preflight_safety");
-            const safeChoice = (choice || "").toLowerCase().trim();
-            Logger.info(`[Phase 0] Parsed safeChoice: "${safeChoice}"`);
-
-            if (safeChoice === 'stash') {
-                await this.gitIntegration.stash(folder, "Genie: Stashed before mission");
-                this.completedActionsHistory.push(`[GIT] 📦 STASHED: Uncommitted changes moved to stash.`);
+            if (autoGit || unstagedBehavior === 'stash') {
+                await this.gitIntegration.stash(folder, `Lollms: Stash before mission ${Date.now()}`);
+                this.completedActionsHistory.push(`[GIT] 📦 STASHED: Automatically saved uncommitted changes to stash.`);
                 this.sessionState.isSafetyCheckPassed = true;
-            } else if (safeChoice === 'commit') {
+            } else if (unstagedBehavior === 'commit') {
                 const msg = await this.gitIntegration.generateCommitMessage(folder);
-                const finalMsg = msg?.trim() || "Genie: pre-flight backup";
+                const finalMsg = msg?.trim() || `chore: pre-flight checkpoint ${Date.now()}`;
                 await this.gitIntegration.stageAllAndCommit(finalMsg, folder);
-                this.completedActionsHistory.push(`[GIT] 💾 COMMITTED: Pre-flight backup created.`);
+                this.completedActionsHistory.push(`[GIT] 💾 COMMITTED: Auto-saved pre-flight checkpoint.`);
                 this.sessionState.isSafetyCheckPassed = true;
-            } else if (safeChoice === 'proceed' || safeChoice === 'continue') {
-                this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Safety Bypass**: Proceeding with uncommitted changes on \`${currentBranch}\`.` });
-                this.completedActionsHistory.push(`[GIT] ⚠️ BYPASS: User chose to proceed with a dirty workspace.`);
-                this.sessionState.isSafetyCheckPassed = true;
-                return true; 
             } else {
-                this.ui.addMessageToDiscussion({ role: 'system', content: `🛑 **Operation cancelled** by user.` });
-                return false;
+                const formPrompt = `
+<lollms_form id="preflight_safety" title="Uncommitted Changes Detected">
+<input type="radio" name="decision" label="Stash changes and create a clean AI branch" value="stash" checked="true" />
+<input type="radio" name="decision" label="Commit them now" value="commit" />
+<input type="radio" name="decision" label="Proceed anyway (Dangerous)" value="proceed" />
+<submit label="Confirm Safety Action" />
+</lollms_form>`.trim();
+
+                const safetyTask: Task = {
+                    id: -1,
+                    task_type: 'safety_check',
+                    description: "🛡️ Uncommitted changes detected. Please choose a safety action to continue.",
+                    action: "safety_check",
+                    parameters: { lollms_form: formPrompt },
+                    status: 'pending',
+                    result: null,
+                    retries: 0
+                };
+
+                this.currentPlan!.tasks = [safetyTask];
+                await this.displayPlan(this.currentPlan);
+
+                Logger.info(`[Phase 0] Emitting Safety Form to Discussion Stream...`);
+                const response = await this.ui.requestUserInput(`🛡️ **Safety Gate**: Uncommitted changes detected.\n\n${formPrompt}`, signal, { isAgentZone: false });
+
+                if (this.currentPlan) {
+                    this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.id !== -1);
+                    await this.displayPlan(this.currentPlan);
+                }
+
+                let choice = this.parseFormResponse(response, "preflight_safety");
+                const safeChoice = (choice || "").toLowerCase().trim();
+
+                if (safeChoice === 'stash') {
+                    await this.gitIntegration.stash(folder, "Genie: Stashed before mission");
+                    this.completedActionsHistory.push(`[GIT] 📦 STASHED: Uncommitted changes moved to stash.`);
+                    this.sessionState.isSafetyCheckPassed = true;
+                } else if (safeChoice === 'commit') {
+                    const msg = await this.gitIntegration.generateCommitMessage(folder);
+                    const finalMsg = msg?.trim() || "Genie: pre-flight backup";
+                    await this.gitIntegration.stageAllAndCommit(finalMsg, folder);
+                    this.completedActionsHistory.push(`[GIT] 💾 COMMITTED: Pre-flight backup created.`);
+                    this.sessionState.isSafetyCheckPassed = true;
+                } else if (safeChoice === 'proceed' || safeChoice === 'continue') {
+                    this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Safety Bypass**: Proceeding with uncommitted changes on \`${currentBranch}\`.` });
+                    this.completedActionsHistory.push(`[GIT] ⚠️ BYPASS: User chose to proceed with a dirty workspace.`);
+                    this.sessionState.isSafetyCheckPassed = true;
+                    return true; 
+                } else {
+                    this.ui.addMessageToDiscussion({ role: 'system', content: `🛑 **Operation cancelled** by user.` });
+                    return false;
+                }
             }
         }
 
         currentBranch = await this.gitIntegration.getCurrentBranch(folder);
 
-        if (!currentBranch.startsWith('ai-task-')) {
+        if (!currentBranch.startsWith('ai-task-') && !currentBranch.startsWith('debug/')) {
             const branchName = `ai-task-${Date.now()}`;
             await this.gitIntegration.createAndCheckoutBranch(folder, branchName);
             const gitMsg = `[GIT] 🌿 BRANCHED: Switched from \`${currentBranch}\` to isolated workspace \`${branchName}\`.`;
@@ -599,7 +638,7 @@ Keep it strictly technical and extremely concise.`
                 skipInPrompt: true
             });
         } else {
-            this.completedActionsHistory.push(`[GIT] ℹ️ Persistence: Already on isolated branch \`${currentBranch}\`.`);
+            this.completedActionsHistory.push(`[GIT] ℹ️ Persistence: Operating on isolated branch \`${currentBranch}\`.`);
         }
 
         this.sessionState.isSafetyCheckPassed = true;
@@ -676,6 +715,26 @@ Keep it strictly technical and extremely concise.`
 
         // Explicitly engage Active Agent Mode state when this method is invoked
         this.isActive = true;
+
+        // Auto-title discussion on the first prompt if untitled
+        const isUntitled = !this.currentDiscussion.title || 
+                           this.currentDiscussion.title === 'New Discussion' || 
+                           this.currentDiscussion.title === 'Untitled Discussion' ||
+                           this.currentDiscussion.title.startsWith('New Discussion');
+
+        if (isUntitled && !this.currentDiscussion.id.startsWith('temp-')) {
+            setImmediate(async () => {
+                try {
+                    const generatedTitle = await this.discussionManager.generateDiscussionTitle(this.currentDiscussion!);
+                    if (generatedTitle && generatedTitle.trim()) {
+                        const cleanTitle = generatedTitle.trim();
+                        this.currentDiscussion!.title = cleanTitle;
+                        await this.discussionManager.saveDiscussion(this.currentDiscussion!);
+                        vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+                    }
+                } catch (e) {}
+            });
+        }
 
         if (!this.currentPlan) {
             this.failureMemory.clear();
@@ -778,7 +837,7 @@ Please commit or stash your work before starting an iterative debug session to e
         if (!this.currentPlan) {
             this.currentPlan = {
                 objective: objective,
-                current_sub_goal: "Discovery",
+                current_sub_goal: "Discovery & Planning",
                 observations: [],
                 scratchpad: "Mission started. Initializing discovery...",
                 tasks: [],
@@ -797,7 +856,7 @@ Please commit or stash your work before starting an iterative debug session to e
             if (signal.aborted) break;
             stepCount++;
 
-            this.processManager?.updateDescription(processId, `Genie: Reasoning (Step ${stepCount})...`);
+            this.processManager?.updateDescription(processId, `Agentic Loop (Turn ${stepCount}/${maxSteps}): Reasoning...`);
             this.ui.updateGeneratingState();
 
             const contextData = await this.contextManager.getContextContent({ 
@@ -837,20 +896,16 @@ Please commit or stash your work before starting an iterative debug session to e
                 .join('\n') || "No specialized environments active (using system default).";
 
             const historyContext = `
-            ### 📦 ACTIVE CONTEXT INVENTORY
-            ${inventory}
-            ${discussionFilesBlock}
+### 📦 ACTIVE CONTEXT INVENTORY
+${inventory}
+${discussionFilesBlock}
 
-            ### 🔌 LOADED ENVIRONMENTS (ACTIVE)
-            ${envs}
-            **PROTOCOL**: When running code for a project, I will automatically use its associated environment. Use 'set_default_environment' to change these mappings.
-            **STRICT RULE**: Do NOT use 'read_file' or 'read_files' for anything listed above. Use the provided content directly.
+### 🔌 LOADED ENVIRONMENTS (ACTIVE)
+${envs}
+**PROTOCOL**: When running code for a project, the associated environment is used automatically.
 
-            ### 🕒 MISSION TIMELINE (EXECUTED ACTIONS)
-            ${this.completedActionsHistory.length > 0 ? this.completedActionsHistory.slice(-12).join('\n\n') : "No actions taken yet."}
-
-            **Current Status**: You have completed ${this.completedActionsHistory.length} steps. 
-**Constraint**: Review the 'AUDIT REPORT' in the last observation. You MUST update your internal scratchpad or project memory with any significant technical discoveries or architectural fixes before proceeding.
+### 🕒 MISSION TIMELINE (EXECUTED ACTIONS)
+${this.completedActionsHistory.length > 0 ? this.completedActionsHistory.slice(-12).join('\n\n') : "No actions taken yet."}
 
 ### 🛑 REFLEXIVE MEMORY (MISTAKES TO AVOID)
 ${this.failureMemory.getMemoryContext()}
@@ -867,46 +922,39 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
             let structuralNudge = "";
             if (hasStructure && !hasContentLoaded) {
-                structuralNudge = "\n**⚠️ LIBRARIAN NOTICE**: You have VISION of the tree but no CODE in memory. Find the paths in the tree and use 'add_files_to_context' immediately.";
-            } else if (hasContentLoaded) {
-                structuralNudge = "\n**⚠️ SPATIAL AUDIT**: You currently possess the source code for several files (marked [C] in the tree). Review 'ACCESSIBLE FILE CONTENTS' before proposing a 'read_file' action.";
+                structuralNudge = "\n**⚠️ LIBRARIAN NOTICE**: You have VISION of the tree but no CODE in memory. Find target files in the tree and read/possess them before editing.";
             }
 
             const remainingSteps = maxSteps - stepCount;
             let budgetBlock = `### ⏳ MISSION BUDGET\n- **Current Step**: ${stepCount} of ${maxSteps}\n- **Remaining Turns**: ${remainingSteps}\n`;
 
             if (remainingSteps <= 3) {
-                budgetBlock += `\n**🚨 CRITICAL WARNING: LOW BUDGET**\nYou are about to run out of turns. You are FORBIDDEN from starting new deep research, long tests, or complex refactors. You MUST use your remaining turns to:\n1. Wrap up your current work safely.\n2. Use the \`submit_response\` tool to explain to the user what you accomplished and what remains to be done before you are forcefully terminated.\n`;
+                budgetBlock += `\n**🚨 CRITICAL WARNING: LOW BUDGET**\nYou are about to run out of turns. Finalize your current edits, verify tests, and call \`submit_response\` with your completed summary before timeout.\n`;
             }
 
-            // --- COGNITIVE RESET PATTERN (REPETITION GUARD) ---
-            let repetitionNudge = "";
             const recentHistoryLength = this.completedActionsHistory.length;
+            let repetitionNudge = "";
             if (recentHistoryLength >= 2) {
                 const lastLog = this.completedActionsHistory[recentHistoryLength - 1];
                 const prevLog = this.completedActionsHistory[recentHistoryLength - 2];
 
-                // Detect if the agent is repeating tools or is stuck in an error loop
                 const isRepetitiveTool = lastLog.includes("STATUS: ❌ FAILURE") && prevLog.includes("STATUS: ❌ FAILURE");
                 const isStuckInLoop = lastLog.includes("WARNING: You already executed") || lastLog.includes("ERROR: Tool failed");
 
                 if (isRepetitiveTool || isStuckInLoop) {
                     repetitionNudge = `
 ### 🚨 COGNITIVE RESET: UNSTUCK MANDATE
-You are stuck in a thought loop or are repeating failing actions. 
-Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the faliing command or using the same parameters.
-
-**DIRECTIONS TO BREAK THE LOOP:**
-1. **Explore with SPARQL**: Use \`query_architecture\` with \`query_type: "sparql"\` and \`target: "SELECT ?file ?path WHERE { ?file s:type s:File . ?file s:path ?path }"\` to discover exactly what files exist.
-2. **Read the Main file**: If you know a file exists, use \`read_file\` with \`path: "freedom_search/enhancer.py"\` (or any other path shown in the tree) to inspect its code.
-3. **Change Parameters**: Do NOT search for the same pattern or run the same shell command again.
-4. **Output ONE tool call**: Output exactly one valid JSON block. Multiple JSON blocks in a single response are forbidden and cause parser failure.
+Previous tool attempt encountered an error. 
+Do NOT repeat the failing parameters. Analyze the error output above, update your hypothesis, adjust file edits or commands, and proceed.
 `;
                 }
             }
 
             const visionParts: any[] = [];
-            visionParts.push({ type: 'text', text: `${historyContext}${structuralNudge}${repetitionNudge}\n\n${budgetBlock}\n\n**OBJECTIVE:** ${objective}\n\nWhat is your next technical action? Output JSON only.` });
+            visionParts.push({ 
+                type: 'text', 
+                text: `${historyContext}${structuralNudge}${repetitionNudge}\n\n${budgetBlock}\n\n**OBJECTIVE:** ${objective}\n\n**CONDITIONAL LOOP INSTRUCTION**: Follow the engineering loop (Code -> Test -> Debug/Fix -> Verify -> Conclude). What is your next single technical action? Output JSON tool call or Markdown code block.` 
+            });
 
             const ensureDataUri = (data: string) => {
                 if (!data) return "";
@@ -935,7 +983,7 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                 }
             });
 
-            const messages: ChatMessage[] =[
+            const messages: ChatMessage[] = [
                 systemPrompt,
                 ...this.chatHistory,
                 ...extraHistory,
@@ -947,7 +995,7 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
 
             if (lastTask && lastTask.status === 'pending' && (lastTask as any).needsApproval === false) {
                 task = lastTask;
-                this.processManager?.updateDescription(processId, `Genie: Executing approved task...`);
+                this.processManager?.updateDescription(processId, `Agentic Loop: Executing approved task...`);
                 this.ui.updateGeneratingState();
             } else {
                 let fullResponse = "";
@@ -961,14 +1009,14 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                 const cleanResponse = stripThinkingTags(response);
 
                 if (this.currentPlan!.observations && this.currentPlan!.observations.length > 15) {
-                    this.processManager?.updateDescription(processId, `Genie: Compressing memories...`);
+                    this.processManager?.updateDescription(processId, `Agentic Loop: Compressing memory timeline...`);
                     await this.condenseObservations(model || "default", signal);
                 }
 
                 const toolCall = this.planParser.extractJson(cleanResponse);
                 if (!toolCall) {
                     if (cleanResponse.includes('```')) {
-                        this.processManager?.updateDescription(processId, `Genie: Extracting and applying code...`);
+                        this.processManager?.updateDescription(processId, `Agentic Loop: Applying code updates...`);
 
                         const codingTask: Task = {
                             id: stepCount,
@@ -985,7 +1033,7 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                         await (this.ui as any).executeAutomationPipeline(cleanResponse, `agent_step_${stepCount}`, signal, processId);
 
                         codingTask.status = 'completed';
-                        codingTask.result = "Code extracted and applied.";
+                        codingTask.result = "Code extracted and applied to disk.";
                         this.completedActionsHistory.push(`[STEP ${codingTask.id}] COMPLETED: Applied code changes via Markdown Coding Mode.`);
 
                         await this.displayPlan(this.currentPlan);
@@ -993,7 +1041,7 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                     }
 
                     if (cleanResponse.length < 1000) {
-                        this.completedActionsHistory.push(`[CONVERSATIONAL FALLBACK]\n- CONTENT: ${cleanResponse.substring(0, 200)}...`);
+                        this.completedActionsHistory.push(`[CONVERSATIONAL RESPONSE]\n- CONTENT: ${cleanResponse.substring(0, 200)}...`);
                         this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
                         break; 
                     }
@@ -1007,12 +1055,12 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                         this.currentPlan.milestones = action.milestones.map((m: any) => ({ label: m, status: 'pending' }));
                     }
                 } catch (jsonErr: any) {
-                    this.completedActionsHistory.push(`[SYSTEM ERROR] Malformed JSON.`);
+                    this.completedActionsHistory.push(`[SYSTEM ERROR] Malformed JSON response received.`);
                     continue;
                 }
                 
                 if (action.new_remark) {
-                    if (!this.currentPlan.observations) this.currentPlan.observations =[];
+                    if (!this.currentPlan.observations) this.currentPlan.observations = [];
                     this.currentPlan.observations.push(action.new_remark);
                 }
                 if (action.current_sub_goal) {
@@ -1024,7 +1072,7 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                     this.ui.updateAgentMode(false);
                     this.ui.addMessageToDiscussion({
                         role: 'system',
-                        content: `🛑 **Agent Loop Halted:** The AI returned an empty or invalid tool action. Please check your model configuration or connection stability.`
+                        content: `🛑 **Agent Loop Finished:** Empty tool signal received.`
                     });
                     break;
                 }
@@ -1032,7 +1080,7 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                 task = {
                     id: stepCount,
                     task_type: 'simple_action',
-                    description: action.thought || action.new_remark || "Executing tool...",
+                    description: action.thought || action.new_remark || `Executing tool ${action.tool}...`,
                     action: action.tool,
                     parameters: action.params || {},
                     status: 'pending',
@@ -1044,52 +1092,7 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                 await this.displayPlan(this.currentPlan);
             }
 
-            // 5. MODE-AWARE EXECUTION
-            const isBuilder = this.currentDiscussion?.capabilities?.workerType === 'builder';
-
-            if (isBuilder) {
-                const stepId = `builder_step_${task.id}_${Date.now()}`;
-                
-                await this.ui.addMessageToDiscussion({
-                    id: stepId,
-                    role: 'assistant',
-                    content: `🛠️ **Builder running (${task.action}):** *${task.description}*...`,
-                    skipInPrompt: true
-                });
-
-                const res = await this.runSingleTask(task, signal, model);
-                this.completedActionsHistory.push(`[BUILDER ACTION] ${task.action}: ${res.output.substring(0, 100)}...`);
-                
-                if (this.ui.updateMessageContent) {
-                    const statusEmoji = res.success ? '✅' : '❌';
-                    const summaryTitle = res.success ? 'Success' : 'Failure';
-                    
-                    let trimmedOutput = res.output.trim();
-                    if (trimmedOutput.length > 400) {
-                        trimmedOutput = trimmedOutput.substring(0, 400) + '\n... [truncated]';
-                    }
-
-                    const statusReport = `${statusEmoji} **Builder (${task.action}):** *${task.description}* (${summaryTitle})\n\n\`\`\`\n${trimmedOutput || '[No output]'}\n\`\`\``;
-                    await this.ui.updateMessageContent(stepId, statusReport);
-                }
-
-                if (!res.success) {
-                    const isEditAction = ['edit_code', 'generate_code', 'markdown_coding'].includes(task.action);
-                    if (isEditAction) {
-                        const editBudget = config.get<number>('agent.maxEditRetries') || 3;
-                        const currentRetries = this.taskEditRetries.get(task.id) || 0;
-
-                        if (currentRetries < editBudget) {
-                            this.taskEditRetries.set(task.id, currentRetries + 1);
-                            this.completedActionsHistory.push(`[REPAIR ATTEMPT ${currentRetries + 1}] Target: ${task.parameters.file_path || 'unknown'}. Error: ${res.output}`);
-                            this.currentPlan!.tasks.pop(); 
-                            continue; 
-                        }
-                    }
-                }
-                continue; 
-            }
-
+            // Task execution
             const toolPolicies = this.currentDiscussion?.capabilities?.toolPolicies || {};
             const toolDef = this.toolManager.getTool(task.action);
 
@@ -1103,7 +1106,7 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                 (task as any).needsApproval = true;
                 this.ui.addMessageToDiscussion({ 
                     role: 'system', 
-                    content: `🛡️ **Safety Gate:** The Architect wants to use \`${task.action}\`. Please review the parameters in the sidebar and click **Run Task & Continue** to allow this specific action.` 
+                    content: `🛡️ **Safety Approval Required:** The agent proposes to execute \`${task.action}\`. Review parameters in the sidebar and click **Run Task & Continue** to proceed.` 
                 });
                 await this.displayPlan(this.currentPlan);
                 this.isActive = false; 
@@ -1111,38 +1114,17 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                 break; 
             }
 
-            // Expose the intent and details of the tool before running to maximize live transparency
-            await this.ui.addMessageToDiscussion({
-                id: `agent_task_${task.id}`,
-                role: 'assistant',
-                content: `### 🛠️ Step ${task.id}: Executing Tool \`${task.action}\`\n` +
-                         `**Intent:** *${task.description}*\n` +
-                         `**Arguments:**\n\`\`\`json\n${JSON.stringify(task.parameters, null, 2)}\n\`\`\`\n` +
-                         `*Running tool in secure workspace sandbox...*`
-            });
-
-            this.processManager?.updateDescription(processId, `Genie: Executing ${task.action}...`);
-            this.ui.updateGeneratingState();
-
             if (task.action === 'submit_response') {
                 task.status = 'completed';
-                task.result = "Response submitted to chat.";
-                this.completedActionsHistory.push(`[MISSION COMPLETE]\n- ACTION: submit_response\n- RESPONSE: ${task.parameters.response.substring(0, 100)}...`);
+                task.result = "Goal verified and response submitted.";
+                const finalContent = task.parameters.response || task.parameters.message || "Mission completed.";
+                this.completedActionsHistory.push(`[MISSION COMPLETE]\n- ACTION: submit_response\n- RESPONSE: ${finalContent.substring(0, 100)}...`);
                 await this.displayPlan(this.currentPlan);
-
-                const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, task.parameters);
-                if (reflectionPrompt && this.projectMemoryManager) {
-                    const evolutionResponse = await this.lollmsAPI.sendChat([
-                        { role: 'system', content: "You are the Genie's Reflexive Memory. Analyze the success and update Project Memory." },
-                        { role: 'user', content: reflectionPrompt }
-                    ], null, signal, model);
-                    await this.projectMemoryManager.processTags(evolutionResponse);
-                }
 
                 await this.ui.addMessageToDiscussion({
                     id: `agent_final_${Date.now()}`,
                     role: 'assistant',
-                    content: task.parameters.response,
+                    content: finalContent,
                     model: model
                 });
                 break;
@@ -1152,9 +1134,12 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
             (task as any).needsApproval = false; 
             await this.displayPlan(this.currentPlan);
 
+            this.processManager?.updateDescription(processId, `Agentic Loop: Running ${task.action}...`);
+            this.ui.updateGeneratingState();
+
             const resultPromise = this.runSingleTask(task, signal, model);
             const timeoutPromise = new Promise<{success: boolean, output: string}>((_, reject) => 
-                setTimeout(() => reject(new Error("EXECUTION_TIMEOUT")), 905000)
+                setTimeout(() => reject(new Error("EXECUTION_TIMEOUT")), 900000)
             );
 
             let result;
@@ -1165,7 +1150,7 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                     const statusIcon = result.success ? '✅' : '❌';
                     const summaryLabel = result.success ? 'Success' : 'Failure';
                     const outputPreview = result.output.length > 1500 
-                        ? result.output.substring(0, 1500) + "\n\n... [Output truncated for chat readability]" 
+                        ? result.output.substring(0, 1500) + "\n\n... [Output truncated for readability]" 
                         : result.output;
 
                     await this.ui.updateMessageContent(
@@ -1176,58 +1161,25 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
                         `**Observation Output:**\n\`\`\`text\n${outputPreview || '[No output returned]'}\n\`\`\``
                     );
                 }
-
-                const isEditAction = ['edit_code', 'generate_code', 'markdown_coding'].includes(task.action);
-                if (!result.success && isEditAction) {
-                    const editBudget = config.get<number>('agent.maxEditRetries') || 3;
-                    const currentRetries = this.taskEditRetries.get(task.id) || 0;
-
-                    if (currentRetries < editBudget) {
-                        this.taskEditRetries.set(task.id, currentRetries + 1);
-                        this.completedActionsHistory.push(`[REPAIR ATTEMPT ${currentRetries + 1}] Target: ${task.parameters.file_path || 'unknown'}. Error: ${result.output}`);
-
-                        this.currentPlan!.tasks.pop(); 
-                        continue; 
-                    }
-                }
             } catch (e: any) {
                 task.status = 'failed';
-                task.result = e.message === "EXECUTION_TIMEOUT" ? "Hanging Error: The terminal did not return a result within the expected time." : e.message;
+                task.result = e.message === "EXECUTION_TIMEOUT" ? "Execution timeout exceeded." : e.message;
                 await this.displayPlan(this.currentPlan);
                 this.isActive = false;
                 this.ui.updateAgentMode(false);
                 return; 
             }
 
+            // Check token budget ratio
             const currentData = await this.contextManager.getContextContent({ modelName: model, signal });
             const tokenInfo = await this.lollmsApi.tokenize(currentData.text, model);
             const limitInfo = await this.lollmsApi.getContextSize(model);
 
             const usageRatio = tokenInfo.count / limitInfo.context_size;
             if (usageRatio > 0.90) {
-                const pruneWarning = `[SYSTEM WARNING] Context usage is at ${Math.round(usageRatio * 100)}%. Your memory is nearing capacity. 
-
-                STRICT PROTOCOL:
-                1. Review the 'ACTIVE CONTEXT INVENTORY'.
-                2. Identify any files (like mixins, large logs, or already analyzed modules) that are no longer needed for the current step.
-                3. Use 'remove_files' to eject them in this turn to ensure stability.`;
-
+                const pruneWarning = `[SYSTEM WARNING] Context usage is at ${Math.round(usageRatio * 100)}%. Prune unnecessary files with 'remove_files_from_context' or finalize your task now.`;
                 this.completedActionsHistory.push(pruneWarning);
-                this.ui.addMessageToDiscussion({ role: 'system', content: `⚖️ **Context Governor:** Usage at ${Math.round(usageRatio * 100)}%. Nudging Architect to prune context.` });
-            }
-
-            const hasBackgroundTasks = this.sessionState.backgroundProcesses.size > 0;
-            const isMonitoring = task.action === 'wait' || 
-                               task.action === 'read_output_tail' || 
-                               task.action === 'is_process_active';
-
-            if (result.success && (isMonitoring || hasBackgroundTasks) && stepCount > (maxSteps * 0.7)) {
-                const bonus = 15;
-                maxSteps += bonus; 
-                this.ui.addMessageToDiscussion({ 
-                    role: 'system', 
-                    content: `⏳ **Mission Budget Refueled**: Active background processes detected. Turn limit extended by ${bonus} to allow continued monitoring.` 
-                });
+                this.ui.addMessageToDiscussion({ role: 'system', content: `⚖️ **Context Governor:** Context at ${Math.round(usageRatio * 100)}% capacity.` });
             }
 
             if (signal.aborted) break;
@@ -1236,7 +1188,7 @@ Your previous hypothesis is falsified. You are now FORBIDDEN from repeating the 
         if (stepCount >= maxSteps) {
             this.ui.addMessageToDiscussion({ 
                 role: 'system', 
-                content: `⚠️ **Mission Timeout:** Reached maximum steps (${maxSteps}) without a final response.` 
+                content: `⚠️ **Mission Step Budget Reached (${maxSteps} steps).** Autonomous loop concluded.` 
             });
         }
     }

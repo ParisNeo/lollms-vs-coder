@@ -678,6 +678,24 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (dom.capDebugMode) dom.capDebugMode.checked = !!caps.debugMode;
                     if (dom.capMaxDebugSteps) dom.capMaxDebugSteps.value = (caps.maxDebugSteps || 10).toString();
 
+                    const sparqlCheck = document.getElementById('cap-sparqlEnabled') as HTMLInputElement;
+                    if (sparqlCheck) sparqlCheck.checked = caps.sparqlEnabled !== false;
+
+                    const grepCheck = document.getElementById('cap-grepEnabled') as HTMLInputElement;
+                    if (grepCheck) grepCheck.checked = caps.grepEnabled !== false;
+
+                    const projMemCheck = document.getElementById('cap-projectMemoryEnabled') as HTMLInputElement;
+                    if (projMemCheck) projMemCheck.checked = caps.projectMemoryEnabled !== false;
+
+                    const tokenEconCheck = document.getElementById('cap-tokenEconomyMode') as HTMLInputElement;
+                    if (tokenEconCheck) tokenEconCheck.checked = !!caps.tokenEconomyMode;
+
+                    const autoFixCheck = document.getElementById('cap-autoFix') as HTMLInputElement;
+                    if (autoFixCheck) autoFixCheck.checked = caps.autoFix !== false;
+
+                    const autoApplyCheck = document.getElementById('cap-autoApply') as HTMLInputElement;
+                    if (autoApplyCheck) autoApplyCheck.checked = !!caps.autoApply;
+
                     if (dom.activeToolsIndicator) {
                         dom.activeToolsIndicator.innerHTML = '';
                         if (caps.arxivSearch) {
@@ -1210,6 +1228,79 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
+            case 'filesStatusResult': {
+                const { blockId, statuses } = message;
+                if (!statuses) break;
+
+                const blockEl = document.getElementById(blockId) || document.querySelector(`.context-expansion-block[data-block-id='${blockId}']`);
+                const listContainer = document.getElementById(`list-${blockId}`) || blockEl?.querySelector('.expansion-file-list');
+
+                if (listContainer) {
+                    const items = listContainer.querySelectorAll('.expansion-file-item');
+                    let allInContext = true;
+
+                    items.forEach((item: any) => {
+                        const pathSpan = item.querySelector('.file-label') || item.querySelector('span:last-child') || item;
+                        const filePath = item.dataset.path?.trim() || pathSpan?.textContent?.trim();
+                        if (!filePath) return;
+
+                        const status = statuses[filePath];
+                        item.classList.remove('status-in-context', 'status-not-in-context', 'status-not-exist');
+
+                        const icon = item.querySelector('.codicon');
+
+                        if (status === 'in_context') {
+                            item.classList.add('status-in-context');
+                            item.style.color = 'var(--vscode-charts-green, #388e3c)';
+                            item.style.borderColor = 'var(--vscode-charts-green, #388e3c)';
+                            item.style.borderLeft = '4px solid var(--vscode-charts-green, #388e3c)';
+                            item.style.background = 'rgba(15, 157, 88, 0.1)';
+                            if (icon) {
+                                icon.className = 'codicon codicon-check';
+                                icon.style.color = 'var(--vscode-charts-green, #388e3c)';
+                            }
+                        } else if (status === 'not_found') {
+                            allInContext = false;
+                            item.classList.add('status-not-exist');
+                            item.style.color = 'var(--vscode-charts-red, #e53935)';
+                            item.style.borderColor = 'var(--vscode-charts-red, #e53935)';
+                            item.style.borderLeft = '4px solid var(--vscode-charts-red, #e53935)';
+                            item.style.background = 'rgba(244, 71, 71, 0.08)';
+                            if (icon) {
+                                icon.className = 'codicon codicon-error';
+                                icon.style.color = 'var(--vscode-charts-red, #e53935)';
+                            }
+                        } else {
+                            allInContext = false;
+                            item.classList.add('status-not-in-context');
+                            item.style.color = 'var(--vscode-editor-foreground, #000000)';
+                            item.style.borderColor = 'var(--vscode-widget-border)';
+                            item.style.borderLeft = '1px solid var(--vscode-widget-border)';
+                            item.style.background = 'var(--vscode-editor-background)';
+                            if (icon) {
+                                icon.className = 'codicon codicon-file-add';
+                                icon.style.color = 'var(--vscode-editor-foreground, #000000)';
+                            }
+                        }
+                    });
+
+                    if (blockEl) {
+                        const addBtn = blockEl.querySelector('.add-btn') as HTMLButtonElement;
+                        if (addBtn) {
+                            if (allInContext && items.length > 0) {
+                                addBtn.innerHTML = '<span class="codicon codicon-check"></span> Added to Context';
+                                addBtn.className = 'code-action-btn applied add-btn';
+                                addBtn.disabled = true;
+                            } else {
+                                addBtn.innerHTML = '<span class="codicon codicon-add"></span> Add all to Context';
+                                addBtn.className = 'code-action-btn apply-btn add-btn';
+                                addBtn.disabled = false;
+                            }
+                        }
+                    }
+                }
+                break;
+            }
             case 'filesAddedToContext': {
                 const { results, blockId } = message;
 
@@ -1260,7 +1351,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                     btn.classList.remove('loading');
                 });
-                
+
                 // 4. Update the individual file rows
                 const listContainer = document.getElementById(`list-${blockId}`) || 
                                       buttons[0]?.closest('.context-expansion-block')?.querySelector('.expansion-file-list');
@@ -1270,21 +1361,26 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         const pathSpan = item.querySelector('span:last-child');
                         const path = pathSpan?.textContent?.trim();
                         if (path && results[path] === true) {
-                            item.style.borderColor = 'var(--vscode-charts-green)';
+                            item.classList.remove('status-not-in-context', 'status-not-exist');
+                            item.classList.add('status-in-context');
+                            item.style.color = 'var(--vscode-charts-green, #388e3c)';
+                            item.style.borderColor = 'var(--vscode-charts-green, #388e3c)';
                             item.style.background = 'rgba(15, 157, 88, 0.1)';
                             const icon = item.querySelector('.codicon');
                             if (icon) {
-                                icon.classList.remove('codicon-file-add');
-                                icon.classList.add('codicon-check');
-                                icon.style.color = 'var(--vscode-charts-green)';
+                                icon.className = 'codicon codicon-check';
+                                icon.style.color = 'var(--vscode-charts-green, #388e3c)';
                             }
                         } else if (path && results[path] === false) {
-                            item.style.borderColor = 'var(--vscode-charts-red)';
+                            item.classList.remove('status-in-context', 'status-not-in-context');
+                            item.classList.add('status-not-exist');
+                            item.style.color = 'var(--vscode-charts-red, #e53935)';
+                            item.style.borderColor = 'var(--vscode-charts-red, #e53935)';
+                            item.style.background = 'rgba(244, 71, 71, 0.08)';
                             const icon = item.querySelector('.codicon');
                             if (icon) {
-                                icon.classList.remove('codicon-file-add');
-                                icon.classList.add('codicon-error');
-                                icon.style.color = 'var(--vscode-charts-red)';
+                                icon.className = 'codicon codicon-error';
+                                icon.style.color = 'var(--vscode-charts-red, #e53935)';
                             }
                         }
                     });

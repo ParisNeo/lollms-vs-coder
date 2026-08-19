@@ -22,21 +22,37 @@ export const readFilesTool: ToolDefinition = {
         const addedToContext: string[] = [];
         const errors: string[] = [];
 
+        const docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.ipynb']);
+        const binaryExtensions = new Set(['.exe', '.dll', '.so', '.dylib', '.bin', '.pkl', '.onnx', '.pt', '.pth', '.pyc']);
+
         for (const filePath of params.paths) {
             if (signal.aborted) break;
-            
+
             try {
                 let cleanPath = filePath.trim();
                 if (cleanPath.startsWith('/') || cleanPath.startsWith('\\')) cleanPath = cleanPath.substring(1);
 
+                const ext = path.extname(cleanPath).toLowerCase();
+
+                if (binaryExtensions.has(ext)) {
+                    results.push(`\`\`\`plaintext:${cleanPath} (Binary Excluded)\n(Binary file cannot be read as text)\n\`\`\``);
+                    continue;
+                }
+
                 const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, cleanPath);
                 const fileContent = await vscode.workspace.fs.readFile(fileUri);
-                const text = Buffer.from(fileContent).toString('utf8');
 
-                // Determine language for the block
-                const ext = filePath.split('.').pop() || 'txt';
-                results.push(`\`\`\`${ext}:${filePath}\n${text}\n\`\`\``);
-                addedToContext.push(filePath);
+                let text = "";
+                if (docExtensions.has(ext)) {
+                    text = await env.contextManager.processFile(cleanPath, Buffer.from(fileContent).toString('base64'));
+                } else {
+                    text = Buffer.from(fileContent).toString('utf8');
+                }
+
+                const lang = ext ? ext.substring(1) : 'txt';
+                const label = docExtensions.has(ext) ? `${cleanPath} (Extracted Text - Read-Only)` : cleanPath;
+                results.push(`\`\`\`${lang}:${label}\n${text}\n\`\`\``);
+                addedToContext.push(cleanPath);
             } catch (error: any) {
                 errors.push(`Failed to read ${filePath}: ${error.message}`);
             }

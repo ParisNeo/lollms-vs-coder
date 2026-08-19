@@ -28,17 +28,32 @@ export const readFileTool: ToolDefinition = {
         while (retries > 0) {
             try {
                 const fileContent = await vscode.workspace.fs.readFile(fileUri);
-                
+                const ext = path.extname(filePath).toLowerCase();
+
                 if (env.contextManager.getContextStateProvider()) {
                     await env.contextManager.getContextStateProvider()!.addFilesToContext([filePath]);
                 }
 
-                return { success: true, output: Buffer.from(fileContent).toString('utf8') };
+                let outputText = "";
+                const docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.ipynb']);
+                const binaryExtensions = new Set(['.exe', '.dll', '.so', '.dylib', '.bin', '.pkl', '.onnx', '.pt', '.pth', '.pyc']);
+
+                if (binaryExtensions.has(ext)) {
+                    return { success: false, output: `Error: File '${filePath}' is a binary artifact and cannot be read as text.` };
+                }
+
+                if (docExtensions.has(ext)) {
+                    outputText = await env.contextManager.processFile(filePath, Buffer.from(fileContent).toString('base64'));
+                } else {
+                    outputText = Buffer.from(fileContent).toString('utf8');
+                }
+
+                return { success: true, output: outputText };
             } catch (error: any) {
                 lastError = error.message;
                 retries--;
                 if (retries > 0) {
-                    await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s for FS
+                    await new Promise(resolve => setTimeout(resolve, 1000));
                 }
             }
         }

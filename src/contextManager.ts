@@ -36,13 +36,13 @@ export class ContextManager {
   private context: vscode.ExtensionContext;
   private lollmsAPI: LollmsAPI;
   public agentManager?: any; // Set dynamically from chatPanel
-  private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']);
-  private docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.msg']);
+  private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg']);
+  private docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.csv', '.tsv']);
   private binaryExtensions = new Set([
     '.pth', '.pt', '.onnx', '.tflite', '.pb', '.h5', '.hdf5', '.pkl', '.bin',
     '.exe', '.dll', '.so', '.dylib', '.class', '.jar', '.war', '.ear',
     '.zip', '.tar', '.gz', '.7z', '.rar', '.iso', '.img', '.db', '.sqlite', '.sqlite3',
-    '.pyc', '.pyo', '.pyd', '.pth', '.pt', '.pkl', '.pickle'
+    '.pyc', '.pyo', '.pyd', '.pickle', '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.mp4', '.avi', '.mov', '.wav'
   ]);
 
   private extensionToLanguageMap: { [key: string]: string } = {
@@ -73,6 +73,7 @@ export class ContextManager {
 
   // --- GLOBAL CACHE STATE ---
   private _cachedTreeString: string | null = null;
+  private _cachedProjectTreeMap = new Map<string, string>();
   private _isTreeDirty: boolean = true;
   private _fileTreeObject: any = null;
   private _fileContentCache!: Map<string, { content: string, mtime: number, size: number, state: ContextState }>;
@@ -119,6 +120,8 @@ export class ContextManager {
       }
     }
     this._cachedTreeString = null;
+    this._cachedProjectTreeMap.clear();
+    this._cachedIsolatedTrees.clear();
     this._isTreeDirty = false;
   }
 
@@ -126,6 +129,7 @@ export class ContextManager {
     this._isTreeDirty = true;
     this._fileTreeObject = null;
     this._cachedTreeString = null;
+    this._cachedProjectTreeMap.clear();
     this._cachedVisibleFiles = null;
     this._cachedIsolatedTrees.clear();
   }
@@ -149,6 +153,7 @@ export class ContextManager {
 
   public clearAllCaches() {
     this._cachedTreeString = null;
+    this._cachedProjectTreeMap.clear();
     this._isTreeDirty = true;
     this._fileContentCache?.clear();
     this._cachedIsolatedTrees.clear();
@@ -194,8 +199,10 @@ export class ContextManager {
 
   public async resolveWorkspaceFromPath(namespacedPath: string): Promise<{ folder: vscode.WorkspaceFolder | undefined, relativePath: string, uri: vscode.Uri } | null> {
     const folders = vscode.workspace.workspaceFolders || [];
-    const normalized = namespacedPath.replace(/\\/g, '/').trim();
-    const segments = normalized.split('/');
+    if (folders.length === 0) return null;
+
+    let normalized = namespacedPath.replace(/\\/g, '/').trim();
+    normalized = normalized.replace(/^\.?\/+/, '');
 
     // 1. Path Traversal Blocking
     if (normalized.includes('../') || normalized.includes('..\\')) {
@@ -203,36 +210,85 @@ export class ContextManager {
       return null;
     }
 
-    let resolvedPath = normalized;
-    if (!path.isAbsolute(resolvedPath)) {
-      // Check if the first segment matches an open workspace folder (case-insensitive)
-      const projectFolder = folders.length > 1
-        ? folders.find(f => f.name.toLowerCase() === segments[0].toLowerCase())
-        : undefined;
-      if (projectFolder && segments.length > 1) {
-        resolvedPath = path.resolve(projectFolder.uri.fsPath, segments.slice(1).join('/'));
-      } else {
-        const base = folders[0]?.uri.fsPath || "";
-        resolvedPath = path.resolve(base, resolvedPath);
+    const isWindows = process.platform === 'win32';
+    const arePathsEqual = (p1: string, p2: string) => {
+      const n1 = path.normalize(p1);
+      const n2 = path.normalize(p2);
+      return isWindows ? n1.toLowerCase() === n2.toLowerCase() : n1 === n2;
+    };
+
+    const isSubPathOf = (parent: string, child: string) => {
+      const p = path.normalize(parent);
+      const c = path.normalize(child);
+      if (arePathsEqual(p, c)) return true;
+      const pWithSep = p.endsWith(path.sep) ? p : p + path.sep;
+      return isWindows 
+        ? c.toLowerCase().startsWith(pWithSep.toLowerCase()) 
+        : c.startsWith(pWithSep);
+    };
+
+    // Case A: Absolute Path
+    if (path.isAbsolute(normalized)) {
+      const resolved = path.resolve(normalized);
+      const owner = folders.find(f => isSubPathOf(f.uri.fsPath, resolved));
+      if (owner) {
+        const relativePath = path.relative(owner.uri.fsPath, resolved).replace(/\\/g, '/');
+        return { folder: owner, relativePath, uri: vscode.Uri.file(resolved) };
       }
-    } else {
-      resolvedPath = path.resolve(resolvedPath);
-    }
-
-    // 2. Strict Boundary Check: Verify resolved path resides inside an open workspace folder
-    const ownerFolder = folders.find(folder => {
-      const folderPath = path.resolve(folder.uri.fsPath);
-      return resolvedPath.startsWith(folderPath + path.sep) || resolvedPath === folderPath;
-    });
-
-    if (!ownerFolder) {
-      Logger.warn(`Blocked out-of-bounds path resolution: ${namespacedPath}`);
       return null;
     }
 
-    const relativePath = path.relative(ownerFolder.uri.fsPath, resolvedPath).replace(/\\/g, '/');
-    const uri = vscode.Uri.file(resolvedPath);
-    return { folder: ownerFolder, relativePath, uri };
+    // Case B: Direct Relative Path Check Across Workspace Folders (Priority 1)
+    // Check if `normalized` exists directly under any workspace folder without stripping segments.
+    for (const folder of folders) {
+      const candidate = path.resolve(folder.uri.fsPath, normalized);
+      if (isSubPathOf(folder.uri.fsPath, candidate)) {
+        try {
+          const stat = await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
+          if (stat) {
+            const relativePath = path.relative(folder.uri.fsPath, candidate).replace(/\\/g, '/');
+            return { folder, relativePath, uri: vscode.Uri.file(candidate) };
+          }
+        } catch {}
+      }
+    }
+
+    const segments = normalized.split('/');
+
+    // Case C: Namespaced Prefix Check (Priority 2: e.g. "ProjectName/src/main.ts" when "ProjectName" is the workspace folder name)
+    const matchedFolder = folders.find(f => 
+      f.name.toLowerCase() === segments[0].toLowerCase()
+    );
+
+    if (matchedFolder && segments.length > 1) {
+      const subPath = segments.slice(1).join('/');
+      const resolved = path.resolve(matchedFolder.uri.fsPath, subPath);
+      if (isSubPathOf(matchedFolder.uri.fsPath, resolved)) {
+        try {
+          const stat = await vscode.workspace.fs.stat(vscode.Uri.file(resolved));
+          if (stat) {
+            const relativePath = path.relative(matchedFolder.uri.fsPath, resolved).replace(/\\/g, '/');
+            return { folder: matchedFolder, relativePath, uri: vscode.Uri.file(resolved) };
+          }
+        } catch {}
+
+        // Fallback for new file creation in multi-root workspaces
+        if (folders.length > 1) {
+          const relativePath = path.relative(matchedFolder.uri.fsPath, resolved).replace(/\\/g, '/');
+          return { folder: matchedFolder, relativePath, uri: vscode.Uri.file(resolved) };
+        }
+      }
+    }
+
+    // Fallback: Default to folders[0]
+    const defaultFolder = folders[0];
+    const defaultResolved = path.resolve(defaultFolder.uri.fsPath, normalized);
+    if (isSubPathOf(defaultFolder.uri.fsPath, defaultResolved)) {
+      const relativePath = path.relative(defaultFolder.uri.fsPath, defaultResolved).replace(/\\/g, '/');
+      return { folder: defaultFolder, relativePath, uri: vscode.Uri.file(defaultResolved) };
+    }
+
+    return null;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -245,7 +301,10 @@ export class ContextManager {
       capabilities?: any,
       onScanProgress?: (pct: number, status: string) => void
   ): Promise<string> {
-      const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}`;
+      const includedFiles = this.contextStateProvider ? this.contextStateProvider.getIncludedFiles() : [];
+      const includedHash = includedFiles.map(f => `${f.path}:${f.state}`).join('|');
+      const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}-${includedHash}`;
+
       if (this._cachedIsolatedTrees.has(cacheKey) && !this._isTreeDirty) {
           return this._cachedIsolatedTrees.get(cacheKey)!;
       }
@@ -321,7 +380,7 @@ export class ContextManager {
 
       let treeString = '```text\n';
       const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-      const depthLimit = config.get<number>('contextMaxDepth') || config.get<number>('context.maxDepth') || 8;
+      const depthLimit = config.get<number>('contextMaxDepth') ?? 2;
 
       const render = (obj: any, prefix: string = '', currentLocalPath: string = '', depth: number = 0): string => {
         if (!obj || typeof obj !== 'object') return '';
@@ -334,10 +393,6 @@ export class ContextManager {
           return a.localeCompare(b);
         });
 
-        if (depth >= depthLimit) {
-            return prefix + '└── ... (deep hierarchy truncated to save tokens)\n';
-        }
-
         keys.forEach((key, index) => {
           const isLast = index === keys.length - 1;
           const connector = isLast ? '└── ' : '├── ';
@@ -349,21 +404,30 @@ export class ContextManager {
           let suffix = "";
           let isCollapsed = false;
 
-          if (state === 'collapsed') {
-            isCollapsed = true;
-            suffix = " (Collapsed)";
-          } else if (state === 'included') {
-            suffix = " [C]";
-          } else if (state === 'definitions-only') {
-            suffix = " [D]";
+          if (isDirectory) {
+            if (state === 'collapsed') {
+              isCollapsed = true;
+              suffix = " (Collapsed)";
+            }
+          } else {
+            if (state === 'included') {
+              suffix = " [C]";
+            } else if (state === 'definitions-only') {
+              suffix = " [D]";
+            }
           }
 
           out += prefix + connector + key + (isDirectory ? '/' : '') + (suffix ? ` ${suffix}` : '') + '\n';
 
           if (isDirectory && !isCollapsed) {
-            out += render(obj[key], prefix + (isLast ? '    ' : '│   '), localPath, depth + 1);
-          } else if (isDirectory && isCollapsed) {
-            out += prefix + (isLast ? '    ' : '│   ') + '└── ⚠️[COLLAPSED: Use add_files if you need contents]\n';
+            const hasActiveChild = includedFiles.some(f => {
+              const normalizedF = f.path.replace(/\\/g, '/');
+              return normalizedF === localPath || normalizedF.startsWith(localPath + '/') || normalizedF.endsWith('/' + localPath) || normalizedF.includes('/' + localPath + '/');
+            });
+
+            if (depth < depthLimit || hasActiveChild) {
+              out += render(obj[key], prefix + (isLast ? '    ' : '│   '), localPath, depth + 1);
+            }
           }
         });
         return out;
@@ -403,6 +467,12 @@ export class ContextManager {
       }
 
       const contextFiles = this.contextStateProvider.getIncludedFiles();
+      const filesHash = contextFiles.map(f => `${f.path}:${f.state}`).join('|');
+      const projectTreeCacheKey = `${folders.map(f => f.uri.toString()).join(',')}-${JSON.stringify(folderSettings)}-${filesHash}`;
+
+      if (this._cachedProjectTreeMap.has(projectTreeCacheKey) && !this._isTreeDirty) {
+        return this._cachedProjectTreeMap.get(projectTreeCacheKey)!;
+      }
 
       if (this._isTreeDirty || !this._fileTreeObject) {
         if (onProgress) onProgress(10);
@@ -477,7 +547,8 @@ export class ContextManager {
 
       let treeString = '## 🌳 PROJECT STRUCTURE\n\n```text\n';
       const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-      const depthLimit = config.get<number>('contextMaxDepth') || config.get<number>('context.maxDepth') || 8;
+      const depthLimit = config.get<number>('contextMaxDepth') ?? 2;
+      const includedFiles = this.contextStateProvider ? this.contextStateProvider.getIncludedFiles() : [];
 
       const render = (obj: any, prefix: string = '', currentPath: string = '', rootFolder?: vscode.WorkspaceFolder, depth: number = 0): string => {
         if (!obj || typeof obj !== 'object') return '';
@@ -489,10 +560,6 @@ export class ContextManager {
           if (!aIsDir && bIsDir) return 1;
           return a.localeCompare(b);
         });
-
-        if (depth >= depthLimit) {
-            return prefix + '└── ... (deep hierarchy truncated)\n';
-        }
 
         keys.forEach((key, index) => {
           const isLast = index === keys.length - 1;
@@ -520,17 +587,25 @@ export class ContextManager {
             const uri = vscode.Uri.joinPath(activeRoot.uri, subPath || '.');
             const state = this.contextStateProvider.getStateForUri(uri);
             if (state === 'fully-excluded') return;
-            if (state === 'collapsed') { isCollapsed = true; suffix = " (Collapsed)"; }
-            else if (state === 'included') suffix = " [C]";
-            else if (state === 'definitions-only') suffix = " [D]";
+            if (isDirectory) {
+              if (state === 'collapsed') { isCollapsed = true; suffix = " (Collapsed)"; }
+            } else {
+              if (state === 'included') suffix = " [C]";
+              else if (state === 'definitions-only') suffix = " [D]";
+            }
           }
 
           out += prefix + connector + key + (isDirectory ? '/' : '') + (suffix ? ` ${suffix}` : '') + '\n';
 
           if (isDirectory && !isCollapsed) {
-            out += render(obj[key], prefix + (isLast ? '    ' : '│   '), subPath || key, activeRoot, depth + 1);
-          } else if (isDirectory && isCollapsed) {
-            out += prefix + (isLast ? '    ' : '│   ') + '└── ... (contents truncated)\n';
+            const hasActiveChild = includedFiles.some(f => {
+              const normalizedF = f.path.replace(/\\/g, '/');
+              return normalizedF === subPath || normalizedF.startsWith(subPath + '/') || normalizedF.endsWith('/' + subPath) || normalizedF.includes('/' + subPath + '/');
+            });
+
+            if (depth < depthLimit || hasActiveChild) {
+              out += render(obj[key], prefix + (isLast ? '    ' : '│   '), subPath || key, activeRoot, depth + 1);
+            }
           }
         });
         return out;
@@ -538,6 +613,10 @@ export class ContextManager {
 
       treeString += render(this._fileTreeObject);
       treeString += '```\n';
+
+      if (!signal?.aborted) {
+        this._cachedProjectTreeMap.set(projectTreeCacheKey, treeString);
+      }
       return treeString;
   }
 
@@ -798,43 +877,38 @@ export class ContextManager {
 
         const headerPath = activeFolders.length > 1 ? `${folder.name}/${relativePath}` : relativePath;
 
-        if (this.contextStateProvider.isStrictlyIgnored(fileUri)) continue;
-
         try {
           const languageId = this.getLanguageId(relativePath);
           const ext = path.extname(relativePath).toLowerCase();
           const cacheKey = headerPath;
 
+          // Stat check to ensure file exists and verify cache validity against disk metadata
+          const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
+          if (!stat || stat.type !== vscode.FileType.File) continue;
+
           const cached = this._fileContentCache.get(cacheKey);
 
-          // REACTIVE CACHE VERIFICATION:
-          // Because VS Code's filesystem watcher instantly invalidates our cache when files
-          // are modified, we can trust the cache 100% without blocking on physical disk I/O.
-          if (cached && cached.state === contextState) {
-              // --- CACHE CORRUPTION GUARD ---
-              if (cached.content && cached.content.trim() !== "") {
-                  projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${cached.content}\n\`\`\`\n\n`;
+          // Cache verification: ensure cache matches current disk mtime and size, and is not falsely empty
+          if (cached && cached.state === contextState && cached.mtime === stat.mtime && cached.size === stat.size) {
+              if (cached.content !== undefined && (cached.content.length > 0 || stat.size === 0)) {
+                  const formatted = cached.content.endsWith('\n') ? cached.content : cached.content + '\n';
+                  projectContentBuffer += `<file path="${headerPath}">\n${formatted}</file>\n\n`;
                   filesInThisFolderCount++;
                   continue;
               } else {
                   this._fileContentCache.delete(cacheKey);
-                  Logger.warn(`[Cache Guard] Cleared corrupted empty cache entry for: ${cacheKey}`);
               }
           }
 
-          // If not cached, we perform a single asynchronous metadata check to populate our cache.
-          const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
-          if (!stat || stat.type !== vscode.FileType.File) continue;
-
           if (this.binaryExtensions.has(ext)) {
-            projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n(Binary file content excluded)\n\`\`\`\n\n`;
+            projectContentBuffer += `<file path="${headerPath}">\n(Binary file content excluded)\n</file>\n\n`;
             filesInThisFolderCount++;
             continue;
           }
 
           if (contextState === 'definitions-only') {
             const definitions = await this.extractDefinitions(fileUri);
-            projectContentBuffer += `\`\`\`${languageId}:${headerPath} (Definitions Only)\n${definitions}\n\`\`\`\n\n`;
+            projectContentBuffer += `<file path="${headerPath}" mode="definitions-only">\n${definitions}\n</file>\n\n`;
             filesInThisFolderCount++;
             continue;
           }
@@ -893,9 +967,8 @@ export class ContextManager {
             }
           }
 
-          if (fileContent.length < 200000) { // Lower limit for caching individual files to 200KB
-            // --- LRU CACHE EVICTION ---
-            if (this._fileContentCache.size >= 100) { // Expanded size to fit more files in large projects
+          if (fileContent.length < 200000) { // Cache files under 200KB
+            if (this._fileContentCache.size >= 100) {
               const oldestKey = this._fileContentCache.keys().next().value;
               if (oldestKey !== undefined) {
                 this._fileContentCache.delete(oldestKey);
@@ -909,9 +982,8 @@ export class ContextManager {
             });
           }
 
-          // Ensure fileContent ends with a newline before appending the closing fence to avoid layout issues
           const formattedContent = fileContent.endsWith('\n') ? fileContent : fileContent + '\n';
-          projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${formattedContent}\`\`\`\n\n`;
+          projectContentBuffer += `<file path="${headerPath}">\n${formattedContent}</file>\n\n`;
           filesInThisFolderCount++;
 
         } catch (error) {
@@ -925,11 +997,11 @@ export class ContextManager {
         result.selectedFilesContent += projectContentBuffer;
       }
     }
+  }
 
-    this._lastContext = result;
-    return result;
-  }
-  }
+  this._lastContext = result;
+  return result;
+}
   // ─────────────────────────────────────────────────────────────
   // FILE OPERATIONS
   // ─────────────────────────────────────────────────────────────
@@ -991,44 +1063,44 @@ export class ContextManager {
     let content = '';
     for (const filePath of filePaths) {
       try {
-        let fullPath: vscode.Uri | undefined;
-        const normalizedPath = filePath.replace(/\\/g, '/');
-        const segments = normalizedPath.split('/');
+        const resolution = await this.resolveWorkspaceFromPath(filePath);
+        if (!resolution) continue;
 
-        for (const folder of folders) {
-          const uriDirect = vscode.Uri.joinPath(folder.uri, normalizedPath);
-          const uriStripped = (segments[0] === folder.name && segments.length > 1)
-            ? vscode.Uri.joinPath(folder.uri, segments.slice(1).join('/'))
-            : null;
-
-          try {
-            await vscode.workspace.fs.stat(uriDirect);
-            fullPath = uriDirect; break;
-          } catch {
-            if (uriStripped) {
-              try { await vscode.workspace.fs.stat(uriStripped); fullPath = uriStripped; break; } catch {}
-            }
-          }
-        }
-
-        if (!fullPath) continue;
-        const stat = await vscode.workspace.fs.stat(fullPath);
-        if (stat.type !== vscode.FileType.File) continue;
+        const fullPath = resolution.uri;
+        const stat = await vscode.workspace.fs.stat(fullPath).catch(() => null);
+        if (!stat || stat.type !== vscode.FileType.File) continue;
 
         const ext = path.extname(filePath).toLowerCase();
-        if (this.binaryExtensions.has(ext)) continue;
+        if (this.binaryExtensions.has(ext)) {
+          content += `\`\`\`plaintext:${filePath} (Binary Excluded)\n(Binary content detected in ${filePath} and excluded from text context)\n\`\`\`\n\n`;
+          continue;
+        }
 
         let text = '';
         const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fullPath.toString());
-        if (openDoc) {
+        if (openDoc && !this.docExtensions.has(ext) && !this.imageExtensions.has(ext)) {
           text = openDoc.getText();
         } else {
           const fileBytes = await vscode.workspace.fs.readFile(fullPath);
           const buffer = Buffer.from(fileBytes);
-          if (this.isBinary(buffer)) continue;
-          text = buffer.toString('utf8');
+
+          if (this.docExtensions.has(ext)) {
+            text = await this.processFile(filePath, buffer.toString('base64'));
+          } else if (this.imageExtensions.has(ext)) {
+            text = `[Image file: ${filePath}]`;
+          } else if (ext === '.ipynb') {
+            text = await this.processFile(filePath, buffer.toString('base64'));
+          } else {
+            if (this.isBinary(buffer)) {
+              content += `\`\`\`plaintext:${filePath} (Binary Excluded)\n(Binary content detected in ${filePath} and excluded from text context)\n\`\`\`\n\n`;
+              continue;
+            }
+            text = buffer.toString('utf8');
+          }
         }
-        content += `\`\`\`${this.getLanguageId(filePath)}:${filePath}\n${text}\n\`\`\`\n\n`;
+        const formatted = text.endsWith('\n') ? text : text + '\n';
+        const modeAttr = this.docExtensions.has(ext) ? ' mode="read-only-doc"' : '';
+        content += `<file path="${filePath}"${modeAttr}>\n${formatted}</file>\n\n`;
       } catch (error) {}
     }
     return content;
@@ -1043,56 +1115,98 @@ export class ContextManager {
     const ext = path.extname(fileName).toLowerCase();
     const buffer = Buffer.from(base64Data, 'base64');
 
-    if (this.binaryExtensions.has(ext)) return `(Binary file ${fileName} content excluded)`;
+    if (this.binaryExtensions.has(ext)) {
+      return `(Binary file ${fileName} content excluded from text context)`;
+    }
 
-    if (ext === '.pdf' || this.docExtensions.has(ext)) {
+    // 1. Spreadsheet (.xlsx, .xls) Parsing into Markdown tables
+    if (ext === '.xlsx' || ext === '.xls') {
+      try {
+        const text = await this.parseExcelLocal(buffer);
+        if (text && !text.startsWith('[Local Excel Parse Failed')) {
+          return `# 📊 SPREADSHEET: ${fileName} (READ-ONLY EXTRACTED DATA)\n\n${text}`;
+        }
+        const apiText = await this.lollmsAPI.extractText(base64Data, fileName);
+        return `# 📊 SPREADSHEET: ${fileName} (READ-ONLY EXTRACTED DATA)\n\n${apiText}`;
+      } catch (e: any) {
+        return await this.parseExcelLocal(buffer);
+      }
+    }
+
+    // 2. PDF Document Parsing
+    if (ext === '.pdf') {
       try {
         let text = "";
-        if (ext === '.pdf') {
-          try { text = await this.lollmsAPI.extractText(base64Data, fileName); }
-          catch (e) { text = await this.parsePdfLocal(buffer); }
-        } else {
+        try {
           text = await this.lollmsAPI.extractText(base64Data, fileName);
+        } catch {
+          text = await this.parsePdfLocal(buffer);
+        }
+        if (!text || text.trim().length === 0) {
+          text = await this.parsePdfLocal(buffer);
         }
 
         if (text.length > 100 && (text.includes('\t') || text.match(/\n\s*\|/))) {
-            Logger.info(`[Context] PDF structure detected. Running Markdown conversion pass for ${fileName}...`);
+          Logger.info(`[Context] PDF structure detected. Running Markdown conversion pass for ${fileName}...`);
+          const conversionPrompt = `You are a Document Structuring Expert. 
+I have extracted raw text from a PDF: ${fileName}. 
+The text contains data that lost its layout during extraction.
 
-            const conversionPrompt = `You are a Document Structuring Expert. 
-    I have extracted raw text from a PDF: ${fileName}. 
-    The text contains data that lost its layout during extraction.
+**TASK:**
+- Convert the provided raw text into clean, valid Markdown.
+- **TABLES**: Identify data rows and columns and recreate them as standard Markdown tables.
+- **HEADERS**: Detect section titles and apply #, ##, ### markers.
+- **CLEANUP**: Remove page numbers, running headers/footers, and extraction artifacts.
 
-    **TASK:**
-    - Convert the provided raw text into beautiful, valid Markdown.
-    - **TABLES**: Identify data rows and columns and recreate them as standard Markdown tables.
-    - **HEADERS**: Detect section titles and apply #, ##, ### markers.
-    - **CLEANUP**: Remove page numbers, running headers/footers, and extraction artifacts.
+**RAW TEXT:**
+${text.substring(0, 10000)}`;
 
-    **RAW TEXT:**
-    ${text.substring(0, 10000)}`;
-
-            try {
-                const model = this.lollmsAPI.getModelName();
-                const structured = await this.lollmsAPI.sendChat([
-                    { role: 'system', content: "You are a markdown formatting expert. Output only the structured markdown." },
-                    { role: 'user', content: conversionPrompt }
-                ], null, undefined, model);
-                return stripThinkingTags(structured).trim();
-            } catch (e) {
-                Logger.warn("PDF structural conversion failed, falling back to raw text.");
-                return text;
-            }
+          try {
+            const model = this.lollmsAPI.getModelName();
+            const structured = await this.lollmsAPI.sendChat([
+              { role: 'system', content: "You are a markdown formatting expert. Output only the structured markdown." },
+              { role: 'user', content: conversionPrompt }
+            ], null, undefined, model);
+            return `# 📄 PDF DOCUMENT: ${fileName} (READ-ONLY EXTRACTED TEXT)\n\n${stripThinkingTags(structured).trim()}`;
+          } catch {
+            return `# 📄 PDF DOCUMENT: ${fileName} (READ-ONLY EXTRACTED TEXT)\n\n${text}`;
+          }
         }
-        return text;
-
-      } catch (apiError: any) {
-        if (ext === '.docx') return await this.parseDocxLocal(buffer);
-        return `⚠️ **Error processing document:** ${(apiError as Error).message}`;
+        return `# 📄 PDF DOCUMENT: ${fileName} (READ-ONLY EXTRACTED TEXT)\n\n${text}`;
+      } catch (e: any) {
+        return `# 📄 PDF DOCUMENT: ${fileName} (READ-ONLY EXTRACTED TEXT)\n\n${await this.parsePdfLocal(buffer)}`;
       }
-    } else if (ext === '.ipynb') {
+    }
+
+    // 3. Word Document (.docx, .odt, .rtf) Parsing
+    if (ext === '.docx' || ext === '.odt' || ext === '.rtf') {
+      try {
+        const text = await this.parseDocxLocal(buffer);
+        if (text && text.trim().length > 0) {
+          return `# 📄 WORD DOCUMENT: ${fileName} (READ-ONLY EXTRACTED TEXT)\n\n${text}`;
+        }
+        const apiText = await this.lollmsAPI.extractText(base64Data, fileName);
+        return `# 📄 WORD DOCUMENT: ${fileName} (READ-ONLY EXTRACTED TEXT)\n\n${apiText}`;
+      } catch {
+        return `# 📄 WORD DOCUMENT: ${fileName} (READ-ONLY EXTRACTED TEXT)\n\n${await this.parseDocxLocal(buffer)}`;
+      }
+    }
+
+    // 4. Presentations (.pptx) and Messages (.msg)
+    if (ext === '.pptx' || ext === '.msg') {
+      try {
+        const text = await this.lollmsAPI.extractText(base64Data, fileName);
+        return `# 📄 PRESENTATION/MESSAGE: ${fileName} (READ-ONLY EXTRACTED TEXT)\n\n${text}`;
+      } catch (e: any) {
+        return `⚠️ **Document Text (${fileName}):** Content extraction failed: ${e.message}`;
+      }
+    }
+
+    // 5. Jupyter Notebooks (.ipynb)
+    if (ext === '.ipynb') {
       try {
         const notebookJson = JSON.parse(buffer.toString('utf8'));
-        let fileContent = '';
+        let fileContent = `# 📓 JUPYTER NOTEBOOK: ${fileName}\n\n`;
         if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
           notebookJson.cells.forEach((cell: any, index: number) => {
             const source = Array.isArray(cell.source) ? cell.source.join('') : '';
@@ -1102,20 +1216,81 @@ export class ContextManager {
         }
         return fileContent;
       } catch (e: any) { return `⚠️ **Error parsing Jupyter Notebook:** ${e.message}`; }
-    } else {
-      if (this.isBinary(buffer)) return `(Binary content detected in ${fileName} and excluded)`;
-      return buffer.toString('utf8');
     }
+
+    // 6. Generic Text / Binary Fallback
+    if (this.isBinary(buffer)) {
+      return `(Binary content detected in ${fileName} and excluded from text context)`;
+    }
+    return buffer.toString('utf8');
   }
 
   private async parsePdfLocal(buffer: Buffer): Promise<string> {
-    try { const data = await pdfParse(buffer); return data.text; }
-    catch (e) { return `[Local PDF Parse Failed: ${e}]`; }
+    try {
+      const data = await pdfParse(buffer);
+      return data.text || '(No text extracted from PDF)';
+    } catch (e: any) {
+      return `[Local PDF Parse Failed: ${e.message}]`;
+    }
   }
 
   private async parseDocxLocal(buffer: Buffer): Promise<string> {
-    try { const result = await mammoth.extractRawText({ buffer }); return result.value; }
-    catch (e) { return `[Local DOCX Parse Failed: ${e}]`; }
+    try {
+      const result = await mammoth.extractRawText({ buffer });
+      return result.value || '(No text extracted from document)';
+    } catch (e: any) {
+      return `[Local DOCX Parse Failed: ${e.message}]`;
+    }
+  }
+
+  private async parseExcelLocal(buffer: Buffer): Promise<string> {
+    try {
+      const ExcelJS = require('exceljs');
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(buffer);
+
+      let out = '';
+      workbook.eachSheet((worksheet: any, sheetId: number) => {
+        out += `### Worksheet: ${worksheet.name}\n\n`;
+        const rows: string[][] = [];
+
+        worksheet.eachRow({ includeEmpty: false }, (row: any) => {
+          const values = Array.isArray(row.values) ? row.values.slice(1) : [];
+          const cleanValues = values.map((v: any) => {
+            if (v === null || v === undefined) return '';
+            if (typeof v === 'object') {
+              if (v.text) return String(v.text).replace(/[\r\n]+/g, ' ').replace(/\|/g, '\\|');
+              if (v.result !== undefined) return String(v.result).replace(/[\r\n]+/g, ' ').replace(/\|/g, '\\|');
+              return JSON.stringify(v).replace(/\|/g, '\\|');
+            }
+            return String(v).replace(/[\r\n]+/g, ' ').replace(/\|/g, '\\|').trim();
+          });
+          rows.push(cleanValues);
+        });
+
+        if (rows.length > 0) {
+          const maxCols = Math.max(...rows.map(r => r.length));
+          const header = rows[0];
+          while (header.length < maxCols) header.push('');
+
+          out += '| ' + header.map(h => h || ' ').join(' | ') + ' |\n';
+          out += '| ' + header.map(() => '---').join(' | ') + ' |\n';
+
+          for (let i = 1; i < rows.length; i++) {
+            const r = rows[i];
+            while (r.length < maxCols) r.push('');
+            out += '| ' + r.map(c => c || ' ').join(' | ') + ' |\n';
+          }
+          out += '\n\n';
+        } else {
+          out += '*(Empty Worksheet)*\n\n';
+        }
+      });
+
+      return out.trim() || '(No data found in spreadsheet)';
+    } catch (e: any) {
+      return `[Local Excel Parse Failed: ${e.message}]`;
+    }
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -2211,6 +2386,8 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
                     agentManager: (this as any).agentManager, 
                     workspaceRoot: folders[0], 
                     contextManager: this,
+                    skillsManager: this.skillsManager,
+                    codeGraphManager: this.codeGraphManager,
                     lollmsApi: this.lollmsAPI,
                     currentPlan: { objective: rephrasedObjective, tasks: [] }
                 };
@@ -2256,6 +2433,8 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
                 agentManager: (this as any).agentManager,
                 workspaceRoot: folders[0],
                 contextManager: this,
+                skillsManager: this.skillsManager,
+                codeGraphManager: this.codeGraphManager,
                 lollmsApi: this.lollmsAPI,
                 currentPlan: { objective: rephrasedObjective, tasks: [] }
             };

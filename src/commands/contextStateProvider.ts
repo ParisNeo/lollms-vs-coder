@@ -428,14 +428,17 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
      */
     private isLightweightTextFile(uri: vscode.Uri): boolean {
         const ext = path.extname(uri.fsPath).toLowerCase();
-        const complexDocs = new Set(['.pdf', '.docx', '.pptx', '.xlsx', '.msg', '.odt', '.rtf']);
-        const images = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.ico', '.tiff']);
-        const commonBinaries = new Set(['.exe', '.dll', '.so', '.dylib', '.pyc', '.o', '.obj', '.bin', '.dat']);
+        const commonBinaries = new Set([
+            '.exe', '.dll', '.so', '.dylib', '.pyc', '.o', '.obj', '.bin', '.dat', 
+            '.zip', '.tar', '.gz', '.7z', '.rar', '.iso', '.img', '.db', '.sqlite',
+            '.pth', '.pt', '.onnx', '.tflite', '.pb', '.h5', '.hdf5', '.pkl', '.pickle'
+        ]);
 
-        if (complexDocs.has(ext) || images.has(ext) || commonBinaries.has(ext)) {
+        if (commonBinaries.has(ext)) {
             return false;
         }
 
+        // Text files, rich documents (.pdf, .docx, .xlsx, .pptx), and images (which load into multimodal vision) are allowed
         return true;
     }
 
@@ -635,76 +638,79 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
         if (!workspaceState) return [];
 
-        const workspaceFolder = this.workspaceFolder || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
-        if (!workspaceFolder) return [];
-
         const folders = vscode.workspace.workspaceFolders || [];
+        if (folders.length === 0) return [];
 
-        let stateWasModified = false;
+        const workspaceFolder = this.workspaceFolder || folders[0];
+        const resultsMap = new Map<string, { path: string, state: ContextState }>();
 
-        const filteredEntries = Object.entries(workspaceState)
-            .filter(([key, state]) => {
-                if (!key || typeof key !== 'string') return false;
-                if (state !== 'included' && state !== 'definitions-only') return false;
+        for (const [key, state] of Object.entries(workspaceState)) {
+            if (!key || typeof key !== 'string') continue;
+            if (state !== 'included' && state !== 'definitions-only') continue;
 
-                // 1. Resolve URI
-                let fileUri: vscode.Uri;
-                const segments = key.split('/');
-                const projectFolder = folders.length > 1
-                    ? folders.find(f => f.name.toLowerCase() === segments[0].toLowerCase())
-                    : undefined;
-                if (projectFolder && segments.length > 1) {
-                    fileUri = vscode.Uri.joinPath(projectFolder.uri, segments.slice(1).join('/'));
-                } else {
-                    fileUri = vscode.Uri.joinPath(workspaceFolder.uri, key);
+            const normalizedKey = this.normalize(key).trim().replace(/^\.?\/+/, '');
+            const segments = normalizedKey.split('/');
+
+            // Multi-strategy URI resolution: Direct relative path existence takes priority
+            let fileUri: vscode.Uri | undefined;
+            for (const folder of folders) {
+                const candidate = vscode.Uri.joinPath(folder.uri, normalizedKey);
+                if (fs.existsSync(candidate.fsPath)) {
+                    fileUri = candidate;
+                    break;
                 }
-
-                // --- FILE EXISTENCE SHIELD ---
-                // Automatically prune manually deleted files from the workspaceState cache on-the-fly
-                if (!fs.existsSync(fileUri.fsPath)) {
-                    delete workspaceState[key];
-                    stateWasModified = true;
-                    return false;
-                }
-
-                // 2. Strict ignore check (heavy folders, glob exclusions, etc.)
-                if (this.isStrictlyIgnored(fileUri)) {
-                    return false;
-                }
-
-                // Effective State Check: Ensure no parent is 'collapsed' or 'fully-excluded'
-                // which would override this specific file's inclusion.
-                let currentPath = key;
-                while (currentPath.includes('/')) {
-                    const lastSlash = currentPath.lastIndexOf('/');
-                    currentPath = currentPath.substring(0, lastSlash);
-                    const parentState = workspaceState[currentPath];
-                    if (parentState === 'collapsed' || parentState === 'fully-excluded') return false;
-
-                    let parentUri: vscode.Uri;
-                    const parentSegments = currentPath.split('/');
-                    const parentFolder = folders.length > 1
-                        ? folders.find(f => f.name.toLowerCase() === parentSegments[0].toLowerCase())
-                        : undefined;
-                    if (parentFolder && parentSegments.length > 1) {
-                        parentUri = vscode.Uri.joinPath(parentFolder.uri, parentSegments.slice(1).join('/'));
-                    } else {
-                        parentUri = vscode.Uri.joinPath(workspaceFolder.uri, currentPath);
-                    }
-
-                    if (this.isStrictlyIgnored(parentUri)) return false;
-                    }
-                    return true;
-                });
-
-            if (stateWasModified) {
-                this.context.workspaceState.update(this.stateKey, workspaceState).then(() => {
-                    this._onDidChangeTreeData.fire();
-                });
             }
 
-            return filteredEntries.map(([key, state]) => ({ path: key, state }));
+            // Namespaced folder prefix check if direct path not found
+            if (!fileUri && segments.length > 1) {
+                const folderMatch = folders.find(f => f.name.toLowerCase() === segments[0].toLowerCase());
+                if (folderMatch) {
+                    const subPath = segments.slice(1).join('/');
+                    const candidate = vscode.Uri.joinPath(folderMatch.uri, subPath);
+                    if (fs.existsSync(candidate.fsPath)) {
+                        fileUri = candidate;
+                    }
+                }
+            }
+
+            if (!fileUri) {
+                const candidate = vscode.Uri.joinPath(workspaceFolder.uri, normalizedKey);
+                if (fs.existsSync(candidate.fsPath)) {
+                    fileUri = candidate;
+                }
+            }
+
+            if (!fileUri || !fs.existsSync(fileUri.fsPath)) {
+                continue;
+            }
+
+            // Check if file or folder is strictly ignored
+            if (this.isStrictlyIgnored(fileUri)) {
+                continue;
+            }
+
+            // Check if any ancestor folder is marked collapsed or fully-excluded
+            let currentPath = normalizedKey;
+            let isParentExcluded = false;
+            while (currentPath.includes('/')) {
+                const lastSlash = currentPath.lastIndexOf('/');
+                currentPath = currentPath.substring(0, lastSlash);
+                const parentState = workspaceState[currentPath];
+                if (parentState === 'collapsed' || parentState === 'fully-excluded') {
+                    isParentExcluded = true;
+                    break;
+                }
+            }
+            if (isParentExcluded) continue;
+
+            const stat = fs.statSync(fileUri.fsPath);
+            if (stat.isFile()) {
+                resultsMap.set(normalizedKey, { path: key, state });
+            }
         }
+
+        return Array.from(resultsMap.values());
+    }
 
     public async addFilesToContext(files: string[]): Promise<string[]> {
         const folders = vscode.workspace.workspaceFolders;
@@ -723,22 +729,25 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             const segments = normalizedPath.split('/');
             const fileName = segments[segments.length - 1];
 
-            // 1. SOVEREIGN NAMESPACE CHECK: Does the first segment match a project name?
-            const projectFolder = folders.find(f => f.name === segments[0]);
-            if (projectFolder && segments.length > 1) {
-                const subPath = segments.slice(1).join('/');
-                targetUri = vscode.Uri.joinPath(projectFolder.uri, subPath);
-                try { await vscode.workspace.fs.stat(targetUri); } catch { targetUri = undefined; }
+            // 1. DIRECT CHECK: Check across all roots for direct relative path existence
+            for (const folder of folders) {
+                const testUri = vscode.Uri.joinPath(folder.uri, normalizedPath);
+                try {
+                    await vscode.workspace.fs.stat(testUri);
+                    targetUri = testUri;
+                    break;
+                } catch {}
             }
 
-            // 2. SEARCH RESOLUTION: Check across all roots for existence (Relative Path)
-            if (!targetUri) {
-                for (const folder of folders) {
-                    const testUri = vscode.Uri.joinPath(folder.uri, normalizedPath);
-                    try {
-                        await vscode.workspace.fs.stat(testUri);
-                        targetUri = testUri;
-                        break;
+            // 2. SOVEREIGN NAMESPACE CHECK: If direct path not found, check if first segment matches folder name
+            if (!targetUri && segments.length > 1) {
+                const projectFolder = folders.find(f => f.name.toLowerCase() === segments[0].toLowerCase());
+                if (projectFolder) {
+                    const subPath = segments.slice(1).join('/');
+                    const namespacedUri = vscode.Uri.joinPath(projectFolder.uri, subPath);
+                    try { 
+                        await vscode.workspace.fs.stat(namespacedUri); 
+                        targetUri = namespacedUri;
                     } catch {}
                 }
             }
@@ -768,16 +777,24 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
             // If we found a valid URI, record the state using the canonical VS Code key
             if (targetUri) {
-                const key = this.normalize(vscode.workspace.asRelativePath(targetUri, false));
-                workspaceState[key] = 'included';
-                urisToFire.push(targetUri);
-                addedPaths.push(file); // Return the original string so the webview can map it back
-                Logger.info(`[Librarian] Successfully resolved and added: ${key}`);
+                const stat = await vscode.workspace.fs.stat(targetUri).catch(() => null);
+                if (stat && stat.type === vscode.FileType.Directory) {
+                    // Recursively include all text files inside the directory
+                    await this.updateChildrenState(targetUri, 'included', workspaceState);
+                    urisToFire.push(targetUri);
+                    addedPaths.push(file);
+                    Logger.info(`[Librarian] Successfully resolved and expanded directory: ${targetUri.fsPath}`);
+                } else {
+                    const key = this.normalize(vscode.workspace.asRelativePath(targetUri, false));
+                    workspaceState[key] = 'included';
+                    urisToFire.push(targetUri);
+                    addedPaths.push(file); // Return the original string so the webview can map it back
+                    Logger.info(`[Librarian] Successfully resolved and added: ${key}`);
 
-                // INCREMENTAL CACHE UPDATE: Do not invalidate the entire visible files cache.
-                // Insert the new path directly so we don't trigger a full workspace directory walk.
-                if (this._cachedVisibleFiles && !this._cachedVisibleFiles.includes(key)) {
-                    this._cachedVisibleFiles.push(key);
+                    // INCREMENTAL CACHE UPDATE: Do not invalidate the entire visible files cache.
+                    if (this._cachedVisibleFiles && !this._cachedVisibleFiles.includes(key)) {
+                        this._cachedVisibleFiles.push(key);
+                    }
                 }
             } else {
                 Logger.warn(`[Librarian] Failed to resolve path: ${file}`);

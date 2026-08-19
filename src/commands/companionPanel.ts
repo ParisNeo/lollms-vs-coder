@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { normalizeAiderContent } from '../utils';
 import { ChatMessage } from '../lollmsAPI';
 
 interface HistoryItem {
@@ -167,6 +168,20 @@ export class CompanionPanel {
                 case 'clearActiveChat':
                     this.chatHistory = [];
                     break;
+                case 'updateMessage':
+                    if (message.messageId && message.newContent !== undefined) {
+                        const msg = this.chatHistory.find(m => m.id === message.messageId);
+                        if (msg) {
+                            msg.content = message.newContent;
+                        }
+                        if (this._history.length > 0) {
+                            const histItem = this._history.find(h => h.id === message.messageId);
+                            if (histItem) {
+                                histItem.prompt = message.newContent;
+                            }
+                        }
+                    }
+                    break;
                 case 'clearHistory':
                     this._history = [];
                     this._currentHistoryIndex = -1;
@@ -180,23 +195,27 @@ export class CompanionPanel {
                     break;
                 case 'replaceCode':
                     try {
-                        const normalizedContent = message.content
-                            .replace(/^\s*<<<<<<< SEARCH/gm, '<<<<<<< SEARCH')
-                            .replace(/^\s*=======/gm, '=======')
-                            .replace(/^\s*>>>>>>> REPLACE/gm, '>>>>>>> REPLACE');
+                        let targetPath = message.filePath;
+                        if (!targetPath && this._lastActiveEditor) {
+                            targetPath = vscode.workspace.asRelativePath(this._lastActiveEditor.document.uri);
+                        }
 
-                        await this._captureSnapshot(message.options?.blockId, message.filePath);
+                        const normalizedContent = normalizeAiderContent(message.content);
 
-                        const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, normalizedContent, undefined, undefined, message.options);
+                        await this._captureSnapshot(message.options?.blockId, targetPath);
+
+                        const opts = { ...message.options, silent: true, autoSave: true };
+                        const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', targetPath, normalizedContent, undefined, undefined, opts);
                         if (res?.success ?? false) {
-                            await this._revealAppliedFile(message.filePath);
+                            await this._revealAppliedFile(targetPath);
                         }
                         this._panel.webview.postMessage({
                             command: 'applyAllResult',
                             success: res?.success ?? false,
                             error: res?.error,
                             blockId: message.options?.blockId,
-                            hunkIndex: message.options?.hunkIndex
+                            hunkIndex: message.options?.hunkIndex,
+                            filePath: targetPath
                         });
                     } catch (e: any) {
                         this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message, blockId: message.options?.blockId });
@@ -204,18 +223,25 @@ export class CompanionPanel {
                     break;
                 case 'applyFileContent':
                     try {
-                        await this._captureSnapshot(message.options?.blockId, message.filePath);
+                        let targetPath = message.filePath;
+                        if (!targetPath && this._lastActiveEditor) {
+                            targetPath = vscode.workspace.asRelativePath(this._lastActiveEditor.document.uri);
+                        }
 
-                        const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content, message.options);
+                        await this._captureSnapshot(message.options?.blockId, targetPath);
+
+                        const opts = { ...message.options, silent: true, autoSave: true };
+                        const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', targetPath, message.content, opts);
                         if (res?.success ?? false) {
-                            await this._revealAppliedFile(message.filePath);
+                            await this._revealAppliedFile(targetPath);
                         }
                         this._panel.webview.postMessage({
                             command: 'applyAllResult',
                             success: res?.success ?? false,
                             error: res?.error,
                             blockId: message.options?.blockId,
-                            hunkIndex: message.options?.hunkIndex
+                            hunkIndex: message.options?.hunkIndex,
+                            filePath: targetPath
                         });
                     } catch (e: any) {
                         this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message, blockId: message.options?.blockId });
@@ -324,7 +350,11 @@ export class CompanionPanel {
     private async _revealAppliedFile(filePath: string | undefined) {
         if (!filePath) return;
         try {
-            const uri = vscode.Uri.file(filePath);
+            const folder = vscode.workspace.workspaceFolders?.[0];
+            let uri = vscode.Uri.file(filePath);
+            if (!path.isAbsolute(filePath) && folder) {
+                uri = vscode.Uri.joinPath(folder.uri, filePath);
+            }
             const companionColumn = this._panel.viewColumn || vscode.ViewColumn.Two;
 
             let targetColumn = vscode.ViewColumn.One;
@@ -345,9 +375,13 @@ export class CompanionPanel {
     private async _captureSnapshot(blockId: string | undefined, filePath: string | undefined) {
         if (!blockId || !filePath) return;
         try {
-            const uri = vscode.Uri.file(filePath);
+            const folder = vscode.workspace.workspaceFolders?.[0];
+            let uri = vscode.Uri.file(filePath);
+            if (!path.isAbsolute(filePath) && folder) {
+                uri = vscode.Uri.joinPath(folder.uri, filePath);
+            }
             const bytes = await vscode.workspace.fs.readFile(uri);
-            this._preApplySnapshots.set(blockId, { filePath, content: Buffer.from(bytes).toString('utf8') });
+            this._preApplySnapshots.set(blockId, { filePath: uri.fsPath, content: Buffer.from(bytes).toString('utf8') });
         } catch {}
     }
 

@@ -64,11 +64,21 @@ export function registerTitleAllDiscussions(
                             try {
                                 const newTitle = await discussionManager.generateDiscussionTitle(discussion);
                                 if (newTitle && newTitle.trim() !== '') {
-                                    discussion.title = newTitle.trim();
+                                    const cleanTitle = newTitle.trim();
+                                    discussion.title = cleanTitle;
                                     await discussionManager.saveDiscussion(discussion);
+
+                                    const openPanel = ChatPanel.panels.get(discussion.id);
+                                    if (openPanel) {
+                                        openPanel._panel.title = cleanTitle;
+                                        if (openPanel.getCurrentDiscussion()) {
+                                            openPanel.getCurrentDiscussion()!.title = cleanTitle;
+                                        }
+                                    }
+
                                     Logger.info('titleAllDiscussions – title set', {
                                         discussionId: discussion.id,
-                                        newTitle,
+                                        newTitle: cleanTitle,
                                     });
                                 } else {
                                     Logger.warn('titleAllDiscussions – empty title returned', {

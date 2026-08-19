@@ -91,6 +91,18 @@ export const editCodeTool: ToolDefinition = {
         if (!env.workspaceRoot || !env.currentPlan) return { success: false, output: "Error: Workspace root or active plan missing." };
 
         let filePath = params.file_path.trim().replace(/^[\\\/]+/, '').replace(/^[A-Z]:[\\\/]/i, '');
+        const ext = path.extname(filePath).toLowerCase();
+
+        const readOnlyDocExts = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.zip', '.tar', '.gz', '.exe', '.bin', '.pkl', '.onnx', '.db', '.sqlite']);
+        if (readOnlyDocExts.has(ext)) {
+            return {
+                success: false,
+                output: `🛑 READ-ONLY ARTIFACT ERROR: Cannot edit '${filePath}' directly with text editing tools. 
+This is a rich document or binary artifact. Its text content in context is read-only.
+If you need to modify this file, write and execute a script (e.g., Python with openpyxl, pandas, python-docx, or pypdf) instead.`
+            };
+        }
+
         const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
 
         let originalContent = "";

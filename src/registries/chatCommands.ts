@@ -209,10 +209,14 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
                             ...discussion,
                             messages: [initialMessage]
                         });
-                        if (generatedTitle) {
-                            discussion.title = generatedTitle.trim();
+                        if (generatedTitle && generatedTitle.trim()) {
+                            const cleanTitle = generatedTitle.trim();
+                            discussion.title = cleanTitle;
+                            if (panel.getCurrentDiscussion()) {
+                                panel.getCurrentDiscussion()!.title = cleanTitle;
+                            }
                             await services.discussionManager.saveDiscussion(discussion);
-                            panel._panel.title = discussion.title;
+                            panel._panel.title = cleanTitle;
                             services.treeProviders.discussion?.refresh();
                         }
                     } catch (err) {

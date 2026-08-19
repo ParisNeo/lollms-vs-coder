@@ -13,7 +13,7 @@ import { SkillsManager } from '../../skillsManager';
 import { Logger } from '../../logger';
 import { PersonalityManager } from '../../personalityManager';
 import { GitIntegration } from '../../gitIntegration';
-import { applyDiffToString, applySearchReplace } from '../../utils';
+import { applyDiffToString, applySearchReplace, normalizeAiderContent } from '../../utils';
 import { BigDataProcessor } from '../../bigDataProcessing';
 import { AutomationPanel } from '../../panels/automationPanel';
 import { LocalizationManager } from '../../utils/localizationManager';
@@ -80,6 +80,7 @@ export class ChatPanel {
   private _failedPatchesRegistry: Map<string, Set<string>> = new Map();
 
   private _initialPrompt?: string;
+  private _shouldOpenWizardOnLoad = false;
 
   private _activeTokenizationPromise: Promise<void> | null = null;
   private _tokenizationPendingRerun = false;
@@ -220,7 +221,7 @@ export class ChatPanel {
             const currentBlockIndex = blockIndex++; // Track block index
             const opts = { silent: true, autoSave: true, blockIndex: currentBlockIndex };
 
-            const isAiderInside = blockContent.includes('<<<<<<< SEARCH');
+            const isAiderInside = blockContent.includes('<<<<<<< SEARCH') || /^[ \t]*={5,}[ \t]*$/m.test(blockContent);
             const commonLangs = ['makefile', 'python', 'py', 'javascript', 'js', 'typescript', 'ts', 'json', 'bash', 'sh', 'css', 'html'];
 
             if (isAiderInside && commonLangs.includes(filePath.toLowerCase())) {
@@ -242,7 +243,7 @@ export class ChatPanel {
             modifiedFiles.add(filePath);
 
             if (isAiderInside) {
-                const normalizedAider = blockContent.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
+                const normalizedAider = normalizeAiderContent(blockContent);
                 const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, { ...opts, autoSave: true });
 
                 // If the patch application failed, trigger automated self-correction (Mute for system IDs to prevent infinite loops)
@@ -252,10 +253,8 @@ export class ChatPanel {
                     await this.triggerSurgicalSelfCorrection(filePath, normalizedAider, result.error || "Search block mismatch.", signal, 1);
                 }
             } else {
-                const resolution = await this.contextManager.resolveWorkspaceFromPath(filePath);
-                if (resolution) {
-                    await vscode.workspace.fs.writeFile(resolution.uri, Buffer.from(blockContent, 'utf8'));
-                    // Notify webview to collapse the newly written file
+                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', filePath, blockContent, { silent: true, autoSave: true, messageId, blockIndex: currentBlockIndex });
+                if (result?.success) {
                     this._panel.webview.postMessage({
                         command: 'fileSavedOnDisk',
                         filePath: filePath
@@ -721,6 +720,7 @@ export class ChatPanel {
           if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
               let discussion: Discussion | null;
               if (this.discussionId.startsWith('temp-')) {
+                  const preciseTokenization = vscode.workspace.getConfiguration('lollmsVsCoder').get<boolean>('preciseTokenization', false);
                   discussion = {
                       id: this.discussionId,
                       title: 'Temporary Discussion',
@@ -728,7 +728,7 @@ export class ChatPanel {
                       timestamp: Date.now(),
                       groupId: null,
                       plan: null,
-                      capabilities: { ...this._discussionCapabilities, agentMode: false, preciseTokenization: preciseTokenizationVal }, 
+                      capabilities: { ...this._discussionCapabilities, agentMode: false, preciseTokenization }, 
                       personalityId: 'default_coder',
                       importedSkills: []
                   };
@@ -833,6 +833,25 @@ export class ChatPanel {
             initialPrompt: this._initialPrompt
         });
         this._initialPrompt = undefined;
+
+        if (this.discussionId.startsWith('temp-') || this._shouldOpenWizardOnLoad) {
+            this._shouldOpenWizardOnLoad = false;
+            let savedSelections: string[] = [];
+            const folders = vscode.workspace.workspaceFolders;
+            if (folders && folders.length > 0) {
+                const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+                try {
+                    const entries = await vscode.workspace.fs.readDirectory(selectionDir);
+                    savedSelections = entries
+                        .filter(([name]) => name.endsWith('.lollms-ctx'))
+                        .map(([name]) => name);
+                } catch (e) {}
+            }
+            this._panel.webview.postMessage({
+                command: 'openNewDiscussionWizard',
+                selections: savedSelections
+            });
+        }
 
         // --- PHASE 2: DEFERRED CONTEXT ASSEMBLY & DISK I/O (NON-BLOCKING) ---
         setImmediate(async () => {
@@ -1731,44 +1750,13 @@ export class ChatPanel {
     });
   }
     /**
-    * Helper to strip file blocks from context data if their parent folder is muted in the matrix.
+    * Helper to return file blocks from context data (already filtered at assembly time by ContextManager).
     */
-    private async _getFilteredFilesContent(contextData: ContextResult, folderSettings: any): Promise<string> {
-        const folders = vscode.workspace.workspaceFolders || [];
-        // Parse the raw markdown blocks reliably using a regex that captures the entire fenced code block
-        const blockRegex = /```([\w-]+)?:([^\r\n]+)[\r\n]+([\s\S]*?)[\r\n]+```/g;
-        const filteredBlocks: string[] = [];
-        let match;
-
-        while ((match = blockRegex.exec(contextData.selectedFilesContent)) !== null) {
-            const lang = match[1] || '';
-            const filePath = match[2].trim();
-            const content = match[3];
-
-            const isMultiRoot = folders.length > 1;
-            const ownerFolder = folders.find(f => {
-                if (isMultiRoot) {
-                    return filePath.startsWith(f.name + '/');
-                }
-                return true;
-            });
-
-            let shouldInclude = true;
-            if (ownerFolder) {
-                const settings = folderSettings[ownerFolder.uri.toString()];
-                if (settings && settings.content === false) {
-                    shouldInclude = false;
-                }
-            }
-
-            if (shouldInclude) {
-                // Reconstruct the block ensuring it has a clean trailing newline and the required closing backticks
-                const formattedContent = content.endsWith('\n') ? content : content + '\n';
-                filteredBlocks.push(`\`\`\`${lang}:${filePath}\n${formattedContent}\`\`\``);
-            }
+    private async _getFilteredFilesContent(contextData: ContextResult | undefined | null, _folderSettings: any): Promise<string> {
+        if (!contextData || !contextData.selectedFilesContent || contextData.selectedFilesContent.trim() === '') {
+            return '';
         }
-
-        return filteredBlocks.join('\n\n');
+        return contextData.selectedFilesContent;
     }
 
     private async waitForWebviewReady() { if (this._isWebviewReady) return; return this._viewReadyPromise; }
@@ -1779,6 +1767,32 @@ export class ChatPanel {
       await this.waitForWebviewReady();
       if (!this._isDisposed) {
           this._panel.webview.postMessage({ command: 'setInputText', text });
+      }
+  }
+
+  public async openNewDiscussionWizard(selections?: string[]) {
+      this._shouldOpenWizardOnLoad = true;
+      if (this._isDisposed) return;
+      await this.waitForWebviewReady();
+      if (!this._isDisposed && this._panel && this._panel.webview) {
+          let savedSelections = selections;
+          if (!savedSelections) {
+              const folders = vscode.workspace.workspaceFolders;
+              if (folders && folders.length > 0) {
+                  const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+                  try {
+                      const entries = await vscode.workspace.fs.readDirectory(selectionDir);
+                      savedSelections = entries
+                          .filter(([name]) => name.endsWith('.lollms-ctx'))
+                          .map(([name]) => name);
+                  } catch (e) {}
+              }
+          }
+          this._panel.webview.postMessage({
+              command: 'openNewDiscussionWizard',
+              selections: savedSelections || []
+          });
+          this._shouldOpenWizardOnLoad = false;
       }
   }
 
@@ -2078,9 +2092,10 @@ export class ChatPanel {
             if (block.type === 'diff') {
                 result = applyDiffToString(originalFileText, block.content);
             } else {
+                const normalizedContent = normalizeAiderContent(block.content);
                 // Handle multiple SEARCH/REPLACE blocks within the same content
                 const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
-                const matches =[...blockContent.matchAll(aiderRegex)];
+                const matches =[...normalizedContent.matchAll(aiderRegex)];
                 
                 if (matches.length > 0) {
                     let currentFileState = originalFileText;
@@ -2184,7 +2199,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
               progress.report({ message: "Extracting file contents..." });
               const contextData = await this._contextManager.getContextContent({ 
                   importedSkillIds: importedIds,
-                  modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
+                  modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName(),
+                  capabilities: this._discussionCapabilities
               });
               
               // --- MATRIX FILTERED EXPORT ---
@@ -2198,14 +2214,14 @@ Please provide the **FULL CONTENT** of the file instead using the format:
               }
 
               const context = {
-                  tree: contextData.projectTree,
-                  files: safeFilesContent,
-                  skills: contextData.skillsContent,
-                  toolManager: this.agentManager?.['toolManager'] // Pass the toolbelt reference
+                  tree: contextData?.projectTree || '',
+                  files: safeFilesContent || contextData?.selectedFilesContent || '',
+                  skills: contextData?.skillsContent || '',
+                  toolManager: this.agentManager?.['toolManager']
               };
 
               let memoryBlock = "";
-              if (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager) {
+              if (this._discussionCapabilities?.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager) {
                   progress.report({ message: "Reading project memory..." });
                   memoryBlock = await this.agentManager.projectMemoryManager.getFormattedMemoryBlock();
               }
@@ -2213,8 +2229,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
               progress.report({ message: "Processing system prompt..." });
               const personaContent = this.getCurrentPersonaSystemPrompt();
               const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, { ...context, tree: '', files: '' });
-              
-              const projectName = contextData.projectName || "Unknown Project";
+
+              const projectName = contextData?.projectName || "Unknown Project";
+              const filesSection = context.files && context.files.trim().length > 0 
+                  ? `## 📄 LOADED FILE CONTENTS\n\n${context.files}`
+                  : `## 📄 FILE CONTENTS\nNo files selected.`;
+
               let fullText = `
 # 🧊 PROJECT SNAPSHOT: ${projectName.toUpperCase()} FOR EXTERNAL LLM
 The following project state was exported from VS Code. 
@@ -2224,7 +2244,7 @@ ${systemPrompt}
 
 ${context.tree || 'No tree provided.'}
 
-${context.files || '## 📄 FILE CONTENTS\nNo files selected.'}
+${filesSection}
 
 ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
 
@@ -2562,6 +2582,31 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     // Turn off the webview's input loading state and trigger immediate "Thinking" display
     this.processManager.updateDescription(processId, "Preparing workspace context...");
     this.updateGeneratingState();
+
+    // Auto-title discussion on the first user prompt if untitled
+    const isUntitled = !this._currentDiscussion.title || 
+                       this._currentDiscussion.title === 'New Discussion' || 
+                       this._currentDiscussion.title === 'Untitled Discussion' ||
+                       this._currentDiscussion.title.startsWith('New Discussion');
+
+    if (isUntitled && !this._currentDiscussion.id.startsWith('temp-')) {
+        setImmediate(async () => {
+            try {
+                const generatedTitle = await this._discussionManager.generateDiscussionTitle(this._currentDiscussion!);
+                if (generatedTitle && generatedTitle.trim()) {
+                    const cleanTitle = generatedTitle.trim();
+                    this._currentDiscussion!.title = cleanTitle;
+                    await this._discussionManager.saveDiscussion(this._currentDiscussion!);
+                    if (this._panel && !this._isDisposed) {
+                        this._panel.title = cleanTitle;
+                    }
+                    vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+                }
+            } catch (titlingErr) {
+                this.log(`Auto-titling background error: ${titlingErr}`, 'WARN');
+            }
+        });
+    }
 
     // Route to Agent Manager if Agent Mode is active
     if (this._discussionCapabilities.agentMode && folders && folders.length > 0) {
@@ -3066,7 +3111,16 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
 
                             const toolDef = this.agentManager.getTools().find((t: any) => t.name === name);
                             if (toolDef) {
-                                const env = { agentManager: this.agentManager, workspaceRoot: folders[0], contextManager: this._contextManager, lollmsApi: this._lollmsAPI };
+                                const env = { 
+                                    agentManager: this.agentManager, 
+                                    workspaceRoot: folders[0], 
+                                    contextManager: this._contextManager, 
+                                    lollmsApi: this._lollmsAPI,
+                                    skillsManager: this._skillsManager,
+                                    codeGraphManager: this._codeGraphManager,
+                                    personalityManager: this._personalityManager,
+                                    currentPlan: this.agentManager?.currentPlan || null
+                                };
                                 const result = await toolDef.execute(parsedParams, env, controller.signal);
                                 toolResult = result.output;
                                 isSuccess = result.success;
@@ -3158,6 +3212,12 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
             await this._contextManager.getContextStateProvider()?.softReset();
             await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', finalFilesList);
 
+            // --- AUTOMATION PIPELINE FOR DYNAMIC MODE ---
+            if (this._discussionCapabilities.autoApply && !controller?.signal.aborted && processId) {
+                await this.executeAutomationPipeline(currentFullResponseBuffer, assistantMessageId, controller?.signal, processId);
+                this.updateContextAndTokens();
+            }
+
             this.processManager.unregister(processId);
             this.updateGeneratingState();
             return; // Terminate execution to bypass standard non-looping flow below
@@ -3229,14 +3289,14 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                         skipInPrompt: true
                     });
 
-                    // 2. Parse file blocks and build peeks
-                    const blockRegex = /```(?:\w+)?[:]?([^\n]+)[\r\n]([\s\S]*?)[\r\n]```/g;
+                    // 2. Parse file blocks and build peeks supporting XML <file> tags and fallback fences
+                    const blockRegex = /<file\s+path=["']([^"']+)["'][^>]*>([\s\S]*?)<\/file>|```(?:\w+)?[:]?([^\n]+)[\r\n]([\s\S]*?)[\r\n]```/gi;
                     let fileMatch;
                     while ((fileMatch = blockRegex.exec(contextData.selectedFilesContent)) !== null) {
-                        const filePath = fileMatch[1].trim();
-                        if (filePath.includes('<<<<<<< SEARCH')) continue;
+                        const filePath = (fileMatch[1] || fileMatch[3] || '').trim();
+                        if (!filePath || filePath.includes('<<<<<<< SEARCH')) continue;
 
-                        const fileBody = fileMatch[2];
+                        const fileBody = fileMatch[2] || fileMatch[4] || '';
                         const lines = fileBody.split('\n');
                         const peekLines = lines.slice(0, 40).join('\n');
                         const peek = lines.length > 40 ? `${peekLines}\n... [Truncated ${lines.length - 40} lines. Use grep_search if you need more context]` : peekLines;
@@ -4873,12 +4933,8 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 break;
             case 'replaceCode':
                 try {
-                    // Logic to normalize markers before sending to command
-                    // Logic to normalize markers before sending to command
-                    const normalizedContent = message.content
-                        .replace(/^\s*<<<<<<< SEARCH/gm, '<<<<<<< SEARCH')
-                        .replace(/^\s*=======/gm, '=======')
-                        .replace(/^\s*>>>>>>> REPLACE/gm, '>>>>>>> REPLACE');
+                    // Logic to normalize markers and lone ======= separators before sending to command
+                    const normalizedContent = normalizeAiderContent(message.content);
 
                     const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, normalizedContent, this, message.messageId, message.options);
                     
@@ -4925,6 +4981,52 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             }
                         });
                     }
+                }
+                break;
+            case 'checkFilesStatus':
+                {
+                    const { files, blockId } = message;
+                    const fileList: string[] = Array.isArray(files) ? files : [];
+                    const statuses: Record<string, 'in_context' | 'not_in_context' | 'not_found'> = {};
+
+                    if (this._contextManager) {
+                        const provider = this._contextManager.getContextStateProvider();
+                        const includedSet = new Set(
+                            provider ? provider.getIncludedFiles().map(f => f.path.replace(/\\/g, '/').toLowerCase()) : []
+                        );
+
+                        for (const filePath of fileList) {
+                            const cleanPath = filePath.trim();
+                            if (!cleanPath) continue;
+
+                            const res = await this._contextManager.resolveWorkspaceFromPath(cleanPath);
+                            if (res) {
+                                try {
+                                    const stat = await vscode.workspace.fs.stat(res.uri).catch(() => null);
+                                    if (stat && (stat.type === vscode.FileType.File || stat.type === vscode.FileType.Directory)) {
+                                        const normRel = res.relativePath.replace(/\\/g, '/').toLowerCase();
+                                        const normPath = cleanPath.replace(/\\/g, '/').toLowerCase();
+                                        const isIncluded = includedSet.has(normRel) || 
+                                                           includedSet.has(normPath) ||
+                                                           Array.from(includedSet).some(inc => inc === normRel || inc.endsWith('/' + normRel) || normRel.endsWith('/' + inc));
+                                        statuses[cleanPath] = isIncluded ? 'in_context' : 'not_in_context';
+                                    } else {
+                                        statuses[cleanPath] = 'not_found';
+                                    }
+                                } catch {
+                                    statuses[cleanPath] = 'not_found';
+                                }
+                            } else {
+                                statuses[cleanPath] = 'not_found';
+                            }
+                        }
+                    }
+
+                    webview.postMessage({
+                        command: 'filesStatusResult',
+                        blockId,
+                        statuses
+                    });
                 }
                 break;
             case 'addFilesToContext':
@@ -5655,23 +5757,19 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     });
                     
                     if (params.reprompt) {
-                        // Rather than sending a new User message and starting a new chat turn,
-                        // we privately inject the result into the current active conversation thread
-                        // to keep all tool results and corrections inside the same single assistant bubble.
                         const activePanel = ChatPanel.panels.get(this.discussionId);
                         if (activePanel && activePanel.getCurrentDiscussion()) {
-                            const disc = activePanel.getCurrentDiscussion()!;
-                            
-                            // Check if this is the dynamic mode loop
+                            // Check if this is an active generation session
+                            const proc = this.processManager.getForDiscussion(this.discussionId);
                             const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
-                            if (activeGen) {
-                                // Dynamic mode is actively running, let the loop handle it
+                            if (activeGen || proc) {
+                                // Generation is already running, avoid spawning duplicate parallel turns
                                 return;
                             }
 
-                            // If triggered manually by user click, we simulate the next turn privately
+                            // If triggered manually by user click while NOT generating, simulate the next turn privately
                             const responsePrompt = `### 📋 SPARQL QUERY RESULT\nQuery executed on the complete ontology graph:\n\`\`\`sparql\n${params.query}\n\`\`\`\n\n**Result:**\n${result}\n\nAnalyze these results and proceed with the mission.`;
-                            
+
                             activePanel.sendMessage({ role: 'system', content: responsePrompt, skipInPrompt: false });
                         }
                     }
@@ -6156,11 +6254,27 @@ Task:
             case 'openSettings':
                 vscode.commands.executeCommand('lollms-vs-coder.showConfigView');
                 break;
+            case 'resetDiscussionCapabilities':
+                if (this._currentDiscussion) {
+                    const defaultCaps = this._discussionManager.getDefaultCapabilities();
+                    this._discussionCapabilities = { ...defaultCaps };
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        this._currentDiscussion.capabilities = this._discussionCapabilities;
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                    await this.updateContextAndTokens();
+                    this._panel.webview.postMessage({ 
+                        command: 'updateDiscussionCapabilities', 
+                        capabilities: this._discussionCapabilities 
+                    });
+                    vscode.window.showInformationMessage("Discussion settings have been reset to defaults.");
+                }
+                break;
             case 'updateDiscussionCapabilities':
                 this._discussionCapabilities = message.capabilities;
                 // Full settings update from modal: we treat this as a potential default update
                 await this.saveCapabilities(true);
-                
+
                 this.log(`Updated Discussion Capabilities: ${JSON.stringify(this._discussionCapabilities)}`);
                 this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
                 break;
@@ -6315,7 +6429,10 @@ Task:
                                 lollmsApi: this._lollmsAPI,
                                 contextManager: this._contextManager,
                                 agentManager: this.agentManager,
-                                currentPlan: null
+                                skillsManager: this._skillsManager,
+                                codeGraphManager: this._codeGraphManager,
+                                personalityManager: this._personalityManager,
+                                currentPlan: this.agentManager?.currentPlan || null
                             };
                             const result = await toolDef.execute(toolParams, env as any, controller.signal);
 
@@ -6356,13 +6473,16 @@ Task:
                             await this.addMessageToDiscussion(resultMessage);
 
                             // --- AUTOMATIC REACTION TRIGGER ---
-                            const nudgeMessage: ChatMessage = {
-                                role: 'system',
-                                content: `The user manually triggered the tool '${toolName}'. Analyze the output above and proceed with the mission.`,
-                                skipInPrompt: false 
-                            };
+                            // Only trigger a new chat turn if reprompt is explicitly desired AND not already running a generation
+                            if (autoReprompt) {
+                                const nudgeMessage: ChatMessage = {
+                                    role: 'system',
+                                    content: `The user manually triggered the tool '${toolName}'. Analyze the output above and proceed with the mission.`,
+                                    skipInPrompt: false 
+                                };
 
-                            await this.sendMessage(nudgeMessage);
+                                await this.sendMessage(nudgeMessage);
+                            }
 
                             } catch (e: any) {
                             if (buttonId) {
@@ -6788,9 +6908,9 @@ Task:
               });
               
               const context = {
-                  tree: contextData.projectTree,
-                  files: contextData.selectedFilesContent,
-                  skills: contextData.skillsContent,
+                  tree: contextData?.projectTree || '',
+                  files: contextData?.selectedFilesContent || '',
+                  skills: contextData?.skillsContent || '',
                   toolManager: this.agentManager?.['toolManager']
               };
 
@@ -7068,6 +7188,11 @@ private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
                 const errorReport = diagnostics.map(d => `[Line ${d.range.start.line + 1}] ${d.message}`).join('\n');
                 const doc = await vscode.workspace.openTextDocument(fileUri);
                 
+                const isPy = doc.languageId === 'python';
+                const langGuidance = isPy 
+                    ? "2. **INDENTATION SENSITIVITY**: This is Python code. Ensure your SEARCH and REPLACE blocks respect the exact nesting levels."
+                    : `2. **LANGUAGE COMPLIANCE**: Target language is \`${doc.languageId}\`. Ensure valid syntax and brackets.`;
+
                 const repairPrompt = `### 🛡️ GUARDIAN PROTOCOL: REPAIR MISSION
 I have detected ${diagnostics.length} functional error(s) in your previous output for \`${relativePath}\`. 
 
@@ -7081,25 +7206,36 @@ ${doc.getText()}
 
 **STRICT INSTRUCTIONS:**
 1. Fix the specific lines reported above.
-2. **INDENTATION SENSITIVITY**: This is Python code. Ensure your SEARCH and REPLACE blocks respect the exact nesting levels.
-3. **NO TRAILING COMMENTS**: Do not add comments like "# ... existing code" inside blocks.
+${langGuidance}
+3. **NO TRAILING COMMENTS**: Do not add placeholders or comments like "// ... existing code" or "# ... rest of code".
 4. Use **AIDER SEARCH/REPLACE** format.
 5. Output ONLY the code blocks. No chatter.`;
 
-                const systemPrompt = "You are a surgical code repair expert. Output only Aider SEARCH/REPLACE blocks to fix the requested errors.";
-                
+                const systemPrompt = "You are a surgical code repair expert. Output only valid Aider SEARCH/REPLACE blocks to fix the requested errors.";
+
                 try {
                     if (agent) {
                         (agent as any).completedActionsHistory.push(`[GUARDIAN REPAIR] 🛡️ START: Attempting to fix ${diagnostics.length} errors in \`${relativePath}\` (Retry ${retries}/${max}).`);
                     }
 
-                    const response = await this._lollmsAPI.sendChat([
+                    const rawResponse = await this._lollmsAPI.sendChat([
                         { role: 'system', content: systemPrompt },
                         { role: 'user', content: repairPrompt }
                     ], null, signal, this._currentDiscussion?.model);
 
+                    const cleanResponse = stripThinkingTags(rawResponse).trim();
+                    const normalizedPatch = normalizeAiderContent(cleanResponse);
+
                     // Apply the fix silently and auto-save
-                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relativePath, response, this, messageId, { silent: true, autoSave: true });
+                    const patchResult: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relativePath, normalizedPatch, this, messageId, { silent: true, autoSave: true });
+
+                    if (!patchResult?.success && cleanResponse.includes('```')) {
+                        // Fallback: Check if response provided full file content or symbol replacement
+                        const codeBlockMatch = cleanResponse.match(/```(?:\w+)?[:]?([^\n\r]*)\n([\s\S]+?)\n```/);
+                        if (codeBlockMatch) {
+                            await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', relativePath, codeBlockMatch[2].trim(), { silent: true, autoSave: true });
+                        }
+                    }
 
                     if (agent) {
                         (agent as any).completedActionsHistory.push(`[GUARDIAN REPAIR] 📝 PATCH APPLIED: Sent surgical fix to \`${relativePath}\`. Waiting for linter verification...`);

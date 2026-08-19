@@ -4206,11 +4206,27 @@ mark.current-match {
     gap: 6px;
     padding: 6px 12px;
     background: var(--vscode-editor-background);
+    border: 1px solid transparent;
     border-bottom: 1px solid var(--vscode-panel-border);
     font-family: var(--vscode-editor-font-family);
     font-size: 12px;
     cursor: pointer;
-    transition: background 0.1s;
+    color: var(--vscode-editor-foreground, #000000);
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.expansion-file-item.status-in-context {
+    color: var(--vscode-charts-green, #388e3c) !important;
+    background: rgba(15, 157, 88, 0.08);
+}
+
+.expansion-file-item.status-not-in-context {
+    color: var(--vscode-editor-foreground, #000000) !important;
+}
+
+.expansion-file-item.status-not-exist {
+    color: var(--vscode-charts-red, #e53935) !important;
+    background: rgba(244, 71, 71, 0.08);
 }
 
 .expansion-file-item:hover {

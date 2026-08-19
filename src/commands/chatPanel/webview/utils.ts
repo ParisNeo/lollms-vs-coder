@@ -99,9 +99,51 @@ function isMetaPlaceholder(line: string): boolean {
 }
 
 /**
- * Enhanced Search/Replace (Aider) with multi-strategy matching.
+ * Normalizes Aider Search/Replace block content in the webview.
+ * Handles standard Aider, indented markers, and lone "=======" separators.
  */
-export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string, strategy?: string } {
+export function normalizeAiderContent(rawBlock: string): string {
+    if (!rawBlock || typeof rawBlock !== 'string') return '';
+
+    let text = rawBlock.replace(/\r\n/g, '\n');
+
+    // 1. If it already has <<<<<<< SEARCH and >>>>>>> REPLACE, normalize markers to line start
+    if (text.includes('<<<<<<< SEARCH') && text.includes('>>>>>>> REPLACE')) {
+        return text.replace(/^[ \t]*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)[ \t]*/gm, '$1');
+    }
+
+    // 2. If it has <<<<<<< SEARCH and ======= but missing closing >>>>>>> REPLACE
+    if (text.includes('<<<<<<< SEARCH') && text.includes('=======')) {
+        let normalized = text.replace(/^[ \t]*(<<<<<<< SEARCH|=======)[ \t]*/gm, '$1');
+        if (!normalized.includes('>>>>>>> REPLACE')) {
+            normalized = normalized.trimEnd() + '\n>>>>>>> REPLACE';
+        }
+        return normalized;
+    }
+
+    // 3. If the AI emitted ONLY the ======= separator without outer markers
+    const separatorRegex = /^[ \t]*={5,}[ \t]*$/m;
+    if (separatorRegex.test(text)) {
+        const parts = text.split(separatorRegex);
+        if (parts.length === 2) {
+            const searchPart = parts[0];
+            const replacePart = parts[1];
+            return `<<<<<<< SEARCH\n${searchPart.trimEnd()}\n=======\n${replacePart.trimStart()}\n>>>>>>> REPLACE`;
+        } else if (parts.length > 2) {
+            let result = '';
+            for (let i = 0; i < parts.length - 1; i += 2) {
+                const s = parts[i];
+                const r = parts[i + 1] || '';
+                result += `<<<<<<< SEARCH\n${s.trimEnd()}\n=======\n${r.trimStart()}\n>>>>>>> REPLACE\n\n`;
+            }
+            return result.trim();
+        }
+    }
+
+    return text;
+}
+
+export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string } {
     const isCrlf = content.includes('\r\n');
     const normalizedContent = content.replace(/\r\n/g, '\n');
     const contentLines = normalizedContent.split('\n');

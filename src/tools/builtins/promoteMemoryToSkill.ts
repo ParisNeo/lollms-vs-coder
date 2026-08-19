@@ -11,25 +11,30 @@ export const promoteMemoryToSkillTool: ToolDefinition = {
     ],
     async execute(params: { memory_id: string, skill_name: string }, env: ToolExecutionEnv): Promise<{ success: boolean; output: string; }> {
         const memManager = (env.agentManager as any)?.projectMemoryManager;
-        const skillManager = env.skillsManager;
-        
+        const skillManager = env.skillsManager || (env.contextManager as any)?.skillsManager || (env.agentManager as any)?.skillsManager;
+
         if (!memManager || !skillManager) return { success: false, output: "Managers not available." };
 
-        const memories = await memManager.getMemories();
-        const mem = memories.find((m: any) => m.id === params.memory_id);
+        const memId = String(params.memory_id || (params as any).memoryId || (params as any).id || "").trim();
+        const skillName = String(params.skill_name || (params as any).skillName || (params as any).name || (params as any).title || "Promoted Skill").trim();
 
-        if (!mem) return { success: false, output: `Memory ID '${params.memory_id}' not found.` };
+        if (!memId) return { success: false, output: "Error: memory_id parameter is required." };
+
+        const memories = await memManager.getMemories();
+        const mem = memories.find((m: any) => m.id === memId);
+
+        if (!mem) return { success: false, output: `Memory ID '${memId}' not found.` };
 
         await skillManager.addSkill({
             id: `promoted-${Date.now()}`,
-            name: params.skill_name,
-            description: `Auto-promoted from project memory: ${mem.title}`,
-            content: mem.content,
-            category: `promoted/${mem.category}`,
+            name: skillName,
+            description: `Auto-promoted from project memory: ${mem.title || memId}`,
+            content: mem.content || "",
+            category: `promoted/${mem.category || 'general'}`,
             scope: 'global',
             language: 'markdown'
         });
 
-        return { success: true, output: `✅ Successfully promoted memory '${mem.title}' to a Global Skill named '${params.skill_name}'.` };
+        return { success: true, output: `✅ Successfully promoted memory '${mem.title || memId}' to a Global Skill named '${skillName}'.` };
     }
 };

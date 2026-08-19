@@ -18,20 +18,35 @@ export const projectMemoryTool: ToolDefinition = {
             return { success: false, output: "Memory Manager not available in this environment." };
         }
 
+        const rawAction = params.action || (params as any).operation || (params as any).op || 'add';
+        const action = String(rawAction).toLowerCase().trim() as 'add' | 'update' | 'delete';
+
+        const rawId = params.id || (params as any).memory_id || (params as any).name || `mem_${Date.now()}`;
+        const id = String(rawId).trim();
+
+        const rawTitle = params.title || (params as any).name || id;
+        const title = String(rawTitle).trim();
+
+        const rawContent = params.content || (params as any).body || (params as any).text || "";
+        const content = String(rawContent).trim();
+
+        const rawImportance = params.importance !== undefined ? Number(params.importance) : 1.0;
+        const importance = isNaN(rawImportance) ? 1.0 : rawImportance;
+
         try {
             await manager.updateMemory(
-                params.action,
-                params.id,
-                params.title,
-                params.content,
+                action,
+                id,
+                title,
+                content,
                 "general",
-                params.importance
+                importance
             );
-            
-            const actionLabel = params.action === 'delete' ? 'removed from' : 'synced to';
+
+            const actionLabel = action === 'delete' ? 'removed from' : 'synced to';
             return { 
                 success: true, 
-                output: `✅ Fact '${params.id}' successfully ${actionLabel} Project Memory.` 
+                output: `✅ Fact '${id}' successfully ${actionLabel} Project Memory.` 
             };
         } catch (e: any) {
             return { success: false, output: `Failed to update project memory: ${e.message}` };

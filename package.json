@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.12.5",
+  "version": "0.12.16",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -37,11 +37,6 @@
   ],
   "contributes": {
     "commands": [
-      {
-        "command": "lollms-vs-coder.retriggerOnboarding",
-        "title": "Lollms: Reconfigure Project DNA & Style",
-        "icon": "$(settings-gear)"
-      },
       {
         "command": "lollms-vs-coder.retriggerOnboarding",
         "title": "Lollms: Reconfigure Project DNA & Style",
@@ -1373,6 +1368,11 @@
             "zh-cn",
             "ar"
           ]
+        },
+        "lollmsVsCoder.contextMaxDepth": {
+          "type": "number",
+          "default": 2,
+          "description": "Maximum directory depth displayed in the automatic project tree. Keeps trees shallow and fast. Subtrees with active files [C] or [D] are automatically expanded."
         },
         "lollmsVsCoder.failsafeContextSize": {
           "type": "number",

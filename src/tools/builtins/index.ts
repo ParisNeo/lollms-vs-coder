@@ -1,4 +1,3 @@
-import * as vscode from 'vscode';
 import { ToolDefinition } from '../tool';
 import { addFilesToContextTool } from './addFilesToContext';
 import { autoSelectContextFilesTool } from './autoSelectContextFiles';
@@ -27,12 +26,12 @@ import { searchArxivTool } from './searchArxiv';
 import { grepSearchTool } from './searchFiles';
 import { findFilesByNameTool } from './findFilesByName';
 import { searchWebTool } from './searchWeb';
-import { searchArxivTool } from './searchArxiv';
 import { navigateToCodeTool } from './navigateToCode';
 import { setLaunchEntrypointTool } from './setLaunchEntrypoint';
 import { setVscodePythonInterpreterTool } from './setVscodePythonInterpreter';
 import { submitResponseTool } from './submitResponse';
 import { buildSkillTool } from './buildSkill';
+import { manageSkillsTool } from './manageSkills';
 import { prepareEnvironmentTool } from './prepareEnvironment';
 import { researchWebPageTool } from './researchWebPage';
 import { moltbookActionTool } from './moltbookAction';
@@ -54,18 +53,66 @@ import { readFileRelationsTool } from './readFileRelations';
 import { searchWikipediaTool } from './searchWikipedia';
 import { searchStackOverflowTool } from './searchStackOverflow';
 import { testWebPageTool } from './testWebPage';
-import { generateCodeTool } from './generateCode';
 import { editCodeTool } from './editCode';
 import { updateFunctionTool } from './updateFunction';
 
 export const allTools: ToolDefinition[] = [
     searchWebTool,
     searchArxivTool,
-    navigateToCodeTool,
+    searchWikipediaTool,
+    searchStackOverflowTool,
+    scrapeWebsiteTool,
+    researchWebPageTool,
     testWebPageTool,
+    navigateToCodeTool,
     generateCodeTool,
     editCodeTool,
-    updateFunctionTool
+    updateFunctionTool,
+    readFileTool,
+    readFilesTool,
+    listFilesTool,
+    grepSearchTool,
+    findFilesByNameTool,
+    deleteFileTool,
+    moveFileTool,
+    addFilesToContextTool,
+    removeFilesFromContextTool,
+    peekAtContextTool,
+    autoSelectContextFilesTool,
+    manageSelectionsTool,
+    buildSkillTool,
+    manageSkillsTool,
+    promoteMemoryToSkillTool,
+    projectMemoryTool,
+    storeKnowledgeTool,
+    readMemoryCategoryTool,
+    readCodeGraphTool,
+    updateCodeGraphTool,
+    queryArchitectureTool,
+    readFileRelationsTool,
+    executeCommandTool,
+    executePythonScriptTool,
+    createPythonEnvironmentTool,
+    installPythonDependenciesTool,
+    runFileTool,
+    setLaunchEntrypointTool,
+    setVscodePythonInterpreterTool,
+    generateImageTool,
+    analyzeImageTool,
+    createSvgAssetTool,
+    processImageAssetTool,
+    requestUserInputTool,
+    submitResponseTool,
+    editPlanTool,
+    reportPlanStatusTool,
+    runVerificationTool,
+    extractYoutubeTranscriptTool,
+    summarizeTextTool,
+    rlmReplTool,
+    moltbookActionTool,
+    waitTool,
+    getEnvironmentDetailsTool,
+    prepareEnvironmentTool
 ];
 
 export const enabledToolsList = [
@@ -76,5 +123,9 @@ export const enabledToolsList = [
     'update_function',
     'execute_command',
     'submit_response',
-    'read_code_graph'
+    'read_code_graph',
+    'build_skill',
+    'manage_skills',
+    'project_memory',
+    'store_knowledge'
 ];

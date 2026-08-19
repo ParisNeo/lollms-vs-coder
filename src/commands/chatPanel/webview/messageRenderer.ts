@@ -11,7 +11,7 @@ import cytoscapeDagre from 'cytoscape-dagre';
 cytoscape.use(coseBilkent);
 cytoscape.use(cytoscapeDagre);
 import { renderWorkspaceMatrix, openRawCodeModal } from './ui.js';
-import { applyDiffToString, applySearchReplace } from './utils.js';
+import { applyDiffToString, applySearchReplace, normalizeAiderContent } from './utils.js';
 
 // CodeMirror imports
 import { EditorState } from "@codemirror/state";
@@ -1141,6 +1141,9 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             if (headerMatch && headerMatch[1] && headerMatch[1] !== '/dev/null') diffFilePath = headerMatch[1].trim();
         }
 
+        // Normalize any lone ======= separators or un-bracketed hunks to standard Aider format
+        codeText = normalizeAiderContent(codeText);
+
         // Improved Regex: More permissive with line endings and prevents eating into the 
         // replacement code if it starts with leading newlines.
         const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
@@ -1149,7 +1152,6 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
 
         const hasAiderMarkers = codeText.includes('<<<<<<< SEARCH') && codeText.includes('>>>>>>> REPLACE') && codeText.includes('=======');
 
-        // A block is only "malformed" if the AI's intent was to write a patch (type 'replace' or no header) but the markers are broken
         let isMalformedAider = false;
         if (hasAiderMarkers && !isAider) {
             if (!info || info.type === 'replace') {
@@ -1178,6 +1180,44 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         const summary = document.createElement('summary');
         summary.className = 'code-summary';
         summary.innerHTML = `<div class="summary-lang-label"><span class="lang-badge" data-lang="${language.toLowerCase()}">${language}</span>${pathVal ? ` : <input type="text" class="path-editor-input" value="${pathVal}" style="display:none;"><span class="path-display-label" style="font-family: var(--vscode-editor-font-family); font-size: 11px; font-weight: bold; margin-left: 8px; color: var(--vscode-textLink-foreground); cursor: pointer;" title="Double-click to edit path">${displayPathVal}</span><button class="code-action-btn goto-file-btn" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto: Open this file">Goto</button>` : ''}${isMalformedAider ? '<span class="malformed-badge">Malformed Patch</span>' : ''}</div>`;
+
+        const gotoBtn = summary.querySelector('.goto-file-btn') as HTMLElement;
+        if (gotoBtn) {
+            gotoBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
+                if (finalPath) {
+                    vscode.postMessage({ command: 'openFile', path: finalPath.trim() });
+                }
+            };
+        }
+
+        const pathDisplayLabel = summary.querySelector('.path-display-label') as HTMLElement;
+        const pathEditorInput = summary.querySelector('.path-editor-input') as HTMLInputElement;
+        if (pathDisplayLabel && pathEditorInput) {
+            pathDisplayLabel.ondblclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                pathDisplayLabel.style.display = 'none';
+                pathEditorInput.style.display = 'inline-block';
+                pathEditorInput.focus();
+                pathEditorInput.select();
+            };
+            pathEditorInput.onblur = () => {
+                pathDisplayLabel.textContent = pathEditorInput.value;
+                pathDisplayLabel.style.display = 'inline-block';
+                pathEditorInput.style.display = 'none';
+            };
+            pathEditorInput.onkeydown = (e) => {
+                if (e.key === 'Enter') {
+                    pathEditorInput.blur();
+                } else if (e.key === 'Escape') {
+                    pathEditorInput.value = pathVal;
+                    pathEditorInput.blur();
+                }
+            };
+        }
 
         const actions = document.createElement('div');
         actions.className = 'code-actions';

@@ -773,6 +773,14 @@ export class LollmsAPI {
         };
     });
 
+    // 🛡️ DEFENSIVE PAYLOAD NORMALIZATION: Ensure at least one 'user' message exists across all backends
+    if (!sanitizedMessages.some(m => m.role === 'user')) {
+        sanitizedMessages.push({
+            role: 'user',
+            content: 'Please proceed and generate the response based on the system instructions provided.'
+        });
+    }
+
     // =========================================================================
     // 🛡️ FINAL API OUTBOUND LOG (DEBUG)
     // =========================================================================

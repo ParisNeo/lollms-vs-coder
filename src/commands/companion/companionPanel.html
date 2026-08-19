@@ -1265,10 +1265,13 @@
             document.documentElement.style.setProperty('--bond-color', bondColor);
         }
 
-        function buildMessageDOM(role, id) {
+        function buildMessageDOM(role, id, rawContent) {
             const wrapper = document.createElement('div');
             wrapper.className = 'message-wrapper ' + (role === 'user' ? 'user-msg-wrapper' : 'assistant-msg-wrapper');
             wrapper.dataset.messageId = id;
+            if (rawContent !== undefined && rawContent !== null) {
+                wrapper.dataset.originalContent = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
+            }
 
             const avatarSlot = document.createElement('div');
             avatarSlot.className = 'msg-avatar-slot';
@@ -1336,10 +1339,11 @@
         function renderHistoryBubbles(history) {
             // Render all previous history bubbles
             (history || []).forEach((msg, idx) => {
+                const textContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
                 if (msg.role === 'user') {
-                    renderUserBubble(msg.content, 'user_' + idx);
+                    renderUserBubble(textContent, 'user_' + idx);
                 } else if (msg.role === 'assistant') {
-                    const dom = buildMessageDOM('assistant', 'assistant_companion_msg_' + idx);
+                    const dom = buildMessageDOM('assistant', 'assistant_companion_msg_' + idx, textContent);
                     const responseBody = dom.body;
 
                     const parsed = processThinkTags(msg.content);
@@ -1416,8 +1420,9 @@
                 let responseBody;
                 if (_chatStreamingEl && container.contains(_chatStreamingEl)) {
                     responseBody = _chatStreamingEl.querySelector('.message-content');
+                    _chatStreamingEl.dataset.originalContent = streamingText;
                 } else {
-                    const dom = buildMessageDOM('assistant', 'assistant_companion_msg_streaming');
+                    const dom = buildMessageDOM('assistant', 'assistant_companion_msg_streaming', streamingText);
                     dom.wrapper.querySelectorAll('.robot-face').forEach(f => f.classList.add('thinking'));
                     container.appendChild(dom.wrapper);
                     _chatStreamingEl = dom.wrapper;
@@ -1529,10 +1534,12 @@
                     if (prompt) {
                         renderUserBubble(prompt, 'user_latest');
                     }
-                    const dom = buildMessageDOM('assistant', 'assistant_companion_msg');
+                    const dom = buildMessageDOM('assistant', 'assistant_companion_msg', text);
                     container.appendChild(dom.wrapper);
                     _respAssistantEl = dom.wrapper;
                     _respPromptRendered = prompt;
+                } else {
+                    _respAssistantEl.dataset.originalContent = text;
                 }
 
                 const responseBody = _respAssistantEl.querySelector('.message-content');
@@ -1674,19 +1681,39 @@
                                 renderArea.innerHTML = DOMPurify.sanitize(marked.parse(message.sparqlResult));
                             }
                         } else {
-                            const loader = card.querySelector('.spinner');
-                            if (loader) loader.style.display = 'none';
-                            const actions = card.querySelector('.review-actions-row');
-                            const body = card.querySelector('.review-body');
-                            if (actions) {
-                                actions.style.display = 'flex';
+                            const applyBtn = card.querySelector('.code-actions .apply-btn');
+                            if (applyBtn) {
+                                applyBtn.disabled = false;
                                 if (message.success) {
-                                    if (body) body.innerHTML = '🏆 <b>Code successfully applied to disk!</b> Please review the changes live in your editor and select your final decision below:';
-                                    setMood('success');
+                                    applyBtn.classList.add('applied');
+                                    applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                                    applyBtn.title = 'Successfully applied to disk!';
                                 } else {
-                                    if (body) body.innerHTML = `<span style="color:var(--error-fg); font-weight:bold;">⚠️ Write Failure:</span> ${message.error || 'Unknown error'}`;
-                                    setMood('error');
+                                    applyBtn.classList.remove('applied');
+                                    applyBtn.innerHTML = '<span class="codicon codicon-error"></span>';
+                                    applyBtn.title = 'Failed to apply: ' + (message.error || 'Unknown error');
                                 }
+                            }
+
+                            let reviewArea = card.querySelector('.review-actions-row');
+                            if (!reviewArea && message.success) {
+                                reviewArea = document.createElement('div');
+                                reviewArea.className = 'review-actions-row';
+                                reviewArea.innerHTML = `
+                                    <button class="review-btn-accept code-action-btn" onclick="reviewDecision('${message.blockId}', 'accept', '${message.filePath || ''}')">
+                                        <i class="codicon codicon-check"></i> Keep Changes
+                                    </button>
+                                    <button class="review-btn-reject code-action-btn" onclick="reviewDecision('${message.blockId}', 'reject', '${message.filePath || ''}')">
+                                        <i class="codicon codicon-discard"></i> Revert
+                                    </button>
+                                `;
+                                card.appendChild(reviewArea);
+                            }
+
+                            if (message.success) {
+                                setMood('success');
+                            } else {
+                                setMood('error');
                             }
                         }
                     }
@@ -1829,12 +1856,25 @@
         }
 
         function startEdit(wrapper, id, role) {
-            let originalContent = "";
-            try {
-                originalContent = JSON.parse(wrapper.dataset.originalContent || '""');
-            } catch {
-                originalContent = "";
+            let originalContent = wrapper.dataset.originalContent;
+
+            if (!originalContent) {
+                const contentEl = wrapper.querySelector('.message-content');
+                if (contentEl) {
+                    originalContent = contentEl.innerText || contentEl.textContent || "";
+                }
             }
+
+            if (typeof originalContent === 'string' && (originalContent.startsWith('"') || originalContent.startsWith('{') || originalContent.startsWith('['))) {
+                try {
+                    const parsed = JSON.parse(originalContent);
+                    if (typeof parsed === 'string') {
+                        originalContent = parsed;
+                    }
+                } catch {}
+            }
+
+            originalContent = (originalContent || "").trim();
 
             const body = wrapper.querySelector('.message-content');
             const actions = wrapper.querySelector('.message-actions');
@@ -1845,8 +1885,8 @@
 
             const textarea = document.createElement('textarea');
             textarea.className = 'edit-textarea';
-            textarea.style.cssText = "width:100%; height:80px; background:var(--vscode-input-background); color:var(--vscode-input-foreground); border:1px solid var(--vscode-input-border); border-radius:6px; padding:6px; box-sizing:border-box;";
-            textarea.value = typeof originalContent === 'string' ? originalContent : JSON.stringify(originalContent);
+            textarea.style.cssText = "width:100%; min-height:90px; background:var(--vscode-input-background); color:var(--vscode-input-foreground); border:1px solid var(--vscode-input-border); border-radius:6px; padding:8px; font-family:var(--vscode-editor-font-family, inherit); font-size:12.5px; box-sizing:border-box; resize:vertical;";
+            textarea.value = originalContent;
 
             const buttons = document.createElement('div');
             buttons.className = 'edit-buttons';
@@ -1873,23 +1913,52 @@
                 e.stopPropagation();
                 const newVal = textarea.value.trim();
                 if (newVal) {
+                    wrapper.dataset.originalContent = newVal;
                     vscode.postMessage({
                         command: 'updateMessage',
                         messageId: id,
                         newContent: newVal
                     });
+                    if (role === 'user') {
+                        body.textContent = newVal;
+                    } else {
+                        renderResponse(newVal, activePrompt, true);
+                    }
                 }
                 editOverlay.remove();
                 actions.style.display = 'flex';
             };
 
-            buttons.append(cancelBtn, saveBtn);
+            if (role === 'user') {
+                const resubmitBtn = document.createElement('button');
+                resubmitBtn.className = 'edit-save-btn apply-btn';
+                resubmitBtn.innerHTML = '<span class="codicon codicon-send"></span> Save & Ask';
+                resubmitBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    const newVal = textarea.value.trim();
+                    if (newVal) {
+                        wrapper.dataset.originalContent = newVal;
+                        vscode.postMessage({
+                            command: 'submitPrompt',
+                            text: newVal,
+                            mode: activeMode
+                        });
+                    }
+                    editOverlay.remove();
+                    actions.style.display = 'flex';
+                };
+                buttons.append(cancelBtn, saveBtn, resubmitBtn);
+            } else {
+                buttons.append(cancelBtn, saveBtn);
+            }
+
             editOverlay.append(textarea, buttons);
 
             body.innerHTML = '';
             body.appendChild(editOverlay);
             actions.style.display = 'none';
             textarea.focus();
+            textarea.setSelectionRange(textarea.value.length, textarea.value.length);
         }
 
         function enhanceCodeBlocks(container, messageId, contentSource, isFinal = false) {
@@ -1978,6 +2047,7 @@
         window.clearResponse = clearResponse;
         window.startEdit = startEdit;
         window.enhanceCodeBlocks = enhanceCodeBlocks;
+        window.reviewDecision = reviewDecision;
         window.loadHistory = (id) => {
             vscode.postMessage({ command: 'loadHistory', id: id });
             toggleHistory();

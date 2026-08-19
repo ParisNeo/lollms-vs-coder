@@ -15,11 +15,24 @@ export const manageSkillsTool: ToolDefinition = {
 
         if (!discussion.importedSkills) discussion.importedSkills = [];
 
-        for (const id of params.skill_ids) {
-            if (params.action === 'load') {
-                if (!discussion.importedSkills.includes(id)) discussion.importedSkills.push(id);
+        const rawAction = params.action || (params as any).mode || (params as any).operation || 'load';
+        const action = String(rawAction).toLowerCase().trim() === 'unload' ? 'unload' : 'load';
+
+        let targetIds: string[] = [];
+        if (Array.isArray(params.skill_ids)) targetIds = params.skill_ids;
+        else if (Array.isArray((params as any).skillIds)) targetIds = (params as any).skillIds;
+        else if (Array.isArray((params as any).skills)) targetIds = (params as any).skills;
+        else if (typeof (params as any).skill_ids === 'string') targetIds = [(params as any).skill_ids];
+        else if (typeof (params as any).skill_id === 'string') targetIds = [(params as any).skill_id];
+        else if (typeof (params as any).id === 'string') targetIds = [(params as any).id];
+
+        for (const id of targetIds) {
+            const cleanId = String(id).trim();
+            if (!cleanId) continue;
+            if (action === 'load') {
+                if (!discussion.importedSkills.includes(cleanId)) discussion.importedSkills.push(cleanId);
             } else {
-                discussion.importedSkills = discussion.importedSkills.filter(s => s !== id);
+                discussion.importedSkills = discussion.importedSkills.filter(s => s !== cleanId);
             }
         }
         

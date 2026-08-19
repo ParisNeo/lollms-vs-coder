@@ -986,6 +986,13 @@ if (dom.sendButton) {
         });
     }
 
+    const resetDiscussionToolsBtn = document.getElementById('reset-discussion-tools-btn');
+    if (resetDiscussionToolsBtn) {
+        resetDiscussionToolsBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'resetDiscussionCapabilities' });
+        });
+    }
+
     if (dom.saveDiscussionToolsBtn) {
         dom.saveDiscussionToolsBtn.addEventListener('click', () => {
             const partialFormat = (document.querySelector('input[name="cap-partialFormat"]:checked') as HTMLInputElement)?.value || 'aider';
@@ -1952,6 +1959,21 @@ if (dom.sendButton) {
         const closeMemBtn = target.closest('.task-memory-header .codicon-close');
         if (closeMemBtn) {
             closeMemBtn.closest('.task-memory-render-area')?.classList.remove('visible');
+            return;
+        }
+
+        // --- GOTO FILE BUTTON HANDLER ---
+        const gotoBtn = target.closest('.goto-file-btn') as HTMLElement;
+        if (gotoBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            const parentBlock = gotoBtn.closest('.code-collapsible, .generation-block, details, .summary-lang-label');
+            const pathInp = parentBlock?.querySelector('.path-editor-input') as HTMLInputElement;
+            const pathDisplay = parentBlock?.querySelector('.path-display-label') as HTMLElement;
+            const targetPath = pathInp?.value || pathDisplay?.textContent || "";
+            if (targetPath) {
+                vscode.postMessage({ command: 'openFile', path: targetPath.trim() });
+            }
             return;
         }
 

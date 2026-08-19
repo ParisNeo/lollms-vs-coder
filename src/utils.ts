@@ -316,6 +316,54 @@ function calculateLineSimilarity(line1: string, line2: string): number {
 }
 
 /**
+ * Normalizes Aider Search/Replace block content.
+ * Handles:
+ * 1. Standard Aider: <<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE
+ * 2. Indented Aider markers: "  <<<<<<< SEARCH" -> "<<<<<<< SEARCH"
+ * 3. AI emitting ONLY the "=======" separator without outer <<<<<<< SEARCH and >>>>>>> REPLACE markers.
+ */
+export function normalizeAiderContent(rawBlock: string): string {
+    if (!rawBlock || typeof rawBlock !== 'string') return '';
+
+    let text = rawBlock.replace(/\r\n/g, '\n');
+
+    // 1. If it already has <<<<<<< SEARCH and >>>>>>> REPLACE, normalize markers to line start
+    if (text.includes('<<<<<<< SEARCH') && text.includes('>>>>>>> REPLACE')) {
+        return text.replace(/^[ \t]*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)[ \t]*/gm, '$1');
+    }
+
+    // 2. If it has <<<<<<< SEARCH and ======= but missing closing >>>>>>> REPLACE
+    if (text.includes('<<<<<<< SEARCH') && text.includes('=======')) {
+        let normalized = text.replace(/^[ \t]*(<<<<<<< SEARCH|=======)[ \t]*/gm, '$1');
+        if (!normalized.includes('>>>>>>> REPLACE')) {
+            normalized = normalized.trimEnd() + '\n>>>>>>> REPLACE';
+        }
+        return normalized;
+    }
+
+    // 3. If the AI emitted ONLY the ======= separator without <<<<<<< SEARCH and >>>>>>> REPLACE
+    const separatorRegex = /^[ \t]*={5,}[ \t]*$/m;
+    if (separatorRegex.test(text)) {
+        const parts = text.split(separatorRegex);
+        if (parts.length === 2) {
+            const searchPart = parts[0];
+            const replacePart = parts[1];
+            return `<<<<<<< SEARCH\n${searchPart.trimEnd()}\n=======\n${replacePart.trimStart()}\n>>>>>>> REPLACE`;
+        } else if (parts.length > 2) {
+            let result = '';
+            for (let i = 0; i < parts.length - 1; i += 2) {
+                const s = parts[i];
+                const r = parts[i + 1] || '';
+                result += `<<<<<<< SEARCH\n${s.trimEnd()}\n=======\n${r.trimStart()}\n>>>>>>> REPLACE\n\n`;
+            }
+            return result.trim();
+        }
+    }
+
+    return text;
+}
+
+/**
  * Applies a Search/Replace (Aider-style) block to content.
  * Includes indentation detection and automatic correction.
  */
@@ -710,52 +758,81 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
         operationalMandate = "\n### 🦾 OPERATIONAL AUTHORITY: ACTIVE\nYou have permission to use JSON tool calls to interact with the filesystem, terminal, and vision systems directly.\n";
     } else if (isDynamic) {
         const allTools = (context as any)?.toolManager?.getAllTools() || [];
+        const isSparqlActive = capabilities?.sparqlEnabled !== false;
+        const isSymbolModeActive = capabilities?.enableSymbolMode !== false;
+        const isWebSearchActive = capabilities?.webSearch !== false;
+
+        const sparqlDynamicRule = isSparqlActive ? `
+    ### 🧱 LIGHTWEIGHT ARCHITECTURAL EXPLORATION (MANDATORY ORDER OF OPERATIONS)
+    - **SPARQL FIRST**: When asked to locate classes, verify imports, check method signatures, or find where a function is called, you **MUST** use the \`<query_architecture>\` tag to perform a fast, token-efficient SPARQL-lite query on the codebase map first.
+    - **NO PREMATURE FULL READS**: Do **NOT** use \`add_files_to_context\` or \`read_file\` to search for definitions. Peeking or loading files with full contents is extremely expensive and wastes your token budget. Use SPARQL queries to inspect the ontology nodes first, and only load files when you are 100% sure you need to edit or review their detailed inner logic.
+` : "";
+
+        const authorizedXmlTags = [
+            `<add_files_to_context>\npath/to/file\n</add_files_to_context>`,
+            isSparqlActive ? `<query_architecture>\nSELECT ?x WHERE { ?x s:type s:Class }\n</query_architecture>` : null,
+            `<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>`
+        ].filter(Boolean).map(tag => `- \`${tag}\``).join('\n    ');
+
+        const availableToolsList = allTools.filter((t: any) => {
+            if (t.name === 'execute_command' || t.name === 'edit_code') return false;
+            if (!isSymbolModeActive && t.name === 'update_function') return false;
+            if (!isSparqlActive && (t.name === 'query_architecture' || t.name === 'read_code_graph')) return false;
+            if (!isWebSearchActive && (t.name === 'search_web' || t.name === 'search_wikipedia' || t.name === 'scrape_website')) return false;
+            return true;
+        }).map((t: any) => `- \`${t.name}\`: ${t.description.split('.')[0]}`).join('\n    ');
+
         operationalMandate = `
     ### 🧠 DYNAMIC MODE PROTOCOL (ACTIVE)
     You are operating under **Dynamic Mode (Multi-Turn Chat loop)**.
     This means you can call tools, receive results, and iterate *inside this single chat turn* without waiting for user interaction!
-
-    ### 🧱 LIGHTWEIGHT ARCHITECTURAL EXPLORATION (MANDATORY ORDER OF OPERATIONS)
-    - **SPARQL FIRST**: When asked to locate classes, verify imports, check method signatures, or find where a function is called, you **MUST** use the \`<query_architecture>\` tag to perform a fast, token-efficient SPARQL-lite query on the codebase map first.
-    - **NO PREMATURE FULL READS**: Do **NOT** use \`add_files_to_context\` or \`read_file\` to search for definitions. Peeking or loading files with full contents is extremely expensive and wastes your token budget. Use SPARQL queries to inspect the ontology nodes first, and only load files when you are 100% sure you need to edit or review their detailed inner logic.
-
+${sparqlDynamicRule}
     **STRICT OPERATIONAL RULES:**
-    1. **INTERCEPTED EXECUTION**: When you output an XML tool tag (like \`<add_files_to_context>\`, \`<query_architecture>\`, or \`<lollms_tool>\`), the system will instantly intercept your stream, run the tool, and prompt you to continue.
+    1. **INTERCEPTED EXECUTION**: When you output an XML tool tag, the system will instantly intercept your stream, run the tool, and prompt you to continue.
     2. **ONE TOOL AT A TIME**: Output exactly one tool call per message, and immediately STOP writing. Do not output multiple tools or trailing prose after the closing tag of your tool.
     3. **NO PROJECT-WIDE ADDITIONS**: You are **STRICTLY FORBIDDEN** from importing or reading the entire project directory (\`.\` or the workspace root). 
-       - If you need code context, you must target specific subfolders (e.g. \`src/auth/\`) or individual files. 
-       - Adding too many files will bloat your memory and result in a token-cap rejection.
-    4. **TOKEN BUDGET LIMIT**: If your active context exceeds **85%** of the model's limit, the system will reject your tool call and force you to prune. Use \`remove_files\` to selectively remove files before requesting more.
-    5. **TEMPORARY SELECTION**: You can use \`add_files_to_context\` or \`remove_files_from_context\` to temporarily load or prune files from your memory to focus better on the task. Once your final answer is compiled, the system will automatically restore the user's original context matrix.
-    6. **WEB DISCOVERY**: If your context lacks the required information, use the web search tools (\`search_web\`, \`search_wikipedia\`) to fetch recent documentation. Do NOT hallucinate.
-    7. **NO AUTO-APPLY**: While you have full autonomy to read files, run searches, or query SPARQL, you are **FORBIDDEN** from modifying files. Any code updates you suggest must be presented to the user to review and apply manually.
+       - Target specific subfolders or individual files.
+    4. **TOKEN BUDGET LIMIT**: If your active context exceeds **85%** of the model's limit, prune using \`remove_files\` before requesting more.
+    5. **TEMPORARY SELECTION**: You can use \`add_files_to_context\` or \`remove_files_from_context\` to temporarily load or prune files from your memory to focus better on the task.
+    6. **NO AUTO-APPLY**: Any code updates you suggest must be presented to the user to review and apply manually.
 
     **AUTHORIZED TOOLS (OUTPUT XML TAGS VERBATIM):**
-    - \`<add_files_to_context>\npath/to/file\n</add_files_to_context>\`
-    - \`<query_architecture>\nSELECT ?x WHERE { ?x s:type s:Class }\n</query_architecture>\`
-    - \`<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>\`
-    
+    ${authorizedXmlTags}
+
     *Available Tools for the <lollms_tool> JSON name parameter:*
-    ${allTools.filter((t: any) => t.name !== 'execute_command' && t.name !== 'edit_code').map((t: any) => `- \`${t.name}\`: ${t.description.split('.')[0]}`).join('\n    ')}
+    ${availableToolsList}
     `;
     } else {
         // --- DISCUSSION MODE: SCOPE-AWARE FILTERING ---
-        // Only show tools that the user has explicitly equipped in the HUD
         const allTools = (context as any)?.toolManager?.getEnabledTools() || [];
-        const HUD_SAFE_LIST = ['generate_image', 'edit_image_asset', 'add_files_to_context', 'record_milestone', 'record_discovery'];
+        const isMemoryActive = capabilities?.projectMemoryEnabled !== false;
+        const isVisionActive = capabilities?.enableImages !== false;
+
+        const HUD_SAFE_LIST = [
+            isVisionActive ? 'generate_image' : null,
+            isVisionActive ? 'edit_image_asset' : null,
+            'add_files_to_context',
+            'record_milestone',
+            'record_discovery'
+        ].filter(Boolean);
+
         const activeTools = allTools.filter((t: any) => HUD_SAFE_LIST.includes(t.name));
+
+        const authorizedTags = [
+            `- \`<add_files_to_context>\`: Add files from project workspace.`,
+            isMemoryActive ? `- \`<project_memory>\`: Save an architectural fact or coding standard.` : null,
+            `- \`<lollms_tool name="tool_name" params='{...}' />\`: Request execution of other specialized tools.`
+        ].filter(Boolean).join('\n    ');
 
         operationalMandate = `
     ### 🛡️ DISCUSSION MODE: ACTIONS
     You are currently in 'Discussion Mode'. You cannot execute code or shell commands autonomously.
     You can request user execution of certain tools by using XML tags on a new line:
-    - \`<add_files_to_context>\`: Add files from project workspace.
-    - \`<project_memory>\`: Save an architectural fact or coding standard.
-    - \`<lollms_tool name="tool_name" params='{...}' />\`: Request execution of other specialized tools.
+    ${authorizedTags}
 
     **AUTHORIZED TAGS:**
+    ${activeTools.map((t: any) => `- **${t.name}**: \`<lollms_tool name="${t.name}" params='{...}' />\``).join('\n    ')}
     `;
-    operationalMandate += activeTools.map((t: any) => `- **${t.name}**: \`<lollms_tool name="${t.name}" params='{...}' />\``).join('\n')
     }
 
     return finalizedBasePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness;

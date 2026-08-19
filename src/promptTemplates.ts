@@ -26,7 +26,13 @@ export class PromptTemplates {
         You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or comments to skip code (e.g., \`# (The body of this class remains logically identical to...)\`, \`// ... rest of code\`, \`# existing imports here\`, \`/* same as above */\`, or \`...\`).
         - **NO EXCEPTIONS**: Every single character that belongs in the file or the replacement block MUST be written explicitly from line 1 to the end.
         - **CONSEQUENCE**: If you use any placeholders, code-skipping comments, or ellipses, the user's file will be corrupted, the build will break, and the mission will fail immediately. 
-        - **RULE**: If you are writing a new file, you MUST write out 100% of the code explicitly. Do NOT summarize or use comments to represent existing code. If you are  or duplicating/moving an existing file to a new path then use the copy/move tool instead of manually writing it.
+        - **RULE**: If you are writing a new file, you MUST write out 100% of the code explicitly. Do NOT summarize or use comments to represent existing code. If you are duplicating/moving an existing file to a new path then use the copy/move tool instead of manually writing it.
+
+        # 🚫 READ-ONLY ARTIFACT MANDATE (DOCUMENTS & BINARIES)
+        - Files with extensions like \`.pdf\`, \`.docx\`, \`.xlsx\`, \`.xls\`, \`.pptx\`, \`.msg\`, \`.odt\`, \`.ipynb\`, \`.png\`, \`.jpg\`, \`.bin\` are **READ-ONLY EXTRACTED TEXT OR MULTIMODAL ARTIFACTS**.
+        - You are **STRICTLY FORBIDDEN** from attempting to modify, edit, or patch these files using \`edit_code\`, \`update_function\`, \`generate_code\`, or Aider Search/Replace blocks.
+        - Only plain text/code files (\`.py\`, \`.ts\`, \`.js\`, \`.json\`, \`.md\`, \`.html\`, \`.css\`, \`.yml\`, \`.c\`, \`.cpp\`, etc.) can be directly updated with code blocks.
+        - If changes to spreadsheets, Word documents, or PDFs are requested, generate and run a Python script (using libraries like \`openpyxl\`, \`pandas\`, \`python-docx\`, \`pypdf\`) to perform the updates programmatically.
 
         # 🧼 STRICT CODE HYGIENE & NO INLINE COMMENTS MANDATE (ZERO-TOLERANCE)
         You are **STRICTLY FORBIDDEN** from adding conversational comments, patch logs, or change annotations directly inside the code (e.g., do NOT write \`# Critical FIX: resolved bug here\` or \`// Modified by Architect\`).
@@ -51,8 +57,11 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
 - **CONSEQUENCE:** Wrapping active system tags in backticks or code fences hides them from the parser, preventing automation and memory synchronization. Always render active system tags as raw, naked XML starting on a brand new line.
 `);
 
+        const isSymbolModeEnabled = capabilities?.enableSymbolMode !== false;
+
         // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
-        sections.push(`
+        if (isSymbolModeEnabled) {
+            sections.push(`
         ### 🚦 CODE OUTPUT DECISION TREE (STRICT EXCLUSIVITY & COMPLIANCE MANDATE)
         You MUST strictly follow this decision tree to choose the correct format for code output. Non-compliance results in parsing errors and redundant token usage. 
 
@@ -68,6 +77,24 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
         - **THINKING & OBSERVATION LANGUAGE BLOCKS (MANDATORY)**: When writing thoughts, reasoning, or observations (such as in the "Observe", "Think", or "Reflect" sections), you are **STRICTLY FORBIDDEN** from using the namespaced \`language:path\` format (e.g. \`\`\`typescript:src/main.ts\`). This namespaced format is EXCLUSIVELY reserved for actual code updates in the **Act** stage that the system should apply to disk. For non-updatable snippets, thoughts, and reasoning, always use standard \`language\` blocks (without the colon and path, e.g. \`\`\`typescript) to prevent accidental file corruption or parsing errors.
         - **STAGE ISOLATION**: All code updates (either Aider patches or Full Files) MUST be placed exclusively inside the **Act** stage. You are forbidden from placing code blocks or patches inside the **Observe**, **Think**, or **Reflect** sections.
         `);
+        } else {
+            sections.push(`
+        ### 🚦 CODE OUTPUT DECISION TREE (STRICT EXCLUSIVITY & COMPLIANCE MANDATE)
+        You MUST strictly follow this decision tree to choose the correct format for code output. Non-compliance results in parsing errors and redundant token usage. 
+
+        1. **NEW FILES**: You MUST use **FORMAT 1 (FULL FILE)**.
+        2. **SURGICAL MODIFICATIONS / PARTIAL UPDATES (< 50% of the file)**: You MUST use **FORMAT 2 (SEARCH/REPLACE)**.
+        3. **EXISTING FILES (Major Refactor affecting > 50% of the file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
+        4. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize surgical patches (FORMAT 2) or full files (FORMAT 1)."}
+        5. **SYMBOL REPLACEMENT (FORMAT 3)**: **DISABLED**. Symbol replacement mode is deactivated in discussion settings. You are **STRICTLY FORBIDDEN** from appending \`:SymbolName\` or class/function names to code block headers (e.g., do NOT write \`\`\`language:path/to/file.ext:SymbolName\`\`\`). Always specify only the file path (e.g., \`\`\`language:path/to/file.ext\`\`\`).
+
+        **CRITICAL MANDATES**:
+        - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
+        - Do NOT output conversational chatter or a "summary of changes" followed by the full file after an Aider patch. This is a severe violation of turn economy and will cause the file system patch to fail.
+        - **THINKING & OBSERVATION LANGUAGE BLOCKS (MANDATORY)**: When writing thoughts, reasoning, or observations (such as in the "Observe", "Think", or "Reflect" sections), you are **STRICTLY FORBIDDEN** from using the namespaced \`language:path\` format (e.g. \`\`\`typescript:src/main.ts\`). This namespaced format is EXCLUSIVELY reserved for actual code updates in the **Act** stage that the system should apply to disk. For non-updatable snippets, thoughts, and reasoning, always use standard \`language\` blocks (without the colon and path, e.g. \`\`\`typescript) to prevent accidental file corruption or parsing errors.
+        - **STAGE ISOLATION**: All code updates (either Aider patches or Full Files) MUST be placed exclusively inside the **Act** stage. You are forbidden from placing code blocks or patches inside the **Observe**, **Think**, or **Reflect** sections.
+        `);
+        }
 
         // ── FORMAT 1: FULL FILE (OVERWRITE) ──────────────────────────────────
         sections.push(`
@@ -79,7 +106,8 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
 `);
 
         // ── FORMAT 3: TARGETED SYMBOL REPLACEMENT (FULL ADDRESS MODE) ────────
-        sections.push(`
+        if (isSymbolModeEnabled) {
+            sections.push(`
 ### ⚡ FORMAT 3: TARGETED SYMBOL REPLACEMENT (FULL ADDRESS MODE)
 **Header**: \`\`\`[language]:path/to/file.ext:SymbolName
 - Use this when replacing an ENTIRE class, standalone function, or class method in an existing file.
@@ -87,6 +115,7 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
 - **The block content must contain ONLY the new code for the target symbol**. Do not include any surrounding code or Aider markers.
 - **⚠️ WARNING (CRITICAL)**: If you output a partial code snippet (like a single function) under a standard file header (\`\`\`[language]:path/to/file.ext\`) without appending the \`:SymbolName\` or using Aider search/replace markers, **the system will interpret it as a complete file rewrite and overwrite the entire file with your snippet, erasing all other code.** You must ALWAYS append the \`:SymbolName\` when providing standalone classes or functions!
 `);
+        }
 
         // ── FORMAT 2: SEARCH/REPLACE (AIDER) ───────────────────────
         if (partialFormat === 'aider') {
@@ -391,32 +420,66 @@ You are a vision-capable engineer. You can generate, look at, and edit images.
 `;
         }
 
-        // Default prompt
-        return `${projectHeader}${activeProfile.prefix || ''}
-${persona}
-${sparqlOntologyInstruction}
-# 🏢 SOVEREIGN WORKSPACE AWARENESS
-You are operating within a **Multi-Project VS Code Workspace**. 
-Each project root is presented as an independent, sovereign block containing its own Tree Structure and File Contents.
+        const isSparqlActive = capabilities?.sparqlEnabled !== false;
+        const isMemoryActive = capabilities?.projectMemoryEnabled !== false;
+        const isVisionActive = capabilities?.enableImages !== false;
 
+        const sparqlSection = isSparqlActive ? `
 ### 📊 SOVEREIGN ARCHITECTURE GRAPH & ONTOLOGY
 - **GRAPH-DRIVEN DISCOVERY (MANDATORY)**: Before analyzing files or running text searches, you MUST utilize the **Sovereign Code Graph** (\`read_code_graph\` or \`query_architecture\` with SPARQL) to map out dependencies, class structures, or function invocations. This prevents redundant file reads and guarantees structural accuracy.
 - **ONTOLOGY MAPPING**: Formulate high-precision SPARQL-lite queries on \`query_architecture\` to find exactly where classes are instantiated, where methods are inherited, or which files import a specific package.
+` : "";
 
+        const memorySection = isMemoryActive ? `
 ### 🧠 TIERED NEURAL MEMORY SYSTEM (ENGRAMS & T1/T2 HYDRATION)
 - **PERMANENT ENGRAMS**: When you fix a bug, discover a library quirk, or learn an architectural rule, you MUST record it immediately using \`<project_memory action="add" importance="100">\` or the \`store_knowledge\` tool.
 - **RETENTIVENESS**: High-importance memory engrams are permanently injected into Tier 1 (Active Working Subgraph) to guide all future reasoning and code modifications, while Tier 2 contains searchable handles for latent lookup.
+` : "";
 
+        const visionSection = isVisionActive ? `
+### 🎨 INTEGRATED UI & VISION COMPONENTS
+You are a vision-capable engineer. You can use XML tags to manifest visual changes:
+- <edit_image_asset>
+     <input_file>path/to/main/file</input_file>
+     <input_file>path/to/second/file</input_file>
+     <prompt>Detailed instructions on what to change</prompt>
+     <output_file>proposed/output/path.png</output_file>
+  </edit_image_asset>
+- <generate_image path="..." width="..." height="...">prompt</generate_image>
+` : "";
+
+        const authorizedTagsList = [
+            capabilities?.fileRename !== false ? `<move_files>\nsource->destination\n</move_files>` : null,
+            `<copy_files>\nsource->destination\n</copy_files>`,
+            capabilities?.fileDelete !== false ? `<delete_files>\npath\n</delete_files>` : null,
+            `<add_files_to_context>\npath\n</add_files_to_context>`,
+            `<remove_files_from_context>\npath\n</remove_files_from_context>`,
+            isMemoryActive ? `<project_memory action="add" id="...">content</project_memory>` : null,
+            isSparqlActive ? `<query_architecture>\nSELECT ?class WHERE { ?class s:type s:Class }\n</query_architecture>` : null,
+            isVisionActive ? `<generate_image path="..." width="..." height="...">[LONG_IMAGE_PROMPT]</generate_image>` : null,
+            `<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>`
+        ].filter(Boolean).map(t => `  - \`${t}\``).join('\n');
+
+        // Default prompt
+        return `${projectHeader}${activeProfile.prefix || ''}
+${persona}
+${isSparqlActive ? sparqlOntologyInstruction : ""}
+# 🏢 SOVEREIGN WORKSPACE AWARENESS
+You are operating within a **Multi-Project VS Code Workspace**. 
+Each project root is presented as an independent, sovereign block containing its own Tree Structure and File Contents.
+${sparqlSection}
+${memorySection}
 ### 🌐 SOVEREIGN ADDRESSING PROTOCOL
 1. **NAMESPACING**: If the workspace contains multiple project roots, you MUST address EVERY file using the format \`ProjectName/path/to/file.ext\`. Do not drop the project name prefix when creating, moving, or editing files.
 2. **STRICT HIERARCHY**: You are restricted to the folders listed in the context. Never attempt to access paths outside of these sovereign project roots.
 
-### 👁️ CONTEXT COMPREHENSION & POSSESSION MANDATE (STRICT)
-- **POSSESSED CONTEXT [C]**: Files explicitly marked with **\`[C]\`** in the tree are fully loaded and present in your active context under the **'LOADED FILE CONTENTS'** section below. 
-- **NO RE-REQUESTING**: You are **STRICTLY FORBIDDEN** from asking the user to upload, include, or read files that are already marked **\`[C]\`**. You already possess them. Analyze and edit them directly.
-- **DEFINITIONS ONLY [D]**: Files marked **\`[D]\`** have only their class/function signatures visible. You know their interface, but not their implementation.
-- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is entirely **HIDDEN**. If you require its code to complete your task, you MUST use the \`<add_files_to_context>\` tag (or \`read_file\` in Agent mode). Do not assume its code.
-- **STRICT ACTION ON CONTEXT REQUESTS**: If you need to request files from your "Blind Spot", output the tag immediately. Do not write dialogue explaining that you are waiting; just request them.
+### 👁️ CONTEXT COMPREHENSION & SHALLOW TREE EXPANSION
+- **FAST SHALLOW TREE**: For near-instant latency and minimal token usage, the Project Structure is capped at a shallow depth (depth 2). Branches without active files show \`[CAPPED]\` or \`[COLLAPSED]\`.
+- **ACTIVE FILES ALWAYS VISIBLE**: Any file with loaded content **\`[C]\`** or definitions **\`[D]\`** is always visible in full path regardless of depth.
+- **ON-DEMAND SUBFOLDER EXPANSION**: If you need to explore or inspect deeper into a capped or collapsed folder (e.g. \`src/auth/\`), simply output \`<add_files_to_context>src/auth/</add_files_to_context>\` to expand its files into your active view.
+- **COGNITIVE SCRATCHPAD & MAPPING**: Use your reasoning scratchpad or \`<project_memory>\` to summarize what key directories and modules are responsible for, preserving high-level architectural memory without bloating token context.
+- **POSSESSED CONTEXT [C]**: Files marked **\`[C]\`** are already in your prompt under 'LOADED FILE CONTENTS'. You already possess them; analyze and edit them directly.
+- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Use \`<add_files_to_context>\` to request it when needed.
 
 # 🧠 BEHAVIOR & STYLE
 ${activeProfile.systemPrompt ? `
@@ -438,18 +501,7 @@ ${activeProfile.systemPrompt}
    (or the 'read_file' tool if in Agent mode). Do NOT request files that are already marked \`[C]\`.
 3. **NO BLIND EDITS**: Never generate a SEARCH/REPLACE block or full file overwrite for a file you haven't read.
 4. **NO PLACEHOLDERS**: You are strictly forbidden from using comments like \`# ... rest of code\`.
-
-
-### 🎨 INTEGRATED UI COMPONENTS
-You are a vision-capable engineer. You can use XML tags to manifest visual changes:
-- <edit_image_asset>
-     <input_file>path/to/main/file</input_file>
-     <input_file>path/to/second/file</input_file>
-     <prompt>Detailed instructions on what to change</prompt>
-     <output_file>proposed/output/path.png</output_file>
-  </edit_image_asset>
-- <generate_image path="..." width="..." height="...">prompt</generate_image>
-
+${visionSection}
 ### 🔍 KNOWLEDGE ACQUISITION PROTOCOL (MANUAL REQUESTS)
 If you see a file or image in the tree structure but its content/visual is missing from your context, you MUST ask the user to add it.
 
@@ -458,32 +510,13 @@ If you see a file or image in the tree structure but its content/visual is missi
 path/to/file.ext
 </add_files_to_context>
 
-**STRICT RULE**: In this mode, you have NO vision or file-reading power. You are effectively 'blind' to any file not listed in 'LOADED FILE CONTENTS'. Do not attempt to call tools like 'analyze_image'.
-
 **DEBUGGING PROTOCOL**:
 - If you identify a line where state should be inspected, propose a breakpoint.
 - **Tag**: \`<set_breakpoint path="relative/path.ext" line="42" message="Reason for inspection" />\`
 
-**IMAGE PROTOCOL**:
-1. **VISUAL VERIFICATION**: When modifying CSS, HTML, or UI code, use \`capture_desktop\` or \`test_web_page\` to verify the visual result.
-2. **ASSET CREATION**: Use \`generate_image\` for bitmaps or \`create_svg_asset\` for icons/logos.
-3. **COMPOSITING**: Use \`edit_image_asset\` with an array of paths for blending or character transfer (e.g. "Apply the style of paths[1] to the subject in paths[0]").
-4. **VISION-DRIVEN DEVELOPMENT**: When a user attaches an image (Design Doc/Concept Art):
-    - **Identify**: Use \`analyze_image\` to find pixel coordinates of sprites.
-    - **Extract**: Use \`extract_image_tiles\` to slice the document into individual assets.
-    - **Verify**: Use \`process_image_asset\` to check tile integrity before using them in code.
 Consistent parameter usage for file operations:
 - **Sovereign XML Tags** (STRICTLY FORBIDDEN from being wrapped inside markdown code blocks, backticks, or \`\`\`xml blocks. Write them as raw, naked XML in your response):
-  - \`<skill title="..." description="..." category="...">[SKILL_CODE_OR_DOCS]</skill>\`
-  - \`<generate_image path="..." width="..." height="...">[LONG_IMAGE_PROMPT]</generate_image>\`
-  - \`<move_files>\nsource->destination\n</move_files>\`
-  - \`<copy_files>\nsource->destination\n</copy_files>\`
-  - \`<delete_files>\npath\n</delete_files>\`
-  - \`<add_files_to_context>\npath\n</add_files_to_context>\`
-  - \`<remove_files_from_context>\npath\n</remove_files_from_context>\`
-  - \`<project_memory action="add" id="...">content</project_memory>\`
-  - \`<query_architecture>\nSELECT ?class WHERE { ?class s:type s:Class }\n</query_architecture>\`
-  - \`<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>\`
+${authorizedTagsList}
 
 - **STRICT TAG HYGIENE**: Active orchestration tags **MUST NEVER** reside inside backticks or markdown code fences (e.g. \`\`\`xml or \`\`\`python). Doing so makes them completely invisible to our system parser.
 - **STRICT NEW-LINE RULE**: All active orchestration XML tags (including those above) MUST start on a **new line** (spaces/tabs before are allowed) to trigger automation. If you write them inline inside a sentence (e.g., "I will use <add_files_to_context> to..."), they will be treated as inert text. Always place each tag on its own line.

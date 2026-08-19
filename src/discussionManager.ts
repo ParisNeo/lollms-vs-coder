@@ -93,14 +93,11 @@ export class DiscussionManager {
         await this.context.globalState.update('lollms_last_capabilities', caps);
     }
 
-    public getLastCapabilities(): DiscussionCapabilities {
+    public getDefaultCapabilities(): DiscussionCapabilities {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const allowedFormats = config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
-        
-        // Load default profile ID from config
         const defaultProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
 
-        const defaults: DiscussionCapabilities = {
+        return {
             workerType: 'discussion',
             responseProfileId: defaultProfileId,
             forceFullCode: false,
@@ -142,14 +139,14 @@ export class DiscussionManager {
             herdParticipantModels: [],
             herdCriticEnabled: false,
             agentMode: false,
-            dynamicMode: false, // Default off
+            dynamicMode: false,
             debugMode: false,
             verifierMode: false,
             testMode: config.get<boolean>('testMode') ?? false,
             documentationMode: config.get<boolean>('documentationMode') ?? false,
             maxDebugSteps: 10, 
             autoSkillMode: false,
-            enableTemperature: false, // Default off (meaning we do not send any temperature)
+            enableTemperature: false,
             temperature: config.get<number>('temperature') ?? 0.7,
             ttftTimeout: 0,
             interTokenTimeout: 0,
@@ -170,7 +167,7 @@ export class DiscussionManager {
             forceFullCodePath: false,
             guiState: {
                 agentBadge: true,
-                dynamicBadge: true, // Visible in HUD
+                dynamicBadge: true,
                 debugBadge: true,
                 autoContextBadge: true,
                 herdBadge: true,
@@ -178,7 +175,10 @@ export class DiscussionManager {
                 docsBadge: true
             }
         };
+    }
 
+    public getLastCapabilities(): DiscussionCapabilities {
+        const defaults = this.getDefaultCapabilities();
         const saved = this.context.globalState.get<DiscussionCapabilities>('lollms_last_capabilities');
 
         // Pull Workspace-wide matrix settings
@@ -444,8 +444,13 @@ export class DiscussionManager {
 
     async generateDiscussionTitle(discussion: Discussion): Promise<string | null> {
         if (!discussion.messages || discussion.messages.length === 0) return null;
-        
-        const firstUserMessage = discussion.messages.find(m => m.role === 'user');
+
+        const firstUserMessage = discussion.messages.find(m => 
+            m.role === 'user' && 
+            !m.skipInPrompt && 
+            (typeof m.content === 'string' ? m.content.trim().length > 0 && !m.content.startsWith('FORM_SUBMISSION:') && !m.content.startsWith('STOP_REQUESTED') : true)
+        ) || discussion.messages.find(m => m.role === 'user');
+
         if (!firstUserMessage) return null;
 
         let contentSnippet = "";
@@ -458,12 +463,12 @@ export class DiscussionManager {
                 .join('\n')
                 .substring(0, 2000);
         }
-    
+
+        if (!contentSnippet.trim()) return null;
+
         const systemPrompt: ChatMessage = {
             role: 'system',
-            content: `You are a title generation AI. Create a descriptive, professional title (5 words or less) for the conversation based on the provided user message.
-Your response MUST be a valid JSON object: {"title": "..."}.
-Output ONLY the JSON.`
+            content: `You are a concise discussion titling AI. Create a short, highly descriptive 3 to 6 word title summarizing the user's request. Output ONLY valid JSON: {"title": "Short Title"}. No explanations.`
         };
 
         try {
@@ -472,43 +477,57 @@ Output ONLY the JSON.`
 
             const rawResponse = await this.lollmsAPI.sendChat([
                 systemPrompt, 
-                { role: 'user', content: `Generate a title for a discussion starting with: "${contentSnippet}"` }
-            ], null, undefined, titlingModel);
+                { role: 'user', content: `Generate a short title for this request:\n"${contentSnippet}"` }
+            ], null, undefined, titlingModel, { thinking: false });
 
             let cleanResponse = stripThinkingTags(rawResponse).trim();
 
-            // --- TITLE RECOVERY FALLBACK ---
-            // If the model wrote the JSON inside the thought block
-            if (cleanResponse.length < 3 && rawResponse.trim().length > 10) {
-                const jsonInRaw = rawResponse.match(/\{[\s\S]*\}/);
-                if (jsonInRaw) {
-                    try {
-                        const parsed = JSON.parse(jsonInRaw[0]);
-                        if (parsed.title) return parsed.title.trim().replace(/["']/g, '');
-                    } catch (e) {}
-                }
-
-                // Text fallback: take the last clean line inside thoughts
-                const rawLines = rawResponse.split('\n').map(l => l.trim());
-                const cleanLines = rawLines.filter(l => l.length > 0 && !l.startsWith('<') && !l.startsWith('/') && !l.startsWith('</'));
-                if (cleanLines.length > 0) {
-                    cleanResponse = cleanLines[cleanLines.length - 1];
+            // 1. Try regex extraction of "title": "..."
+            const titleFieldMatch = cleanResponse.match(/"title"\s*:\s*"([^"]+)"/i);
+            if (titleFieldMatch && titleFieldMatch[1]) {
+                const candidate = titleFieldMatch[1].trim().replace(/[#{}"']/g, '');
+                if (candidate && candidate.toLowerCase() !== 'json' && candidate.toLowerCase() !== 'new discussion') {
+                    return candidate.substring(0, 60);
                 }
             }
 
-            const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
+            // 2. Try JSON.parse
+            const jsonMatch = cleanResponse.match(/\{[\s\S]*?\}/);
             if (jsonMatch) {
                 try {
                     const parsed = JSON.parse(jsonMatch[0]);
-                    if (parsed.title) return parsed.title.trim().replace(/["']/g, '');
+                    if (parsed.title && typeof parsed.title === 'string') {
+                        const candidate = parsed.title.trim().replace(/[#{}"']/g, '');
+                        if (candidate && candidate.toLowerCase() !== 'json' && candidate.toLowerCase() !== 'new discussion') {
+                            return candidate.substring(0, 60);
+                        }
+                    }
                 } catch (e) {}
             }
 
-            const fallbackTitle = cleanResponse.split('\n')[0].trim().replace(/[#{}"']/g, '').substring(0, 60);
-            return fallbackTitle || null;
+            // 3. Fallback: Take first clean text line
+            const lines = cleanResponse
+                .replace(/```[\s\S]*?```/g, '')
+                .replace(/```\w*/g, '')
+                .split('\n')
+                .map(l => l.trim().replace(/^(title|subject)\s*:\s*/i, '').replace(/[#{}"']/g, '').trim())
+                .filter(l => l.length > 0 && !l.startsWith('<') && !l.startsWith('{') && l.toLowerCase() !== 'json');
+
+            if (lines.length > 0) {
+                const candidate = lines[0].substring(0, 60);
+                if (candidate && candidate.toLowerCase() !== 'new discussion') {
+                    return candidate;
+                }
+            }
+
+            // 4. Ultimate Fallback: Derive title from first words of snippet
+            const cleanSnippet = contentSnippet.replace(/[#*`\r\n]/g, ' ').replace(/\s+/g, ' ').trim();
+            const words = cleanSnippet.split(' ').slice(0, 6).join(' ');
+            return words ? (words.length > 50 ? words.substring(0, 47) + '...' : words) : "New Discussion";
 
         } catch (error: any) {
-            throw error; 
+            Logger.warn("generateDiscussionTitle failed", error);
+            return null; 
         }
     }
 }

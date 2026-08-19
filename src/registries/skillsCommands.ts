@@ -40,10 +40,26 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, service
         const skill: Partial<Skill> = {
             name: "New Selection Skill",
             content: content,
-            language: editor.document.languageId
+            language: editor.document.languageId,
+            category: "lessons_learned",
+            scope: "local"
         };
 
         SkillEditorPanel.createOrShow(services.extensionUri, services.skillsManager, skill as Skill);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.buildSkillFromExperience', async () => {
+        const activeDiscussion = ChatPanel.currentPanel?.getCurrentDiscussion();
+        const skillPrompt = "Please extract the key architectural rules, technical lessons, and protocols learned from our recent discussion/experience, build a comprehensive skill, and add it to our active context.";
+
+        if (ChatPanel.currentPanel) {
+            await ChatPanel.currentPanel.sendMessage({
+                role: 'user',
+                content: skillPrompt
+            });
+        } else {
+            vscode.window.showInformationMessage("Open a chat panel to extract skills from current experience.");
+        }
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteSkill', async (item: any) => {

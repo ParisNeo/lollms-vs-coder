@@ -1021,7 +1021,7 @@ if (dom.sendButton) {
                 ttftTimeout: parseInt((document.getElementById('modal-ttft-timeout') as HTMLInputElement)?.value || '0', 10),
                 interTokenTimeout: parseInt((document.getElementById('modal-inter-token-timeout') as HTMLInputElement)?.value || '0', 10),
                 contextGovernorEnabled: (document.getElementById('cap-contextGovernorEnabled') as HTMLInputElement)?.checked ?? true,
-                contextGovernorThreshold: parseInt((document.getElementById('modal-governor-threshold') as HTMLInputElement)?.value || '90', 10),
+                contextGovernorThreshold: parseInt((document.getElementById('modal-governor-threshold') as HTMLInputElement)?.value || '95', 10),
                 contextGovernorPermanentPruning: (document.getElementById('cap-contextGovernorPermanentPruning') as HTMLInputElement)?.checked ?? false,
                 contextAggression: dom.contextAggressionSelect?.value || 'respect',
                 forceFullCode: dom.capForceFullCode?.checked ?? false,
@@ -1729,6 +1729,43 @@ if (dom.sendButton) {
      */
     function handleGlobalClick(e: MouseEvent) {
         const target = e.target as HTMLElement;
+
+        // --- GLOBAL MESSAGE BUBBLE COPY DELEGATION ---
+        const copyMsgBtn = target.closest('.copy-msg-btn') as HTMLButtonElement;
+        if (copyMsgBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            const wrapper = copyMsgBtn.closest('.message-wrapper') as HTMLElement;
+            let textToCopy = "";
+            if (wrapper) {
+                const msgDiv = wrapper.querySelector('.message') as HTMLElement;
+                if (msgDiv && msgDiv.dataset.originalContent) {
+                    try {
+                        const parsed = JSON.parse(msgDiv.dataset.originalContent);
+                        if (typeof parsed === 'string') textToCopy = parsed;
+                        else if (Array.isArray(parsed)) textToCopy = parsed.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n');
+                        else textToCopy = String(parsed);
+                    } catch {
+                        textToCopy = msgDiv.dataset.originalContent;
+                    }
+                }
+                if (!textToCopy) {
+                    const contentEl = wrapper.querySelector('.message-content');
+                    textToCopy = contentEl ? (contentEl.textContent || '') : '';
+                }
+            }
+
+            if (textToCopy) {
+                vscode.postMessage({ command: 'copyToClipboard', text: textToCopy });
+                const icon = copyMsgBtn.querySelector('i, .codicon');
+                if (icon) {
+                    const origClass = icon.className;
+                    icon.className = 'codicon codicon-check';
+                    setTimeout(() => { icon.className = origClass; }, 2000);
+                }
+            }
+            return;
+        }
 
         // --- HUD Dashboard Clicks ---
         const matrixTrigger = target.closest('.hud-action-trigger');

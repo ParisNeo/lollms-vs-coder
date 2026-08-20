@@ -624,8 +624,6 @@ export class ContextManager {
   // MAIN CONTEXT ASSEMBLY
   // ─────────────────────────────────────────────────────────────
 
-  private _pendingContextPromise: Promise<ContextResult> | null = null;
-
   async getContextContent(options?: {
     includeTree?: boolean,
     signal?: AbortSignal,
@@ -644,42 +642,7 @@ export class ContextManager {
       throw new Error("Operation cancelled");
     }
 
-    if (!this._pendingContextPromise) {
-      // Create the shared promise without letting any single abort signal reject the shared background task
-      this._pendingContextPromise = (async () => {
-        try {
-          return await this._executeGetContextContent({ ...options, signal: undefined });
-        } finally {
-          this._pendingContextPromise = null;
-        }
-      })();
-    }
-
-    const sharedPromise = this._pendingContextPromise;
-
-    // Return a promise that resolves when the shared promise resolves,
-    // but rejects immediately if the caller's specific signal is aborted.
-    if (signal) {
-      return new Promise<ContextResult>((resolve, reject) => {
-        const onAbort = () => {
-          reject(new Error("Operation cancelled"));
-        };
-        signal.addEventListener('abort', onAbort);
-
-        sharedPromise.then(
-          res => {
-            signal.removeEventListener('abort', onAbort);
-            if (!signal.aborted) resolve(res);
-          },
-          err => {
-            signal.removeEventListener('abort', onAbort);
-            if (!signal.aborted) reject(err);
-          }
-        );
-      });
-    }
-
-    return sharedPromise;
+    return await this._executeGetContextContent(options);
   }
 
   private async _executeGetContextContent(options?: {

@@ -336,7 +336,7 @@ function evaluateSparql(query: string): SparqlResult {
     if (!currentGraphData) return res;
 
     const cleanQuery = query.replace(/#.*/g, '').trim();
-    const selectMatch = cleanQuery.match(/SELECT\s+([\?\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
+    const selectMatch = cleanQuery.match(/SELECT\s+(DISTINCT\s+)?([\?\*\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
     const constructMatch = cleanQuery.match(/CONSTRUCT\s*\{([\s\S]+?)\}\s*WHERE\s*\{([\s\S]+?)\}/i);
 
     if (!selectMatch && !constructMatch) {
@@ -344,27 +344,35 @@ function evaluateSparql(query: string): SparqlResult {
     }
 
     res.type = constructMatch ? 'construct' : 'select';
-
-    const whereClause = selectMatch ? selectMatch[2].trim() : constructMatch![2].trim();
+    const whereClause = selectMatch ? selectMatch[3].trim() : constructMatch![2].trim();
     const constructTemplate = constructMatch ? constructMatch[1].trim() : "";
 
-    // Parse WHERE Triple Patterns
     const triples: { s: string, p: string, o: string }[] = [];
+    const filters: string[] = [];
     const lines = whereClause.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/);
+
     for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        const parts = trimmed.split(/\s+/);
-        if (parts.length >= 3) {
-            triples.push({
-                s: parts[0],
-                p: parts[1],
-                o: parts.slice(2).join(' ')
-            });
+        const filterMatch = trimmed.match(/^FILTER\s*\(([\s\S]+)\)$/i);
+        if (filterMatch) {
+            filters.push(filterMatch[1].trim());
+        } else {
+            const parts = trimmed.split(/\s+/);
+            if (parts.length >= 3) {
+                let s = parts[0];
+                let p = parts[1];
+                let o = parts.slice(2).join(' ');
+
+                if (p === 'a' || p === 'rdf:type' || p === 'type') p = 's:type';
+                else if (!p.startsWith('?') && !p.startsWith('s:')) p = `s:${p}`;
+
+                triples.push({ s, p, o });
+            }
         }
     }
 
-    if (triples.length === 0) return res;
+    if (triples.length === 0 && filters.length === 0) return res;
 
     const variables = new Set<string>();
     for (const t of triples) {
@@ -374,14 +382,27 @@ function evaluateSparql(query: string): SparqlResult {
     }
 
     const facts: { s: string, p: string, o: string }[] = [];
+    const nodeMap = new Map<string, any>();
+
     currentGraphData.nodes.forEach((node: any) => {
-        const typeUri = `s:${node.type.charAt(0).toUpperCase() + node.type.slice(1)}`;
-        facts.push({ s: node.id, p: 's:type', o: typeUri });
+        nodeMap.set(node.id, node);
+        const typeCapitalized = node.type ? (node.type.charAt(0).toUpperCase() + node.type.slice(1)) : 'Unknown';
+        facts.push({ s: node.id, p: 's:type', o: `s:${typeCapitalized}` });
         facts.push({ s: node.id, p: 's:name', o: `"${node.label}"` });
+        facts.push({ s: node.id, p: 's:label', o: `"${node.label}"` });
+        if (node.filePath) {
+            facts.push({ s: node.id, p: 's:path', o: `"${node.filePath}"` });
+            facts.push({ s: node.id, p: 's:filePath', o: `"${node.filePath}"` });
+        }
     });
 
     currentGraphData.edges.forEach((edge: any) => {
-        facts.push({ s: edge.source, p: `s:${edge.label}`, o: edge.target });
+        const rel = edge.label.startsWith('s:') ? edge.label : `s:${edge.label}`;
+        facts.push({ s: edge.source, p: rel, o: edge.target });
+        const targetNode = nodeMap.get(edge.target);
+        if (targetNode) {
+            facts.push({ s: edge.source, p: rel, o: `"${targetNode.label}"` });
+        }
     });
 
     const varList = Array.from(variables);
@@ -407,6 +428,21 @@ function evaluateSparql(query: string): SparqlResult {
                 );
                 if (!match) { valid = false; break; }
             }
+
+            if (valid && filters.length > 0) {
+                for (const filter of filters) {
+                    const regexMatch = filter.match(/regex\s*\(\s*(\?[a-zA-Z0-9_]+)\s*,\s*['"]([^'"]+)['"](?:\s*,\s*['"]([iI])['"])?\s*\)/i);
+                    if (regexMatch) {
+                        const varName = regexMatch[1];
+                        const pattern = regexMatch[2];
+                        const flags = regexMatch[3] || '';
+                        const boundVal = bindings[varName] || '';
+                        const re = new RegExp(pattern, flags);
+                        if (!re.test(boundVal)) { valid = false; break; }
+                    }
+                }
+            }
+
             if (valid) {
                 const isDup = results.some(r => varList.every(v => r[v] === bindings[v]));
                 if (!isDup) results.push({ ...bindings });
@@ -416,11 +452,10 @@ function evaluateSparql(query: string): SparqlResult {
 
         const currentVar = varList[varIdx];
         const domain = new Set<string>();
-        for (const t of triples) {
-            if (t.s === currentVar) facts.forEach(f => domain.add(f.s));
-            if (t.p === currentVar) facts.forEach(f => domain.add(f.p));
-            if (t.o === currentVar) facts.forEach(f => domain.add(f.o));
-        }
+        facts.forEach(f => {
+            domain.add(f.s);
+            domain.add(f.o);
+        });
 
         for (const val of domain) {
             bindings[currentVar] = val;
@@ -432,17 +467,25 @@ function evaluateSparql(query: string): SparqlResult {
     solve(0, {});
 
     if (res.type === 'select') {
-        const selectVars = selectMatch![1].trim().split(/\s+/).map(v => v.trim());
+        const selectStr = selectMatch![2].trim();
+        let targetVars: string[] = [];
+        if (selectStr === '*' || selectStr.includes('*')) {
+            targetVars = varList;
+        } else {
+            targetVars = selectStr.split(/\s+/).filter(v => v.startsWith('?'));
+            if (targetVars.length === 0) targetVars = varList;
+        }
+
         results.forEach(row => {
-            selectVars.forEach(v => {
+            targetVars.forEach(v => {
                 const val = row[v];
-                if (val && !val.startsWith('s:')) {
-                    res.nodes.add(val);
+                if (val) {
+                    const clean = val.replace(/^"|"$/g, '');
+                    res.nodes.add(clean);
                 }
             });
         });
     } else {
-        // CONSTRUCT MODE: Parse construct template triples
         const templateTriples: { s: string, p: string, o: string }[] = [];
         const templateLines = constructTemplate.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/);
         for (const line of templateLines) {
@@ -465,16 +508,15 @@ function evaluateSparql(query: string): SparqlResult {
                 const oVal = t.o.startsWith('?') ? row[t.o] : t.o;
 
                 if (sVal && pVal && oVal) {
-                    const cleanS = sVal.replace(/^s:/i, '');
-                    const cleanP = pVal.replace(/^s:/i, '');
-                    const cleanO = oVal.replace(/^s:/i, '');
+                    const cleanS = sVal.replace(/^s:/i, '').replace(/^"|"$/g, '');
+                    const cleanP = pVal.replace(/^s:/i, '').replace(/^"|"$/g, '');
+                    const cleanO = oVal.replace(/^s:/i, '').replace(/^"|"$/g, '');
 
                     res.nodes.add(cleanS);
                     res.nodes.add(cleanO);
 
-                    // Match concrete edges in current graph matching this constructed relation
                     currentGraphData.edges.forEach((edge: any) => {
-                        if (edge.source === cleanS && edge.target === cleanO && edge.label === cleanP) {
+                        if (edge.source === cleanS && edge.target === cleanO) {
                             res.edges.add(edge.id);
                         }
                     });

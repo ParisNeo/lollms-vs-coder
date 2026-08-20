@@ -254,7 +254,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         // Allow .lollms/skills to pass through so we can refresh the library
         if (p.includes(path.join('.lollms', 'skills'))) return false;
         const segments = p.split(/[\\/]/).map(s => s.toLowerCase());
-        return segments.some(s => ['.lollms', '.git', 'node_modules', 'venv', '.venv', 'data', 'data_workspace'].includes(s));
+        return segments.some(s => [
+            '.lollms', '.git', 'node_modules', 'venv', '.venv', 'env', '.env',
+            'bin', 'obj', 'dist', 'build', 'out', 'target', '__pycache__',
+            'data', 'data_workspace'
+        ].includes(s));
     };
 
     let watcherDebounceTimer: NodeJS.Timeout | undefined;

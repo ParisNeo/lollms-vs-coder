@@ -619,11 +619,12 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     }
                 }
             } else {
-                // Determine discussionId from active panel if available
                 const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
                 await services.diffManager.openDiff(fileUri, finalWriteContent, discussionId, {
                     messageId: options?.messageId,
-                    blockIndex: options?.blockIndex
+                    blockIndex: options?.blockIndex,
+                    blockId: options?.blockId,
+                    filePath: sanitizedFilePath
                 });
             }
 
@@ -747,29 +748,63 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
         if (generatedUri && services.diffManager.isLollmsDiff(generatedUri)) {
             const originalUri = services.diffManager.getOriginalUri(generatedUri);
+            const metadata = (services.diffManager as any).getMetadata?.(generatedUri) || (generatedUri as any)._lollmsMeta;
+
             if (originalUri) {
                 const doc = await vscode.workspace.openTextDocument(generatedUri);
                 const newContent = doc.getText();
-                
+
                 const originalDoc = await vscode.workspace.openTextDocument(originalUri);
                 const edit = new vscode.WorkspaceEdit();
-                edit.replace(originalUri, new vscode.Range(0, 0, originalDoc.lineCount, 0), newContent);
-                
+                const lastLine = originalDoc.lineCount > 0 ? originalDoc.lineCount - 1 : 0;
+                edit.replace(originalUri, new vscode.Range(new vscode.Position(0, 0), originalDoc.lineAt(lastLine).range.end), newContent);
+
                 const applied = await vscode.workspace.applyEdit(edit);
                 if (applied) {
                     await originalDoc.save();
 
-                    // Close the diff tab before cleaning up the file
+                    // Notify the active ChatPanel and sync the discussion state
+                    const targetDiscussionId = metadata?.discussionId || ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
+                    const panel = targetDiscussionId ? ChatPanel.panels.get(targetDiscussionId) || ChatPanel.currentPanel : ChatPanel.currentPanel;
+
+                    if (panel) {
+                        const relPath = vscode.workspace.asRelativePath(originalUri, false);
+
+                        if (metadata?.messageId && metadata?.blockIndex !== undefined) {
+                            await panel.updateAppliedState(metadata.messageId, metadata.blockIndex, metadata.hunkIndex);
+                        }
+
+                        panel._panel.webview.postMessage({
+                            command: 'applyAllResult',
+                            messageId: metadata?.messageId,
+                            blockIndex: metadata?.blockIndex,
+                            hunkIndex: metadata?.hunkIndex,
+                            blockId: metadata?.blockId,
+                            filePath: relPath,
+                            success: true,
+                            alreadyApplied: true
+                        });
+
+                        panel._panel.webview.postMessage({
+                            command: 'fileSavedOnDisk',
+                            filePath: relPath,
+                            messageId: metadata?.messageId,
+                            blockIndex: metadata?.blockIndex,
+                            hunkIndex: metadata?.hunkIndex
+                        });
+                    }
+
+                    // Close the diff tab
                     if (vscode.window.activeTextEditor?.document.uri.toString() === generatedUri.toString()) {
                         await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
                     }
 
-                    // Clean up: This deletes the file from disk
+                    // Clean up temporary generated file
                     await services.diffManager.cleanup(generatedUri);
 
-                    // RESTORE: Use DiffManager to restore original document with its cached position
+                    // Restore editor focus
                     await services.diffManager.restoreEditorPosition(originalUri);
-                    vscode.window.showInformationMessage("Changes accepted.");
+                    vscode.window.setStatusBarMessage("Lollms: Changes validated and saved to disk", 3000);
                 }
             }
         }
@@ -811,7 +846,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
     }));
 
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number, autoSave?: boolean, undo?: boolean }): Promise<{ success: boolean; error?: string; repaired?: boolean; alreadyApplied?: boolean }> => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number, autoSave?: boolean, undo?: boolean, blockId?: string }): Promise<{ success: boolean; error?: string; repaired?: boolean; alreadyApplied?: boolean }> => {
         // Clean up hallucinated metadata
         const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
         const ext = path.extname(sanitizedFilePath).toLowerCase();
@@ -826,15 +861,14 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const isUndo = options?.undo === true;
         Logger.info(`Executing replaceCode (${isUndo ? 'UNDO' : 'APPLY'}) for: ${sanitizedFilePath}`);
 
-        const folders = vscode.workspace.workspaceFolders || [];
-
         // Handle "REPAIR_REQUESTED" signal from UI
         if (content === "REPAIR_REQUESTED") {
-            if (!panel || !messageId || options?.blockIndex === undefined) {
-                Logger.warn("ReplaceCode called with REPAIR signal but missing panel, messageId, or blockIndex.");
+            const activePanel = panel || ChatPanel.currentPanel || (messageId ? ChatPanel.panels.get(messageId) : undefined);
+            if (!activePanel || !messageId) {
+                Logger.warn("ReplaceCode called with REPAIR signal but missing active panel or messageId.");
                 return { success: false, error: "Invalid repair context" };
             }
-            const discussion = panel.getCurrentDiscussion();
+            const discussion = activePanel.getCurrentDiscussion();
             if (!discussion) {
                 Logger.warn("ReplaceCode called with REPAIR signal but discussion not found.");
                 return { success: false, error: "Discussion not found" };
@@ -852,18 +886,51 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 messageText = message.content.map((c: any) => c.type === 'text' ? c.text : '').join('\n');
             }
 
-            const blockMatches = [...messageText.matchAll(/```(?:[^\n]*)\n([\s\S]*?)\n```/g)];
-            if (!blockMatches[options.blockIndex]) {
-                Logger.warn(`ReplaceCode: Code block at index ${options.blockIndex} not found in message ${messageId}.`);
+            // Universal Block Extractor: Extracts both XML <file> tags and fenced ``` code blocks
+            const extractedBlocks: { content: string; fullMatch: string; path?: string }[] = [];
+
+            // 1. XML <file> blocks
+            const fileXmlRegex = /<file\s+([^>]*?)>([\s\S]*?)<\/file>/gi;
+            let fMatch;
+            while ((fMatch = fileXmlRegex.exec(messageText)) !== null) {
+                const attrStr = fMatch[1];
+                const pMatch = attrStr.match(/path=["']([^"']+)["']/i);
+                extractedBlocks.push({
+                    content: fMatch[2].trim(),
+                    fullMatch: fMatch[0],
+                    path: pMatch ? pMatch[1].trim() : undefined
+                });
+            }
+
+            // 2. Fenced ``` blocks
+            const fenceRegex = /```(?:[^\r\n]*)\r?\n([\s\S]*?)\r?\n```/g;
+            let fenceMatch;
+            while ((fenceMatch = fenceRegex.exec(messageText)) !== null) {
+                extractedBlocks.push({
+                    content: fenceMatch[1].trim(),
+                    fullMatch: fenceMatch[0]
+                });
+            }
+
+            let targetBlock = extractedBlocks.find(b => b.path === sanitizedFilePath || (b.path && b.path.endsWith('/' + sanitizedFilePath)));
+            if (!targetBlock && options?.blockIndex !== undefined && extractedBlocks[options.blockIndex]) {
+                targetBlock = extractedBlocks[options.blockIndex];
+            }
+            if (!targetBlock && extractedBlocks.length > 0) {
+                targetBlock = extractedBlocks[0];
+            }
+
+            if (!targetBlock) {
+                Logger.warn(`ReplaceCode: Code block could not be extracted from message ${messageId}.`);
                 return { success: false, error: "Code block not found" };
             }
 
-            const originalBlockContent = blockMatches[options.blockIndex][1];
+            const originalBlockContent = targetBlock.content;
             const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
             const matches = [...originalBlockContent.matchAll(aiderRegex)];
 
             let failingHunk = originalBlockContent;
-            if (options.hunkIndex !== undefined && matches[options.hunkIndex]) {
+            if (options?.hunkIndex !== undefined && matches[options.hunkIndex]) {
                 failingHunk = matches[options.hunkIndex][0];
             }
 
@@ -883,56 +950,50 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 return { success: false, error: "Could not read original file" };
             }
 
-            // Perform AI Repair
+            // Perform AI Repair with Timeout Protection
             return await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
                 title: `Lollms: Repairing block for ${sanitizedFilePath}...`,
                 cancellable: true
             }, async (progress, token) => {
                 const abortController = new AbortController();
-                token.onCancellationRequested(() => abortController.abort());
-
-                // Find the failure error from the last completed action history or use a generic one
-                let lastError = "Indentation mismatch or search block not found in original file.";
-                const agent = panel.agentManager;
-                if (agent) {
-                    const recentFailures = (agent as any).failureMemory?.failures || [];
-                    if (recentFailures.length > 0) {
-                        lastError = recentFailures[recentFailures.length - 1].errorOutput;
-                    }
-                }
+                const timeout = setTimeout(() => abortController.abort(), 60000); // 60s timeout guard
+                token.onCancellationRequested(() => {
+                    clearTimeout(timeout);
+                    abortController.abort();
+                });
 
                 const repairPrompt = `### 🛑 SEARCH/REPLACE FAILURE REPORT
-The following block failed to apply to \`${sanitizedFilePath}\`.
+The following patch failed to apply to \`${sanitizedFilePath}\`.
 
-**CRITICAL ERROR:** 
-"${lastError}"
-
-**YOUR PREVIOUS ATTEMPT:**
+**FAILING SEARCH BLOCK:**
 \`\`\`
 ${failingHunk}
 \`\`\`
 
-**ACTUAL FILE CONTENT (REFERENCE):**
+**ACTUAL DISK CONTENT (GROUND TRUTH):**
 \`\`\`
 ${originalFileContent}
 \`\`\`
 
 **INSTRUCTIONS FOR REPAIR:**
-1. Your SEARCH block was NOT a literal, character-for-character match of the file content.
-2. Check for **indentation differences** (spaces vs tabs) and **trailing whitespace**.
-3. Provide the CORRECTED block. Include 2-3 lines of unchanged context in the SEARCH section to ensure a unique match.
-4. Output **ONLY** the corrected \`<<<<<<< SEARCH ... >>>>>>> REPLACE\` block. Do not wrap it in other code blocks.
+1. Your SEARCH block was NOT an exact match of the lines currently in the file.
+2. Check for exact indentation, whitespace, quotes, and punctuation.
+3. Provide the CORRECTED patch block. Include 2-3 lines of unchanged context in the SEARCH block to guarantee a unique match.
+4. Output **ONLY** the corrected \`<<<<<<< SEARCH ... >>>>>>> REPLACE\` block. Do not wrap in markdown or conversation.
 `;
 
                 try {
                     const model = discussion.model || services.lollmsAPI.getModelName();
-                    const response = await panel._lollmsAPI.sendChat([
-                        { role: 'system', content: "You are a surgical code repair engine. You only output valid Aider-style Search/Replace blocks." },
+                    const response = await activePanel._lollmsAPI.sendChat([
+                        { role: 'system', content: "You are a surgical code repair engine. Output ONLY a valid Aider-style Search/Replace block." },
                         { role: 'user', content: repairPrompt }
-                    ], null, abortController.signal, model);
+                    ], null, abortController.signal, model, { thinking: false });
 
-                    if (token.isCancellationRequested) return { success: false, error: "Cancelled" };
+                    clearTimeout(timeout);
+                    if (token.isCancellationRequested || abortController.signal.aborted) {
+                        return { success: false, error: "Repair cancelled." };
+                    }
 
                     const cleanResponse = stripThinkingTags(response);
 
@@ -946,35 +1007,68 @@ ${originalFileContent}
                     if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
                         fixedBlock = cleanResponse.substring(startIdx, endIdx + endTag.length);
                     } else {
-                        // Fallback: search for first code block or raw response
-                        const match = cleanResponse.match(/```(?:\w+)?\n([\s\S]*?)\n```/);
+                        const match = cleanResponse.match(/```(?:\w+)?\r?\n([\s\S]*?)\r?\n```/);
                         fixedBlock = match ? match[1].trim() : cleanResponse.trim();
                     }
 
                     if (fixedBlock && fixedBlock.includes("<<<<<<< SEARCH")) {
-                        // Update the message content in the UI
+                        // Update the message content in persistent discussion memory
                         if (discussion) {
                             const msg = discussion.messages.find((m: any) => m.id === messageId);
                             if (msg && typeof msg.content === 'string') {
                                 const updatedContent = msg.content.replace(failingHunk, fixedBlock);
-                                await panel.updateMessageContent(messageId, updatedContent);
+                                await activePanel.updateMessageContent(messageId, updatedContent);
                             }
                         }
 
-                        if (token.isCancellationRequested) return { success: false, error: "Cancelled" };
-
-                        vscode.window.showInformationMessage("Block repaired. Retrying apply...");
-                        return await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', sanitizedFilePath, fixedBlock, panel, messageId, { 
+                        vscode.window.showInformationMessage("Block repaired. Applying corrected patch...");
+                        const applyResult = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', sanitizedFilePath, fixedBlock, activePanel, messageId, { 
                             ...options, 
                             silent: true,
                             undo: false 
+                        }) as any;
+
+                        // Ensure UI updates to clear spinners
+                        activePanel._panel.webview.postMessage({
+                            command: 'applyAllResult',
+                            messageId: messageId,
+                            filePath: sanitizedFilePath,
+                            blockIndex: options?.blockIndex,
+                            hunkIndex: options?.hunkIndex,
+                            blockId: options?.blockId,
+                            success: applyResult?.success ?? false,
+                            alreadyApplied: applyResult?.success ?? false,
+                            error: applyResult?.error
                         });
+
+                        return applyResult;
                     } else {
                         vscode.window.showWarningMessage("Lollms: The AI suggested a fix but the response format was unrecognizable.");
+                        activePanel._panel.webview.postMessage({
+                            command: 'applyAllResult',
+                            messageId: messageId,
+                            filePath: sanitizedFilePath,
+                            blockIndex: options?.blockIndex,
+                            hunkIndex: options?.hunkIndex,
+                            blockId: options?.blockId,
+                            success: false,
+                            error: "AI repair produced unrecognizable format."
+                        });
                         return { success: false, error: "AI repair produced invalid format" };
                     }
                 } catch (err: any) {
+                    clearTimeout(timeout);
                     vscode.window.showErrorMessage(`Repair failed: ${err.message}`);
+                    activePanel._panel.webview.postMessage({
+                        command: 'applyAllResult',
+                        messageId: messageId,
+                        filePath: sanitizedFilePath,
+                        blockIndex: options?.blockIndex,
+                        hunkIndex: options?.hunkIndex,
+                        blockId: options?.blockId,
+                        success: false,
+                        error: err.message
+                    });
                     return { success: false, error: `Repair failed: ${err.message}` };
                 }
             });
@@ -1205,12 +1299,13 @@ ${originalContent}
                             Logger.info(`replaceCode: Successfully persisted modifications to disk for ${sanitizedFilePath}`);
                         }
                     } else {
-                        // Determine discussionId from active panel if available
                         const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
                         await services.diffManager.openDiff(fileUri, currentContent, discussionId, {
                             messageId: messageId,
                             blockIndex: options?.blockIndex,
-                            hunkIndex: options?.hunkIndex
+                            hunkIndex: options?.hunkIndex,
+                            blockId: options?.blockId,
+                            filePath: sanitizedFilePath
                         });
                     }
                 }

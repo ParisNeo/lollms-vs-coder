@@ -739,7 +739,7 @@ export class LollmsAPI {
     const backend = this.config.backendType;
     const model = modelOverride || this.config.modelName;
     const stream = !!onChunk;
-    
+
     let url = this.baseUrl;
     let headers: any = { 
         'Content-Type': 'application/json',
@@ -747,24 +747,38 @@ export class LollmsAPI {
     };
     let body: any = {};
 
+    const vsConfig = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const { isModelVisionCapable } = require('./utils');
+    const autoSuppress = vsConfig.get<boolean>('autoSuppressImagesForNonVisionModels', true);
+    const visionSupported = options?.capabilities?.enableImages !== false && 
+        (!autoSuppress || isModelVisionCapable(model, vsConfig));
+
     const sanitizedMessages = messages.filter(m => !m.skipInPrompt).map(m => {
         let content = m.content;
 
         // --- MULTIMODAL FORMATTING GUARD ---
         if (Array.isArray(content)) {
-            content = content.map(part => {
-                if (part.type === 'image_url' && part.image_url?.url) {
-                    let url = part.image_url.url;
-                    // If it's a raw base64 string without data prefix, add it.
-                    // Most backends expect "data:image/png;base64,..."
-                    if (!url.startsWith('data:') && !url.startsWith('http')) {
-                        // Heuristic: default to png if unknown
-                        url = `data:image/png;base64,${url}`;
-                    }
-                    return { ...part, image_url: { ...part.image_url, url } };
+            if (!visionSupported) {
+                // Strip image_url from outbound payload for text-only models
+                const textParts = content.filter(part => part.type === 'text').map(part => part.text);
+                const hasMutedImages = content.some(part => part.type === 'image_url');
+                let combined = textParts.join('\n');
+                if (hasMutedImages) {
+                    combined += (combined ? '\n' : '') + `[Attached image omitted: ${model} is a text-only model]`;
                 }
-                return part;
-            });
+                content = combined || '[Image suppressed]';
+            } else {
+                content = content.map(part => {
+                    if (part.type === 'image_url' && part.image_url?.url) {
+                        let url = part.image_url.url;
+                        if (!url.startsWith('data:') && !url.startsWith('http')) {
+                            url = `data:image/png;base64,${url}`;
+                        }
+                        return { ...part, image_url: { ...part.image_url, url } };
+                    }
+                    return part;
+                });
+            }
         }
 
         return {
@@ -802,14 +816,13 @@ export class LollmsAPI {
     // =========================================================================
 
     const controller = new AbortController();
-    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-    
+
     // Resolve timeout values from capabilities or global config with extended default limit (180s)
     // 0 = Infinity (no timer started)
-    const globalTimeout = config.get<number>('requestTimeout') || 180000;
+    const globalTimeout = vsConfig.get<number>('requestTimeout') || 180000;
     const ttftTimeoutValue = options?.capabilities?.ttftTimeout ?? globalTimeout;
     const interTokenTimeoutValue = options?.capabilities?.interTokenTimeout ?? 0;
-    
+
     let timedOut = false;
     let firstTokenReceived = false;
     let activeTimer: NodeJS.Timeout | undefined;
@@ -832,14 +845,14 @@ export class LollmsAPI {
             controller.abort();
         });
     }
-    
+
     // PRIORITY: 
     // 1. Explicit option passed by ChatPanel (The Badge)
     // 2. Global Setting fallback
-    const isThinkingActive = options?.thinking !== undefined ? options.thinking : (config.get<boolean>('lollmsVsCoder.thinkingMode') || false);
-    
-    const reasoningEffort = config.get<string>('lollmsVsCoder.reasoningEffort') || 'medium';
-    const thinkingBudget = config.get<number>('lollmsVsCoder.thinkingBudget') || 16000;
+    const isThinkingActive = options?.thinking !== undefined ? options.thinking : (vsConfig.get<boolean>('thinkingMode') || false);
+
+    const reasoningEffort = vsConfig.get<string>('reasoningEffort') || 'medium';
+    const thinkingBudget = vsConfig.get<number>('thinkingBudget') || 16000;
 
     if (backend === 'ollama') {
         url += '/api/chat';

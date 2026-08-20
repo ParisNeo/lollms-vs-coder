@@ -1602,11 +1602,13 @@ export function syncExpansionBlocks() {
     const globalState = (window as any).state;
     const globalFiles = globalState?.lastContextData?.files || [];
 
-    // Helper for robust path matching
-    const isPathMatch = (pathA: string, pathB: string): boolean => {
-        if (!pathA || !pathB) return false;
-        const cleanA = pathA.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
-        const cleanB = pathB.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
+    // Helper for robust path matching supporting strings and object descriptors
+    const isPathMatch = (pathA: any, pathB: any): boolean => {
+        const strA = typeof pathA === 'string' ? pathA : (pathA?.path || '');
+        const strB = typeof pathB === 'string' ? pathB : (pathB?.path || '');
+        if (!strA || !strB) return false;
+        const cleanA = strA.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
+        const cleanB = strB.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
         return cleanA === cleanB || cleanA.endsWith('/' + cleanB) || cleanB.endsWith('/' + cleanA);
     };
 
@@ -1616,7 +1618,7 @@ export function syncExpansionBlocks() {
         const pathAttr = item.getAttribute('data-path');
         if (!pathAttr) return;
 
-        const isIncluded = globalFiles.some((cf: string) => isPathMatch(cf, pathAttr));
+        const isIncluded = globalFiles.some((cf: any) => isPathMatch(cf, pathAttr));
         if (isIncluded) {
             item.classList.remove('status-not-in-context', 'status-not-exist');
             item.classList.add('status-in-context');
@@ -1632,19 +1634,21 @@ export function syncExpansionBlocks() {
         }
     });
 
-    // 2. Query extension host to check both on-disk existence and context inclusion
-    document.querySelectorAll('.context-expansion-block').forEach((block: any) => {
-        try {
-            const files = JSON.parse(block.dataset.files || '[]');
-            if (files.length > 0 && block.id) {
-                vscode.postMessage({
-                    command: 'checkFilesStatus',
-                    files,
-                    blockId: block.id
-                });
-            }
-        } catch (e) {}
-    });
+    // 2. Query extension host to check both on-disk existence and context inclusion (only when not streaming)
+    if (!state.isGenerating) {
+        document.querySelectorAll('.context-expansion-block').forEach((block: any) => {
+            try {
+                const files = JSON.parse(block.dataset.files || '[]');
+                if (files.length > 0 && block.id) {
+                    vscode.postMessage({
+                        command: 'checkFilesStatus',
+                        files,
+                        blockId: block.id
+                    });
+                }
+            } catch (e) {}
+        });
+    }
 }
 
 /**
@@ -1726,12 +1730,12 @@ export class BadgesPresenter {
 
     public static renderOptionsHubBadge(iconsLabel: string): string {
         return `
-        <div class="badge-group hud-options-parent">
-            <span class="mode-badge active clickable hud-options-trigger" style="background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border-color: var(--vscode-widget-border);" title="Sovereign HUD Options (Hover/Click to configure protocols)">
+        <div class="badge-wrapper hud-options-parent" style="position: relative;">
+            <span class="mode-badge active clickable hud-options-trigger" style="background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border-color: var(--vscode-widget-border);" title="Sovereign HUD Options (Click to configure protocols)">
                 <span class="codicon codicon-settings-gear"></span> 
                 <span class="badge-label" style="margin-left: 4px; letter-spacing: 0.5px; font-weight: bold;">HUD: ${iconsLabel}</span>
             </span>
-            <div class="hud-options-popup" style="display: none; position: absolute; top: calc(100% + 5px); left: 0; z-index: 10001; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); box-shadow: 0 10px 30px rgba(0,0,0,0.5); padding: 10px; border-radius: 8px; flex-direction: column; gap: 8px; min-width: 240px; max-height: 70vh; overflow-y: auto;"></div>
+            <div id="hud-options-menu" class="custom-menu hidden" style="min-width: 260px; padding: 8px 10px; gap: 6px;"></div>
         </div>`;
     }
 
@@ -1886,26 +1890,25 @@ export class BadgesBinder {
         };
     }
 
-    public static bindOptionsHubMenu(group: HTMLElement, caps: any) {
+    public static bindOptionsHubMenu(group: HTMLElement, caps: any, wasVisible: boolean = false) {
         const badge = group.querySelector('.hud-options-trigger') as HTMLElement;
-        const menu = group.querySelector('.hud-options-popup') as HTMLElement;
+        const menu = group.querySelector('#hud-options-menu') as HTMLElement;
         if (!badge || !menu) return;
 
-        // Render checkbox layouts defensively
         const optionsList = [
-            { label: '🧠 Thinking Mode', icon: 'codicon-circuit-board', key: 'thinkingMode', val: !caps.thinkingMode },
-            { label: '📊 SPARQL Engine', icon: 'codicon-graph', key: 'sparqlEnabled', val: caps.sparqlEnabled === false },
-            { label: '🔍 GREP Indexer', icon: 'codicon-search', key: 'grepEnabled', val: caps.grepEnabled === false },
-            { label: '🌍 Web Research', icon: 'codicon-globe', key: 'webSearch', val: !caps.webSearch },
-            { label: '🧬 Project DNA', icon: 'codicon-chip', key: 'projectMemoryEnabled', val: caps.projectMemoryEnabled === false },
-            { label: '💡 Skills Library', icon: 'codicon-lightbulb', key: 'autoSkillMode', val: !caps.autoSkillMode },
-            { label: '⚡ Auto-Apply Blocks', icon: 'codicon-zap', key: 'autoApply', val: !caps.autoApply },
-            { label: '🐞 Debug Protocol', icon: 'codicon-bug', key: 'debugMode', val: !caps.debugMode },
-            { label: '🛡️ Verifier Protocol', icon: 'codicon-shield', key: 'verifierMode', val: !caps.verifierMode },
-            { label: '🧪 Test Protocol', icon: 'codicon-beaker', key: 'testMode', val: !caps.testMode },
-            { label: '📖 Docs Protocol', icon: 'codicon-book', key: 'documentationMode', val: !caps.documentationMode },
-            { label: '🐙 Git Integration', icon: 'codicon-git-branch', key: 'gitAutoWorkflow', val: !caps.gitAutoWorkflow },
-            { label: '🐂 Multi-Agent (Herd)', icon: 'codicon-organization', key: 'herdMode', val: !caps.herdMode }
+            { label: '🧠 Thinking Mode', icon: 'codicon-circuit-board', key: 'thinkingMode' },
+            { label: '📊 SPARQL Engine', icon: 'codicon-graph', key: 'sparqlEnabled' },
+            { label: '🔍 GREP Indexer', icon: 'codicon-search', key: 'grepEnabled' },
+            { label: '🌍 Web Research', icon: 'codicon-globe', key: 'webSearch' },
+            { label: '🧬 Project DNA', icon: 'codicon-chip', key: 'projectMemoryEnabled' },
+            { label: '💡 Skills Library', icon: 'codicon-lightbulb', key: 'autoSkillMode' },
+            { label: '⚡ Auto-Apply Blocks', icon: 'codicon-zap', key: 'autoApply' },
+            { label: '🐞 Debug Protocol', icon: 'codicon-bug', key: 'debugMode' },
+            { label: '🛡️ Verifier Protocol', icon: 'codicon-shield', key: 'verifierMode' },
+            { label: '🧪 Test Protocol', icon: 'codicon-beaker', key: 'testMode' },
+            { label: '📖 Docs Protocol', icon: 'codicon-book', key: 'documentationMode' },
+            { label: '🐙 Git Integration', icon: 'codicon-git-branch', key: 'gitAutoWorkflow' },
+            { label: '🐂 Multi-Agent (Herd)', icon: 'codicon-organization', key: 'herdMode' }
         ];
 
         menu.innerHTML = optionsList.map(opt => {
@@ -1915,48 +1918,69 @@ export class BadgesBinder {
                             !!(caps as any)[opt.key];
 
             return `
-            <div class="hud-opt-row" style="display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 4px 8px; border-radius: 4px; font-size: 12px;">
-                <div style="display: flex; align-items: center; gap: 8px; opacity: 0.9;">
+            <div class="hud-opt-row" style="display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 4px 6px; border-radius: 4px; font-size: 12px; cursor: pointer;">
+                <div style="display: flex; align-items: center; gap: 8px; opacity: 0.9; user-select: none;">
                     <span class="codicon ${opt.icon || 'codicon-gear'}"></span>
                     <span>${opt.label}</span>
                 </div>
-                <label class="switch" style="width: 28px; height: 16px; margin: 0; flex-shrink: 0;">
+                <label class="switch" style="width: 28px; height: 16px; margin: 0; flex-shrink: 0; cursor: pointer;">
                     <input type="checkbox" data-key="${opt.key}" ${checked ? 'checked' : ''} style="margin: 0; cursor: pointer;">
                     <span class="slider" style="border-radius: 16px;"></span>
                 </label>
             </div>`;
         }).join('');
 
-        // Bind Change triggers
-        menu.querySelectorAll('input[type="checkbox"]').forEach((cb: any) => {
-            cb.onchange = (e: Event) => {
+        // Clicking the whole row toggles the checkbox
+        menu.querySelectorAll('.hud-opt-row').forEach((row: any) => {
+            row.onclick = (e: MouseEvent) => {
+                const target = e.target as HTMLElement;
+                if (target.tagName === 'INPUT') return;
+                e.preventDefault();
                 e.stopPropagation();
-                const key = cb.dataset.key;
-                const opt = optionsList.find(o => o.key === key);
-                if (opt) {
-                    vscode.postMessage({
-                        command: 'updateDiscussionCapabilitiesPartial',
-                        partial: { [key]: opt.val }
-                    });
+                const cb = row.querySelector('input[type="checkbox"]') as HTMLInputElement;
+                if (cb) {
+                    cb.checked = !cb.checked;
+                    cb.dispatchEvent(new Event('change', { bubbles: true }));
                 }
             };
         });
 
+        // Bind direct change handlers sending the exact isChecked boolean state
+        menu.querySelectorAll('input[type="checkbox"]').forEach((cb: any) => {
+            cb.onchange = (e: Event) => {
+                e.stopPropagation();
+                const key = cb.dataset.key;
+                const isChecked = cb.checked;
+
+                if (state.capabilities) {
+                    (state.capabilities as any)[key] = isChecked;
+                }
+
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial: { [key]: isChecked }
+                });
+            };
+        });
+
+        menu.onclick = (e) => {
+            e.stopPropagation();
+        };
+
+        if (wasVisible) {
+            menu.classList.add('visible');
+        }
+
         badge.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            const isVisible = menu.style.display === 'flex';
-            document.querySelectorAll('.hud-options-popup').forEach((m: any) => m.style.display = 'none');
-            menu.style.display = isVisible ? 'none' : 'flex';
+            const isOpening = !menu.classList.contains('visible');
+            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+            if (isOpening) {
+                adjustMenuPosition(badge, menu);
+                menu.classList.add('visible');
+            }
         };
-
-        const closeHandler = () => {
-            menu.style.display = 'none';
-            window.removeEventListener('click', closeHandler);
-        };
-        badge.addEventListener('click', () => {
-            setTimeout(() => window.addEventListener('click', closeHandler), 50);
-        });
     }
 
     public static bindOperationalModeMenu(wrapper: HTMLElement, isAssistant: boolean, isDynamic: boolean, isAgent: boolean) {
@@ -2148,7 +2172,7 @@ export function updateBadges() {
             projectMemoryEnabled: true,
             ttftTimeout: 180000,
             interTokenTimeout: 10000,
-            contextGovernorThreshold: 90
+            contextGovernorThreshold: 95
         };
     }
 
@@ -2205,6 +2229,8 @@ export function updateBadges() {
     }
 
     // --- Auxiliary HUD Options Dropdown Hub ---
+    const wasOptionsMenuOpen = document.getElementById('hud-options-menu')?.classList.contains('visible') || false;
+
     const activeIcons: string[] = [];
     if (caps.thinkingMode) activeIcons.push('🧠');
     if (caps.sparqlEnabled !== false) activeIcons.push('📊');
@@ -2224,7 +2250,7 @@ export function updateBadges() {
     const optDiv = document.createElement('div');
     optDiv.innerHTML = BadgesPresenter.renderOptionsHubBadge(iconsLabel);
     const optionsParentGroup = optDiv.firstElementChild as HTMLElement;
-    BadgesBinder.bindOptionsHubMenu(optionsParentGroup, caps);
+    BadgesBinder.bindOptionsHubMenu(optionsParentGroup, caps, wasOptionsMenuOpen);
     container.appendChild(optionsParentGroup);
 
     // --- OPERATIONAL MODE GROUP (Assistant/Co-Engineer/Agent) ---

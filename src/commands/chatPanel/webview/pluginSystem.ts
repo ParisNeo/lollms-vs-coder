@@ -3,8 +3,9 @@ import { DiscussionCapabilities } from './dom';
 export interface PluginContext {
     messageId: string;
     isFinal: boolean;
-    capabilities: DiscussionCapabilities | null;
+    capabilities: any;
     vscode: any;
+    blockIndex?: number;
 }
 
 export interface TagPlugin {

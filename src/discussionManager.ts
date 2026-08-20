@@ -150,7 +150,7 @@ export class DiscussionManager {
             temperature: config.get<number>('temperature') ?? 0.7,
             ttftTimeout: 0,
             interTokenTimeout: 0,
-            contextGovernorThreshold: 90,
+            contextGovernorThreshold: config.get<number>('contextGovernorThreshold') ?? 95,
             contextAggression: 'respect',
             tokenEconomyMode: false,
             disableProjectContext: false,

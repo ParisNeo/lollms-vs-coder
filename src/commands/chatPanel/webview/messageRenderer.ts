@@ -10,7 +10,7 @@ import cytoscapeDagre from 'cytoscape-dagre';
 
 cytoscape.use(coseBilkent);
 cytoscape.use(cytoscapeDagre);
-import { renderWorkspaceMatrix, openRawCodeModal } from './ui.js';
+import { renderWorkspaceMatrix, openRawCodeModal, updateProgressBar } from './ui.js';
 import { applyDiffToString, applySearchReplace, normalizeAiderContent } from './utils.js';
 
 // CodeMirror imports
@@ -32,7 +32,7 @@ import { projectMemoryPlugin } from './plugins/projectMemoryPlugin.js';
 import { milestonePlugin } from './plugins/milestonePlugin.js';
 import { processingPlugin } from './plugins/processingPlugin.js';
 import { formPlugin } from './plugins/formPlugin.js';
-import { fileOpPlugin } from './plugins/fileOpPlugin.js';
+import { fileOpPlugin, fileMutationPlugin } from './plugins/fileOpPlugin.js';
 import { breakpointPlugin } from './plugins/breakpointPlugin.js';
 import { imageAssetPlugin } from './plugins/imageAssetPlugin.js';
 import { imageGenPlugin } from './plugins/imageGenPlugin.js';
@@ -49,6 +49,7 @@ function initPlugins() {
     registerPlugin(processingPlugin);
     registerPlugin(formPlugin);
     registerPlugin(fileOpPlugin);
+    registerPlugin(fileMutationPlugin);
     registerPlugin(breakpointPlugin);
     registerPlugin(imageAssetPlugin);
     registerPlugin(imageGenPlugin);
@@ -926,12 +927,15 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
             // --- NAKED AIDER DETECTION ---
             if (line.startsWith('<<<<<<< SEARCH')) {
                 inBlock = true;
+                fenceLength = 0;
+                depth = 1;
+                blockStartOffset = currentOffset;
                 let inferredPath = "";
                 for (let k = i - 1; k >= Math.max(0, i - 10); k--) {
                     const pathMatch = lines[k].match(/[`"']?([a-zA-Z0-9._\-\/]+\.[a-z0-9]+)[`"']?/);
                     if (pathMatch) { inferredPath = pathMatch[1]; break; }
                 }
-                infos.push({ type: 'replace', path: inferredPath, start: currentOffset, isClosed: false });
+                infos.push({ type: 'replace', path: inferredPath, stripFirstLine: false, start: blockStartOffset, isClosed: false });
                 currentOffset += lineWithNewline.length;
                 continue;
             }
@@ -1019,7 +1023,12 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                 infos[infos.length - 1].type = 'replace';
             }
 
-            if (match && match[2].length >= fenceLength) {
+            if (fenceLength === 0 && (line.startsWith('>>>>>>> REPLACE') || line.startsWith('</file>'))) {
+                inBlock = false;
+                depth = 0;
+                infos[infos.length - 1].end = currentOffset + lineWithNewline.length;
+                infos[infos.length - 1].isClosed = true;
+            } else if (match && match[2].length >= fenceLength && fenceLength > 0) {
                 const hasLabel = line.substring(match[0].length).trim().length > 0;
                 if (hasLabel) depth++;
                 else depth--;
@@ -1163,10 +1172,13 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         const isDiagram = language === 'mermaid' || language === 'svg' || language === 'cytoscape' || isCytoscapeJson;
 
         const pathVal = isDiff ? diffFilePath : filePath;
+        const appliedHunksCheck = state.appliedState?.[messageId]?.[blockIdx] || [];
+        const isAlreadyAppliedOnLoad = appliedHunksCheck.includes(-1);
 
         const details = document.createElement('details');
         details.className = 'code-collapsible' + (isMalformedAider ? ' malformed' : '');
-        details.open = true;
+        // Collapse by default if already applied to preserve screen space
+        details.open = !isAlreadyAppliedOnLoad;
         details.dataset.rawCode = codeText;
         details.id = `block-${messageId}-${blockIdx}`;
 
@@ -2171,6 +2183,30 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     if (Array.isArray(rawContent)) {
         sourceText = rawContent.filter(p => p.type === 'text').map(p => p.text).join('\n');
+
+        const imageParts = rawContent.filter(p => p.type === 'image_url' && (p.image_url?.url || p.url));
+        if (imageParts.length > 0) {
+            const renderedImages = imageParts.map((imgPart: any, imgIdx: number) => {
+                const url = imgPart.image_url?.url || imgPart.url || "";
+                if (!url) return "";
+                const isMuted = imgPart.isMuted === true || imgPart.muted === true;
+                const mutedClass = isMuted ? 'muted-image' : '';
+                const mutedBadge = isMuted 
+                    ? `<div class="image-suppressed-badge"><span class="codicon codicon-error"></span> Suppressed (Text-only model)</div>` 
+                    : '';
+
+                return `
+                    <div class="message-inline-image-card ${mutedClass}" data-img-idx="${imgIdx}" onclick="(window.openSovereignZoom || window.openImageZoom)('${url}')" title="${isMuted ? 'Image suppressed: model is text-only' : 'Click to zoom image'}">
+                        ${mutedBadge}
+                        <img src="${url}" alt="Attached Image" loading="lazy" />
+                    </div>
+                `;
+            }).filter(Boolean).join('');
+
+            if (renderedImages) {
+                imagesHtml = `<div class="message-images-gallery">${renderedImages}</div>`;
+            }
+        }
     } else {
         sourceText = String(rawContent || "");
     }
@@ -2179,58 +2215,181 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     const thinkResult = processThinkTags(sourceText);
     const mainProcessedContent = thinkResult.processedContent;
 
-    let thoughtsHtml = "";
-    if (thinkResult.thoughts.length > 0) {
+    // Partition zones in contentDiv to ensure DOM elements (like the animated spinner) are preserved in-place
+    let thoughtsZone = contentDiv.querySelector(':scope > .message-thoughts-zone') as HTMLElement;
+    let imagesZone = contentDiv.querySelector(':scope > .message-images-zone') as HTMLElement;
+    let bodyZone = contentDiv.querySelector(':scope > .message-body-zone') as HTMLElement;
+
+    if (!thoughtsZone || !imagesZone || !bodyZone) {
+        contentDiv.innerHTML = `
+            <div class="message-thoughts-zone"></div>
+            <div class="message-images-zone"></div>
+            <div class="message-body-zone"></div>
+        `;
+        thoughtsZone = contentDiv.querySelector('.message-thoughts-zone') as HTMLElement;
+        imagesZone = contentDiv.querySelector('.message-images-zone') as HTMLElement;
+        bodyZone = contentDiv.querySelector('.message-body-zone') as HTMLElement;
+    }
+
+    if (thinkResult.thoughts.length === 0) {
+        thoughtsZone.innerHTML = "";
+    } else {
+        // Prune any excess thought elements if count changed
+        const existingCards = thoughtsZone.querySelectorAll('.plan-scratchpad');
+        if (existingCards.length > thinkResult.thoughts.length) {
+            for (let i = thinkResult.thoughts.length; i < existingCards.length; i++) {
+                existingCards[i].remove();
+            }
+        }
+
         thinkResult.thoughts.forEach((t, idx) => {
             const isClosed = t.closed || isFinal;
-            const iconHtml = isClosed 
-                ? '<span class="codicon codicon-circuit-board"></span>' 
-                : '<span class="spinner" style="width:10px; height:10px; border-width:2px; margin-right:6px; color: var(--thinking-color);"></span>';
+            let scratchpad = thoughtsZone.querySelector(`.plan-scratchpad[data-idx="${idx}"]`) as HTMLElement;
 
-            // Calculate thinking duration if timestamps exist
-            let durationHtml = "";
+            // Calculate thinking duration
             const tStart = wrapper.getAttribute('data-think-start-time');
             const tEnd = wrapper.getAttribute('data-think-end-time');
-            
+            let durationText = "";
+            let isLive = false;
+
             if (tStart && tEnd) {
                 const elapsed = ((parseInt(tEnd, 10) - parseInt(tStart, 10)) / 1000).toFixed(1);
-                durationHtml = `<span class="think-duration" style="font-size: 10px; opacity: 0.6; font-weight: normal; margin-left: auto; padding-right: 12px;">thought for ${elapsed}s</span>`;
+                durationText = `thought for ${elapsed}s`;
             } else if (tStart && !isClosed) {
-                // Live ticking elapsed timer for active thinking
+                isLive = true;
                 const elapsedLive = ((Date.now() - parseInt(tStart, 10)) / 1000).toFixed(1);
-                durationHtml = `<span class="think-duration live-thinking" data-start-time="${tStart}" style="font-size: 10px; color: var(--thinking-color); font-weight: bold; margin-left: auto; padding-right: 12px; animation: lollms-pulse 1.5s infinite;">thinking... (${elapsedLive}s)</span>`;
+                durationText = `thinking... (${elapsedLive}s)`;
             } else if (!isClosed) {
-                durationHtml = `<span class="think-duration" style="font-size: 10px; opacity: 0.6; font-weight: normal; margin-left: auto; padding-right: 12px; animation: lollms-pulse 1.5s infinite;">thinking...</span>`;
+                durationText = `thinking...`;
             }
 
-            // Check if there was a previously rendered details block for this index to preserve user toggle state
-            const prevDetails = contentDiv.querySelector(`.plan-scratchpad[data-idx="${idx}"] details`) as HTMLDetailsElement;
-            const isUserCollapsed = prevDetails ? !prevDetails.open : false;
+            const parsedMarkdown = DOMPurify.sanitize(marked.parse(t.content || "*AI is contemplating...*"));
 
-            thoughtsHtml += `
-                <div class="plan-scratchpad" data-idx="${idx}" style="margin-top:0; margin-bottom: 12px; border-left: 3px solid var(--thinking-color); box-sizing: border-box;">
-                    <details ${(!isClosed && !isUserCollapsed) ? 'open' : ''} style="border: none; background: transparent; margin: 0; box-shadow: none;">
+            if (!scratchpad) {
+                // First initialization of this thought block
+                scratchpad = document.createElement('div');
+                scratchpad.className = 'plan-scratchpad';
+                scratchpad.dataset.idx = String(idx);
+                scratchpad.dataset.closed = isClosed ? 'true' : 'false';
+                scratchpad.style.cssText = 'margin-top:0; margin-bottom: 12px; border-left: 3px solid var(--thinking-color); box-sizing: border-box;';
+
+                const iconHtml = isClosed 
+                    ? '<span class="codicon codicon-circuit-board thought-status-icon"></span>' 
+                    : '<span class="spinner thought-status-icon" style="width:10px; height:10px; border-width:2px; margin-right:6px; color: var(--thinking-color); display: inline-block;"></span>';
+
+                const durationHtml = `<span class="think-duration ${isLive ? 'live-thinking' : ''}" style="font-size: 10px; ${isLive ? 'color: var(--thinking-color); font-weight: bold; animation: lollms-pulse 1.5s infinite;' : 'opacity: 0.6; font-weight: normal;'} margin-left: auto; padding-right: 12px;">${durationText}</span>`;
+
+                scratchpad.innerHTML = `
+                    <details ${!isClosed ? 'open' : ''} style="border: none; background: transparent; margin: 0; box-shadow: none;">
                         <summary class="scratchpad-header" style="color: var(--thinking-color); display: flex; align-items: center; justify-content: space-between; width: 100%; box-sizing: border-box; padding: 6px 12px; list-style: none;">
                             <div style="display: flex; align-items: center; gap: 6px;">
-                                ${iconHtml} 
-                                <span style="font-weight: bold;">Thought (Reasoning)${!isClosed ? '...' : ''}</span>
+                                ${iconHtml}
+                                <span style="font-weight: bold;" class="thought-title-label">Thought (Reasoning)${!isClosed ? '...' : ''}</span>
                             </div>
                             ${durationHtml}
                         </summary>
                         <div class="scratchpad-content markdown-body" style="padding: 10px 15px; font-size:11px; opacity:0.9; background:rgba(0,0,0,0.05); border-radius:0 0 6px 6px;">
-                            ${DOMPurify.sanitize(marked.parse(t.content || "*AI is contemplating...*"))}
+                            ${parsedMarkdown}
                         </div>
                     </details>
-                </div>`;
+                `;
+                thoughtsZone.appendChild(scratchpad);
+            } else {
+                // DOM node ALREADY exists: perform in-place updates so the spinner DOM element is never destroyed/reset
+                const wasClosed = scratchpad.dataset.closed === 'true';
+
+                if (!wasClosed && isClosed) {
+                    scratchpad.dataset.closed = 'true';
+                    const iconEl = scratchpad.querySelector('.thought-status-icon');
+                    if (iconEl) {
+                        iconEl.outerHTML = '<span class="codicon codicon-circuit-board thought-status-icon"></span>';
+                    }
+                    const titleLabel = scratchpad.querySelector('.thought-title-label');
+                    if (titleLabel) {
+                        titleLabel.textContent = 'Thought (Reasoning)';
+                    }
+                }
+
+                // Update duration text in-place
+                const durationEl = scratchpad.querySelector('.think-duration');
+                if (durationEl) {
+                    durationEl.textContent = durationText;
+                    if (isClosed) {
+                        durationEl.className = 'think-duration';
+                        (durationEl as HTMLElement).style.color = '';
+                        (durationEl as HTMLElement).style.fontWeight = 'normal';
+                        (durationEl as HTMLElement).style.opacity = '0.6';
+                        (durationEl as HTMLElement).style.animation = 'none';
+                    }
+                }
+
+                // Update text content in-place without resetting scroll or summary
+                const contentEl = scratchpad.querySelector('.scratchpad-content');
+                if (contentEl) {
+                    contentEl.innerHTML = parsedMarkdown;
+                }
+            }
         });
     }
 
-    // 2. EXTRACT CODE BLOCKS AS SOVEREIGN SEGMENTS (Bypasses marked.parse and resolves nesting bugs)
-    const codeBlocks = extractFilePaths(mainProcessedContent);
+    // 2. EXTRACT VALID LINE-START XML TAG PLUGINS (FIRST-CLASS MUTATIONS & WIDGETS)
     const segments: MessageSegment[] = [];
     const ctx: PluginContext = { messageId, isFinal, capabilities: state.capabilities, vscode };
+    let mutationTagIndex = 0;
 
+    pluginRegistry.forEach(plugin => {
+        if (!plugin.tagPattern) return;
+        plugin.tagPattern.lastIndex = 0;
+        let pMatch;
+        while ((pMatch = plugin.tagPattern.exec(mainProcessedContent)) !== null) {
+            const matchIndex = pMatch.index;
+            const fullMatch = pMatch[0];
+
+            // Strict Line-Start check: verify the match begins at the start of a line
+            const hasLineStart = matchIndex === 0 || mainProcessedContent[matchIndex - 1] === '\n' || mainProcessedContent[matchIndex - 1] === '\r';
+            if (!hasLineStart) continue;
+
+            // Also check that the closing tag is at the start of a line (if it is not self-closing)
+            const isSelfClosing = fullMatch.trim().endsWith('/>');
+            if (!isSelfClosing) {
+                const closingTagIndex = matchIndex + fullMatch.lastIndexOf('</');
+                const hasClosingLineStart = closingTagIndex > 0 && (mainProcessedContent[closingTagIndex - 1] === '\n' || mainProcessedContent[closingTagIndex - 1] === '\r');
+                if (!hasClosingLineStart) continue;
+            }
+
+            // Exclude matching if it overlaps with previously matched plugins
+            const isOverlapping = segments.some(s => 
+                (matchIndex >= s.start && matchIndex < s.end) ||
+                (matchIndex + fullMatch.length > s.start && matchIndex + fullMatch.length <= s.end) ||
+                (s.start >= matchIndex && s.start < matchIndex + fullMatch.length)
+            );
+            if (isOverlapping) continue;
+
+            const currentBlockIdx = plugin.id === 'file_mutation' ? mutationTagIndex++ : undefined;
+            const html = plugin.render(pMatch, { ...ctx, blockIndex: currentBlockIdx });
+            if (html) {
+                segments.push({
+                    type: 'plugin',
+                    content: html,
+                    start: matchIndex,
+                    end: matchIndex + fullMatch.length,
+                    plugin
+                });
+            }
+        }
+    });
+
+    // 3. EXTRACT FENCED CODE BLOCKS OUTSIDE OF PLUGINS
+    const codeBlocks = extractFilePaths(mainProcessedContent);
     codeBlocks.forEach((block, idx) => {
+        // Skip if this code block overlaps with an already segmented XML plugin
+        const isOverlapping = segments.some(s => 
+            (block.start >= s.start && block.start < s.end) ||
+            (block.end > s.start && block.end <= s.end) ||
+            (s.start >= block.start && s.start < block.end)
+        );
+        if (isOverlapping) return;
+
         const blockText = mainProcessedContent.substring(block.start, block.end);
         const lines = blockText.split(/\r?\n/);
         if (lines.length === 0) return;
@@ -2255,53 +2414,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         const placeholderHtml = `<pre class="lollms-placeholder" data-block-index="${idx}" data-lang="${language.replace(/"/g, '&quot;')}"><code>${escapedCode}</code></pre>`;
 
         segments.push({
-            type: 'plugin', // Treated as plugin to prevent any marked parsing
+            type: 'plugin',
             content: placeholderHtml,
             start: block.start,
             end: block.end
         });
-    });
-
-    // 3. EXTRACT VALID LINE-START ACTIVE PLUGINS (WIDGETS)
-    pluginRegistry.forEach(plugin => {
-        if (!plugin.tagPattern) return;
-        plugin.tagPattern.lastIndex = 0;
-        let pMatch;
-        while ((pMatch = plugin.tagPattern.exec(mainProcessedContent)) !== null) {
-            const matchIndex = pMatch.index;
-            const fullMatch = pMatch[0];
-
-            // Strict Line-Start check: verify the match begins at the start of a line
-            const hasLineStart = matchIndex === 0 || mainProcessedContent[matchIndex - 1] === '\n' || mainProcessedContent[matchIndex - 1] === '\r';
-            if (!hasLineStart) continue;
-
-            // Also check that the closing tag is at the start of a line (if it is not self-closing)
-            const isSelfClosing = fullMatch.trim().endsWith('/>');
-            if (!isSelfClosing) {
-                const closingTagIndex = matchIndex + fullMatch.lastIndexOf('</');
-                const hasClosingLineStart = closingTagIndex > 0 && (mainProcessedContent[closingTagIndex - 1] === '\n' || mainProcessedContent[closingTagIndex - 1] === '\r');
-                if (!hasClosingLineStart) continue;
-            }
-
-            // Exclude matching if it overlaps with any Code Blocks or previously matched plugins!
-            const isOverlapping = segments.some(s => 
-                (matchIndex >= s.start && matchIndex < s.end) ||
-                (matchIndex + fullMatch.length > s.start && matchIndex + fullMatch.length <= s.end) ||
-                (s.start >= matchIndex && s.start < matchIndex + fullMatch.length)
-            );
-            if (isOverlapping) continue;
-
-            const html = plugin.render(pMatch, ctx);
-            if (html) {
-                segments.push({
-                    type: 'plugin',
-                    content: html,
-                    start: matchIndex,
-                    end: matchIndex + fullMatch.length,
-                    plugin
-                });
-            }
-        }
     });
 
     const allSegments: MessageSegment[] = [...segments];
@@ -2399,18 +2516,22 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         }
     });
 
-    // --- APPLY ALL AGGREGATOR (RE-INTEGRATED) ---
+    // --- APPLY ALL AGGREGATOR (COUNTS BOTH XML <file> TAGS & LEGACY BLOCKS) ---
+    const xmlFileMatches = [...sourceText.matchAll(/<file\s+([^>]*?)>([\s\S]*?)<\/file>/gi)];
+    const xmlActionableCount = xmlFileMatches.filter(m => /path=["'][^"']+["']/i.test(m[1])).length;
+
     const globalBlockInfos = extractFilePaths(sourceText);
-    const actionableBlockCount = globalBlockInfos.filter(info => {
-        // Ensure we count all valid implementation blocks
+    const legacyActionableCount = globalBlockInfos.filter(info => {
         return info.path && ['file', 'diff', 'insert', 'replace', 'delete'].includes(info.type || '');
     }).length;
 
-    if (actionableBlockCount > 1 && isFinal) {
+    const totalActionableCount = xmlActionableCount + legacyActionableCount;
+
+    if (totalActionableCount > 1 && isFinal) {
         finalHtml += `
             <div class="apply-all-wrapper" style="margin-top: 16px; padding: 0 12px;">
                 <button class="apply-all-btn" id="apply-all-${messageId}">
-                    <span class="codicon codicon-check-all"></span> Apply All Changes (${actionableBlockCount} files)
+                    <span class="codicon codicon-check-all"></span> Apply All Changes (${totalActionableCount} files)
                 </button>
                 <div class="apply-progress-container" id="progress-container-${messageId}" style="display:none; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden;">
                     <div class="apply-progress-bar" id="progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-blue); transition: width 0.3s ease;"></div>
@@ -2420,10 +2541,14 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     }
 
 
-    // Append thoughts, parsed HTML and images into a single unified stream
-    const totalHtml = thoughtsHtml + finalHtml + imagesHtml;
+    // Update images and main body zones separately to keep the thoughts zone stable
+    if (imagesZone) {
+        imagesZone.innerHTML = DOMPurify.sanitize(imagesHtml, SANITIZE_CONFIG);
+    }
 
-    contentDiv.innerHTML = DOMPurify.sanitize(totalHtml, SANITIZE_CONFIG);
+    if (bodyZone) {
+        bodyZone.innerHTML = DOMPurify.sanitize(finalHtml, SANITIZE_CONFIG);
+    }
 
     // Secure Auto-render invocation for Math expressions in Chat Messages
     if (typeof (window as any).renderMathInElement === 'function') {
@@ -2447,7 +2572,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         Prism.highlightElement(block);
     });
 
-    enhanceCodeBlocks(contentDiv, messageId, rawContent, isFinal);
+    enhanceCodeBlocks(bodyZone, messageId, rawContent, isFinal);
 
         // Attach listener for the new Apply All button
         const applyAllBtn = contentDiv.querySelector(`#apply-all-${messageId}`) as HTMLButtonElement;
@@ -2542,6 +2667,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         }
     });
 
+    // Synchronize master batch button with initial/hydrated applied states
+    if (isFinal) {
+        checkAndSyncMessageAppliedState(messageId);
+    }
+
     triggerVirtualListRecalculation();
 }
 
@@ -2558,20 +2688,41 @@ function gatherChangesFromBlocks(messageId: string, isUndo: boolean = false) {
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return changes;
 
-    const blocks = wrapper.querySelectorAll('details.code-collapsible');
-    blocks.forEach((block: any) => {
-        // SAFEGUARD: Never include malformed blocks in the bulk "Apply All" changes list
-        if (block.classList.contains('malformed')) {
+    const blocks = Array.from(new Set(wrapper.querySelectorAll('details.code-collapsible, .file-mutation-card')));
+    blocks.forEach((block: any, idx: number) => {
+        // 1. Handle XML <file> Mutation Cards
+        if (block.classList.contains('file-mutation-card')) {
+            const path = block.dataset.path || "";
+            const action = block.dataset.action || "write";
+            const symbol = block.dataset.symbol || "";
+            const rawCodeAttr = block.dataset.rawCode;
+            const codeText = rawCodeAttr ? decodeURIComponent(rawCodeAttr) : (block.querySelector('pre code')?.textContent || "");
+            const applyBtn = block.querySelector('.apply-mutation-btn, .apply-btn');
+
+            const isMatch = isUndo ? applyBtn?.classList.contains('applied') : (applyBtn && !applyBtn.classList.contains('applied'));
+            if (isMatch && path) {
+                const changeType = (action === 'patch' || codeText.includes('<<<<<<< SEARCH')) ? 'replace' : 'file';
+                const targetPath = (symbol && changeType === 'file') ? `${path}:${symbol}` : path;
+                const bIdx = parseInt(block.dataset.blockIndex || "0", 10);
+                changes.push({
+                    type: changeType,
+                    path: targetPath,
+                    content: codeText,
+                    label: `${path}${symbol ? ` (${symbol})` : ''}`,
+                    blockIndex: isNaN(bIdx) ? idx : bIdx,
+                    blockId: block.id
+                });
+            }
             return;
         }
 
+        // 2. Handle Legacy Markdown Code Blocks
         const idParts = block.id.split('-');
         const blockIndex = parseInt(idParts[idParts.length - 1], 10);
         const codeText = block.dataset.rawCode || "";
 
-        // RE-INTEGRATED: User-edited path recovery
         const pathInp = block.querySelector('.path-editor-input') as HTMLInputElement;
-        const path = pathInp ? pathInp.value.trim() : "";
+        const path = pathInp ? pathInp.value.trim() : (block.dataset.path || "");
         if (!path) return;
 
         const hunkBubbles = block.querySelectorAll('.aider-hunk-bubble');
@@ -2585,8 +2736,9 @@ function gatherChangesFromBlocks(messageId: string, isUndo: boolean = false) {
                         path: path,
                         content: codeText, 
                         label: `${path} (Hunk ${hIdx + 1})`,
-                        blockIndex: blockIndex,
-                        hunkIndex: hIdx
+                        blockIndex: isNaN(blockIndex) ? idx : blockIndex,
+                        hunkIndex: hIdx,
+                        blockId: block.id
                     });
                 }
             });
@@ -2601,7 +2753,8 @@ function gatherChangesFromBlocks(messageId: string, isUndo: boolean = false) {
                     path: path,
                     content: codeText,
                     label: path,
-                    blockIndex: blockIndex
+                    blockIndex: isNaN(blockIndex) ? idx : blockIndex,
+                    blockId: block.id
                 });
             }
         }
@@ -2869,17 +3022,61 @@ export class ContextPresenter {
         </div>`;
     }
 
-    public static renderFileList(list: string[], emptyMsg: string, allowSummarize: boolean = false): string {
+    public static renderFileList(
+        list: (string | { path: string, tokens?: number, state?: string })[], 
+        emptyMsg: string, 
+        allowSummarize: boolean = false,
+        fileTokensMap: Record<string, number> = {},
+        sortOrder: 'heavy-to-light' | 'light-to-heavy' | 'name' = 'heavy-to-light'
+    ): string {
         if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
+
+        // Normalize list items to objects with token weights
+        const normalized = list.map(item => {
+            if (typeof item === 'string') {
+                const tok = fileTokensMap[item] || 0;
+                return { path: item, tokens: tok };
+            }
+            const tok = item.tokens || fileTokensMap[item.path] || 0;
+            return { path: item.path, tokens: tok, state: item.state };
+        });
+
+        // Apply sorting
+        if (sortOrder === 'heavy-to-light') {
+            normalized.sort((a, b) => (b.tokens - a.tokens) || a.path.localeCompare(b.path));
+        } else if (sortOrder === 'light-to-heavy') {
+            normalized.sort((a, b) => (a.tokens - b.tokens) || a.path.localeCompare(b.path));
+        } else if (sortOrder === 'name') {
+            normalized.sort((a, b) => a.path.split('/').pop()!.localeCompare(b.path.split('/').pop()!));
+        }
+
         return `<ul class="context-file-list">
-            ${list.map(f => {
+            ${normalized.map(item => {
+                const f = item.path;
+                const tokens = item.tokens || 0;
                 const uniqueDomId = f.replace(/[^a-zA-Z0-9]/g, '_');
+                const fileName = f.split('/').pop() || f;
+                const dirName = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
+
+                // Build styled weight badge
+                let tokenBadge = '';
+                if (tokens > 0) {
+                    const displayVal = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
+                    const weightClass = tokens >= 10000 ? 'weight-heavy' : (tokens >= 3000 ? 'weight-medium' : 'weight-light');
+                    tokenBadge = `<span class="file-token-badge ${weightClass}" title="Estimated Token Weight: ~${tokens.toLocaleString()} tokens">~${displayVal} tok</span>`;
+                } else {
+                    tokenBadge = `<span class="file-token-badge weight-light" title="Lightweight file">~0 tok</span>`;
+                }
+
                 return `
                 <li class="context-item" style="flex-direction: column; align-items: stretch; gap: 4px;">
-                    <div style="display:flex; align-items:center; width:100%;">
+                    <div style="display:flex; align-items:center; width:100%; gap: 6px;">
                         <details class="info-collapsible lazy-file-accordion" data-path="${f}" style="flex: 1; min-width:0; border:none; padding:0;">
-                            <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600;">
-                                <span class="codicon codicon-file"></span> ${f.split('/').pop()}
+                            <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600; display:flex; align-items:center; gap: 6px;">
+                                <span class="codicon codicon-file"></span>
+                                <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;" title="${f}">${fileName}</span>
+                                ${dirName ? `<span style="font-size:9px; opacity:0.45; margin-right:4px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${dirName}</span>` : ''}
+                                ${tokenBadge}
                             </summary>
                             <div class="lazy-file-pane" id="lazy-pane-${uniqueDomId}" style="padding-top: 8px; font-size:11px; font-family:var(--vscode-editor-font-family);">
                                 <div style="display:flex; align-items:center; gap:8px; opacity:0.6;"><div class="spinner"></div> Ingesting file content from disk...</div>
@@ -3033,7 +3230,13 @@ export class ContextPresenter {
                             <div class="collapsible-content hud-files-container" style="padding-top: 8px;">
                                 <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
                                     <span>Project Files</span>
-                                    ${finalFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn"><span class="codicon codicon-checklist"></span> Bulk Remove</button>` : ''}
+                                    <div style="display: flex; gap: 4px; align-items: center;">
+                                        <button id="sort-files-btn" class="section-bulk-btn" title="Toggle sorting order (Heavy to Light / A-Z)">
+                                            <span class="codicon ${state.fileSortOrder === 'name' ? 'codicon-sort-alphabetically' : (state.fileSortOrder === 'light-to-heavy' ? 'codicon-sort-numeric-up' : 'codicon-sort-numeric-down')}"></span>
+                                            <span id="sort-files-label">${state.fileSortOrder === 'name' ? 'A-Z' : (state.fileSortOrder === 'light-to-heavy' ? 'Light to Heavy' : 'Heavy to Light')}</span>
+                                        </button>
+                                        ${finalFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn"><span class="codicon codicon-checklist"></span> Bulk Remove</button>` : ''}
+                                    </div>
                                 </h4>
                                 <div class="hud-project-files-list">${projectFilesHtml}</div>
                                 <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
@@ -3253,6 +3456,23 @@ export class ContextBinder {
             });
         });
 
+        // Bind Sort button
+        const sortBtn = dashboard.querySelector('#sort-files-btn') as HTMLElement;
+        if (sortBtn) {
+            sortBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (state.fileSortOrder === 'heavy-to-light') {
+                    state.fileSortOrder = 'light-to-heavy';
+                } else if (state.fileSortOrder === 'light-to-heavy') {
+                    state.fileSortOrder = 'name';
+                } else {
+                    state.fileSortOrder = 'heavy-to-light';
+                }
+                updateContext();
+            };
+        }
+
         // Bind Toolbar buttons
         const bindClick = (id: string, action: () => void) => {
             const el = document.getElementById(id);
@@ -3343,7 +3563,10 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     // Detection for Welcome Message integration
     const isNewDiscussion = !document.querySelector('.message-wrapper:not(.context-message)');
 
-    const isProjectFile = (f: string) => {
+    const getFilePath = (item: any) => typeof item === 'string' ? item : item.path;
+
+    const isProjectFile = (item: any) => {
+        const f = getFilePath(item);
         const isInternal = f.includes('.lollms/') || f.startsWith('http') || f.startsWith('external/');
         return !isInternal;
     };
@@ -3352,7 +3575,7 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     const externalFiles = finalFiles.filter(f => !isProjectFile(f));
 
     try {
-        // Decoupled templates generated via ContextPresenter with strict fallback guards
+        // Decoupled templates generated via ContextPresenter with token weights
         const safeProjectFiles = Array.isArray(projectFiles) ? projectFiles : [];
         const safeExternalFiles = Array.isArray(externalFiles) ? externalFiles : [];
         const safeFinalSkills = Array.isArray(finalSkills) ? finalSkills : [];
@@ -3360,8 +3583,11 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
         const safeFinalTools = Array.isArray(finalTools) ? finalTools : [];
         const safeFinalSelections = Array.isArray(finalSelections) ? finalSelections : [];
 
-        const projectFilesHtml = ContextPresenter.renderFileList(safeProjectFiles, "No project files selected.", false);
-        const externalFilesHtml = ContextPresenter.renderFileList(safeExternalFiles, "No search results in context.", true);
+        const tokenMap = state.fileTokensMap || {};
+        const sortOrder = state.fileSortOrder || 'heavy-to-light';
+
+        const projectFilesHtml = ContextPresenter.renderFileList(safeProjectFiles, "No project files selected.", false, tokenMap, sortOrder);
+        const externalFilesHtml = ContextPresenter.renderFileList(safeExternalFiles, "No search results in context.", true, tokenMap, sortOrder);
         const skillsHtml = ContextPresenter.renderSkills(safeFinalSkills);
         const briefingHtml = finalBriefing ? renderDataBriefing(finalBriefing) : '<div style="font-style:italic; opacity:0.5;">No specific task constraints defined. Click the shield to add instructions.</div>';
 
@@ -3388,6 +3614,18 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
         if (dashboard) {
             // Run dedicated DOM binding system (Layer 2)
             ContextBinder.bindGestures(dashboard, finalFiles, finalSkills);
+
+            // Re-hydrate token metrics immediately to prevent "Calculating..." flicker
+            if (state.lastTokenMetrics) {
+                const { totalTokens, contextSize, isApproximate, segments } = state.lastTokenMetrics;
+                const normalizedTotal = (typeof totalTokens === 'number' && !isNaN(totalTokens)) ? totalTokens : 0;
+                const size = (contextSize > 0) ? contextSize : 128000;
+                const finalLabel = `${isApproximate ? 'Est. ' : ''}Tokens: ${normalizedTotal.toLocaleString()} / ${size.toLocaleString()}`;
+                const labelEl = document.getElementById('token-count-label');
+                if (labelEl) labelEl.textContent = finalLabel;
+                const barContainer = document.getElementById('token-progress-container');
+                updateProgressBar(barContainer, normalizedTotal, size, segments);
+            }
         }
     } catch (renderError: any) {
         console.error("❌ FAILED HUD PRESENTATION RENDERING:", renderError);
@@ -3423,7 +3661,7 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
 /**
  * Opens a modal to select multiple files for removal from context.
  */
-export function showBulkDeleteModal(files: string[]) {
+export function showBulkDeleteModal(files: any[]) {
     const modal = document.getElementById('bulk-delete-modal');
     const list = document.getElementById('bulk-delete-files-list');
     const master = document.getElementById('bulk-delete-select-all') as HTMLInputElement;
@@ -3432,10 +3670,11 @@ export function showBulkDeleteModal(files: string[]) {
 
     if (!modal || !list) return;
 
-    // We sort alphabetically by the filename (not path) for easier browsing
-    const sortedFiles = [...files].sort((a, b) => a.split('/').pop()!.localeCompare(b.split('/').pop()!));
+    const getPath = (item: any) => typeof item === 'string' ? item : (item?.path || '');
+    const sortedFiles = [...files].sort((a, b) => getPath(a).split('/').pop()!.localeCompare(getPath(b).split('/').pop()!));
 
-    list.innerHTML = sortedFiles.map(f => {
+    list.innerHTML = sortedFiles.map(item => {
+        const f = getPath(item);
         const fileName = f.split('/').pop();
         const dirName = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
         return `
@@ -4108,35 +4347,53 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
 }
 
 /**
- * Checks all actionable blocks in a message. If all are red (applied), 
- * makes the "Apply All" button at the bottom red as well.
+ * Dynamically computes applied vs unapplied blocks in a message
+ * and updates the master batch action button with precise counts.
  */
 export function checkAndSyncMessageAppliedState(messageId: string) {
+    if (!messageId) return;
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return;
 
     const applyAllBtn = wrapper.querySelector('.apply-all-btn') as HTMLButtonElement;
     if (!applyAllBtn) return;
 
-    // Find all blocks that actually HAVE an Apply button. 
-    // We ignore blocks that are just for display (no path header).
-    const blockButtons = Array.from(wrapper.querySelectorAll('.code-actions .apply-btn'));
+    // 1. Gather all unique actionable code blocks and file mutation cards
+    const allBlocks = Array.from(new Set(wrapper.querySelectorAll('details.code-collapsible, .file-mutation-card')));
 
-    if (blockButtons.length === 0) return;
+    if (allBlocks.length <= 1) {
+        return;
+    }
 
-    const allApplied = blockButtons.every(btn => btn.classList.contains('applied'));
+    // 2. Count applied blocks
+    const appliedBlocks = allBlocks.filter(b => {
+        const btn = b.querySelector('.apply-btn, .apply-mutation-btn');
+        return btn?.classList.contains('applied');
+    });
 
-    if (allApplied) {
-        applyAllBtn.classList.add('applied');
-        applyAllBtn.innerHTML = '<span class="codicon codicon-check"></span> All Changes Applied';
-        applyAllBtn.disabled = true;
-        applyAllBtn.style.backgroundColor = 'var(--vscode-charts-green)';
+    const unappliedCount = allBlocks.length - appliedBlocks.length;
 
-        // NOTE: Preemptive auto-collapse removed to prevent visual desynchronization.
-        // Blocks will be collapsed only when the user explicitly saves the file on disk.
-    } else {
-        applyAllBtn.classList.remove('applied');
+    // 3. Update button state and labels
+    if (unappliedCount > 0) {
+        // Pending/failed changes remain
+        applyAllBtn.classList.remove('applied', 'undo-all-btn', 'stop-btn-red', 'sequential-applying');
+        applyAllBtn.style.removeProperty('background-color');
+        applyAllBtn.style.removeProperty('color');
         applyAllBtn.disabled = false;
+
+        if (appliedBlocks.length > 0) {
+            applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Changes (${unappliedCount} of ${allBlocks.length} files)`;
+        } else {
+            applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply All Changes (${allBlocks.length} files)`;
+        }
+    } else {
+        // 100% of blocks are applied -> Allow Undo All
+        applyAllBtn.classList.remove('sequential-applying', 'stop-btn-red');
+        applyAllBtn.classList.add('undo-all-btn');
+        applyAllBtn.disabled = false;
+        applyAllBtn.style.removeProperty('background-color');
+        applyAllBtn.style.removeProperty('color');
+        applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo All Changes (${allBlocks.length} files)`;
     }
 }
 

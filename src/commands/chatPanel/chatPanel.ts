@@ -209,7 +209,58 @@ export class ChatPanel {
         const modifiedFiles = new Set<string>();
         let blockIndex = 0; // Initialize precise index tracker
 
-        // 1. Process Fenced Code Blocks (Standard)
+        // 1. Process XML <file> Mutation Tags
+        const fileTagRegex = /<file\s+([^>]*?)>([\s\S]*?)<\/file>/gi;
+        let fileMatch;
+
+        while ((fileMatch = fileTagRegex.exec(content)) !== null) {
+            if (signal.aborted) break;
+            const attrStr = fileMatch[1] || "";
+            const fileBody = fileMatch[2] || "";
+
+            const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
+            if (!pathMatch) continue;
+
+            const filePath = pathMatch[1].trim();
+            const actionMatch = attrStr.match(/action=["']([^"']+)["']/i);
+            const symbolMatch = attrStr.match(/symbol=["']([^"']+)["']/i);
+
+            const action = (actionMatch ? actionMatch[1] : (fileBody.includes('<<<<<<< SEARCH') ? 'patch' : 'write')).toLowerCase();
+            const symbol = symbolMatch ? symbolMatch[1].trim() : "";
+
+            const currentBlockIndex = blockIndex++;
+            modifiedFiles.add(filePath);
+
+            const isPatch = action === 'patch' || fileBody.includes('<<<<<<< SEARCH');
+
+            if (isPatch) {
+                const normalizedAider = normalizeAiderContent(fileBody);
+                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, { silent: true, autoSave: true, blockIndex: currentBlockIndex });
+                if (result?.success) {
+                    await this.updateAppliedState(messageId, currentBlockIndex);
+                    this._panel.webview.postMessage({
+                        command: 'fileSavedOnDisk',
+                        filePath: filePath,
+                        messageId: messageId,
+                        blockIndex: currentBlockIndex
+                    });
+                }
+            } else {
+                const targetPath = symbol ? `${filePath}:${symbol}` : filePath;
+                const result: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', targetPath, fileBody, { silent: true, autoSave: true, messageId, blockIndex: currentBlockIndex });
+                if (result?.success) {
+                    await this.updateAppliedState(messageId, currentBlockIndex);
+                    this._panel.webview.postMessage({
+                        command: 'fileSavedOnDisk',
+                        filePath: filePath,
+                        messageId: messageId,
+                        blockIndex: currentBlockIndex
+                    });
+                }
+            }
+        }
+
+        // 2. Process Fenced Code Blocks (Standard)
         const blockRegex = /```[\t ]*(?:language:|lang:)?(\w+)[\t ]*:[\t ]*([^\n\r\s]+)[\t ]*[\r\n]+([\s\S]+?)[\r\n]+```/g;
         let match;
 
@@ -863,7 +914,23 @@ export class ChatPanel {
                 try {
                     const provider = this._contextManager.getContextStateProvider();
                     const rawFiles = provider ? provider.getIncludedFiles() : [];
-                    includedFiles = rawFiles.filter(f => f && f.path).map(f => f.path);
+                    const filesWithWeights = await Promise.all(rawFiles.filter(f => f && f.path).map(async f => {
+                        let tokens = 0;
+                        const cached = (this._contextManager as any)._fileContentCache?.get(f.path);
+                        if (cached?.content) {
+                            tokens = Math.ceil(cached.content.length / 3.5);
+                        } else {
+                            const res = await this._contextManager.resolveWorkspaceFromPath(f.path);
+                            if (res) {
+                                try {
+                                    const st = await vscode.workspace.fs.stat(res.uri);
+                                    tokens = Math.ceil(st.size / 3.5);
+                                } catch {}
+                            }
+                        }
+                        return { path: f.path, tokens, state: f.state };
+                    }));
+                    includedFiles = filesWithWeights as any;
                 } catch (e) {
                     Logger.warn("Safeguard caught error reading included files.");
                 }
@@ -1161,46 +1228,10 @@ export class ChatPanel {
                 if (signal.aborted) return resolvePromise();
 
                 // --- IMMEDIATE INSTANT HYDRATION / REACTION ---
-                const provider = self.contextStateProvider || self._contextManager.getContextStateProvider();
+                const provider = self._contextManager.getContextStateProvider();
                 const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
 
-                if (includedFiles.length === 0) {
-                    self._panel.webview.postMessage({ 
-                        command: 'updateContext', 
-                        files: [],
-                        skills: [],
-                        tools: [],
-                        diagrams: [],
-                        briefing: ""
-                    });
-
-                    const oldMetrics = self._currentDiscussion?.lastTokenMetrics;
-                    const fallbackSize = oldMetrics?.contextSize || 128000;
-                    const fallbackSegments = {
-                        system: oldMetrics?.segments?.system || 0,
-                        briefing: 0,
-                        tree: oldMetrics?.segments?.tree || 0,
-                        skills: 0,
-                        memory: oldMetrics?.segments?.memory || 0,
-                        diagrams: 0,
-                        files: 0,
-                        history: oldMetrics?.segments?.history || 0,
-                        images: 0
-                    };
-
-                    self._panel.webview.postMessage({
-                        command: 'updateTokenProgress',
-                        totalTokens: Object.values(fallbackSegments).reduce((a, b) => a + b, 0),
-                        contextSize: fallbackSize,
-                        isApproximate: false,
-                        segments: fallbackSegments
-                    });
-
-                    self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                    self._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
-                    self._panel.webview.postMessage({ command: 'hideProjectLoader' }); // Failsafe dismiss
-                    return resolvePromise();
-                } else if (!isBackground) {
+                if (!isBackground) {
                     self._panel.webview.postMessage({ 
                         command: 'updateContext', 
                         files: includedFiles
@@ -1334,11 +1365,28 @@ export class ChatPanel {
 
                         // --- LAZY INGESTION & DELTA STATE CACHE ---
                         const provider = self._contextManager.getContextStateProvider();
-                        const includedFiles = provider ? provider.getIncludedFiles().map(f => ({
-                            path: f.path,
-                            state: f.state,
-                            hasContent: false // Loaded dynamically on-demand
-                        })) : [];
+                        const rawIncluded = provider ? provider.getIncludedFiles() : [];
+                        const includedFiles = await Promise.all(rawIncluded.filter(f => f && f.path).map(async f => {
+                            let tokens = 0;
+                            const cached = (self._contextManager as any)._fileContentCache?.get(f.path);
+                            if (cached?.content) {
+                                tokens = Math.ceil(cached.content.length / 3.5);
+                            } else {
+                                const res = await self._contextManager.resolveWorkspaceFromPath(f.path);
+                                if (res) {
+                                    try {
+                                        const st = await vscode.workspace.fs.stat(res.uri);
+                                        tokens = Math.ceil(st.size / 3.5);
+                                    } catch {}
+                                }
+                            }
+                            return {
+                                path: f.path,
+                                tokens,
+                                state: f.state,
+                                hasContent: false
+                            };
+                        }));
                         const currentSkills = context.importedSkills || []; 
 
                         const discussionTools = self._currentDiscussion?.importedTools || [];
@@ -1591,17 +1639,13 @@ export class ChatPanel {
                     }
 
                     if (self._panel && self._panel.webview) {
-                        const metricsStr = JSON.stringify({ totalTokens, finalCtxSize, segments });
-                        if ((self as any)._lastSentMetricsStr !== metricsStr) {
-                            (self as any)._lastSentMetricsStr = metricsStr;
-                            self._panel.webview.postMessage({
-                                command: 'updateTokenProgress',
-                                totalTokens: totalTokens,
-                                contextSize: finalCtxSize,
-                                isApproximate: isLimitApproximate,
-                                segments: segments
-                            });
-                        }
+                        self._panel.webview.postMessage({
+                            command: 'updateTokenProgress',
+                            totalTokens: totalTokens,
+                            contextSize: finalCtxSize,
+                            isApproximate: isLimitApproximate,
+                            segments: segments
+                        });
 
                         if (!isBackground) {
                             self._panel.webview.postMessage({
@@ -2569,9 +2613,27 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     // 1.5 Sync capabilities to catch any changes from background tasks
     this._discussionCapabilities = this._currentDiscussion.capabilities || this._discussionCapabilities;
 
+    const { isModelVisionCapable } = require('../../utils');
+    const autoSuppress = config.get<boolean>('autoSuppressImagesForNonVisionModels', true);
+    const visionSupported = this._discussionCapabilities.enableImages !== false && 
+        (!autoSuppress || isModelVisionCapable(targetModel, config));
+
+    let userContent = message.content;
+    if (Array.isArray(userContent)) {
+        if (!visionSupported) {
+            userContent = userContent.map((part: any) => {
+                if (part.type === 'image_url') {
+                    return { ...part, isMuted: true };
+                }
+                return part;
+            });
+        }
+    }
+
     // --- 1. PRESERVE USER CONTENT IMMEDIATELY (INSTANT MATERIALIZATION) ---
     const userMessage: ChatMessage = { 
         ...message, 
+        content: userContent,
         id: message.id || 'user_' + Date.now() + Math.random().toString(36).substring(2),
         timestamp: Date.now()
     };
@@ -3254,8 +3316,10 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                 const totalEstimated = metrics.total;
                 const maxTokens = metrics.contextSize;
 
-                // Read User-Defined Threshold (Default to 90 if missing)
-                const userThresholdPercent = this._discussionCapabilities.contextGovernorThreshold || 90;
+                // Read User-Defined Threshold (Default to 95 if missing)
+                const userThresholdPercent = this._discussionCapabilities.contextGovernorThreshold !== undefined
+                    ? this._discussionCapabilities.contextGovernorThreshold
+                    : 95;
                 const triggerThreshold = maxTokens * (userThresholdPercent / 100);
 
                 const fillPercentage = Math.round((totalEstimated / maxTokens) * 100);
@@ -3602,6 +3666,7 @@ The API endpoint returned an empty response.
 **🔍 DIAGNOSTICS & SOLUTIONS:**
 1.  **Strict API Schema**: Ensure your API key is correctly configured inside Settings for the **${this._currentDiscussion.model || 'active'}** model.
 2.  **Verify Server Endpoint**: If using a local proxy or custom API path, test the connection via the **Test Connection** button inside the Lollms Settings Panel.
+3.  **Vision/Multimodal Mismatch**: If you attached an image, note that **${targetModel}** may be a pure text LLM (not a VLM). Sending multimodal payloads to non-vision models often results in HTTP 400/422 errors or empty responses. You can toggle vision off in Discussion Settings or configure non-vision models in Settings to automatically suppress image payloads with a red indicator.
 `.trim();
 
                 processedResponse = connectionWarning;
@@ -4933,27 +4998,75 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 break;
             case 'replaceCode':
                 try {
-                    // Logic to normalize markers and lone ======= separators before sending to command
                     const normalizedContent = normalizeAiderContent(message.content);
-
-                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, normalizedContent, this, message.messageId, message.options);
-                    
-                    webview.postMessage({
-                        command: 'applyAllResult',
+                    const isUndo = message.options?.undo === true;
+                    const isManual = !message.options?.silent && !isUndo;
+                    const opts = {
+                        silent: !isManual,
+                        autoSave: !isManual,
+                        undo: isUndo,
                         messageId: message.messageId,
-                        filePath: message.filePath,
                         blockIndex: message.blockIndex,
                         hunkIndex: message.hunkIndex,
-                        success: res?.success ?? false,
-                        repaired: res?.repaired,
-                        error: res?.error
-                    });
+                        blockId: message.blockId || message.options?.blockId,
+                        ...(message.options || {})
+                    };
+
+                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, normalizedContent, this, message.messageId, opts);
+
                     if (res && res.success) {
-                        await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex);
+                        if (opts.silent || isUndo) {
+                            if (message.blockIndex !== undefined && message.messageId) {
+                                await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex, isUndo);
+                            }
+                            webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: message.messageId,
+                                filePath: message.filePath,
+                                blockIndex: message.blockIndex,
+                                hunkIndex: message.hunkIndex,
+                                blockId: message.blockId || message.options?.blockId,
+                                success: true,
+                                alreadyApplied: !isUndo,
+                                undo: isUndo
+                            });
+                        } else {
+                            // Manual click: Diff editor opened in new tab. Show reviewing state
+                            webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: message.messageId,
+                                filePath: message.filePath,
+                                blockIndex: message.blockIndex,
+                                hunkIndex: message.hunkIndex,
+                                blockId: message.blockId || message.options?.blockId,
+                                success: true,
+                                reviewingDiff: true
+                            });
+                        }
+                    } else {
+                        webview.postMessage({
+                            command: 'applyAllResult',
+                            messageId: message.messageId,
+                            filePath: message.filePath,
+                            blockIndex: message.blockIndex,
+                            hunkIndex: message.hunkIndex,
+                            blockId: message.blockId || message.options?.blockId,
+                            success: false,
+                            error: res?.error
+                        });
                     }
                 } catch (e: any) {
                     this.log(`Command replaceCode failed: ${e.message}`, 'ERROR');
-                    webview.postMessage({ command: 'applyAllResult', messageId: message.messageId, blockIndex: message.blockIndex, hunkIndex: message.hunkIndex, success: false, error: e.message });
+                    webview.postMessage({ 
+                        command: 'applyAllResult', 
+                        messageId: message.messageId, 
+                        blockIndex: message.blockIndex, 
+                        hunkIndex: message.hunkIndex, 
+                        blockId: message.blockId || message.options?.blockId, 
+                        filePath: message.filePath, 
+                        success: false, 
+                        error: e.message 
+                    });
                 }
                 break;
             case 'deleteCodeBlock':
@@ -6013,21 +6126,66 @@ Task:
                 break;
             case 'applyFileContent':
                 try {
-                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content);
-                    webview.postMessage({
-                        command: 'applyAllResult',
-                        messageId: message.messageId,
-                        filePath: message.filePath,
+                    const isManual = !message.options?.silent;
+                    const opts = { 
+                        silent: !isManual, 
+                        autoSave: !isManual, 
+                        messageId: message.messageId, 
                         blockIndex: message.blockIndex,
-                        success: res?.success ?? false,
-                        error: res?.error
-                    });
+                        hunkIndex: message.hunkIndex,
+                        blockId: message.blockId || message.options?.blockId,
+                        ...(message.options || {})
+                    };
+                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content, opts);
+
                     if (res && res.success) {
-                        await this.updateAppliedState(message.messageId, message.blockIndex);
+                        if (opts.silent) {
+                            webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: message.messageId,
+                                filePath: message.filePath,
+                                blockIndex: message.blockIndex,
+                                blockId: message.blockId || message.options?.blockId,
+                                success: true,
+                                alreadyApplied: true
+                            });
+                            if (message.blockIndex !== undefined) {
+                                await this.updateAppliedState(message.messageId, message.blockIndex);
+                            }
+                        } else {
+                            // Manual click: Diff editor opened. Notify webview to show reviewing state
+                            webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: message.messageId,
+                                filePath: message.filePath,
+                                blockIndex: message.blockIndex,
+                                blockId: message.blockId || message.options?.blockId,
+                                success: true,
+                                reviewingDiff: true
+                            });
+                        }
+                    } else {
+                        webview.postMessage({
+                            command: 'applyAllResult',
+                            messageId: message.messageId,
+                            filePath: message.filePath,
+                            blockIndex: message.blockIndex,
+                            blockId: message.blockId || message.options?.blockId,
+                            success: false,
+                            error: res?.error
+                        });
                     }
                 } catch (e: any) {
                     this.log(`Command applyFileContent failed: ${e.message}`, 'ERROR');
-                    webview.postMessage({ command: 'applyAllResult', messageId: message.messageId, blockIndex: message.blockIndex, success: false, error: e.message });
+                    webview.postMessage({ 
+                        command: 'applyAllResult', 
+                        messageId: message.messageId, 
+                        blockIndex: message.blockIndex, 
+                        blockId: message.blockId || message.options?.blockId,
+                        filePath: message.filePath,
+                        success: false, 
+                        error: e.message 
+                    });
                 }
                 break;
             case 'applyPatchContent':

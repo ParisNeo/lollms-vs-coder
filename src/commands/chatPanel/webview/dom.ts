@@ -115,7 +115,9 @@ export const state: {
     matrixStats: Record<string, { tree: number, files: number }>, // Per-folder token stats
     usageData: { project: any[], extra: any[] },
     currentUsageSort: { column: 'name' | 'tokens', direction: 'asc' | 'desc' },
-    lastContextData: { context: string, files: string[], skills: any[], tools: any[], diagrams: any[], briefing: string, skillIds?: string[] } | null,
+    lastContextData: { context: string, files: (string | { path: string, tokens?: number, state?: string })[], skills: any[], tools: any[], diagrams: any[], briefing: string, skillIds?: string[] } | null,
+    fileTokensMap: Record<string, number>,
+    fileSortOrder: 'heavy-to-light' | 'light-to-heavy' | 'name',
     capabilities: DiscussionCapabilities | null,
     currentBranch: string,
     lastCommitHash: string,
@@ -124,7 +126,13 @@ export const state: {
     personalities: any[],
     agentProfiles: any[],
     profiles: any[],
-    pendingImages: any[]
+    pendingImages: any[],
+    lastTokenMetrics?: {
+        totalTokens: number;
+        contextSize: number;
+        isApproximate?: boolean;
+        segments?: Record<string, number>;
+    }
 } = {
     searchMatches: [],
     currentMatchIndex: -1,
@@ -135,6 +143,8 @@ export const state: {
     usageData: { project: [], extra: [] },
     currentUsageSort: { column: 'tokens', direction: 'desc' }, // Default to biggest first
     lastContextData: { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "" },
+    fileTokensMap: {},
+    fileSortOrder: 'heavy-to-light',
     capabilities: null,
     currentBranch: '',
     lastCommitHash: '',
@@ -145,6 +155,9 @@ export const state: {
     profiles: [],
     pendingImages: []
 };
+
+// Global attachment for decoupled sub-plugins and event listeners
+(window as any).state = state;
 
 export const dom = {
     get personalitySelector() { return document.getElementById('personality-selector') as HTMLSelectElement; },

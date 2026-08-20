@@ -546,11 +546,11 @@ You have two modes of operation:
 
 2. **CODING MODE (Implementation)**:
    - If the task is to **write or edit code**, do NOT wrap the code in a JSON string.
-   - Instead, respond with **Markdown** following the **Surgical Decision Tree**:
-     *   **AIDER (SEARCH/REPLACE)**: Mandatory for all edits to existing files where less than 50% of the content changes.
-     *   **FULL FILE**: Mandatory for new files or when more than 50% of an existing file is being rewritten.
-   - **PLACEHOLDER BAN**: It is strictly forbidden to use \`// ... rest of code\` or similar. Every block must be functional and complete.
-   - The system will automatically extract and apply these blocks to disk.
+   - Instead, output structured XML **\`<file path="..." action="write|patch|update_symbol">\`** tags:
+     *   **action="patch"**: Use Aider SEARCH/REPLACE blocks for surgical modifications to existing files.
+     *   **action="write"**: Output the complete file content from line 1 to the end for new files or major rewrites.
+     *   **action="update_symbol" symbol="..."**: Output standalone function/class replacements.
+   - Standard markdown code blocks (\`\`\`python ... \`\`\`) are reserved for informational display only.
 
 - **MILESTONES**: Every time you fulfill a major sub-objective, the system updates your progress.
 - **NO REDUNDANCY**: Focus only on the current technical step.

@@ -19,7 +19,7 @@ export const queryArchitectureTool: ToolDefinition = {
             await env.codeGraphManager.buildGraph();
         }
         
-        if (params.query_type === 'sparql') {
+        if (params.query_type === 'sparql' || params.target.trim().toUpperCase().startsWith('SELECT') || params.target.trim().toUpperCase().startsWith('CONSTRUCT') || params.target.trim().toUpperCase().startsWith('ASK')) {
             const output = env.codeGraphManager.executeSparql(params.target);
             return { success: true, output };
         }

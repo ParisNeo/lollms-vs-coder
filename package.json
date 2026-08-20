@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.12.16",
+  "version": "1.0.0",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1304,6 +1304,26 @@
           "default": "You are an expert AI assistant that writes conventional git commit messages.",
           "description": "%config.commitMessagePersona.description%"
         },
+        "lollmsVsCoder.nonVisionModels": {
+          "type": "array",
+          "default": [
+            "glm",
+            "deepseek-chat",
+            "deepseek-v",
+            "codellama",
+            "mistral-nemo",
+            "qwen-coder",
+            "command-r",
+            "llama-3-8b",
+            "llama-3-70b"
+          ],
+          "description": "List of model name substrings that do not support vision (e.g. 'glm', 'deepseek-chat'). Images sent to these models will be automatically suppressed with a red border indicator to prevent 422/400 API errors."
+        },
+        "lollmsVsCoder.autoSuppressImagesForNonVisionModels": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically remove image payloads before sending to models that do not support vision, displaying them with a red border indicator in the chat."
+        },
         "lollmsVsCoder.contextFileExceptions": {
           "type": "array",
           "default": [
@@ -1368,6 +1388,11 @@
             "zh-cn",
             "ar"
           ]
+        },
+        "lollmsVsCoder.contextGovernorThreshold": {
+          "type": "number",
+          "default": 95,
+          "description": "Default context filling percentage (10-99%) that triggers automatic Context Governor pruning."
         },
         "lollmsVsCoder.contextMaxDepth": {
           "type": "number",

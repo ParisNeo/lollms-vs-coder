@@ -201,24 +201,40 @@ export class CompanionPanel {
                         }
 
                         const normalizedContent = normalizeAiderContent(message.content);
+                        const isUndo = message.options?.undo === true;
+                        const isManual = !message.options?.silent && !isUndo;
 
-                        await this._captureSnapshot(message.options?.blockId, targetPath);
+                        const blockId = message.blockId || message.options?.blockId;
+                        await this._captureSnapshot(blockId, targetPath);
 
-                        const opts = { ...message.options, silent: true, autoSave: true };
+                        const opts = { 
+                            ...message.options, 
+                            silent: !isManual, 
+                            autoSave: !isManual,
+                            undo: isUndo,
+                            blockId: blockId
+                        };
+
                         const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', targetPath, normalizedContent, undefined, undefined, opts);
                         if (res?.success ?? false) {
-                            await this._revealAppliedFile(targetPath);
+                            if (opts.silent || isUndo) {
+                                await this._revealAppliedFile(targetPath);
+                            }
                         }
+
                         this._panel.webview.postMessage({
                             command: 'applyAllResult',
                             success: res?.success ?? false,
                             error: res?.error,
-                            blockId: message.options?.blockId,
+                            blockId: blockId,
                             hunkIndex: message.options?.hunkIndex,
-                            filePath: targetPath
+                            filePath: targetPath,
+                            alreadyApplied: res?.success && (opts.silent || isUndo ? !isUndo : false),
+                            reviewingDiff: res?.success && isManual,
+                            undo: isUndo
                         });
                     } catch (e: any) {
-                        this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message, blockId: message.options?.blockId });
+                        this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message, blockId: message.options?.blockId || message.blockId });
                     }
                     break;
                 case 'applyFileContent':
@@ -228,23 +244,36 @@ export class CompanionPanel {
                             targetPath = vscode.workspace.asRelativePath(this._lastActiveEditor.document.uri);
                         }
 
-                        await this._captureSnapshot(message.options?.blockId, targetPath);
+                        const isManual = !message.options?.silent;
+                        const blockId = message.blockId || message.options?.blockId;
+                        await this._captureSnapshot(blockId, targetPath);
 
-                        const opts = { ...message.options, silent: true, autoSave: true };
+                        const opts = { 
+                            ...message.options, 
+                            silent: !isManual, 
+                            autoSave: !isManual,
+                            blockId: blockId
+                        };
+
                         const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', targetPath, message.content, opts);
                         if (res?.success ?? false) {
-                            await this._revealAppliedFile(targetPath);
+                            if (opts.silent) {
+                                await this._revealAppliedFile(targetPath);
+                            }
                         }
+
                         this._panel.webview.postMessage({
                             command: 'applyAllResult',
                             success: res?.success ?? false,
                             error: res?.error,
-                            blockId: message.options?.blockId,
+                            blockId: blockId,
                             hunkIndex: message.options?.hunkIndex,
-                            filePath: targetPath
+                            filePath: targetPath,
+                            alreadyApplied: res?.success && (opts.silent ? true : res.alreadyApplied),
+                            reviewingDiff: res?.success && isManual
                         });
                     } catch (e: any) {
-                        this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message, blockId: message.options?.blockId });
+                        this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message, blockId: message.options?.blockId || message.blockId });
                     }
                     break;
                 case 'reviewDecision':

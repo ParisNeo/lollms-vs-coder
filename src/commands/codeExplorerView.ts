@@ -674,19 +674,15 @@ ${jsonGraph}
                     <select id="sparql-examples" style="flex: 1;" title="Predefined SPARQL templates">
                         <option value="">Examples</option>
                         <optgroup label="SELECT Queries">
-                            <option value="SELECT ?class WHERE { ?class s:type s:Class }">All Classes</option>
-                            <option value="SELECT ?func WHERE { ?func s:type s:Function }">All Global Functions</option>
-                            <option value="SELECT ?file WHERE { ?file s:imports ?lib . ?lib s:type s:Library }">Files using External Libraries</option>
-                            <option value="SELECT ?caller ?callee WHERE { ?caller s:calls ?callee }">All Invocations (Caller -> Callee)</option>
+                            <option value="SELECT * WHERE { ?x s:type s:Class }">All Classes (*)</option>
+                            <option value="SELECT ?func ?path WHERE { ?func s:type s:Function . ?func s:path ?path }">All Functions with File Paths</option>
+                            <option value="SELECT ?file ?lib WHERE { ?file s:imports ?lib . ?lib s:type s:Library }">Files using External Libraries</option>
+                            <option value="SELECT ?caller ?callee WHERE { ?caller s:calls ?callee }">Invocations (Caller -> Callee)</option>
                             <option value="SELECT ?method WHERE { ?class s:name 'Player' . ?class s:contains ?method . ?method s:type s:Method }">Methods of 'Player' Class</option>
                             <option value="SELECT ?target WHERE { ?caller s:name 'start_game' . ?caller s:calls ?target }">Symbols Called by 'start_game'</option>
-                            <option value="SELECT ?class WHERE { ?func s:name 'load_enemy_sprite_sheets' . ?func s:localVariable ?class . ?class s:type s:Class }">Classes Instantiated in 'load_enemy_sprite_sheets'</option>
-                            <option value="SELECT ?type WHERE { ?method s:name '_play_story_sound' . ?method s:inputParam ?type }">Parameter Types of '_play_story_sound'</option>
-                            <option value="SELECT ?type WHERE { ?func s:name 'get_frame_count' . ?func s:outputParam ?type }">Return Type of 'get_frame_count'</option>
-                            <option value="SELECT ?child WHERE { ?child s:inherits ?parent . ?parent s:name 'Sprite' }">Classes Inheriting from 'Sprite'</option>
-                            <option value="SELECT ?file WHERE { ?file s:imports ?target . ?target s:name 'constants.py' }">Files Importing 'constants.py'</option>
-                            <option value="SELECT ?file WHERE { ?file s:contains ?c1 . ?c1 s:name 'Player' . ?file s:contains ?c2 . ?c2 s:name 'Enemy' }">Files Containing Both Player & Enemy Classes</option>
-                            <option value="SELECT ?a ?b ?c WHERE { ?a s:calls ?b . ?b s:calls ?c }">Deep Call Paths (A -> B -> C)</option>
+                            <option value="SELECT ?child ?parent WHERE { ?child s:inherits ?parent }">Inheritance Hierarchy</option>
+                            <option value="SELECT ?file WHERE { ?file s:type s:File . FILTER(regex(?file, 'auth', 'i')) }">Filter Files Matching 'auth'</option>
+                            <option value="SELECT ?file WHERE { ?file s:contains ?c1 . ?file s:contains ?c2 . ?c1 s:name 'Player' . ?c2 s:name 'Enemy' }">Files with Multiple Target Classes</option>
                         </optgroup>
                         <optgroup label="CONSTRUCT Subgraphs">
                             <option value="CONSTRUCT { ?caller s:calls ?callee } WHERE { ?caller s:type s:Function . ?callee s:type s:Function . ?caller s:calls ?callee }">Construct: Pure Function Call Graph</option>

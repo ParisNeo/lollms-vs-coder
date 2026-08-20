@@ -185,7 +185,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
                     renderMessageContent(message.id, message.fullContent, true);
-                    
+
+                    // Final single sync pass for all context expansion blocks
+                    import('./ui.js').then(ui => ui.syncExpansionBlocks());
+
                     // HAL9000: Speak the result only if enabled in capabilities
                     if (state.capabilities?.enableTTS && typeof (window as any).halSpeak === 'function') {
                         // Strip markdown and code blocks for cleaner speech
@@ -313,10 +316,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateContext':
                 updateContext(message.context, message.files, message.skills, message.tools, message.diagrams, message.briefing, message.selections);
-                // Optimized sync: Wait for DOM to stabilize before matching UI blocks
                 updateBadges();
-                if ((window as any)._syncTimer) clearTimeout((window as any)._syncTimer);
-                (window as any)._syncTimer = setTimeout(() => syncExpansionBlocks(), 800);
+                // Only schedule background sync if generation is not actively streaming
+                if (!state.isGenerating) {
+                    if ((window as any)._syncTimer) clearTimeout((window as any)._syncTimer);
+                    (window as any)._syncTimer = setTimeout(() => syncExpansionBlocks(), 800);
+                }
                 break;
             case 'updateContextDelta':
                 {
@@ -739,6 +744,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const govRange = document.getElementById('modal-governor-threshold') as HTMLInputElement;
                     const govLabel = document.getElementById('modal-governor-threshold-val');
                     if (govRange && govLabel) {
+                        const threshold = caps.contextGovernorThreshold !== undefined ? caps.contextGovernorThreshold : 95;
+                        govRange.value = threshold.toString();
+                        govLabel.textContent = threshold + '%';
                         govRange.oninput = () => { govLabel.textContent = govRange.value + '%'; };
                     }
 
@@ -920,16 +928,22 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 updateLoaderStatus(message.status, message.stats);
                 break;
             case 'updateTokenProgress':
-                console.log("[Lollms Debug:Token] Received updateTokenProgress payload:", message);
-                console.log("[Lollms Debug:Token] Current text label element:", dom.tokenCountLabel);
+                state.lastTokenMetrics = {
+                    totalTokens: message.totalTokens,
+                    contextSize: message.contextSize,
+                    isApproximate: message.isApproximate,
+                    segments: message.segments
+                };
 
                 if (dom.tokenCountLabel) {
                     const { totalTokens, contextSize, error, isApproximate, folderStats, files } = message;
 
-                    // LATE HYDRATION: Update global file list and sync existing UI blocks
+                    // LATE HYDRATION: Update global file list and sync existing UI blocks only if idle
                     if (files && state.lastContextData) {
                         state.lastContextData.files = files;
-                        import('./ui.js').then(ui => ui.syncExpansionBlocks());
+                        if (!state.isGenerating) {
+                            import('./ui.js').then(ui => ui.syncExpansionBlocks());
+                        }
                     }
 
                     if (folderStats) {
@@ -1552,6 +1566,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 renderContextUsage(message.usage);
                 break;
             case 'updateContextFileUsage':
+                if (message.path) {
+                    if (!state.fileTokensMap) state.fileTokensMap = {};
+                    state.fileTokensMap[message.path] = message.tokens;
+                }
                 updateContextFileUsage(message.path, message.tokens);
                 break;
             case 'webSearchResults':
@@ -1627,12 +1645,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
             case 'fileSavedOnDisk':
                 {
-                    const { filePath, messageId, blockIndex, hunkIndex } = message;
+                    const { filePath, messageId, blockIndex, hunkIndex, blockId } = message;
                     if (!filePath) break;
 
-                    // 1. If we have precise block index, update its applied state so it turns green!
+                    // 1. Update persistent in-memory applied state
                     if (messageId && blockIndex !== undefined) {
-                        // Mark as applied in state
                         if (!state.appliedState[messageId]) state.appliedState[messageId] = {};
                         if (!state.appliedState[messageId][blockIndex]) state.appliedState[messageId][blockIndex] = [];
 
@@ -1640,45 +1657,41 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         if (!state.appliedState[messageId][blockIndex].includes(hunkVal)) {
                             state.appliedState[messageId][blockIndex].push(hunkVal);
                         }
-
-                        // Trigger applyAllResult visually for this block to set the checkmark and green color!
-                        const event = new MessageEvent('message', {
-                            data: {
-                                command: 'applyAllResult',
-                                messageId,
-                                blockIndex,
-                                hunkIndex,
-                                success: true,
-                                alreadyApplied: true
-                            }
-                        });
-                        window.dispatchEvent(event);
                     }
 
-                    // 2. Scan the entire DOM for any code block that targets this specific file to collapse it gracefully
-                    const codeBlocks = document.querySelectorAll('details.code-collapsible');
+                    // 2. Target ONLY the specific block matching blockIndex/blockId to avoid marking unrelated blocks of the same file as applied
+                    const targetBlock = (blockId ? document.getElementById(blockId) : null)
+                        || (messageId && blockIndex !== undefined ? document.getElementById(`block-${messageId}-${blockIndex}`) : null);
 
-                    codeBlocks.forEach((block: any) => {
-                        const inputEl = block.querySelector('.path-editor-input') as HTMLInputElement;
-                        const currentPath = inputEl ? inputEl.value.trim() : "";
-
-                        // If this block targets the saved file, collapse it gracefully
-                        if (currentPath === filePath || currentPath.replace(/\\\\/g, '/').endsWith(filePath.replace(/\\\\/g, '/'))) {
-                            collapseBlockWithScrollPreservation(block, dom.messagesDiv);
+                    if (targetBlock) {
+                        const applyBtn = targetBlock.querySelector('.apply-btn, .apply-mutation-btn') as HTMLButtonElement;
+                        if (applyBtn) {
+                            applyBtn.disabled = false;
+                            applyBtn.classList.remove('delete-btn', 'apply-failed-btn');
+                            applyBtn.classList.add('applied');
+                            applyBtn.innerHTML = '<i class="codicon codicon-check"></i>';
+                            applyBtn.title = "Successfully applied. Click to re-apply.";
                         }
-                    });
+                        targetBlock.classList.remove('malformed', 'apply-failed');
+                        (targetBlock as HTMLElement).style.border = '';
+                        (targetBlock as HTMLElement).style.backgroundColor = '';
+
+                        if ((targetBlock as HTMLDetailsElement).open) {
+                            collapseBlockWithScrollPreservation(targetBlock as HTMLDetailsElement, dom.messagesDiv);
+                        }
+                    }
                 }
                 break;
             case 'applyAllResult':
                 {
-                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`) as HTMLElement;
-                    const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
-                    if (!wrapper) break;
-
+                    const wrapper = message.messageId ? document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`) as HTMLElement : null;
                     const isUndo = message.undo === true;
+                    const mainApplyBtn = (message.messageId && message.blockIndex !== undefined) 
+                        ? document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement 
+                        : null;
 
                     const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
-                    const row = wrapper.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`) as HTMLElement;
+                    const row = wrapper ? wrapper.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`) as HTMLElement : null;
 
                     if (row) {
                         const iconEl = row.querySelector('.status-icon');
@@ -1758,9 +1771,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
                     }
 
-                    // 1. Update the individual code block UI (even if it wasn't part of an "Apply All" run)
+                    // 1. Update the individual code block UI (supporting standard blocks and XML file mutation cards)
                     const targetBlockId = `block-${message.messageId}-${message.blockIndex}`;
-                    const blockEl = document.getElementById(targetBlockId) as HTMLDetailsElement;
+                    const blockEl = (message.blockId ? document.getElementById(message.blockId) : null) 
+                        || document.getElementById(targetBlockId) 
+                        || (message.filePath ? document.querySelector(`.file-mutation-card[data-path='${message.filePath}']`) : null) as HTMLDetailsElement;
 
                     // Support SPARQL block spinner and results rendering resolution
                     const sparqlBlock = document.getElementById(message.blockIndex) as HTMLElement;
@@ -1796,74 +1811,113 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         const hunkVal = message.hunkIndex !== undefined ? message.hunkIndex : -1;
 
                         if (message.alreadyApplied) {
-                            if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
-                            if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
+                            if (message.messageId && message.blockIndex !== undefined) {
+                                if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
+                                if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
 
-                            if (isUndo) {
-                                state.appliedState[message.messageId][message.blockIndex] = state.appliedState[message.messageId][message.blockIndex].filter(v => v !== hunkVal);
-                                if (hunkVal === -1) state.appliedState[message.messageId][message.blockIndex] = [];
-                            } else {
-                                if (!state.appliedState[message.messageId][message.blockIndex].includes(hunkVal)) {
-                                    state.appliedState[message.messageId][message.blockIndex].push(hunkVal);
+                                if (isUndo) {
+                                    state.appliedState[message.messageId][message.blockIndex] = state.appliedState[message.messageId][message.blockIndex].filter(v => v !== hunkVal);
+                                    if (hunkVal === -1) state.appliedState[message.messageId][message.blockIndex] = [];
+                                } else {
+                                    if (!state.appliedState[message.messageId][message.blockIndex].includes(hunkVal)) {
+                                        state.appliedState[message.messageId][message.blockIndex].push(hunkVal);
+                                    }
                                 }
                             }
                         }
 
                         const restoreBtn = (btn: HTMLButtonElement) => {
                             if (!btn) return;
-                            const bubble = btn.closest('.aider-hunk-bubble, .code-collapsible');
-                            const undoBtn = bubble?.querySelector('.undo-hunk-btn, .undo-block-btn') as HTMLElement;
+                            const bubble = btn.closest('.aider-hunk-bubble, .code-collapsible, .file-mutation-card');
+                            const undoBtn = bubble?.querySelector('.undo-hunk-btn, .undo-block-btn, .undo-mutation-btn') as HTMLElement;
+                            const isPatch = bubble?.getAttribute('data-action') === 'patch' || bubble?.classList.contains('aider-diff-container') || bubble?.querySelector('.aider-hunk-group') !== null;
 
-                            btn.disabled = false; // ALWAYS keep enabled for re-apply
+                            btn.disabled = false; // Always keep clickable to re-apply
 
                             const isMainBtn = btn.id && btn.id.startsWith('apply-btn-');
 
                             if (isUndo) {
                                 btn.classList.remove('applied');
-                                const isAider = bubble?.classList.contains('aider-diff-container') || bubble?.querySelector('.aider-hunk-group');
-                                let icon = 'codicon-tools';
-                                if (isMainBtn) {
-                                    icon = btn.classList.contains('apply-all-btn') ? 'codicon-check-all' : (isAider ? 'codicon-diff-modified' : 'codicon-tools');
-                                } else {
-                                    icon = 'codicon-git-commit';
-                                }
+                                const icon = isMainBtn 
+                                    ? (btn.classList.contains('apply-all-btn') ? 'codicon-check-all' : (isPatch ? 'codicon-diff-modified' : 'codicon-tools'))
+                                    : (isPatch ? 'codicon-arrow-swap' : 'codicon-tools');
                                 btn.innerHTML = `<i class="codicon ${icon}"></i>`;
+                                btn.title = "Review Diff & Apply";
                                 if (undoBtn) {
-                                    if (undoBtn.classList.contains('undo-block-btn')) {
-                                        undoBtn.remove();
-                                    } else {
-                                        undoBtn.style.display = 'none';
-                                        undoBtn.innerHTML = '<i class="codicon codicon-discard"></i> UNDO';
-                                        (undoBtn as HTMLButtonElement).disabled = false;
-                                    }
+                                    undoBtn.style.display = 'none';
+                                    undoBtn.disabled = false;
+                                    undoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
                                 }
                             } else if (message.alreadyApplied) {
                                 btn.classList.add('applied');
                                 btn.innerHTML = '<i class="codicon codicon-check"></i>';
-                                btn.title = "Successfully applied. Click to apply again.";
-                                if (undoBtn) {
-                                    undoBtn.style.display = 'flex';
-                                    undoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
+                                btn.title = "Successfully applied. Click to re-apply.";
+                                
+                                // Reveal or instantiate the red Undo button for patches
+                                if (isPatch) {
+                                    let activeUndoBtn = undoBtn as HTMLButtonElement;
+                                    if (!activeUndoBtn) {
+                                        activeUndoBtn = document.createElement('button');
+                                        activeUndoBtn.className = 'code-action-btn delete-btn undo-mutation-btn';
+                                        activeUndoBtn.title = 'Undo this patch (apply inverse)';
+                                        activeUndoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
+                                        const actions = bubble?.querySelector('.code-actions');
+                                        if (actions) actions.insertBefore(activeUndoBtn, btn);
+                                    }
+                                    activeUndoBtn.style.display = 'inline-flex';
+                                    activeUndoBtn.disabled = false;
+                                    activeUndoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
+                                    
+                                    const rawCodeAttr = bubble?.getAttribute('data-raw-code');
+                                    const rawCode = rawCodeAttr ? decodeURIComponent(rawCodeAttr) : (bubble?.querySelector('pre code')?.textContent || "");
+                                    const path = bubble?.getAttribute('data-path');
+                                    const bIdx = parseInt(bubble?.getAttribute('data-block-index') || "0", 10);
+                                    activeUndoBtn.onclick = (e: MouseEvent) => {
+                                        e.stopPropagation();
+                                        activeUndoBtn.disabled = true;
+                                        activeUndoBtn.innerHTML = '<div class="spinner"></div>';
+                                        vscode.postMessage({
+                                            command: 'replaceCode',
+                                            filePath: path,
+                                            content: rawCode,
+                                            messageId: message.messageId,
+                                            blockIndex: bIdx,
+                                            blockId: bubble?.id,
+                                            options: { undo: true, silent: true, autoSave: true, blockId: bubble?.id, blockIndex: bIdx }
+                                        });
+                                    };
                                 }
+                            } else if (message.reviewingDiff) {
+                                btn.disabled = false;
+                                btn.classList.remove('applied');
+                                btn.innerHTML = '<i class="codicon codicon-diff"></i>';
+                                btn.title = "Reviewing diff in tab. Validate changes to complete application.";
                             } else {
                                 btn.classList.remove('applied');
-                                const isAider = bubble?.classList.contains('aider-diff-container') || bubble?.querySelector('.aider-hunk-group');
-                                let icon = 'codicon-tools';
-                                if (isMainBtn) {
-                                    icon = isAider ? 'codicon-diff-modified' : 'codicon-tools';
-                                } else {
-                                    icon = 'codicon-git-commit';
-                                }
+                                const icon = isMainBtn 
+                                    ? (isPatch ? 'codicon-diff-modified' : 'codicon-tools')
+                                    : (isPatch ? 'codicon-arrow-swap' : 'codicon-tools');
                                 btn.innerHTML = `<i class="codicon ${icon}"></i>`;
                                 btn.title = isMainBtn 
-                                    ? "Interactive diff opened. Edit right side and save (Ctrl+S) to apply."
+                                    ? "Interactive diff opened. Edit right side and validate to apply."
                                     : "Apply this hunk surgically.";
                             }
                         };
 
-                        // Update specific Apply button for this block
+                        // Update specific Apply button for this block (including .apply-mutation-btn)
                         const mainBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
                         if (mainBtn) restoreBtn(mainBtn);
+
+                        const mutationApplyBtn = blockEl?.querySelector('.apply-mutation-btn') as HTMLButtonElement;
+                        if (mutationApplyBtn) restoreBtn(mutationApplyBtn);
+
+                        // Clear and restore repair buttons on success
+                        const activeRepairBtn = blockEl?.querySelector('.fix-ai-btn, .repairBtn, .row-fix-ai-btn') as HTMLButtonElement;
+                        if (activeRepairBtn) {
+                            activeRepairBtn.disabled = false;
+                            activeRepairBtn.innerHTML = '<span class="codicon codicon-sparkle"></span> Fix with AI';
+                            activeRepairBtn.style.display = 'none'; // Hide repair button once successfully applied
+                        }
                         if (message.hunkIndex !== undefined && message.hunkIndex !== -1) {
                             // TAB SYNC: Find the specific tab and pane
                             const tab = blockEl.querySelector(`.hunk-tab-${message.hunkIndex}`) as HTMLElement;
@@ -1895,22 +1949,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             });
                         }
 
-                        // Automatically collapse the code block upon successful automatic application to keep the viewport clean
-                        if (message.alreadyApplied) {
-                            setTimeout(() => {
-                                if (blockEl && blockEl.open) {
-                                    import('./utils.js').then(utils => {
-                                        utils.collapseBlockWithScrollPreservation(blockEl, document.getElementById('messages'));
-                                    });
-                                }
-                            }, 500);
+                        // Re-sync main button state for the entire message
+                        if (message.messageId) {
+                            checkAndSyncMessageAppliedState(message.messageId);
                         }
 
-                        // Re-sync main button state for the entire message
-                        checkAndSyncMessageAppliedState(message.messageId);
-
-                        // Collapse block automatically if applied (hunk-specific or full block)
-                        if (message.alreadyApplied && !isUndo && blockEl.open) {
+                        // Collapse block automatically upon application
+                        if (message.alreadyApplied && !isUndo && blockEl && blockEl.open) {
                             import('./utils.js').then(utils => {
                                 utils.collapseBlockWithScrollPreservation(blockEl, document.getElementById('messages'));
                             });
@@ -1939,22 +1984,37 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
 
                     } else if (blockEl && !message.success) {
-                        // 1. STOP THE SPINNER
-                        if (mainApplyBtn) {
-                            mainApplyBtn.disabled = false;
-                            const isAider = blockEl.dataset.rawCode?.includes('<<<<<<< SEARCH');
-                            mainApplyBtn.innerHTML = `<span class="codicon ${isAider ? 'codicon-arrow-swap' : 'codicon-tools'}"></span>`;
+                        // 1. STOP ALL SPINNERS & RESTORE BUTTON STATES
+                        const targetApplyBtn = blockEl.querySelector('.apply-btn, .apply-mutation-btn') as HTMLButtonElement;
+                        if (targetApplyBtn) {
+                            targetApplyBtn.disabled = false;
+                            targetApplyBtn.classList.remove('applied');
+                            targetApplyBtn.classList.add('delete-btn', 'apply-failed-btn');
+                            targetApplyBtn.innerHTML = '<i class="codicon codicon-error"></i> Failed';
+                            targetApplyBtn.title = message.error || "Patch failed to match file content on disk. Click to retry.";
                         }
 
-                        // TAB SYNC: Highlight the failing tab
+                        // Reset any active repair buttons in this block
+                        const activeRepairBtn = blockEl.querySelector('.fix-ai-btn, .repairBtn, .row-fix-ai-btn') as HTMLButtonElement;
+                        if (activeRepairBtn) {
+                            activeRepairBtn.disabled = false;
+                            activeRepairBtn.innerHTML = '<span class="codicon codicon-sparkle"></span> Fix with AI';
+                        }
+
+                        if (mainApplyBtn) {
+                            mainApplyBtn.disabled = false;
+                            mainApplyBtn.classList.remove('applied', 'sequential-applying');
+                            mainApplyBtn.classList.add('delete-btn', 'apply-failed-btn');
+                            mainApplyBtn.innerHTML = '<i class="codicon codicon-error"></i>';
+                        }
+
+                        // 2. TAB SYNC: Highlight the failing tab
                         if (message.hunkIndex !== undefined) {
                             const tab = blockEl.querySelector(`.hunk-tab-${message.hunkIndex}`) as HTMLElement;
                             if (tab) {
-                                tab.classList.add('status-failed');
-                                tab.classList.add('active');
+                                tab.classList.add('status-failed', 'active');
                                 tab.querySelector('.hunk-status-icon i')!.className = 'codicon codicon-error';
 
-                                // Auto-switch to the failing pane
                                 blockEl.querySelectorAll('.hunk-tab, .hunk-tab-content').forEach(el => {
                                     if (el !== tab && !el.classList.contains(`hunk-pane-${message.hunkIndex}`)) {
                                         el.classList.remove('active');
@@ -1964,49 +2024,58 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             }
                         }
 
-                        // VISUAL RED ALERT: Set state to error
-                        blockEl.classList.add('malformed');
-                        blockEl.style.borderColor = 'var(--vscode-errorForeground)';
+                        // 3. VISUAL RED ALERT: Highlight card in red and expand it so the user can inspect
+                        blockEl.classList.add('malformed', 'apply-failed');
+                        (blockEl as HTMLElement).style.border = '2px solid var(--vscode-charts-red)';
+                        (blockEl as HTMLElement).style.backgroundColor = 'rgba(244, 71, 71, 0.08)';
+                        (blockEl as HTMLDetailsElement).open = true;
 
-                        // FAILURE CASE: Insert explicit "Fix with AI" & "Manual Fix" buttons
-                        // in place of the generic error message or as floating helper actions
+                        // 4. INSERT "Auto Repair" & "Manual Stitch" BUTTONS DIRECTLY INTO CARD ACTIONS
                         const actions = blockEl.querySelector('.code-actions');
-                        if (actions && !actions.querySelector('.fix-ai-btn')) {
-                            const fixAiBtn = document.createElement('button');
-                            fixAiBtn.className = 'code-action-btn apply-btn fix-ai-btn';
-                            fixAiBtn.style.borderColor = 'var(--vscode-charts-purple)';
-                            fixAiBtn.innerHTML = '<span class="codicon codicon-sparkle"></span> Fix with AI';
-                            fixAiBtn.onclick = () => {
-                                fixAiBtn.disabled = true;
-                                fixAiBtn.innerHTML = '<div class="spinner"></div> Repairing...';
-                                vscode.postMessage({ 
-                                    command: 'replaceCode', 
-                                    filePath: message.filePath, 
-                                    content: "REPAIR_REQUESTED", 
-                                    messageId: message.messageId, 
-                                    blockIndex: message.blockIndex,
-                                    hunkIndex: message.hunkIndex,
-                                    options: { silent: true }
-                                });
-                            };
+                        if (actions) {
+                            const rawCode = blockEl.dataset.rawCode ? decodeURIComponent(blockEl.dataset.rawCode) : (blockEl.querySelector('pre code')?.textContent || "");
 
-                            const manualFixBtn = document.createElement('button');
-                            manualFixBtn.className = 'code-action-btn secondary-btn manual-fix-btn';
-                            manualFixBtn.style.borderColor = 'var(--vscode-charts-orange)';
-                            manualFixBtn.innerHTML = '<span class="codicon codicon-tools"></span> Manual Fix';
-                            manualFixBtn.onclick = () => {
-                                const codeText = blockEl.dataset.rawCode || "";
-                                openRawCodeModal(
-                                    message.messageId, 
-                                    message.blockIndex, 
-                                    message.filePath, 
-                                    codeText, 
-                                    message.hunkIndex !== undefined ? message.hunkIndex : 0
-                                );
-                            };
+                            if (!actions.querySelector('.fix-ai-btn')) {
+                                const fixAiBtn = document.createElement('button');
+                                fixAiBtn.className = 'code-action-btn apply-btn fix-ai-btn';
+                                fixAiBtn.style.cssText = 'background-color: var(--vscode-charts-purple) !important; color: white !important;';
+                                fixAiBtn.innerHTML = '<span class="codicon codicon-sparkle"></span> Auto Repair';
+                                fixAiBtn.title = "Ask AI to repair this specific patch against current disk content";
+                                fixAiBtn.onclick = (e: MouseEvent) => {
+                                    e.stopPropagation();
+                                    fixAiBtn.disabled = true;
+                                    fixAiBtn.innerHTML = '<div class="spinner"></div> Repairing...';
+                                    vscode.postMessage({ 
+                                        command: 'replaceCode', 
+                                        filePath: message.filePath, 
+                                        content: "REPAIR_REQUESTED", 
+                                        messageId: message.messageId, 
+                                        blockIndex: message.blockIndex,
+                                        hunkIndex: message.hunkIndex,
+                                        options: { silent: true, blockIndex: message.blockIndex, hunkIndex: message.hunkIndex }
+                                    });
+                                };
+                                actions.insertBefore(fixAiBtn, actions.firstChild);
+                            }
 
-                            actions.appendChild(fixAiBtn);
-                            actions.appendChild(manualFixBtn);
+                            if (!actions.querySelector('.manual-fix-btn')) {
+                                const manualFixBtn = document.createElement('button');
+                                manualFixBtn.className = 'code-action-btn secondary-btn manual-fix-btn';
+                                manualFixBtn.style.cssText = 'border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);';
+                                manualFixBtn.innerHTML = '<span class="codicon codicon-tools"></span> Manual Stitch';
+                                manualFixBtn.title = "Open side-by-side manual stitching view";
+                                manualFixBtn.onclick = (e: MouseEvent) => {
+                                    e.stopPropagation();
+                                    openRawCodeModal(
+                                        message.messageId, 
+                                        message.blockIndex, 
+                                        message.filePath, 
+                                        rawCode, 
+                                        message.hunkIndex !== undefined ? message.hunkIndex : 0
+                                    );
+                                };
+                                actions.insertBefore(manualFixBtn, actions.children[1] || actions.firstChild);
+                            }
                         }
                     }
 
@@ -2025,47 +2094,17 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
                     }
 
-                    // Update main "Apply All" button state if everything is finished
-                    const resultsList = row?.closest('.apply-results-list') || document.getElementById(`results-${message.messageId}`);
-                    if (resultsList) {
-                        const stillPending = resultsList.querySelectorAll('.spinner, .codicon-loading').length;
+                    // Update master button state via authoritative calculation
+                    if (message.messageId) {
+                        checkAndSyncMessageAppliedState(message.messageId);
 
-                        if (stillPending === 0) {
-                            const mainBtn = document.getElementById(`apply-all-${message.messageId}`) as HTMLButtonElement;
-
-                            if (mainBtn) {
-                                mainBtn.classList.remove('stop-btn-red');
-                                mainBtn.classList.remove('sequential-applying');
-
-                                const failedCount = resultsList.querySelectorAll('.codicon-error').length;
-                                if (failedCount === 0) {
-                                    if (isUndo) {
-                                        // SUCCESS: Undo completed! Restore Apply All state.
-                                        mainBtn.innerHTML = '<span class="codicon codicon-check-all"></span> Apply All Changes';
-                                        mainBtn.className = 'apply-all-btn'; // Reset standard classes
-                                        mainBtn.style.removeProperty('background-color');
-                                        mainBtn.style.removeProperty('color');
-                                        mainBtn.disabled = false;
-
-                                        // Hide progress bar and results list on successful revert
-                                        const progressBar = document.getElementById(`progress-container-${message.messageId}`);
-                                        if (progressBar) progressBar.style.display = 'none';
-                                        resultsList.style.display = 'none';
-                                    } else {
-                                        // SUCCESS: Apply completed! Transform to Undo All.
-                                        mainBtn.innerHTML = '<span class="codicon codicon-discard"></span> Undo All Changes';
-                                        mainBtn.classList.add('applied');
-                                        mainBtn.classList.add('undo-all-btn');
-                                        mainBtn.style.setProperty('background-color', 'var(--vscode-charts-red)', 'important');
-                                        mainBtn.style.setProperty('color', 'white', 'important');
-                                        mainBtn.disabled = false;
-                                    }
-                                } else {
-                                    // STILL FAILED: Update count in orange bar
-                                    mainBtn.innerHTML = `<span class="codicon codicon-warning"></span> Retry Failed (${failedCount})`;
-                                    mainBtn.style.setProperty('background-color', 'var(--vscode-charts-orange)', 'important');
-                                    mainBtn.disabled = false;
-                                }
+                        const resultsList = row?.closest('.apply-results-list') || document.getElementById(`results-${message.messageId}`);
+                        if (resultsList && isUndo) {
+                            const stillPending = resultsList.querySelectorAll('.spinner, .codicon-loading').length;
+                            if (stillPending === 0) {
+                                const progressBar = document.getElementById(`progress-container-${message.messageId}`);
+                                if (progressBar) progressBar.style.display = 'none';
+                                resultsList.style.display = 'none';
                             }
                         }
                     }                    

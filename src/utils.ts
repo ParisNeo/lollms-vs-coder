@@ -673,6 +673,37 @@ export async function getProcessedSystemPrompt(
     const shells = await getAvailableShells();
     const envAwareness = await getEnvironmentAwarenessBlock();
 
+    const fileMutationProtocol = `
+### 📁 FILE MUTATION PROTOCOL (XML SPECIFICATION)
+You are STRICTLY FORBIDDEN from using colon-delimited markdown backticks (like \`\`\`language:path/to/file) to edit or write files.
+- Use standard markdown code fences (\`\`\`python ... \`\`\`) ONLY for explanations, illustrations, and command examples (they have no file writing authority).
+- When you need to CREATE, OVERWRITE, PATCH, or MODIFY a file on disk, you MUST wrap the code in a top-level <file> XML tag starting on a brand-new line.
+
+#### 1. FULL FILE CREATION / REWRITE:
+<file path="path/to/file.ext" action="write">
+[Complete file content from line 1 to the end with no placeholders]
+</file>
+
+#### 2. SURGICAL SEARCH/REPLACE (AIDER PATCH):
+<file path="path/to/file.ext" action="patch">
+<<<<<<< SEARCH
+[Exact lines currently in the file]
+=======
+[New lines to replace them with]
+>>>>>>> REPLACE
+</file>
+
+#### 3. TARGETED SYMBOL REPLACEMENT:
+<file path="path/to/file.ext" action="update_symbol" symbol="ClassName:methodName">
+[New complete implementation of this class, function, or method]
+</file>
+
+**STRICT RULES**:
+- Always specify the path attribute with the relative workspace path.
+- The closing </file> tag MUST be placed on its own line after the code content.
+- Do NOT nest <file> tags inside markdown code fences.
+`;
+
     // CALL THE TEMPLATE BUILDER
     const basePrompt = PromptTemplates.build(
         promptType, 
@@ -682,12 +713,11 @@ export async function getProcessedSystemPrompt(
         capabilities, 
         forceFullCode, 
         context
-    );
+    ) + "\n" + fileMutationProtocol;
 
     // --- CONDITIONAL SPARQL DEACTIVATION ---
     let finalizedBasePrompt = basePrompt;
     if (capabilities?.sparqlEnabled === false) {
-        // Surgically remove all ontological, graph, and SPARQL instructions to keep the LLM blind to them
         finalizedBasePrompt = finalizedBasePrompt
             .replace(/### 🧊 SOVEREIGN DUAL-ONTOLOGY GRAPH[\s\S]*?before making decisions!/gi, "")
             .replace(/### 📊 SOVEREIGN CODE GRAPH & PATTERNS[\s\S]*?protects your attention map\./gi, "")
@@ -898,6 +928,35 @@ export function getContextLimitForModel(modelName: string): number {
  * Estimates the token cost of an image based on model-specific vision protocols.
  * Heuristic based on April 2026 provider documentation.
  */
+export function isModelVisionCapable(modelName: string, config?: vscode.WorkspaceConfiguration): boolean {
+    if (!modelName) return false;
+    const model = modelName.toLowerCase().trim();
+    const cfg = config || vscode.workspace.getConfiguration('lollmsVsCoder');
+
+    // 1. Explicit Vision keywords & architectures - always allow
+    const visionKeywords = [
+        'vision', '-vl', '_vl', '-v', '_v', '4v', '5v', 'visual', 'multimodal', 
+        'llava', 'bakllava', 'minicpm', 'mplug', 'internvl', 'cogvlm', 'pixtral',
+        'gpt-4o', 'gpt-4-turbo', 'gpt-4-vision', 'claude-3', 'gemini', 'omni'
+    ];
+    if (visionKeywords.some(k => model.includes(k))) {
+        return true;
+    }
+
+    // 2. Check user-configured non-vision model list
+    const nonVisionPatterns: string[] = cfg.get<string[]>('nonVisionModels') || [
+        'deepseek-chat', 'deepseek-v', 'codellama', 'mistral-nemo', 'qwen-coder', 'command-r', 'llama-3-8b', 'llama-3-70b'
+    ];
+    for (const pattern of nonVisionPatterns) {
+        if (pattern && model.includes(pattern.toLowerCase().trim())) {
+            return false;
+        }
+    }
+
+    // 3. Fallback to token estimation heuristic
+    return estimateImageTokens(modelName) > 0;
+}
+
 export function estimateImageTokens(modelName: string, width?: number, height?: number): number {
     if (!modelName) return 0;
     const model = modelName.toLowerCase();

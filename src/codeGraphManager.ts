@@ -43,17 +43,16 @@ const WORKER_PARSE_SCRIPT = `
 const { parentPort, workerData } = require('worker_threads');
 const fs = require('fs');
 
-function stripCommentsAndStrings(code) {
+function stripComments(code) {
     return code.replace(/\\/\\*[\\s\\S]*?\\*\\/|([^\\\\:]|^)\\/\\/.*$/gm, '$1') 
-               .replace(/#.*/g, '') 
-               .replace(/"(?:[^"\\\\\\n]|\\\\.)*"|'(?:[^'\\\\\\n]|\\\\.)*'/g, ''); 
+               .replace(/#.*/g, '');
 }
 
 function extractImports(text, ext) {
     const imports = [];
-    if (['ts', 'js', 'tsx', 'jsx'].includes(ext)) {
-        let match;
+    if (['ts', 'js', 'tsx', 'jsx', 'mjs', 'cjs'].includes(ext)) {
         const esImportRegex = /(?:import|export)\\s+(?:type\\s+)?(?:[\\w\\s{},*]+from\\s+)?['"]([^'"]+)['"]/g;
+        let match;
         while ((match = esImportRegex.exec(text)) !== null) {
             imports.push(match[1]);
         }
@@ -83,6 +82,23 @@ function extractImports(text, ext) {
     return imports;
 }
 
+function extractInvocations(text, ext) {
+    const calls = [];
+    const callRegex = /\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(/g;
+    const reserved = new Set([
+        'if', 'for', 'while', 'switch', 'catch', 'return', 'typeof', 'sizeof',
+        'require', 'import', 'function', 'class', 'super', 'print', 'len', 'range', 'def'
+    ]);
+    let match;
+    while ((match = callRegex.exec(text)) !== null) {
+        const name = match[1];
+        if (!reserved.has(name) && name.length > 1) {
+            calls.push(name);
+        }
+    }
+    return Array.from(new Set(calls));
+}
+
 const { absolutePath, ext, normalizedPath } = workerData;
 let text = '';
 try {
@@ -90,15 +106,14 @@ try {
 } catch (err) {
     text = '';
 }
-const cleanText = stripCommentsAndStrings(text);
+const cleanText = stripComments(text);
 const lines = cleanText.split('\\n');
 
 const localNodes = [];
 const localEdges = [];
+const calls = extractInvocations(cleanText, ext);
 
 let nextNodeIdNum = 1;
-let nextEdgeIdNum = 1;
-
 let currentClass = null;
 let currentClassIndent = 0;
 
@@ -107,7 +122,7 @@ lines.forEach((line, index) => {
     if (!trimmed) return;
     const indent = line.search(/\\S/);
 
-    const fnMatch = line.match(/(?:async\\s+)?function\\s+([a-zA-Z0-9_]+)\\s*\\(([^)]*)\\)(?:\\s*:\\s*([^\\{]+))?/);
+    const fnMatch = line.match(/(?:export\\s+)?(?:async\\s+)?function\\s+([a-zA-Z0-9_]+)\\s*\\(([^)]*)\\)(?:\\s*:\\s*([^\\{]+))?/);
     const pyMatch = line.match(/^\\s*def\\s+([a-zA-Z0-9_]+)\\s*\\(([^)]*)\\)(?:\\s*->\\s*([^:]+))?\\s*:/);
 
     if ((fnMatch || pyMatch) && !currentClass) {
@@ -127,7 +142,7 @@ lines.forEach((line, index) => {
         });
     }
 
-    const classMatch = line.match(/class\\s+([a-zA-Z0-9_]+)/);
+    const classMatch = line.match(/(?:export\\s+)?(?:abstract\\s+)?class\\s+([a-zA-Z0-9_]+)/);
     if (classMatch) {
         const className = classMatch[1];
         const classNodeId = \`class_\${nextNodeIdNum++}\`;
@@ -189,23 +204,12 @@ lines.forEach((line, index) => {
                         type: 'method',
                         filePath: normalizedPath,
                         startLine: index,
-                        signature: \`\${methodName}(\&{methodMatch[2].trim()}) : \${methodMatch[3]?.trim() || 'any'}\`,
+                        signature: \`\${methodName}(\${methodMatch[2].trim()}) : \${methodMatch[3]?.trim() || 'any'}\`,
                         params: methodMatch[2].trim(),
                         returnType: methodMatch[3]?.trim() || 'any'
                     });
                     localEdges.push({ source: currentClass.id, target: methodNodeId, label: 'contains' });
                 }
-            }
-
-            let attrMatch;
-            if (ext === 'py') {
-                attrMatch = line.match(/self\\.([a-zA-Z0-9_]+)\\s*=/);
-            } else {
-                attrMatch = line.match(/(?:public|private|protected|\\s)*\\s*([a-zA-Z0-9_]+)\\s*(?::\\s*[a-zA-Z0-9_<>\\[\\]]+)?\\s*=/);
-            }
-
-            if (attrMatch) {
-                currentClass.attributes.push(attrMatch[1]);
             }
         }
     }
@@ -217,9 +221,20 @@ parentPort.postMessage({
     nodes: localNodes,
     edges: localEdges,
     imports,
+    calls,
     linesCount: lines.length
 });
 `;
+
+export interface RdfTriple {
+    s: string;
+    p: string;
+    o: string;
+}
+
+export interface SparqlBinding {
+    [variable: string]: string;
+}
 
 export class CodeGraphManager {
     private workspaceRoot?: vscode.Uri;
@@ -812,33 +827,244 @@ export class CodeGraphManager {
         return JSON.stringify(elements, null, 2);
     }
 
+    /**
+     * Complete RDF Triplestore Model and SPARQL-lite Engine
+     */
     public executeSparql(query: string, customNodes?: any[], customEdges?: any[]): string {
-        // Simple SPARQL emulator
-        const nodes = customNodes || this.graph.nodes;
-        const edges = customEdges || this.graph.edges;
+        const nodes: GraphNode[] = customNodes || this.graph.nodes;
+        const edges: GraphEdge[] = customEdges || this.graph.edges;
 
-        const selectMatch = query.match(/SELECT\s+([\?\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
-        if (!selectMatch) return "SPARQL-lite Error: Invalid query format.";
-
-        const whereClause = selectMatch[2].trim();
-        let results = "### 🔍 SPARQL-lite Query Results\n\n| Match |\n| --- |\n";
-
-        if (whereClause.includes('s:Class')) {
-            const classes = nodes.filter(n => n.type === 'class');
-            classes.forEach(c => {
-                results += `| **${c.label}** (\`${c.id}\`) |\n`;
-            });
-        } else if (whereClause.includes('s:imports')) {
-            edges.filter(e => e.label === 'imports').forEach(e => {
-                const src = nodes.find(n => n.id === e.source)?.label || e.source;
-                const trg = nodes.find(n => n.id === e.target)?.label || e.target;
-                results += `| **${src}** s:imports **${trg}** |\n`;
-            });
-        } else {
-            results += "| (No matching subgraphs found) |\n";
+        if (!nodes || nodes.length === 0) {
+            return "### 🔍 SPARQL-lite Query Results\n\n*(Graph is currently empty. Build the architecture graph to query code symbols.)*";
         }
 
-        return results;
+        const cleanQuery = query.replace(/#.*/g, '').trim();
+
+        // 1. Build authoritative in-memory RDF Triples from Graph
+        const facts: RdfTriple[] = [];
+        const nodeMap = new Map<string, GraphNode>();
+
+        nodes.forEach(n => {
+            nodeMap.set(n.id, n);
+            const typeCapitalized = n.type ? (n.type.charAt(0).toUpperCase() + n.type.slice(1)) : 'Unknown';
+            facts.push({ s: n.id, p: 's:type', o: `s:${typeCapitalized}` });
+            facts.push({ s: n.id, p: 's:name', o: `"${n.label}"` });
+            facts.push({ s: n.id, p: 's:label', o: `"${n.label}"` });
+            if (n.filePath) {
+                facts.push({ s: n.id, p: 's:path', o: `"${n.filePath}"` });
+                facts.push({ s: n.id, p: 's:filePath', o: `"${n.filePath}"` });
+            }
+            if (n.signature) {
+                facts.push({ s: n.id, p: 's:signature', o: `"${n.signature}"` });
+            }
+            if (n.linesCount !== undefined) {
+                facts.push({ s: n.id, p: 's:linesCount', o: String(n.linesCount) });
+            }
+        });
+
+        edges.forEach(e => {
+            const rel = e.label.startsWith('s:') ? e.label : `s:${e.label}`;
+            facts.push({ s: e.source, p: rel, o: e.target });
+            // Also index target label for convenient ?x s:imports 'TargetName' queries
+            const targetNode = nodeMap.get(e.target);
+            if (targetNode) {
+                facts.push({ s: e.source, p: rel, o: `"${targetNode.label}"` });
+            }
+        });
+
+        // 2. Parse Query Types (SELECT / CONSTRUCT / ASK)
+        const selectMatch = cleanQuery.match(/SELECT\s+(DISTINCT\s+)?([\?\*\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}(?:\s*ORDER\s+BY\s+[\?\w]+)?(?:\s*LIMIT\s+(\d+))?/i);
+        const constructMatch = cleanQuery.match(/CONSTRUCT\s*\{([\s\S]+?)\}\s*WHERE\s*\{([\s\S]+?)\}/i);
+        const askMatch = cleanQuery.match(/ASK\s+WHERE\s*\{([\s\S]+?)\}/i);
+
+        if (!selectMatch && !constructMatch && !askMatch) {
+            return `### ❌ SPARQL-lite Syntax Error\nCould not parse query. Supported formats: \`SELECT ?var WHERE { ... }\`, \`CONSTRUCT { ... } WHERE { ... }\`, \`ASK WHERE { ... }\`.\nQuery: \`\`\`sparql\n${query}\n\`\`\``;
+        }
+
+        const whereClause = selectMatch ? selectMatch[3].trim() : (constructMatch ? constructMatch[2].trim() : askMatch![1].trim());
+        const isDistinct = selectMatch ? Boolean(selectMatch[1]) : false;
+        const limit = selectMatch && selectMatch[4] ? parseInt(selectMatch[4], 10) : 50;
+
+        // 3. Extract Patterns and FILTER clauses
+        const triplePatterns: RdfTriple[] = [];
+        const filters: string[] = [];
+
+        // Split by statement delimiters
+        const statements = whereClause.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/).filter(s => s.trim().length > 0);
+
+        for (const stmt of statements) {
+            const trimmed = stmt.trim();
+            const filterMatch = trimmed.match(/^FILTER\s*\(([\s\S]+)\)$/i);
+            if (filterMatch) {
+                filters.push(filterMatch[1].trim());
+            } else {
+                const parts = trimmed.split(/\s+/);
+                if (parts.length >= 3) {
+                    let s = parts[0];
+                    let p = parts[1];
+                    let o = parts.slice(2).join(' ');
+
+                    // Normalize 'a' keyword to 's:type'
+                    if (p === 'a' || p === 'rdf:type' || p === 'type') {
+                        p = 's:type';
+                    } else if (!p.startsWith('?') && !p.startsWith('s:')) {
+                        p = `s:${p}`;
+                    }
+
+                    triplePatterns.push({ s, p, o });
+                }
+            }
+        }
+
+        if (triplePatterns.length === 0 && filters.length === 0) {
+            return "SPARQL-lite Notice: WHERE block is empty.";
+        }
+
+        // 4. Extract Variables
+        const variables = new Set<string>();
+        for (const t of triplePatterns) {
+            if (t.s.startsWith('?')) variables.add(t.s);
+            if (t.p.startsWith('?')) variables.add(t.p);
+            if (t.o.startsWith('?')) variables.add(t.o);
+        }
+
+        const varList = Array.from(variables);
+        const rawSolutions: SparqlBinding[] = [];
+
+        const matchVal = (factVal: string, queryVal: string): boolean => {
+            if (!factVal || !queryVal) return false;
+            const cleanF = factVal.replace(/^s:/i, '').replace(/['"]/g, '').toLowerCase().trim();
+            const cleanQ = queryVal.replace(/^s:/i, '').replace(/['"]/g, '').toLowerCase().trim();
+            return cleanF === cleanQ;
+        };
+
+        // Recursive backtracking variable solver
+        const solve = (varIdx: number, bindings: SparqlBinding) => {
+            if (varIdx === varList.length) {
+                let valid = true;
+                for (const t of triplePatterns) {
+                    const sVal = t.s.startsWith('?') ? bindings[t.s] : t.s;
+                    const pVal = t.p.startsWith('?') ? bindings[t.p] : t.p;
+                    const oVal = t.o.startsWith('?') ? bindings[t.o] : t.o;
+
+                    const hasMatch = facts.some(f => 
+                        matchVal(f.s, sVal) && matchVal(f.p, pVal) && matchVal(f.o, oVal)
+                    );
+                    if (!hasMatch) {
+                        valid = false;
+                        break;
+                    }
+                }
+
+                // Evaluate FILTER expressions
+                if (valid && filters.length > 0) {
+                    for (const filter of filters) {
+                        // Support regex(?var, 'pattern', 'i')
+                        const regexMatch = filter.match(/regex\s*\(\s*(\?[a-zA-Z0-9_]+)\s*,\s*['"]([^'"]+)['"](?:\s*,\s*['"]([iI])['"])?\s*\)/i);
+                        if (regexMatch) {
+                            const varName = regexMatch[1];
+                            const pattern = regexMatch[2];
+                            const flags = regexMatch[3] || '';
+                            const boundVal = bindings[varName] || '';
+                            const re = new RegExp(pattern, flags);
+                            if (!re.test(boundVal)) {
+                                valid = false;
+                                break;
+                            }
+                        }
+                        // Support ?var = 'literal'
+                        const eqMatch = filter.match(/(\?[a-zA-Z0-9_]+)\s*=\s*['"]([^'"]+)['"]/);
+                        if (eqMatch) {
+                            const varName = eqMatch[1];
+                            const litVal = eqMatch[2];
+                            if (bindings[varName] !== litVal && bindings[varName] !== `"${litVal}"`) {
+                                valid = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (valid) {
+                    rawSolutions.push({ ...bindings });
+                }
+                return;
+            }
+
+            const currentVar = varList[varIdx];
+            const candidateDomain = new Set<string>();
+            facts.forEach(f => {
+                candidateDomain.add(f.s);
+                candidateDomain.add(f.o);
+            });
+
+            for (const val of candidateDomain) {
+                bindings[currentVar] = val;
+                solve(varIdx + 1, bindings);
+                delete bindings[currentVar];
+            }
+        };
+
+        solve(0, {});
+
+        // 5. Format Output
+        if (askMatch) {
+            const hasResult = rawSolutions.length > 0;
+            return `### 🔍 SPARQL ASK Query Result\n\n**Verdict**: \`${hasResult ? 'true (Graph Matches Pattern)' : 'false (No Matches)'}\``;
+        }
+
+        if (rawSolutions.length === 0) {
+            return `### 🔍 SPARQL-lite Query Results\n\n*(0 matches found across ${nodes.length} nodes and ${edges.length} relations)*`;
+        }
+
+        // Deduplicate rows if requested
+        let finalSolutions = rawSolutions;
+        if (isDistinct) {
+            const seen = new Set<string>();
+            finalSolutions = rawSolutions.filter(sol => {
+                const key = JSON.stringify(sol);
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+        }
+
+        finalSolutions = finalSolutions.slice(0, limit);
+
+        // Project selected columns
+        const selectStr = selectMatch![2].trim();
+        let targetColumns: string[] = [];
+
+        if (selectStr === '*' || selectStr.includes('*')) {
+            targetColumns = varList;
+        } else {
+            targetColumns = selectStr.split(/\s+/).filter(v => v.startsWith('?'));
+            if (targetColumns.length === 0) targetColumns = varList;
+        }
+
+        if (targetColumns.length === 0) {
+            return `### 🔍 SPARQL-lite Results\n\nMatches: **${finalSolutions.length}** subgraphs.`;
+        }
+
+        let table = `### 🔍 SPARQL-lite Query Results (${finalSolutions.length} matches)\n\n`;
+        table += `| ${targetColumns.map(c => `**${c}**`).join(' | ')} |\n`;
+        table += `| ${targetColumns.map(() => '---').join(' | ')} |\n`;
+
+        for (const sol of finalSolutions) {
+            const rowValues = targetColumns.map(col => {
+                const rawVal = sol[col] || '(null)';
+                const clean = rawVal.replace(/^"|"$/g, '');
+                // Enrich node IDs with readable names if available
+                const nodeInfo = nodeMap.get(clean);
+                if (nodeInfo) {
+                    return `\`${nodeInfo.label}\` (${nodeInfo.type})`;
+                }
+                return clean;
+            });
+            table += `| ${rowValues.join(' | ')} |\n`;
+        }
+
+        return table;
     }
 
     public generateMermaid(type: string): string {

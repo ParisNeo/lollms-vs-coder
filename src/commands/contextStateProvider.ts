@@ -336,8 +336,12 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 return true;
             }
 
-            // Standard heavy folders
-            if (['node_modules', '.git', '__pycache__', 'venv', '.venv', 'dist', 'build', 'bin', 'obj', 'data', 'data_workspace'].includes(basename)) {
+            // Standard heavy, build, and binary directories (blocked across any path segment)
+            const heavyDirs = [
+                'node_modules', '.git', '__pycache__', 'venv', '.venv', 'env', '.env',
+                'bin', 'obj', 'dist', 'build', 'out', 'target', 'data', 'data_workspace'
+            ];
+            if (segments.some(seg => heavyDirs.includes(seg)) || heavyDirs.includes(basename)) {
                 return true;
             }
 
@@ -541,7 +545,10 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
             const standardExcludes = [
                 '**/__pycache__/**', '**/*.pyc', '**/*.pyo', '**/*.pyd',
-                '**/*.obj', '**/*.bin', '**/.DS_Store', '**/node_modules/**', '**/venv/**', '**/.venv/**', '**/env/**', '**/.git/**'
+                '**/*.obj', '**/*.bin', '**/.DS_Store', '**/node_modules/**', 
+                '**/venv/**', '**/.venv/**', '**/env/**', '**/.git/**',
+                '**/bin/**', '**/obj/**', '**/dist/**', '**/build/**', '**/out/**', '**/target/**',
+                '**/data/**', '**/data_workspace/**'
             ];
 
             const combinedExcludes = Array.from(new Set([...exceptions, ...standardExcludes]));

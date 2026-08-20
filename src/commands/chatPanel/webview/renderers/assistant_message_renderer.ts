@@ -59,7 +59,31 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
             if (msgDiv && (window as any).startEdit) (window as any).startEdit(msgDiv, messageId, isUser ? 'user' : 'assistant');
         });
         actions.querySelector('.copy-msg-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ command: 'copyToClipboard', text: String(rawContent) });
+            let textToCopy = "";
+            const msgDiv = wrapper.querySelector('.message') as HTMLElement;
+            if (msgDiv && msgDiv.dataset.originalContent) {
+                try {
+                    const parsed = JSON.parse(msgDiv.dataset.originalContent);
+                    if (typeof parsed === 'string') textToCopy = parsed;
+                    else if (Array.isArray(parsed)) textToCopy = parsed.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n');
+                    else textToCopy = String(parsed);
+                } catch {
+                    textToCopy = msgDiv.dataset.originalContent;
+                }
+            }
+            if (!textToCopy) {
+                const contentEl = wrapper.querySelector('.message-content');
+                textToCopy = contentEl ? (contentEl.textContent || '') : '';
+            }
+
+            vscode.postMessage({ command: 'copyToClipboard', text: textToCopy });
+
+            const copyIcon = actions.querySelector('.copy-msg-btn i, .copy-msg-btn .codicon');
+            if (copyIcon) {
+                const origClass = copyIcon.className;
+                copyIcon.className = 'codicon codicon-check';
+                setTimeout(() => { copyIcon.className = origClass; }, 2000);
+            }
         });
         actions.querySelector('.regenerate-msg-btn')?.addEventListener('click', () => {
             vscode.postMessage({ command: 'regenerateFromMessage', messageId });

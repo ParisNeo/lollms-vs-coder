@@ -38,7 +38,7 @@ export const sparqlPlugin: TagPlugin = {
             <div class="generation-body" style="padding: 12px; background: var(--vscode-editor-background); display:flex; flex-direction:column; gap:8px;">
                 <pre style="margin: 0; padding: 10px; background: rgba(0,0,0,0.15); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-family: monospace; font-size: 11px; white-space: pre-wrap; overflow-x: auto;">${escapedQuery}</pre>
                 ${isAuto ? `<div style="font-size: 10px; color: var(--vscode-charts-green);"><i class="codicon codicon-sync spin"></i> Auto-Apply Active: Querying complete ontology graph...</div>` : ''}
-                <div class="sparql-results-render-area" style="display:none; max-height:250px; overflow-y:auto; border-top: 1px solid var(--vscode-widget-border); padding-top:8px;"></div>
+                <div class="sparql-results-render-area markdown-body" style="display:none; max-height:300px; overflow-y:auto; border-top: 1px solid var(--vscode-widget-border); padding-top:8px; font-size:11px;"></div>
             </div>
         </div>`;
     },

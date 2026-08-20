@@ -1,4 +1,5 @@
 import { TagPlugin, PluginContext } from '../pluginSystem';
+import { state } from '../dom.js';
 import DOMPurify from 'dompurify';
 
 export const contextExpansionPlugin: TagPlugin = {
@@ -36,8 +37,8 @@ export const contextExpansionPlugin: TagPlugin = {
 
         // --- LIVE STATE CHECK ---
         // Prioritize state.lastContextData.files which is the Source of Truth for "Possessed" code.
-        const globalState = (window as any).state;
-        const currentFiles = globalState?.lastContextData?.files || [];
+        const activeState = state?.lastContextData ? state : (window as any).state;
+        const currentFiles = activeState?.lastContextData?.files || [];
         
         const blockId = `ctx-exp-${context.messageId}-${Math.random().toString(36).substring(7)}`;
         const fileListJson = JSON.stringify(paths).replace(/"/g, '&quot;');
@@ -46,8 +47,10 @@ export const contextExpansionPlugin: TagPlugin = {
         const isPathInContext = (p: string) => {
             if (!p) return false;
             const cleanP = p.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
-            return (currentFiles || []).some((cf: string) => {
-                const cleanCf = cf.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
+            return (currentFiles || []).some((cf: any) => {
+                const cfStr = typeof cf === 'string' ? cf : (cf?.path || '');
+                if (!cfStr) return false;
+                const cleanCf = cfStr.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
                 return cleanCf === cleanP || cleanCf.endsWith('/' + cleanP) || cleanP.endsWith('/' + cleanCf);
             });
         };
@@ -112,7 +115,10 @@ export const contextExpansionPlugin: TagPlugin = {
     },
 
     initialize: (container, context) => {
-        // Immediately query backend for exact on-disk existence and inclusion status
+        // Only query backend and sync DOM states ONCE at the conclusion of generation
+        if (!context.isFinal) return;
+
+        // Query backend for exact on-disk existence and inclusion status
         container.querySelectorAll('.context-expansion-block').forEach((block: any) => {
             try {
                 const files = JSON.parse(block.dataset.files || '[]');
@@ -126,7 +132,7 @@ export const contextExpansionPlugin: TagPlugin = {
             } catch (e) {}
         });
 
-        // Immediate sync for the whole DOM
+        // Single DOM sync at end of generation
         import('../ui.js').then(ui => ui.syncExpansionBlocks());
 
         const handleAdd = (btn: HTMLButtonElement, reprompt: boolean) => {

@@ -1369,6 +1369,14 @@
                     }
 
                     let finalMarkdown = parsed.processedContent;
+
+                    // 1. Render Structured XML <file> Mutation Cards
+                    const fileTagRegex = /<file\s+([^>]*?)>([\s\S]*?)<\/file>/gi;
+                    finalMarkdown = finalMarkdown.replace(fileTagRegex, (match, attrStr, rawBody) => {
+                        return renderFileMutationCard(attrStr, rawBody);
+                    });
+
+                    // 2. Render SPARQL Widgets
                     const sparqlRegex = /<query_architecture>([\s\S]*?)<\/query_architecture>/gi;
                     finalMarkdown = finalMarkdown.replace(sparqlRegex, (match, query) => {
                         const blockId = 'sparql-companion-' + Date.now();
@@ -1376,8 +1384,8 @@
                     });
 
                     let parsedHtml = thoughtsHtml + DOMPurify.sanitize(marked.parse(finalMarkdown), {
-                        ADD_TAGS: ['div', 'pre', 'button', 'span', 'i', 'a'],
-                        ADD_ATTR: ['class', 'style', 'data-query', 'data-block-id', 'onclick', 'data-action', 'data-path', 'data-line', 'data-text']
+                        ADD_TAGS: ['div', 'pre', 'button', 'span', 'i', 'a', 'details', 'summary', 'code'],
+                        ADD_ATTR: ['class', 'style', 'data-query', 'data-block-id', 'data-path', 'data-action', 'data-symbol', 'data-raw-code', 'onclick', 'open']
                     });
 
                     const actRegex = /<(open_file|select_code|set_breakpoint|run_script)\s+([^>]*?)\s*\/>/gi;
@@ -1520,6 +1528,14 @@
             }
 
             let finalMarkdown = parsed.processedContent;
+
+            // 1. Render Structured XML <file> Mutation Cards
+            const fileTagRegex = /<file\s+([^>]*?)>([\s\S]*?)<\/file>/gi;
+            finalMarkdown = finalMarkdown.replace(fileTagRegex, (match, attrStr, rawBody) => {
+                return renderFileMutationCard(attrStr, rawBody);
+            });
+
+            // 2. Render SPARQL Widgets
             const sparqlRegex = /<query_architecture>([\s\S]*?)<\/query_architecture>/gi;
             finalMarkdown = finalMarkdown.replace(sparqlRegex, (match, query) => {
                 const blockId = 'sparql-companion-' + Date.now();
@@ -1668,53 +1684,50 @@
                     }
                     break;
                 case 'applyAllResult':
-                    const card = document.getElementById(message.blockId);
+                    const card = document.getElementById(message.blockId) || (message.filePath ? document.querySelector('.file-mutation-card[data-path="' + message.filePath + '"]') : null);
                     if (card) {
-                        if (card.classList.contains('sparql-block')) {
-                            const headerActions = card.querySelector('.generation-header .code-actions');
-                            if (headerActions) {
-                                headerActions.innerHTML = '<i class="codicon codicon-check" style="color: var(--success-fg)"></i>';
-                            }
-                            const renderArea = card.querySelector('.sparql-results-render-area');
-                            if (renderArea && message.sparqlResult) {
-                                renderArea.style.display = 'block';
-                                renderArea.innerHTML = DOMPurify.sanitize(marked.parse(message.sparqlResult));
-                            }
-                        } else {
-                            const applyBtn = card.querySelector('.code-actions .apply-btn');
+                        const applyBtn = card.querySelector('.apply-mutation-btn, .apply-btn');
+                        const undoBtn = card.querySelector('.undo-mutation-btn, .undo-btn');
+
+                        if (message.undo) {
                             if (applyBtn) {
                                 applyBtn.disabled = false;
-                                if (message.success) {
-                                    applyBtn.classList.add('applied');
-                                    applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                                    applyBtn.title = 'Successfully applied to disk!';
-                                } else {
-                                    applyBtn.classList.remove('applied');
-                                    applyBtn.innerHTML = '<span class="codicon codicon-error"></span>';
-                                    applyBtn.title = 'Failed to apply: ' + (message.error || 'Unknown error');
-                                }
+                                applyBtn.classList.remove('applied');
+                                applyBtn.innerHTML = '<i class="codicon codicon-tools"></i> Apply';
                             }
-
-                            let reviewArea = card.querySelector('.review-actions-row');
-                            if (!reviewArea && message.success) {
-                                reviewArea = document.createElement('div');
-                                reviewArea.className = 'review-actions-row';
-                                reviewArea.innerHTML = `
-                                    <button class="review-btn-accept code-action-btn" onclick="reviewDecision('${message.blockId}', 'accept', '${message.filePath || ''}')">
-                                        <i class="codicon codicon-check"></i> Keep Changes
-                                    </button>
-                                    <button class="review-btn-reject code-action-btn" onclick="reviewDecision('${message.blockId}', 'reject', '${message.filePath || ''}')">
-                                        <i class="codicon codicon-discard"></i> Revert
-                                    </button>
-                                `;
-                                card.appendChild(reviewArea);
+                            if (undoBtn) {
+                                undoBtn.style.display = 'none';
+                                undoBtn.disabled = false;
                             }
-
-                            if (message.success) {
-                                setMood('success');
-                            } else {
-                                setMood('error');
+                            card.open = true;
+                        } else if (message.alreadyApplied) {
+                            if (applyBtn) {
+                                applyBtn.disabled = false;
+                                applyBtn.classList.add('applied');
+                                applyBtn.innerHTML = '<i class="codicon codicon-check"></i>';
+                                applyBtn.title = 'Applied to disk. Click to re-apply.';
                             }
+                            if (undoBtn) {
+                                undoBtn.style.display = 'inline-flex';
+                                undoBtn.disabled = false;
+                            }
+                            card.open = false; // Auto-collapse on successful apply
+                            setMood('success');
+                        } else if (message.reviewingDiff) {
+                            if (applyBtn) {
+                                applyBtn.disabled = false;
+                                applyBtn.classList.remove('applied');
+                                applyBtn.innerHTML = '<i class="codicon codicon-diff"></i>';
+                                applyBtn.title = 'Reviewing diff in editor. Accept diff to complete.';
+                            }
+                        } else if (!message.success) {
+                            if (applyBtn) {
+                                applyBtn.disabled = false;
+                                applyBtn.classList.remove('applied');
+                                applyBtn.innerHTML = '<i class="codicon codicon-error"></i>';
+                                applyBtn.title = message.error || 'Failed to apply';
+                            }
+                            setMood('error');
                         }
                     }
                     break;
@@ -1824,6 +1837,129 @@
         function appendChunk(chunk) {
             activeContentBuffer += chunk;
             renderResponse(activeContentBuffer, activePrompt, false);
+        }
+
+        function renderDiffLines(lines, type) {
+            return lines.map(line => {
+                const escaped = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+                const safeLine = escaped.length === 0 ? ' ' : escaped;
+                return '<div class="aider-diff-line aider-diff-' + type + '"><span class="aider-diff-code">' + safeLine + '</span></div>';
+            }).join('');
+        }
+
+        function renderFileMutationCard(attrStr, rawBody) {
+            rawBody = (rawBody || "").trim();
+            const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
+            const filePath = pathMatch ? pathMatch[1].trim() : "unspecified_file";
+            const actionMatch = attrStr.match(/action=["']([^"']+)["']/i);
+            const symbolMatch = attrStr.match(/symbol=["']([^"']+)["']/i);
+
+            const action = (actionMatch ? actionMatch[1] : (rawBody.includes('<<<<<<< SEARCH') ? 'patch' : 'write')).toLowerCase();
+            const symbol = symbolMatch ? symbolMatch[1].trim() : "";
+
+            const isPatch = action === 'patch' || rawBody.includes('<<<<<<< SEARCH');
+            const blockId = 'comp-block-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+            const actionLabel = isPatch ? 'SURGICAL PATCH' : (symbol ? 'SYMBOL: ' + symbol : 'WRITE FILE');
+            const actionIcon = isPatch ? 'codicon-diff-modified' : (symbol ? 'codicon-symbol-method' : 'codicon-file-code');
+            const ext = filePath.split('.').pop() || 'plaintext';
+
+            let bodyHtml = "";
+            if (isPatch) {
+                const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+                const matches = [...rawBody.matchAll(aiderRegex)];
+
+                if (matches.length > 0) {
+                    bodyHtml = '<div class="hunk-contents-wrapper">' + matches.map((m, hIdx) => {
+                        const sLines = (m[1] || "").replace(/\r\n/g, '\n').split('\n');
+                        const rLines = (m[2] || "").replace(/\r\n/g, '\n').split('\n');
+
+                        let pref = 0;
+                        while (pref < sLines.length && pref < rLines.length && sLines[pref].trim() === rLines[pref].trim()) pref++;
+                        let suff = 0;
+                        while (suff < (sLines.length - pref) && suff < (rLines.length - pref) && sLines[sLines.length - 1 - suff].trim() === rLines[rLines.length - 1 - suff].trim()) suff++;
+
+                        return '<div class="aider-hunk-bubble" style="border-bottom: ' + (hIdx < matches.length - 1 ? '1px solid var(--vscode-widget-border)' : 'none') + ';">' +
+                            (matches.length > 1 ? '<div style="font-size:10px; font-weight:bold; opacity:0.7; padding:4px 12px; background:rgba(0,0,0,0.15);">HUNK ' + (hIdx + 1) + ' of ' + matches.length + '</div>' : '') +
+                            '<div class="aider-hunk-content">' +
+                                '<pre style="margin:0; padding:12px; background:var(--vscode-editor-background); border:none; overflow:auto; max-height:350px;">' +
+                                    renderDiffLines(sLines.slice(0, pref), 'unchanged') +
+                                    renderDiffLines(sLines.slice(pref, sLines.length - suff), 'removed') +
+                                    renderDiffLines(rLines.slice(pref, rLines.length - suff), 'added') +
+                                    renderDiffLines(sLines.slice(sLines.length - suff), 'unchanged') +
+                                '</pre>' +
+                            '</div>' +
+                        '</div>';
+                    }).join('') + '</div>';
+                } else {
+                    const escaped = rawBody.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                    bodyHtml = '<pre style="margin:0; padding:12px; max-height:400px; overflow:auto;"><code class="language-' + ext + '">' + escaped + '</code></pre>';
+                }
+            } else {
+                const escaped = rawBody.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                bodyHtml = '<pre style="margin:0; padding:12px; max-height:400px; overflow:auto;"><code class="language-' + ext + '">' + escaped + '</code></pre>';
+            }
+
+            const encodedRaw = encodeURIComponent(rawBody);
+
+            return '\n\n<details class="code-collapsible file-mutation-card" id="' + blockId + '" data-path="' + filePath + '" data-action="' + action + '" data-symbol="' + symbol + '" data-raw-code="' + encodedRaw + '" open style="margin: 10px 0;">\n' +
+                '  <summary class="code-summary">\n' +
+                '    <div class="summary-lang-label">\n' +
+                '      <span class="lang-badge" data-lang="' + ext + '">' + ext + '</span>\n' +
+                '      <span class="path-display-label" style="font-family: var(--vscode-editor-font-family); font-size: 11px; font-weight: bold; margin-left: 8px; color: var(--vscode-textLink-foreground);">\n' +
+                '        <i class="codicon ' + actionIcon + '"></i> ' + filePath + (symbol ? ' (' + symbol + ')' : '') + '\n' +
+                '      </span>\n' +
+                '      <span class="mode-badge active" style="font-size: 9px; padding: 1px 6px; margin-left: 6px;">' + actionLabel + '</span>\n' +
+                '      <button class="code-action-btn goto-file-btn" onclick="event.stopPropagation(); vscode.postMessage({command:\'workspaceAction\', action:\'openFile\', params:{filePath:\'' + filePath + '\'}})" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto file">Goto</button>\n' +
+                '    </div>\n' +
+                '    <div class="code-actions">\n' +
+                '      <button class="code-action-btn" onclick="event.stopPropagation(); vscode.postMessage({command:\'copyToClipboard\', text: decodeURIComponent(\'' + encodedRaw + '\')})" title="Copy Code"><i class="codicon codicon-copy"></i></button>\n' +
+                (isPatch ? '      <button class="code-action-btn delete-btn undo-mutation-btn" style="display:none;" onclick="event.stopPropagation(); applyCompanionMutation(\'' + blockId + '\', true)" title="Undo patch"><i class="codicon codicon-discard"></i></button>\n' : '') +
+                '      <button class="code-action-btn apply-btn apply-mutation-btn" onclick="event.stopPropagation(); applyCompanionMutation(\'' + blockId + '\', false)" title="Review Diff & Apply"><i class="codicon codicon-tools"></i> Apply</button>\n' +
+                '    </div>\n' +
+                '  </summary>\n' +
+                bodyHtml +
+                '</details>\n\n';
+        }
+
+        function applyCompanionMutation(blockId, isUndo) {
+            const card = document.getElementById(blockId);
+            if (!card) return;
+
+            const filePath = card.dataset.path;
+            const action = card.dataset.action;
+            const symbol = card.dataset.symbol;
+            const rawContent = decodeURIComponent(card.dataset.rawCode || "");
+
+            const applyBtn = card.querySelector('.apply-mutation-btn');
+            const undoBtn = card.querySelector('.undo-mutation-btn');
+
+            if (isUndo) {
+                if (undoBtn) { undoBtn.disabled = true; undoBtn.innerHTML = '<div class="spinner"></div>'; }
+                vscode.postMessage({
+                    command: 'replaceCode',
+                    filePath: filePath,
+                    content: rawContent,
+                    options: { undo: true, silent: true, autoSave: true, blockId: blockId }
+                });
+            } else {
+                if (applyBtn) { applyBtn.disabled = true; applyBtn.innerHTML = '<div class="spinner"></div> Reviewing...'; }
+                if (action === 'patch' || rawContent.includes('<<<<<<< SEARCH')) {
+                    vscode.postMessage({
+                        command: 'replaceCode',
+                        filePath: filePath,
+                        content: rawContent,
+                        options: { silent: false, autoSave: false, blockId: blockId }
+                    });
+                } else {
+                    const targetPath = symbol ? `${filePath}:${symbol}` : filePath;
+                    vscode.postMessage({
+                        command: 'applyFileContent',
+                        filePath: targetPath,
+                        content: rawContent,
+                        options: { silent: false, autoSave: false, blockId: blockId }
+                    });
+                }
+            }
         }
 
         function renderSparqlWidget(blockId, queryText) {

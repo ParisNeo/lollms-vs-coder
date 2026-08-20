@@ -86,8 +86,8 @@ export class QuickEditManager {
                 prompt = `**My Question / Message:** "${instruction}"\n\n` +
                             `**COMPLIANCE RULES (MANDATORY):**\n` +
                             `1. You are operating with **Full Grounding Mode** active. You have full vision of our tree and selected files above.\n` +
-                            `2. Use AIDER SEARCH/REPLACE blocks if asked to write or modify code for files in the workspace.\n` +
-                            `3. For non-workspace code examples, use standard markdown code blocks (e.g. \` \` \`python).\n` +
+                            `2. To CREATE, MODIFY, or PATCH files on disk, you MUST use structured \`<file path="..." action="write|patch|update_symbol">\` XML tags.\n` +
+                            `3. For non-workspace code examples and explanations, use standard markdown code blocks (e.g. \`\`\`python).\n` +
                             `4. Use our un-validated interaction tools (<open_file />, <set_breakpoint />) proactively to control the editor window.`;
             } else if (editor) {
                 const document = editor.document;
@@ -171,25 +171,25 @@ export class QuickEditManager {
                     }
 
                     prompt += `\n**COMPLIANCE RULES:**\n` +
-                                `1. Use AIDER SEARCH/REPLACE blocks for surgical modifications to the active file.\n` +
-                                `2. Use FULL FILE blocks if you need to rewrite more than 50% of the file.\n` +
-                                `3. You may use the available tools to search the workspace, run queries, or find code.`;
+                                `1. When modifying or patching this file, use \`<file path="${relativePath}" action="patch">\` containing SEARCH/REPLACE blocks.\n` +
+                                `2. When creating new files or rewriting completely, use \`<file path="${relativePath}" action="write">\`.\n` +
+                                `3. For targeted functions/methods, use \`<file path="${relativePath}" action="update_symbol" symbol="Name">\`.\n` +
+                                `4. Standard markdown code blocks (\`\`\`${languageId}) are reserved for explanations only.`;
                 } else {
                     // Conversational/Casual mode when no text is selected
                     prompt = `I am discussing casually with you. I do not have any code selected to modify.\n\n` +
                                 `Current active file in editor (for your reference only): \`${relativePath}\` (${languageId}).\n\n` +
                                 `**My Question / Message:** "${instruction}"\n\n` +
                                 `**COMPLIANCE RULES (MANDATORY):**\n` +
-                                `1. DO NOT output any AIDER search/replace blocks or modify any files on disk.\n` +
-                                `2. DO NOT use namespaced code blocks (e.g., do NOT use \` \` \`lang:path\`).\n` +
-                                `3. If you write code examples, use standard, non-namespaced markdown blocks (e.g., \` \` \`python or \` \` \`javascript) so they do not trigger any file writes.\n`;
+                                `1. DO NOT output any <file> mutation tags unless I explicitly ask you to create or modify a file.\n` +
+                                `2. Use standard markdown blocks (\`\`\`${languageId}) for explanations and examples.\n`;
                 }
             } else {
                 // Grounding when NO editor is open (Conversational Workspace Mode)
                 prompt = `I am discussing casually with you. No file editor is currently open in my workspace.\n\n` +
                             `**My Question / Message:** "${instruction}"\n\n` +
                             `**COMPLIANCE RULES (MANDATORY):**\n` +
-                            `1. DO NOT output any AIDER search/replace blocks or modify any files on disk.\n`;
+                            `1. DO NOT output any <file> mutation tags unless I explicitly ask you to create or edit a file.\n`;
             }
 
             // --- SOVEREIGN SUB-GRAPH EXTRACTION ---

@@ -322,6 +322,97 @@ export class CodeGraphManager {
         if (this.contextSetter) {
             this.contextSetter('buildState', 'idle');
         }
+        if (this.workspaceRoot) {
+            const cacheUri = vscode.Uri.joinPath(this.workspaceRoot, '.lollms', 'graph_cache.json');
+            vscode.workspace.fs.delete(cacheUri).then(undefined, () => {});
+        }
+    }
+
+    /**
+     * Persists the compiled graph and parsed file metadata to .lollms/graph_cache.json
+     */
+    public async saveToDiskCache(): Promise<void> {
+        if (!this.workspaceRoot || this.graph.nodes.length === 0) return;
+        try {
+            const cacheDir = vscode.Uri.joinPath(this.workspaceRoot, '.lollms');
+            await vscode.workspace.fs.createDirectory(cacheDir);
+            const cacheUri = vscode.Uri.joinPath(cacheDir, 'graph_cache.json');
+
+            const payload = JSON.stringify({
+                version: 1,
+                timestamp: Date.now(),
+                graph: this.graph,
+                parsedFiles: Array.from(this.parsedFilesCache.entries())
+            });
+
+            await vscode.workspace.fs.writeFile(cacheUri, Buffer.from(payload, 'utf8'));
+        } catch (err) {
+            console.warn('[CodeGraphManager] Failed to write graph cache:', err);
+        }
+    }
+
+    /**
+     * Fast-loads the cached graph from disk in milliseconds if available.
+     */
+    public async loadFromDiskCache(): Promise<boolean> {
+        if (!this.workspaceRoot) return false;
+        try {
+            const cacheUri = vscode.Uri.joinPath(this.workspaceRoot, '.lollms', 'graph_cache.json');
+            const data = await vscode.workspace.fs.readFile(cacheUri);
+            const parsed = JSON.parse(Buffer.from(data).toString('utf8'));
+
+            if (parsed && parsed.graph && Array.isArray(parsed.graph.nodes) && parsed.graph.nodes.length > 0) {
+                this.graph = parsed.graph;
+                if (Array.isArray(parsed.parsedFiles)) {
+                    this.parsedFilesCache = new Map(parsed.parsedFiles);
+                }
+                this.buildState = 'ready';
+                if (this.contextSetter) {
+                    this.contextSetter('buildState', 'ready');
+                }
+                return true;
+            }
+        } catch (err) {
+            // Cache not found or invalid
+        }
+        return false;
+    }
+
+    /**
+     * Ensures the graph is ready in memory. Checks disk cache first, or compiles on-demand with user notification.
+     */
+    public async ensureGraphReady(notifyUser: boolean = true): Promise<void> {
+        if (this.buildState === 'ready' && this.graph.nodes.length > 0) {
+            return;
+        }
+
+        if (this.activeBuildPromise) {
+            return this.activeBuildPromise;
+        }
+
+        // 1. Try loading from cache first
+        const loaded = await this.loadFromDiskCache();
+        if (loaded) {
+            return;
+        }
+
+        // 2. Build on-demand with notification
+        if (notifyUser) {
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Lollms: Indexing codebase architecture for SPARQL query (this might take some time on initial scan)...",
+                cancellable: false
+            }, async (progress) => {
+                await this.buildGraph(undefined, (p) => {
+                    progress.report({ message: `${p.status} (${p.percentage}%)` });
+                });
+            });
+        } else {
+            await this.buildGraph();
+        }
+
+        // 3. Persist to cache
+        await this.saveToDiskCache();
     }
 
     /**
@@ -353,7 +444,7 @@ export class CodeGraphManager {
                 // Find all source files
                 const patterns = ['**/*.ts', '**/*.js', '**/*.tsx', '**/*.jsx', '**/*.py'];
                 const excludePattern = '**/{node_modules,venv,.venv,env,.env,.git,dist,build,out,bin,obj,.vscode,.idea,.lollms,__pycache__,target,*.egg-info,vendor}/**';
-                
+
                 let files: vscode.Uri[] = [];
                 for (const pattern of patterns) {
                     if (signal.aborted) return;
@@ -427,6 +518,9 @@ export class CodeGraphManager {
                 }
                 if (progress) progress({ percentage: 100, status: "Architecture map synchronized." });
 
+                // Save cache to disk
+                await this.saveToDiskCache();
+
             } catch (err: any) {
                 this.buildState = 'error';
                 this.lastError = err?.message || String(err);
@@ -472,6 +566,7 @@ export class CodeGraphManager {
                 // If the graph was already fully compiled, update only the modified file surgically
                 if (this.buildState === 'ready') {
                     this.linkFileInGraph(relPath);
+                    this.saveToDiskCache().catch(() => {});
                 }
 
             } catch (e) {
@@ -830,7 +925,12 @@ export class CodeGraphManager {
     /**
      * Complete RDF Triplestore Model and SPARQL-lite Engine
      */
-    public executeSparql(query: string, customNodes?: any[], customEdges?: any[]): string {
+    public async executeSparql(query: string, customNodes?: any[], customEdges?: any[]): Promise<string> {
+        // Ensure graph is compiled before executing query
+        if (!customNodes && (!this.graph.nodes || this.graph.nodes.length === 0 || this.buildState !== 'ready')) {
+            await this.ensureGraphReady(true);
+        }
+
         const nodes: GraphNode[] = customNodes || this.graph.nodes;
         const edges: GraphEdge[] = customEdges || this.graph.edges;
 
@@ -938,74 +1038,87 @@ export class CodeGraphManager {
             return cleanF === cleanQ;
         };
 
-        // Recursive backtracking variable solver
-        const solve = (varIdx: number, bindings: SparqlBinding) => {
-            if (varIdx === varList.length) {
-                let valid = true;
-                for (const t of triplePatterns) {
-                    const sVal = t.s.startsWith('?') ? bindings[t.s] : t.s;
-                    const pVal = t.p.startsWith('?') ? bindings[t.p] : t.p;
-                    const oVal = t.o.startsWith('?') ? bindings[t.o] : t.o;
+        const evaluateFilter = (filterStr: string, bindings: SparqlBinding): boolean => {
+            const f = filterStr.trim();
 
-                    const hasMatch = facts.some(f => 
-                        matchVal(f.s, sVal) && matchVal(f.p, pVal) && matchVal(f.o, oVal)
-                    );
-                    if (!hasMatch) {
-                        valid = false;
-                        break;
-                    }
-                }
-
-                // Evaluate FILTER expressions
-                if (valid && filters.length > 0) {
-                    for (const filter of filters) {
-                        // Support regex(?var, 'pattern', 'i')
-                        const regexMatch = filter.match(/regex\s*\(\s*(\?[a-zA-Z0-9_]+)\s*,\s*['"]([^'"]+)['"](?:\s*,\s*['"]([iI])['"])?\s*\)/i);
-                        if (regexMatch) {
-                            const varName = regexMatch[1];
-                            const pattern = regexMatch[2];
-                            const flags = regexMatch[3] || '';
-                            const boundVal = bindings[varName] || '';
-                            const re = new RegExp(pattern, flags);
-                            if (!re.test(boundVal)) {
-                                valid = false;
-                                break;
-                            }
-                        }
-                        // Support ?var = 'literal'
-                        const eqMatch = filter.match(/(\?[a-zA-Z0-9_]+)\s*=\s*['"]([^'"]+)['"]/);
-                        if (eqMatch) {
-                            const varName = eqMatch[1];
-                            const litVal = eqMatch[2];
-                            if (bindings[varName] !== litVal && bindings[varName] !== `"${litVal}"`) {
-                                valid = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if (valid) {
-                    rawSolutions.push({ ...bindings });
-                }
-                return;
+            // 1. IN / NOT IN: ?var IN (val1, val2, ...) or ?var NOT IN (...)
+            const inMatch = f.match(/(\?[a-zA-Z0-9_]+)\s+(NOT\s+IN|IN)\s*\(([\s\S]+?)\)/i);
+            if (inMatch) {
+                const varName = inMatch[1];
+                const isNotIn = inMatch[2].toUpperCase().includes('NOT');
+                const rawList = inMatch[3].split(',').map(s => s.trim());
+                const boundVal = bindings[varName] || '';
+                const inList = rawList.some(item => matchVal(boundVal, item));
+                return isNotIn ? !inList : inList;
             }
 
-            const currentVar = varList[varIdx];
-            const candidateDomain = new Set<string>();
-            facts.forEach(f => {
-                candidateDomain.add(f.s);
-                candidateDomain.add(f.o);
-            });
-
-            for (const val of candidateDomain) {
-                bindings[currentVar] = val;
-                solve(varIdx + 1, bindings);
-                delete bindings[currentVar];
+            // 2. regex(?var, 'pattern', 'flags')
+            const regexMatch = f.match(/regex\s*\(\s*(\?[a-zA-Z0-9_]+)\s*,\s*['"]([^'"]+)['"](?:\s*,\s*['"]([iI])['"])?\s*\)/i);
+            if (regexMatch) {
+                const varName = regexMatch[1];
+                const pattern = regexMatch[2];
+                const flags = regexMatch[3] || '';
+                const boundVal = (bindings[varName] || '').replace(/^"|"$/g, '');
+                try {
+                    const re = new RegExp(pattern, flags);
+                    return re.test(boundVal);
+                } catch {
+                    return false;
+                }
             }
+
+            // 3. Equality & Inequality: ?var = 'val' or ?var = s:Class or ?var != 'val'
+            const eqMatch = f.match(/(\?[a-zA-Z0-9_]+)\s*(=|!=|<>)\s*([^\s)]+)/);
+            if (eqMatch) {
+                const varName = eqMatch[1];
+                const op = eqMatch[2];
+                const targetVal = eqMatch[3].trim();
+                const boundVal = bindings[varName] || '';
+                const isEq = matchVal(boundVal, targetVal);
+                return (op === '=') ? isEq : !isEq;
+            }
+
+            return true;
         };
 
-        solve(0, {});
+        // 4. High-Performance Relational Pattern Join (O(K * Patterns) instead of O(Domain^Vars))
+        let solutions: SparqlBinding[] = [{}];
+
+        for (const pattern of triplePatterns) {
+            const nextSolutions: SparqlBinding[] = [];
+
+            for (const binding of solutions) {
+                const sBound = pattern.s.startsWith('?') ? binding[pattern.s] : pattern.s;
+                const pBound = pattern.p.startsWith('?') ? binding[pattern.p] : pattern.p;
+                const oBound = pattern.o.startsWith('?') ? binding[pattern.o] : pattern.o;
+
+                for (const fact of facts) {
+                    const sMatch = !sBound || matchVal(fact.s, sBound);
+                    const pMatch = !pBound || matchVal(fact.p, pBound);
+                    const oMatch = !oBound || matchVal(fact.o, oBound);
+
+                    if (sMatch && pMatch && oMatch) {
+                        const newBinding: SparqlBinding = { ...binding };
+                        if (pattern.s.startsWith('?') && !binding[pattern.s]) newBinding[pattern.s] = fact.s;
+                        if (pattern.p.startsWith('?') && !binding[pattern.p]) newBinding[pattern.p] = fact.p;
+                        if (pattern.o.startsWith('?') && !binding[pattern.o]) newBinding[pattern.o] = fact.o;
+                        nextSolutions.push(newBinding);
+                    }
+                }
+            }
+
+            solutions = nextSolutions;
+            if (solutions.length === 0) break;
+        }
+
+        // Apply filters on candidate bindings
+        if (filters.length > 0) {
+            solutions = solutions.filter(binding => 
+                filters.every(filterStr => evaluateFilter(filterStr, binding))
+            );
+        }
+
+        rawSolutions.push(...solutions);
 
         // 5. Format Output
         if (askMatch) {

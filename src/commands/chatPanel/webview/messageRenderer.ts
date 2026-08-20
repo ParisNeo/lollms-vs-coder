@@ -1358,20 +1358,41 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
                 }
             }
         } else {
-            // ADDED: Play button for code without path
-            const runnableLangs = ['python', 'py', 'javascript', 'js', 'typescript', 'ts', 'bash', 'sh', 'powershell', 'pwsh'];
+            // Action buttons for runnable script/command code blocks
+            const runnableLangs = ['python', 'py', 'javascript', 'js', 'typescript', 'ts', 'bash', 'sh', 'powershell', 'pwsh', 'batch', 'cmd'];
             if (runnableLangs.includes(language.toLowerCase())) {
+                // 1. Send to Active Opened Terminal
+                const terminalBtn = createButton('Terminal', 'codicon-terminal', () => {
+                    vscode.postMessage({ command: 'runInActiveTerminal', code: codeText });
+                }, 'code-action-btn secondary-btn', 'Send to currently opened VS Code terminal');
+                terminalBtn.disabled = isDisabled;
+                actions.appendChild(terminalBtn);
+
+                // 2. Captured Local Run
                 const runBtn = createButton('Run', 'codicon-play', () => {
                     runBtn.disabled = true;
                     runBtn.innerHTML = '<div class="spinner"></div>';
-                    vscode.postMessage({ command: 'runScript', code: codeText, language: language });
+                    vscode.postMessage({ command: 'runScript', code: codeText, language: language, reprompt: false });
                     setTimeout(() => { 
                         runBtn.disabled = false; 
                         runBtn.innerHTML = '<span class="codicon codicon-play"></span>'; 
                     }, 3000);
-                }, 'code-action-btn apply-btn');
+                }, 'code-action-btn secondary-btn', 'Run and capture output');
                 runBtn.disabled = isDisabled;
                 actions.appendChild(runBtn);
+
+                // 3. Run & Reprompt AI
+                const repromptBtn = createButton('Run & Reprompt', 'codicon-sync', () => {
+                    repromptBtn.disabled = true;
+                    repromptBtn.innerHTML = '<div class="spinner"></div>';
+                    vscode.postMessage({ command: 'runScript', code: codeText, language: language, reprompt: true });
+                    setTimeout(() => { 
+                        repromptBtn.disabled = false; 
+                        repromptBtn.innerHTML = '<span class="codicon codicon-sync"></span>'; 
+                    }, 3000);
+                }, 'code-action-btn apply-btn', 'Run command and feed output back to AI');
+                repromptBtn.disabled = isDisabled;
+                actions.appendChild(repromptBtn);
             }
         }
 
@@ -2349,9 +2370,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const hasLineStart = matchIndex === 0 || mainProcessedContent[matchIndex - 1] === '\n' || mainProcessedContent[matchIndex - 1] === '\r';
             if (!hasLineStart) continue;
 
-            // Also check that the closing tag is at the start of a line (if it is not self-closing)
+            // Also check that the closing tag is at the start of a line (if it is not self-closing and closing tag is present)
             const isSelfClosing = fullMatch.trim().endsWith('/>');
-            if (!isSelfClosing) {
+            const hasClosingTag = fullMatch.includes('</');
+            if (!isSelfClosing && hasClosingTag) {
                 const closingTagIndex = matchIndex + fullMatch.lastIndexOf('</');
                 const hasClosingLineStart = closingTagIndex > 0 && (mainProcessedContent[closingTagIndex - 1] === '\n' || mainProcessedContent[closingTagIndex - 1] === '\r');
                 if (!hasClosingLineStart) continue;
@@ -2567,73 +2589,30 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         }
     }
 
-    // Highlight any raw code blocks inside the thoughts area cleanly without action UI
-    contentDiv.querySelectorAll('.plan-scratchpad pre code').forEach(block => {
+    // Highlight any raw code blocks inside thoughts or live streaming file mutation cards
+    contentDiv.querySelectorAll('.plan-scratchpad pre code, .file-mutation-card pre code, .code-collapsible pre code').forEach(block => {
         Prism.highlightElement(block);
     });
 
     enhanceCodeBlocks(bodyZone, messageId, rawContent, isFinal);
 
-        // Attach listener for the new Apply All button
-        const applyAllBtn = contentDiv.querySelector(`#apply-all-${messageId}`) as HTMLButtonElement;
-        if (applyAllBtn) {
-            applyAllBtn.onclick = () => {
-                // If clicked while active, cancel immediately!
-                if (applyAllBtn.classList.contains('sequential-applying')) {
-                    applyAllBtn.disabled = true;
-                    applyAllBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Cancelling...';
-                    vscode.postMessage({ command: 'stopGeneration' });
-                    return;
-                }
+    // Attach single unified listener for the Apply All button
+    const applyAllBtn = contentDiv.querySelector(`#apply-all-${messageId}`) as HTMLButtonElement;
+    if (applyAllBtn) {
+        applyAllBtn.onclick = () => {
+            // If clicked while active, cancel immediately
+            if (applyAllBtn.classList.contains('sequential-applying')) {
+                applyAllBtn.disabled = true;
+                applyAllBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Cancelling...';
+                vscode.postMessage({ command: 'stopGeneration' });
+                return;
+            }
 
-                const isUndo = applyAllBtn.classList.contains('undo-all-btn');
-                const changes = gatherChangesFromBlocks(messageId, isUndo);
-                if (changes.length > 0) {
-                    if (isUndo) {
-                        applyAllBtn.disabled = true;
-                        applyAllBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Undoing Batch...';
-
-                        const resList = document.getElementById(`results-${messageId}`);
-                        const progressContainer = document.getElementById(`progress-container-${messageId}`);
-
-                        if (resList) {
-                            resList.style.display = 'block';
-                            resList.innerHTML = changes.map(c => `
-                                <div class="apply-row" data-block-index="${c.blockIndex}" ${c.hunkIndex !== undefined ? `data-hunk-index="${c.hunkIndex}"` : ''}>
-                                    <span class="status-icon"><div class="spinner"></div></span>
-                                    <span class="row-path clickable" onclick="vscode.postMessage({command:'openFile', path:'${c.path}'})">${c.path} ${c.hunkIndex !== undefined ? `(Hunk ${c.hunkIndex+1})` : ''}</span>
-                                    <div class="row-actions" style="display:none"></div>
-                                </div>`).join('');
-                        }
-
-                        if (progressContainer) {
-                            progressContainer.style.display = 'block';
-                            const bar = progressContainer.querySelector('.apply-progress-bar') as HTMLElement;
-                            if (bar) bar.style.width = '0%';
-                        }
-
-                        vscode.postMessage({ command: 'applyAllChanges', changes, messageId, undo: true });
-                    } else {
-                        // REDIRECTION: Open the Staging Modal instead of immediate apply
-                        import('./ui.js').then(ui => {
-                            ui.openStagingRevamp(messageId, changes);
-                        });
-                    }
-                }
-            };
-        }
-
-    // --- APPLY ALL AGGREGATOR ---
-    // Note: The main Apply All button logic is handled via gatherChangesFromBlocks 
-    // triggered by either the static button in finalHtml or a dynamically injected one.
-    const btn = contentDiv.querySelector(`.apply-all-btn`) as HTMLButtonElement;
-    if (btn) {
-        btn.onclick = () => {
-            const isUndo = btn.classList.contains('undo-all-btn');
+            const isUndo = applyAllBtn.classList.contains('undo-all-btn');
             const changes = gatherChangesFromBlocks(messageId, isUndo);
             if (changes.length > 0) {
-                btn.disabled = true;
-                btn.innerHTML = isUndo 
+                applyAllBtn.disabled = true;
+                applyAllBtn.innerHTML = isUndo 
                     ? '<span class="codicon codicon-sync spin"></span> Undoing Batch...' 
                     : '<span class="codicon codicon-sync spin"></span> Applying Batch...';
 
@@ -3473,6 +3452,74 @@ export class ContextBinder {
             };
         }
 
+        // Helper to extract file path string
+        const getFilePath = (item: any) => typeof item === 'string' ? item : (item?.path || '');
+
+        // Bind Project Files Bulk Remove button
+        const bulkRemoveProjectBtn = dashboard.querySelector('#bulk-remove-project-btn') as HTMLElement;
+        if (bulkRemoveProjectBtn) {
+            bulkRemoveProjectBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const projectFiles = files.filter(f => {
+                    const p = getFilePath(f);
+                    return !p.includes('.lollms/') && !p.startsWith('http') && !p.startsWith('external/');
+                });
+                showBulkDeleteModal(projectFiles);
+            };
+        }
+
+        // Bind External Files Bulk Process button
+        const bulkProcessExternalBtn = dashboard.querySelector('#bulk-process-external-btn') as HTMLElement;
+        if (bulkProcessExternalBtn) {
+            bulkProcessExternalBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const externalFiles = files.filter(f => {
+                    const p = getFilePath(f);
+                    return p.includes('.lollms/') || p.startsWith('http') || p.startsWith('external/');
+                }).map(getFilePath);
+                showBulkProcessModal(externalFiles);
+            };
+        }
+
+        // Bind External Files Bulk Remove/Delete button
+        const bulkDeleteExternalBtn = dashboard.querySelector('#bulk-delete-external-btn') as HTMLElement;
+        if (bulkDeleteExternalBtn) {
+            bulkDeleteExternalBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const externalFiles = files.filter(f => {
+                    const p = getFilePath(f);
+                    return p.includes('.lollms/') || p.startsWith('http') || p.startsWith('external/');
+                });
+                showBulkDeleteModal(externalFiles);
+            };
+        }
+
+        // Bind Skills Bulk Remove button
+        const bulkDeleteSkillsBtn = dashboard.querySelector('#bulk-delete-skills-btn') as HTMLElement;
+        if (bulkDeleteSkillsBtn) {
+            bulkDeleteSkillsBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                showBulkDeleteSkillsModal(skills);
+            };
+        }
+
+        // Bind Tools Bulk Clear button
+        const bulkRemoveToolsBtn = dashboard.querySelector('#bulk-remove-tools-btn') as HTMLElement;
+        if (bulkRemoveToolsBtn) {
+            bulkRemoveToolsBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial: { importedTools: [], projectTools: [] }
+                });
+            };
+        }
+
         // Bind Toolbar buttons
         const bindClick = (id: string, action: () => void) => {
             const el = document.getElementById(id);
@@ -3673,19 +3720,29 @@ export function showBulkDeleteModal(files: any[]) {
     const getPath = (item: any) => typeof item === 'string' ? item : (item?.path || '');
     const sortedFiles = [...files].sort((a, b) => getPath(a).split('/').pop()!.localeCompare(getPath(b).split('/').pop()!));
 
-    list.innerHTML = sortedFiles.map(item => {
-        const f = getPath(item);
-        const fileName = f.split('/').pop();
-        const dirName = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
-        return `
-        <div class="checkbox-container" style="margin-bottom: 6px; padding: 4px; border-radius: 4px; background: rgba(0,0,0,0.15); display: flex; align-items: center;">
-            <input type="checkbox" class="bulk-delete-file-check" value="${f}" id="bulk-del-check-${f}" checked style="margin: 0 10px 0 5px;">
-            <label for="bulk-del-check-${f}" style="font-size: 11px; cursor: pointer; flex: 1; min-width: 0;">
-                <div style="font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${fileName}</div>
-                <div style="font-size: 9px; opacity: 0.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${dirName}</div>
-            </label>
-        </div>`;
-    }).join('');
+    if (sortedFiles.length === 0) {
+        list.innerHTML = '<div style="padding: 15px; opacity: 0.6; text-align: center; font-size: 11px;">No files to remove.</div>';
+    } else {
+        list.innerHTML = sortedFiles.map(item => {
+            const f = getPath(item);
+            const fileName = f.split('/').pop();
+            const dirName = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
+            const tokens = (typeof item === 'object' && item.tokens) ? item.tokens : (state.fileTokensMap?.[f] || 0);
+            const tokenBadge = tokens > 0 ? `<span class="file-token-badge" style="margin-left:auto;">~${tokens >= 1000 ? (tokens/1000).toFixed(1) + 'k' : tokens} tok</span>` : '';
+
+            return `
+            <div class="checkbox-container" style="margin-bottom: 6px; padding: 6px 10px; border-radius: 4px; background: rgba(0,0,0,0.15); display: flex; align-items: center; border: 1px solid var(--vscode-widget-border);">
+                <input type="checkbox" class="bulk-delete-file-check" value="${f}" id="bulk-del-check-${f}" checked style="margin: 0 10px 0 0;">
+                <label for="bulk-del-check-${f}" style="font-size: 11px; cursor: pointer; flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="min-width:0; overflow:hidden;">
+                        <div style="font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${fileName}</div>
+                        ${dirName ? `<div style="font-size: 9px; opacity: 0.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${dirName}</div>` : ''}
+                    </div>
+                    ${tokenBadge}
+                </label>
+            </div>`;
+        }).join('');
+    }
 
     if (master) {
         master.checked = true;
@@ -3697,16 +3754,17 @@ export function showBulkDeleteModal(files: any[]) {
     modal.classList.add('visible');
 
     const close = () => modal.classList.remove('visible');
-    closeBtn!.onclick = close;
+    if (closeBtn) closeBtn.onclick = close;
 
-    runBtn!.onclick = () => {
-        const selected = Array.from(document.querySelectorAll('.bulk-delete-file-check:checked')).map((el: any) => el.value);
-        if (selected.length > 0) {
-            // This command triggers bulkRemoveFiles in ChatPanel.ts
-            vscode.postMessage({ command: 'bulkRemoveFiles', paths: selected });
-            modal.classList.remove('visible');
-        }
-    };
+    if (runBtn) {
+        runBtn.onclick = () => {
+            const selected = Array.from(list.querySelectorAll('.bulk-delete-file-check:checked')).map((el: any) => el.value);
+            if (selected.length > 0) {
+                vscode.postMessage({ command: 'bulkRemoveFiles', paths: selected });
+                modal.classList.remove('visible');
+            }
+        };
+    }
 }
 
 // Expose to global so messageRenderer can trigger it

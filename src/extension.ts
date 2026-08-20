@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { LollmsAPI, LollmsConfig } from './lollmsAPI';
+import { LollmsAPI } from './lollmsAPI';
 import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
 import { ContextStateProvider } from './commands/contextStateProvider';
@@ -8,7 +8,6 @@ import { FileDecorationProvider } from './commands/fileDecorationProvider';
 import { DiscussionManager } from './discussionManager';
 import { ScriptRunner } from './scriptRunner';
 import { PromptManager } from './promptManager';
-import { AgentManager } from './agentManager';
 import { ProcessManager } from './processManager';
 import { LollmsNotebookCellActionProvider, NotebookManager } from './notebookTools';
 import { LollmsCodeActionProvider } from './commands/codeActions';
@@ -28,13 +27,10 @@ import { setPythonApi, debugErrorManager, disposeTerminal } from './extensionSta
 import { LollmsServices } from './lollmsContext';
 import { ToolManager } from './tools/toolManager';
 import { ChatPanel } from './commands/chatPanel/chatPanel';
-import { DiscussionItem } from './commands/discussionTreeProvider';
 import { DiffManager } from './diffManager';
-import { DiffCodeLensProvider } from './commands/diffCodeLensProvider';
 import { HerdManager } from './herdManager';
 import { LollmsDebugAdapterTrackerFactory } from './debugAdapterTracker';
 import { CodeExplorerPanel } from './commands/codeExplorerView';
-import { SelectionCodeLensProvider } from './commands/selectionCodeLensProvider';
 import { SelectionDecorator, SelectionHoverProvider } from './ui/selectionDecorator';
 
 // RLM Database Imports

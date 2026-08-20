@@ -843,19 +843,24 @@
     </div>
 
     <div id="usage-modal" class="modal">
-        <div class="modal-content" style="max-width: 800px; width: 90%;">
-            <div class="modal-header">
-                <h2>Context Token Usage</h2>
+        <div class="modal-content" style="max-width: 850px; width: 92%; max-height: 88vh; display: flex; flex-direction: column; overflow: hidden;">
+            <div class="modal-header" style="border-bottom: 1px solid var(--vscode-widget-border); padding: 12px 18px;">
+                <h2 style="margin: 0; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+                    <i class="codicon codicon-dashboard" style="color: var(--vscode-charts-blue);"></i> 
+                    <span>Context Token Usage & Inspection</span>
+                </h2>
                 <span class="close-btn" id="usage-close-btn">&times;</span>
             </div>
-            <div class="modal-body">
-                <p style="font-size: 11px; opacity: 0.8; margin-bottom: 15px;">Detailed breakdown of tokens per file using the currently selected model.</p>
-                <div id="usage-list-container" style="max-height: 400px; overflow-y: auto;">
-                    <div style="text-align:center; padding: 20px;"><div class="spinner"></div> Calculating...</div>
+            <div class="modal-body" style="flex: 1; overflow-y: auto; padding: 16px 18px 0 18px;">
+                <p style="font-size: 11px; opacity: 0.75; margin: 0 0 14px 0;">Live token density breakdown per file. Removing files from context frees up model attention budget without modifying files on disk.</p>
+                <div id="usage-list-container" style="min-height: 250px;">
+                    <div style="text-align:center; padding: 40px;"><div class="spinner" style="width:24px; height:24px; border-width:3px; margin-bottom:8px;"></div><div style="font-size:11px; opacity:0.8;">Calculating token weights...</div></div>
                 </div>
             </div>
-            <div class="modal-footer">
-                <button id="usage-refresh-btn" class="code-action-btn apply-btn" style="width:auto; height:32px;"><span class="codicon codicon-refresh"></span> Recalculate</button>
+            <div class="modal-footer" style="display: flex; justify-content: flex-end; padding: 10px 18px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background);">
+                <button id="usage-refresh-btn" class="code-action-btn secondary-btn" style="width: auto; height: 30px; font-weight: 600;">
+                    <i class="codicon codicon-refresh"></i> Recalculate
+                </button>
             </div>
         </div>
     </div>
@@ -883,21 +888,21 @@
     </div>
 
     <div id="bulk-delete-modal" class="modal">
-        <div class="modal-content">
+        <div class="modal-content" style="max-width: 550px;">
             <div class="modal-header">
-                <h2>Bulk Delete Files</h2>
+                <h2 style="margin: 0; font-size: 14px; display: flex; align-items: center; gap: 8px;"><i class="codicon codicon-checklist"></i> Bulk Remove Files from Context</h2>
                 <span class="close-btn" id="bulk-delete-close-btn">&times;</span>
             </div>
             <div class="modal-body">
-                <p style="font-size: 12px; opacity: 0.8; margin-bottom: 12px; color: var(--vscode-errorForeground);">Warning: This will permanently delete the selected files from your workspace.</p>
+                <p style="font-size: 11px; opacity: 0.8; margin: 0 0 12px 0;">Select files to uncheck from the active AI context. Files on disk will remain completely intact.</p>
                 <div class="checkbox-container" style="margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
                     <input type="checkbox" id="bulk-delete-select-all" checked>
                     <label for="bulk-delete-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select / Deselect All</label>
                 </div>
-                <div id="bulk-delete-files-list" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px;"></div>
+                <div id="bulk-delete-files-list" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px; display: flex; flex-direction: column; gap: 4px;"></div>
             </div>
             <div class="modal-footer">
-                <button id="bulk-delete-run-btn" class="code-action-btn delete-btn" style="width: 100%; justify-content: center;">Delete Selected Files</button>
+                <button id="bulk-delete-run-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center; height: 32px;">Remove Selected from Context</button>
             </div>
         </div>
     </div>
@@ -1427,7 +1432,7 @@
             </div>
         </div>
     </div>
-    <input type="file" id="fileInput" style="display: none;" multiple accept=".md,.txt,.msg,.docx,.pdf,.pptx,.xlsx,.csv,.png,.jpg,.jpeg,.bmp,.webp">
+    <input type="file" id="fileInput" style="display: none;" multiple accept=".md,.txt,.rst,.html,.htm,.json,.yaml,.yml,.csv,.tsv,.docx,.pdf,.pptx,.xlsx,.msg,.odt,.rtf,.ipynb,.py,.ts,.js,.cpp,.c,.cs,.java,.rs,.go,.sh,.png,.jpg,.jpeg,.bmp,.webp,.svg">
 
     <script nonce="{{nonce}}">
         try {

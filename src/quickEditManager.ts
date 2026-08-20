@@ -155,7 +155,7 @@ export class QuickEditManager {
                     debugReport = `\n### 🐞 ACTIVE DEBUGGER VARIABLES (LOCALS)\n${compressedLines.join('\n')}\n`;
                 }
 
-                currentFileBlock = `### 📄 COMPLETE ACTIVE FILE CONTENT\n\`\`\`${languageId}:${relativePath}\n${currentFileCode}\n\`\`\`\n${fileErrorsReport}${debugReport}`;
+                currentFileBlock = `### 📄 COMPLETE ACTIVE FILE CONTENT\n<file path="${relativePath}">\n${currentFileCode}\n</file>\n${fileErrorsReport}${debugReport}`;
 
                 if (hasSelection) {
                     const startLine = selection.start.line;

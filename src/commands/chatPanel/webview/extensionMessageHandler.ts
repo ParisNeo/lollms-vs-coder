@@ -1659,9 +1659,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
                     }
 
-                    // 2. Target ONLY the specific block matching blockIndex/blockId to avoid marking unrelated blocks of the same file as applied
+                    // 2. Target the specific block matching blockIndex/blockId or data-path
                     const targetBlock = (blockId ? document.getElementById(blockId) : null)
-                        || (messageId && blockIndex !== undefined ? document.getElementById(`block-${messageId}-${blockIndex}`) : null);
+                        || (messageId && blockIndex !== undefined ? document.getElementById(`block-${messageId}-${blockIndex}`) : null)
+                        || (document.querySelector(`.file-mutation-card[data-path='${filePath}']`));
 
                     if (targetBlock) {
                         const applyBtn = targetBlock.querySelector('.apply-btn, .apply-mutation-btn') as HTMLButtonElement;
@@ -1679,6 +1680,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         if ((targetBlock as HTMLDetailsElement).open) {
                             collapseBlockWithScrollPreservation(targetBlock as HTMLDetailsElement, dom.messagesDiv);
                         }
+                    }
+
+                    if (messageId) {
+                        checkAndSyncMessageAppliedState(messageId);
                     }
                 }
                 break;
@@ -1810,18 +1815,16 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (blockEl && message.success) {
                         const hunkVal = message.hunkIndex !== undefined ? message.hunkIndex : -1;
 
-                        if (message.alreadyApplied) {
-                            if (message.messageId && message.blockIndex !== undefined) {
-                                if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
-                                if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
+                        if (message.messageId && message.blockIndex !== undefined) {
+                            if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
+                            if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
 
-                                if (isUndo) {
-                                    state.appliedState[message.messageId][message.blockIndex] = state.appliedState[message.messageId][message.blockIndex].filter(v => v !== hunkVal);
-                                    if (hunkVal === -1) state.appliedState[message.messageId][message.blockIndex] = [];
-                                } else {
-                                    if (!state.appliedState[message.messageId][message.blockIndex].includes(hunkVal)) {
-                                        state.appliedState[message.messageId][message.blockIndex].push(hunkVal);
-                                    }
+                            if (isUndo) {
+                                state.appliedState[message.messageId][message.blockIndex] = state.appliedState[message.messageId][message.blockIndex].filter(v => v !== hunkVal);
+                                if (hunkVal === -1) state.appliedState[message.messageId][message.blockIndex] = [];
+                            } else {
+                                if (!state.appliedState[message.messageId][message.blockIndex].includes(hunkVal)) {
+                                    state.appliedState[message.messageId][message.blockIndex].push(hunkVal);
                                 }
                             }
                         }

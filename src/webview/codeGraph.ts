@@ -415,56 +415,86 @@ function evaluateSparql(query: string): SparqlResult {
         return cleanFact === cleanQuery;
     };
 
-    const solve = (varIdx: number, bindings: Record<string, string>) => {
-        if (varIdx === varList.length) {
-            let valid = true;
-            for (const t of triples) {
-                const sVal = t.s.startsWith('?') ? bindings[t.s] : t.s;
-                const pVal = t.p.startsWith('?') ? bindings[t.p] : t.p;
-                const oVal = t.o.startsWith('?') ? bindings[t.o] : t.o;
+    const evaluateFilter = (filterStr: string, bindings: Record<string, string>): boolean => {
+        const f = filterStr.trim();
 
-                const match = facts.some(f => 
-                    matchValue(f.s, sVal) && matchValue(f.p, pVal) && matchValue(f.o, oVal)
-                );
-                if (!match) { valid = false; break; }
-            }
-
-            if (valid && filters.length > 0) {
-                for (const filter of filters) {
-                    const regexMatch = filter.match(/regex\s*\(\s*(\?[a-zA-Z0-9_]+)\s*,\s*['"]([^'"]+)['"](?:\s*,\s*['"]([iI])['"])?\s*\)/i);
-                    if (regexMatch) {
-                        const varName = regexMatch[1];
-                        const pattern = regexMatch[2];
-                        const flags = regexMatch[3] || '';
-                        const boundVal = bindings[varName] || '';
-                        const re = new RegExp(pattern, flags);
-                        if (!re.test(boundVal)) { valid = false; break; }
-                    }
-                }
-            }
-
-            if (valid) {
-                const isDup = results.some(r => varList.every(v => r[v] === bindings[v]));
-                if (!isDup) results.push({ ...bindings });
-            }
-            return;
+        // 1. IN / NOT IN: ?var IN (val1, val2, ...) or ?var NOT IN (...)
+        const inMatch = f.match(/(\?[a-zA-Z0-9_]+)\s+(NOT\s+IN|IN)\s*\(([\s\S]+?)\)/i);
+        if (inMatch) {
+            const varName = inMatch[1];
+            const isNotIn = inMatch[2].toUpperCase().includes('NOT');
+            const rawList = inMatch[3].split(',').map(s => s.trim());
+            const boundVal = bindings[varName] || '';
+            const inList = rawList.some(item => matchValue(boundVal, item));
+            return isNotIn ? !inList : inList;
         }
 
-        const currentVar = varList[varIdx];
-        const domain = new Set<string>();
-        facts.forEach(f => {
-            domain.add(f.s);
-            domain.add(f.o);
-        });
-
-        for (const val of domain) {
-            bindings[currentVar] = val;
-            solve(varIdx + 1, bindings);
-            delete bindings[currentVar];
+        // 2. regex(?var, 'pattern', 'flags')
+        const regexMatch = f.match(/regex\s*\(\s*(\?[a-zA-Z0-9_]+)\s*,\s*['"]([^'"]+)['"](?:\s*,\s*['"]([iI])['"])?\s*\)/i);
+        if (regexMatch) {
+            const varName = regexMatch[1];
+            const pattern = regexMatch[2];
+            const flags = regexMatch[3] || '';
+            const boundVal = (bindings[varName] || '').replace(/^"|"$/g, '');
+            try {
+                const re = new RegExp(pattern, flags);
+                return re.test(boundVal);
+            } catch {
+                return false;
+            }
         }
+
+        // 3. Equality & Inequality: ?var = 'val' or ?var = s:Class or ?var != 'val'
+        const eqMatch = f.match(/(\?[a-zA-Z0-9_]+)\s*(=|!=|<>)\s*([^\s)]+)/);
+        if (eqMatch) {
+            const varName = eqMatch[1];
+            const op = eqMatch[2];
+            const targetVal = eqMatch[3].trim();
+            const boundVal = bindings[varName] || '';
+            const isEq = matchValue(boundVal, targetVal);
+            return (op === '=') ? isEq : !isEq;
+        }
+
+        return true;
     };
 
-    solve(0, {});
+    // Pattern-by-Pattern relational join
+    let solutions: Record<string, string>[] = [{}];
+
+    for (const pattern of triples) {
+        const nextSolutions: Record<string, string>[] = [];
+
+        for (const binding of solutions) {
+            const sBound = pattern.s.startsWith('?') ? binding[pattern.s] : pattern.s;
+            const pBound = pattern.p.startsWith('?') ? binding[pattern.p] : pattern.p;
+            const oBound = pattern.o.startsWith('?') ? binding[pattern.o] : pattern.o;
+
+            for (const fact of facts) {
+                const sMatch = !sBound || matchValue(fact.s, sBound);
+                const pMatch = !pBound || matchValue(fact.p, pBound);
+                const oMatch = !oBound || matchValue(fact.o, oBound);
+
+                if (sMatch && pMatch && oMatch) {
+                    const newBinding: Record<string, string> = { ...binding };
+                    if (pattern.s.startsWith('?') && !binding[pattern.s]) newBinding[pattern.s] = fact.s;
+                    if (pattern.p.startsWith('?') && !binding[pattern.p]) newBinding[pattern.p] = fact.p;
+                    if (pattern.o.startsWith('?') && !binding[pattern.o]) newBinding[pattern.o] = fact.o;
+                    nextSolutions.push(newBinding);
+                }
+            }
+        }
+
+        solutions = nextSolutions;
+        if (solutions.length === 0) break;
+    }
+
+    if (filters.length > 0) {
+        solutions = solutions.filter(binding => 
+            filters.every(filterStr => evaluateFilter(filterStr, binding))
+        );
+    }
+
+    results.push(...solutions);
 
     if (res.type === 'select') {
         const selectStr = selectMatch![2].trim();

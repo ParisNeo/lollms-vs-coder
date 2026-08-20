@@ -13,21 +13,19 @@ export const queryArchitectureTool: ToolDefinition = {
         if (!env.codeGraphManager) {
             return { success: false, output: "Error: CodeGraphManager is not available." };
         }
-        
-        // Build graph proactively if the tool needs it and it isn't ready
-        if (env.codeGraphManager.getBuildState() !== 'ready') {
-            await env.codeGraphManager.buildGraph();
-        }
-        
+
+        // Automatically restore from cache or build on-demand
+        await env.codeGraphManager.ensureGraphReady(true);
+
         if (params.query_type === 'sparql' || params.target.trim().toUpperCase().startsWith('SELECT') || params.target.trim().toUpperCase().startsWith('CONSTRUCT') || params.target.trim().toUpperCase().startsWith('ASK')) {
-            const output = env.codeGraphManager.executeSparql(params.target);
+            const output = await env.codeGraphManager.executeSparql(params.target);
             return { success: true, output };
         }
 
         const qType = params.query_type === 'outline' || params.query_type === 'dependencies' || params.query_type === 'usages' 
             ? params.query_type 
             : 'outline';
-            
+
         const output = env.codeGraphManager.getArchitectureAnalysis(params.target, qType);
         return { success: true, output };
     }

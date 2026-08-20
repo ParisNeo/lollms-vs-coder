@@ -195,7 +195,12 @@ Please provide the final technical answer:`;
                     : undefined;
 
                 if (this.graphManager.getGraphData().nodes.length === 0 && this.graphManager.getBuildState() === 'idle') {
-                    this.triggerGraphBuild(focusPath);
+                    const restored = await this.graphManager.loadFromDiskCache();
+                    if (restored) {
+                        this.update();
+                    } else {
+                        this.triggerGraphBuild(focusPath);
+                    }
                 } else {
                     this.update();
                 }

@@ -166,17 +166,25 @@ Therefore, after applying changes, you are **encouraged to run a verification ch
         memory?: string;   // This contains Project DNA
     }): string {
         // Parse the list of possessed files from the files block to create an explicit list
-        const blocks = context.files.split(/```/);
         const possessedFiles: string[] = [];
-        blocks.forEach(block => {
-            const match = block.match(/^(?:\w+)?:([^\r\n]+)/);
-            if (match) {
-                const path = match[1].trim().split(' ')[0];
-                if (path && !possessedFiles.includes(path)) {
-                    possessedFiles.push(path);
+        const fileTagMatches = [...context.files.matchAll(/<file\s+path=["']([^"']+)["'][^>]*>/gi)];
+        if (fileTagMatches.length > 0) {
+            fileTagMatches.forEach(m => {
+                const p = m[1].trim();
+                if (p && !possessedFiles.includes(p)) possessedFiles.push(p);
+            });
+        } else {
+            const blocks = context.files.split(/```/);
+            blocks.forEach(block => {
+                const match = block.match(/^(?:\w+)?:([^\r\n]+)/);
+                if (match) {
+                    const path = match[1].trim().split(' ')[0];
+                    if (path && !possessedFiles.includes(path)) {
+                        possessedFiles.push(path);
+                    }
                 }
-            }
-        });
+            });
+        }
 
         const filesInventory = possessedFiles.length > 0 
             ? possessedFiles.map(f => `- \`${f}\` [FULL CONTENT FULLY LOADED - DO NOT REQUEST]`).join('\n')

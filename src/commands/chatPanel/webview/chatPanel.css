@@ -5038,75 +5038,85 @@ details[open] > summary .folder-handle::before {
     background: rgba(214, 122, 13, 0.05);
 }
 
-#usage-list-container tr:hover {
+#usage-list-container tr.usage-file-row {
+    border-bottom: 1px solid var(--vscode-widget-border);
+    transition: background-color 0.12s ease, opacity 0.2s ease, transform 0.2s ease;
+}
+
+#usage-list-container tr.usage-file-row:hover {
     background-color: var(--vscode-list-hoverBackground);
 }
 
+.remove-usage-item-btn {
+    transition: background-color 0.15s ease, transform 0.1s ease, color 0.15s ease;
+}
+
 .remove-usage-item-btn:hover {
+    background-color: rgba(244, 71, 71, 0.15) !important;
     color: var(--vscode-errorForeground) !important;
+    transform: scale(1.1);
 }
 
 .usage-section-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-bottom: 1px solid var(--vscode-panel-border);
-    padding-bottom: 8px;
-    margin-bottom: 12px;
+    border-bottom: 1px solid var(--vscode-widget-border);
+    padding-bottom: 6px;
+    margin-bottom: 8px;
 }
 
 .section-title {
     font-size: 11px;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.6px;
     font-weight: 800;
-    opacity: 0.7;
+    opacity: 0.85;
+    display: flex;
+    align-items: center;
+    gap: 6px;
 }
 
 .usage-sort-controls {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
     background: var(--vscode-editor-inactiveSelectionBackground);
     padding: 2px 4px;
     border-radius: 4px;
+    border: 1px solid var(--vscode-widget-border);
 }
 
-.sort-btn {
+.usage-sort-controls .sort-btn {
     background: transparent;
     border: none;
     color: var(--vscode-foreground);
-    opacity: 0.5;
+    opacity: 0.6;
     cursor: pointer;
-    padding: 2px 6px;
+    padding: 3px 6px;
     border-radius: 3px;
     display: flex;
     align-items: center;
-    transition: all 0.1s;
+    transition: all 0.12s ease;
 }
 
-.sort-btn:hover {
+.usage-sort-controls .sort-btn:hover {
     opacity: 1;
     background: var(--vscode-toolbar-hoverBackground);
 }
 
-.sort-btn.active {
+.usage-sort-controls .sort-btn.active {
     opacity: 1;
     color: var(--vscode-textLink-foreground);
     background: var(--vscode-button-secondaryBackground);
+    font-weight: bold;
 }
 
-.sort-divider {
+.usage-sort-controls .sort-divider {
     width: 1px;
     height: 12px;
     background: var(--vscode-widget-border);
     margin: 0 4px;
-}
-
-#usage-list-container th {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
 }
 
 /* 🚀 SOVEREIGN INGESTION CENTER WEBVIEW LAYOUT */

@@ -615,6 +615,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     const applied = await vscode.workspace.applyEdit(edit);
                     if (applied) {
                         await document.save();
+                        services.contextManager.refreshFileInCache(fileUri);
+                        services.contextManager.getContextStateProvider()?.addFilesToContext([sanitizedFilePath]).catch(() => {});
                         Logger.info(`applyFileContent: Successfully persisted complete rewrite to disk for ${relativePath}`);
                     }
                 }
@@ -1296,6 +1298,8 @@ ${originalContent}
                         const applied = await vscode.workspace.applyEdit(edit);
                         if (applied) {
                             await document.save();
+                            services.contextManager.refreshFileInCache(fileUri);
+                            services.contextManager.getContextStateProvider()?.addFilesToContext([sanitizedFilePath]).catch(() => {});
                             Logger.info(`replaceCode: Successfully persisted modifications to disk for ${sanitizedFilePath}`);
                         }
                     } else {
@@ -1534,7 +1538,9 @@ ${originalContent}
              try {
                 // applyDiff now handles explicit saving internally
                 await applyDiff(patchContent, filePath); 
-                
+                services.contextManager.refreshFileInCache(fileUri);
+                services.contextManager.getContextStateProvider()?.addFilesToContext([filePath]).catch(() => {});
+
                 if (!options?.silent) {
                     // Scroll to the patch location
                     const editor = await vscode.window.showTextDocument(doc);

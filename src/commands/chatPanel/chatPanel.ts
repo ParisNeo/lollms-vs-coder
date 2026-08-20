@@ -1100,7 +1100,7 @@ export class ChatPanel {
         // Non-blocking deferred calculations to prevent UI render blocking
         setTimeout(async () => {
             // --- LAZY NON-BLOCKING HYDRATION ---
-            // If we have previously cached metrics for this discussion, restore them immediately
+            // If we have previously cached metrics for this discussion, restore them immediately to prevent flicker
             if (this._currentDiscussion && this._currentDiscussion.lastTokenMetrics) {
                 const m = this._currentDiscussion.lastTokenMetrics;
                 if (this._panel && this._panel.webview && !this._isDisposed) {
@@ -1112,9 +1112,10 @@ export class ChatPanel {
                         segments: m.segments
                     });
                 }
-            } else if (this._panel && this._panel.webview && !this._isDisposed) {
-                // Otherwise, trigger a silent, low-priority background calculation pass [2]
-                // This populates the HUD bar automatically on load without hanging the interface
+            }
+
+            // Always trigger background context and token sync to ensure disk changes & applied files are fresh
+            if (this._panel && this._panel.webview && !this._isDisposed) {
                 this.updateContextAndTokens({ isBackgroundSync: true });
             }
 
@@ -3153,7 +3154,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                             completedDynamicActions.push(`Removed ${filesToRemove.length} files from active attention.`);
                         } else if (interceptedTag === 'query_architecture') {
                             const sparql = interceptedParams!.trim();
-                            const rawResult = this.agentManager.codeGraphManager.executeSparql(sparql);
+                            const rawResult = await this.agentManager.codeGraphManager.executeSparql(sparql);
                             toolResult = rawResult || "No matches.";
                             if (rawResult.includes("Error") || rawResult.includes("failed")) {
                                 isSuccess = false;
@@ -3853,9 +3854,12 @@ Your task is to write comprehensive unit tests for the changes just made by the 
 Look at the modifications provided in the previous message.
 1. Identify the functions/classes that were modified or created.
 2. Write unit tests to cover both the happy path and edge cases.
-3. Output the tests using the exact formatting rules (e.g., \`\`\`language:path/to/test_file.ext\n[code]\n\`\`\`).
+3. Output the tests using the exact <file> XML formatting rules:
+<file path="path/to/test_file.ext" action="write">
+[Complete test code]
+</file>
 If you don't know the exact test file path, guess a standard path (e.g., tests/test_filename.py or filename.test.ts).
-DO NOT explain your code. Output ONLY the test code blocks.`;
+DO NOT explain your code. Output ONLY the <file> tags.`;
 
             const testPrompt = `Please write unit tests for the changes you just implemented. Ensure you use the exact formatting rules for file creation or modification.`;
 
@@ -3998,15 +4002,15 @@ DO NOT explain your code. Output ONLY the test code blocks.`;
 Your primary goal is to maintain the project's PHYSICAL documentation files.
 
 ### 📚 DOCUMENTATION PROTOCOL (STRICT PRIORITY):
-1. **FILE MODIFICATION (MANDATORY)**: You MUST update or create at least one documentation file (e.g., \`README.md\`, \`ARCHITECTURE.md\`, or \`docs/*.md\`) using the AIDER SEARCH/REPLACE format. 
+1. **FILE MODIFICATION (MANDATORY)**: You MUST update or create at least one documentation file (e.g., \`README.md\`, \`ARCHITECTURE.md\`, or \`docs/*.md\`) using the \`<file path="..." action="patch">\` (or \`action="write"\`) tag.
    - Document new classes, functions, or changes in behavior.
    - If the project is missing a README, create one now.
-2. **INTERNAL GROUNDING (SECONDARY)**: ONLY AFTER updating the files, you may use a \`<project_memory operation="add" ...>\` tag.
+2. **INTERNAL GROUNDING (SECONDARY)**: ONLY AFTER updating the files, you may use a \`<project_memory action="add" ...>\` tag.
    - Use memory ONLY for "Project DNA" (e.g., "The user hates Flask, always use FastAPI") or "Hidden Quirks" that aren't appropriate for a public README.
 
 ### 🛑 PROHIBITIONS:
 - **NO MEMORY-ONLY RESPONSES**: Generating a memory tag without updating a documentation file is a FAILURE.
-- **NO CHATTER**: Output ONLY the Aider code blocks and the memory tags.
+- **NO CHATTER**: Output ONLY the <file> mutation tags and the memory tags.
 
 If there are no meaningful docs to update, find the README.md and add a "Latest Changes" entry.`;
 
@@ -4947,10 +4951,14 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                                         // If undoing, remove from applied state, otherwise add it
                                         await this.updateAppliedState(messageId, change.blockIndex, change.hunkIndex, isUndoMode);
 
-                                        // Collapse the newly applied file directly to keep the workspace clean [2]
+                                        // Collapse the newly applied file directly and sync block state
                                         this._panel.webview.postMessage({
                                             command: 'fileSavedOnDisk',
-                                            filePath: change.path
+                                            filePath: change.path,
+                                            messageId: messageId,
+                                            blockIndex: change.blockIndex,
+                                            hunkIndex: change.hunkIndex,
+                                            blockId: change.blockId
                                         });
                                     }
                                 } catch (e: any) {
@@ -4958,19 +4966,37 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                                     this.log(`Batch failure on ${change.path}: ${e.message}`, 'ERROR');
                                 }
 
-                                // 2. Notify UI: Item result
+                                // 2. Notify UI: Item result with explicit alreadyApplied state
                                 this._panel.webview.postMessage({
                                     command: 'applyAllResult',
                                     messageId: messageId,
                                     filePath: change.path,
                                     blockIndex: change.blockIndex,
                                     hunkIndex: change.hunkIndex,
+                                    blockId: change.blockId,
                                     success: result?.success ?? false,
+                                    alreadyApplied: (result?.success ?? false) && !isUndoMode,
                                     error: result?.error,
                                     currentIndex: i,
                                     totalCount: changesBatch.length,
                                     undo: isUndoMode
                                 });
+                            }
+
+                            // Automatically add successfully applied files to context to ensure continuity
+                            if (!message.undo && this._contextManager) {
+                                const appliedPaths = changesBatch.map((c: any) => c.path).filter(Boolean);
+                                if (appliedPaths.length > 0) {
+                                    try {
+                                        await this._contextManager.getContextStateProvider()?.addFilesToContext(appliedPaths);
+                                    } catch (ctxErr) {
+                                        this.log(`Failed to add applied batch files to context: ${ctxErr}`, 'WARN');
+                                    }
+                                }
+                            }
+
+                            if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
+                                await this._discussionManager.saveDiscussion(this._currentDiscussion);
                             }
                         } finally {
                             ChatPanel.isBatchApplying = false;
@@ -4979,7 +5005,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         this.processManager.unregister(applyProcId);
                         this.updateGeneratingState();
                         // Final context refresh to show new state in HUD
-                        this.updateContextAndTokens();
+                        this.updateContextAndTokens({ isBackgroundSync: false });
                     };
 
                     runBatch();
@@ -5381,26 +5407,27 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     canSelectMany: true,
                     openLabel: 'Add to AI Context',
                     filters: { 
-                        'Documents':['pdf', 'docx', 'pptx', 'xlsx', 'msg'],
-                        'Images':['png', 'jpg', 'jpeg', 'webp', 'bmp'],
-                        'Code/Text': ['*']
+                        'Documentation & Code': ['md', 'txt', 'rst', 'pdf', 'docx', 'html', 'htm', 'json', 'yaml', 'yml', 'py', 'ts', 'js', 'cpp', 'c', 'cs', 'java', 'rs', 'go', 'sh', 'xlsx', 'pptx', 'msg', 'csv'],
+                        'Documents': ['md', 'txt', 'pdf', 'docx', 'pptx', 'xlsx', 'msg', 'odt', 'rtf', 'csv', 'tsv', 'html', 'rst'],
+                        'Images': ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'svg'],
+                        'All Files': ['*']
                     }
                 });
                 if (uris && uris.length > 0) {
-                    // Show progress immediately
-                    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: true, statusText: 'Processing documents...' });
+                    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: true, statusText: 'Ingesting documentation files...' });
                     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-                    
+                    let addedCount = 0;
+
                     for (const uri of uris) {
                         const ext = path.extname(uri.fsPath).toLowerCase();
                         const fileName = path.basename(uri.fsPath);
 
-                        // If it's a complex document or image, treat it as a rich attachment
-                        if (['.pdf', '.docx', '.pptx', '.xlsx', '.msg', '.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
+                        // If it's a complex binary/document or image, treat it as a rich attachment
+                        if (['.pdf', '.docx', '.pptx', '.xlsx', '.msg', '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.svg'].includes(ext)) {
                             try {
                                 const bytes = await vscode.workspace.fs.readFile(uri);
                                 const base64 = Buffer.from(bytes).toString('base64');
-                                const isImage = ['.png', '.jpg', '.jpeg', '.webp', '.bmp'].includes(ext);
+                                const isImage = ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.svg'].includes(ext);
 
                                 let importMode: string | undefined = undefined;
                                 if (ext === '.pdf') {
@@ -5410,28 +5437,28 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                                         { label: 'Images only', mode: 'images', detail: 'Convert every page of the PDF into an image for visual analysis.' }
                                     ];
                                     const choice = await vscode.window.showQuickPick(choices, { placeHolder: `How should I import ${fileName}?` });
-                                    
+
                                     if (!choice) {
                                         this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
-                                        continue; // User cancelled
+                                        continue;
                                     }
                                     importMode = choice.mode;
                                 }
 
                                 await this._handleFileAttachment(fileName, isImage ? `data:image/${ext.substring(1)};base64,${base64}` : `data:application/octet-stream;base64,${base64}`, isImage, importMode);
+                                addedCount++;
                             } catch (e: any) {
                                 vscode.window.showErrorMessage(`Failed to attach ${fileName}: ${e.message}`);
                             }
                         } else {
-                            // Standard text/code file
+                            // Standard text/documentation/code file
                             try {
                                 const isWithinWorkspace = workspaceFolder && vscode.workspace.getWorkspaceFolder(uri);
-                                
+
                                 if (isWithinWorkspace) {
-                                    // Standard internal file: add directly to background project context
                                     await vscode.commands.executeCommand('lollms-vs-coder.setContextIncluded', uri, [uri]);
+                                    addedCount++;
                                 } else if (workspaceFolder) {
-                                    // External File: Ingest and write to the local external cache folder
                                     const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, 'external');
                                     await vscode.workspace.fs.createDirectory(cacheDir).then(undefined, () => {});
 
@@ -5441,15 +5468,20 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
 
                                     await vscode.workspace.fs.writeFile(cacheUri, fileBytes);
 
-                                    // Register the ingested path to the context
                                     const relativePath = path.join('external', safeName).replace(/\\/g, '/');
                                     await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [relativePath]);
+                                    addedCount++;
                                 }
                             } catch (e: any) {
                                 vscode.window.showErrorMessage(`Failed to ingest ${fileName}: ${e.message}`);
                             }
                         }
                     }
+
+                    if (addedCount > 0) {
+                        vscode.window.showInformationMessage(`✅ Added ${addedCount} file(s) to the discussion context.`);
+                    }
+
                     this.updateContextAndTokens();
                     this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
                 }
@@ -5839,26 +5871,9 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             label: el.data.label
                         }));
 
-                        result = this.agentManager.codeGraphManager.executeSparql(params.query, customNodes, customEdges);
+                        result = await this.agentManager.codeGraphManager.executeSparql(params.query, customNodes, customEdges);
                     } else {
-                        // If the codebase graph has not been built yet, build it automatically in the background
-                        if (this.agentManager.codeGraphManager.getBuildState() !== 'ready') {
-                            await vscode.window.withProgress({
-                                location: vscode.ProgressLocation.Notification,
-                                title: "Lollms: Building architecture map for SPARQL query...",
-                                cancellable: false
-                            }, async (progress) => {
-                                // Ensure the workspace root is set before building the graph
-                                const folders = vscode.workspace.workspaceFolders;
-                                if (folders && folders.length > 0) {
-                                    this.agentManager.codeGraphManager.setWorkspaceRoot(folders[0].uri);
-                                }
-                                await this.agentManager.codeGraphManager.buildGraph(undefined, (p) => {
-                                    progress.report({ message: `${p.status} (${p.percentage}%)` });
-                                });
-                            });
-                        }
-                        result = this.agentManager.codeGraphManager.executeSparql(params.query);
+                        result = await this.agentManager.codeGraphManager.executeSparql(params.query);
                     }
 
                     webview.postMessage({
@@ -6208,7 +6223,10 @@ Task:
                 }
                 break;
             case 'runScript':
-                vscode.commands.executeCommand('lollms-vs-coder.runScript', message.code, message.language);
+                vscode.commands.executeCommand('lollms-vs-coder.runScript', message.code, message.language, { reprompt: message.reprompt === true });
+                break;
+            case 'runInActiveTerminal':
+                vscode.commands.executeCommand('lollms-vs-coder.runInActiveTerminal', message.code);
                 break;
             case 'executeProject':
                 await vscode.commands.executeCommand('lollms-vs-coder.executeProject', this);
@@ -7227,39 +7245,43 @@ Task:
   private async handleRequestContextUsage() {
       if (this._isDisposed || !this._currentDiscussion || !this._contextManager) return;
       const provider = this._contextManager.getContextStateProvider();
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-      if (!provider || !workspaceFolder) return;
+      if (!provider) return;
 
       const includedFiles = provider.getIncludedFiles();
       const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
-      const crypto = require('crypto');
 
       // 1. Send initial list immediately so UI renders skeleton
       const initialUsage = includedFiles.map(f => ({
           path: f.path,
           state: f.state,
           tokens: -1, // Loading state
-          isExtra: f.path.includes('.lollms/') || f.path.startsWith('http')
+          isExtra: f.path.includes('.lollms/') || f.path.startsWith('http') || f.path.startsWith('external/')
       }));
 
       this._panel.webview.postMessage({ command: 'contextUsageData', usage: initialUsage });
 
-      // 2. Populate tokens incrementally
+      // 2. Populate tokens incrementally with multi-root resolution
       for (const file of includedFiles) {
           // Cooperative Yield: Let the main Extension Host thread breathe and process webview paints
           await new Promise(resolve => setTimeout(resolve, 5));
 
           try {
-              const uri = vscode.Uri.joinPath(workspaceFolder.uri, file.path);
+              const res = await this._contextManager.resolveWorkspaceFromPath(file.path);
+              if (!res) {
+                  this._panel.webview.postMessage({ command: 'updateContextFileUsage', path: file.path, tokens: 0, error: true });
+                  continue;
+              }
+
+              const uri = res.uri;
               const stats = await vscode.workspace.fs.stat(uri);
 
-              // Generate a lightweight, non-reading composite hash using file size + modified time
+              // Generate a lightweight composite hash using file size + modified time
               const compositeHash = `${stats.size}_${stats.mtime}`;
 
               let tokenCount = await this._contextManager.getCachedTokens(file.path, compositeHash);
 
               if (tokenCount === null) {
-                  // Only read the file if we do not have a cached token count for this specific version!
+                  // Read only if cache is missing or invalidated
                   let text = "";
                   if (file.state === 'definitions-only') {
                       text = await (this._contextManager as any).extractDefinitions(uri);

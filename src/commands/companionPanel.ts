@@ -282,7 +282,7 @@ export class CompanionPanel {
                 case 'executeLollmsCommand':
                     const { command, params } = message.details;
                     if (command === 'lollms-vs-coder.runSparqlQueryDirectly') {
-                        const result = this.agentManager?.codeGraphManager?.executeSparql(params.query) || "SPARQL-lite Error: Graph Engine unavailable.";
+                        const result = await this.agentManager?.codeGraphManager?.executeSparql(params.query) || "SPARQL-lite Error: Graph Engine unavailable.";
                         this._panel.webview.postMessage({
                             command: 'applyAllResult',
                             messageId: params.messageId,

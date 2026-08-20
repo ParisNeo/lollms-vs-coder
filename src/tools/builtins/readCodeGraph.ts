@@ -13,10 +13,7 @@ export const readCodeGraphTool: ToolDefinition = {
             return { success: false, output: "Error: CodeGraphManager is not available in the environment." };
         }
 
-        // If graph is empty, try to build it first
-        if (env.codeGraphManager.getGraphData().nodes.length === 0) {
-             await env.codeGraphManager.buildGraph();
-        }
+        await env.codeGraphManager.ensureGraphReady(true);
 
         const type = params.type || 'summary';
 

@@ -1370,8 +1370,8 @@
 
                     let finalMarkdown = parsed.processedContent;
 
-                    // 1. Render Structured XML <file> Mutation Cards
-                    const fileTagRegex = /<file\s+([^>]*?)>([\s\S]*?)<\/file>/gi;
+                    // 1. Render Structured XML <file> Mutation Cards (supports streaming unclosed tags)
+                    const fileTagRegex = /<file\s+([^>]*?)>([\s\S]*?)(?:<\/file>|(?=^[ \t]*<file\b)|$)/gi;
                     finalMarkdown = finalMarkdown.replace(fileTagRegex, (match, attrStr, rawBody) => {
                         return renderFileMutationCard(attrStr, rawBody);
                     });
@@ -1529,8 +1529,8 @@
 
             let finalMarkdown = parsed.processedContent;
 
-            // 1. Render Structured XML <file> Mutation Cards
-            const fileTagRegex = /<file\s+([^>]*?)>([\s\S]*?)<\/file>/gi;
+            // 1. Render Structured XML <file> Mutation Cards (supports streaming unclosed tags)
+            const fileTagRegex = /<file\s+([^>]*?)>([\s\S]*?)(?:<\/file>|(?=^[ \t]*<file\b)|$)/gi;
             finalMarkdown = finalMarkdown.replace(fileTagRegex, (match, attrStr, rawBody) => {
                 return renderFileMutationCard(attrStr, rawBody);
             });

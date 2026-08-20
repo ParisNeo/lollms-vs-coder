@@ -380,6 +380,17 @@ if (dom.sendButton) {
         });
     }
 
+    if (dom.usageCloseBtn) {
+        dom.usageCloseBtn.onclick = () => dom.usageModal.classList.remove('visible');
+    }
+    if (dom.usageRefreshBtn) {
+        dom.usageRefreshBtn.onclick = () => {
+            dom.usageRefreshBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Recalculating...';
+            dom.usageRefreshBtn.disabled = true;
+            vscode.postMessage({ command: 'requestContextUsage' });
+        };
+    }
+
     // Integrated File Import: reads the UI parsing strategy before submitting
     const handleFileImport = (files: FileList | null) => {
         if (!files || files.length === 0) return;

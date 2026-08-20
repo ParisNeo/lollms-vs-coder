@@ -2987,42 +2987,208 @@ export function initAutomationUI() {
         updateVisibility(); // Initial state
     }
 }
+
+export function getContextCapacity(): number {
+    const sizeMatch = (dom.tokenCountLabel?.textContent || "").match(/\/ ([\d\s,.]+)/);
+    if (sizeMatch) {
+        const parsed = parseInt(sizeMatch[1].replace(/\D/g, ''), 10);
+        if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    return state.lastTokenMetrics?.contextSize || 128000;
+}
+
+export function calculateUsageTotal(): { total: number, isPending: boolean } {
+    let total = 0;
+    let isPending = false;
+
+    const countList = (list: any[]) => {
+        for (const item of list) {
+            if (item.tokens === -1) isPending = true;
+            else if (item.tokens > 0) total += item.tokens;
+        }
+    };
+
+    if (state.usageData) {
+        if (Array.isArray(state.usageData.project)) countList(state.usageData.project);
+        if (Array.isArray(state.usageData.extra)) countList(state.usageData.extra);
+    }
+
+    return { total, isPending };
+}
+
+export function updateUsageDashboardHeader() {
+    const contextSize = getContextCapacity();
+    const { total, isPending } = calculateUsageTotal();
+
+    const totalLabel = document.getElementById('usage-total-label');
+    if (totalLabel) {
+        totalLabel.textContent = `${total.toLocaleString()} / ${contextSize.toLocaleString()} tokens${isPending ? ' (Computing...)' : ''}`;
+    }
+
+    const pct = Math.min((total / contextSize) * 100, 100);
+    const pctBadge = document.getElementById('usage-pct-badge');
+    if (pctBadge) {
+        pctBadge.textContent = `${pct.toFixed(1)}%`;
+        pctBadge.className = `token-mini-badge ${pct > 85 ? 'weight-heavy' : (pct > 60 ? 'weight-medium' : 'weight-light')}`;
+    }
+
+    const bar = document.getElementById('usage-modal-bar');
+    if (bar) {
+        bar.style.width = `${pct}%`;
+        bar.className = `token-progress-bar ${pct > 85 ? 'range-danger' : (pct > 60 ? 'range-warning' : 'range-safe')}`;
+    }
+}
+
+function renderUsageRows(type: 'project' | 'extra', contextSize: number): string {
+    const list = state.usageData[type] || [];
+    if (list.length === 0) {
+        return `<tr><td colspan="4" style="padding: 12px; text-align:center; opacity:0.5; font-style:italic;">No ${type === 'project' ? 'project' : 'external'} files in context.</td></tr>`;
+    }
+
+    const sorted = [...list].sort((a, b) => {
+        const dir = state.currentUsageSort.direction === 'asc' ? 1 : -1;
+        if (state.currentUsageSort.column === 'name') {
+            const nameA = a.path.split('/').pop() || a.path;
+            const nameB = b.path.split('/').pop() || b.path;
+            return dir * nameA.localeCompare(nameB);
+        } else {
+            return dir * ((a.tokens || 0) - (b.tokens || 0));
+        }
+    });
+
+    return sorted.map(item => {
+        const tokens = item.tokens;
+        const isPending = tokens === -1;
+        const validTokens = Math.max(0, tokens || 0);
+        const pct = Math.min((validTokens / contextSize) * 100, 100);
+        const barClass = pct > 20 ? 'range-warning' : 'range-safe';
+        const fileName = item.path.split('/').pop() || item.path;
+        const dirName = item.path.includes('/') ? item.path.substring(0, item.path.lastIndexOf('/')) : '';
+        
+        return `
+            <tr data-path="${item.path}" class="usage-file-row">
+                <td style="padding: 8px 6px; width: 28px; vertical-align: middle;">
+                    <input type="checkbox" class="usage-row-check" value="${item.path}" style="cursor:pointer; margin:0;">
+                </td>
+                <td style="padding: 8px 10px; max-width: 280px; vertical-align: middle;">
+                    <div style="font-weight: 600; font-size: 12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${item.path}">${fileName}</div>
+                    ${dirName ? `<div style="font-size: 10px; opacity: 0.5; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${dirName}</div>` : ''}
+                </td>
+                <td style="padding: 8px 12px; width: 140px; vertical-align: middle;">
+                    <div style="display:flex; flex-direction:column; gap:4px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span class="file-token-label" style="font-weight:700; font-family:var(--vscode-editor-font-family); font-size:11px;">
+                                ${isPending ? '<span class="spinner" style="width:8px; height:8px; border-width:1.5px;"></span>' : validTokens.toLocaleString()}
+                            </span>
+                            <span style="font-size:9px; opacity:0.5;">${isPending ? '' : (pct < 0.1 ? '<0.1%' : pct.toFixed(1) + '%')}</span>
+                        </div>
+                        <div class="token-progress-container" style="height:4px; width:100%; background:rgba(0,0,0,0.25); border-radius:2px;">
+                            <div class="token-progress-bar file-usage-bar ${barClass}" style="width:${isPending ? '0%' : pct + '%'};"></div>
+                        </div>
+                    </div>
+                </td>
+                <td style="padding: 8px 6px; text-align:right; width: 36px; vertical-align: middle;">
+                    <button class="icon-btn remove-usage-item-btn" data-path="${item.path}" title="Remove file from AI context" style="padding:4px; border-radius:4px; opacity:0.7;">
+                        <i class="codicon codicon-trash" style="color:var(--vscode-errorForeground);"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function refreshUsageDisplay(contextSize: number) {
+    const projectBody = document.getElementById('usage-table-project');
+    const extraBody = document.getElementById('usage-table-extra');
+    
+    if (projectBody) projectBody.innerHTML = renderUsageRows('project', contextSize);
+    if (extraBody) extraBody.innerHTML = renderUsageRows('extra', contextSize);
+
+    // Update section counts and visibility
+    const projCount = state.usageData.project.length;
+    const extraCount = state.usageData.extra.length;
+
+    const projCategory = document.getElementById('usage-category-project');
+    if (projCategory) projCategory.style.display = projCount > 0 ? 'block' : 'none';
+    const projBadge = document.getElementById('count-badge-project');
+    if (projBadge) projBadge.textContent = `(${projCount})`;
+
+    const extraCategory = document.getElementById('usage-category-extra');
+    if (extraCategory) extraCategory.style.display = extraCount > 0 ? 'block' : 'none';
+    const extraBadge = document.getElementById('count-badge-extra');
+    if (extraBadge) extraBadge.textContent = `(${extraCount})`;
+
+    // Update sort button visual states
+    document.querySelectorAll('.usage-sort-controls .sort-btn').forEach((btn: any) => {
+        if (btn.dataset.col) {
+            btn.classList.toggle('active', btn.dataset.col === state.currentUsageSort.column);
+        } else if (btn.classList.contains('direction-btn')) {
+            const icon = btn.querySelector('i');
+            if (icon) {
+                icon.className = `codicon ${state.currentUsageSort.direction === 'asc' ? 'codicon-arrow-up' : 'codicon-arrow-down'}`;
+            }
+        }
+    });
+
+    updateUsageDashboardHeader();
+}
+
 export function renderContextUsage(usage: any[]) {
     const container = dom.usageListContainer;
     if (!container) return;
 
     if (!usage || usage.length === 0) {
-        container.innerHTML = '<div style="padding:20px; opacity:0.6; text-align:center;">No files included in context.</div>';
+        container.innerHTML = `
+            <div style="padding: 40px 20px; opacity: 0.6; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px;">
+                <i class="codicon codicon-files" style="font-size: 32px; opacity: 0.5;"></i>
+                <div style="font-size: 13px; font-weight: bold;">No files currently included in AI context.</div>
+                <div style="font-size: 11px;">Add files via the Explorer or with <code>&lt;add_files_to_context&gt;</code>.</div>
+            </div>
+        `;
         return;
     }
 
-    // Update state model
-    state.usageData.project = usage.filter(f => !f.isExtra).map(f => ({ ...f, tokens: 0 }));
-    state.usageData.extra = usage.filter(f => f.isExtra).map(f => ({ ...f, tokens: 0 }));
+    // Initialize state model with raw tokens or cached values
+    state.usageData.project = usage.filter(f => !f.isExtra).map(f => ({
+        ...f,
+        tokens: state.fileTokensMap?.[f.path] !== undefined ? state.fileTokensMap[f.path] : (f.tokens !== undefined ? f.tokens : -1)
+    }));
 
-    const sizeMatch = (dom.tokenCountLabel?.textContent || "").match(/\/ ([\d\s,.]+)/);
-    const contextSize = sizeMatch ? parseInt(sizeMatch[1].replace(/\D/g, '')) : 128000;
+    state.usageData.extra = usage.filter(f => f.isExtra).map(f => ({
+        ...f,
+        tokens: state.fileTokensMap?.[f.path] !== undefined ? state.fileTokensMap[f.path] : (f.tokens !== undefined ? f.tokens : -1)
+    }));
+
+    const contextSize = getContextCapacity();
 
     let html = `
-        <div class="usage-dashboard-header" style="margin-bottom: 25px; background: var(--vscode-editor-inactiveSelectionBackground); padding: 15px; border-radius: 8px; border: 1px solid var(--vscode-widget-border);">
-            <div style="display:flex; justify-content:space-between; margin-bottom: 10px; font-weight:bold; font-size: 14px;">
-                <span>Total Token Load</span>
-                <span id="usage-total-label">Calculating...</span>
+        <div class="usage-dashboard-header" style="margin-bottom: 20px; background: var(--vscode-editor-inactiveSelectionBackground); padding: 14px 16px; border-radius: 8px; border: 1px solid var(--vscode-widget-border);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px; font-weight:bold; font-size: 13px;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <i class="codicon codicon-graph-line" style="color:var(--vscode-charts-blue);"></i>
+                    <span>Total Context Load</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span id="usage-pct-badge" class="token-mini-badge weight-light">0%</span>
+                    <span id="usage-total-label" style="font-family: var(--vscode-editor-font-family); font-size:12px;">Calculating...</span>
+                </div>
             </div>
-            <div class="token-progress-container" style="height: 12px; margin-bottom: 5px;">
-                <div id="usage-modal-bar" class="token-progress-bar"></div>
+            <div class="token-progress-container" style="height: 8px; margin-bottom: 4px; background: rgba(0,0,0,0.3); border-radius: 4px;">
+                <div id="usage-modal-bar" class="token-progress-bar range-safe" style="width: 0%;"></div>
             </div>
         </div>
     `;
 
     const renderTableSection = (type: 'project' | 'extra', title: string, icon: string) => {
         const count = state.usageData[type].length;
-        if (count === 0) return "";
-        
         return `
-            <div style="margin-bottom: 30px;">
+            <div class="usage-category-wrapper" id="usage-category-${type}" style="margin-bottom: 24px; ${count === 0 ? 'display:none;' : ''}">
                 <div class="usage-section-header">
-                    <div class="section-title"><i class="codicon ${icon}"></i> ${title} (${count})</div>
+                    <div class="section-title">
+                        <i class="codicon ${icon}"></i> 
+                        <span>${title}</span> 
+                        <span class="usage-badge-count" id="count-badge-${type}" style="opacity:0.6; font-size:10px;">(${count})</span>
+                    </div>
                     <div class="usage-sort-controls">
                         <button class="sort-btn ${state.currentUsageSort.column === 'name' ? 'active' : ''}" data-col="name" title="Sort by Name">
                             <i class="codicon codicon-sort-alphabetically"></i>
@@ -3045,51 +3211,86 @@ export function renderContextUsage(usage: any[]) {
         `;
     };
 
-    container.innerHTML = html + renderTableSection('project', "Project Files", "codicon-root-folder") + renderTableSection('extra', "Research & External", "codicon-globe");
+    container.innerHTML = html + renderTableSection('project', "Project Workspace Files", "codicon-root-folder") + renderTableSection('extra', "External & Research Documents", "codicon-globe");
 
-    // Add Bulk Action Bar
+    // Add Interactive Action Footer
     const actionBar = document.createElement('div');
-    actionBar.style.cssText = "position: sticky; bottom: 0; background: var(--vscode-editorWidget-background); padding: 10px; border-top: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center;";
+    actionBar.className = 'usage-action-bar-footer';
+    actionBar.style.cssText = "position: sticky; bottom: 0; background: var(--vscode-editorWidget-background); padding: 10px 14px; border-top: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center; z-index: 10; margin-top: 10px;";
     actionBar.innerHTML = `
         <div style="display:flex; gap:10px; align-items:center;">
-            <input type="checkbox" id="usage-master-check" title="Select All">
-            <span id="usage-selected-count" style="font-size:11px; opacity:0.7;">0 selected</span>
+            <input type="checkbox" id="usage-master-check" title="Select All Files" style="cursor:pointer; margin:0;">
+            <label for="usage-master-check" id="usage-selected-count" style="font-size:11px; opacity:0.7; cursor:pointer;">0 selected</label>
         </div>
-        <button id="usage-bulk-remove-btn" class="code-action-btn delete-btn" disabled style="width:auto; height:28px; padding: 0 12px;">
-            <i class="codicon codicon-trash"></i> Remove Selected
-        </button>
+        <div style="display:flex; gap:8px;">
+            <button id="usage-bulk-remove-btn" class="code-action-btn delete-btn" disabled style="width:auto; height:28px; padding: 0 12px;">
+                <i class="codicon codicon-trash"></i> Remove Selected from Context
+            </button>
+        </div>
     `;
     container.appendChild(actionBar);
+
+    updateUsageDashboardHeader();
 
     // Master Checkbox Logic
     const master = document.getElementById('usage-master-check') as HTMLInputElement;
     const bulkBtn = document.getElementById('usage-bulk-remove-btn') as HTMLButtonElement;
     const countLabel = document.getElementById('usage-selected-count');
 
-    const updateUI = () => {
-        const checked = container.querySelectorAll('.usage-row-check:checked').length;
-        bulkBtn.disabled = checked === 0;
-        if (countLabel) countLabel.textContent = `${checked} selected`;
+    const updateCheckState = () => {
+        const checks = Array.from(container.querySelectorAll('.usage-row-check:checked')) as HTMLInputElement[];
+        const checkedCount = checks.length;
+        bulkBtn.disabled = checkedCount === 0;
+
+        let selectedTokens = 0;
+        checks.forEach(c => {
+            const p = c.value;
+            const item = state.usageData.project.find(i => i.path === p) || state.usageData.extra.find(i => i.path === p);
+            if (item && item.tokens > 0) selectedTokens += item.tokens;
+        });
+
+        if (countLabel) {
+            countLabel.textContent = checkedCount > 0 
+                ? `${checkedCount} selected (~${selectedTokens.toLocaleString()} tok)` 
+                : "0 selected";
+        }
     };
 
     master.onchange = () => {
         container.querySelectorAll('.usage-row-check').forEach((cb: any) => cb.checked = master.checked);
-        updateUI();
+        updateCheckState();
     };
 
     container.addEventListener('change', (e) => {
-        if ((e.target as HTMLElement).classList.contains('usage-row-check')) updateUI();
+        if ((e.target as HTMLElement).classList.contains('usage-row-check')) {
+            updateCheckState();
+        }
     });
 
     bulkBtn.onclick = () => {
         const paths = Array.from(container.querySelectorAll('.usage-row-check:checked')).map((cb: any) => cb.value);
+        if (paths.length === 0) return;
+
+        // Perform instant optimistic removal
+        paths.forEach(p => {
+            state.usageData.project = state.usageData.project.filter(i => i.path !== p);
+            state.usageData.extra = state.usageData.extra.filter(i => i.path !== p);
+            if (state.fileTokensMap) delete state.fileTokensMap[p];
+            const row = container.querySelector(`tr[data-path="${p}"]`);
+            if (row) row.remove();
+        });
+
         vscode.postMessage({ command: 'bulkRemoveFiles', paths });
-        dom.usageModal.classList.remove('visible');
+
+        refreshUsageDisplay(getContextCapacity());
+        updateUsageDashboardHeader();
+        updateCheckState();
     };
 
-    // Re-attach listeners for sort buttons
+    // Sort buttons listener
     container.querySelectorAll('.sort-btn').forEach(btn => {
         btn.onclick = (e) => {
+            e.stopPropagation();
             const col = (btn as HTMLElement).dataset.col as 'name' | 'tokens';
             if (col) {
                 if (state.currentUsageSort.column === col) {
@@ -3100,87 +3301,43 @@ export function renderContextUsage(usage: any[]) {
             } else if ((btn as HTMLElement).classList.contains('direction-btn')) {
                 state.currentUsageSort.direction = state.currentUsageSort.direction === 'asc' ? 'desc' : 'asc';
             }
-            
-            refreshUsageDisplay(contextSize);
+            refreshUsageDisplay(getContextCapacity());
         };
     });
 
+    // Single item removal click handler (Trash button)
     container.onclick = (e) => {
         const target = e.target as HTMLElement;
         const btn = target.closest('.remove-usage-item-btn') as HTMLButtonElement;
         if (btn && btn.dataset.path) {
-            vscode.postMessage({ command: 'removeFileFromContext', path: btn.dataset.path });
+            e.preventDefault();
+            e.stopPropagation();
+            const targetPath = btn.dataset.path;
             const row = btn.closest('tr');
-            if (row) row.style.opacity = '0.3';
+
+            if (row) {
+                row.style.transition = 'all 0.2s ease-out';
+                row.style.opacity = '0';
+                row.style.transform = 'translateX(20px)';
+
+                setTimeout(() => {
+                    row.remove();
+                    // Remove from data model
+                    state.usageData.project = state.usageData.project.filter(i => i.path !== targetPath);
+                    state.usageData.extra = state.usageData.extra.filter(i => i.path !== targetPath);
+                    if (state.fileTokensMap) delete state.fileTokensMap[targetPath];
+
+                    // Recalculate totals and counts
+                    updateUsageDashboardHeader();
+                    refreshUsageDisplay(getContextCapacity());
+                    updateCheckState();
+                }, 200);
+            }
+
+            vscode.postMessage({ command: 'removeFileFromContext', path: targetPath });
         }
     };
 }
-
-function renderUsageRows(type: 'project' | 'extra', contextSize: number): string {
-    const sorted = [...state.usageData[type]].sort((a, b) => {
-        const dir = state.currentUsageSort.direction === 'asc' ? 1 : -1;
-        if (state.currentUsageSort.column === 'name') {
-            return dir * a.path.localeCompare(b.path);
-        } else {
-            return dir * ((a.tokens || 0) - (b.tokens || 0));
-        }
-    });
-
-    return sorted.map(item => {
-        const tokens = item.tokens || 0;
-        const pct = Math.min((tokens / contextSize) * 100, 100);
-        const barClass = pct > 20 ? 'range-warning' : 'range-safe';
-        
-        return `
-            <tr data-path="${item.path}" style="border-bottom: 1px solid var(--vscode-widget-border);">
-                <td style="padding:10px 8px; width: 30px;">
-                    <input type="checkbox" class="usage-row-check" value="${item.path}">
-                </td>
-                <td style="padding:10px 8px; max-width:300px;">
-                    <div style="font-weight: 500; overflow:hidden; text-overflow:ellipsis;">${item.path.split('/').pop()}</div>
-                    <div style="font-size: 10px; opacity: 0.5; overflow:hidden; text-overflow:ellipsis;">${item.path}</div>
-                </td>
-                <td style="padding:10px 8px; width: 120px;">
-                    <div style="display:flex; flex-direction:column; gap:4px;">
-                        <span class="file-token-label" style="font-weight:bold;">${tokens > 0 ? tokens.toLocaleString() : '...'}</span>
-                        <div class="token-progress-container" style="height:4px; width:100%;">
-                            <div class="token-progress-bar file-usage-bar ${barClass}" style="width:${pct}%"></div>
-                        </div>
-                    </div>
-                </td>
-                <td style="padding:10px 8px; text-align:right; width:40px;">
-                    <button class="icon-btn remove-usage-item-btn" data-path="${item.path}" title="Remove from context">
-                        <i class="codicon codicon-trash"></i>
-                    </button>
-                </td>
-            </tr>
-        `;
-    }).join('');
-}
-
-function refreshUsageDisplay(contextSize: number) {
-    const projectBody = document.getElementById('usage-table-project');
-    const extraBody = document.getElementById('usage-table-extra');
-    
-    if (projectBody) projectBody.innerHTML = renderUsageRows('project', contextSize);
-    if (extraBody) extraBody.innerHTML = renderUsageRows('extra', contextSize);
-
-    // Update active state of sort buttons
-    document.querySelectorAll('.sort-btn').forEach((btn: any) => {
-        if (btn.dataset.col) {
-            btn.classList.toggle('active', btn.dataset.col === state.currentUsageSort.column);
-        } else if (btn.classList.contains('direction-btn')) {
-            const icon = btn.querySelector('i');
-            if (icon) {
-                icon.className = `codicon ${state.currentUsageSort.direction === 'asc' ? 'codicon-sort-numeric-up' : 'codicon-sort-numeric-down'}`;
-            }
-        }
-    });
-}
-
-/**
- * Renders the Tool Picker modal allowing users to equip specific agent capabilities.
- */
 /**
  * Renders the Tool Picker modal allowing users to equip specific agent capabilities.
  */
@@ -3280,36 +3437,27 @@ export function updateContextFileUsage(filePath: string, tokens: number) {
     let item = state.usageData.project.find(i => i.path === filePath) || state.usageData.extra.find(i => i.path === filePath);
     if (item) item.tokens = tokens;
 
-    // 2. Direct DOM update for responsiveness
+    if (!state.fileTokensMap) state.fileTokensMap = {};
+    state.fileTokensMap[filePath] = tokens;
+
+    const contextSize = getContextCapacity();
+
+    // 2. Direct DOM row update
     const row = document.querySelector(`tr[data-path="${filePath}"]`);
-    if (!row) return;
+    if (row) {
+        const label = row.querySelector('.file-token-label');
+        const bar = row.querySelector('.file-usage-bar') as HTMLElement;
 
-    const label = row.querySelector('.file-token-label');
-    const bar = row.querySelector('.file-usage-bar') as HTMLElement;
-    
-    const sizeMatch = (dom.tokenCountLabel?.textContent || "").match(/\/ ([\d\s,.]+)/);
-    const contextSize = sizeMatch ? parseInt(sizeMatch[1].replace(/\D/g, '')) : 128000;
-
-    if (label) label.textContent = tokens.toLocaleString();
-    if (bar) {
-        const pct = Math.min((tokens / contextSize) * 100, 100);
-        bar.style.width = `${pct}%`;
-        bar.className = 'token-progress-bar file-usage-bar ' + (pct > 20 ? 'range-warning' : 'range-safe');
+        if (label) label.textContent = tokens >= 0 ? tokens.toLocaleString() : '0';
+        if (bar) {
+            const pct = Math.min((Math.max(0, tokens) / contextSize) * 100, 100);
+            bar.style.width = `${pct}%`;
+            bar.className = `token-progress-bar file-usage-bar ${pct > 20 ? 'range-warning' : 'range-safe'}`;
+        }
     }
 
-    // Update global total label
-    const allLabels = Array.from(document.querySelectorAll('.file-token-label'));
-    let total = 0;
-    let pending = false;
-    allLabels.forEach(l => {
-        if (l.textContent === '...') pending = true;
-        else total += parseInt(l.textContent?.replace(/,/g, '') || '0');
-    });
-
-    const totalLabel = document.getElementById('usage-total-label');
-    if (totalLabel) totalLabel.textContent = `${total.toLocaleString()} / ${contextSize.toLocaleString()}${pending ? ' (Calculating...)' : ''}`;
-    
-    updateProgressBar(document.getElementById('usage-modal-bar'), total, contextSize);
+    // 3. Update authoritative dashboard header using numerical state model
+    updateUsageDashboardHeader();
 }
 
 /**

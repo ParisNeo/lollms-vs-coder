@@ -798,7 +798,13 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         SearchPanel.createOrShow(services.extensionUri, services.contextManager);
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runScript', async (code: string, language: string) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runInActiveTerminal', async (code: string) => {
+        const terminal = vscode.window.activeTerminal || vscode.window.createTerminal('Lollms Terminal');
+        terminal.show(false);
+        terminal.sendText(code.trim(), true);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runScript', async (code: string, language: string, options?: { reprompt?: boolean }) => {
         const panel = ChatPanel.currentPanel;
         const workspaceFolder = getActiveWorkspace();
 
@@ -813,7 +819,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         }
 
         try {
-            await services.scriptRunner.runScript(code, language, panel, workspaceFolder);
+            await services.scriptRunner.runScript(code, language, panel, workspaceFolder, options?.reprompt === true);
         } catch (error: any) {
             vscode.window.showErrorMessage(`Failed to run script: ${error.message}`);
         }

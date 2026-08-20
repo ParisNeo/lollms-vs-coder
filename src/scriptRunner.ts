@@ -43,7 +43,7 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
     });
   }
 
-  public async runScript(code: string, language: string, panel: ChatPanel, workspaceFolder: vscode.WorkspaceFolder) {
+  public async runScript(code: string, language: string, panel: ChatPanel, workspaceFolder: vscode.WorkspaceFolder, reprompt: boolean = false) {
     if (!workspaceFolder) {
         panel.addMessageToDiscussion({ role: 'system', content: 'Cannot execute script: No workspace folder is open.' });
         return;
@@ -201,10 +201,26 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
         const { stripAnsiCodes } = require('./utils');
         const cleanOutput = stripAnsiCodes(result.output);
 
-        const resultMessage = { role: 'system' as const, content: `**Execution Result (Success: ${result.success})**\n\n\`\`\`\n${cleanOutput || '(No output)'}\n\`\`\`` };
-        panel.addMessageToDiscussion(resultMessage);
-        
-        if (cleanOutput.trim().length > 0) {
+        const statusEmoji = result.success ? '✅' : '❌';
+        const resultMessage = { 
+            role: 'system' as const, 
+            content: `**Execution Result (${statusEmoji} Success: ${result.success})**\n\n\`\`\`\n${cleanOutput || '(No output)'}\n\`\`\`` 
+        };
+        await panel.addMessageToDiscussion(resultMessage);
+
+        if (reprompt) {
+            const repromptPayload = `### 📋 SCRIPT EXECUTION OBSERVATION\n` +
+                `**Language**: \`${currentLang}\`\n` +
+                `**Status**: ${statusEmoji} ${result.success ? 'Success' : 'Failed'}\n\n` +
+                `**Executed Script:**\n\`\`\`${currentLang}\n${originalCode}\n\`\`\`\n\n` +
+                `**Output:**\n\`\`\`\n${cleanOutput || '(No output generated)'}\n\`\`\`\n\n` +
+                `Analyze the execution output above. If there are errors or warnings, diagnose and propose the fix. If execution was successful, proceed to the next step.`;
+
+            await panel.sendMessage({
+                role: 'user',
+                content: repromptPayload
+            });
+        } else if (cleanOutput.trim().length > 0) {
             panel.analyzeExecutionResult(originalCode, currentLang, cleanOutput, result.success ? 0 : 1);
         }
     } catch (err: any) {

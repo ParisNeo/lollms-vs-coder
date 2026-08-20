@@ -11,7 +11,8 @@ function renderDiffLines(lines: string[], type: 'added' | 'removed' | 'unchanged
 
 export const fileMutationPlugin: TagPlugin = {
     id: 'file_mutation',
-    tagPattern: /^[ \t]*<file\s+([^>]*?)>([\s\S]*?)<\/file>/gim,
+    // Matches closed <file>...</file> OR unclosed streaming <file ...>... tags until next <file> or end of stream
+    tagPattern: /^[ \t]*<file\s+([^>]*?)>([\s\S]*?)(?:<\/file>|(?=^[ \t]*<file\b)|$)/gim,
     render: (match, context) => {
         const attrStr = match[1] || "";
         const rawContent = (match[2] || "").trim();
@@ -32,6 +33,7 @@ export const fileMutationPlugin: TagPlugin = {
         const actionIcon = isPatch ? 'codicon-diff-modified' : (symbol ? 'codicon-symbol-method' : 'codicon-file-code');
 
         const ext = filePath.split('.').pop() || 'plaintext';
+        const isStreaming = !context.isFinal && !match[0].includes('</file>');
 
         // Check persisted state
         const blockIdx = context.blockIndex !== undefined ? context.blockIndex : 0;
@@ -83,9 +85,10 @@ export const fileMutationPlugin: TagPlugin = {
 
         // Render collapsed by default if already applied
         const openAttr = isApplied ? '' : 'open';
-        const applyBtnClass = isApplied ? 'applied' : 'apply-btn';
-        const applyBtnIcon = isApplied ? 'codicon-check' : 'codicon-tools';
-        const applyBtnTitle = isApplied ? 'Successfully applied. Click to re-apply.' : 'Review Diff & Apply';
+        const applyBtnClass = isStreaming ? 'apply-btn' : (isApplied ? 'applied' : 'apply-btn');
+        const applyBtnIcon = isStreaming ? 'codicon-loading spin' : (isApplied ? 'codicon-check' : 'codicon-tools');
+        const applyBtnTitle = isStreaming ? 'Streaming code changes...' : (isApplied ? 'Successfully applied. Click to re-apply.' : 'Review Diff & Apply');
+        const applyBtnDisabled = isStreaming ? 'disabled style="opacity:0.6;"' : '';
 
         return `
         <details class="code-collapsible file-mutation-card" id="${blockId}" data-path="${filePath}" data-action="${action}" data-symbol="${symbol}" data-block-index="${blockIdx}" data-raw-code="${encodedRawCode}" ${openAttr}>
@@ -96,13 +99,14 @@ export const fileMutationPlugin: TagPlugin = {
                         <i class="codicon ${actionIcon}"></i> ${filePath}${symbol ? ` (${symbol})` : ''}
                     </span>
                     <span class="mode-badge active" style="font-size: 9px; padding: 1px 6px; margin-left: 6px;">${actionLabel}</span>
+                    ${isStreaming ? '<span class="status-label-inline" style="font-size:10px; color:var(--vscode-charts-blue); margin-left:8px;"><i class="codicon codicon-sync spin"></i> Streaming...</span>' : ''}
                     <button class="code-action-btn goto-file-btn" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto: Open this file">Goto</button>
                 </div>
                 <div class="code-actions">
                     <button class="code-action-btn copy-mutation-btn" title="Copy Content"><i class="codicon codicon-copy"></i></button>
                     ${isPatch ? `<button class="code-action-btn raw-stitch-mutation-btn" title="Open Manual Stitching View"><i class="codicon codicon-source-control"></i></button>` : ''}
                     ${(isApplied && isPatch) ? `<button class="code-action-btn delete-btn undo-mutation-btn" title="Undo this patch"><i class="codicon codicon-discard"></i></button>` : ''}
-                    <button class="code-action-btn ${applyBtnClass} apply-mutation-btn" title="${applyBtnTitle}"><i class="codicon ${applyBtnIcon}"></i></button>
+                    <button class="code-action-btn ${applyBtnClass} apply-mutation-btn" ${applyBtnDisabled} title="${applyBtnTitle}"><i class="codicon ${applyBtnIcon}"></i></button>
                 </div>
             </summary>
             ${bodyHtml}

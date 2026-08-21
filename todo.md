@@ -1,7 +1,7 @@
 # HOT
 - there is a problem in the code rendering when the <file> tag is used. it is rendering an empty code block followed by a malrendered code. if it is a patch, it renders an empty block and a patch block.
 - the discussion is not saved!!
-
+- In the initial context selection, add an empty one
 
 
 

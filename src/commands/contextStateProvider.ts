@@ -641,7 +641,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         this._onDidChangeTreeData.fire();
     }
     
-    public getIncludedFiles(): { path: string, state: ContextState }[] {
+    public getIncludedFiles(): { path: string, state: ContextState, bytes?: number, tokens?: number }[] {
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
         if (!workspaceState) return [];
 
@@ -649,7 +649,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         if (folders.length === 0) return [];
 
         const workspaceFolder = this.workspaceFolder || folders[0];
-        const resultsMap = new Map<string, { path: string, state: ContextState }>();
+        const resultsMap = new Map<string, { path: string, state: ContextState, bytes: number, tokens: number }>();
 
         for (const [key, state] of Object.entries(workspaceState)) {
             if (!key || typeof key !== 'string') continue;
@@ -712,7 +712,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
             const stat = fs.statSync(fileUri.fsPath);
             if (stat.isFile()) {
-                resultsMap.set(normalizedKey, { path: key, state });
+                const bytes = stat.size || 0;
+                const tokens = Math.max(1, Math.ceil(bytes / 3.5));
+                resultsMap.set(normalizedKey, { path: key, state, bytes, tokens });
             }
         }
 

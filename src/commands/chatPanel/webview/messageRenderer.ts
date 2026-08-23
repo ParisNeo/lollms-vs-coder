@@ -112,7 +112,9 @@ const SANITIZE_CONFIG = {
         'target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling', 
         'onclick', 'data-value', 'data-type', 'data-message-id', 'data-pid',
         'data-files', 'data-block-id', 'data-action', 'data-id', 'data-title', 
-        'data-content', 'data-importance', 'data-mem-id'
+        'data-content', 'data-importance', 'data-mem-id', 'data-path', 'data-symbol',
+        'data-block-index', 'data-raw-code', 'data-lang', 'data-hunk-index', 'data-idx', 'data-closed',
+        'open'
     ],
     // IMPORTANT: Allow all classes for our custom UI blocks
     ADD_CLASSES: { 
@@ -2359,6 +2361,27 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     let mutationTagIndex = 0;
 
     pluginRegistry.forEach(plugin => {
+        if (plugin.extractBlocks) {
+            const extracted = plugin.extractBlocks(mainProcessedContent, ctx);
+            extracted.forEach(b => {
+                const isOverlapping = segments.some(s => 
+                    (b.start >= s.start && b.start < s.end) ||
+                    (b.end > s.start && b.end <= s.end) ||
+                    (s.start >= b.start && s.start < b.end)
+                );
+                if (!isOverlapping && b.html) {
+                    segments.push({
+                        type: 'plugin',
+                        content: b.html,
+                        start: b.start,
+                        end: b.end,
+                        plugin
+                    });
+                }
+            });
+            return;
+        }
+
         if (!plugin.tagPattern) return;
         plugin.tagPattern.lastIndex = 0;
         let pMatch;
@@ -2375,7 +2398,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const hasClosingTag = fullMatch.includes('</');
             if (!isSelfClosing && hasClosingTag) {
                 const closingTagIndex = matchIndex + fullMatch.lastIndexOf('</');
-                const hasClosingLineStart = closingTagIndex > 0 && (mainProcessedContent[closingTagIndex - 1] === '\n' || mainProcessedContent[closingTagIndex - 1] === '\r');
+                const textBeforeClosing = mainProcessedContent.substring(matchIndex, closingTagIndex);
+                const lastNewline = Math.max(textBeforeClosing.lastIndexOf('\n'), textBeforeClosing.lastIndexOf('\r'));
+                const linePrefix = lastNewline === -1 ? textBeforeClosing : textBeforeClosing.substring(lastNewline + 1);
+                const hasClosingLineStart = linePrefix.trim() === '';
                 if (!hasClosingLineStart) continue;
             }
 
@@ -2539,8 +2565,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     });
 
     // --- APPLY ALL AGGREGATOR (COUNTS BOTH XML <file> TAGS & LEGACY BLOCKS) ---
-    const xmlFileMatches = [...sourceText.matchAll(/<file\s+([^>]*?)>([\s\S]*?)<\/file>/gi)];
-    const xmlActionableCount = xmlFileMatches.filter(m => /path=["'][^"']+["']/i.test(m[1])).length;
+    const { extractFileBlocks } = require('./plugins/fileOpPlugin.js');
+    const xmlFileBlocks = typeof extractFileBlocks === 'function' ? extractFileBlocks(sourceText) : [];
+    const xmlActionableCount = xmlFileBlocks.filter((b: any) => /path=["'][^"']+["']/i.test(b.attrStr)).length;
 
     const globalBlockInfos = extractFilePaths(sourceText);
     const legacyActionableCount = globalBlockInfos.filter(info => {
@@ -3002,7 +3029,7 @@ export class ContextPresenter {
     }
 
     public static renderFileList(
-        list: (string | { path: string, tokens?: number, state?: string })[], 
+        list: (string | { path: string, bytes?: number, tokens?: number, state?: string })[], 
         emptyMsg: string, 
         allowSummarize: boolean = false,
         fileTokensMap: Record<string, number> = {},
@@ -3010,21 +3037,27 @@ export class ContextPresenter {
     ): string {
         if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
 
-        // Normalize list items to objects with token weights
+        // Normalize list items to objects with byte sizes and approximate token conversions
         const normalized = list.map(item => {
             if (typeof item === 'string') {
-                const tok = fileTokensMap[item] || 0;
-                return { path: item, tokens: tok };
+                const byteSize = fileTokensMap[item] || 0;
+                const tok = Math.max(byteSize > 0 ? 1 : 0, Math.ceil(byteSize / 3.5));
+                return { path: item, bytes: byteSize, tokens: tok };
             }
-            const tok = item.tokens || fileTokensMap[item.path] || 0;
-            return { path: item.path, tokens: tok, state: item.state };
+            const byteSize = item.bytes !== undefined && item.bytes > 0 
+                ? item.bytes 
+                : (item.tokens && item.tokens > 0 ? Math.round(item.tokens * 3.5) : (fileTokensMap[item.path] || 0));
+            const tok = item.tokens !== undefined && item.tokens > 0 
+                ? item.tokens 
+                : Math.max(byteSize > 0 ? 1 : 0, Math.ceil(byteSize / 3.5));
+            return { path: item.path, bytes: byteSize, tokens: tok, state: item.state };
         });
 
         // Apply sorting
         if (sortOrder === 'heavy-to-light') {
-            normalized.sort((a, b) => (b.tokens - a.tokens) || a.path.localeCompare(b.path));
+            normalized.sort((a, b) => (b.bytes - a.bytes) || (b.tokens - a.tokens) || a.path.localeCompare(b.path));
         } else if (sortOrder === 'light-to-heavy') {
-            normalized.sort((a, b) => (a.tokens - b.tokens) || a.path.localeCompare(b.path));
+            normalized.sort((a, b) => (a.bytes - b.bytes) || (a.tokens - b.tokens) || a.path.localeCompare(b.path));
         } else if (sortOrder === 'name') {
             normalized.sort((a, b) => a.path.split('/').pop()!.localeCompare(b.path.split('/').pop()!));
         }
@@ -3032,19 +3065,27 @@ export class ContextPresenter {
         return `<ul class="context-file-list">
             ${normalized.map(item => {
                 const f = item.path;
-                const tokens = item.tokens || 0;
+                const bytes = item.bytes || 0;
+                const tokens = item.tokens || Math.max(bytes > 0 ? 1 : 0, Math.ceil(bytes / 3.5));
                 const uniqueDomId = f.replace(/[^a-zA-Z0-9]/g, '_');
                 const fileName = f.split('/').pop() || f;
                 const dirName = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
 
-                // Build styled weight badge
+                // Build styled weight badge with byte size and estimated tokens
                 let tokenBadge = '';
-                if (tokens > 0) {
-                    const displayVal = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
-                    const weightClass = tokens >= 10000 ? 'weight-heavy' : (tokens >= 3000 ? 'weight-medium' : 'weight-light');
-                    tokenBadge = `<span class="file-token-badge ${weightClass}" title="Estimated Token Weight: ~${tokens.toLocaleString()} tokens">~${displayVal} tok</span>`;
+                if (bytes > 0 || tokens > 0) {
+                    let formattedBytes = `${bytes} B`;
+                    if (bytes >= 1024 * 1024) {
+                        formattedBytes = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+                    } else if (bytes >= 1024) {
+                        formattedBytes = `${(bytes / 1024).toFixed(1)} KB`;
+                    }
+
+                    const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
+                    const weightClass = bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light');
+                    tokenBadge = `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`;
                 } else {
-                    tokenBadge = `<span class="file-token-badge weight-light" title="Lightweight file">~0 tok</span>`;
+                    tokenBadge = `<span class="file-token-badge weight-light" title="Lightweight file">~0 B</span>`;
                 }
 
                 return `

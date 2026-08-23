@@ -9,13 +9,103 @@ function renderDiffLines(lines: string[], type: 'added' | 'removed' | 'unchanged
     }).join('');
 }
 
+export interface ExtractedFileBlock {
+    attrStr: string;
+    rawContent: string;
+    fullMatch: string;
+    start: number;
+    end: number;
+    isClosed: boolean;
+}
+
+export function extractFileBlocks(text: string): ExtractedFileBlock[] {
+    const blocks: ExtractedFileBlock[] = [];
+    if (!text || typeof text !== 'string') return blocks;
+
+    const openTagRegex = /^[ \t]*<file\s+([^>]*?)>/gim;
+    let match: RegExpExecArray | null;
+
+    while ((match = openTagRegex.exec(text)) !== null) {
+        const start = match.index;
+        const attrStr = match[1] || "";
+        const bodyStart = match.index + match[0].length;
+
+        let depth = 1;
+        let isClosed = false;
+        let end = text.length;
+        let bodyEnd = text.length;
+
+        const tagFinder = /<file\b([^>]*?)>|<\/file>/gi;
+        tagFinder.lastIndex = bodyStart;
+
+        let innerMatch: RegExpExecArray | null;
+        while ((innerMatch = tagFinder.exec(text)) !== null) {
+            const tag = innerMatch[0];
+            if (tag.toLowerCase() === '</file>') {
+                depth--;
+                if (depth === 0) {
+                    isClosed = true;
+                    bodyEnd = innerMatch.index;
+                    end = innerMatch.index + tag.length;
+                    break;
+                }
+            } else {
+                const innerAttr = innerMatch[1] || "";
+                if (!innerAttr.trim().endsWith('/')) {
+                    depth++;
+                }
+            }
+        }
+
+        const rawContent = text.substring(bodyStart, bodyEnd);
+        const fullMatch = text.substring(start, end);
+
+        blocks.push({
+            attrStr,
+            rawContent,
+            fullMatch,
+            start,
+            end,
+            isClosed
+        });
+
+        openTagRegex.lastIndex = end;
+    }
+
+    return blocks;
+}
+
 export const fileMutationPlugin: TagPlugin = {
     id: 'file_mutation',
-    // Matches closed <file>...</file> OR unclosed streaming <file ...>... tags until next <file> or end of stream
-    tagPattern: /^[ \t]*<file\s+([^>]*?)>([\s\S]*?)(?:<\/file>|(?=^[ \t]*<file\b)|$)/gim,
+    extractBlocks: (content: string, context: PluginContext) => {
+        const blocks = extractFileBlocks(content);
+        const results: { match: any, start: number, end: number, html: string }[] = [];
+        blocks.forEach((b, idx) => {
+            const matchObj = [b.fullMatch, b.attrStr, b.rawContent];
+            (matchObj as any).index = b.start;
+            const html = fileMutationPlugin.render(matchObj, {
+                ...context,
+                blockIndex: context.blockIndex !== undefined ? context.blockIndex + idx : idx
+            });
+            if (html) {
+                results.push({
+                    match: matchObj,
+                    start: b.start,
+                    end: b.end,
+                    html
+                });
+            }
+        });
+        return results;
+    },
     render: (match, context) => {
         const attrStr = match[1] || "";
-        const rawContent = (match[2] || "").trim();
+        let rawContent = (match[2] || "").trim();
+
+        // Strip markdown code fences if model wrapped content inside <file> tag
+        if (/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s.test(rawContent)) {
+            rawContent = rawContent.replace(/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s, '$1').trim();
+        }
 
         const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
         if (!pathMatch) return null;

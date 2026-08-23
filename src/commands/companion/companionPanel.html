@@ -1336,6 +1336,63 @@
             container.scrollTop = container.scrollHeight;
         }
 
+        function extractFileBlocks(text) {
+            const blocks = [];
+            if (!text || typeof text !== 'string') return blocks;
+
+            const openTagRegex = /^[ \t]*<file\s+([^>]*?)>/gim;
+            let match;
+
+            while ((match = openTagRegex.exec(text)) !== null) {
+                const start = match.index;
+                const attrStr = match[1] || "";
+                const bodyStart = match.index + match[0].length;
+
+                let depth = 1;
+                let isClosed = false;
+                let end = text.length;
+                let bodyEnd = text.length;
+
+                const tagFinder = /<file\b([^>]*?)>|<\/file>/gi;
+                tagFinder.lastIndex = bodyStart;
+
+                let innerMatch;
+                while ((innerMatch = tagFinder.exec(text)) !== null) {
+                    const tag = innerMatch[0];
+                    if (tag.toLowerCase() === '</file>') {
+                        depth--;
+                        if (depth === 0) {
+                            isClosed = true;
+                            bodyEnd = innerMatch.index;
+                            end = innerMatch.index + tag.length;
+                            break;
+                        }
+                    } else {
+                        const innerAttr = innerMatch[1] || "";
+                        if (!innerAttr.trim().endsWith('/')) {
+                            depth++;
+                        }
+                    }
+                }
+
+                const rawContent = text.substring(bodyStart, bodyEnd);
+                const fullMatch = text.substring(start, end);
+
+                blocks.push({
+                    attrStr: attrStr,
+                    rawContent: rawContent,
+                    fullMatch: fullMatch,
+                    start: start,
+                    end: end,
+                    isClosed: isClosed
+                });
+
+                openTagRegex.lastIndex = end;
+            }
+
+            return blocks;
+        }
+
         function renderHistoryBubbles(history) {
             // Render all previous history bubbles
             (history || []).forEach((msg, idx) => {
@@ -1370,11 +1427,13 @@
 
                     let finalMarkdown = parsed.processedContent;
 
-                    // 1. Render Structured XML <file> Mutation Cards (supports streaming unclosed tags)
-                    const fileTagRegex = /<file\s+([^>]*?)>([\s\S]*?)(?:<\/file>|(?=^[ \t]*<file\b)|$)/gi;
-                    finalMarkdown = finalMarkdown.replace(fileTagRegex, (match, attrStr, rawBody) => {
-                        return renderFileMutationCard(attrStr, rawBody);
-                    });
+                    // 1. Render Structured XML <file> Mutation Cards (supports nested <file> tags)
+                    const fileBlocks = extractFileBlocks(finalMarkdown);
+                    for (let i = fileBlocks.length - 1; i >= 0; i--) {
+                        const fb = fileBlocks[i];
+                        const cardHtml = renderFileMutationCard(fb.attrStr, fb.rawContent);
+                        finalMarkdown = finalMarkdown.substring(0, fb.start) + cardHtml + finalMarkdown.substring(fb.end);
+                    }
 
                     // 2. Render SPARQL Widgets
                     const sparqlRegex = /<query_architecture>([\s\S]*?)<\/query_architecture>/gi;
@@ -1529,11 +1588,13 @@
 
             let finalMarkdown = parsed.processedContent;
 
-            // 1. Render Structured XML <file> Mutation Cards (supports streaming unclosed tags)
-            const fileTagRegex = /<file\s+([^>]*?)>([\s\S]*?)(?:<\/file>|(?=^[ \t]*<file\b)|$)/gi;
-            finalMarkdown = finalMarkdown.replace(fileTagRegex, (match, attrStr, rawBody) => {
-                return renderFileMutationCard(attrStr, rawBody);
-            });
+            // 1. Render Structured XML <file> Mutation Cards (supports nested <file> tags)
+            const fileBlocks = extractFileBlocks(finalMarkdown);
+            for (let i = fileBlocks.length - 1; i >= 0; i--) {
+                const fb = fileBlocks[i];
+                const cardHtml = renderFileMutationCard(fb.attrStr, fb.rawContent);
+                finalMarkdown = finalMarkdown.substring(0, fb.start) + cardHtml + finalMarkdown.substring(fb.end);
+            }
 
             // 2. Render SPARQL Widgets
             const sparqlRegex = /<query_architecture>([\s\S]*?)<\/query_architecture>/gi;

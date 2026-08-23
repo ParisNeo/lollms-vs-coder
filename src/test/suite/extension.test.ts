@@ -3,6 +3,32 @@ import * as vscode from 'vscode';
 import { suite, test } from 'mocha';
 import { FailureMemory } from '../../agent/failureHandling';
 import { LollmsAPI } from '../../lollmsAPI';
+import { fileMutationPlugin } from '../../commands/chatPanel/webview/plugins/fileOpPlugin';
+import { normalizeAiderContent } from '../../utils';
+
+suite('Extension & File Mutation Test Suite', () => {
+	vscode.window.showInformationMessage('Start all tests.');
+
+	test('Sample test', () => {
+		assert.strictEqual(-1, [1, 2, 3].indexOf(5));
+		assert.strictEqual(-1, [1, 2, 3].indexOf(0));
+	});
+
+	test('fileMutationPlugin regex does not match empty body at newline', () => {
+		const text = `Here is the code update:
+<file path="src/sample.ts" action="write">
+console.log("hello world");
+</file>`;
+
+		const re = new RegExp(fileMutationPlugin.tagPattern.source, fileMutationPlugin.tagPattern.flags);
+		const match = re.exec(text);
+
+		assert.ok(match, 'Expected fileMutationPlugin to match <file> block');
+		assert.strictEqual(match[1].trim(), 'path="src/sample.ts" action="write"');
+  assert.strictEqual(match[2].trim(), 'console.log("hello world");', 'Body should contain full file content, not empty string');
+ });
+});
+
 
 suite('Lollms VS Coder Testing Suite', () => {
     vscode.window.showInformationMessage('Starting Lollms Integration Tests...');
@@ -139,4 +165,76 @@ suite('Lollms VS Coder Testing Suite', () => {
         const estimatedTokens = api.tokenize(fallbackText);
         assert.ok(estimatedTokens, 'Local tokenizer fallback should return an estimated count.');
     });
+
+    	test('normalizeAiderContent handles standard, indented and unclosed Aider blocks', () => {
+		const raw = `  <<<<<<< SEARCH
+const x = 1;
+=======
+const x = 2;
+>>>>>>> REPLACE`;
+
+		const normalized = normalizeAiderContent(raw);
+		assert.ok(normalized.startsWith('<<<<<<< SEARCH'));
+		assert.ok(normalized.includes('======='));
+		assert.ok(normalized.includes('>>>>>>> REPLACE'));
+	});
+
+	test('extractFileBlocks correctly extracts outer <file> containing nested <file> tags in code', () => {
+		const nestedContent = `<file path="src/codeGenerator.ts" action="write">
+export function createTemplate() {
+    return \`<file path="subfile.ts" action="write">
+const inner = 42;
+</file>\`;
+}
+</file>`;
+
+		const { extractFileBlocks } = require('../../commands/chatPanel/webview/plugins/fileOpPlugin');
+		const blocks = extractFileBlocks(nestedContent);
+
+		assert.strictEqual(blocks.length, 1, 'Should extract exactly 1 outer block');
+		assert.ok(blocks[0].isClosed, 'Outer block should be closed');
+		assert.ok(blocks[0].attrStr.includes('src/codeGenerator.ts'), 'Should match outer path');
+		assert.ok(blocks[0].rawContent.includes('return `<file path="subfile.ts" action="write">'), 'Body should preserve inner <file> opening tag');
+		assert.ok(blocks[0].rawContent.includes('const inner = 42;'), 'Body should preserve inner content');
+		assert.ok(blocks[0].rawContent.includes('</file>`;'), 'Body should preserve inner closing tag');
+		assert.ok(blocks[0].rawContent.endsWith('}'), 'Body should end with closing brace of outer code');
+	});
+
+	test('extractFileBlocks extracts multiple sequential <file> tags with nested content', () => {
+		const text = `
+<file path="file1.ts" action="write">
+const x = "<file path='dummy.txt'>test</file>";
+</file>
+
+<file path="file2.ts" action="patch">
+<<<<<<< SEARCH
+const old = 1;
+=======
+const old = 2;
+>>>>>>> REPLACE
+</file>`;
+
+		const { extractFileBlocks } = require('../../commands/chatPanel/webview/plugins/fileOpPlugin');
+		const blocks = extractFileBlocks(text);
+
+		assert.strictEqual(blocks.length, 2, 'Should extract both sequential files');
+		assert.ok(blocks[0].attrStr.includes('file1.ts'));
+		assert.ok(blocks[0].rawContent.includes("const x = \"<file path='dummy.txt'>test</file>\";"));
+		assert.ok(blocks[1].attrStr.includes('file2.ts'));
+		assert.ok(blocks[1].rawContent.includes('<<<<<<< SEARCH'));
+	});
+
+	test('renderFileList calculates byte size and token estimate correctly', () => {
+		const { ContextPresenter } = require('../../commands/chatPanel/webview/messageRenderer');
+		const fileList = [
+			{ path: 'src/main.ts', bytes: 3500, state: 'included' },
+			{ path: 'package.json', bytes: 700, state: 'included' }
+		];
+
+		const html = ContextPresenter.renderFileList(fileList, "No files", false, {}, 'heavy-to-light');
+		assert.ok(html.includes('src/main.ts'));
+		assert.ok(html.includes('3.4 KB') || html.includes('3.5 KB') || html.includes('KB'));
+		assert.ok(html.includes('tok'));
+		assert.ok(!html.includes('~0 tok'), 'File with positive byte count should not render ~0 tok');
+	});
 });

@@ -209,14 +209,14 @@ export class ChatPanel {
         const modifiedFiles = new Set<string>();
         let blockIndex = 0; // Initialize precise index tracker
 
-        // 1. Process XML <file> Mutation Tags
-        const fileTagRegex = /<file\s+([^>]*?)>([\s\S]*?)<\/file>/gi;
-        let fileMatch;
+        // 1. Process XML <file> Mutation Tags (Depth-aware extraction handles nested tags)
+        const { extractFileBlocks } = require('../../utils');
+        const fileBlocks = extractFileBlocks(content);
 
-        while ((fileMatch = fileTagRegex.exec(content)) !== null) {
+        for (const fileBlock of fileBlocks) {
             if (signal.aborted) break;
-            const attrStr = fileMatch[1] || "";
-            const fileBody = fileMatch[2] || "";
+            const attrStr = fileBlock.attrStr || "";
+            const fileBody = fileBlock.rawContent || "";
 
             const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
             if (!pathMatch) continue;
@@ -1077,7 +1077,7 @@ export class ChatPanel {
             const m = this._currentDiscussion.lastTokenMetrics;
 
             const provider = this._contextManager.getContextStateProvider();
-            const safeFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
+            const safeFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
 
             this._panel.webview.postMessage({ 
                 command: 'updateContext', 
@@ -1091,11 +1091,12 @@ export class ChatPanel {
                 totalTokens: m.total,
                 contextSize: m.contextSize,
                 isApproximate: false,
-                segments: m.segments
+                segments: m.segments,
+                files: safeFiles
             });
 
             this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-        } 
+        }  
 
         // Non-blocking deferred calculations to prevent UI render blocking
         setTimeout(async () => {
@@ -1230,12 +1231,12 @@ export class ChatPanel {
 
                 // --- IMMEDIATE INSTANT HYDRATION / REACTION ---
                 const provider = self._contextManager.getContextStateProvider();
-                const includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
+                const rawIncluded = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
 
                 if (!isBackground) {
                     self._panel.webview.postMessage({ 
                         command: 'updateContext', 
-                        files: includedFiles
+                        files: rawIncluded
                     });
                 }
 
@@ -1306,11 +1307,10 @@ export class ChatPanel {
 
                     if (self._isDisposed) return;
 
-                    let includedFiles: string[] = [];
+                    let includedFiles: any[] = [];
                     try {
                         const provider = self._contextManager.getContextStateProvider();
-                        const rawFiles = provider ? provider.getIncludedFiles() : [];
-                        includedFiles = rawFiles.filter(f => f && f.path).map(f => f.path);
+                        includedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
                     } catch (e) {}
 
                     // Aggressive truncation for Webview UI to prevent IPC Channel Closure
@@ -5244,7 +5244,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                                     });
                                 }
 
-                                const currentFilesList = provider.getIncludedFiles().map(f => f.path);
+                                const currentFilesList = provider.getIncludedFiles();
                                 this._panel.webview.postMessage({
                                     command: 'updateContext',
                                     files: currentFilesList

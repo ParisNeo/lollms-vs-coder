@@ -1093,3 +1093,73 @@ export function extractAndStripMemory(responseText: string): { content: string, 
     const match = responseText.match(/<memory>([\s\S]*?)<\/memory>/);
     return match ? { content: responseText.replace(match[0], '').trim(), memory: match[1].trim() } : { content: responseText, memory: null };
 }
+
+export interface ExtractedFileBlock {
+    attrStr: string;
+    rawContent: string;
+    fullMatch: string;
+    start: number;
+    end: number;
+    isClosed: boolean;
+}
+
+/**
+ * Depth-aware extractor for <file> mutation blocks.
+ * Correctly handles nested <file>...</file> tags inside code strings or templates.
+ */
+export function extractFileBlocks(text: string): ExtractedFileBlock[] {
+    const blocks: ExtractedFileBlock[] = [];
+    if (!text || typeof text !== 'string') return blocks;
+
+    const openTagRegex = /^[ \t]*<file\s+([^>]*?)>/gim;
+    let match: RegExpExecArray | null;
+
+    while ((match = openTagRegex.exec(text)) !== null) {
+        const start = match.index;
+        const attrStr = match[1] || "";
+        const bodyStart = match.index + match[0].length;
+
+        let depth = 1;
+        let isClosed = false;
+        let end = text.length;
+        let bodyEnd = text.length;
+
+        const tagFinder = /<file\b([^>]*?)>|<\/file>/gi;
+        tagFinder.lastIndex = bodyStart;
+
+        let innerMatch: RegExpExecArray | null;
+        while ((innerMatch = tagFinder.exec(text)) !== null) {
+            const tag = innerMatch[0];
+            if (tag.toLowerCase() === '</file>') {
+                depth--;
+                if (depth === 0) {
+                    isClosed = true;
+                    bodyEnd = innerMatch.index;
+                    end = innerMatch.index + tag.length;
+                    break;
+                }
+            } else {
+                const innerAttr = innerMatch[1] || "";
+                if (!innerAttr.trim().endsWith('/')) {
+                    depth++;
+                }
+            }
+        }
+
+        const rawContent = text.substring(bodyStart, bodyEnd);
+        const fullMatch = text.substring(start, end);
+
+        blocks.push({
+            attrStr,
+            rawContent,
+            fullMatch,
+            start,
+            end,
+            isClosed
+        });
+
+        openTagRegex.lastIndex = end;
+    }
+
+    return blocks;
+}

@@ -16,6 +16,8 @@ export interface TagPlugin {
     // For Agent Mode (The JSON "tool" name)
     toolName?: string;
 
+    extractBlocks?: (content: string, context: PluginContext) => { match: any, start: number, end: number, html: string }[];
+
     // Logic to render the HTML string from either an XML match or a raw JSON object
     render: (match: RegExpExecArray | any, context: PluginContext) => string | null;
 
@@ -25,6 +27,7 @@ export interface TagPlugin {
     // Fragment to inject into the LLM system prompt
     systemPromptFragment?: string;
 }
+
 
 export const pluginRegistry: TagPlugin[] = [];
 

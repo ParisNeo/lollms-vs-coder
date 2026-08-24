@@ -915,20 +915,26 @@ export class ChatPanel {
                     const provider = this._contextManager.getContextStateProvider();
                     const rawFiles = provider ? provider.getIncludedFiles() : [];
                     const filesWithWeights = await Promise.all(rawFiles.filter(f => f && f.path).map(async f => {
-                        let tokens = 0;
+                        let bytes = f.bytes || 0;
+                        let tokens = f.tokens || 0;
                         const cached = (this._contextManager as any)._fileContentCache?.get(f.path);
                         if (cached?.content) {
+                            bytes = cached.size || cached.content.length;
                             tokens = Math.ceil(cached.content.length / 3.5);
-                        } else {
+                        } else if (bytes === 0) {
                             const res = await this._contextManager.resolveWorkspaceFromPath(f.path);
                             if (res) {
                                 try {
                                     const st = await vscode.workspace.fs.stat(res.uri);
+                                    bytes = st.size;
                                     tokens = Math.ceil(st.size / 3.5);
                                 } catch {}
                             }
                         }
-                        return { path: f.path, tokens, state: f.state };
+                        if (tokens === 0 && bytes > 0) {
+                            tokens = Math.max(1, Math.ceil(bytes / 3.5));
+                        }
+                        return { path: f.path, bytes, tokens, state: f.state };
                     }));
                     includedFiles = filesWithWeights as any;
                 } catch (e) {
@@ -1329,8 +1335,9 @@ export class ChatPanel {
                     }).join('\n');
 
                     // --- Extract Project Memory early for tokenization ---
-                    const projectMemory = (self._discussionCapabilities.projectMemoryEnabled !== false && self.agentManager?.projectMemoryManager)
-                        ? await self.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, self._skillsManager)
+                    const memManager = (self as any).projectMemoryManager || self.agentManager?.projectMemoryManager;
+                    const projectMemory = (self._discussionCapabilities.projectMemoryEnabled !== false && memManager)
+                        ? await memManager.getFormattedMemoryBlock(historyText, self._skillsManager)
                         : "";
 
                     const rawBriefing = self._currentDiscussion?.discussion_data_zone || "";
@@ -1368,21 +1375,28 @@ export class ChatPanel {
                         const provider = self._contextManager.getContextStateProvider();
                         const rawIncluded = provider ? provider.getIncludedFiles() : [];
                         const includedFiles = await Promise.all(rawIncluded.filter(f => f && f.path).map(async f => {
-                            let tokens = 0;
+                            let bytes = f.bytes || 0;
+                            let tokens = f.tokens || 0;
                             const cached = (self._contextManager as any)._fileContentCache?.get(f.path);
                             if (cached?.content) {
+                                bytes = cached.size || cached.content.length;
                                 tokens = Math.ceil(cached.content.length / 3.5);
-                            } else {
+                            } else if (bytes === 0) {
                                 const res = await self._contextManager.resolveWorkspaceFromPath(f.path);
                                 if (res) {
                                     try {
                                         const st = await vscode.workspace.fs.stat(res.uri);
+                                        bytes = st.size;
                                         tokens = Math.ceil(st.size / 3.5);
                                     } catch {}
                                 }
                             }
+                            if (tokens === 0 && bytes > 0) {
+                                tokens = Math.max(1, Math.ceil(bytes / 3.5));
+                            }
                             return {
                                 path: f.path,
+                                bytes,
                                 tokens,
                                 state: f.state,
                                 hasContent: false
@@ -1483,9 +1497,32 @@ export class ChatPanel {
                         } catch (e) {}
                     }
 
+                    const isWin = process.platform === 'win32';
+                    const areUrisEqual = (u1?: vscode.Uri, u2?: vscode.Uri) => {
+                        if (!u1 || !u2) return false;
+                        if (u1.toString() === u2.toString()) return true;
+                        if (decodeURIComponent(u1.toString().toLowerCase()) === decodeURIComponent(u2.toString().toLowerCase())) return true;
+                        return isWin ? u1.fsPath.toLowerCase() === u2.fsPath.toLowerCase() : u1.fsPath === u2.fsPath;
+                    };
+
+                    const getFolderSetting = (folder: vscode.WorkspaceFolder) => {
+                        const uriStr = folder.uri.toString();
+                        const uriStrLower = uriStr.toLowerCase();
+                        const fsPathLower = folder.uri.fsPath.toLowerCase();
+
+                        for (const [key, val] of Object.entries(folderSettings)) {
+                            if (!key || typeof val !== 'object') continue;
+                            const kLower = key.toLowerCase();
+                            if (kLower === uriStrLower || kLower === fsPathLower || decodeURIComponent(kLower) === decodeURIComponent(uriStrLower)) {
+                                return val as { tree?: boolean, content?: boolean };
+                            }
+                        }
+                        return { tree: true, content: true };
+                    };
+
                     activeFolders.forEach(folder => {
                         const uriKey = folder.uri.toString();
-                        const settings = folderSettings[uriKey] || { tree: true, content: true };
+                        const settings = getFolderSetting(folder);
 
                         statsPromises.push((async () => {
                             if (signal.aborted) return;
@@ -1494,20 +1531,20 @@ export class ChatPanel {
                                 let filesTokens = 0;
 
                                 // 1. Tree Weight
-                                if (settings.tree) {
+                                if (settings.tree !== false) {
                                     const folderTree = await self._contextManager.generateIsolatedProjectTree(folder, signal, self._discussionCapabilities);
                                     const res = await getTokenCount(folderTree);
                                     treeTokens = res.count;
                                 }
 
                                 // 2. Content Weight (Fast Heuristic from Cache/Stats)
-                                if (settings.content) {
+                                if (settings.content !== false) {
                                     const provider = self._contextManager.getContextStateProvider();
                                     const included = provider?.getIncludedFiles() || [];
 
                                     for (const file of included) {
                                         const resolution = await self._contextManager.resolveWorkspaceFromPath(file.path);
-                                        if (resolution?.folder?.uri.toString() === uriKey) {
+                                        if (resolution?.folder && areUrisEqual(resolution.folder.uri, folder.uri)) {
                                             const cached = (self._contextManager as any)._fileContentCache.get(file.path);
                                             if (cached) {
                                                 filesTokens += Math.ceil(cached.content.length / 3.5);
@@ -2266,9 +2303,10 @@ Please provide the **FULL CONTENT** of the file instead using the format:
               };
 
               let memoryBlock = "";
-              if (this._discussionCapabilities?.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager) {
+              const memManager = (this as any).projectMemoryManager || this.agentManager?.projectMemoryManager;
+              if (this._discussionCapabilities?.projectMemoryEnabled !== false && memManager) {
                   progress.report({ message: "Reading project memory..." });
-                  memoryBlock = await this.agentManager.projectMemoryManager.getFormattedMemoryBlock();
+                  memoryBlock = await memManager.getFormattedMemoryBlock();
               }
 
               progress.report({ message: "Processing system prompt..." });
@@ -2858,8 +2896,9 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
             signal: controller.signal
         });
 
-        const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
-            ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock(typeof message.content === 'string' ? message.content : '', this._skillsManager)
+        const memManager = (this as any).projectMemoryManager || this.agentManager?.projectMemoryManager;
+        const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && memManager)
+            ? await memManager.getFormattedMemoryBlock(typeof message.content === 'string' ? message.content : '', this._skillsManager)
             : "";
 
         const localContext = { 
@@ -3134,6 +3173,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                             } else {
                                 const added = await this._contextManager.getContextStateProvider()?.addFilesToContext(filesToAdd) || [];
                                 if (added.length > 0) {
+                                    this._contextManager.recordRecentlyAddedFiles(added);
                                     toolResult = `Success: Added ${added.join(', ')} to context.`;
                                     completedDynamicActions.push("Loaded " + added.length + " files into memory.");
                                 } else {
@@ -3355,71 +3395,112 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                     });
 
                     // 2. Parse file blocks and build peeks supporting XML <file> tags and fallback fences
-                    const blockRegex = /<file\s+path=["']([^"']+)["'][^>]*>([\s\S]*?)<\/file>|```(?:\w+)?[:]?([^\n]+)[\r\n]([\s\S]*?)[\r\n]```/gi;
-                    let fileMatch;
-                    while ((fileMatch = blockRegex.exec(contextData.selectedFilesContent)) !== null) {
-                        const filePath = (fileMatch[1] || fileMatch[3] || '').trim();
-                        if (!filePath || filePath.includes('<<<<<<< SEARCH')) continue;
+                    const { extractFileBlocks: extractBlocksForGovernor } = require('../../utils');
+                    const extractedBlocks = extractBlocksForGovernor(contextData.selectedFilesContent);
 
-                        const fileBody = fileMatch[2] || fileMatch[4] || '';
-                        const lines = fileBody.split('\n');
-                        const peekLines = lines.slice(0, 40).join('\n');
-                        const peek = lines.length > 40 ? `${peekLines}\n... [Truncated ${lines.length - 40} lines. Use grep_search if you need more context]` : peekLines;
+                    if (extractedBlocks.length > 0) {
+                        for (const fb of extractedBlocks) {
+                            const pMatch = fb.attrStr.match(/path=["']([^"']+)["']/i);
+                            const filePath = pMatch ? pMatch[1].trim() : "";
+                            if (!filePath || filePath.includes('<<<<<<< SEARCH')) continue;
 
-                        fileBlocks.push({
-                            fullMatch: fileMatch[0],
-                            path: filePath,
-                            tokens: Math.ceil(fileMatch[0].length / 3.5),
-                            peek: peek,
-                            keep: true 
-                        });
+                            const lines = fb.rawContent.split('\n');
+                            const peekLines = lines.slice(0, 40).join('\n');
+                            const peek = lines.length > 40 ? `${peekLines}\n... [Truncated ${lines.length - 40} lines. Use grep_search if you need more context]` : peekLines;
+
+                            fileBlocks.push({
+                                fullMatch: fb.fullMatch,
+                                path: filePath,
+                                tokens: Math.ceil(fb.fullMatch.length / 3.5),
+                                peek: peek,
+                                keep: true
+                            });
+                        }
+                    } else {
+                        const blockRegex = /<file\s+path=["']([^"']+)["'][^>]*>([\s\S]*?)<\/file>|```(?:\w+)?[:]?([^\n]+)[\r\n]([\s\S]*?)[\r\n]```/gi;
+                        let fileMatch;
+                        while ((fileMatch = blockRegex.exec(contextData.selectedFilesContent)) !== null) {
+                            const filePath = (fileMatch[1] || fileMatch[3] || '').trim();
+                            if (!filePath || filePath.includes('<<<<<<< SEARCH')) continue;
+
+                            const fileBody = fileMatch[2] || fileMatch[4] || '';
+                            const lines = fileBody.split('\n');
+                            const peekLines = lines.slice(0, 40).join('\n');
+                            const peek = lines.length > 40 ? `${peekLines}\n... [Truncated ${lines.length - 40} lines. Use grep_search if you need more context]` : peekLines;
+
+                            fileBlocks.push({
+                                fullMatch: fileMatch[0],
+                                path: filePath,
+                                tokens: Math.ceil(fileMatch[0].length / 3.5),
+                                peek: peek,
+                                keep: true 
+                            });
+                        }
                     }
 
                     // 3. AGENTIC DECISION PASS
-                // Provide the LLM with the tree (grounded with markers) and recent history
-                const recentHistory = history.slice(-3).map(m => {
-                    const role = m.role.toUpperCase();
-                    const content = typeof m.content === 'string' ? m.content : "[Multipart Content]";
-                    return `### ${role}\n${content.substring(0, 1000)}${content.length > 1000 ? '...' : ''}`;
-                }).join('\n\n');
+                    // Provide the LLM with the tree (grounded with markers) and recent history
+                    const recentHistory = history.slice(-3).map(m => {
+                        const role = m.role.toUpperCase();
+                        const content = typeof m.content === 'string' ? m.content : "[Multipart Content]";
+                        return `### ${role}\n${content.substring(0, 1000)}${content.length > 1000 ? '...' : ''}`;
+                    }).join('\n\n');
 
-                const decisionPrompt = `You are the **Sovereign Context Governor**. 
-            The current request payload (**${totalEstimated.toLocaleString()}** tokens) has reached **${fillPercentage}%** of the model's limit (**${maxTokens.toLocaleString()}**).
-            You must select which files to evict from the 'possessed' context to liberate at least **${Math.round(overflow).toLocaleString()}** tokens.
+                    const recentSearchText = (userPromptText + "\n" + recentHistory).toLowerCase();
+                    const isMentionedInPrompt = (filePath: string) => {
+                        const base = path.basename(filePath).toLowerCase();
+                        return recentSearchText.includes(base) || recentSearchText.includes(filePath.toLowerCase());
+                    };
 
-            ### 🌳 PROJECT STRUCTURE & CONTEXT STATUS
-            ${contextData.projectTree}
-            *(Legend: [C] = Content in memory, No marker = path only)*
+                    const isProtected = (filePath: string): boolean => {
+                        if (this._contextManager.isRecentlyAdded(filePath)) return true;
+                        if (isMentionedInPrompt(filePath)) return true;
+                        const lower = filePath.toLowerCase();
+                        if (lower.includes('core') || lower.includes('mixin') || lower.includes('types') || lower.includes('interface') || lower.includes('api')) return true;
+                        return false;
+                    };
 
-            ### 🕒 RECENT MISSION HISTORY
-            ${recentHistory || "No previous history."}
+                    const decisionPrompt = `You are the **Sovereign Context Governor**. 
+The current request payload (**${totalEstimated.toLocaleString()}** tokens) has reached **${fillPercentage}%** of the model's limit (**${maxTokens.toLocaleString()}**).
+You must select which files to evict from the 'possessed' context to liberate at least **${Math.round(overflow).toLocaleString()}** tokens.
 
-            ### 🎯 CURRENT USER PROMPT
-            "${userPromptText}"
+### 🌳 PROJECT STRUCTURE & CONTEXT STATUS
+${contextData.projectTree}
+*(Legend: [C] = Content in memory, No marker = path only)*
 
-            ### 📄 LOADED FILES (MEMOIZED CONTENT & PEEKS)
-            Analyze their relevance to the current mission and history.
-            ${fileBlocks.map(b => `
-            - **File**: \`${b.path}\` (${b.tokens} tokens)
-              **Content Peek (First 40 lines)**:
-              \`\`\`
-              ${b.peek}
-              \`\`\`
-            `).join('\n')}
+### 🕒 RECENT MISSION HISTORY
+${recentHistory || "No previous history."}
 
-            ### 📝 PRUNING RULES:
-            1. **PROTECT CORE**: Do NOT evict files containing "core", "mixin", "types", or "api" unless they are explicitly unrelated to the prompt.
-            2. **PROTECT SELECTION**: If the user prompt refers to a specific file or logic found in one of these files, KEEP it.
-            3. **EVICT NOISE**: Target large boilerplate files, unrelated utilities, or documentation that has already been digested.
+### 🎯 CURRENT USER PROMPT
+"${userPromptText}"
 
-            **OUTPUT FORMAT**: JSON only.
-            {
-            "keep": ["path/to/relevant/file.ts"],
-            "evict": [
-            {"path": "path/to/noise.py", "reason": "Short explanation why this is being evicted"}
-            ]
-            }
-            `;
+### 📄 LOADED FILES (MEMOIZED CONTENT & PEEKS)
+Analyze their relevance to the current mission and history.
+${fileBlocks.map(b => {
+    const protectedTag = isProtected(b.path) ? " [PROTECTED - JUST ADDED / CURRENTLY REFERENCED - DO NOT EVICT]" : "";
+    return `
+- **File**: \`${b.path}\` (${b.tokens} tokens)${protectedTag}
+  **Content Peek (First 40 lines)**:
+  \`\`\`
+  ${b.peek}
+  \`\`\`
+`;
+}).join('\n')}
+
+### 📝 PRUNING RULES:
+1. **ZERO-EVICTION FOR RECENT ADDITIONS (CRITICAL)**: You MUST NEVER evict files marked [PROTECTED] or files recently requested by the user or agent. Evicting files that were just added creates a destructive infinite oscillation loop.
+2. **PROTECT CORE & TYPES**: Do NOT evict files containing "core", "mixin", "types", "interface", or "api" unless they are explicitly unrelated to the prompt.
+3. **PROTECT RECENT REFERENCES**: If the user prompt or recent history refers to a specific file or logic found in one of these files, KEEP it.
+4. **EVICT NOISE FIRST**: Target old, digested files, large unrelated utilities, or documentation that has already been analyzed.
+
+**OUTPUT FORMAT**: JSON only.
+{
+"keep": ["path/to/relevant/file.ts"],
+"evict": [
+{"path": "path/to/noise.py", "reason": "Short explanation why this is being evicted"}
+]
+}
+`;
                 let decision;
                 try {
                     const decisionRes = await this._lollmsAPI.sendChat([
@@ -3428,47 +3509,48 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                     ], null, controller.signal, targetModel);
                     decision = JSON.parse(stripThinkingTags(decisionRes));
                 } catch (e) {
-                    // Fallback: Evict just enough tokens to clear the overflow instead of a blind 5-file nuke.
+                    // Fallback: Evict just enough tokens to clear the overflow, strictly protecting recently added/core files
                     const sortedBySize = [...fileBlocks].sort((a, b) => b.tokens - a.tokens);
                     const evictList: any[] = [];
                     let liberated = 0;
 
                     for (const block of sortedBySize) {
-                        // Attempt to protect core files even in fallback
-                        const lowerPath = block.path.toLowerCase();
-                        if (lowerPath.includes('core') || lowerPath.includes('mixin') || lowerPath.includes('types')) continue;
+                        if (isProtected(block.path)) continue;
 
-                        evictList.push({ path: block.path, reason: "Fallback: Removed to clear token overflow after decision error." });
+                        evictList.push({ path: block.path, reason: "Fallback: Removed to clear token overflow." });
                         liberated += block.tokens;
                         if (liberated >= overflow) break;
-                    }
-
-                    // If still not enough, force remove the largest remaining files
-                    if (liberated < overflow) {
-                        for (const block of sortedBySize) {
-                            if (evictList.find(e => e.path === block.path)) continue;
-                            evictList.push({ path: block.path, reason: "Emergency Fallback: Removed to prevent system crash." });
-                            liberated += block.tokens;
-                            if (liberated >= overflow) break;
-                        }
                     }
 
                     decision = { keep: [], evict: evictList };
                 }
 
                 // 4. APPLY DECISIONS
-                const evictedPaths = (decision.evict || []).map((e: any) => e.path);
+                const candidateEvictedPaths = (decision.evict || []).map((e: any) => e.path);
                 let liberatedTokens = 0;
                 const keptList: string[] = [];
                 const evictedReport: string[] = [];
+                const evictedPaths: string[] = [];
 
                 fileBlocks.forEach(b => {
-                    const isEvicted = evictedPaths.includes(b.path);
-                    if (isEvicted) {
+                    const wantsToEvict = candidateEvictedPaths.some((ep: string) => {
+                        const cleanEp = ep.replace(/\\/g, '/').toLowerCase().trim();
+                        const cleanBp = b.path.replace(/\\/g, '/').toLowerCase().trim();
+                        return cleanEp === cleanBp || cleanEp.endsWith('/' + cleanBp) || cleanBp.endsWith('/' + cleanEp);
+                    });
+
+                    // Anti-Oscillation Gate: If file is protected, prevent eviction even if LLM tried to evict it
+                    if (wantsToEvict && isProtected(b.path)) {
+                        this.log(`Context Governor Shield: Prevented eviction of protected/recently added file: ${b.path}`, 'INFO');
+                        b.keep = true;
+                        keptList.push(`- 🛡️ \`${b.path}\` (Protected from eviction)`);
+                    } else if (wantsToEvict) {
                         b.keep = false;
                         liberatedTokens += b.tokens;
-                        const reason = decision.evict.find((e:any) => e.path === b.path)?.reason || "Irrelevant to current prompt.";
-                        evictedReport.push(`- ✂ \`${b.path}\`: ${reason}`);
+                        evictedPaths.push(b.path);
+                        const matchEntry = decision.evict.find((e: any) => e.path && e.path.toLowerCase().includes(path.basename(b.path).toLowerCase()));
+                        const reason = matchEntry?.reason || "Irrelevant to current prompt.";
+                        evictedReport.push(`- ✂️ \`${b.path}\`: ${reason}`);
                     } else {
                         keptList.push(`- ✅ \`${b.path}\``);
                     }
@@ -5187,6 +5269,8 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             });
 
                             if (addedPaths.length > 0) {
+                                this._contextManager.recordRecentlyAddedFiles(addedPaths);
+
                                 // Notify UI immediately to stop the spinner and show updated visual states (checkmarks)
                                 webview.postMessage({
                                     command: 'filesAddedToContext',
@@ -5822,6 +5906,8 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     messageId: message.messageId,
                     blockIndex: message.blockIndex,
                     hunkIndex: message.hunkIndex,
+                    blockId: message.blockId,
+                    filePath: message.filePath,
                     success: true,
                     alreadyApplied: true
                 });
@@ -6586,6 +6672,12 @@ Task:
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
+
+                    // Post back to webview to ensure full synchronization
+                    this._panel.webview.postMessage({
+                        command: 'updateDiscussionPersonality',
+                        personalityId: message.personalityId
+                    });
                 }
                 break;
             case 'runTool':

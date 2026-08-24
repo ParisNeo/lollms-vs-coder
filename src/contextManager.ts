@@ -72,19 +72,51 @@ export class ContextManager {
   } = { tree: 0, system: 0, history: {}, files: {} };
 
   // --- GLOBAL CACHE STATE ---
-  private _cachedTreeString: string | null = null;
+private _cachedTreeString: string | null = null;
   private _cachedProjectTreeMap = new Map<string, string>();
   private _isTreeDirty: boolean = true;
   private _fileTreeObject: any = null;
   private _fileContentCache!: Map<string, { content: string, mtime: number, size: number, state: ContextState }>;
   private _cachedIsolatedTrees = new Map<string, string>(); // Caches the rendered tree per workspace folder
   private _cachedVisibleFiles: string[] | null = null;
+  private _recentlyAddedFiles: Map<string, number> = new Map();
   private static PROJECT_TOOLS_KEY = 'lollms_project_active_tools';
 
   constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
     this.context = context;
     this.lollmsAPI = lollmsAPI;
     this._fileContentCache = new Map();
+  }
+
+  public recordRecentlyAddedFiles(filePaths: string[]) {
+    const now = Date.now();
+    for (const p of filePaths) {
+      if (!p) continue;
+      const normalized = this.normalize(p).trim().replace(/^\.?\/+/, '');
+      this._recentlyAddedFiles.set(normalized, now);
+    }
+  }
+
+  public isRecentlyAdded(filePath: string, windowMs: number = 10 * 60 * 1000): boolean {
+    if (!filePath) return false;
+    const normalized = this.normalize(filePath).trim().replace(/^\.?\/+/, '');
+    const now = Date.now();
+
+    // Prune stale entries
+    for (const [key, time] of this._recentlyAddedFiles.entries()) {
+      if (now - time > windowMs * 2) {
+        this._recentlyAddedFiles.delete(key);
+      }
+    }
+
+    for (const [key, time] of this._recentlyAddedFiles.entries()) {
+      if (now - time <= windowMs) {
+        if (key === normalized || key.endsWith('/' + normalized) || normalized.endsWith('/' + key)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -227,7 +259,7 @@ export class ContextManager {
         : c.startsWith(pWithSep);
     };
 
-    // Case A: Absolute Path
+    // Case A: Absolute Path (Supports files from other folders or outside workspace)
     if (path.isAbsolute(normalized)) {
       const resolved = path.resolve(normalized);
       const owner = folders.find(f => isSubPathOf(f.uri.fsPath, resolved));
@@ -235,7 +267,13 @@ export class ContextManager {
         const relativePath = path.relative(owner.uri.fsPath, resolved).replace(/\\/g, '/');
         return { folder: owner, relativePath, uri: vscode.Uri.file(resolved) };
       }
-      return null;
+      // Return valid URI for files opened from other folders outside active workspace
+      return { folder: undefined, relativePath: path.basename(resolved), uri: vscode.Uri.file(resolved) };
+    }
+
+    if (folders.length === 0) {
+      const resolved = path.resolve(normalized);
+      return { folder: undefined, relativePath: path.basename(resolved), uri: vscode.Uri.file(resolved) };
     }
 
     // Case B: Direct Relative Path Check Across Workspace Folders (Priority 1)
@@ -339,7 +377,21 @@ export class ContextManager {
         }
       };
 
-      // --- HIGH-PERFORMANCE RIPGREP PATH SCANNER ---
+      // 1. Explicitly inject all active context files first so they are guaranteed to be in the tree
+      for (const file of includedFiles) {
+          const rel = file.path.replace(/\\/g, '/');
+          const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
+          if (isMultiRoot) {
+              const prefix = folder.name.toLowerCase() + '/';
+              if (rel.toLowerCase().startsWith(prefix)) {
+                  injectPathIntoTree(rel.substring(prefix.length));
+              }
+          } else {
+              injectPathIntoTree(rel);
+          }
+      }
+
+      // 2. High-performance tree discovery for unselected files (auto-excluding bloat directories)
       if (this.contextStateProvider) {
           const visibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal, onScanProgress);
           const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
@@ -457,9 +509,26 @@ export class ContextManager {
       }
 
       const folderSettings = capabilities?.folderSettings || {};
+      const isWindows = process.platform === 'win32';
+
+      const getFolderSetting = (folder: vscode.WorkspaceFolder) => {
+        const uriStr = folder.uri.toString();
+        const uriStrLower = uriStr.toLowerCase();
+        const fsPathLower = folder.uri.fsPath.toLowerCase();
+
+        for (const [key, val] of Object.entries(folderSettings)) {
+          if (!key || typeof val !== 'object') continue;
+          const kLower = key.toLowerCase();
+          if (kLower === uriStrLower || kLower === fsPathLower || decodeURIComponent(kLower) === decodeURIComponent(uriStrLower)) {
+            return val as { tree?: boolean, content?: boolean };
+          }
+        }
+        return { tree: true, content: true };
+      };
+
       const folders = vscode.workspace.workspaceFolders.filter(f => {
-        const settings = folderSettings[f.uri.toString()];
-        return !settings || settings.tree !== false;
+        const settings = getFolderSetting(f);
+        return settings.tree !== false;
       });
 
       if (folders.length === 0) {
@@ -770,11 +839,38 @@ export class ContextManager {
       }
     }
 
+    const isWindows = process.platform === 'win32';
+    const areUrisEqual = (u1?: vscode.Uri, u2?: vscode.Uri) => {
+      if (!u1 || !u2) return false;
+      if (u1.toString() === u2.toString()) return true;
+      if (decodeURIComponent(u1.toString().toLowerCase()) === decodeURIComponent(u2.toString().toLowerCase())) return true;
+      return isWindows ? u1.fsPath.toLowerCase() === u2.fsPath.toLowerCase() : u1.fsPath === u2.fsPath;
+    };
+
+    const getFolderSetting = (folder: vscode.WorkspaceFolder) => {
+      const uriStr = folder.uri.toString();
+      const uriStrLower = uriStr.toLowerCase();
+      const fsPathLower = folder.uri.fsPath.toLowerCase();
+
+      for (const [key, val] of Object.entries(folderSettings)) {
+        if (!key || typeof val !== 'object') continue;
+        const kLower = key.toLowerCase();
+        if (kLower === uriStrLower || kLower === fsPathLower || decodeURIComponent(kLower) === decodeURIComponent(uriStrLower)) {
+          return val as { tree?: boolean, content?: boolean };
+        }
+      }
+      return { tree: true, content: true };
+    };
+
     for (const folder of activeFolders) {
       if (signal?.aborted) throw new Error("Operation cancelled");
 
-      const settings = folderSettings[folder.uri.toString()] || { tree: true, content: true };
-      if (!settings.tree && !settings.content) continue;
+      let settings = getFolderSetting(folder);
+      // Failsafe: If the user explicitly has included files in this workspace, do not mute everything
+      if (settings.tree === false && settings.content === false && contextFiles.length > 0) {
+        settings = { tree: true, content: true };
+      }
+      if (settings.tree === false && settings.content === false) continue;
 
       const projectName = folder.name;
 
@@ -829,7 +925,7 @@ export class ContextManager {
 
         const resolution = await this.resolveWorkspaceFromPath(fileEntry.path);
 
-        if (!resolution || !resolution.folder || resolution.folder.uri.toString().toLowerCase() !== folder.uri.toString().toLowerCase()) {
+        if (!resolution || !resolution.folder || !areUrisEqual(resolution.folder.uri, folder.uri)) {
           continue; 
         }
 

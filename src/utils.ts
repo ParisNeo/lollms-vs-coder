@@ -133,29 +133,7 @@ export interface ResponseProfile {
  * These prompts are defined in code. Even if settings.json has old versions,
  * the extension logic will use these unless the user explicitly creates a custom profile.
  */
-export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
-    {
-        id: "balanced",
-        name: "Balanced (Default)",
-        description: "Natural technical flow: Brief explanation followed by implementation.",
-        systemPrompt: "### RESPONSE STYLE: BALANCED\n- **Logic**: Briefly explain the technical approach or reasoning behind your solution.\n- **Implementation**: Provide the code or tags (e.g., <project_memory>) immediately after the explanation.\n- **Constraint**: Do not wrap your entire response in a code block. Use standard markdown for text and only use code blocks for actual source code.\n- **Tone**: Professional, helpful, and direct.",
-        prefix: ""
-    },
-    {
-        id: "structured",
-        name: "Structured (Analytical)",
-        description: "Formal Observe/Think/Act/Reflect breakdown.",
-        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this four-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why. No code updates (Aider blocks or full files) are allowed in this stage.\n  3. **Act**: Provide the actual implementation, code updates, or tool calls. All Aider patches or full files MUST reside exclusively in this section.\n  4. **Reflect**: Evaluate assumptions, check edge cases, or validate performance.\n\n- **STRICT FORMATTING**: Use standard Markdown (bolding, lists) for these sections. Do NOT wrap these text sections in triple backticks.\n- **ACT SECTION**: The Act section MUST contain the functional XML tags (like <edit_image_asset>) or JSON tool calls. Do NOT just output text description of the action in the Act section.\n- **AUTONOMOUS ACTIONS**: If you need to use a tool or save a memory, do so at the END of your 'Act' section. Tags like <project_memory> are mandatory for persistence.",
-        prefix: ""
-    },
-    {
-        id: "minimalist",
-        name: "Minimalist",
-        description: "Just the answer/code. Zero fluff.",
-        systemPrompt: "### RESPONSE STYLE: MINIMALIST\n- **Directness**: Do not include introductions, conclusions, or 'Here is your code'.\n- **Content**: Provide only the requested code block or the direct answer to the question.\n- **Brevity**: Extreme conciseness.",
-        prefix: ""
-    }
-];
+export { ResponseProfile, SYSTEM_RESPONSE_PROFILES } from './registries/profiles';
 
 export interface DiscussionCapabilities {
     generationFormats: {
@@ -1087,6 +1065,92 @@ export function stripThinkingTags(responseText: string): string {
  */
 export function isIndexInRange(index: number, ranges: { start: number, end: number }[]): boolean {
     return ranges.some(r => index >= r.start && index < r.end);
+}
+
+export interface AiderHunk {
+    fullMatch: string;
+    searchPart: string;
+    replacePart: string;
+    startIndex: number;
+    endIndex: number;
+}
+
+/**
+ * Balanced Aider hunk parser that tracks nested <<<<<<< SEARCH / >>>>>>> REPLACE markers.
+ */
+export function parseAiderHunks(rawBlock: string): AiderHunk[] {
+    const hunks: AiderHunk[] = [];
+    if (!rawBlock || typeof rawBlock !== 'string') return hunks;
+
+    const lines = rawBlock.replace(/\r\n/g, '\n').split('\n');
+    let i = 0;
+
+    while (i < lines.length) {
+        const line = lines[i];
+        if (line.trim().startsWith('<<<<<<< SEARCH')) {
+            const startLineIdx = i;
+            const searchLines: string[] = [];
+            const replaceLines: string[] = [];
+            let inReplace = false;
+            let depth = 1;
+            let isClosed = false;
+
+            i++;
+            while (i < lines.length) {
+                const curLine = lines[i];
+                const trimmed = curLine.trim();
+
+                if (!inReplace) {
+                    if (trimmed.startsWith('<<<<<<< SEARCH')) {
+                        depth++;
+                        searchLines.push(curLine);
+                    } else if (trimmed.startsWith('>>>>>>> REPLACE')) {
+                        if (depth > 1) {
+                            depth--;
+                        }
+                        searchLines.push(curLine);
+                    } else if (trimmed.startsWith('=======') && depth === 1) {
+                        inReplace = true;
+                        depth = 0;
+                    } else {
+                        searchLines.push(curLine);
+                    }
+                } else {
+                    if (trimmed.startsWith('<<<<<<< SEARCH')) {
+                        depth++;
+                        replaceLines.push(curLine);
+                    } else if (trimmed.startsWith('>>>>>>> REPLACE')) {
+                        if (depth > 0) {
+                            depth--;
+                            replaceLines.push(curLine);
+                        } else {
+                            isClosed = true;
+                            break;
+                        }
+                    } else {
+                        replaceLines.push(curLine);
+                    }
+                }
+                i++;
+            }
+
+            if (isClosed || inReplace) {
+                const searchPart = searchLines.join('\n');
+                const replacePart = replaceLines.join('\n');
+                const fullMatch = lines.slice(startLineIdx, i + 1).join('\n');
+                hunks.push({
+                    fullMatch,
+                    searchPart,
+                    replacePart,
+                    startIndex: startLineIdx,
+                    endIndex: i
+                });
+            }
+        }
+        i++;
+    }
+
+    return hunks;
 }
 
 export function extractAndStripMemory(responseText: string): { content: string, memory: string | null } {

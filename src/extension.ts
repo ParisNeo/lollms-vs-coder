@@ -377,6 +377,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         statusBar.updateActiveWorkspace(folder);
 
         // Notify managers to refresh (Merge logic now handles the multi-root data)
+        await contextStateProvider.switchWorkspace(folder);
         await discussionManager.initialize();
         await skillsManager.switchWorkspace(vscode.workspace.workspaceFolders?.[0]?.uri || folder.uri, context.extensionUri);
         await projectMemoryManager.getMemories();

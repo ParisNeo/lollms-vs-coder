@@ -1336,6 +1336,79 @@
             container.scrollTop = container.scrollHeight;
         }
 
+        function parseAiderHunks(rawBlock) {
+            const hunks = [];
+            if (!rawBlock || typeof rawBlock !== 'string') return hunks;
+
+            const lines = rawBlock.replace(/\r\n/g, '\n').split('\n');
+            let i = 0;
+
+            while (i < lines.length) {
+                const line = lines[i];
+                if (line.trim().startsWith('<<<<<<< SEARCH')) {
+                    const startLineIdx = i;
+                    const searchLines = [];
+                    const replaceLines = [];
+                    let inReplace = false;
+                    let depth = 1;
+                    let isClosed = false;
+
+                    i++;
+                    while (i < lines.length) {
+                        const curLine = lines[i];
+                        const trimmed = curLine.trim();
+
+                        if (!inReplace) {
+                            if (trimmed.startsWith('<<<<<<< SEARCH')) {
+                                depth++;
+                                searchLines.push(curLine);
+                            } else if (trimmed.startsWith('>>>>>>> REPLACE')) {
+                                if (depth > 1) depth--;
+                                searchLines.push(curLine);
+                            } else if (trimmed.startsWith('=======') && depth === 1) {
+                                inReplace = true;
+                                depth = 0;
+                            } else {
+                                searchLines.push(curLine);
+                            }
+                        } else {
+                            if (trimmed.startsWith('<<<<<<< SEARCH')) {
+                                depth++;
+                                replaceLines.push(curLine);
+                            } else if (trimmed.startsWith('>>>>>>> REPLACE')) {
+                                if (depth > 0) {
+                                    depth--;
+                                    replaceLines.push(curLine);
+                                } else {
+                                    isClosed = true;
+                                    break;
+                                }
+                            } else {
+                                replaceLines.push(curLine);
+                            }
+                        }
+                        i++;
+                    }
+
+                    if (isClosed || inReplace) {
+                        const searchPart = searchLines.join('\n');
+                        const replacePart = replaceLines.join('\n');
+                        const fullMatch = lines.slice(startLineIdx, i + 1).join('\n');
+                        hunks.push({
+                            fullMatch: fullMatch,
+                            searchPart: searchPart,
+                            replacePart: replacePart,
+                            startIndex: startLineIdx,
+                            endIndex: i
+                        });
+                    }
+                }
+                i++;
+            }
+
+            return hunks;
+        }
+
         function extractFileBlocks(text) {
             const blocks = [];
             if (!text || typeof text !== 'string') return blocks;
@@ -1922,35 +1995,77 @@
             const blockId = 'comp-block-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
             const actionLabel = isPatch ? 'SURGICAL PATCH' : (symbol ? 'SYMBOL: ' + symbol : 'WRITE FILE');
             const actionIcon = isPatch ? 'codicon-diff-modified' : (symbol ? 'codicon-symbol-method' : 'codicon-file-code');
+            const applyIcon = isPatch ? 'codicon-arrow-swap' : 'codicon-tools';
             const ext = filePath.split('.').pop() || 'plaintext';
 
             let bodyHtml = "";
             if (isPatch) {
-                const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
-                const matches = [...rawBody.matchAll(aiderRegex)];
+                const hunks = parseAiderHunks(rawBody);
 
-                if (matches.length > 0) {
-                    bodyHtml = '<div class="hunk-contents-wrapper">' + matches.map((m, hIdx) => {
-                        const sLines = (m[1] || "").replace(/\r\n/g, '\n').split('\n');
-                        const rLines = (m[2] || "").replace(/\r\n/g, '\n').split('\n');
+                if (hunks.length > 0) {
+                    if (hunks.length > 1) {
+                        const navTabsHtml = hunks.map((h, hIdx) => {
+                            return '<div class="hunk-tab hunk-tab-' + hIdx + ' ' + (hIdx === 0 ? 'active' : '') + '" onclick="event.stopPropagation(); switchCompanionTab(this, \'' + blockId + '\', ' + hIdx + ')">' +
+                                '<span class="hunk-status-icon"><i class="codicon codicon-primitive-dot"></i></span> HUNK ' + (hIdx + 1) +
+                            '</div>';
+                        }).join('');
+
+                        const panesHtml = hunks.map((h, hIdx) => {
+                            const sLines = (h.searchPart || "").replace(/\r\n/g, '\n').split('\n');
+                            const rLines = (h.replacePart || "").replace(/\r\n/g, '\n').split('\n');
+
+                            let pref = 0;
+                            while (pref < sLines.length && pref < rLines.length && sLines[pref].trim() === rLines[pref].trim()) pref++;
+                            let suff = 0;
+                            while (suff < (sLines.length - pref) && suff < (rLines.length - pref) && sLines[sLines.length - 1 - suff].trim() === rLines[rLines.length - 1 - suff].trim()) suff++;
+
+                            return '<div class="hunk-tab-content hunk-pane-' + hIdx + ' ' + (hIdx === 0 ? 'active' : '') + '" id="pane-' + blockId + '-' + hIdx + '">' +
+                                '<div class="aider-hunk-bubble">' +
+                                    '<div class="aider-hunk-content">' +
+                                        '<pre style="margin:0; padding:12px; background:var(--vscode-editor-background); border:none; overflow:auto; max-height:350px;">' +
+                                            renderDiffLines(sLines.slice(0, pref), 'unchanged') +
+                                            renderDiffLines(sLines.slice(pref, sLines.length - suff), 'removed') +
+                                            renderDiffLines(rLines.slice(pref, rLines.length - suff), 'added') +
+                                            renderDiffLines(sLines.slice(sLines.length - suff), 'unchanged') +
+                                        '</pre>' +
+                                    '</div>' +
+                                    '<div class="aider-hunk-header" style="border-top: 1px solid var(--vscode-widget-border); border-bottom: none;">' +
+                                        '<div style="font-size: 10px; opacity:0.7;">Hunk ' + (hIdx + 1) + ' of ' + hunks.length + '</div>' +
+                                        '<div class="aider-hunk-actions">' +
+                                            '<button class="code-action-btn apply-btn" onclick="event.stopPropagation(); applyCompanionHunk(\'' + blockId + '\', ' + hIdx + ')" title="Apply this hunk"><i class="codicon codicon-arrow-swap"></i> Apply Hunk</button>' +
+                                        '</div>' +
+                                    '</div>' +
+                                '</div>' +
+                            '</div>';
+                        }).join('');
+
+                        bodyHtml = '<div class="hunk-tabs-container">' +
+                            '<div class="hunk-tabs-nav">' + navTabsHtml + '</div>' +
+                            '<div class="hunk-contents-wrapper">' + panesHtml + '</div>' +
+                        '</div>';
+                    } else {
+                        const h = hunks[0];
+                        const sLines = (h.searchPart || "").replace(/\r\n/g, '\n').split('\n');
+                        const rLines = (h.replacePart || "").replace(/\r\n/g, '\n').split('\n');
 
                         let pref = 0;
                         while (pref < sLines.length && pref < rLines.length && sLines[pref].trim() === rLines[pref].trim()) pref++;
                         let suff = 0;
                         while (suff < (sLines.length - pref) && suff < (rLines.length - pref) && sLines[sLines.length - 1 - suff].trim() === rLines[rLines.length - 1 - suff].trim()) suff++;
 
-                        return '<div class="aider-hunk-bubble" style="border-bottom: ' + (hIdx < matches.length - 1 ? '1px solid var(--vscode-widget-border)' : 'none') + ';">' +
-                            (matches.length > 1 ? '<div style="font-size:10px; font-weight:bold; opacity:0.7; padding:4px 12px; background:rgba(0,0,0,0.15);">HUNK ' + (hIdx + 1) + ' of ' + matches.length + '</div>' : '') +
-                            '<div class="aider-hunk-content">' +
-                                '<pre style="margin:0; padding:12px; background:var(--vscode-editor-background); border:none; overflow:auto; max-height:350px;">' +
-                                    renderDiffLines(sLines.slice(0, pref), 'unchanged') +
-                                    renderDiffLines(sLines.slice(pref, sLines.length - suff), 'removed') +
-                                    renderDiffLines(rLines.slice(pref, rLines.length - suff), 'added') +
-                                    renderDiffLines(sLines.slice(sLines.length - suff), 'unchanged') +
-                                '</pre>' +
+                        bodyHtml = '<div class="hunk-contents-wrapper">' +
+                            '<div class="aider-hunk-bubble">' +
+                                '<div class="aider-hunk-content">' +
+                                    '<pre style="margin:0; padding:12px; background:var(--vscode-editor-background); border:none; overflow:auto; max-height:350px;">' +
+                                        renderDiffLines(sLines.slice(0, pref), 'unchanged') +
+                                        renderDiffLines(sLines.slice(pref, sLines.length - suff), 'removed') +
+                                        renderDiffLines(rLines.slice(pref, rLines.length - suff), 'added') +
+                                        renderDiffLines(sLines.slice(sLines.length - suff), 'unchanged') +
+                                    '</pre>' +
+                                '</div>' +
                             '</div>' +
                         '</div>';
-                    }).join('') + '</div>';
+                    }
                 } else {
                     const escaped = rawBody.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
                     bodyHtml = '<pre style="margin:0; padding:12px; max-height:400px; overflow:auto;"><code class="language-' + ext + '">' + escaped + '</code></pre>';
@@ -1975,11 +2090,27 @@
                 '    <div class="code-actions">\n' +
                 '      <button class="code-action-btn" onclick="event.stopPropagation(); vscode.postMessage({command:\'copyToClipboard\', text: decodeURIComponent(\'' + encodedRaw + '\')})" title="Copy Code"><i class="codicon codicon-copy"></i></button>\n' +
                 (isPatch ? '      <button class="code-action-btn delete-btn undo-mutation-btn" style="display:none;" onclick="event.stopPropagation(); applyCompanionMutation(\'' + blockId + '\', true)" title="Undo patch"><i class="codicon codicon-discard"></i></button>\n' : '') +
-                '      <button class="code-action-btn apply-btn apply-mutation-btn" onclick="event.stopPropagation(); applyCompanionMutation(\'' + blockId + '\', false)" title="Review Diff & Apply"><i class="codicon codicon-tools"></i> Apply</button>\n' +
+                '      <button class="code-action-btn apply-btn apply-mutation-btn" onclick="event.stopPropagation(); applyCompanionMutation(\'' + blockId + '\', false)" title="' + (isPatch ? 'Review Diff & Apply Patch' : 'Apply File Content') + '"><i class="codicon ' + applyIcon + '"></i> Apply</button>\n' +
                 '    </div>\n' +
                 '  </summary>\n' +
                 bodyHtml +
                 '</details>\n\n';
+        }
+
+        function switchCompanionTab(tabEl, blockId, hIdx) {
+            const card = document.getElementById(blockId);
+            if (!card) return;
+
+            const nav = card.querySelector('.hunk-tabs-nav');
+            const wrapper = card.querySelector('.hunk-contents-wrapper');
+
+            if (nav && wrapper) {
+                nav.querySelectorAll('.hunk-tab').forEach(t => t.classList.remove('active'));
+                wrapper.querySelectorAll('.hunk-tab-content').forEach(p => p.classList.remove('active'));
+
+                tabEl.classList.add('active');
+                wrapper.querySelector('.hunk-pane-' + hIdx)?.classList.add('active');
+            }
         }
 
         function applyCompanionMutation(blockId, isUndo) {

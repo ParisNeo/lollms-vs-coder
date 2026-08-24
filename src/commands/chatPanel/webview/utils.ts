@@ -143,6 +143,92 @@ export function normalizeAiderContent(rawBlock: string): string {
     return text;
 }
 
+export interface AiderHunk {
+    fullMatch: string;
+    searchPart: string;
+    replacePart: string;
+    startIndex: number;
+    endIndex: number;
+}
+
+/**
+ * Balanced Aider hunk parser that tracks nested <<<<<<< SEARCH / >>>>>>> REPLACE markers.
+ */
+export function parseAiderHunks(rawBlock: string): AiderHunk[] {
+    const hunks: AiderHunk[] = [];
+    if (!rawBlock || typeof rawBlock !== 'string') return hunks;
+
+    const lines = rawBlock.replace(/\r\n/g, '\n').split('\n');
+    let i = 0;
+
+    while (i < lines.length) {
+        const line = lines[i];
+        if (line.trim().startsWith('<<<<<<< SEARCH')) {
+            const startLineIdx = i;
+            const searchLines: string[] = [];
+            const replaceLines: string[] = [];
+            let inReplace = false;
+            let depth = 1;
+            let isClosed = false;
+
+            i++;
+            while (i < lines.length) {
+                const curLine = lines[i];
+                const trimmed = curLine.trim();
+
+                if (!inReplace) {
+                    if (trimmed.startsWith('<<<<<<< SEARCH')) {
+                        depth++;
+                        searchLines.push(curLine);
+                    } else if (trimmed.startsWith('>>>>>>> REPLACE')) {
+                        if (depth > 1) {
+                            depth--;
+                        }
+                        searchLines.push(curLine);
+                    } else if (trimmed.startsWith('=======') && depth === 1) {
+                        inReplace = true;
+                        depth = 0;
+                    } else {
+                        searchLines.push(curLine);
+                    }
+                } else {
+                    if (trimmed.startsWith('<<<<<<< SEARCH')) {
+                        depth++;
+                        replaceLines.push(curLine);
+                    } else if (trimmed.startsWith('>>>>>>> REPLACE')) {
+                        if (depth > 0) {
+                            depth--;
+                            replaceLines.push(curLine);
+                        } else {
+                            isClosed = true;
+                            break;
+                        }
+                    } else {
+                        replaceLines.push(curLine);
+                    }
+                }
+                i++;
+            }
+
+            if (isClosed || inReplace) {
+                const searchPart = searchLines.join('\n');
+                const replacePart = replaceLines.join('\n');
+                const fullMatch = lines.slice(startLineIdx, i + 1).join('\n');
+                hunks.push({
+                    fullMatch,
+                    searchPart,
+                    replacePart,
+                    startIndex: startLineIdx,
+                    endIndex: i
+                });
+            }
+        }
+        i++;
+    }
+
+    return hunks;
+}
+
 export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string } {
     const isCrlf = content.includes('\r\n');
     const normalizedContent = content.replace(/\r\n/g, '\n');

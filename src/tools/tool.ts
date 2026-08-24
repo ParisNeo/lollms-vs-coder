@@ -19,7 +19,7 @@ export interface Task {
     dependencies?: number[]; 
     status: 'pending' | 'in_progress' | 'completed' | 'failed';
     progress?: number; // 0 to 100
-    current_substep?: string; // e.g. "Downloading package 3/10..."
+    current_substep?: string;
     result: string | null;
     memory_delta?: {
         variables?: Record<string, any>;
@@ -44,7 +44,7 @@ export interface Plan {
     milestones?: Milestone[]; 
     investigation?: any[]; 
     attempts?: Plan[];     
-    status?: 'active' | 'stale' | 'failed' | 'active';
+    status?: 'active' | 'stale' | 'failed' | 'completed';
     metrics?: any;
     scratchpad: string;    
 }
@@ -94,4 +94,4 @@ export interface ToolDefinition {
      */
     manualTagFormat?: string;
     execute(params: any, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }>;
-    }
+}

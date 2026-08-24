@@ -95,30 +95,43 @@ export class QuickEditManager {
                 const selectedText = document.getText(selection);
                 hasSelection = !selection.isEmpty && selectedText.trim().length > 0;
                 languageId = document.languageId;
-                relativePath = vscode.workspace.asRelativePath(document.uri);
+                
+                // Multi-root and external folder path resolution
+                const wsFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+                if (wsFolder) {
+                    const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
+                    relativePath = isMultiRoot
+                        ? `${wsFolder.name}/${path.relative(wsFolder.uri.fsPath, document.uri.fsPath).replace(/\\/g, '/')}`
+                        : path.relative(wsFolder.uri.fsPath, document.uri.fsPath).replace(/\\/g, '/');
+                } else if (document.uri.scheme === 'file') {
+                    // Outside workspace: preserve full normalized disk path for precise patching
+                    relativePath = document.uri.fsPath.replace(/\\/g, '/');
+                } else {
+                    relativePath = vscode.workspace.asRelativePath(document.uri);
+                }
                 
                 // Notebook Detection
                 isNotebook = document.uri.scheme === 'vscode-notebook-cell';
 
                 if (isNotebook) {
-                        const notebookEditor = vscode.window.visibleNotebookEditors.find(ne => 
+                    const notebookEditor = vscode.window.visibleNotebookEditors.find(ne => 
                         ne.notebook.getCells().some(c => c.document.uri.toString() === document.uri.toString())
-                        );
-                        if (notebookEditor) {
-                            relativePath = vscode.workspace.asRelativePath(notebookEditor.notebook.uri);
-                            const currentCell = notebookEditor.notebook.getCells().find(c => c.document.uri.toString() === document.uri.toString());
-                            if (currentCell) {
-                                relativePath += ` (Cell ${currentCell.index + 1})`;
-                                
-                                for (const cell of notebookEditor.notebook.getCells()) {
+                    );
+                    if (notebookEditor) {
+                        relativePath = vscode.workspace.asRelativePath(notebookEditor.notebook.uri);
+                        const currentCell = notebookEditor.notebook.getCells().find(c => c.document.uri.toString() === document.uri.toString());
+                        if (currentCell) {
+                            relativePath += ` (Cell ${currentCell.index + 1})`;
+                            
+                            for (const cell of notebookEditor.notebook.getCells()) {
                                 if (cell === currentCell) break;
                                 const content = cell.document.getText();
                                 if (content.length > 2000) continue; 
                                 notebookContext += `Cell ${cell.index + 1} (${cell.kind === vscode.NotebookCellKind.Code ? 'Code' : 'Markdown'}):\n\`\`\`\n${content}\n\`\`\`\n\n`;
-                                }
                             }
                         }
                     }
+                }
 
                 const currentFileCode = document.getText();
                 
@@ -129,15 +142,15 @@ export class QuickEditManager {
                     fileErrorsReport = `\n### 🛡️ COMPLETE FILE ERROR & WARNING REPORT\n` +
                         rawDiagnostics.map((d, idx) => {
                             const severity = d.severity === vscode.DiagnosticSeverity.Error ? 'ERROR' : 
-                                                d.severity === vscode.DiagnosticSeverity.Warning ? 'WARNING' : 'INFO';
+                                             d.severity === vscode.DiagnosticSeverity.Warning ? 'WARNING' : 'INFO';
                             return `${idx + 1}. **[Line ${d.range.start.line + 1}] [${severity}]**: \`${d.message}\` (${d.source || 'linter'})`;
                         }).join('\n') + `\n`;
                 }
 
                 // Compress active debug variables if debugger is active
                 const { debugStateManager, debugErrorManager } = require('./extensionState');
-                const lastDbgState = debugStateManager.lastState;
-                const lastDbgError = debugErrorManager.lastError;
+                const lastDbgState = debugStateManager?.lastState;
+                const lastDbgError = debugErrorManager?.lastError;
                 const dbgLocals = lastDbgState?.locals || lastDbgError?.locals || "";
                 let debugReport = "";
                 if (dbgLocals) {
@@ -158,40 +171,40 @@ export class QuickEditManager {
                 currentFileBlock = `### 📄 COMPLETE ACTIVE FILE CONTENT\n<file path="${relativePath}">\n${currentFileCode}\n</file>\n${fileErrorsReport}${debugReport}`;
 
                 if (hasSelection) {
-                    const startLine = selection.start.line;
-                    const endLine = selection.end.line;
+                    const startLine = selection.start.line + 1;
+                    const endLine = selection.end.line + 1;
 
                     prompt = `I am working on the file \`${relativePath}\` (${languageId}).\n\n` +
-                                `#### 🔍 SELECTED ZOOM AREA (Lines ${startLine + 1} to ${endLine + 1})\n` +
-                                `\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
-                                `**Instruction/Question:** "${instruction}"\n\n`;
+                             `#### 🔍 SELECTED CHUNK / ZOOM AREA (Lines ${startLine} to ${endLine})\n` +
+                             `\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
+                             `**Instruction/Question:** "${instruction}"\n\n`;
 
                     if (isNotebook && notebookContext) {
                         prompt = `**NOTEBOOK CONTEXT (Preceding Cells):**\n${notebookContext}\n\n` + prompt;
                     }
 
                     prompt += `\n**COMPLIANCE RULES:**\n` +
-                                `1. When modifying or patching this file, use \`<file path="${relativePath}" action="patch">\` containing SEARCH/REPLACE blocks.\n` +
-                                `2. When creating new files or rewriting completely, use \`<file path="${relativePath}" action="write">\`.\n` +
-                                `3. For targeted functions/methods, use \`<file path="${relativePath}" action="update_symbol" symbol="Name">\`.\n` +
-                                `4. Standard markdown code blocks (\`\`\`${languageId}) are reserved for explanations only.`;
+                              `1. You can see the COMPLETE file content above in \`<file path="${relativePath}">\` and the specific focused zoom chunk.\n` +
+                              `2. When modifying or patching this file, output a \`<file path="${relativePath}" action="patch">\` tag containing SEARCH/REPLACE blocks.\n` +
+                              `3. When creating new files or rewriting completely, use \`<file path="${relativePath}" action="write">\`.\n` +
+                              `4. For targeted functions/methods, use \`<file path="${relativePath}" action="update_symbol" symbol="Name">\`.\n` +
+                              `5. Standard markdown code blocks (\`\`\`${languageId}) are reserved for explanations only.`;
                 } else {
-                    // Conversational/Casual mode when no text is selected
-                    prompt = `I am discussing casually with you. I do not have any code selected to modify.\n\n` +
-                                `Current active file in editor (for your reference only): \`${relativePath}\` (${languageId}).\n\n` +
-                                `**My Question / Message:** "${instruction}"\n\n` +
-                                `**COMPLIANCE RULES (MANDATORY):**\n` +
-                                `1. DO NOT output any <file> mutation tags unless I explicitly ask you to create or modify a file.\n` +
-                                `2. Use standard markdown blocks (\`\`\`${languageId}) for explanations and examples.\n`;
+                    prompt = `I am working on the file \`${relativePath}\` (${languageId}).\n\n` +
+                             `**Instruction/Question:** "${instruction}"\n\n` +
+                             `**COMPLIANCE RULES:**\n` +
+                             `1. You have the COMPLETE file content above in \`<file path="${relativePath}">\`.\n` +
+                             `2. If I ask you to modify, fix, or add code to this file, output a \`<file path="${relativePath}" action="patch">\` tag containing SEARCH/REPLACE blocks (or \`action="write"\` / \`action="update_symbol"\`).\n` +
+                             `3. If my request is purely explanatory or conversational, respond in clean Markdown.`;
                 }
             } else {
                 // Grounding when NO editor is open (Conversational Workspace Mode)
-                prompt = `I am discussing casually with you. No file editor is currently open in my workspace.\n\n` +
-                            `**My Question / Message:** "${instruction}"\n\n` +
-                            `**COMPLIANCE RULES (MANDATORY):**\n` +
-                            `1. DO NOT output any <file> mutation tags unless I explicitly ask you to create or edit a file.\n`;
+                prompt = `I am discussing with you. No file editor is currently open in my workspace.\n\n` +
+                         `**My Question / Message:** "${instruction}"\n\n` +
+                         `**COMPLIANCE RULES:**\n` +
+                         `1. If I ask to create a new file, output \`<file path="path/to/file.ext" action="write">\`.\n` +
+                         `2. Use standard markdown blocks for general explanations and examples.\n`;
             }
-
             // --- SOVEREIGN SUB-GRAPH EXTRACTION ---
             const graph = this.contextManager['codeGraphManager'];
             let localGraphSummary = "";

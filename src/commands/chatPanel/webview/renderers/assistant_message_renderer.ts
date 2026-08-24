@@ -29,7 +29,7 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
             ? `<button class="msg-action-btn regenerate-msg-btn" title="Regenerate Response"><i class="codicon codicon-sync"></i></button>`
             : `<button class="msg-action-btn run-monitor-btn" title="Run App & Monitor Logs"><i class="codicon codicon-play"></i></button>`;
 
-        // Add Floating Action HUD
+        // Floating Message Actions HUD that follows and hovers
         const actions = document.createElement('div');
         actions.className = 'message-actions';
         actions.innerHTML = `${editButton}${copyButton}${middleButton}${deleteButton}`;
@@ -39,12 +39,15 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
         const header = document.createElement('div');
         header.className = 'message-header';
 
+        const roleSpan = document.createElement('span');
+        roleSpan.className = 'role-name';
         if (isUser) {
-            header.innerHTML = `<span class="role-name">You</span>`;
+            roleSpan.textContent = 'You';
         } else {
             const personaLabel = wrapper.dataset.personalityName || 'Lollms Coder';
-            header.innerHTML = `<span class="role-name">${personaLabel} (Assistant)</span>`;
+            roleSpan.textContent = `${personaLabel} (Assistant)`;
         }
+        header.appendChild(roleSpan);
         bodyDiv.appendChild(header);
 
         // Target Content Container

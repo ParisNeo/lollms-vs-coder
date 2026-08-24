@@ -21,7 +21,7 @@ export function renderDynamicMessage(messageId: string, rawContent: any, isFinal
         const deleteButton = `<button class="msg-action-btn delete-msg-btn" title="Delete Message"><i class="codicon codicon-trash"></i></button>`;
         const monitorButton = `<button class="msg-action-btn run-monitor-btn" title="Run App & Monitor Logs"><i class="codicon codicon-play"></i></button>`;
 
-        // Add Floating Action HUD
+        // Floating Message Actions HUD
         const actions = document.createElement('div');
         actions.className = 'message-actions';
         actions.innerHTML = `${editButton}${copyButton}${monitorButton}${deleteButton}`;
@@ -31,7 +31,12 @@ export function renderDynamicMessage(messageId: string, rawContent: any, isFinal
         const header = document.createElement('div');
         header.className = 'message-header';
         const personaLabel = wrapper.dataset.personalityName || '🧠 Dynamic Specialist';
-        header.innerHTML = `<span class="role-name" style="color: var(--vscode-charts-orange); font-weight:800;">${personaLabel} (Dynamic Turn)</span>`;
+
+        const roleSpan = document.createElement('span');
+        roleSpan.className = 'role-name';
+        roleSpan.style.cssText = 'color: var(--vscode-charts-orange); font-weight: 800;';
+        roleSpan.textContent = `${personaLabel} (Dynamic Turn)`;
+        header.appendChild(roleSpan);
         bodyDiv.appendChild(header);
 
         // Dynamic Stream & Interaction Container

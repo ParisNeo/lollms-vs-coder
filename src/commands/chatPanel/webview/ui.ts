@@ -1796,9 +1796,15 @@ export class BadgesBinder {
             item.onclick = (e: MouseEvent) => {
                 e.preventDefault();
                 e.stopPropagation();
-                state.currentPersonalityId = item.dataset.pid;
-                vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: item.dataset.pid });
+                const newPid = item.dataset.pid;
+                if (!newPid) return;
+                state.currentPersonalityId = newPid;
+                if (dom.personalitySelector) {
+                    dom.personalitySelector.value = newPid;
+                }
+                vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: newPid });
                 menu.classList.remove('visible');
+                updateBadges();
             };
         });
 
@@ -3847,7 +3853,7 @@ export function handleProgressiveSearchResults(results: any[]) {
     }
 }
 
-export function openRawCodeModal(messageId: string, blockIndex: number, filePath: string, rawCode: string, initialHunkIdx: number = 0) {
+export function openRawCodeModal(messageId: string, blockIndex: number, filePath: string, rawCode: string, initialHunkIdx: number = 0, blockId?: string) {
     // 🧹 CLEANUP GHOST ELEMENTS: Remove any orphaned action buttons from previous failed renders
     document.querySelectorAll('.modal-footer > button, .raw-block-actions').forEach(el => {
         if (!el.closest('#raw-code-modal')) el.remove();
@@ -3866,6 +3872,12 @@ export function openRawCodeModal(messageId: string, blockIndex: number, filePath
     filenameEl.textContent = filePath;
     display.dataset.messageId = messageId;
     display.dataset.blockIndex = String(blockIndex);
+    display.dataset.filePath = filePath;
+    if (blockId) {
+        display.dataset.blockId = blockId;
+    } else {
+        delete display.dataset.blockId;
+    }
 
     // Normalize rawCode to handle lone ======= separators seamlessly
     const normalizedRawCode = normalizeAiderContent(rawCode);

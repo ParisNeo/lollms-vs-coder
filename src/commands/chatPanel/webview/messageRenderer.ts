@@ -1,5 +1,6 @@
 import { dom, vscode, state } from './dom.js';
-import { isScrolledToBottom, collapseBlockWithScrollPreservation } from './utils.js';
+import { isScrolledToBottom, collapseBlockWithScrollPreservation, parseAiderHunks } from './utils.js';
+import { extractFileBlocks } from './plugins/fileOpPlugin.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
@@ -910,6 +911,12 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
 function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean, start: number, end: number })[] {
     // 🧠 Strip thinking blocks BEFORE running path extraction to keep index alignments perfect
     const cleanContent = (window as any).processThinkTags ? (window as any).processThinkTags(content).processedContent : content;
+    const fileBlocks = extractFileBlocks(cleanContent);
+    const fileRanges = fileBlocks.map(b => ({ start: b.start, end: b.end }));
+
+    const isInsideFileBlock = (offset: number) => {
+        return fileRanges.some(r => offset >= r.start && offset < r.end);
+    };
 
     const infos: any[] = [];
     const lines = cleanContent.split('\n');
@@ -925,8 +932,14 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
         const line = lineText.trim();
         const match = lineText.match(/^(\s*)(`{3,})/); // Indentation agnostic match
 
+        // Skip any line that resides inside a top-level <file> block
+        if (isInsideFileBlock(currentOffset)) {
+            currentOffset += lineWithNewline.length;
+            continue;
+        }
+
         if (!inBlock) {
-            // --- NAKED AIDER DETECTION ---
+            // --- NAKED AIDER DETECTION (OUTSIDE <file> TAGS ONLY) ---
             if (line.startsWith('<<<<<<< SEARCH')) {
                 inBlock = true;
                 fenceLength = 0;
@@ -977,8 +990,6 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                         prefix = parts[1].trim().toLowerCase();
                         pathStr = parts.slice(2).join(':').trim();
                     } else {
-                        // Support full addressing: [lang]:[file_path]:[class_name]:[method_name]
-                        // Path is the second part (index 1)
                         pathStr = parts.slice(1).join(':').trim();
                     }
 
@@ -1025,7 +1036,7 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                 infos[infos.length - 1].type = 'replace';
             }
 
-            if (fenceLength === 0 && (line.startsWith('>>>>>>> REPLACE') || line.startsWith('</file>'))) {
+            if (fenceLength === 0 && line.startsWith('>>>>>>> REPLACE')) {
                 inBlock = false;
                 depth = 0;
                 infos[infos.length - 1].end = currentOffset + lineWithNewline.length;
@@ -2364,11 +2375,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         if (plugin.extractBlocks) {
             const extracted = plugin.extractBlocks(mainProcessedContent, ctx);
             extracted.forEach(b => {
-                const isOverlapping = segments.some(s => 
-                    (b.start >= s.start && b.start < s.end) ||
-                    (b.end > s.start && b.end <= s.end) ||
-                    (s.start >= b.start && s.start < b.end)
-                );
+                // Bidirectional interval overlap check
+                const isOverlapping = segments.some(s => b.start < s.end && b.end > s.start);
                 if (!isOverlapping && b.html) {
                     segments.push({
                         type: 'plugin',
@@ -2430,12 +2438,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     // 3. EXTRACT FENCED CODE BLOCKS OUTSIDE OF PLUGINS
     const codeBlocks = extractFilePaths(mainProcessedContent);
     codeBlocks.forEach((block, idx) => {
-        // Skip if this code block overlaps with an already segmented XML plugin
-        const isOverlapping = segments.some(s => 
-            (block.start >= s.start && block.start < s.end) ||
-            (block.end > s.start && block.end <= s.end) ||
-            (s.start >= block.start && s.start < block.end)
-        );
+        // Skip if this code block overlaps with an already segmented XML plugin (Bidirectional check)
+        const isOverlapping = segments.some(s => block.start < s.end && block.end > s.start);
         if (isOverlapping) return;
 
         const blockText = mainProcessedContent.substring(block.start, block.end);
@@ -2565,8 +2569,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     });
 
     // --- APPLY ALL AGGREGATOR (COUNTS BOTH XML <file> TAGS & LEGACY BLOCKS) ---
-    const { extractFileBlocks } = require('./plugins/fileOpPlugin.js');
-    const xmlFileBlocks = typeof extractFileBlocks === 'function' ? extractFileBlocks(sourceText) : [];
+    const xmlFileBlocks = extractFileBlocks(sourceText);
     const xmlActionableCount = xmlFileBlocks.filter((b: any) => /path=["'][^"']+["']/i.test(b.attrStr)).length;
 
     const globalBlockInfos = extractFilePaths(sourceText);
@@ -3037,20 +3040,48 @@ export class ContextPresenter {
     ): string {
         if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
 
+        const registry = (window as any).lazyFilesRegistry;
+
         // Normalize list items to objects with byte sizes and approximate token conversions
         const normalized = list.map(item => {
-            if (typeof item === 'string') {
-                const byteSize = fileTokensMap[item] || 0;
-                const tok = Math.max(byteSize > 0 ? 1 : 0, Math.ceil(byteSize / 3.5));
-                return { path: item, bytes: byteSize, tokens: tok };
+            const rawPath = typeof item === 'string' ? item : item.path;
+            const regItem = registry?.get(rawPath);
+
+            let bytes = 0;
+            let tokens = 0;
+            let fileState = undefined;
+
+            if (typeof item === 'object' && item !== null) {
+                fileState = item.state;
+                if (typeof item.bytes === 'number' && item.bytes > 0) {
+                    bytes = item.bytes;
+                }
+                if (typeof item.tokens === 'number' && item.tokens > 0) {
+                    tokens = item.tokens;
+                }
             }
-            const byteSize = item.bytes !== undefined && item.bytes > 0 
-                ? item.bytes 
-                : (item.tokens && item.tokens > 0 ? Math.round(item.tokens * 3.5) : (fileTokensMap[item.path] || 0));
-            const tok = item.tokens !== undefined && item.tokens > 0 
-                ? item.tokens 
-                : Math.max(byteSize > 0 ? 1 : 0, Math.ceil(byteSize / 3.5));
-            return { path: item.path, bytes: byteSize, tokens: tok, state: item.state };
+
+            if (regItem && typeof regItem === 'object') {
+                if (bytes === 0 && typeof regItem.bytes === 'number' && regItem.bytes > 0) {
+                    bytes = regItem.bytes;
+                }
+                if (tokens === 0 && typeof regItem.tokens === 'number' && regItem.tokens > 0) {
+                    tokens = regItem.tokens;
+                }
+                if (!fileState) fileState = regItem.state;
+            }
+
+            if (tokens === 0 && fileTokensMap[rawPath]) {
+                tokens = fileTokensMap[rawPath];
+            }
+
+            if (bytes === 0 && tokens > 0) {
+                bytes = Math.round(tokens * 3.5);
+            } else if (tokens === 0 && bytes > 0) {
+                tokens = Math.max(1, Math.ceil(bytes / 3.5));
+            }
+
+            return { path: rawPath, bytes, tokens, state: fileState };
         });
 
         // Apply sorting
@@ -3066,27 +3097,22 @@ export class ContextPresenter {
             ${normalized.map(item => {
                 const f = item.path;
                 const bytes = item.bytes || 0;
-                const tokens = item.tokens || Math.max(bytes > 0 ? 1 : 0, Math.ceil(bytes / 3.5));
+                const tokens = item.tokens || (bytes > 0 ? Math.ceil(bytes / 3.5) : 0);
                 const uniqueDomId = f.replace(/[^a-zA-Z0-9]/g, '_');
                 const fileName = f.split('/').pop() || f;
                 const dirName = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
 
                 // Build styled weight badge with byte size and estimated tokens
-                let tokenBadge = '';
-                if (bytes > 0 || tokens > 0) {
-                    let formattedBytes = `${bytes} B`;
-                    if (bytes >= 1024 * 1024) {
-                        formattedBytes = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-                    } else if (bytes >= 1024) {
-                        formattedBytes = `${(bytes / 1024).toFixed(1)} KB`;
-                    }
-
-                    const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
-                    const weightClass = bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light');
-                    tokenBadge = `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`;
-                } else {
-                    tokenBadge = `<span class="file-token-badge weight-light" title="Lightweight file">~0 B</span>`;
+                let formattedBytes = `${bytes} B`;
+                if (bytes >= 1024 * 1024) {
+                    formattedBytes = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+                } else if (bytes >= 1024) {
+                    formattedBytes = `${(bytes / 1024).toFixed(1)} KB`;
                 }
+
+                const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
+                const weightClass = bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light');
+                const tokenBadge = `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`;
 
                 return `
                 <li class="context-item" style="flex-direction: column; align-items: stretch; gap: 4px;">
@@ -3175,15 +3201,15 @@ export class ContextPresenter {
 
                         <div class="token-fused-bar" style="display: flex; flex-direction: column; gap: 4px;">
                             <div style="display: flex; align-items: center; gap: 8px;">
-                                <button id="hud-quick-refresh-btn" class="icon-btn" title="Refresh Token Count" style="padding: 0; color: var(--vscode-descriptionForeground); opacity: 0.6;">
-                                    <i class="codicon codicon-refresh" style="font-size: 10px;"></i>
+                                <button id="hud-quick-refresh-btn" class="icon-btn" title="Refresh & Recalculate Context Tokens" style="padding: 2px; color: var(--vscode-textLink-foreground); opacity: 0.9; cursor: pointer;">
+                                    <i class="codicon codicon-refresh" style="font-size: 12px;"></i>
                                 </button>
-                                <div class="token-progress-container" id="token-progress-container" style="flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.03);">
+                                <div class="token-progress-container" id="token-progress-container" style="flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.06);">
                                     <div class="token-progress-bar" id="token-progress-bar"></div>
                                 </div>
                             </div>
                             <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <span id="token-count-label" style="font-size: 9px; opacity: 0.4; font-family: var(--vscode-editor-font-family);">Calculating...</span>
+                                <span id="token-count-label" style="font-size: 9px; opacity: 0.6; font-family: var(--vscode-editor-font-family);">Calculating...</span>
                                 <div id="token-bar-legend" class="token-legend" style="display: none; gap: 10px;"></div>
                             </div>
                         </div>
@@ -3410,6 +3436,21 @@ export class ContextBinder {
             });
         }
 
+        // Dedicated HUD Quick Refresh Binding
+        const quickRefresh = dashboard.querySelector('#hud-quick-refresh-btn');
+        if (quickRefresh) {
+            (quickRefresh as HTMLElement).onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const icon = quickRefresh.querySelector('.codicon');
+                if (icon) icon.classList.add('spin');
+                const label = document.getElementById('token-count-label');
+                if (label) label.textContent = 'Counting tokens...';
+                vscode.postMessage({ command: 'calculateTokens' });
+                setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1200);
+            };
+        }
+
         // Bind accordion toggles dynamically
         dashboard.querySelectorAll('.lazy-file-accordion').forEach(accordion => {
             accordion.addEventListener('toggle', () => {
@@ -3630,6 +3671,16 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
 
     // 1. MERGE WITH EXISTING STATE (Partial updates)
     const prev = state.lastContextData || { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "", selections: [] };
+
+    if (files && Array.isArray(files)) {
+        if (!state.fileTokensMap) state.fileTokensMap = {};
+        files.forEach((f: any) => {
+            if (f && typeof f === 'object' && f.path) {
+                if (f.tokens) state.fileTokensMap[f.path] = f.tokens;
+                else if (f.bytes) state.fileTokensMap[f.path] = Math.ceil(f.bytes / 3.5);
+            }
+        });
+    }
 
     state.lastContextData = {
         context: contextText !== undefined ? contextText : (prev.context || ""),

@@ -15,7 +15,7 @@ export function renderAgentMessage(messageId: string, rawContent: any, isFinal: 
     if (!layout) {
         bodyDiv.innerHTML = ''; // Clear prior shells
 
-        // Add Floating Action HUD (the Hover HUD)
+        // Floating Message Actions HUD (Hover follow)
         const actions = document.createElement('div');
         actions.className = 'message-actions';
         actions.innerHTML = `
@@ -28,7 +28,12 @@ export function renderAgentMessage(messageId: string, rawContent: any, isFinal: 
         const header = document.createElement('div');
         header.className = 'message-header';
         const personaLabel = wrapper.dataset.personalityName || 'Autonomous Agent';
-        header.innerHTML = `<span class="role-name" style="color: var(--vscode-charts-red); font-weight:800; letter-spacing:0.5px;">🤖 ${personaLabel} (Agent Mission)</span>`;
+
+        const roleSpan = document.createElement('span');
+        roleSpan.className = 'role-name';
+        roleSpan.style.cssText = 'color: var(--vscode-charts-red); font-weight: 800; letter-spacing: 0.5px;';
+        roleSpan.textContent = `🤖 ${personaLabel} (Agent Mission)`;
+        header.appendChild(roleSpan);
         bodyDiv.appendChild(header);
 
         // Core Layout Container

@@ -1,5 +1,6 @@
 import { TagPlugin, PluginContext } from '../pluginSystem';
 import { state } from '../dom.js';
+import { normalizeAiderContent, parseAiderHunks } from '../utils.js';
 
 function renderDiffLines(lines: string[], type: 'added' | 'removed' | 'unchanged'): string {
     return lines.map(line => {
@@ -134,14 +135,69 @@ export const fileMutationPlugin: TagPlugin = {
         let bodyHtml = "";
 
         if (isPatch) {
-            // Parse Aider hunks with green/red diff rendering
-            const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
-            const matches = [...rawContent.matchAll(aiderRegex)];
+            const normalizedRaw = normalizeAiderContent(rawContent);
+            const hunks = parseAiderHunks(normalizedRaw);
 
-            if (matches.length > 0) {
-                const hunksHtml = matches.map((m, hIdx) => {
-                    const sLines = (m[1] || "").replace(/\r\n/g, '\n').split('\n');
-                    const rLines = (m[2] || "").replace(/\r\n/g, '\n').split('\n');
+            if (hunks.length > 0) {
+                if (hunks.length > 1) {
+                    // --- MULTI-HUNK TABBED VIEW ---
+                    const navTabsHtml = hunks.map((h, hIdx) => {
+                        const isHunkApplied = appliedHunks.includes(hIdx) || isApplied;
+                        const statusClass = isHunkApplied ? 'status-completed' : '';
+                        const statusIcon = isHunkApplied ? 'codicon-check' : 'codicon-primitive-dot';
+
+                        return `
+                        <div class="hunk-tab hunk-tab-${hIdx} ${hIdx === 0 ? 'active' : ''} ${statusClass}" data-hunk-index="${hIdx}">
+                            <span class="hunk-status-icon"><i class="codicon ${statusIcon}"></i></span> HUNK ${hIdx + 1}
+                        </div>`;
+                    }).join('');
+
+                    const panesHtml = hunks.map((h, hIdx) => {
+                        const sLines = (h.searchPart || "").replace(/\r\n/g, '\n').split('\n');
+                        const rLines = (h.replacePart || "").replace(/\r\n/g, '\n').split('\n');
+
+                        let pref = 0;
+                        while (pref < sLines.length && pref < rLines.length && sLines[pref].trim() === rLines[pref].trim()) {
+                            pref++;
+                        }
+                        let suff = 0;
+                        while (suff < (sLines.length - pref) && suff < (rLines.length - pref) && sLines[sLines.length - 1 - suff].trim() === rLines[rLines.length - 1 - suff].trim()) {
+                            suff++;
+                        }
+
+                        const isHunkApplied = appliedHunks.includes(hIdx) || isApplied;
+
+                        return `
+                        <div class="hunk-tab-content hunk-pane-${hIdx} ${hIdx === 0 ? 'active' : ''}" id="pane-${blockId}-${hIdx}">
+                            <div class="aider-hunk-bubble">
+                                <div class="aider-hunk-content">
+                                    <pre style="margin:0; padding:12px; background:var(--vscode-editor-background); border:none; overflow:auto; max-height:350px;">${renderDiffLines(sLines.slice(0, pref), 'unchanged')}${renderDiffLines(sLines.slice(pref, sLines.length - suff), 'removed')}${renderDiffLines(rLines.slice(pref, rLines.length - suff), 'added')}${renderDiffLines(sLines.slice(sLines.length - suff), 'unchanged')}</pre>
+                                </div>
+                                <div class="aider-hunk-header" style="border-top: 1px solid var(--vscode-widget-border); border-bottom: none;">
+                                    <div style="font-size: 10px; opacity:0.7;">Hunk ${hIdx + 1} of ${hunks.length}</div>
+                                    <div class="aider-hunk-actions">
+                                        <button class="code-action-btn delete-btn undo-hunk-btn" style="display: ${isHunkApplied ? 'inline-flex' : 'none'};" data-hunk-index="${hIdx}" title="Undo this hunk"><i class="codicon codicon-discard"></i> Undo</button>
+                                        <button class="code-action-btn apply-btn apply-hunk-btn ${isHunkApplied ? 'applied' : ''}" data-hunk-index="${hIdx}" title="Apply this hunk"><i class="codicon ${isHunkApplied ? 'codicon-check' : 'codicon-arrow-swap'}"></i> Apply Hunk</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>`;
+                    }).join('');
+
+                    bodyHtml = `
+                    <div class="hunk-tabs-container">
+                        <div class="hunk-tabs-nav">
+                            ${navTabsHtml}
+                        </div>
+                        <div class="hunk-contents-wrapper">
+                            ${panesHtml}
+                        </div>
+                    </div>`;
+                } else {
+                    // Single hunk view
+                    const h = hunks[0];
+                    const sLines = (h.searchPart || "").replace(/\r\n/g, '\n').split('\n');
+                    const rLines = (h.replacePart || "").replace(/\r\n/g, '\n').split('\n');
 
                     let pref = 0;
                     while (pref < sLines.length && pref < rLines.length && sLines[pref].trim() === rLines[pref].trim()) {
@@ -152,16 +208,15 @@ export const fileMutationPlugin: TagPlugin = {
                         suff++;
                     }
 
-                    return `
-                    <div class="aider-hunk-bubble" style="border-bottom: ${hIdx < matches.length - 1 ? '1px solid var(--vscode-widget-border)' : 'none'};">
-                        ${matches.length > 1 ? `<div style="font-size:10px; font-weight:bold; opacity:0.7; padding:4px 12px; background:rgba(0,0,0,0.15);">HUNK ${hIdx + 1} of ${matches.length}</div>` : ''}
-                        <div class="aider-hunk-content">
-                            <pre style="margin:0; padding:12px; background:var(--vscode-editor-background); border:none; overflow:auto; max-height:350px;">${renderDiffLines(sLines.slice(0, pref), 'unchanged')}${renderDiffLines(sLines.slice(pref, sLines.length - suff), 'removed')}${renderDiffLines(rLines.slice(pref, rLines.length - suff), 'added')}${renderDiffLines(sLines.slice(sLines.length - suff), 'unchanged')}</pre>
+                    bodyHtml = `
+                    <div class="hunk-contents-wrapper">
+                        <div class="aider-hunk-bubble">
+                            <div class="aider-hunk-content">
+                                <pre style="margin:0; padding:12px; background:var(--vscode-editor-background); border:none; overflow:auto; max-height:350px;">${renderDiffLines(sLines.slice(0, pref), 'unchanged')}${renderDiffLines(sLines.slice(pref, sLines.length - suff), 'removed')}${renderDiffLines(rLines.slice(pref, rLines.length - suff), 'added')}${renderDiffLines(sLines.slice(sLines.length - suff), 'unchanged')}</pre>
+                            </div>
                         </div>
                     </div>`;
-                }).join('');
-
-                bodyHtml = `<div class="hunk-contents-wrapper">${hunksHtml}</div>`;
+                }
             } else {
                 const escapedCode = rawContent.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
                 bodyHtml = `<pre style="margin:0; padding:12px; max-height:400px; overflow:auto;"><code class="language-${ext}">${escapedCode}</code></pre>`;
@@ -173,11 +228,11 @@ export const fileMutationPlugin: TagPlugin = {
 
         const encodedRawCode = encodeURIComponent(rawContent);
 
-        // Render collapsed by default if already applied
+        // Render open by default if not applied
         const openAttr = isApplied ? '' : 'open';
         const applyBtnClass = isStreaming ? 'apply-btn' : (isApplied ? 'applied' : 'apply-btn');
-        const applyBtnIcon = isStreaming ? 'codicon-loading spin' : (isApplied ? 'codicon-check' : 'codicon-tools');
-        const applyBtnTitle = isStreaming ? 'Streaming code changes...' : (isApplied ? 'Successfully applied. Click to re-apply.' : 'Review Diff & Apply');
+        const applyBtnIcon = isStreaming ? 'codicon-loading spin' : (isApplied ? 'codicon-check' : (isPatch ? 'codicon-arrow-swap' : 'codicon-tools'));
+        const applyBtnTitle = isStreaming ? 'Streaming code changes...' : (isApplied ? 'Successfully applied. Click to re-apply.' : (isPatch ? 'Review Diff & Apply Patch' : 'Apply File Content'));
         const applyBtnDisabled = isStreaming ? 'disabled style="opacity:0.6;"' : '';
 
         return `
@@ -210,6 +265,66 @@ export const fileMutationPlugin: TagPlugin = {
             const blockIndex = parseInt(card.dataset.blockIndex || "0", 10);
             const rawCodeAttr = card.dataset.rawCode;
             const rawContent = rawCodeAttr ? decodeURIComponent(rawCodeAttr) : (card.querySelector('pre code')?.textContent || "");
+
+            // Tab navigation for multi-hunk cards
+            card.querySelectorAll('.hunk-tab').forEach((tab: HTMLElement) => {
+                tab.onclick = (e: MouseEvent) => {
+                    e.stopPropagation();
+                    const hIdx = tab.dataset.hunkIndex;
+                    const nav = tab.closest('.hunk-tabs-nav');
+                    const wrapper = card.querySelector('.hunk-contents-wrapper');
+
+                    if (nav && wrapper && hIdx !== undefined) {
+                        nav.querySelectorAll('.hunk-tab').forEach((t: Element) => t.classList.remove('active'));
+                        wrapper.querySelectorAll('.hunk-tab-content').forEach((p: Element) => p.classList.remove('active'));
+
+                        tab.classList.add('active');
+                        wrapper.querySelector(`.hunk-pane-${hIdx}`)?.classList.add('active');
+                    }
+                };
+            });
+
+            // Individual Hunk Apply buttons
+            card.querySelectorAll('.apply-hunk-btn').forEach((hunkBtn: HTMLElement) => {
+                hunkBtn.onclick = (e: MouseEvent) => {
+                    e.stopPropagation();
+                    const hIdx = parseInt((hunkBtn as HTMLElement).dataset.hunkIndex || "0", 10);
+                    (hunkBtn as HTMLButtonElement).disabled = true;
+                    hunkBtn.innerHTML = '<div class="spinner"></div>';
+
+                    context.vscode.postMessage({
+                        command: 'replaceCode',
+                        filePath,
+                        content: rawContent,
+                        messageId: context.messageId,
+                        blockIndex: blockIndex,
+                        hunkIndex: hIdx,
+                        blockId: card.id,
+                        options: { silent: false, autoSave: false, blockId: card.id, blockIndex: blockIndex, hunkIndex: hIdx }
+                    });
+                };
+            });
+
+            // Individual Hunk Undo buttons
+            card.querySelectorAll('.undo-hunk-btn').forEach((undoHunkBtn: HTMLElement) => {
+                undoHunkBtn.onclick = (e: MouseEvent) => {
+                    e.stopPropagation();
+                    const hIdx = parseInt((undoHunkBtn as HTMLElement).dataset.hunkIndex || "0", 10);
+                    (undoHunkBtn as HTMLButtonElement).disabled = true;
+                    undoHunkBtn.innerHTML = '<div class="spinner"></div>';
+
+                    context.vscode.postMessage({
+                        command: 'replaceCode',
+                        filePath,
+                        content: rawContent,
+                        messageId: context.messageId,
+                        blockIndex: blockIndex,
+                        hunkIndex: hIdx,
+                        blockId: card.id,
+                        options: { undo: true, silent: true, autoSave: true, blockId: card.id, blockIndex: blockIndex, hunkIndex: hIdx }
+                    });
+                };
+            });
 
             const applyBtn = card.querySelector('.apply-mutation-btn') as HTMLButtonElement;
             if (applyBtn) {
@@ -293,47 +408,102 @@ export const fileMutationPlugin: TagPlugin = {
 
 export const fileOpPlugin: TagPlugin = {
     id: 'file_operations',
-    tagPattern: /^[ \t]*<(move_files|copy_files|delete_files|remove_files_from_context)>([\s\S]*?)<\/\1>/gim,
+    tagPattern: /^[ \t]*<(move_files|copy_files|delete_files|remove_files_from_context)\b([^>]*?)>([\s\S]*?)<\/\1>/gim,
     render: (match) => {
         const type = match[1];
-        const inner = match[2].trim();
-        const lines = inner.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-        
-        let title = "", icon = "", command = "", btnText = "";
-        let detailsHtml = "";
+        const attrPart = match[2] || "";
+        const inner = (match[3] || "").trim();
 
-        if (type === 'delete_files') {
-            title = "Propose Deletion"; icon = "codicon-trash"; command = "deleteFile"; btnText = "Delete All";
-            detailsHtml = lines.map(p => `<div class="expansion-file-item"><span class="codicon codicon-file"></span> ${p}</div>`).join('');
-        } else if (type === 'move_files' || type === 'copy_files') {
-            title = type === 'move_files' ? "Propose Move" : "Propose Copy";
-            icon = type === 'move_files' ? "codicon-arrow-swap" : "codicon-files";
-            command = type === 'move_files' ? "bulkMoveFiles" : "bulkCopyFiles";
-            btnText = "Apply Changes";
-            detailsHtml = lines.map(l => {
-                const [src, dest] = l.split('->');
-                return `<div class="file-operation-details"><span>${src}</span> <i class="codicon codicon-arrow-right"></i> <span>${dest}</span></div>`;
-            }).join('');
+        let lines: string[] = [];
+
+        const attrMatch = attrPart.match(/paths=['"](\[.*?\])['"]/i);
+        if (attrMatch) {
+            try { lines = JSON.parse(attrMatch[1].replace(/'/g, '"')); } catch(e) {}
         }
 
-        const payload = type === 'delete_files' ? { filePaths: lines } : { operations: lines.map(l => ({ src: l.split('->')[0], dest: l.split('->')[1] })) };
+        if (lines.length === 0) {
+            lines = inner.split('\n')
+                .map(l => l.trim().replace(/^['"]|['"]$/g, ''))
+                .filter(l => l.length > 0 && !l.startsWith('<') && l !== '...');
+        }
+
+        if (lines.length === 0) return null;
+
+        let title = "", icon = "", command = "", btnText = "";
+        let detailsHtml = "";
+        let payload: any = {};
+
+        if (type === 'remove_files_from_context') {
+            title = "Context Pruning Proposed";
+            icon = "codicon-clear-all";
+            command = "bulkRemoveFiles";
+            btnText = `Remove from Context (${lines.length} files)`;
+            detailsHtml = lines.map(p => `
+                <div class="expansion-file-item" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
+                    <span class="codicon codicon-trash" style="color: var(--vscode-charts-red, #f44336);"></span>
+                    <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p}</span>
+                </div>
+            `).join('');
+            payload = { paths: lines };
+        } else if (type === 'delete_files') {
+            title = "File Deletion Proposed";
+            icon = "codicon-trash";
+            command = "deleteFile";
+            btnText = `Delete All (${lines.length} files)`;
+            detailsHtml = lines.map(p => `
+                <div class="expansion-file-item" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
+                    <span class="codicon codicon-file"></span>
+                    <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p}</span>
+                </div>
+            `).join('');
+            payload = { filePaths: lines, paths: lines };
+        } else if (type === 'move_files' || type === 'copy_files') {
+            title = type === 'move_files' ? "Move/Rename Proposed" : "Copy Proposed";
+            icon = type === 'move_files' ? "codicon-arrow-swap" : "codicon-files";
+            command = type === 'move_files' ? "bulkMoveFiles" : "bulkCopyFiles";
+            btnText = type === 'move_files' ? "Apply Move" : "Apply Copy";
+            const ops: { src: string, dest: string }[] = [];
+            lines.forEach(l => {
+                const [src, dest] = l.split('->').map(s => s.trim());
+                if (src && dest) {
+                    ops.push({ src, dest });
+                }
+            });
+            detailsHtml = ops.map(op => `
+                <div class="file-operation-details" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
+                    <span>${op.src}</span>
+                    <i class="codicon codicon-arrow-right"></i>
+                    <span style="font-weight: bold;">${op.dest}</span>
+                </div>
+            `).join('');
+            payload = { operations: ops };
+        }
 
         return `
-        <div class="file-operation-block">
-            <div class="file-operation-header"><span class="codicon ${icon}"></span> <span>${title}</span></div>
-            <div class="expansion-body">
-                <div class="expansion-file-list">${detailsHtml}</div>
-                <div class="file-operation-actions">
-                    <button class="code-action-btn apply-btn file-op-btn" data-command="${command}" data-payload='${JSON.stringify(payload)}'>${btnText}</button>
+        <div class="file-operation-block" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-left: 4px solid var(--vscode-charts-orange); border-radius: 8px; margin: 12px 0; overflow: hidden;">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 12px;">
+                <span class="codicon ${icon}"></span> 
+                <span>${title}</span>
+            </div>
+            <div class="expansion-body" style="padding: 12px;">
+                <div class="expansion-file-list" style="margin-bottom: 12px; max-height: 240px; overflow-y: auto;">
+                    ${detailsHtml}
+                </div>
+                <div class="file-operation-actions" style="display: flex; justify-content: flex-end; gap: 8px;">
+                    <button class="code-action-btn apply-btn file-op-btn" data-command="${command}" data-payload='${JSON.stringify(payload)}'>
+                        <span class="codicon codicon-check"></span> ${btnText}
+                    </button>
                 </div>
             </div>
         </div>`;
     },
     initialize: (container, context) => {
         container.querySelectorAll('.file-op-btn').forEach(btn => {
-            (btn as HTMLElement).onclick = () => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
                 const d = (btn as HTMLElement).dataset;
-                const parsedPayload = JSON.parse(d.payload!);
+                if (!d.command || !d.payload) return;
+                const parsedPayload = JSON.parse(d.payload);
                 context.vscode.postMessage({ command: d.command, ...parsedPayload });
                 (btn as HTMLButtonElement).disabled = true;
                 btn.innerHTML = '<i class="codicon codicon-check"></i> Applied';

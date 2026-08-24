@@ -223,7 +223,7 @@ const old = 2;
 		assert.ok(blocks[1].attrStr.includes('file2.ts'));
 		assert.ok(blocks[1].rawContent.includes('<<<<<<< SEARCH'));
 	});
-
+    
 	test('renderFileList calculates byte size and token estimate correctly', () => {
 		const { ContextPresenter } = require('../../commands/chatPanel/webview/messageRenderer');
 		const fileList = [
@@ -237,4 +237,36 @@ const old = 2;
 		assert.ok(html.includes('tok'));
 		assert.ok(!html.includes('~0 tok'), 'File with positive byte count should not render ~0 tok');
 	});
+
+	test('ContextManager protects recently added files against governor eviction', () => {
+		const { ContextManager } = require('../../contextManager');
+		const cm = new ContextManager({} as any, {} as any);
+
+		cm.recordRecentlyAddedFiles(['src/modules/analysis/logic.py', 'database.py']);
+
+		assert.strictEqual(cm.isRecentlyAdded('src/modules/analysis/logic.py'), true);
+  assert.strictEqual(cm.isRecentlyAdded('database.py'), true);
+  assert.strictEqual(cm.isRecentlyAdded('other_file.py'), false);
+ });
+
+ test('ContextStateProvider excludes bloat folders from general discovery while allowing explicit file access', () => {
+  const { ContextStateProvider } = require('../../commands/contextStateProvider');
+  const provider = new ContextStateProvider({
+   workspaceState: {
+    get: () => ({}),
+    update: () => Promise.resolve()
+   },
+   globalState: {
+    get: () => ({}),
+    update: () => Promise.resolve()
+   }
+  } as any);
+
+  const dataUri = vscode.Uri.file('/workspace/data/raw_dataset.csv');
+  const binUri = vscode.Uri.file('/workspace/bin/output.exe');
+
+  // File is not strictly ignored from context inclusion
+  assert.strictEqual(provider.isStrictlyIgnored(dataUri), false, 'data/ files should not be blocked from explicit inclusion');
+  assert.strictEqual(provider.isStrictlyIgnored(binUri), false, 'bin/ files should not be blocked from explicit inclusion');
+ });
 });

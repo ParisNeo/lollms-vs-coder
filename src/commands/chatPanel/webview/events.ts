@@ -1472,6 +1472,8 @@ if (dom.sendButton) {
             const blockIndex = parseInt(display.dataset.blockIndex || "0", 10);
             const hunkIndexRaw = display.dataset.hunkIndex;
             const hunkIndex = hunkIndexRaw === "" ? undefined : parseInt(hunkIndexRaw || "0", 10);
+            const filePath = display.dataset.filePath || dom.rawCodeFilename.textContent || "";
+            const blockId = display.dataset.blockId;
 
             if (messageId) {
                 // Terminate any ongoing progressive search state machine to prevent background CPU loops
@@ -1484,7 +1486,9 @@ if (dom.sendButton) {
                     command: 'markHunkApplied',
                     messageId,
                     blockIndex,
-                    hunkIndex
+                    hunkIndex,
+                    filePath,
+                    blockId
                 });
 
                 // Immediately update local UI to show success
@@ -1494,6 +1498,8 @@ if (dom.sendButton) {
                         messageId,
                         blockIndex,
                         hunkIndex,
+                        filePath,
+                        blockId,
                         success: true,
                         alreadyApplied: true
                     }
@@ -1804,8 +1810,10 @@ if (dom.sendButton) {
             e.stopPropagation();
             const icon = refreshBtn.querySelector('.codicon');
             if (icon) icon.classList.add('spin');
+            const label = document.getElementById('token-count-label');
+            if (label) label.textContent = 'Counting tokens...';
             vscode.postMessage({ command: 'calculateTokens' });
-            setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1000);
+            setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1200);
             return;
         }
 

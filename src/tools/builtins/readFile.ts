@@ -31,7 +31,10 @@ export const readFileTool: ToolDefinition = {
                 const ext = path.extname(filePath).toLowerCase();
 
                 if (env.contextManager.getContextStateProvider()) {
-                    await env.contextManager.getContextStateProvider()!.addFilesToContext([filePath]);
+                    const added = await env.contextManager.getContextStateProvider()!.addFilesToContext([filePath]);
+                    if (added && added.length > 0) {
+                        env.contextManager.recordRecentlyAddedFiles(added);
+                    }
                 }
 
                 let outputText = "";

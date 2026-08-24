@@ -74,8 +74,7 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
         **CRITICAL MANDATES**:
         - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
         - Do NOT output conversational chatter or a "summary of changes" followed by the full file after an Aider patch. This is a severe violation of turn economy and will cause the file system patch to fail.
-        - **THINKING & OBSERVATION LANGUAGE BLOCKS (MANDATORY)**: When writing thoughts, reasoning, or observations (such as in the "Observe", "Think", or "Reflect" sections), you are **STRICTLY FORBIDDEN** from using the namespaced \`language:path\` format (e.g. \`\`\`typescript:src/main.ts\`). This namespaced format is EXCLUSIVELY reserved for actual code updates in the **Act** stage that the system should apply to disk. For non-updatable snippets, thoughts, and reasoning, always use standard \`language\` blocks (without the colon and path, e.g. \`\`\`typescript) to prevent accidental file corruption or parsing errors.
-        - **STAGE ISOLATION**: All code updates (either Aider patches or Full Files) MUST be placed exclusively inside the **Act** stage. You are forbidden from placing code blocks or patches inside the **Observe**, **Think**, or **Reflect** sections.
+        - **THINKING & OBSERVATION SNIPPETS**: When writing non-updatable snippets, thoughts, illustrations, or explanations, always use standard markdown code fences (without file paths, e.g. \`\`\`typescript). The \`<file path="..." ...>\` and namespaced headers are EXCLUSIVELY reserved for actual code updates that the system should apply to disk.
         `);
         } else {
             sections.push(`
@@ -91,8 +90,7 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
         **CRITICAL MANDATES**:
         - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
         - Do NOT output conversational chatter or a "summary of changes" followed by the full file after an Aider patch. This is a severe violation of turn economy and will cause the file system patch to fail.
-        - **THINKING & OBSERVATION LANGUAGE BLOCKS (MANDATORY)**: When writing thoughts, reasoning, or observations (such as in the "Observe", "Think", or "Reflect" sections), you are **STRICTLY FORBIDDEN** from using the namespaced \`language:path\` format (e.g. \`\`\`typescript:src/main.ts\`). This namespaced format is EXCLUSIVELY reserved for actual code updates in the **Act** stage that the system should apply to disk. For non-updatable snippets, thoughts, and reasoning, always use standard \`language\` blocks (without the colon and path, e.g. \`\`\`typescript) to prevent accidental file corruption or parsing errors.
-        - **STAGE ISOLATION**: All code updates (either Aider patches or Full Files) MUST be placed exclusively inside the **Act** stage. You are forbidden from placing code blocks or patches inside the **Observe**, **Think**, or **Reflect** sections.
+        - **THINKING & OBSERVATION SNIPPETS**: When writing non-updatable snippets, thoughts, illustrations, or explanations, always use standard markdown code fences (without file paths, e.g. \`\`\`typescript). The \`<file path="..." ...>\` and namespaced headers are EXCLUSIVELY reserved for actual code updates that the system should apply to disk.
         `);
         }
 
@@ -471,6 +469,7 @@ You are a vision-capable engineer. You can use XML tags to manifest visual chang
         // Default prompt
         return `${projectHeader}${activeProfile.prefix || ''}
 ${persona}
+${activeProfile.systemPrompt ? `\n${activeProfile.systemPrompt}\n` : ""}
 ${isSparqlActive ? sparqlOntologyInstruction : ""}
 # 🏢 SOVEREIGN WORKSPACE AWARENESS
 You are operating within a **Multi-Project VS Code Workspace**. 
@@ -488,12 +487,6 @@ ${memorySection}
 - **COGNITIVE SCRATCHPAD & MAPPING**: Use your reasoning scratchpad or \`<project_memory>\` to summarize what key directories and modules are responsible for, preserving high-level architectural memory without bloating token context.
 - **POSSESSED CONTEXT [C]**: Files marked **\`[C]\`** are already in your prompt under 'LOADED FILE CONTENTS'. You already possess them; analyze and edit them directly.
 - **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Use \`<add_files_to_context>\` to request it when needed.
-
-# 🧠 BEHAVIOR & STYLE
-${activeProfile.systemPrompt ? `
-### 📢 CRITICAL RESPONSE STYLE: ${activeProfile.name.toUpperCase()}
-${activeProfile.systemPrompt}
-` : ""}
 
 ### 🛡️ GUARDIAN PROTOCOL (AUTONOMOUS INTEGRITY)
 1. **VERIFICATION LOOP**: Note that every file you write will be immediately audited by a system linter/compiler. 

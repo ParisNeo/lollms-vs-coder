@@ -315,6 +315,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (countEl && message.count) countEl.textContent = message.count;
                 break;
             case 'updateContext':
+                if (Array.isArray(message.files)) {
+                    if (!state.fileTokensMap) state.fileTokensMap = {};
+                    message.files.forEach((f: any) => {
+                        if (f && typeof f === 'object' && f.path) {
+                            if (f.tokens) state.fileTokensMap[f.path] = f.tokens;
+                            else if (f.bytes) state.fileTokensMap[f.path] = Math.ceil(f.bytes / 3.5);
+                        }
+                    });
+                }
                 updateContext(message.context, message.files, message.skills, message.tools, message.diagrams, message.briefing, message.selections);
                 updateBadges();
                 // Only schedule background sync if generation is not actively streaming
@@ -328,10 +337,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const { action, files, skills, tools, briefing, selections, filePath, content } = message;
 
                     if (action === 'sync_all') {
-                        // Fast local sync without full re-render of code block contents
+                        // Fast local sync preserving file descriptors with weights
                         state.lastContextData = {
                             context: "",
-                            files: files.map((f: any) => f.path),
+                            files: files || [],
                             skills: skills,
                             tools: tools,
                             diagrams: [],
@@ -339,8 +348,18 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             selections: selections
                         };
 
+                        if (!state.fileTokensMap) state.fileTokensMap = {};
+                        if (Array.isArray(files)) {
+                            files.forEach((f: any) => {
+                                if (f && typeof f === 'object' && f.path) {
+                                    if (f.tokens) state.fileTokensMap[f.path] = f.tokens;
+                                    else if (f.bytes) state.fileTokensMap[f.path] = Math.ceil(f.bytes / 3.5);
+                                }
+                            });
+                        }
+
                         // Store descriptors in our local view cache
-                        (window as any).lazyFilesRegistry = new Map(files.map((f: any) => [f.path, f]));
+                        (window as any).lazyFilesRegistry = new Map(files.map((f: any) => [typeof f === 'string' ? f : f.path, f]));
 
                         // Use the decoupled updater pathway
                         import('./messageRenderer.js').then(mRenderer => {
@@ -941,6 +960,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     // LATE HYDRATION: Update global file list and sync existing UI blocks only if idle
                     if (files && state.lastContextData) {
                         state.lastContextData.files = files;
+                        if (!state.fileTokensMap) state.fileTokensMap = {};
+                        files.forEach((f: any) => {
+                            if (f && typeof f === 'object' && f.path) {
+                                if (f.tokens) state.fileTokensMap[f.path] = f.tokens;
+                                else if (f.bytes) state.fileTokensMap[f.path] = Math.ceil(f.bytes / 3.5);
+                            }
+                        });
                         if (!state.isGenerating) {
                             import('./ui.js').then(ui => ui.syncExpansionBlocks());
                         }
@@ -1711,76 +1737,91 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         const labelInline = row.querySelector('.status-label-inline');
                         if (labelInline) labelInline.remove();
 
-                        // Add "Fix with AI" and "Manual Stitch" buttons if the change failed to apply
-                        // (Mute for system-generated messages to prevent recursive loops)
-                        const isSystemId = message.messageId.startsWith('self_correction') || message.messageId.startsWith('guardian') || message.messageId.startsWith('system') || message.messageId.startsWith('inspection');
-                        if (!message.success && !isSystemId) {
-                            let rowActions = row.querySelector('.row-actions') as HTMLElement;
-                            if (!rowActions) {
-                                rowActions = document.createElement('div');
-                                rowActions.className = 'row-actions';
-                                row.appendChild(rowActions);
-                            }
-                            rowActions.style.display = 'flex';
-                            rowActions.style.gap = '6px';
-                            rowActions.style.marginLeft = 'auto';
+                        const rowActions = row.querySelector('.row-actions') as HTMLElement;
+                        if (message.success && rowActions) {
+                            rowActions.remove();
+                        } else if (!message.success) {
+                            const isSystemId = message.messageId?.startsWith('self_correction') || message.messageId?.startsWith('guardian') || message.messageId?.startsWith('system') || message.messageId?.startsWith('inspection');
+                            if (!isSystemId) {
+                                let activeActions = rowActions;
+                                if (!activeActions) {
+                                    activeActions = document.createElement('div');
+                                    activeActions.className = 'row-actions';
+                                    row.appendChild(activeActions);
+                                }
+                                activeActions.style.display = 'flex';
+                                activeActions.style.gap = '6px';
+                                activeActions.style.marginLeft = 'auto';
 
-                            // Find the raw code block on the page to retrieve data for the modal
-                            const blockEl = document.getElementById(`block-${message.messageId}-${message.blockIndex}`) as HTMLDetailsElement;
-                            const rawCode = blockEl ? blockEl.dataset.rawCode || "" : "";
+                                const blockEl = document.getElementById(`block-${message.messageId}-${message.blockIndex}`) as HTMLDetailsElement;
+                                const rawCode = blockEl ? blockEl.dataset.rawCode || "" : "";
 
-                            rowActions.innerHTML = `
-                                <button class="code-action-btn apply-btn row-fix-ai-btn" style="height:20px; font-size:9px; padding:0 6px;" title="Ask AI to repair this specific change">
-                                    <i class="codicon codicon-sparkle"></i> Fix with AI
-                                </button>
-                                <button class="code-action-btn secondary-btn row-manual-stitch-btn" style="height:20px; font-size:9px; padding:0 6px;" title="Open manual stitching modal">
-                                    <i class="codicon codicon-tools"></i> Raw Block
-                                </button>
-                            `;
+                                activeActions.innerHTML = `
+                                    <button class="code-action-btn apply-btn row-fix-ai-btn" style="height:20px; font-size:9px; padding:0 6px;" title="Ask AI to repair this specific change">
+                                        <i class="codicon codicon-sparkle"></i> Fix with AI
+                                    </button>
+                                    <button class="code-action-btn secondary-btn row-manual-stitch-btn" style="height:20px; font-size:9px; padding:0 6px;" title="Open manual stitching modal">
+                                        <i class="codicon codicon-tools"></i> Raw Block
+                                    </button>
+                                `;
 
-                            // Bind "Fix with AI" action
-                            const fixAiBtn = rowActions.querySelector('.row-fix-ai-btn') as HTMLButtonElement;
-                            if (fixAiBtn) {
-                                fixAiBtn.onclick = (e) => {
-                                    e.stopPropagation();
-                                    fixAiBtn.disabled = true;
-                                    fixAiBtn.innerHTML = '<div class="spinner"></div> Repairing...';
-                                    vscode.postMessage({
-                                        command: 'replaceCode',
-                                        filePath: message.filePath,
-                                        content: "REPAIR_REQUESTED",
-                                        messageId: message.messageId,
-                                        options: { 
-                                            silent: true,
-                                            blockIndex: message.blockIndex,
-                                            hunkIndex: message.hunkIndex
-                                        }
-                                    });
-                                };
-                            }
+                                const fixAiBtn = activeActions.querySelector('.row-fix-ai-btn') as HTMLButtonElement;
+                                if (fixAiBtn) {
+                                    fixAiBtn.onclick = (e) => {
+                                        e.stopPropagation();
+                                        fixAiBtn.disabled = true;
+                                        fixAiBtn.innerHTML = '<div class="spinner"></div> Repairing...';
+                                        vscode.postMessage({
+                                            command: 'replaceCode',
+                                            filePath: message.filePath,
+                                            content: "REPAIR_REQUESTED",
+                                            messageId: message.messageId,
+                                            options: { 
+                                                silent: true,
+                                                blockIndex: message.blockIndex,
+                                                hunkIndex: message.hunkIndex
+                                            }
+                                        });
+                                    };
+                                }
 
-                            // Bind "Raw Block / Manual Stitch" action
-                            const manualStitchBtn = rowActions.querySelector('.row-manual-stitch-btn') as HTMLButtonElement;
-                            if (manualStitchBtn) {
-                                manualStitchBtn.onclick = (e) => {
-                                    e.stopPropagation();
-                                    openRawCodeModal(
-                                        message.messageId, 
-                                        message.blockIndex, 
-                                        message.filePath, 
-                                        rawCode,
-                                        message.hunkIndex !== undefined ? message.hunkIndex : 0
-                                    );
-                                };
+                                const manualStitchBtn = activeActions.querySelector('.row-manual-stitch-btn') as HTMLButtonElement;
+                                if (manualStitchBtn) {
+                                    manualStitchBtn.onclick = (e) => {
+                                        e.stopPropagation();
+                                        openRawCodeModal(
+                                            message.messageId, 
+                                            message.blockIndex, 
+                                            message.filePath, 
+                                            rawCode,
+                                            message.hunkIndex !== undefined ? message.hunkIndex : 0,
+                                            blockEl?.id
+                                        );
+                                    };
+                                }
                             }
                         }
                     }
 
-                    // 1. Update the individual code block UI (supporting standard blocks and XML file mutation cards)
-                    const targetBlockId = `block-${message.messageId}-${message.blockIndex}`;
-                    const blockEl = (message.blockId ? document.getElementById(message.blockId) : null) 
-                        || document.getElementById(targetBlockId) 
-                        || (message.filePath ? document.querySelector(`.file-mutation-card[data-path='${message.filePath}']`) : null) as HTMLDetailsElement;
+                    // 1. Resilient Card Lookup across XML file mutation cards and standard code blocks
+                    let blockEl: HTMLDetailsElement | null = null;
+                    if (message.blockId) {
+                        blockEl = document.getElementById(message.blockId) as HTMLDetailsElement;
+                    }
+                    if (!blockEl && wrapper && message.blockIndex !== undefined) {
+                        blockEl = wrapper.querySelector(`.file-mutation-card[data-block-index='${message.blockIndex}'], details[id='block-${message.messageId}-${message.blockIndex}'], details[data-block-index='${message.blockIndex}']`) as HTMLDetailsElement;
+                    }
+                    if (!blockEl && message.filePath) {
+                        if (wrapper) {
+                            blockEl = wrapper.querySelector(`.file-mutation-card[data-path='${message.filePath}'], details[data-path='${message.filePath}']`) as HTMLDetailsElement;
+                        }
+                        if (!blockEl) {
+                            blockEl = document.querySelector(`.file-mutation-card[data-path='${message.filePath}'], details[data-path='${message.filePath}']`) as HTMLDetailsElement;
+                        }
+                    }
+                    if (!blockEl && message.messageId && message.blockIndex !== undefined) {
+                        blockEl = document.getElementById(`block-${message.messageId}-${message.blockIndex}`) as HTMLDetailsElement;
+                    }
 
                     // Support SPARQL block spinner and results rendering resolution
                     const sparqlBlock = document.getElementById(message.blockIndex) as HTMLElement;
@@ -1813,6 +1854,16 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
                     if (blockEl && message.success) {
+                        // 1. Remove failure / malformed alert styles
+                        blockEl.classList.remove('malformed', 'apply-failed');
+                        blockEl.style.removeProperty('border');
+                        blockEl.style.removeProperty('background-color');
+                        (blockEl as HTMLElement).style.border = '';
+                        (blockEl as HTMLElement).style.backgroundColor = '';
+
+                        // 2. Remove any injected Auto Repair / Manual Stitch buttons from block actions
+                        blockEl.querySelectorAll('.fix-ai-btn, .manual-fix-btn, .repairBtn, .row-fix-ai-btn, .row-manual-stitch-btn').forEach(el => el.remove());
+
                         const hunkVal = message.hunkIndex !== undefined ? message.hunkIndex : -1;
 
                         if (message.messageId && message.blockIndex !== undefined) {

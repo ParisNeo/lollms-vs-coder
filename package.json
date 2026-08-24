@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.4",
+  "version": "1.0.8",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -718,51 +718,37 @@
             {
               "id": "balanced",
               "name": "Balanced (Default)",
-              "description": "Natural technical flow: Brief explanation followed by implementation.",
-              "systemPrompt": "### RESPONSE STYLE: BALANCED\n- **Logic**: Briefly explain the technical approach or reasoning behind the solution first.\n- **Implementation**: Provide the code or perform the actions immediately after the explanation.\n- **Tone**: Professional, helpful, and direct.",
+              "description": "Standard helper with security-first and clean code reasoning.",
+              "systemPrompt": "### RESPONSE STYLE: BALANCED (SECURITY & CLEAN CODE FIRST)\n- **1. Approach & Rationale**: Briefly outline the technical approach and architectural reasoning.\n- **2. Security First (Zero-Trust)**:\n  * Validate and sanitize all input boundaries; guard against injections (SQLi, command injection, path traversal, XSS) and unsafe deserialization.\n  * Never hardcode credentials, tokens, or secrets.\n  * Use safe defaults, principle of least privilege, and robust error handling without exposing internal stack traces to users.\n- **3. Code Cleanliness & Hygiene**:\n  * No unused variables, dead code, or unreferenced imports.\n  * Ensure strict type compliance, explicit error checking, and proper resource disposal (close file handles, database connections, streams).\n- **4. Implementation**: Immediately output the clean code update or XML mutation tags following the explanation.",
+              "prefix": ""
+            },
+            {
+              "id": "minimalist",
+              "name": "Silent (Code Only)",
+              "description": "Output only code blocks. No conversation.",
+              "systemPrompt": "### RESPONSE STYLE: SILENT (CODE ONLY)\n- **Zero Fluff**: Do not include conversational greetings, explanations, conclusions, or 'Here is the code'.\n- **Content**: Output ONLY the requested code block, file mutation tags, or direct technical answer.\n- **High Quality & Secure**: Enforce clean imports, no dead code, and secure coding practices directly in the code itself.",
+              "prefix": ""
+            },
+            {
+              "id": "pedagogical",
+              "name": "Pedagogical",
+              "description": "Deep explanations and teaching.",
+              "systemPrompt": "### RESPONSE STYLE: PEDAGOGICAL (TEACHER)\n- **Mentorship & Clarity**: Explain the 'why' and 'how' behind the architecture, design patterns, and security principles.\n- **Step-by-Step Breakdown**: Walk through complex logic, trade-offs, and how to avoid common vulnerabilities.\n- **Clean Code Guidance**: Explain why specific imports, types, or sanitizations are used so the developer learns lasting best practices.",
+              "prefix": ""
+            },
+            {
+              "id": "chain_of_thought",
+              "name": "Chain of Thought",
+              "description": "Forces explicit reasoning steps.",
+              "systemPrompt": "### RESPONSE STYLE: CHAIN OF THOUGHT\n- **Explicit Step-by-Step Logic**: Trace through requirements, edge cases, potential failure points, and security risks step by step before implementing.\n- **Verification of Assumptions**: Challenge assumptions, verify type signatures and variable lifecycles, then provide the solution.",
               "prefix": ""
             },
             {
               "id": "structured",
               "name": "Structured (Analytical)",
               "description": "Formal Observe/Think/Act/Reflect breakdown.",
-              "systemPrompt": "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this four-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why. No code updates (Aider blocks or full files) are allowed in this stage.\n  3. **Act**: Provide the actual implementation, code updates, or tool calls. All Aider patches or full files MUST reside exclusively in this section.\n  4. **Reflect**: Evaluate assumptions, check edge cases, or validate performance.",
+              "systemPrompt": "### RESPONSE STYLE: STRUCTURED (ANALYTICAL)\n- **MANDATORY FOUR-STAGE LAYOUT**:\n  1. **Observe**: State what is being requested, inspect constraints, and audit the context.\n  2. **Think**: Formulate the technical strategy, security considerations, and architectural plan.\n  3. **Act**: Provide the actual implementation, file mutations, or tool calls. All code updates and XML tags MUST reside exclusively in this section.\n  4. **Reflect**: Evaluate edge cases, verify security boundaries, and validate performance.\n- **Rules**: Use standard Markdown headers for sections. Do not put code blocks or file tags in Observe, Think, or Reflect.",
               "prefix": ""
-            },
-            {
-              "id": "senior_coder",
-              "name": "Senior Coder",
-              "description": "Focus on best practices, performance, and clean naming.",
-              "systemPrompt": "### RESPONSE STYLE: SENIOR CODER\n- **Quality**: Prioritize DRY, KISS, and SOLID principles.\n- **Performance**: Optimize for execution speed and memory efficiency.\n- **Naming**: Use highly descriptive variable and function names.\n- **Notes**: Briefly mention which best practices were applied.",
-              "prefix": ""
-            },
-            {
-              "id": "architect",
-              "name": "Architect",
-              "description": "Focus on high-level design patterns and maintainability.",
-              "systemPrompt": "### RESPONSE STYLE: ARCHITECT\n- **Design**: Think in terms of components, scalability, and interfaces.\n- **Patterns**: Suggest design patterns (e.g. Factory, Observer) where applicable.\n- **Trade-offs**: Explain why one technical choice was made over another.",
-              "prefix": ""
-            },
-            {
-              "id": "minimalist",
-              "name": "Minimalist",
-              "description": "Just the answer/code. Zero fluff.",
-              "systemPrompt": "### RESPONSE STYLE: MINIMALIST\n- **Directness**: Do not include introductions, conclusions, or 'Here is your code'.\n- **Content**: Provide only the requested code block or the direct answer to the question.\n- **Brevity**: Extreme conciseness.",
-              "prefix": ""
-            },
-            {
-              "id": "pedagogical",
-              "name": "Pedagogical (Teacher)",
-              "description": "Deep explanations and concepts coaching.",
-              "systemPrompt": "### RESPONSE STYLE: PEDAGOGICAL\n- **Teaching**: Act as a mentor. Explain concepts deeply so the user learns the 'how' and 'why'.\n- **Breakdown**: Use analogies and step-by-step walkthroughs.\n- **Resources**: Suggest areas for further study if relevant.",
-              "prefix": ""
-            },
-            {
-              "id": "no_think",
-              "name": "Fast / No Think",
-              "description": "Disable reasoning for speed (DeepSeek-R1 style).",
-              "systemPrompt": "Bypass internal reasoning steps to provide the fastest possible response.",
-              "prefix": "/no_think"
             }
           ],
           "items": {
@@ -1286,12 +1272,12 @@
         },
         "lollmsVsCoder.chatPersona": {
           "type": "string",
-          "default": "You are Lollms, an expert AI software engineer. You always start your responses with a clear pedagogical breakdown of the **Observe**, **Think**, and **Act** phases before providing code or executing tools.",
+          "default": "You are Lollms, an expert AI software engineer and architect dedicated to delivering secure, clean, and production-ready code.",
           "description": "%config.chatPersona.description%"
         },
         "lollmsVsCoder.agentPersona": {
           "type": "string",
-          "default": "You are a specialized AI agent. Before performing tasks, you briefly summarize the **Observe** (context/issue), **Think** (approach), and **Act** (plan).",
+          "default": "You are an autonomous AI engineering agent with a focus on verified, secure implementations and clean code standards.",
           "description": "%config.agentPersona.description%"
         },
         "lollmsVsCoder.codeInspectorPersona": {

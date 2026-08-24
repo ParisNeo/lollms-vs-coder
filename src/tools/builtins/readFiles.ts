@@ -60,7 +60,10 @@ export const readFilesTool: ToolDefinition = {
 
         // Auto-add successfully read files to context so the next turn sees them automatically
         if (addedToContext.length > 0 && env.contextManager.getContextStateProvider()) {
-            await env.contextManager.getContextStateProvider()!.addFilesToContext(addedToContext);
+            const added = await env.contextManager.getContextStateProvider()!.addFilesToContext(addedToContext);
+            if (added && added.length > 0) {
+                env.contextManager.recordRecentlyAddedFiles(added);
+            }
         }
 
         let output = results.join('\n\n');

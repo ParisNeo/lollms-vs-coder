@@ -6,6 +6,7 @@ import { startDiscussionWithInitialPrompt } from '../utils/discussionUtils';
 import { AgentManager } from '../agentManager';
 import { AutomationPanel } from '../panels/automationPanel';
 import { getProcessedSystemPrompt, stripThinkingTags } from '../utils';
+import { getAvailableContextSelections } from '../commands/contextCommands';
 
 export async function registerChatCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
@@ -44,57 +45,27 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
 
     // --- HOOKED NEW DISCUSSION: REPLACES BLIND DIRECT WRITING WITH MODAL TRIGGER ---
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
+        const savedSelections = await getAvailableContextSelections();
         const panel = ChatPanel.currentPanel || Array.from(ChatPanel.panels.values())[0];
         if (panel) {
             panel._panel.reveal();
-
-            // Read selections from disk
-            let savedSelections: string[] = [];
-            const folders = vscode.workspace.workspaceFolders;
-            if (folders && folders.length > 0) {
-                const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
-                try {
-                    const entries = await vscode.workspace.fs.readDirectory(selectionDir);
-                    savedSelections = entries
-                        .filter(([name]) => name.endsWith('.lollms-ctx'))
-                        .map(([name]) => name);
-                } catch (e) {}
-            }
-
             panel._panel.webview.postMessage({ 
                 command: 'openNewDiscussionWizard',
                 selections: savedSelections
             });
         } else {
-            // If no panel is active, trigger newTempDiscussion.
-            // This is a stable, fully-initialized command. We append a query flag so it knows to open the wizard on load.
             vscode.commands.executeCommand<ChatPanel>('lollms-vs-coder.newTempDiscussion').then((panel) => {
-                // We attach a one-time listener to wait for webview ready before showing the modal, preventing the race condition
                 if (panel) {
                     const checkInterval = setInterval(async () => {
                         if (panel.isWebviewReady && panel._panel && panel._panel.webview && !panel.isDisposed) {
                             clearInterval(checkInterval);
-
-                            // Read selections from disk in fallback block too!
-                            let savedSelections: string[] = [];
-                            const folders = vscode.workspace.workspaceFolders;
-                            if (folders && folders.length > 0) {
-                                const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
-                                try {
-                                    const entries = await vscode.workspace.fs.readDirectory(selectionDir);
-                                    savedSelections = entries
-                                        .filter(([name]) => name.endsWith('.lollms-ctx'))
-                                        .map(([name]) => name);
-                                } catch (e) {}
-                            }
-
+                            const currentSelections = await getAvailableContextSelections();
                             panel._panel.webview.postMessage({ 
                                 command: 'openNewDiscussionWizard',
-                                selections: savedSelections
+                                selections: currentSelections
                             });
                         }
                     }, 100);
-                    // Clear check interval after 10 seconds to prevent hanging
                     setTimeout(() => clearInterval(checkInterval), 10000);
                 }
             });
@@ -137,24 +108,34 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             discussion.capabilities.folderSettings = folderSettings;
         }
 
-        // If a specific saved context selection was chosen, ensure those folder structures are enabled
-        if (params.contextSelection && params.contextSelection !== 'current') {
+        // Handle chosen context selection
+        if (params.contextSelection && params.contextSelection !== 'current' && params.contextSelection !== 'empty') {
             try {
-                const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'selection', params.contextSelection);
-                const content = await vscode.workspace.fs.readFile(fileUri);
-                const files = JSON.parse(Buffer.from(content).toString('utf8'));
-                if (Array.isArray(files) && discussion.capabilities) {
-                    const newSettings = { ... (discussion.capabilities.folderSettings || {}) };
-                    const folders = vscode.workspace.workspaceFolders || [];
+                const targetFileName = params.contextSelection.endsWith('.lollms-ctx') ? params.contextSelection : `${params.contextSelection}.lollms-ctx`;
+                const allFolders = vscode.workspace.workspaceFolders || [];
+                let content: Uint8Array | undefined;
 
-                    files.forEach(f => {
-                        const segments = f.split('/');
-                        const projFolder = folders.find(fd => fd.name === segments[0]);
-                        if (projFolder) {
-                            newSettings[projFolder.uri.toString()] = { tree: true, content: true };
-                        }
-                    });
-                    discussion.capabilities.folderSettings = newSettings;
+                for (const f of allFolders) {
+                    try {
+                        const fileUri = vscode.Uri.joinPath(f.uri, '.lollms', 'selection', targetFileName);
+                        content = await vscode.workspace.fs.readFile(fileUri);
+                        break;
+                    } catch {}
+                }
+
+                if (content && discussion.capabilities) {
+                    const files = JSON.parse(Buffer.from(content).toString('utf8'));
+                    if (Array.isArray(files)) {
+                        const newSettings = { ... (discussion.capabilities.folderSettings || {}) };
+                        files.forEach((f: string) => {
+                            const segments = f.split('/');
+                            const projFolder = allFolders.find(fd => fd.name === segments[0]);
+                            if (projFolder) {
+                                newSettings[projFolder.uri.toString()] = { tree: true, content: true };
+                            }
+                        });
+                        discussion.capabilities.folderSettings = newSettings;
+                    }
                 }
             } catch (e) {}
         }
@@ -182,8 +163,10 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         panel.setPersonalityManager(services.personalityManager);
         panel.setHerdManager(services.herdManager);
 
-        // Load the chosen saved context selection if specified
-        if (params.contextSelection && params.contextSelection !== 'current') {
+        // Apply chosen context selection state
+        if (params.contextSelection === 'empty') {
+            await services.contextManager.getContextStateProvider()?.softReset();
+        } else if (params.contextSelection && params.contextSelection !== 'current') {
             await vscode.commands.executeCommand('lollms-vs-coder.loadContextSelectionDirect', params.contextSelection);
         }
 

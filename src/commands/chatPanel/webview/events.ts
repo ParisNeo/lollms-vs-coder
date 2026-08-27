@@ -1505,6 +1505,11 @@ if (dom.sendButton) {
                     }
                 }));
 
+                // Synchronize results list rows and buttons immediately
+                import('./messageRenderer.js').then(m => {
+                    m.checkAndSyncMessageAppliedState(messageId);
+                });
+
                 // Reset search results mini view and close the modal completely
                 if (dom.rawSearchResultsMini) dom.rawSearchResultsMini.style.display = 'none';
                 clearRawSearch();
@@ -1690,13 +1695,35 @@ if (dom.sendButton) {
         vscode.postMessage({ command: 'stopTokenCalculation' });
     });
     // --- 🖼️ SOVEREIGN IMAGE ZOOM DELEGATION ---
-    dom.messagesDiv?.addEventListener('click', (e) => {
+    document.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
-        if (target.tagName === 'IMG' && !target.closest('.no-zoom') && !target.closest('.staged-image-card')) {
+
+        // 1. Handle clicking inline image cards or gallery previews
+        const card = target.closest('.message-inline-image-card, .staged-image-card, .version-card') as HTMLElement;
+        if (card && !target.closest('.edit-btn, .remove-btn, .discard-draft-btn, .save-draft-btn')) {
+            const img = card.querySelector('img');
+            const bg = card.style.backgroundImage;
+            let src = img?.src || '';
+            if (!src && bg) {
+                const bgMatch = bg.match(/url\(['"]?(.*?)['"]?\)/);
+                if (bgMatch) src = bgMatch[1];
+            }
+            if (src) {
+                e.preventDefault();
+                e.stopPropagation();
+                openSovereignZoom(src);
+                return;
+            }
+        }
+
+        // 2. Handle clicking any standalone markdown <img> tag in the message stream
+        if (target.tagName === 'IMG' && !target.closest('.no-zoom, #image-zoom-overlay, #image-editor-modal, .message-avatar')) {
             const img = target as HTMLImageElement;
-            // Prevent zooming on tiny icons or avatars
-            if (img.naturalWidth > 50 || img.naturalHeight > 50 || img.src.startsWith('data:')) {
+            if (img.src && !img.src.endsWith('.svg') && !img.classList.contains('codicon')) {
+                e.preventDefault();
+                e.stopPropagation();
                 openSovereignZoom(img.src);
+                return;
             }
         }
     });

@@ -6,6 +6,38 @@ import * as path from 'path';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { AgentManager } from '../agentManager';
 
+export async function getAvailableContextSelections(): Promise<{ name: string; fileName: string; fileCount?: number }[]> {
+    const folders = vscode.workspace.workspaceFolders || [];
+    const selections: { name: string; fileName: string; fileCount?: number }[] = [];
+    const seenNames = new Set<string>();
+
+    for (const folder of folders) {
+        const selectionDir = vscode.Uri.joinPath(folder.uri, '.lollms', 'selection');
+        try {
+            const entries = await vscode.workspace.fs.readDirectory(selectionDir);
+            for (const [name, type] of entries) {
+                if (type === vscode.FileType.File && name.endsWith('.lollms-ctx')) {
+                    if (!seenNames.has(name)) {
+                        seenNames.add(name);
+                        let fileCount: number | undefined = undefined;
+                        try {
+                            const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(selectionDir, name));
+                            const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
+                            if (Array.isArray(parsed)) fileCount = parsed.length;
+                        } catch {}
+                        selections.push({
+                            name: name.replace('.lollms-ctx', ''),
+                            fileName: name,
+                            fileCount
+                        });
+                    }
+                }
+            }
+        } catch {}
+    }
+    return selections;
+}
+
 export function registerContextCommands(context: vscode.ExtensionContext, services: LollmsServices) {
     
     const setContextState = async (uri: vscode.Uri | any, uris: vscode.Uri[] | any[], state: ContextState) => {
@@ -222,17 +254,33 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         const folders = vscode.workspace.workspaceFolders;
         if (!folders || folders.length === 0) return;
 
-        const fileUri = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection', fileName);
+        const targetFileName = fileName.endsWith('.lollms-ctx') ? fileName : `${fileName}.lollms-ctx`;
+        let targetUri: vscode.Uri | undefined;
+
+        for (const folder of folders) {
+            const candidate = vscode.Uri.joinPath(folder.uri, '.lollms', 'selection', targetFileName);
+            try {
+                await vscode.workspace.fs.stat(candidate);
+                targetUri = candidate;
+                break;
+            } catch {}
+        }
+
+        if (!targetUri) {
+            vscode.window.showErrorMessage(`Selection file '${targetFileName}' not found in workspace.`);
+            return;
+        }
+
         try {
-            const content = await vscode.workspace.fs.readFile(fileUri);
+            const content = await vscode.workspace.fs.readFile(targetUri);
             const files = JSON.parse(Buffer.from(content).toString('utf8'));
             if (Array.isArray(files)) {
                 await services.contextManager.getContextStateProvider()?.softReset();
                 await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', files);
-                vscode.window.showInformationMessage(`Context switched to: ${fileName.replace('.lollms-ctx', '')}`);
+                vscode.window.showInformationMessage(`Context switched to: ${targetFileName.replace('.lollms-ctx', '')}`);
             }
         } catch (e: any) {
-            vscode.window.showErrorMessage(`Failed to load context ${fileName}: ${e.message}`);
+            vscode.window.showErrorMessage(`Failed to load context ${targetFileName}: ${e.message}`);
         }
     }));
 

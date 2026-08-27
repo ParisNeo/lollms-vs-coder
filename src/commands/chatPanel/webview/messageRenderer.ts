@@ -2861,8 +2861,8 @@ function addAttachment(message: any) {
         const imageCards = images.map((img: any) => {
             const src = img.data.startsWith('data:') ? img.data : `data:image/png;base64,${img.data}`;
             return `
-                <div class="staged-image-card" style="background-image: url(${src});" 
-                     onclick="const w=window.open(); w.document.write('<img src=\\'${src}\\' style=\\'max-width:100%\\'>')">
+                <div class="staged-image-card" style="background-image: url(${src}); cursor: pointer;" 
+                     onclick="(window.openSovereignZoom || window.openImageZoom)('${src}')" title="Click to view full screen">
                 </div>`;
         }).join('');
 
@@ -4496,14 +4496,79 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
     }
 }
 
-/**
- * Dynamically computes applied vs unapplied blocks in a message
- * and updates the master batch action button with precise counts.
- */
+export function syncResultsListRows(messageId: string) {
+    if (!messageId) return;
+    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
+    if (!wrapper) return;
+
+    const resList = wrapper.querySelector('.apply-results-list') || document.getElementById(`results-${messageId}`);
+    if (!resList) return;
+
+    const appliedStateForMsg = state.appliedState?.[messageId] || {};
+
+    const rows = resList.querySelectorAll('.apply-row');
+    rows.forEach((row: any) => {
+        const bIdx = parseInt(row.dataset.blockIndex, 10);
+        const hIdxRaw = row.dataset.hunkIndex;
+        const hIdx = hIdxRaw !== undefined && hIdxRaw !== "" ? parseInt(hIdxRaw, 10) : undefined;
+
+        const appliedHunks = appliedStateForMsg[bIdx] || [];
+        const isBlockFullyApplied = appliedHunks.includes(-1);
+        const isHunkApplied = hIdx !== undefined ? (appliedHunks.includes(hIdx) || isBlockFullyApplied) : isBlockFullyApplied;
+
+        // Check if corresponding code block or mutation card has .applied
+        const blockEl = document.getElementById(`block-${messageId}-${bIdx}`) 
+            || wrapper.querySelector(`.file-mutation-card[data-block-index='${bIdx}']`);
+        
+        let isBtnApplied = false;
+        if (blockEl) {
+            if (hIdx !== undefined) {
+                const hunkTab = blockEl.querySelector(`.hunk-tab-${hIdx}`);
+                const hunkBtn = blockEl.querySelector(`.hunk-pane-${hIdx} .apply-btn, .apply-hunk-btn[data-hunk-index='${hIdx}']`);
+                isBtnApplied = hunkTab?.classList.contains('status-completed') || hunkBtn?.classList.contains('applied') || false;
+            } else {
+                const mainBtn = blockEl.querySelector('.apply-btn, .apply-mutation-btn');
+                isBtnApplied = mainBtn?.classList.contains('applied') || false;
+            }
+        }
+
+        if (isHunkApplied || isBlockFullyApplied || isBtnApplied) {
+            row.classList.remove('status-failed', 'status-applying');
+            row.classList.add('status-success');
+            const iconEl = row.querySelector('.status-icon');
+            if (iconEl) {
+                iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
+            }
+            row.style.background = '';
+            row.style.opacity = '1';
+            row.querySelector('.row-actions')?.remove();
+            const labelInline = row.querySelector('.status-label-inline');
+            if (labelInline) labelInline.remove();
+        }
+    });
+
+    // Update progress bar
+    const totalRows = rows.length;
+    const successRows = resList.querySelectorAll('.apply-row.status-success').length;
+    if (totalRows > 0) {
+        const bar = document.getElementById(`progress-bar-${messageId}`) as HTMLElement;
+        if (bar) {
+            const pct = Math.round((successRows / totalRows) * 100);
+            bar.style.width = `${pct}%`;
+            if (pct === 100) {
+                bar.style.background = 'var(--vscode-charts-green)';
+            }
+        }
+    }
+}
+
 export function checkAndSyncMessageAppliedState(messageId: string) {
     if (!messageId) return;
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return;
+
+    // Synchronize apply-row items in the results list
+    syncResultsListRows(messageId);
 
     const applyAllBtn = wrapper.querySelector('.apply-all-btn') as HTMLButtonElement;
     if (!applyAllBtn) return;

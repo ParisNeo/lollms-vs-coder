@@ -887,17 +887,8 @@ export class ChatPanel {
 
         if (this.discussionId.startsWith('temp-') || this._shouldOpenWizardOnLoad) {
             this._shouldOpenWizardOnLoad = false;
-            let savedSelections: string[] = [];
-            const folders = vscode.workspace.workspaceFolders;
-            if (folders && folders.length > 0) {
-                const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
-                try {
-                    const entries = await vscode.workspace.fs.readDirectory(selectionDir);
-                    savedSelections = entries
-                        .filter(([name]) => name.endsWith('.lollms-ctx'))
-                        .map(([name]) => name);
-                } catch (e) {}
-            }
+            const { getAvailableContextSelections } = require('../contextCommands');
+            const savedSelections = await getAvailableContextSelections();
             this._panel.webview.postMessage({
                 command: 'openNewDiscussionWizard',
                 selections: savedSelections
@@ -1852,23 +1843,15 @@ export class ChatPanel {
       }
   }
 
-  public async openNewDiscussionWizard(selections?: string[]) {
+  public async openNewDiscussionWizard(selections?: any[]) {
       this._shouldOpenWizardOnLoad = true;
       if (this._isDisposed) return;
       await this.waitForWebviewReady();
       if (!this._isDisposed && this._panel && this._panel.webview) {
           let savedSelections = selections;
           if (!savedSelections) {
-              const folders = vscode.workspace.workspaceFolders;
-              if (folders && folders.length > 0) {
-                  const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
-                  try {
-                      const entries = await vscode.workspace.fs.readDirectory(selectionDir);
-                      savedSelections = entries
-                          .filter(([name]) => name.endsWith('.lollms-ctx'))
-                          .map(([name]) => name);
-                  } catch (e) {}
-              }
+              const { getAvailableContextSelections } = require('../contextCommands');
+              savedSelections = await getAvailableContextSelections();
           }
           this._panel.webview.postMessage({
               command: 'openNewDiscussionWizard',

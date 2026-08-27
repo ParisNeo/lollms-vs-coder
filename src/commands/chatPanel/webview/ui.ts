@@ -50,33 +50,40 @@ export function closeImageZoom() {
 export function renderPendingImages() {
     if (!dom.attachmentPreviewArea) return;
     dom.attachmentPreviewArea.innerHTML = '';
-    
+
     state.pendingImages.forEach((img, idx) => {
         if (!img.data) return; // Skip invalid entries
         const card = document.createElement('div');
         card.className = 'staged-image-card';
         card.style.backgroundImage = `url(${img.data})`;
-        
+
         const edit = document.createElement('div');
         edit.className = 'edit-btn';
         edit.innerHTML = '<span class="codicon codicon-edit"></span>';
-        edit.onclick = () => {
+        edit.title = 'Edit and annotate drawing';
+        edit.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             openImageEditor(idx);
         };
 
         const remove = document.createElement('div');
         remove.className = 'remove-btn';
         remove.innerHTML = '<span class="codicon codicon-close"></span>';
-        remove.onclick = () => {
+        remove.title = 'Remove attached image';
+        remove.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             state.pendingImages.splice(idx, 1);
             renderPendingImages();
         };
-        
+
         card.appendChild(edit);
         card.appendChild(remove);
         dom.attachmentPreviewArea.appendChild(card);
     });
 }
+
 
 let canvasCtx: CanvasRenderingContext2D | null = null;
 let currentEditingIdx: number | null = null;
@@ -459,27 +466,38 @@ function redrawCanvas() {
     }
 }
 
+let isCanvasEventsInitialized = false;
+
 /**
- * Launches the visual editor for a specific data URI (e.g. from a generated block)
+ * Launches the visual editor for a specific data URI (e.g. from a generated block or zoom modal)
  */
 (window as any).openImageEditorFromData = (dataUrl: string, filename: string) => {
     const modal = dom.editorModal;
     const canvas = dom.editorCanvas;
-    if (!modal || !canvas) return;
+    if (!modal || !canvas) {
+        console.error("Image editor modal or canvas element not found.");
+        return;
+    }
 
-    modal.style.display = 'flex';
+    modal.style.setProperty('display', 'flex', 'important');
     canvasCtx = canvas.getContext('2d');
 
-    // We treat this as a "New" edit index -1 so saving appends to pendingImages 
-    // unless you want to overwrite the specific file (which would require extension-side write)
     currentEditingIdx = null; 
+
+    undoStack = [];
+    redoStack = [];
+    annotationShapes = [];
+    selectedShape = null;
 
     const img = new Image();
     img.onload = () => {
+        baseImage = img;
         canvas.width = img.width;
         canvas.height = img.height;
-        canvasCtx?.drawImage(img, 0, 0);
+        viewState = { scale: 1, offsetX: 0, offsetY: 0 };
         saveState();
+        fitImageToScreen();
+        redrawCanvas();
     };
     img.src = dataUrl;
     initCanvasEvents();
@@ -489,9 +507,12 @@ export function openImageEditor(index: number | null = null): void {
     currentEditingIdx = index;
     const modal = dom.editorModal;
     const canvas = dom.editorCanvas;
-    if (!modal || !canvas) return;
+    if (!modal || !canvas) {
+        console.error("Image editor modal or canvas element not found.");
+        return;
+    }
 
-    modal.style.display = 'flex';
+    modal.style.setProperty('display', 'flex', 'important');
     canvasCtx = canvas.getContext('2d');
 
     undoStack = [];
@@ -505,10 +526,11 @@ export function openImageEditor(index: number | null = null): void {
         canvas.height = img.height;
         viewState = { scale: 1, offsetX: 0, offsetY: 0 };
         saveState(); // Initial empty state
+        fitImageToScreen();
         redrawCanvas();
     };
 
-    if (index !== null) {
+    if (index !== null && state.pendingImages[index] && state.pendingImages[index].data) {
         const img = new Image();
         img.onload = () => onImageLoaded(img);
         img.src = state.pendingImages[index].data;
@@ -528,6 +550,7 @@ export function openImageEditor(index: number | null = null): void {
 
     initCanvasEvents();
 }
+
 
 export function fitImageToScreen(): void {
     if (!baseImage || !dom.editorCanvas) return;
@@ -666,6 +689,12 @@ function captureWebcam() {
 function initCanvasEvents() {
     const canvas = dom.editorCanvas;
     if (!canvas || !canvasCtx) return;
+
+    if (isCanvasEventsInitialized) {
+        return;
+    }
+    isCanvasEventsInitialized = true;
+
 
     // --- ZOOM LOGIC ---
     canvas.addEventListener('wheel', (e: WheelEvent) => {
@@ -1655,6 +1684,7 @@ export function syncExpansionBlocks() {
  * Global internal image viewer to bypass browser popup blockers.
  */
 export function openSovereignZoom(dataUri: string) {
+    if (!dataUri) return;
     const overlay = document.getElementById('image-zoom-overlay');
     const display = document.getElementById('zoomed-image-display') as HTMLImageElement;
     if (!overlay || !display) return;
@@ -1667,9 +1697,25 @@ export function openSovereignZoom(dataUri: string) {
         closeSovereignZoom();
     };
 
-    overlay.onclick = close;
+    overlay.onclick = (e) => {
+        if (e.target === overlay) {
+            close(e);
+        }
+    };
+
     const closeBtn = document.getElementById('zoom-close-btn');
     if (closeBtn) closeBtn.onclick = close;
+
+    const editBtn = document.getElementById('zoom-edit-btn');
+    if (editBtn) {
+        editBtn.onclick = (e) => {
+            e.stopPropagation();
+            closeSovereignZoom();
+            if (typeof (window as any).openImageEditorFromData === 'function') {
+                (window as any).openImageEditorFromData(dataUri, 'annotated_image.png');
+            }
+        };
+    }
 
     const copyBtn = document.getElementById('zoom-copy-btn');
     if (copyBtn) {
@@ -1677,7 +1723,7 @@ export function openSovereignZoom(dataUri: string) {
             e.stopPropagation();
             vscode.postMessage({ command: 'copyToClipboard', text: dataUri });
             copyBtn.innerHTML = '<i class="codicon codicon-check"></i> Copied Data';
-            setTimeout(() => { copyBtn.innerHTML = '<i class="codicon codicon-copy"></i> Copy Image'; }, 2000);
+            setTimeout(() => { copyBtn.innerHTML = '<i class="codicon codicon-copy"></i>'; }, 2000);
         };
     }
 
@@ -1700,6 +1746,11 @@ export function closeSovereignZoom() {
         overlay.classList.remove('active');
     }
 }
+
+// Ensure functions are available globally in the webview runtime
+(window as any).openSovereignZoom = openSovereignZoom;
+(window as any).openImageZoom = openSovereignZoom;
+(window as any).closeSovereignZoom = closeSovereignZoom;
 
 // --- presenters/BadgesPresenter.ts ---
 // Presentation templates decoupled from direct DOM bindings and layout managers.
@@ -3473,7 +3524,7 @@ export function updateContextFileUsage(filePath: string, tokens: number) {
  * Renders the Workspace Access Matrix rows inside the HUD modal.
  */
 // --- NEW DISCUSSION WIZARD RENDERING ---
-export function openNewDiscussionWizard(selections: string[] = []) {
+export function openNewDiscussionWizard(selections: (string | { name: string; fileName: string; fileCount?: number })[] = []) {
     if (!dom.wizardModal) return;
 
     // 1. Populate Personalities Select
@@ -3500,22 +3551,39 @@ export function openNewDiscussionWizard(selections: string[] = []) {
         `;
     }
 
-    // Populate Context Selections Dropdown
+    // 3. Populate Context Selections Dropdown (with Clean/Empty, Current, and Saved options)
     const ctxSelect = document.getElementById('wizard-context-selection') as HTMLSelectElement;
     if (ctxSelect) {
-        ctxSelect.innerHTML = `<option value="current" selected>Current Active Selection (Default)</option>`;
+        ctxSelect.innerHTML = `
+            <option value="current" selected>⚡ Current Active Selection (Keep loaded files)</option>
+            <option value="empty">🧹 Clean / Empty Context (Start with 0 files)</option>
+        `;
+
+        const savedGroup = document.createElement('optgroup');
+        savedGroup.label = "Saved File Selections";
+
+        let hasSaved = false;
         (selections || []).forEach(s => {
+            const fileName = typeof s === 'string' ? s : s.fileName;
+            const displayName = typeof s === 'string' ? s.replace('.lollms-ctx', '') : s.name;
+            const fileCount = typeof s === 'object' && s.fileCount !== undefined ? ` (${s.fileCount} files)` : '';
+
             const opt = document.createElement('option');
-            opt.value = s;
-            opt.textContent = s.replace('.lollms-ctx', '');
-            ctxSelect.appendChild(opt);
+            opt.value = fileName;
+            opt.textContent = `📁 ${displayName}${fileCount}`;
+            savedGroup.appendChild(opt);
+            hasSaved = true;
         });
+
+        if (hasSaved) {
+            ctxSelect.appendChild(savedGroup);
+        }
     }
 
-    // 3. Render Matrix Folder Rows inside Wizard
+    // 4. Render Matrix Folder Rows inside Wizard
     renderWizardMatrix();
 
-    // 4. Reveal Modal and focus the input field
+    // 5. Reveal Modal and focus the input field
     dom.wizardModal.style.display = 'flex';
     dom.wizardModal.classList.add('visible');
 

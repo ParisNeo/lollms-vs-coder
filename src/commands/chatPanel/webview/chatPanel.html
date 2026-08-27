@@ -1258,6 +1258,9 @@
     <!-- 🖼️ SOVEREIGN IMAGE ZOOM OVERLAY -->
     <div id="image-zoom-overlay">
         <div class="zoom-controls">
+            <button class="code-action-btn secondary-btn" id="zoom-edit-btn" title="Annotate / Edit Image in Studio">
+                <i class="codicon codicon-edit"></i> Edit Image
+            </button>
             <button class="code-action-btn secondary-btn" id="zoom-copy-btn" title="Copy to clipboard">
                 <i class="codicon codicon-copy"></i>
             </button>
@@ -1267,6 +1270,7 @@
         </div>
         <img id="zoomed-image-display" alt="Zoomed View">
     </div>
+
 
     <div id="raw-code-modal" class="modal">
         <div class="modal-content" style="max-width: 95%; width: 1100px;">
@@ -1312,7 +1316,7 @@
     </div>
 
     <!-- Image Editor Modal -->
-    <div id="image-editor-modal" class="image-editor-modal">
+    <div id="image-editor-modal" class="image-editor-modal editor-modal">
         <div class="editor-toolbar">
             <div class="tool-group" id="vector-tools">
                 <label>Annotate Tools</label>
@@ -1335,9 +1339,10 @@
                 <button class="code-action-btn" id="editor-zoom-fit" title="Fit to Screen"><i class="codicon codicon-screen-full"></i> Fit</button>
             </div>
             <div class="tool-group">
-                <button class="code-action-btn" id="editor-shadow-in" title="Undo"><i class="codicon codicon-discard"></i></button>
+                <button class="code-action-btn" id="editor-undo" title="Undo"><i class="codicon codicon-discard"></i></button>
                 <button class="code-action-btn" id="editor-redo" title="Redo"><i class="codicon codicon-redo"></i></button>
             </div>
+
             <div class="tool-group">
                 <label>Color</label>
                 <input type="color" id="editor-color" value="#e74c3c">

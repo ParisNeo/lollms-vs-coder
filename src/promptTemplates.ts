@@ -62,14 +62,15 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
         // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
         if (isSymbolModeEnabled) {
             sections.push(`
-        ### 🚦 CODE OUTPUT DECISION TREE (STRICT EXCLUSIVITY & COMPLIANCE MANDATE)
-        You MUST strictly follow this decision tree to choose the correct format for code output. Non-compliance results in parsing errors and redundant token usage. 
+        ### 🚦 CODE OUTPUT DECISION TREE & TOKEN ECONOMY ARBITRATION (SYMBOL MODE ACTIVE)
+        You MUST strictly follow this decision tree to minimize token consumption and eliminate parsing errors:
 
-        1. **NEW FILES**: You MUST use **FORMAT 1 (FULL FILE)**.
-        2. **MODIFYING AN ENTIRE FUNCTION, CLASS, OR METHOD**: You **MUST** use the \`update_function\` tool (or **FORMAT 3 (FULL ADDRESS MODE)**). This is your primary coding weapon! Do NOT use Aider SEARCH/REPLACE blocks to replace a whole function, as writing the old function body is a severe waste of space and token budget.
-        3. **SMALL SURGICAL CHANGES WITHIN A FUNCTION (< 50% of the symbol)**: You MUST use **FORMAT 2 (SEARCH/REPLACE)**.
-        4. **EXISTING FILES (Major Refactor affecting > 50% of the file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
-        5. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize symbol updates or surgical patches using FORMAT 2/3."}
+        1. **NEW FILES**: You MUST use **FORMAT 1 (FULL FILE)**: \`<file path="..." action="write">\`.
+        2. **TOKEN-EFFICIENT SYMBOL UPDATE (PRIORITY FOR FUNCTIONS/CLASSES)**: When replacing or refactoring an entire function, method, or class, Aider Search/Replace requires printing both the full old code in SEARCH AND the full new code in REPLACE (2x token cost). In contrast, targeted symbol replacement (\`<file path="..." action="update_symbol" symbol="SymbolName">\` or \`update_function\`) ONLY outputs the new code once (1x token cost).
+           - **MANDATE**: Whenever replacing an entire function/class/method, or whenever symbol update consumes fewer tokens than duplicating code in an Aider Search block, you **MUST use targeted symbol update** (\`action="update_symbol"\` or \`update_function\`).
+        3. **MINIMAL SURGICAL PATCH (< 5 lines inside a function)**: Use **FORMAT 2 (SEARCH/REPLACE)**: \`<file path="..." action="patch">\` ONLY when altering a small snippet (1-5 lines) inside a large function where the search snippet is substantially smaller than re-outputting the entire function body.
+        4. **MAJOR REFACTOR (> 50% of the entire file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
+        5. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize symbol updates (FORMAT 3) or surgical patches (FORMAT 2) based on token efficiency."}
 
         **CRITICAL MANDATES**:
         - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
@@ -480,13 +481,17 @@ ${memorySection}
 1. **NAMESPACING**: If the workspace contains multiple project roots, you MUST address EVERY file using the format \`ProjectName/path/to/file.ext\`. Do not drop the project name prefix when creating, moving, or editing files.
 2. **STRICT HIERARCHY**: You are restricted to the folders listed in the context. Never attempt to access paths outside of these sovereign project roots.
 
-### 👁️ CONTEXT COMPREHENSION & SHALLOW TREE EXPANSION
-- **FAST SHALLOW TREE**: For near-instant latency and minimal token usage, the Project Structure is capped at a shallow depth (depth 2). Branches without active files show \`[CAPPED]\` or \`[COLLAPSED]\`.
-- **ACTIVE FILES ALWAYS VISIBLE**: Any file with loaded content **\`[C]\`** or definitions **\`[D]\`** is always visible in full path regardless of depth.
-- **ON-DEMAND SUBFOLDER EXPANSION**: If you need to explore or inspect deeper into a capped or collapsed folder (e.g. \`src/auth/\`), simply output \`<add_files_to_context>src/auth/</add_files_to_context>\` to expand its files into your active view.
-- **COGNITIVE SCRATCHPAD & MAPPING**: Use your reasoning scratchpad or \`<project_memory>\` to summarize what key directories and modules are responsible for, preserving high-level architectural memory without bloating token context.
-- **POSSESSED CONTEXT [C]**: Files marked **\`[C]\`** are already in your prompt under 'LOADED FILE CONTENTS'. You already possess them; analyze and edit them directly.
-- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Use \`<add_files_to_context>\` to request it when needed.
+### 👁️ CONTEXT COMPREHENSION & FILE DISCOVERY PROTOCOL
+- **MARKER [C] (POSSESSED CODE)**: Files marked **\`[C]\`** in the tree are already fully present under 'LOADED FILE CONTENTS' / 'ACCESSIBLE FILE CONTENTS'. You possess their complete source code. You are **STRICTLY FORBIDDEN** from calling \`read_file\` or \`<add_files_to_context>\` for files marked \`[C]\`.
+- **\`<add_files_to_context>\` vs \`read_file\` (MUTUALLY EXCLUSIVE)**:
+  * Use **\`<add_files_to_context>\`** ONLY when you need a file persistently added to your active context across turns (for ongoing editing or reference).
+  * Use **\`read_file\`** (via \`<lollms_tool>\`) ONLY when you want to temporarily inspect/peek at an unpossessed file without permanently bloating the context window.
+  * **NEVER combine both in the same turn or for the same file.** If you request \`<add_files_to_context>\`, do NOT call \`read_file\` for that file.
+- **TOOL PARAMETER HYGIENE**:
+  * For \`read_file\`, the parameter is \`"path"\` (e.g. \`{"name": "read_file", "arguments": {"path": "src/utils.py"}}\`).
+  * For \`read_files\`, the parameter is \`"paths"\` (array of strings).
+- **FAST SHALLOW TREE**: For minimal token usage, branches without active files show \`[CAPPED]\` or \`[COLLAPSED]\`.
+- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Choose either \`<add_files_to_context>\` or \`read_file\` to access it.
 
 ### 🛡️ GUARDIAN PROTOCOL (AUTONOMOUS INTEGRITY)
 1. **VERIFICATION LOOP**: Note that every file you write will be immediately audited by a system linter/compiler. 

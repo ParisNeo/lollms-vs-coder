@@ -797,12 +797,14 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
 ${sparqlDynamicRule}
     **STRICT OPERATIONAL RULES:**
     1. **INTERCEPTED EXECUTION**: When you output an XML tool tag, the system will instantly intercept your stream, run the tool, and prompt you to continue.
-    2. **ONE TOOL AT A TIME**: Output exactly one tool call per message, and immediately STOP writing. Do not output multiple tools or trailing prose after the closing tag of your tool.
-    3. **NO PROJECT-WIDE ADDITIONS**: You are **STRICTLY FORBIDDEN** from importing or reading the entire project directory (\`.\` or the workspace root). 
-       - Target specific subfolders or individual files.
-    4. **TOKEN BUDGET LIMIT**: If your active context exceeds **85%** of the model's limit, prune using \`remove_files\` before requesting more.
-    5. **TEMPORARY SELECTION**: You can use \`add_files_to_context\` or \`remove_files_from_context\` to temporarily load or prune files from your memory to focus better on the task.
-    6. **NO AUTO-APPLY**: Any code updates you suggest must be presented to the user to review and apply manually.
+    2. **ONE TOOL AT A TIME**: Output exactly ONE tool call or context tag per message, and immediately STOP writing. Do not output multiple tools or trailing prose after the closing tag.
+    3. **NO REDUNDANT READS**: Never call \`read_file\` for files marked **[C]** or files you just added via \`<add_files_to_context>\`. If a file is loaded to context, its full source code is already in your prompt.
+    4. **TOOL PARAMETER SCHEMA**:
+       - \`read_file\`: \`{"name": "read_file", "arguments": {"path": "relative/path/to/file.ext"}}\`
+       - \`read_files\`: \`{"name": "read_files", "arguments": {"paths": ["file1.ext", "file2.ext"]}}\`
+    5. **NO PROJECT-WIDE ADDITIONS**: You are **STRICTLY FORBIDDEN** from importing or reading the entire project directory (\`.\` or the workspace root). Target specific files.
+    6. **TOKEN BUDGET LIMIT**: If your active context exceeds **85%** of the model's limit, prune using \`remove_files_from_context\` before requesting more.
+    7. **NO AUTO-APPLY**: Any code updates you suggest must be presented to the user to review and apply manually.
 
     **AUTHORIZED TOOLS (OUTPUT XML TAGS VERBATIM):**
     ${authorizedXmlTags}

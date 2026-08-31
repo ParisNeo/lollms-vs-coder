@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-08-31 00:22]
+
+- feat(chat): enhance message rendering and prompt templates
+
 ## [2026-08-27 02:42]
 
 - feat(chatPanel): enhance webview UI and update version to 1.0.10

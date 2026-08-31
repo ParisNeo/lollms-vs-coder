@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 
 export const readFilesTool: ToolDefinition = {
     name: "read_files",
-    description: "Reads the content of multiple files from the workspace in a single turn. Returns a combined block of code files. Use this to gather dependencies quickly.",
+    description: "Reads the content of multiple files from the workspace in a single turn without permanently adding them to context. Returns a combined block of code files.",
     isAgentic: true,
     isDefault: true,
     permissionGroup: 'filesystem_read',
@@ -11,25 +12,26 @@ export const readFilesTool: ToolDefinition = {
         { name: "paths", type: "array", description: "An array of relative paths to the files to be read.", required: true }
     ],
     async execute(params: { paths: string[] }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
-        if (!params.paths || !Array.isArray(params.paths)) {
-            return { success: false, output: "Error: 'paths' parameter (array) is required." };
+        const rawPaths = params.paths || (params as any).file_paths || (params as any).filePaths || (params as any).files;
+        const pathsArray = Array.isArray(rawPaths) ? rawPaths : (typeof rawPaths === 'string' ? [rawPaths] : []);
+        if (pathsArray.length === 0) {
+            return { success: false, output: "Error: 'paths' parameter (array of strings) is required." };
         }
         if (!env.workspaceRoot) {
             return { success: false, output: "Error: No active workspace folder." };
         }
 
         const results: string[] = [];
-        const addedToContext: string[] = [];
         const errors: string[] = [];
 
         const docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.ipynb']);
         const binaryExtensions = new Set(['.exe', '.dll', '.so', '.dylib', '.bin', '.pkl', '.onnx', '.pt', '.pth', '.pyc']);
 
-        for (const filePath of params.paths) {
+        for (const filePath of pathsArray) {
             if (signal.aborted) break;
 
             try {
-                let cleanPath = filePath.trim();
+                let cleanPath = String(filePath).trim();
                 if (cleanPath.startsWith('/') || cleanPath.startsWith('\\')) cleanPath = cleanPath.substring(1);
 
                 const ext = path.extname(cleanPath).toLowerCase();
@@ -39,7 +41,8 @@ export const readFilesTool: ToolDefinition = {
                     continue;
                 }
 
-                const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, cleanPath);
+                const res = await env.contextManager.resolveWorkspaceFromPath(cleanPath);
+                const fileUri = res ? res.uri : vscode.Uri.joinPath(env.workspaceRoot.uri, cleanPath);
                 const fileContent = await vscode.workspace.fs.readFile(fileUri);
 
                 let text = "";
@@ -52,17 +55,8 @@ export const readFilesTool: ToolDefinition = {
                 const lang = ext ? ext.substring(1) : 'txt';
                 const label = docExtensions.has(ext) ? `${cleanPath} (Extracted Text - Read-Only)` : cleanPath;
                 results.push(`\`\`\`${lang}:${label}\n${text}\n\`\`\``);
-                addedToContext.push(cleanPath);
             } catch (error: any) {
                 errors.push(`Failed to read ${filePath}: ${error.message}`);
-            }
-        }
-
-        // Auto-add successfully read files to context so the next turn sees them automatically
-        if (addedToContext.length > 0 && env.contextManager.getContextStateProvider()) {
-            const added = await env.contextManager.getContextStateProvider()!.addFilesToContext(addedToContext);
-            if (added && added.length > 0) {
-                env.contextManager.recordRecentlyAddedFiles(added);
             }
         }
 

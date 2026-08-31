@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 
 export const readFileTool: ToolDefinition = {
     name: "read_file",
-    description: "Reads the content of a file from the workspace.",
+    description: "Reads the content of a file from the workspace without permanently adding it to context. Use this for temporary inspection or peeking.",
     isAgentic: false,
     isDefault: true,
     permissionGroup: 'filesystem_read',
@@ -11,31 +12,30 @@ export const readFileTool: ToolDefinition = {
         { name: "path", type: "string", description: "The relative path to the file to be read.", required: true }
     ],
     async execute(params: { path: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
-        if (!params.path) {
+        const rawPath = params.path || (params as any).file_path || (params as any).filePath || (params as any).file || "";
+        if (!rawPath) {
             return { success: false, output: "Error: 'path' parameter is required." };
         }
         if (!env.workspaceRoot) {
             return { success: false, output: "Error: No active workspace folder." };
         }
         
-        let filePath = params.path.trim();
+        let filePath = rawPath.trim();
         if (filePath.startsWith('/') || filePath.startsWith('\\')) filePath = filePath.substring(1);
 
-        const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
+        const res = await env.contextManager.resolveWorkspaceFromPath(filePath);
+        const fileUri = res ? res.uri : vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
         let retries = 3;
         let lastError = "";
 
         while (retries > 0) {
+            if (signal?.aborted) {
+                return { success: false, output: "Read file operation cancelled." };
+            }
+
             try {
                 const fileContent = await vscode.workspace.fs.readFile(fileUri);
                 const ext = path.extname(filePath).toLowerCase();
-
-                if (env.contextManager.getContextStateProvider()) {
-                    const added = await env.contextManager.getContextStateProvider()!.addFilesToContext([filePath]);
-                    if (added && added.length > 0) {
-                        env.contextManager.recordRecentlyAddedFiles(added);
-                    }
-                }
 
                 let outputText = "";
                 const docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.ipynb']);
@@ -56,7 +56,7 @@ export const readFileTool: ToolDefinition = {
                 lastError = error.message;
                 retries--;
                 if (retries > 0) {
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await new Promise(resolve => setTimeout(resolve, 500));
                 }
             }
         }

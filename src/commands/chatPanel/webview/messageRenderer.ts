@@ -3799,49 +3799,253 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
 
 /**
  * Opens a modal to select multiple files for removal from context.
+ * Supports sorting by Alphabetical (A-Z / Z-A) and File Size / Tokens (Largest / Smallest).
  */
 export function showBulkDeleteModal(files: any[]) {
     const modal = document.getElementById('bulk-delete-modal');
     const list = document.getElementById('bulk-delete-files-list');
     const master = document.getElementById('bulk-delete-select-all') as HTMLInputElement;
     const closeBtn = document.getElementById('bulk-delete-close-btn');
-    const runBtn = document.getElementById('bulk-delete-run-btn');
+    const runBtn = document.getElementById('bulk-delete-run-btn') as HTMLButtonElement;
+    const summaryLabel = document.getElementById('bulk-delete-summary');
+    const sortNameBtn = document.getElementById('bulk-sort-name-btn');
+    const sortSizeBtn = document.getElementById('bulk-sort-size-btn');
+    const sortDirBtn = document.getElementById('bulk-sort-dir-btn');
+    const sortDirIcon = document.getElementById('bulk-sort-dir-icon');
 
     if (!modal || !list) return;
 
-    const getPath = (item: any) => typeof item === 'string' ? item : (item?.path || '');
-    const sortedFiles = [...files].sort((a, b) => getPath(a).split('/').pop()!.localeCompare(getPath(b).split('/').pop()!));
+    const getFilePath = (item: any) => typeof item === 'string' ? item : (item?.path || '');
+    const registry = (window as any).lazyFilesRegistry;
 
-    if (sortedFiles.length === 0) {
-        list.innerHTML = '<div style="padding: 15px; opacity: 0.6; text-align: center; font-size: 11px;">No files to remove.</div>';
-    } else {
-        list.innerHTML = sortedFiles.map(item => {
-            const f = getPath(item);
-            const fileName = f.split('/').pop();
-            const dirName = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
-            const tokens = (typeof item === 'object' && item.tokens) ? item.tokens : (state.fileTokensMap?.[f] || 0);
-            const tokenBadge = tokens > 0 ? `<span class="file-token-badge" style="margin-left:auto;">~${tokens >= 1000 ? (tokens/1000).toFixed(1) + 'k' : tokens} tok</span>` : '';
+    // Normalize raw file entries to objects with accurate byte count and token estimations
+    const normalizedFiles = files.map(item => {
+        const rawPath = getFilePath(item);
+        const regItem = registry?.get(rawPath);
+
+        let bytes = 0;
+        let tokens = 0;
+
+        if (typeof item === 'object' && item !== null) {
+            if (typeof item.bytes === 'number' && item.bytes > 0) bytes = item.bytes;
+            if (typeof item.tokens === 'number' && item.tokens > 0) tokens = item.tokens;
+        }
+
+        if (regItem && typeof regItem === 'object') {
+            if (bytes === 0 && typeof regItem.bytes === 'number' && regItem.bytes > 0) bytes = regItem.bytes;
+            if (tokens === 0 && typeof regItem.tokens === 'number' && regItem.tokens > 0) tokens = regItem.tokens;
+        }
+
+        if (tokens === 0 && state.fileTokensMap?.[rawPath]) {
+            tokens = state.fileTokensMap[rawPath];
+        }
+
+        if (bytes === 0 && tokens > 0) {
+            bytes = Math.round(tokens * 3.5);
+        } else if (tokens === 0 && bytes > 0) {
+            tokens = Math.max(1, Math.ceil(bytes / 3.5));
+        }
+
+        const fileName = rawPath.split('/').pop() || rawPath;
+        const dirName = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+
+        return {
+            path: rawPath,
+            fileName,
+            dirName,
+            bytes,
+            tokens
+        };
+    });
+
+    // Tracking set of selected file paths (initially all selected)
+    const selectedPaths = new Set<string>(normalizedFiles.map(f => f.path));
+
+    let currentSortCol: 'name' | 'size' = 'size';
+    let currentSortDir: 'asc' | 'desc' = 'desc'; // Default: Largest first
+
+    const updateFooterSummary = () => {
+        const checkedCount = selectedPaths.size;
+        let totalFreedTokens = 0;
+        let totalFreedBytes = 0;
+
+        normalizedFiles.forEach(f => {
+            if (selectedPaths.has(f.path)) {
+                totalFreedTokens += f.tokens;
+                totalFreedBytes += f.bytes;
+            }
+        });
+
+        if (summaryLabel) {
+            let sizeFormatted = `${totalFreedBytes} B`;
+            if (totalFreedBytes >= 1024 * 1024) sizeFormatted = `${(totalFreedBytes / (1024 * 1024)).toFixed(1)} MB`;
+            else if (totalFreedBytes >= 1024) sizeFormatted = `${(totalFreedBytes / 1024).toFixed(1)} KB`;
+
+            const tokDisplay = totalFreedTokens >= 1000 ? `${(totalFreedTokens / 1000).toFixed(1)}k` : `${totalFreedTokens}`;
+            summaryLabel.textContent = checkedCount > 0 
+                ? `${checkedCount} of ${normalizedFiles.length} selected (${sizeFormatted} / ~${tokDisplay} tok)`
+                : `0 of ${normalizedFiles.length} selected`;
+        }
+
+        if (runBtn) {
+            runBtn.disabled = checkedCount === 0;
+            runBtn.innerHTML = checkedCount > 0 
+                ? `<span class="codicon codicon-trash"></span> Remove ${checkedCount} File${checkedCount > 1 ? 's' : ''}`
+                : `<span class="codicon codicon-trash"></span> Remove Selected`;
+        }
+
+        if (master) {
+            master.checked = checkedCount === normalizedFiles.length && normalizedFiles.length > 0;
+            master.indeterminate = checkedCount > 0 && checkedCount < normalizedFiles.length;
+        }
+    };
+
+    const renderList = () => {
+        if (normalizedFiles.length === 0) {
+            list.innerHTML = '<div style="padding: 20px; opacity: 0.6; text-align: center; font-size: 11px;">No files to remove.</div>';
+            updateFooterSummary();
+            return;
+        }
+
+        // Sort items
+        const sorted = [...normalizedFiles].sort((a, b) => {
+            const dir = currentSortDir === 'asc' ? 1 : -1;
+            if (currentSortCol === 'name') {
+                return dir * a.fileName.localeCompare(b.fileName, undefined, { sensitivity: 'base' }) || dir * a.path.localeCompare(b.path);
+            } else {
+                return dir * (a.bytes - b.bytes) || dir * (a.tokens - b.tokens) || a.fileName.localeCompare(b.fileName);
+            }
+        });
+
+        list.innerHTML = sorted.map(item => {
+            const f = item.path;
+            const isChecked = selectedPaths.has(f);
+            const bytes = item.bytes;
+            const tokens = item.tokens;
+
+            let formattedBytes = `${bytes} B`;
+            if (bytes >= 1024 * 1024) formattedBytes = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+            else if (bytes >= 1024) formattedBytes = `${(bytes / 1024).toFixed(1)} KB`;
+
+            const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
+            const weightClass = bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light');
+            const tokenBadge = `<span class="file-token-badge ${weightClass}" title="${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`;
 
             return `
-            <div class="checkbox-container" style="margin-bottom: 6px; padding: 6px 10px; border-radius: 4px; background: rgba(0,0,0,0.15); display: flex; align-items: center; border: 1px solid var(--vscode-widget-border);">
-                <input type="checkbox" class="bulk-delete-file-check" value="${f}" id="bulk-del-check-${f}" checked style="margin: 0 10px 0 0;">
-                <label for="bulk-del-check-${f}" style="font-size: 11px; cursor: pointer; flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between;">
-                    <div style="min-width:0; overflow:hidden;">
-                        <div style="font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${fileName}</div>
-                        ${dirName ? `<div style="font-size: 9px; opacity: 0.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${dirName}</div>` : ''}
+            <div class="checkbox-container bulk-delete-item-row ${isChecked ? 'selected' : ''}" style="margin-bottom: 4px; padding: 6px 10px; border-radius: 4px; background: rgba(0,0,0,0.15); display: flex; align-items: center; border: 1px solid var(--vscode-widget-border); transition: background 0.1s, border-color 0.1s;">
+                <input type="checkbox" class="bulk-delete-file-check" value="${f}" id="bulk-del-check-${item.path.replace(/[^a-zA-Z0-9]/g, '_')}" ${isChecked ? 'checked' : ''} style="margin: 0 10px 0 0; cursor: pointer;">
+                <label for="bulk-del-check-${item.path.replace(/[^a-zA-Z0-9]/g, '_')}" style="font-size: 11px; cursor: pointer; flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between; user-select: none;">
+                    <div style="min-width: 0; overflow: hidden; padding-right: 8px;">
+                        <div style="font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f}">
+                            <i class="codicon codicon-file" style="margin-right: 4px; opacity: 0.7;"></i>${item.fileName}
+                        </div>
+                        ${item.dirName ? `<div style="font-size: 9px; opacity: 0.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.dirName}</div>` : ''}
                     </div>
                     ${tokenBadge}
                 </label>
             </div>`;
         }).join('');
-    }
 
-    if (master) {
-        master.checked = true;
-        master.onchange = () => {
-            list.querySelectorAll('.bulk-delete-file-check').forEach((cb: any) => cb.checked = master.checked);
+        // Delegate checkbox listeners
+        list.querySelectorAll('.bulk-delete-file-check').forEach((cb: any) => {
+            cb.onchange = () => {
+                if (cb.checked) {
+                    selectedPaths.add(cb.value);
+                } else {
+                    selectedPaths.delete(cb.value);
+                }
+                const row = cb.closest('.bulk-delete-item-row');
+                if (row) row.classList.toggle('selected', cb.checked);
+                updateFooterSummary();
+            };
+        });
+
+        // Delegate row clicks
+        list.querySelectorAll('.bulk-delete-item-row').forEach((row: any) => {
+            row.onclick = (e: MouseEvent) => {
+                const target = e.target as HTMLElement;
+                if (target.tagName === 'INPUT' || target.tagName === 'LABEL') return;
+                const cb = row.querySelector('.bulk-delete-file-check') as HTMLInputElement;
+                if (cb) {
+                    cb.checked = !cb.checked;
+                    cb.dispatchEvent(new Event('change'));
+                }
+            };
+        });
+
+        // Update sort button styling
+        if (sortNameBtn) sortNameBtn.classList.toggle('active', currentSortCol === 'name');
+        if (sortSizeBtn) sortSizeBtn.classList.toggle('active', currentSortCol === 'size');
+        if (sortDirIcon) {
+            sortDirIcon.className = `codicon ${currentSortDir === 'asc' ? 'codicon-arrow-up' : 'codicon-arrow-down'}`;
+        }
+        if (sortDirBtn) {
+            sortDirBtn.title = currentSortCol === 'name' 
+                ? (currentSortDir === 'asc' ? 'Direction: A to Z (Click to switch to Z to A)' : 'Direction: Z to A (Click to switch to A to Z)')
+                : (currentSortDir === 'asc' ? 'Direction: Smallest First (Click for Largest First)' : 'Direction: Largest First (Click for Smallest First)');
+        }
+
+        updateFooterSummary();
+    };
+
+    // Sort button click handlers
+    if (sortNameBtn) {
+        sortNameBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (currentSortCol === 'name') {
+                currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSortCol = 'name';
+                currentSortDir = 'asc'; // A-Z default
+            }
+            renderList();
         };
     }
+
+    if (sortSizeBtn) {
+        sortSizeBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (currentSortCol === 'size') {
+                currentSortDir = currentSortDir === 'desc' ? 'asc' : 'desc';
+            } else {
+                currentSortCol = 'size';
+                currentSortDir = 'desc'; // Largest first default
+            }
+            renderList();
+        };
+    }
+
+    if (sortDirBtn) {
+        sortDirBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+            renderList();
+        };
+    }
+
+    // Master Select / Deselect All
+    if (master) {
+        master.onchange = () => {
+            if (master.checked) {
+                normalizedFiles.forEach(f => selectedPaths.add(f.path));
+            } else {
+                selectedPaths.clear();
+            }
+            list.querySelectorAll('.bulk-delete-file-check').forEach((cb: any) => {
+                cb.checked = master.checked;
+            });
+            list.querySelectorAll('.bulk-delete-item-row').forEach((row: any) => {
+                row.classList.toggle('selected', master.checked);
+            });
+            updateFooterSummary();
+        };
+    }
+
+    // Initial render
+    renderList();
 
     modal.classList.add('visible');
 
@@ -3850,7 +4054,7 @@ export function showBulkDeleteModal(files: any[]) {
 
     if (runBtn) {
         runBtn.onclick = () => {
-            const selected = Array.from(list.querySelectorAll('.bulk-delete-file-check:checked')).map((el: any) => el.value);
+            const selected = Array.from(selectedPaths);
             if (selected.length > 0) {
                 vscode.postMessage({ command: 'bulkRemoveFiles', paths: selected });
                 modal.classList.remove('visible');

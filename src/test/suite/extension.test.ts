@@ -265,8 +265,78 @@ const old = 2;
   const dataUri = vscode.Uri.file('/workspace/data/raw_dataset.csv');
   const binUri = vscode.Uri.file('/workspace/bin/output.exe');
 
-  // File is not strictly ignored from context inclusion
+// File is not strictly ignored from context inclusion
   assert.strictEqual(provider.isStrictlyIgnored(dataUri), false, 'data/ files should not be blocked from explicit inclusion');
   assert.strictEqual(provider.isStrictlyIgnored(binUri), false, 'bin/ files should not be blocked from explicit inclusion');
+ });
+
+ test('Non-agent mode prompt never exposes read_file and exclusively directs to add_files_to_context', async () => {
+  const { PromptTemplates } = require('../../promptTemplates');
+  const { getProcessedSystemPrompt } = require('../../utils');
+
+  // 1. Non-agent chat mode build
+  const nonAgentPrompt = PromptTemplates.build(
+   'chat',
+   'You are a helpful assistant.',
+   '',
+   ['bash'],
+   { agentMode: false, dynamicMode: false } as any,
+   false
+  );
+
+  assert.strictEqual(nonAgentPrompt.includes('read_file'), false, 'Non-agent prompt must never mention read_file');
+  assert.strictEqual(nonAgentPrompt.includes('read_files'), false, 'Non-agent prompt must never mention read_files');
+  assert.strictEqual(nonAgentPrompt.includes('<lollms_tool>'), false, 'Non-agent discussion prompt must never mention <lollms_tool>');
+  assert.ok(nonAgentPrompt.includes('<add_files_to_context>'), 'Non-agent prompt must instruct use of <add_files_to_context>');
+
+  // 4. Export Prompt (Copy context & prompt for external LLMs)
+  const exportPrompt = await getProcessedSystemPrompt(
+   'chat',
+   { agentMode: false, dynamicMode: true, isExport: true } as any,
+   'You are an assistant.',
+   undefined,
+   false,
+   { tree: '', files: '', skills: '' } as any
+  );
+
+  assert.strictEqual(exportPrompt.includes('<lollms_tool>'), false, 'Export prompt must never contain <lollms_tool>');
+  assert.strictEqual(exportPrompt.includes('Available Tools for the'), false, 'Export prompt must never contain tool listings');
+  assert.ok(exportPrompt.includes('<add_files_to_context>'), 'Export prompt must keep <add_files_to_context> tag');
+  assert.ok(exportPrompt.includes('<remove_files_from_context>'), 'Export prompt must keep <remove_files_from_context> tag');
+
+  // 2. Non-agent dynamic mode (Co-Engineer)
+  const toolManager = {
+   getAllTools: () => [
+    { name: 'read_file', description: 'Reads a file.' },
+    { name: 'read_files', description: 'Reads files.' },
+    { name: 'generate_image', description: 'Generates image.' }
+   ]
+  };
+
+  const dynamicPrompt = await getProcessedSystemPrompt(
+   'chat',
+   { agentMode: false, dynamicMode: true } as any,
+   'You are a helpful assistant.',
+   undefined,
+   false,
+   { toolManager } as any
+  );
+
+  assert.strictEqual(dynamicPrompt.includes('- `read_file`'), false, 'Dynamic non-agent prompt must never list read_file in available tools');
+  assert.strictEqual(dynamicPrompt.includes('- `read_files`'), false, 'Dynamic non-agent prompt must never list read_files in available tools');
+  assert.strictEqual(dynamicPrompt.includes('read_file`: `{"name": "read_file"'), false, 'Dynamic non-agent prompt must never show read_file schema');
+  assert.ok(dynamicPrompt.includes('EXCLUSIVE FILE DISCOVERY VIA <add_files_to_context>'), 'Dynamic prompt must emphasize exclusive <add_files_to_context>');
+
+  // 3. Agent mode prompt DOES mention read_file
+  const agentPrompt = PromptTemplates.build(
+   'agent',
+   'You are an agent.',
+   '',
+   ['bash'],
+   { agentMode: true } as any,
+   false
+  );
+
+  assert.ok(agentPrompt.includes('read_file'), 'Agent mode prompt should mention read_file for agent execution');
  });
 });

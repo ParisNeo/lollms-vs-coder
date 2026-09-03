@@ -2294,7 +2294,13 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
               progress.report({ message: "Processing system prompt..." });
               const personaContent = this.getCurrentPersonaSystemPrompt();
-              const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, { ...context, tree: '', files: '' });
+              const exportCapabilities: DiscussionCapabilities = {
+                  ...this._discussionCapabilities,
+                  agentMode: false,
+                  dynamicMode: false,
+                  isExport: true
+              };
+              const systemPrompt = await getProcessedSystemPrompt('chat', exportCapabilities, personaContent, undefined, forceFullCode, { ...context, tree: '', files: '' });
 
               const projectName = contextData?.projectName || "Unknown Project";
               const filesSection = context.files && context.files.trim().length > 0 
@@ -3195,26 +3201,32 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                             const name = parsedCall.name || "unknown_tool";
                             const parsedParams = parsedCall.arguments || parsedCall.params || {};
 
-                            const toolDef = this.agentManager.getTools().find((t: any) => t.name === name);
-                            if (toolDef) {
-                                const env = { 
-                                    agentManager: this.agentManager, 
-                                    workspaceRoot: folders[0], 
-                                    contextManager: this._contextManager, 
-                                    lollmsApi: this._lollmsAPI,
-                                    skillsManager: this._skillsManager,
-                                    codeGraphManager: this._codeGraphManager,
-                                    personalityManager: this._personalityManager,
-                                    currentPlan: this.agentManager?.currentPlan || null
-                                };
-                                const result = await toolDef.execute(parsedParams, env, controller.signal);
-                                toolResult = result.output;
-                                isSuccess = result.success;
-                                completedDynamicActions.push(`Executed tool: ${name}`);
-                            } else {
-                                toolResult = `Error: Tool '${name}' is not equipped or does not exist.`;
+                            if (!this._discussionCapabilities.agentMode && (name === 'read_file' || name === 'read_files' || name === 'peek_at_context')) {
+                                toolResult = `Error: Tool '${name}' is disabled in non-agent mode. You do not have a read_file tool. You must exclusively use <add_files_to_context>\npath/to/file\n</add_files_to_context> to add files from the project tree to your context.`;
                                 isSuccess = false;
-                                completedDynamicActions.push(`Failed to run tool: ${name} (not found).`);
+                                completedDynamicActions.push(`Attempted ${name} in non-agent mode (BLOCKED - must use <add_files_to_context>).`);
+                            } else {
+                                const toolDef = this.agentManager.getTools().find((t: any) => t.name === name);
+                                if (toolDef) {
+                                    const env = { 
+                                        agentManager: this.agentManager, 
+                                        workspaceRoot: folders[0], 
+                                        contextManager: this._contextManager, 
+                                        lollmsApi: this._lollmsAPI,
+                                        skillsManager: this._skillsManager,
+                                        codeGraphManager: this._codeGraphManager,
+                                        personalityManager: this._personalityManager,
+                                        currentPlan: this.agentManager?.currentPlan || null
+                                    };
+                                    const result = await toolDef.execute(parsedParams, env, controller.signal);
+                                    toolResult = result.output;
+                                    isSuccess = result.success;
+                                    completedDynamicActions.push(`Executed tool: ${name}`);
+                                } else {
+                                    toolResult = `Error: Tool '${name}' is not equipped or does not exist.`;
+                                    isSuccess = false;
+                                    completedDynamicActions.push(`Failed to run tool: ${name} (not found).`);
+                                }
                             }
                         }
                     } catch (executionErr: any) {
@@ -7167,7 +7179,14 @@ Task:
 
               progress.report({ message: "Generating Persona..." });
               const personaContent = this.getCurrentPersonaSystemPrompt();
-              const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context);
+              const exportCapabilities: DiscussionCapabilities = {
+                  ...this._discussionCapabilities,
+                  agentMode: false,
+                  dynamicMode: false,
+                  isExport: true
+              };
+              const systemPrompt = await getProcessedSystemPrompt('chat', exportCapabilities, personaContent, undefined, forceFullCode, context);
+
 
               await vscode.env.clipboard.writeText(systemPrompt);
               vscode.window.showInformationMessage("✅ System prompt (with context) copied to clipboard.");

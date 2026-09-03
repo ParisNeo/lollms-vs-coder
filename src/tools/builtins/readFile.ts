@@ -5,7 +5,7 @@ import { ToolDefinition, ToolExecutionEnv } from '../tool';
 export const readFileTool: ToolDefinition = {
     name: "read_file",
     description: "Reads the content of a file from the workspace without permanently adding it to context. Use this for temporary inspection or peeking.",
-    isAgentic: false,
+    isAgentic: true,
     isDefault: true,
     permissionGroup: 'filesystem_read',
     parameters: [

@@ -242,10 +242,11 @@ Keep it strictly technical and extremely concise.`
             if (t.name === 'submit_response') return true;
             if (t.name === 'read_discussion_file' && attachments === 0) return false;
 
-            const isEquipped = allEquipped.has(t.name);
+const isEquipped = allEquipped.has(t.name);
             const isDefaultDiscussion = DISCUSSION_SAFE_LIST.includes(t.name);
 
             if (!isAgentMode) {
+                if (t.name === 'read_file' || t.name === 'read_files' || t.name === 'peek_at_context') return false;
                 if (!isDefaultDiscussion && !isEquipped) return false;
             }
 

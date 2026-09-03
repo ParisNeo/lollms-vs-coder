@@ -769,10 +769,11 @@ private _cachedTreeString: string | null = null;
     result.text = `# 🏢 SOVEREIGN WORKSPACE STRUCTURE\n`;
     result.text += `You are operating in a multi-root VS Code environment with ${activeFolders.length} independent project(s).\n\n`;
 
+const isAgentMode = options?.capabilities?.agentMode === true;
     result.text += `### 🌐 HOW TO INTERACT\n`;
     result.text += `1. **Addressing**: Always refer to files using the full namespaced path: \`ProjectName/path/to/file.ext\`.\n`;
     result.text += `2. **Partial Vision**: The user has selected **${contextFiles.length}** file(s) for your primary context. You can see the full structure in the tree, but you only "possess" the code for specific files.\n`;
-    result.text += `3. **Expansion**: If you see a file in the tree that you need to read but its content is missing below, you MUST use the \`<add_files_to_context>\` tag (or \`read_file\` tool in Agent Mode) to request it. Do NOT guess the implementation.\n\n`;
+    result.text += `3. **Expansion**: If you see a file in the tree that you need to read but its content is missing below, you MUST use the \`<add_files_to_context>\` tag${isAgentMode ? ' (or `read_file` tool in Agent Mode)' : ''} to request it. Do NOT guess the implementation.\n\n`;
 
     result.text += `### 🏷️ CONTEXT MARKERS (LEGEND)\n`;
     result.text += `- **\`[C]\` (Content Loaded)**: The full source code of this file is available in the 'LOADED FILE CONTENTS' section below.\n`;
@@ -2108,8 +2109,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     **STRICT RULES:**
     1. **PRUNE BY DEFAULT**: In every turn, look at the '[Currently Selected]' list. If a file is not DIRECTLY necessary for the next technical step, you MUST use \`remove_files\` immediately to eject it.
     2. **SURGICAL SELECTION**: Do not "clump" files. Only 'possess' (add to context) the 2-3 files you are actively analyzing or modifying. 
-    3. **TEMPORARY PEEKING**: If you only need to check a definition or a small snippet in a dependency, use \`read_file\` (peek) instead of adding it permanently to context.
-    4. **ZERO-CRUFT POLICY**: Once a file has been analyzed and its discovery recorded via \`record_discovery\`, remove it from the context to make room for implementation details.
+    3. **ZERO-CRUFT POLICY**: Once a file has been analyzed and its discovery recorded via \`record_discovery\`, remove it from the context to make room for implementation details.
     `:"";
     const fullContext = await this.getContextContent({ includeTree: true, modelName: model, signal });
 

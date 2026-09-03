@@ -157,12 +157,13 @@ Therefore, after applying changes, you are **encouraged to run a verification ch
     /**
      * Builds the current project state message.
      */
-    public static buildProjectStateMessage(context: { 
+public static buildProjectStateMessage(context: { 
         tree: string; 
         files: string; 
         skills: string; 
         briefing?: string; // This is the Mission Briefing
         memory?: string;   // This contains Project DNA
+        isAgentMode?: boolean;
     }): string {
         // Parse the list of possessed files from the files block to create an explicit list
         const possessedFiles: string[] = [];
@@ -184,7 +185,6 @@ Therefore, after applying changes, you are **encouraged to run a verification ch
                 }
             });
         }
-
         const filesInventory = possessedFiles.length > 0 
             ? possessedFiles.map(f => `- \`${f}\` [FULL CONTENT FULLY LOADED - DO NOT REQUEST]`).join('\n')
             : "No files are currently loaded in your context.";
@@ -233,6 +233,8 @@ ${context.files || ''}
 
         const formatting = this.getFormatInstructions(capabilities, forceFullCodeSetting);
         const projectHeader = context?.projectName ? `# 📂 WORKING ON PROJECT: ${context.projectName.toUpperCase()}\n\n` : '';
+        const isExport = (capabilities as any)?.isExport === true;
+        const isAgentMode = !isExport && (promptType === 'agent' || capabilities?.agentMode === true);
 
     const sparqlOntologyInstruction = `
 ### 🧊 SOVEREIGN DUAL-ONTOLOGY GRAPH & SPARQL-LITE
@@ -462,9 +464,9 @@ You are a vision-capable engineer. You can use XML tags to manifest visual chang
             `<add_files_to_context>\npath\n</add_files_to_context>`,
             `<remove_files_from_context>\npath\n</remove_files_from_context>`,
             isMemoryActive ? `<project_memory action="add" id="...">content</project_memory>` : null,
-            isSparqlActive ? `<query_architecture>\nSELECT ?class WHERE { ?class s:type s:Class }\n</query_architecture>` : null,
+            isSparqlActive && !isExport ? `<query_architecture>\nSELECT ?class WHERE { ?class s:type s:Class }\n</query_architecture>` : null,
             isVisionActive ? `<generate_image path="..." width="..." height="...">[LONG_IMAGE_PROMPT]</generate_image>` : null,
-            `<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>`
+            isAgentMode && !isExport ? `<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>` : null
         ].filter(Boolean).map(t => `  - \`${t}\``).join('\n');
 
         // Default prompt

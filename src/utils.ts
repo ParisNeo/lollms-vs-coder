@@ -216,6 +216,7 @@ export interface DiscussionCapabilities {
     contextGovernorEnabled?: boolean; // New key
     contextGovernorPermanentPruning?: boolean; // New key
     enableSymbolMode?: boolean; // New key
+    isExport?: boolean; // True when exporting context & prompt for external clipboard use
     guiState?: {
         agentBadge: boolean;
         dynamicBadge?: boolean;
@@ -754,13 +755,34 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
     }
 
     // 🛡️ PROTOCOL GATE: Mode-Specific Operational Constraints
-    const isAutonomous = capabilities?.agentMode === true || promptType === 'agent';
-    const isBuilder = capabilities?.workerType === 'builder';
-    const isDynamic = capabilities?.dynamicMode === true;
+    const isExport = (capabilities as any)?.isExport === true;
+    const isAutonomous = !isExport && (capabilities?.agentMode === true || promptType === 'agent');
+    const isBuilder = !isExport && capabilities?.workerType === 'builder';
+    const isDynamic = !isExport && capabilities?.dynamicMode === true;
 
     let operationalMandate = "";
 
-    if (promptType === 'surgical_agent') {
+    if (isExport) {
+        const isMemoryActive = capabilities?.projectMemoryEnabled !== false;
+        const isVisionActive = capabilities?.enableImages !== false;
+
+        const authorizedExportTags = [
+            `- \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>\`: Request that a file from the project tree be loaded into your context.`,
+            `- \`<remove_files_from_context>\npath/to/file.ext\n</remove_files_from_context>\`: Eject files from context.`,
+            capabilities?.fileRename !== false ? `- \`<move_files>\nsource->destination\n</move_files>\`: Move or rename files.` : null,
+            `- \`<copy_files>\nsource->destination\n</copy_files>\`: Copy files.`,
+            capabilities?.fileDelete !== false ? `- \`<delete_files>\npath\n</delete_files>\`: Delete files.` : null,
+            isMemoryActive ? `- \`<project_memory action="add" id="...">content</project_memory>\`: Save an architectural fact or rule.` : null,
+            isVisionActive ? `- \`<generate_image path="..." width="..." height="...">prompt</generate_image>\`: Generate visual assets.` : null
+        ].filter(Boolean).join('\n    ');
+
+        operationalMandate = `
+    ### 🛡️ EXTERNAL LLM OPERATIONAL PROTOCOL (TAGS EXCLUSIVE - NO TOOLS)
+    You are an external assistant. Tool calling is completely deactivated. You do NOT have access to tools or \`<lollms_tool>\`.
+    You MUST EXCLUSIVELY use top-level XML tags starting on a new line to interact with the project:
+    ${authorizedExportTags}
+    `;
+    } else if (promptType === 'surgical_agent') {
         operationalMandate = "\n### 🚫 STRICT OPERATIONAL RULE\nYou are a single-file refactoring engine. You are FORBIDDEN from using, referencing, or outputting any JSON tool calls, XML tags, or external commands. Your only authorized action is to output the SEARCH/REPLACE block modifying the code.\n";
     } else if (isAutonomous || isBuilder) {
         operationalMandate = "\n### 🦾 OPERATIONAL AUTHORITY: ACTIVE\nYou have permission to use JSON tool calls to interact with the filesystem, terminal, and vision systems directly.\n";
@@ -770,20 +792,23 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
         const isSymbolModeActive = capabilities?.enableSymbolMode !== false;
         const isWebSearchActive = capabilities?.webSearch !== false;
 
-        const sparqlDynamicRule = isSparqlActive ? `
+const sparqlDynamicRule = isSparqlActive ? `
     ### 🧱 LIGHTWEIGHT ARCHITECTURAL EXPLORATION (MANDATORY ORDER OF OPERATIONS)
     - **SPARQL FIRST**: When asked to locate classes, verify imports, check method signatures, or find where a function is called, you **MUST** use the \`<query_architecture>\` tag to perform a fast, token-efficient SPARQL-lite query on the codebase map first.
-    - **NO PREMATURE FULL READS**: Do **NOT** use \`add_files_to_context\` or \`read_file\` to search for definitions. Peeking or loading files with full contents is extremely expensive and wastes your token budget. Use SPARQL queries to inspect the ontology nodes first, and only load files when you are 100% sure you need to edit or review their detailed inner logic.
+    - **NO PREMATURE CONTEXT BLOAT**: Do **NOT** use \`<add_files_to_context>\` to search for definitions. Adding files with full contents uses your token budget. Use SPARQL queries to inspect the ontology nodes first, and only add files via \`<add_files_to_context>\` when you are 100% sure you need to edit or review their detailed inner logic.
 ` : "";
 
         const authorizedXmlTags = [
             `<add_files_to_context>\npath/to/file\n</add_files_to_context>`,
+            `<remove_files_from_context>\npath/to/file\n</remove_files_from_context>`,
             isSparqlActive ? `<query_architecture>\nSELECT ?x WHERE { ?x s:type s:Class }\n</query_architecture>` : null,
             `<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>`
         ].filter(Boolean).map(tag => `- \`${tag}\``).join('\n    ');
 
         const availableToolsList = allTools.filter((t: any) => {
             if (t.name === 'execute_command' || t.name === 'edit_code') return false;
+            // In non-agent mode, read_file, read_files, and peek_at_context must NEVER be accessible or shown
+            if (t.name === 'read_file' || t.name === 'read_files' || t.name === 'peek_at_context') return false;
             if (!isSymbolModeActive && t.name === 'update_function') return false;
             if (!isSparqlActive && (t.name === 'query_architecture' || t.name === 'read_code_graph')) return false;
             if (!isWebSearchActive && (t.name === 'search_web' || t.name === 'search_wikipedia' || t.name === 'scrape_website')) return false;
@@ -798,12 +823,10 @@ ${sparqlDynamicRule}
     **STRICT OPERATIONAL RULES:**
     1. **INTERCEPTED EXECUTION**: When you output an XML tool tag, the system will instantly intercept your stream, run the tool, and prompt you to continue.
     2. **ONE TOOL AT A TIME**: Output exactly ONE tool call or context tag per message, and immediately STOP writing. Do not output multiple tools or trailing prose after the closing tag.
-    3. **NO REDUNDANT READS**: Never call \`read_file\` for files marked **[C]** or files you just added via \`<add_files_to_context>\`. If a file is loaded to context, its full source code is already in your prompt.
-    4. **TOOL PARAMETER SCHEMA**:
-       - \`read_file\`: \`{"name": "read_file", "arguments": {"path": "relative/path/to/file.ext"}}\`
-       - \`read_files\`: \`{"name": "read_files", "arguments": {"paths": ["file1.ext", "file2.ext"]}}\`
-    5. **NO PROJECT-WIDE ADDITIONS**: You are **STRICTLY FORBIDDEN** from importing or reading the entire project directory (\`.\` or the workspace root). Target specific files.
-    6. **TOKEN BUDGET LIMIT**: If your active context exceeds **85%** of the model's limit, prune using \`remove_files_from_context\` before requesting more.
+    3. **EXCLUSIVE FILE DISCOVERY VIA <add_files_to_context>**: You do NOT have a file-reading tool in this mode. To inspect, read, or edit files, you **MUST EXCLUSIVELY** use the \`<add_files_to_context>\` tag to add them to your context from the project tree. Once added, their full contents will be in your prompt.
+    4. **NO REDUNDANT ADDITIONS**: Never request files that are already marked **[C]** in the tree.
+    5. **NO PROJECT-WIDE ADDITIONS**: You are **STRICTLY FORBIDDEN** from importing the entire project directory (\`.\` or the workspace root). Target specific files.
+    6. **TOKEN BUDGET LIMIT**: If your active context exceeds **85%** of the model's limit, prune using \`<remove_files_from_context>\` before requesting more.
     7. **NO AUTO-APPLY**: Any code updates you suggest must be presented to the user to review and apply manually.
 
     **AUTHORIZED TOOLS (OUTPUT XML TAGS VERBATIM):**

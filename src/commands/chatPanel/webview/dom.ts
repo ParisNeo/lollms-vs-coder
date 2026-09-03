@@ -95,6 +95,7 @@ export interface DiscussionCapabilities {
     grepEnabled?: boolean;   // Control background ripgrep indexing
     enableTemperature?: boolean; // Enabled state for custom temperature override
     temperature?: number;
+    isExport?: boolean;
     guiState?: {
         agentBadge: boolean;
         debugBadge: boolean;

@@ -85,7 +85,7 @@ ${projectContext.projectTree}
 **STRICT DISCOVERY PROTOCOL**:
 - The tree above is your EYES. If a file is listed in the tree, you ALREADY KNOW it exists.
 - DO NOT use \`list_files\` or \`execute_command('ls')\` to check for files present in the tree.
-- To see the code inside any file in the tree, use \`read_file\`.
+- To inspect code of unpossessed files, use \`read_file\` (in Agent Mode) or \`<add_files_to_context>\` (in Discussion Mode).
 
 ### 📄 ACCESSIBLE FILE CONTENTS
 ${projectContext.selectedFilesContent || "(No files have been read yet. Use 'read_files' to see code.)"}

@@ -277,11 +277,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
 
             if (type === 'change') {
                 contextManager.refreshFileInCache(uri);
-                contextManager.updateTreeStructure(uri, 'change');
 
                 // Incremental Sync only: Update the file cache without rebuilding the entire graph structure
                 if (isSparqlActive && codeGraphManager.getBuildState() === 'ready') {
-                    Logger.info(`[Sovereign Graph] Performing incremental parse for: ${path.basename(fsPath)}`);
                     await codeGraphManager.updateFileInGraph(uri);
                 }
             } else if (type === 'create') {
@@ -302,8 +300,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
             }
         }
 
-        // Trigger single, unified background recount after batch completes
-        if (ChatPanel.currentPanel && !ChatPanel.isBatchApplying) {
+        // Only trigger token recalculation if an active context file changed or file structure was modified
+        const hasRelevantChange = events.some(([fsPath, type]) => {
+            if (type === 'create' || type === 'delete') return true;
+            return contextManager.isPathInActiveContext(fsPath);
+        });
+
+        if (hasRelevantChange && ChatPanel.currentPanel && !ChatPanel.isBatchApplying) {
             ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: true });
         }
     };

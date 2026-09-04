@@ -1166,11 +1166,8 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         // Normalize any lone ======= separators or un-bracketed hunks to standard Aider format
         codeText = normalizeAiderContent(codeText);
 
-        // Improved Regex: More permissive with line endings and prevents eating into the 
-        // replacement code if it starts with leading newlines.
-        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
-        const aiderMatches = [...codeText.matchAll(aiderRegex)];
-        const isAider = aiderMatches.length > 0;
+        const hunks = parseAiderHunks(codeText);
+        const isAider = hunks.length > 0;
 
         const hasAiderMarkers = codeText.includes('<<<<<<< SEARCH') && codeText.includes('>>>>>>> REPLACE') && codeText.includes('=======');
 
@@ -1462,9 +1459,8 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             const savedState = preservedStates.get(details.id);
             const initialActiveTabIdx = savedState ? savedState.activeTabIdx : 0;
 
-            // Use the normalized code text to parse hunks reliably
-            const robustAiderRegex = /<<<<<<< SEARCH\n([\s\S]*?)\n=======\n([\s\S]*?)\n>>>>>>> REPLACE/g;
-            const robustMatches = [...normalizedCodeText.matchAll(robustAiderRegex)];
+            const hunks = parseAiderHunks(normalizedCodeText);
+            const robustMatches = hunks.map(h => [h.fullMatch, h.searchPart, h.replacePart]);
 
             robustMatches.forEach((m, hIdx) => {
                 const appliedHunks = state.appliedState?.[currentMsgId]?.[blockIdx] || [];
@@ -2585,10 +2581,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 <button class="apply-all-btn" id="apply-all-${messageId}">
                     <span class="codicon codicon-check-all"></span> Apply All Changes (${totalActionableCount} files)
                 </button>
-                <div class="apply-progress-container" id="progress-container-${messageId}" style="display:none; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden;">
+                <div class="apply-progress-container" id="progress-container-${messageId}" style="height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden;">
                     <div class="apply-progress-bar" id="progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-blue); transition: width 0.3s ease;"></div>
                 </div>
-                <div class="apply-results-list" id="results-${messageId}" style="display:none; margin-top:8px;"></div>
+                <div class="apply-results-list" id="results-${messageId}" style="margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
             </div>`;
     }
 
@@ -2692,83 +2688,179 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
 
 
-function gatherChangesFromBlocks(messageId: string, isUndo: boolean = false) {
-    const changes: any[] = [];
-    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
-    if (!wrapper) return changes;
+export interface PatchItem {
+    id: string;
+    blockIndex: number;
+    hunkIndex?: number;
+    path: string;
+    label: string;
+    content: string;
+    type: 'replace' | 'file' | 'diff';
+    blockId: string;
+    isApplied: boolean;
+}
 
+export function getPatchesForMessage(messageId: string): PatchItem[] {
+    const patches: PatchItem[] = [];
+    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
+    if (!wrapper) return patches;
+
+    const appliedStateForMsg = state.appliedState?.[messageId] || {};
     const blocks = Array.from(new Set(wrapper.querySelectorAll('details.code-collapsible, .file-mutation-card')));
+
     blocks.forEach((block: any, idx: number) => {
-        // 1. Handle XML <file> Mutation Cards
-        if (block.classList.contains('file-mutation-card')) {
-            const path = block.dataset.path || "";
+        const isMutationCard = block.classList.contains('file-mutation-card');
+        const bIdxAttr = block.dataset.blockIndex;
+        let blockIndex = bIdxAttr !== undefined && bIdxAttr !== "" ? parseInt(bIdxAttr, 10) : idx;
+        if (isNaN(blockIndex)) blockIndex = idx;
+
+        const appliedHunks = appliedStateForMsg[blockIndex] || [];
+        const isBlockFullyApplied = appliedHunks.includes(-1);
+
+        if (isMutationCard) {
+            const rawPath = block.dataset.path || "";
             const action = block.dataset.action || "write";
             const symbol = block.dataset.symbol || "";
             const rawCodeAttr = block.dataset.rawCode;
             const codeText = rawCodeAttr ? decodeURIComponent(rawCodeAttr) : (block.querySelector('pre code')?.textContent || "");
             const applyBtn = block.querySelector('.apply-mutation-btn, .apply-btn');
+            const targetPath = (symbol && action !== 'patch') ? `${rawPath}:${symbol}` : rawPath;
+            const changeType = (action === 'patch' || codeText.includes('<<<<<<< SEARCH')) ? 'replace' : 'file';
 
-            const isMatch = isUndo ? applyBtn?.classList.contains('applied') : (applyBtn && !applyBtn.classList.contains('applied'));
-            if (isMatch && path) {
-                const changeType = (action === 'patch' || codeText.includes('<<<<<<< SEARCH')) ? 'replace' : 'file';
-                const targetPath = (symbol && changeType === 'file') ? `${path}:${symbol}` : path;
-                const bIdx = parseInt(block.dataset.blockIndex || "0", 10);
-                changes.push({
-                    type: changeType,
+            const hunkTabs = Array.from(block.querySelectorAll('.hunk-tab')) as HTMLElement[];
+            if (hunkTabs.length > 1) {
+                hunkTabs.forEach((tab: HTMLElement, hIdx: number) => {
+                    const pane = block.querySelector(`.hunk-pane-${hIdx}`);
+                    const hunkBtn = pane?.querySelector('.apply-btn');
+                    const isHunkApplied = isBlockFullyApplied || appliedHunks.includes(hIdx) || 
+                        tab.classList.contains('status-completed') || hunkBtn?.classList.contains('applied') || false;
+
+                    patches.push({
+                        id: `${blockIndex}-${hIdx}`,
+                        blockIndex,
+                        hunkIndex: hIdx,
+                        path: targetPath,
+                        label: `${rawPath} (Hunk ${hIdx + 1})`,
+                        content: codeText,
+                        type: changeType,
+                        blockId: block.id,
+                        isApplied: isHunkApplied
+                    });
+                });
+            } else {
+                const isApplied = isBlockFullyApplied || appliedHunks.length > 0 || applyBtn?.classList.contains('applied') || false;
+                patches.push({
+                    id: `${blockIndex}-full`,
+                    blockIndex,
+                    hunkIndex: undefined,
                     path: targetPath,
+                    label: `${rawPath}${symbol ? ` (${symbol})` : ''}`,
                     content: codeText,
-                    label: `${path}${symbol ? ` (${symbol})` : ''}`,
-                    blockIndex: isNaN(bIdx) ? idx : bIdx,
-                    blockId: block.id
+                    type: changeType,
+                    blockId: block.id,
+                    isApplied
                 });
             }
             return;
         }
 
-        // 2. Handle Legacy Markdown Code Blocks
-        const idParts = block.id.split('-');
-        const blockIndex = parseInt(idParts[idParts.length - 1], 10);
-        const codeText = block.dataset.rawCode || "";
+        // Markdown code blocks
+        const idParts = block.id ? block.id.split('-') : [];
+        if (idParts.length > 0) {
+            const parsed = parseInt(idParts[idParts.length - 1], 10);
+            if (!isNaN(parsed)) blockIndex = parsed;
+        }
 
+        const rawCode = block.dataset.rawCode || "";
         const pathInp = block.querySelector('.path-editor-input') as HTMLInputElement;
         const path = pathInp ? pathInp.value.trim() : (block.dataset.path || "");
         if (!path) return;
 
-        const hunkBubbles = block.querySelectorAll('.aider-hunk-bubble');
-        if (hunkBubbles.length > 0) {
+        const hunkTabs = Array.from(block.querySelectorAll('.hunk-tab')) as HTMLElement[];
+        const hunkBubbles = Array.from(block.querySelectorAll('.aider-hunk-bubble'));
+
+        if (hunkTabs.length > 1) {
+            hunkTabs.forEach((tab: HTMLElement, hIdx: number) => {
+                const pane = block.querySelector(`.hunk-pane-${hIdx}`);
+                const hunkBtn = pane?.querySelector('.apply-btn');
+                const isHunkApplied = isBlockFullyApplied || appliedHunks.includes(hIdx) || 
+                    tab.classList.contains('status-completed') || hunkBtn?.classList.contains('applied') || false;
+
+                patches.push({
+                    id: `${blockIndex}-${hIdx}`,
+                    blockIndex,
+                    hunkIndex: hIdx,
+                    path,
+                    label: `${path} (Hunk ${hIdx + 1})`,
+                    content: rawCode,
+                    type: 'replace',
+                    blockId: block.id,
+                    isApplied: isHunkApplied
+                });
+            });
+        } else if (hunkBubbles.length > 0) {
             hunkBubbles.forEach((hunk: any, hIdx: number) => {
                 const btn = hunk.querySelector('.apply-btn');
-                const isMatch = isUndo ? btn?.classList.contains('applied') : (btn && !btn.classList.contains('applied'));
-                if (isMatch) {
-                    changes.push({
-                        type: 'replace',
-                        path: path,
-                        content: codeText, 
-                        label: `${path} (Hunk ${hIdx + 1})`,
-                        blockIndex: isNaN(blockIndex) ? idx : blockIndex,
-                        hunkIndex: hIdx,
-                        blockId: block.id
-                    });
-                }
+                const isHunkApplied = isBlockFullyApplied || appliedHunks.includes(hIdx) || btn?.classList.contains('applied') || false;
+
+                patches.push({
+                    id: `${blockIndex}-${hIdx}`,
+                    blockIndex,
+                    hunkIndex: hIdx,
+                    path,
+                    label: `${path} (Hunk ${hIdx + 1})`,
+                    content: rawCode,
+                    type: 'replace',
+                    blockId: block.id,
+                    isApplied: isHunkApplied
+                });
             });
         } else {
             const applyBtn = block.querySelector('.code-actions .apply-btn');
-            const isMatch = isUndo ? applyBtn?.classList.contains('applied') : (applyBtn && !applyBtn.classList.contains('applied'));
-            if (isMatch) {
-                const labelText = block.querySelector('.summary-lang-label span')?.textContent || "";
-                const type = labelText.toLowerCase().includes('diff') ? 'diff' : 'file';
-                changes.push({
-                    type: type,
-                    path: path,
-                    content: codeText,
-                    label: path,
-                    blockIndex: isNaN(blockIndex) ? idx : blockIndex,
-                    blockId: block.id
-                });
-            }
+            const labelText = block.querySelector('.summary-lang-label span')?.textContent || "";
+            const changeType = labelText.toLowerCase().includes('diff') ? 'diff' : 'file';
+            const isApplied = isBlockFullyApplied || appliedHunks.length > 0 || applyBtn?.classList.contains('applied') || false;
+
+            patches.push({
+                id: `${blockIndex}-full`,
+                blockIndex,
+                hunkIndex: undefined,
+                path,
+                label: path,
+                content: rawCode,
+                type: changeType,
+                blockId: block.id,
+                isApplied
+            });
         }
     });
-    return changes;
+
+    return patches;
+}
+
+export function gatherChangesFromBlocks(messageId: string, isUndo: boolean = false) {
+    const patches = getPatchesForMessage(messageId);
+    if (isUndo) {
+        return patches.filter(p => p.isApplied).map(p => ({
+            type: p.type,
+            path: p.path,
+            content: p.content,
+            label: p.label,
+            blockIndex: p.blockIndex,
+            hunkIndex: p.hunkIndex,
+            blockId: p.blockId
+        }));
+    } else {
+        return patches.filter(p => !p.isApplied).map(p => ({
+            type: p.type,
+            path: p.path,
+            content: p.content,
+            label: p.label,
+            blockIndex: p.blockIndex,
+            hunkIndex: p.hunkIndex,
+            blockId: p.blockId
+        }));
+    }
 }
 
 /**
@@ -4708,60 +4800,93 @@ export function syncResultsListRows(messageId: string) {
     const resList = wrapper.querySelector('.apply-results-list') || document.getElementById(`results-${messageId}`);
     if (!resList) return;
 
-    const appliedStateForMsg = state.appliedState?.[messageId] || {};
+    const patches = getPatchesForMessage(messageId);
+    if (patches.length === 0) return;
 
-    const rows = resList.querySelectorAll('.apply-row');
-    rows.forEach((row: any) => {
-        const bIdx = parseInt(row.dataset.blockIndex, 10);
-        const hIdxRaw = row.dataset.hunkIndex;
-        const hIdx = hIdxRaw !== undefined && hIdxRaw !== "" ? parseInt(hIdxRaw, 10) : undefined;
+    resList.style.display = 'flex';
+    resList.style.flexDirection = 'column';
+    resList.style.gap = '4px';
 
-        const appliedHunks = appliedStateForMsg[bIdx] || [];
-        const isBlockFullyApplied = appliedHunks.includes(-1);
-        const isHunkApplied = hIdx !== undefined ? (appliedHunks.includes(hIdx) || isBlockFullyApplied) : isBlockFullyApplied;
+    const existingRows = Array.from(resList.querySelectorAll('.apply-row'));
+    if (existingRows.length !== patches.length) {
+        resList.innerHTML = patches.map(p => {
+            const isDone = p.isApplied;
+            const iconHtml = isDone 
+                ? '<span class="status-icon"><i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i></span>'
+                : '<span class="status-icon"><i class="codicon codicon-circle-large-outline" style="opacity:0.4"></i></span>';
+            const badgeHtml = isDone 
+                ? '<span class="validated-badge" style="margin-left:auto; font-size:10px; color:var(--vscode-charts-green); font-weight:bold; display:flex; align-items:center; gap:4px;"><i class="codicon codicon-pass-filled"></i> Validated</span>'
+                : '<span class="pending-badge" style="margin-left:auto; font-size:10px; opacity:0.6;">Pending</span>';
 
-        // Check if corresponding code block or mutation card has .applied
-        const blockEl = document.getElementById(`block-${messageId}-${bIdx}`) 
-            || wrapper.querySelector(`.file-mutation-card[data-block-index='${bIdx}']`);
-        
-        let isBtnApplied = false;
-        if (blockEl) {
-            if (hIdx !== undefined) {
-                const hunkTab = blockEl.querySelector(`.hunk-tab-${hIdx}`);
-                const hunkBtn = blockEl.querySelector(`.hunk-pane-${hIdx} .apply-btn, .apply-hunk-btn[data-hunk-index='${hIdx}']`);
-                isBtnApplied = hunkTab?.classList.contains('status-completed') || hunkBtn?.classList.contains('applied') || false;
-            } else {
-                const mainBtn = blockEl.querySelector('.apply-btn, .apply-mutation-btn');
-                isBtnApplied = mainBtn?.classList.contains('applied') || false;
-            }
-        }
+            return `
+                <div class="apply-row ${isDone ? 'status-success' : 'status-pending'}" 
+                     data-block-index="${p.blockIndex}" 
+                     ${p.hunkIndex !== undefined ? `data-hunk-index="${p.hunkIndex}"` : ''}
+                     style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:4px; border:1px solid var(--vscode-widget-border);">
+                    ${iconHtml}
+                    <span class="row-path clickable" title="Click to open file in editor" onclick="vscode.postMessage({command:'openFile', path:'${p.path}'})">${p.label}</span>
+                    ${badgeHtml}
+                    <div class="row-actions" style="display:none"></div>
+                </div>`;
+        }).join('');
+    } else {
+        patches.forEach(p => {
+            const hunkAttr = p.hunkIndex !== undefined ? `[data-hunk-index='${p.hunkIndex}']` : ':not([data-hunk-index])';
+            const row = resList.querySelector(`.apply-row[data-block-index='${p.blockIndex}']${hunkAttr}`) as HTMLElement;
+            if (!row) return;
 
-        if (isHunkApplied || isBlockFullyApplied || isBtnApplied) {
-            row.classList.remove('status-failed', 'status-applying');
-            row.classList.add('status-success');
             const iconEl = row.querySelector('.status-icon');
-            if (iconEl) {
-                iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
-            }
-            row.style.background = '';
-            row.style.opacity = '1';
-            row.querySelector('.row-actions')?.remove();
-            const labelInline = row.querySelector('.status-label-inline');
-            if (labelInline) labelInline.remove();
-        }
-    });
+            if (p.isApplied) {
+                row.classList.remove('status-failed', 'status-pending', 'status-applying');
+                row.classList.add('status-success');
+                if (iconEl) {
+                    iconEl.innerHTML = '<i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i>';
+                }
+                row.style.background = '';
+                row.style.opacity = '1';
 
-    // Update progress bar
-    const totalRows = rows.length;
-    const successRows = resList.querySelectorAll('.apply-row.status-success').length;
-    if (totalRows > 0) {
-        const bar = document.getElementById(`progress-bar-${messageId}`) as HTMLElement;
-        if (bar) {
-            const pct = Math.round((successRows / totalRows) * 100);
-            bar.style.width = `${pct}%`;
-            if (pct === 100) {
-                bar.style.background = 'var(--vscode-charts-green)';
+                row.querySelector('.row-actions')?.remove();
+                row.querySelector('.status-label-inline')?.remove();
+
+                let badge = row.querySelector('.validated-badge');
+                if (!badge) {
+                    row.querySelector('.pending-badge')?.remove();
+                    badge = document.createElement('span');
+                    badge.className = 'validated-badge';
+                    badge.style.cssText = 'margin-left:auto; font-size:10px; color:var(--vscode-charts-green); font-weight:bold; display:flex; align-items:center; gap:4px;';
+                    badge.innerHTML = '<i class="codicon codicon-pass-filled"></i> Validated';
+                    row.appendChild(badge);
+                }
+            } else {
+                if (!row.classList.contains('status-failed')) {
+                    row.classList.remove('status-success', 'status-applying');
+                    row.classList.add('status-pending');
+                    if (iconEl) {
+                        iconEl.innerHTML = '<i class="codicon codicon-circle-large-outline" style="opacity:0.4"></i>';
+                    }
+                    row.querySelector('.validated-badge')?.remove();
+                    if (!row.querySelector('.pending-badge')) {
+                        const badge = document.createElement('span');
+                        badge.className = 'pending-badge';
+                        badge.style.cssText = 'margin-left:auto; font-size:10px; opacity:0.6;';
+                        badge.textContent = 'Pending';
+                        row.appendChild(badge);
+                    }
+                }
             }
+        });
+    }
+
+    const totalPatches = patches.length;
+    const validatedPatches = patches.filter(p => p.isApplied).length;
+    if (totalPatches > 0) {
+        const progressContainer = document.getElementById(`progress-container-${messageId}`) || wrapper.querySelector('.apply-progress-container') as HTMLElement;
+        const bar = document.getElementById(`progress-bar-${messageId}`) as HTMLElement;
+        if (progressContainer) progressContainer.style.display = 'block';
+        if (bar) {
+            const pct = Math.round((validatedPatches / totalPatches) * 100);
+            bar.style.width = `${pct}%`;
+            bar.style.background = pct === 100 ? 'var(--vscode-charts-green)' : 'var(--vscode-charts-blue)';
         }
     }
 }
@@ -4771,50 +4896,39 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return;
 
-    // Synchronize apply-row items in the results list
     syncResultsListRows(messageId);
 
     const applyAllBtn = wrapper.querySelector('.apply-all-btn') as HTMLButtonElement;
     if (!applyAllBtn) return;
 
-    // 1. Gather all unique actionable code blocks and file mutation cards
-    const allBlocks = Array.from(new Set(wrapper.querySelectorAll('details.code-collapsible, .file-mutation-card')));
+    const patches = getPatchesForMessage(messageId);
+    const totalCount = patches.length;
+    if (totalCount <= 1) return;
 
-    if (allBlocks.length <= 1) {
-        return;
-    }
+    const validatedCount = patches.filter(p => p.isApplied).length;
+    const unappliedCount = totalCount - validatedCount;
 
-    // 2. Count applied blocks
-    const appliedBlocks = allBlocks.filter(b => {
-        const btn = b.querySelector('.apply-btn, .apply-mutation-btn');
-        return btn?.classList.contains('applied');
-    });
-
-    const unappliedCount = allBlocks.length - appliedBlocks.length;
-
-    // 3. Update button state and labels
     if (unappliedCount > 0) {
-        // Pending/failed changes remain
         applyAllBtn.classList.remove('applied', 'undo-all-btn', 'stop-btn-red', 'sequential-applying');
         applyAllBtn.style.removeProperty('background-color');
         applyAllBtn.style.removeProperty('color');
         applyAllBtn.disabled = false;
 
-        if (appliedBlocks.length > 0) {
-            applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Changes (${unappliedCount} of ${allBlocks.length} files)`;
+        if (validatedCount > 0) {
+            applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Changes (${unappliedCount} of ${totalCount} files)`;
         } else {
-            applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply All Changes (${allBlocks.length} files)`;
+            applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply All Changes (${totalCount} files)`;
         }
     } else {
-        // 100% of blocks are applied -> Allow Undo All
         applyAllBtn.classList.remove('sequential-applying', 'stop-btn-red');
         applyAllBtn.classList.add('undo-all-btn');
         applyAllBtn.disabled = false;
         applyAllBtn.style.removeProperty('background-color');
         applyAllBtn.style.removeProperty('color');
-        applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo All Changes (${allBlocks.length} files)`;
+        applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo All Changes (${totalCount} files)`;
     }
 }
+
 
 /**
  * Formats the entire plan history into a single Markdown string for debugging.

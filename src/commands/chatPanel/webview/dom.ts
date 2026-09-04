@@ -95,6 +95,7 @@ export interface DiscussionCapabilities {
     grepEnabled?: boolean;   // Control background ripgrep indexing
     enableTemperature?: boolean; // Enabled state for custom temperature override
     temperature?: number;
+    userPreferences?: string;
     isExport?: boolean;
     guiState?: {
         agentBadge: boolean;
@@ -262,6 +263,7 @@ export const dom = {
     get generatingOverlay() { return document.getElementById('generating-overlay') as HTMLDivElement; },
     get activeToolsIndicator() { return document.getElementById('active-tools-indicator') as HTMLDivElement; },
     
+    get capUserPreferences() { return document.getElementById('cap-userPreferences') as HTMLTextAreaElement; },
     get capForceFullCode() { return document.getElementById('cap-forceFullCode') as HTMLInputElement; },
     get capAllowFullFallback() { return document.getElementById('cap-allowFullFallback') as HTMLInputElement; },
     get capExplainCode() { return document.getElementById('cap-explainCode') as HTMLInputElement; },

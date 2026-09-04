@@ -96,8 +96,10 @@ export class DiscussionManager {
     public getDefaultCapabilities(): DiscussionCapabilities {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const defaultProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
+        const globalPreferences = config.get<string>('userPreferences') || config.get<string>('userInfo.codingStyle') || '';
 
         return {
+            userPreferences: globalPreferences,
             workerType: 'discussion',
             responseProfileId: defaultProfileId,
             forceFullCode: false,
@@ -187,6 +189,9 @@ export class DiscussionManager {
 
         if (saved) {
             const merged = { ...defaults, ...saved };
+            if (saved.userPreferences === undefined) {
+                merged.userPreferences = defaults.userPreferences;
+            }
             if (globalFolderSettings) merged.folderSettings = globalFolderSettings;
             if (isGlobalMuted !== undefined) merged.disableProjectContext = isGlobalMuted;
             if ((!merged.herdPreAnswerParticipants || merged.herdPreAnswerParticipants.length === 0) && (merged as any).herdPreCodeParticipants) {

@@ -27,6 +27,7 @@ export interface ContextResult {
   skillsContent: string;
   importedSkills: Skill[];
   diagrams?: { type: string; mermaid: string }[];
+  isolatedTrees?: Record<string, string>;
 }
 
 export class ContextManager {
@@ -134,7 +135,6 @@ private _cachedTreeString: string | null = null;
         if (!current[part]) current[part] = index === parts.length - 1 ? null : {};
         current = current[part];
       });
-      // Incrementally add to list cache to prevent re-scanning the disk [5]
       if (this._cachedVisibleFiles && !this._cachedVisibleFiles.includes(relPath)) {
           this._cachedVisibleFiles.push(relPath);
           this._cachedVisibleFiles.sort();
@@ -146,7 +146,6 @@ private _cachedTreeString: string | null = null;
         current = current[parts[i]];
       }
       delete current[parts[parts.length - 1]];
-      // Incrementally remove from list cache [5]
       if (this._cachedVisibleFiles) {
           this._cachedVisibleFiles = this._cachedVisibleFiles.filter(f => f !== relPath);
       }
@@ -157,17 +156,33 @@ private _cachedTreeString: string | null = null;
     this._isTreeDirty = false;
   }
 
-  public markTreeDirty() {
-    this._isTreeDirty = true;
-    this._fileTreeObject = null;
+  public clearRenderedTreeCache() {
     this._cachedTreeString = null;
     this._cachedProjectTreeMap.clear();
-    this._cachedVisibleFiles = null;
     this._cachedIsolatedTrees.clear();
+  }
+
+  public markTreeDirty(clearVisibleFiles: boolean = false) {
+    this._isTreeDirty = true;
+    this._fileTreeObject = null;
+    this.clearRenderedTreeCache();
+    if (clearVisibleFiles) {
+      this._cachedVisibleFiles = null;
+    }
   }
 
   public isTreeDirty(): boolean {
     return this._isTreeDirty || !this._cachedTreeString;
+  }
+
+  public isPathInActiveContext(fsPathOrRelPath: string): boolean {
+    if (!this.contextStateProvider) return false;
+    const included = this.contextStateProvider.getIncludedFiles();
+    const normalized = this.normalize(fsPathOrRelPath).toLowerCase();
+    return included.some(f => {
+      const normF = this.normalize(f.path).toLowerCase();
+      return normalized === normF || normalized.endsWith('/' + normF) || normF.endsWith('/' + normalized);
+    });
   }
 
   public refreshFileInCache(uri: vscode.Uri) {
@@ -180,15 +195,16 @@ private _cachedTreeString: string | null = null;
             this._fileContentCache?.delete(`${folder.name}/${relPath}`);
         }
     }
-    this.markTreeDirty();
+    // File content change does not alter the directory structure or file presence.
+    // Preserving _fileTreeObject and _cachedVisibleFiles prevents full disk rescans.
   }
 
   public clearAllCaches() {
-    this._cachedTreeString = null;
-    this._cachedProjectTreeMap.clear();
+    this.clearRenderedTreeCache();
     this._isTreeDirty = true;
+    this._fileTreeObject = null;
+    this._cachedVisibleFiles = null;
     this._fileContentCache?.clear();
-    this._cachedIsolatedTrees.clear();
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -206,7 +222,10 @@ private _cachedTreeString: string | null = null;
 
   public setContextStateProvider(provider: ContextStateProvider | undefined) {
     this.contextStateProvider = provider;
-    this.contextStateProvider?.onDidChangeTreeData(() => { this.markTreeDirty(); });
+    this.contextStateProvider?.onDidChangeTreeData(() => {
+        // Inclusion state changed: only invalidate rendered strings, keeping file tree cache intact
+        this.clearRenderedTreeCache();
+    });
   }
   public setSkillsManager(manager: SkillsManager) { this.skillsManager = manager; }
   public setCodeGraphManager(manager: CodeGraphManager) { this.codeGraphManager = manager; }
@@ -884,6 +903,8 @@ const isAgentMode = options?.capabilities?.agentMode === true;
         result.text += `### 🌳 ${projectName.toUpperCase()} — FILE STRUCTURE\n`;
         result.text += isolatedTree + '\n';
         result.projectTree += `### ${projectName}\n${isolatedTree}\n`;
+        if (!result.isolatedTrees) result.isolatedTrees = {};
+        result.isolatedTrees[folder.uri.toString()] = isolatedTree;
       } else if (settings.tree === false) {
         result.text += `*(Tree hidden for ${projectName} by Workspace Access Matrix)*\n\n`;
       }
@@ -1027,8 +1048,8 @@ const isAgentMode = options?.capabilities?.agentMode === true;
             }
           }
 
-          if (fileContent.length < 200000) { // Cache files under 200KB
-            if (this._fileContentCache.size >= 100) {
+          if (fileContent.length < 2000000) { // Cache loaded files under 2MB
+            if (this._fileContentCache.size >= 500) {
               const oldestKey = this._fileContentCache.keys().next().value;
               if (oldestKey !== undefined) {
                 this._fileContentCache.delete(oldestKey);

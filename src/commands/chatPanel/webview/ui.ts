@@ -1,5 +1,5 @@
 import { dom, state, vscode } from "./dom.js";
-import { isScrolledToBottom, applySearchReplace, normalizeAiderContent } from "./utils.js";
+import { isScrolledToBottom, applySearchReplace, normalizeAiderContent, parseAiderHunks } from "./utils.js";
 import DOMPurify from 'dompurify';
 
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
@@ -3583,7 +3583,13 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
     // 4. Render Matrix Folder Rows inside Wizard
     renderWizardMatrix();
 
-    // 5. Reveal Modal and focus the input field
+    // 5. Populate User Preferences in Wizard
+    const wizardUserPref = document.getElementById('wizard-user-preferences') as HTMLTextAreaElement;
+    if (wizardUserPref) {
+        wizardUserPref.value = state.capabilities?.userPreferences || '';
+    }
+
+    // 6. Reveal Modal and focus the input field
     dom.wizardModal.style.display = 'flex';
     dom.wizardModal.classList.add('visible');
 
@@ -3950,9 +3956,9 @@ export function openRawCodeModal(messageId: string, blockIndex: number, filePath
     // Normalize rawCode to handle lone ======= separators seamlessly
     const normalizedRawCode = normalizeAiderContent(rawCode);
 
-    // Extract all hunks
-    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
-    const matches = [...normalizedRawCode.matchAll(aiderRegex)];
+    // Extract all hunks using robust parser supporting deletions
+    const hunks = parseAiderHunks(normalizedRawCode);
+    const matches = hunks.map(h => [h.fullMatch, h.searchPart, h.replacePart]);
 
     tabBar.innerHTML = '';
 

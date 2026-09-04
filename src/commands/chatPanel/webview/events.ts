@@ -2,7 +2,7 @@ import { dom, vscode, state } from './dom.js';
 import { performSearch, navigateSearch, clearSearch } from './search.js';
 import { insertNewMessageEditor } from './messageRenderer.js';
 import { setGeneratingState, updateBadges, openImageEditor, renderPendingImages, renderWorkspaceMatrix, openRawCodeModal } from './ui.js';
-import { isScrolledToBottom } from './utils.js';
+import { isScrolledToBottom, parseAiderHunks } from "./utils.js";
 
 export function initEventHandlers() {
     console.log("[DEBUG:Events] Initializing handlers...");
@@ -1020,6 +1020,7 @@ if (dom.sendButton) {
             const isTempEnabled = enableTempInput ? enableTempInput.checked : false;
 
             const caps = {
+                userPreferences: (document.getElementById('cap-userPreferences') as HTMLTextAreaElement)?.value?.trim() ?? '',
                 generationFormats: {
                     fullFile: dom.capAllowFullFallback?.checked ?? true,
                     partialFormat: partialFormat
@@ -1424,21 +1425,17 @@ if (dom.sendButton) {
         let textToCopy = text;
 
         if (mode !== 'full') {
-            // Precise regex for Aider markers
-            const aiderRegex = /<<<<<<< SEARCH[ \t]*\r?\n([\s\S]*?)\r?\n=======[ \t]*(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE[ \t]*/g;
-            const matches = [...text.matchAll(aiderRegex)];
-            
-            if (matches.length > 0) {
+            const hunks = parseAiderHunks(text);
+            if (hunks.length > 0) {
                 if (mode === 'search') {
-                    textToCopy = matches.map(m => m[1]).join('\n\n');
+                    textToCopy = hunks.map(h => h.searchPart).join('\n\n');
                 } else if (mode === 'replace') {
-                    textToCopy = matches.map(m => m[2]).join('\n\n');
+                    textToCopy = hunks.map(h => h.replacePart).join('\n\n');
                 }
-                } else {
-                // If it's a code block but doesn't have markers, search/replace copy is invalid
+            } else {
                 vscode.postMessage({ command: 'showError', message: 'No SEARCH/REPLACE markers found in this block.' });
                 return;
-                }
+            }
         }
 
         if (textToCopy) {
@@ -1476,28 +1473,47 @@ if (dom.sendButton) {
             const blockId = display.dataset.blockId;
 
             if (messageId) {
-                // Terminate any ongoing progressive search state machine to prevent background CPU loops
                 if ((window as any).progressiveSearchState !== undefined) {
                     (window as any).progressiveSearchState = null;
                 }
 
-                // Send signal to extension to update persistent state
+                // 1. Immediately update in-memory applied state
+                if (!state.appliedState[messageId]) state.appliedState[messageId] = {};
+                if (!state.appliedState[messageId][blockIndex]) state.appliedState[messageId][blockIndex] = [];
+
+                const hunkVal = hunkIndex !== undefined ? hunkIndex : -1;
+                if (!state.appliedState[messageId][blockIndex].includes(hunkVal)) {
+                    state.appliedState[messageId][blockIndex].push(hunkVal);
+                }
+
+                // If block has only one hunk or entire block applied, register full block completion
+                const blockEl = (blockId ? document.getElementById(blockId) : null)
+                    || document.getElementById(`block-${messageId}-${blockIndex}`)
+                    || document.querySelector(`.file-mutation-card[data-block-index='${blockIndex}']`);
+                const allTabs = blockEl ? blockEl.querySelectorAll('.hunk-tab') : [];
+                if (allTabs.length <= 1) {
+                    if (!state.appliedState[messageId][blockIndex].includes(-1)) {
+                        state.appliedState[messageId][blockIndex].push(-1);
+                    }
+                }
+
+                // 2. Notify extension host to persist to disk
                 vscode.postMessage({
                     command: 'markHunkApplied',
                     messageId,
                     blockIndex,
-                    hunkIndex,
+                    hunkIndex: hunkVal,
                     filePath,
                     blockId
                 });
 
-                // Immediately update local UI to show success
+                // 3. Immediately dispatch applyAllResult locally to update rows, cards and master button
                 window.dispatchEvent(new MessageEvent('message', {
                     data: {
                         command: 'applyAllResult',
                         messageId,
                         blockIndex,
-                        hunkIndex,
+                        hunkIndex: hunkVal,
                         filePath,
                         blockId,
                         success: true,
@@ -1505,12 +1521,13 @@ if (dom.sendButton) {
                     }
                 }));
 
-                // Synchronize results list rows and buttons immediately
+                // 4. Force synchronization of rows and master apply-all button
                 import('./messageRenderer.js').then(m => {
+                    m.syncResultsListRows(messageId);
                     m.checkAndSyncMessageAppliedState(messageId);
                 });
 
-                // Reset search results mini view and close the modal completely
+                // 5. Clean up modal and search states
                 if (dom.rawSearchResultsMini) dom.rawSearchResultsMini.style.display = 'none';
                 clearRawSearch();
                 if (dom.rawSearchInput) dom.rawSearchInput.value = '';
@@ -1575,6 +1592,7 @@ if (dom.sendButton) {
         const title = dom.wizardTitle.value.trim() || undefined;
         const personalityId = dom.wizardPersonality.value;
         const profileId = dom.wizardProfile.value;
+        const userPreferences = (document.getElementById('wizard-user-preferences') as HTMLTextAreaElement)?.value?.trim();
         const contextSelectEl = document.getElementById('wizard-context-selection') as HTMLSelectElement;
         const contextSelection = contextSelectEl ? contextSelectEl.value : 'current';
 
@@ -1597,6 +1615,7 @@ if (dom.sendButton) {
                     profileId,
                     selectedFolders,
                     contextSelection,
+                    userPreferences,
                     sendToAi
                 }
             }

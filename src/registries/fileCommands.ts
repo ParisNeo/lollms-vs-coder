@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsServices } from '../lollmsContext';
-import { applyDiff, applySearchReplace, stripThinkingTags } from '../utils';
+import { applyDiff, applySearchReplace, stripThinkingTags, normalizeAiderContent, parseAiderHunks } from '../utils';
 import { normalizeToDocument } from '../utils/promptUtils';
 import { Logger } from '../logger';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
@@ -928,8 +928,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             }
 
             const originalBlockContent = targetBlock.content;
-            const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
-            const matches = [...originalBlockContent.matchAll(aiderRegex)];
+            const hunks = parseAiderHunks(normalizeAiderContent(originalBlockContent));
+            const matches = hunks.map((h: any) => [h.fullMatch, h.searchPart, h.replacePart]);
 
             let failingHunk = originalBlockContent;
             if (options?.hunkIndex !== undefined && matches[options.hunkIndex]) {
@@ -1106,18 +1106,16 @@ ${originalFileContent}
             document = await vscode.workspace.openTextDocument(fileUri);
         }
 
-         // Improved Regex: Allows for optional spaces before markers and handles line endings more gracefully.
-        const normalizedContent = content.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
-        const aiderRegex = /<<<<<<< SEARCH[ \t\r]*\n([\s\S]*?)\n=======[ \t\r]*\n([\s\S]*?)\n>>>>>>> REPLACE/g;
-        let matches = [...normalizedContent.matchAll(aiderRegex)];
+        const normalizedContent = normalizeAiderContent(content);
+        const parsedHunks = parseAiderHunks(normalizedContent);
+        let matches: string[][] = parsedHunks.map(h => [h.fullMatch, h.searchPart, h.replacePart]);
 
         if (matches.length === 0) {
-            // DEEP SCAN: If no blocks found at start of lines, try a less restrictive match 
-            // for models that put chatter inside the code block
             const permissiveRegex = /<<<<<<< SEARCH([\s\S]*?)=======([\s\S]*?)>>>>>>> REPLACE/g;
-            matches = [...normalizedContent.matchAll(permissiveRegex)];
-
-            if (matches.length === 0) {
+            const rawMatches = [...normalizedContent.matchAll(permissiveRegex)];
+            if (rawMatches.length > 0) {
+                matches = rawMatches.map(m => [m[0], m[1].replace(/^\r?\n/, '').replace(/\r?\n$/, ''), m[2].replace(/^\r?\n/, '').replace(/\r?\n$/, '')]);
+            } else {
                 if (!options?.silent) vscode.window.showErrorMessage("No valid Search/Replace blocks found.");
                 return { success: false, error: "Invalid Aider block format: Markers must be on their own lines." };
             }
@@ -1182,8 +1180,8 @@ ${originalFileContent}
                     continue;
                 }
 
-                // Idempotency check: If content is already present, count as success
-                if (currentContent.includes(replaceCode.trim())) {
+                // Idempotency check: If content is already present, count as success (only for non-empty replacements)
+                if (replaceCode.trim().length > 0 && currentContent.includes(replaceCode.trim())) {
                     applyCount++;
                     continue; 
                 }
@@ -1597,8 +1595,9 @@ ${originalContent}
                 const isAider = rawContent.includes('<<<<<<< SEARCH');
 
                 if (isAider) {
-                    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
-                    const matches = [...rawContent.matchAll(aiderRegex)];
+                    const normalizedRaw = normalizeAiderContent(rawContent);
+                    const hunks = parseAiderHunks(normalizedRaw);
+                    const matches = hunks.map((h: any) => [h.fullMatch, h.searchPart, h.replacePart]);
                     
                     // If verifying a specific hunk from the list
                     if (change.hunkIndex !== undefined && matches[change.hunkIndex]) {

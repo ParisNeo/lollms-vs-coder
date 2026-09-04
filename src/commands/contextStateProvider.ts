@@ -123,9 +123,11 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         }
     }
 
-    refresh(): void {
-        this._isTreeDirty = true;
-        this._cachedVisibleFiles = null;
+    refresh(invalidateFiles: boolean = false): void {
+        if (invalidateFiles) {
+            this._isTreeDirty = true;
+            this._cachedVisibleFiles = null;
+        }
         this._onDidChangeTreeData.fire();
         this._onDidChangeFileDecorations.fire();
     }
@@ -197,7 +199,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         if (stateWasModified) {
             await this.context.workspaceState.update(this.stateKey, workspaceState);
-            this.refresh();
+            this.refresh(false);
         }
     }
 
@@ -441,7 +443,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         await this.context.workspaceState.update(this.stateKey, workspaceState);
         const urisToUpdate = Array.from(allUrisToFire).map(s => vscode.Uri.parse(s));
-        this.refresh();
+        this.refresh(false);
         this._onDidChangeFileDecorations.fire(urisToUpdate);
     }
     
@@ -641,7 +643,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     public async getAllVisibleFiles(signal?: AbortSignal, onProgress?: (pct: number, status: string) => void): Promise<string[]> {
-        if (this._cachedVisibleFiles && !this._isTreeDirty) {
+        if (this._cachedVisibleFiles && this._cachedVisibleFiles.length > 0 && !this._isTreeDirty) {
             return this._cachedVisibleFiles;
         }
         return this.triggerFullScan(onProgress);

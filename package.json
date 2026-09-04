@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1466,6 +1466,12 @@
           "default": "",
           "description": "Brief description of your preferred coding style (e.g., 'Functional', 'PEP8', 'Concise')."
         },
+        "lollmsVsCoder.userPreferences": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "markdownDescription": "Global custom user preferences, coding style guidelines, and behavioral rules injected into the AI system prompt for discussions and agents."
+        },
         "lollmsVsCoder.herdParticipants": {
           "type": "array",
           "default": [],
@@ -2153,16 +2159,17 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-package",
-    "build-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts",
-    "minify-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts",
+    "build-webview": "npm run copy-assets && esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts",
+    "minify-webview": "npm run copy-assets && esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts",
     "compile-tests": "esbuild ./src/test/runTest.ts --bundle --outfile=out/test/runTest.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap && esbuild ./src/test/suite/index.ts --bundle --outfile=out/test/suite/index.js --external:vscode --external:mocha --external:glob --format=cjs --platform=node --target=es2020 --sourcemap && esbuild ./src/test/suite/extension.test.ts --bundle --outfile=out/test/suite/extension.test.js --external:vscode --external:mocha --external:glob --format=cjs --platform=node --target=es2020 --sourcemap",
     "compile": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap && npm run compile-tests",
     "watch": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap --watch",
     "esbuild-package": "npm run clean && npm run copy-assets && npm run minify-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --minify",
     "copy-assets": "cpx \"src/commands/chatPanel/webview/*.{css,html}\" out/webview && cpx \"src/commands/companion/*.html\" out/webview && cpx \"src/webview/*.js\" out/webview && cpx \"media/**\" out/media && cpx \"node_modules/@vscode/codicons/dist/codicon.{css,ttf}\" out/styles && cpx \"node_modules/prismjs/themes/prism-tomorrow.css\" out/styles && cpx \"src/skills/**/*\" out/skills && cpx \"l10n/*.json\" out/l10n && cpx \"l10n/*.json\" l10n && cpx \"package.nls*.json\" out",
+    "audit": "npm audit --audit-level moderate",
     "audit-fix": "npm audit fix --audit-level=moderate || echo 'Audit fix finished with remaining issues.'",
-    "package": "npm run build-and-package",
-    "build-and-package": "npm run clean && npm run audit-fix && npm run vscode:prepublish && npx @vscode/vsce package",
+    "package": "npx @vscode/vsce package",
+    "build-and-package": "npx @vscode/vsce package",
     "pretest": "npm run compile && npm audit --audit-level=moderate",
     "test": "node ./out/test/runTest.js",
     "security-audit": "npm audit --audit-level moderate",

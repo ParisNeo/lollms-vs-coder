@@ -444,6 +444,18 @@
                 <span class="close-btn" id="close-discussion-tools-modal">&times;</span>
             </div>
             <div class="modal-body">
+                <div class="modal-section" style="border-left: 4px solid var(--vscode-charts-blue);">
+                    <h3 style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">
+                        <span class="codicon codicon-person"></span> User Preferences & Instructions
+                    </h3>
+                    <p style="font-size: 11px; opacity: 0.8; margin-top: 0; margin-bottom: 8px;">
+                        Specify custom coding guidelines, language requirements, architectural preferences, or formatting rules. These are directly injected into the AI system prompt on every turn.
+                    </p>
+                    <div class="form-group" style="margin: 0;">
+                        <textarea id="cap-userPreferences" class="commit-textarea" style="height: 90px; width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); font-size: 12px;" placeholder="e.g. Always use TypeScript strict mode. Prefer functional programming and immutability. Use Tailwind for styling. Keep explanations concise and never use placeholders in code."></textarea>
+                    </div>
+                </div>
+
                 <div class="modal-section">
                     <h3>Performance & Creativity</h3>
                     <div class="checkbox-container" style="margin-bottom: 10px;">
@@ -1207,6 +1219,11 @@
                 <div class="form-group">
                     <label for="wizard-prompt" style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8;">First Prompt / Instruction</label>
                     <textarea id="wizard-prompt" rows="4" placeholder="What is the objective or question for this discussion? (Shift+Enter for new line)..." style="width:100%; box-sizing:border-box; font-family:inherit;"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="wizard-user-preferences" style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8;">Custom User Preferences (Injected into System Prompt)</label>
+                    <textarea id="wizard-user-preferences" rows="2" placeholder="e.g. Strict TypeScript, functional style, no placeholders..." style="width:100%; box-sizing:border-box; font-family:inherit;"></textarea>
                 </div>
 
                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
-import { applySearchReplace, getProcessedSystemPrompt, stripThinkingTags } from '../../utils';
+import { applySearchReplace, getProcessedSystemPrompt, stripThinkingTags, normalizeAiderContent, parseAiderHunks } from '../../utils';
 import { ChatMessage } from '../../lollmsAPI';
 import * as path from 'path';
 import { Logger } from '../../logger';
@@ -182,9 +182,10 @@ If you need to modify this file, write and execute a script (e.g., Python with o
             ], null, signal, modelOverride);
 
             const cleanResponse = stripThinkingTags(response);
-            const normalizedResponse = cleanResponse.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
-            const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
-            const matches = [...normalizedResponse.matchAll(aiderRegex)];
+            const normalizedResponse = normalizeAiderContent(cleanResponse);
+            const hunks = parseAiderHunks(normalizedResponse);
+            const matches = hunks.map((h: any) => [h.fullMatch, h.searchPart, h.replacePart]);
+
 
             if (matches.length === 0) {
                 attempts++;

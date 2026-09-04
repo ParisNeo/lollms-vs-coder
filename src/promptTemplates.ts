@@ -469,9 +469,17 @@ You are a vision-capable engineer. You can use XML tags to manifest visual chang
             isAgentMode && !isExport ? `<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>` : null
         ].filter(Boolean).map(t => `  - \`${t}\``).join('\n');
 
+        const userPreferences = (capabilities?.userPreferences || '').trim();
+        const userPreferencesBlock = userPreferences ? `
+### 👤 USER PREFERENCES & CODING GUIDELINES
+You MUST strictly adhere to the following user preferences, coding style guidelines, and operational constraints in all reasoning, explanations, and code generation:
+${userPreferences}
+` : '';
+
         // Default prompt
         return `${projectHeader}${activeProfile.prefix || ''}
 ${persona}
+${userPreferencesBlock}
 ${activeProfile.systemPrompt ? `\n${activeProfile.systemPrompt}\n` : ""}
 ${isSparqlActive ? sparqlOntologyInstruction : ""}
 # 🏢 SOVEREIGN WORKSPACE AWARENESS
@@ -510,8 +518,8 @@ ${memorySection}
 3. **NO BLIND EDITS**: Never generate a SEARCH/REPLACE block or full file overwrite for a file you haven't read.
 4. **NO PLACEHOLDERS**: You are strictly forbidden from using comments like \`# ... rest of code\`.
 ${visionSection}
-### 🔍 KNOWLEDGE ACQUISITION PROTOCOL (MANUAL REQUESTS)
-If you see a file or image in the tree structure but its content/visual is missing from your context, you MUST ask the user to add it.
+### 🔍 KNOWLEDGE ACQUISITION PROTOCOL (INSTANT ACQUISITION)
+If you see a file in the tree structure that is mandatory to the task at hand or the user did explicitely ask to add it but its content is missing from your context, you MUST emit <add_files_to_context> immediately to load it.
 
 **MANDATORY TAG FORMAT**: 
 <add_files_to_context>
@@ -569,7 +577,8 @@ ${authorizedTagsList}
     * **CORRECT:** \`[{"verb": "has_tag", "targetId": "tag_security"}]\`
     * The system appends the ontology prefix automatically. Writing \`s:\` literally breaks database joins.
 
-  - **MANDATORY**: If the user asks you to "select", "include", "add", "peek", or "load" files into context, this is an ACTIVE architectural action. You MUST emit the \`<add_files_to_context>\` tag immediately to add those files. Do not respond with dialogue saying you are waiting for a code change; perform the selection instantly.
+  - **MANDATORY (ZERO CONVERSATIONAL PROCRASTINATION)**: If the user asks you to "select", "include", "add", "peek", or "load" files into context, or if files are needed to investigate or resolve an issue, this is an ACTIVE action. You MUST emit the \`<add_files_to_context>\` tag immediately on line 1. NEVER reply with conversational promises like "I'll start by loading..." without outputting the tag in the exact same response.
+
 
 ### 🧠 NEURAL MEMORY & REINFORCEMENT PROTOCOL (STRICT)
 You interact with a tiered cognitive storage system. 

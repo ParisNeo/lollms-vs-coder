@@ -13,13 +13,12 @@ import { SkillsManager } from '../../skillsManager';
 import { Logger } from '../../logger';
 import { PersonalityManager } from '../../personalityManager';
 import { GitIntegration } from '../../gitIntegration';
-import { applyDiffToString, applySearchReplace, normalizeAiderContent } from '../../utils';
+import { applyDiffToString, applySearchReplace, normalizeAiderContent, parseAiderHunks } from '../../utils';
 import { BigDataProcessor } from '../../bigDataProcessing';
 import { AutomationPanel } from '../../panels/automationPanel';
 import { LocalizationManager } from '../../utils/localizationManager';
 import { LollmsServices } from '../../lollmsContext';
 import { ChatPanelMessageHandler } from './chatPanelMessageHandler';
-
 
 interface ActiveGeneration {
     messageId: string;
@@ -1245,23 +1244,23 @@ export class ChatPanel {
                     const importedIds = self._currentDiscussion?.importedSkills || [];
                     const activeDiagramIds = self._currentDiscussion?.activeDiagrams || [];
 
-                    self._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Assembling Codebase Map...' });
+                    if (forceFull) {
+                        self._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Assembling Codebase Map...' });
+                    }
 
-                    let currentTokenEstimate = 0;
                     const context = await self._contextManager.getContextContent({ 
                         signal, 
                         capabilities: self._discussionCapabilities,
                         importedSkillIds: importedIds,
                         activeDiagramIds: activeDiagramIds,
                         modelName: modelForTokenization,
-                        onProgress: (progressData: any) => {
+                        onProgress: forceFull ? (progressData: any) => {
                             if (!self._isDisposed) {
                                 const pct = typeof progressData === 'object' ? progressData.percentage : progressData;
                                 const current = progressData?.current || 0;
                                 const total = progressData?.total || 0;
                                 const name = progressData?.fileName || '';
 
-                                // 1. Send detailed progress data to the webview
                                 self._panel.webview.postMessage({ 
                                     command: 'tokenCalculationProgress', 
                                     progress: pct,
@@ -1270,7 +1269,6 @@ export class ChatPanel {
                                     fileName: name
                                 });
 
-                                // 2. Update the big Blueprint loader with "Live" stats
                                 self._panel.webview.postMessage({
                                     command: 'updateLoaderStatus',
                                     status: `Indexing: ${pct}% complete...`,
@@ -1280,8 +1278,8 @@ export class ChatPanel {
                                     }
                                 });
                             }
-                        },
-                        onScanProgress: (pct: number, status: string) => {
+                        } : undefined,
+                        onScanProgress: forceFull ? (pct: number, status: string) => {
                             if (!self._isDisposed && self._panel.webview) {
                                 self._panel.webview.postMessage({
                                     command: 'tokenCalculationProgress',
@@ -1294,7 +1292,7 @@ export class ChatPanel {
                                     stats: { files: -1, tokens: -1 }
                                 });
                             }
-                        }
+                        } : undefined
                     });
 
                     if (signal.aborted) {
@@ -1521,14 +1519,13 @@ export class ChatPanel {
                                 let treeTokens = 0;
                                 let filesTokens = 0;
 
-                                // 1. Tree Weight
+                                // 1. Tree Weight: Reuse pre-assembled isolated tree from context
                                 if (settings.tree !== false) {
-                                    const folderTree = await self._contextManager.generateIsolatedProjectTree(folder, signal, self._discussionCapabilities);
-                                    const res = await getTokenCount(folderTree);
-                                    treeTokens = res.count;
+                                    const folderTree = context?.isolatedTrees?.[uriKey] || await self._contextManager.generateIsolatedProjectTree(folder, signal, self._discussionCapabilities);
+                                    treeTokens = Math.ceil((folderTree || '').length / 3.5);
                                 }
 
-                                // 2. Content Weight (Fast Heuristic from Cache/Stats)
+                                // 2. Content Weight (Metadata Heuristic from Loaded Files Only)
                                 if (settings.content !== false) {
                                     const provider = self._contextManager.getContextStateProvider();
                                     const included = provider?.getIncludedFiles() || [];
@@ -1536,15 +1533,7 @@ export class ChatPanel {
                                     for (const file of included) {
                                         const resolution = await self._contextManager.resolveWorkspaceFromPath(file.path);
                                         if (resolution?.folder && areUrisEqual(resolution.folder.uri, folder.uri)) {
-                                            const cached = (self._contextManager as any)._fileContentCache.get(file.path);
-                                            if (cached) {
-                                                filesTokens += Math.ceil(cached.content.length / 3.5);
-                                            } else {
-                                                try {
-                                                    const stats = await vscode.workspace.fs.stat(resolution.uri);
-                                                    filesTokens += Math.ceil(stats.size / 3.5);
-                                                } catch {}
-                                            }
+                                            filesTokens += (file.tokens || Math.ceil((file.bytes || 0) / 3.5));
                                         }
                                     }
                                 }
@@ -5082,7 +5071,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         this.processManager.unregister(applyProcId);
                         this.updateGeneratingState();
                         // Final context refresh to show new state in HUD
-                        this.updateContextAndTokens({ isBackgroundSync: false });
+                        this.updateContextAndTokens({ isBackgroundSync: true });
                     };
 
                     runBatch();
@@ -7416,7 +7405,17 @@ private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
             const rawBytes = await vscode.workspace.fs.readFile(htmlPath);
             htmlContent = Buffer.from(rawBytes).toString('utf8');
         } catch (err: any) {
-            return `<h3>Error loading Chat Panel layout. Details: ${err.message}</h3>`;
+            // Self-healing fallback: read from source template and restore to out/
+            try {
+                const srcPath = vscode.Uri.joinPath(this._extensionUri, 'src', 'commands', 'chatPanel', 'webview', 'chatPanel.html');
+                const rawBytes = await vscode.workspace.fs.readFile(srcPath);
+                htmlContent = Buffer.from(rawBytes).toString('utf8');
+                const outDir = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview');
+                await vscode.workspace.fs.createDirectory(outDir);
+                await vscode.workspace.fs.writeFile(htmlPath, rawBytes);
+            } catch (fallbackErr: any) {
+                return `<h3>Error loading Chat Panel layout. Details: ${err.message}</h3>`;
+            }
         }
 
         return htmlContent

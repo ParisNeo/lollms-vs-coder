@@ -342,7 +342,9 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     if (bestScore > 0.8 && bestMatchStart !== -1) {
         const before = contentLines.slice(0, bestMatchStart);
         const after = contentLines.slice(bestMatchEnd);
-        const finalResult = [...before, normalizedReplace, ...after].join('\n');
+        const finalResult = normalizedReplace === ""
+            ? [...before, ...after].join('\n')
+            : [...before, normalizedReplace, ...after].join('\n');
         return { success: true, result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult };
     }
 

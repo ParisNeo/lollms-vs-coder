@@ -102,7 +102,17 @@ export class CompanionPanel {
         try {
             htmlContent = fs.readFileSync(htmlPath.fsPath, 'utf8');
         } catch (err: any) {
-            return `<h3>Error loading Companion Panel layout. Details: ${err.message}</h3>`;
+            try {
+                const srcPath = vscode.Uri.joinPath(this._extensionUri, 'src', 'commands', 'companion', 'companionPanel.html');
+                htmlContent = fs.readFileSync(srcPath.fsPath, 'utf8');
+                const outDir = path.dirname(htmlPath.fsPath);
+                if (!fs.existsSync(outDir)) {
+                    fs.mkdirSync(outDir, { recursive: true });
+                }
+                fs.writeFileSync(htmlPath.fsPath, htmlContent, 'utf8');
+            } catch {
+                return `<h3>Error loading Companion Panel layout. Details: ${err.message}</h3>`;
+            }
         }
 
         const codiconUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));

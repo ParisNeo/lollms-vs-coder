@@ -535,6 +535,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         state.profiles = [];
                     }
 
+                    const userPrefInput = document.getElementById('cap-userPreferences') as HTMLTextAreaElement;
+                    if (userPrefInput) {
+                        userPrefInput.value = caps.userPreferences || '';
+                    }
+
                     if (dom.capForceFullCode) dom.capForceFullCode.checked = !!caps.forceFullCode;
                     const symbolModeCheck = document.getElementById('cap-enableSymbolMode') as HTMLInputElement;
                     if (symbolModeCheck) {
@@ -1721,26 +1726,51 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         ? document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement 
                         : null;
 
-                    const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
-                    const row = wrapper ? wrapper.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`) as HTMLElement : null;
-
-                    if (row) {
-                        const iconEl = row.querySelector('.status-icon');
-                        if (iconEl) {
-                            iconEl.innerHTML = message.success 
-                                ? '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>' 
-                                : '<span class="codicon codicon-error" style="color:var(--vscode-charts-red)"></span>';
+                    // Locate all relevant rows in the apply-all list for this block/hunk
+                    const targetRows: HTMLElement[] = [];
+                    if (wrapper && message.blockIndex !== undefined) {
+                        if (message.hunkIndex === -1 || message.hunkIndex === undefined) {
+                            targetRows.push(...Array.from(wrapper.querySelectorAll(`.apply-row[data-block-index='${message.blockIndex}']`)) as HTMLElement[]);
+                        } else {
+                            const specificRow = wrapper.querySelector(`.apply-row[data-block-index='${message.blockIndex}'][data-hunk-index='${message.hunkIndex}']`) as HTMLElement;
+                            if (specificRow) {
+                                targetRows.push(specificRow);
+                            } else {
+                                const fallbackRow = wrapper.querySelector(`.apply-row[data-block-index='${message.blockIndex}']`) as HTMLElement;
+                                if (fallbackRow) targetRows.push(fallbackRow);
+                            }
                         }
-                        row.style.background = '';
-                        row.style.opacity = '1';
+                    }
 
-                        const labelInline = row.querySelector('.status-label-inline');
-                        if (labelInline) labelInline.remove();
+                    targetRows.forEach(row => {
+                        const iconEl = row.querySelector('.status-icon');
+                        if (message.success) {
+                            row.classList.remove('status-failed', 'status-applying');
+                            row.classList.add('status-success');
+                            if (iconEl) {
+                                iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
+                            }
+                            row.style.background = '';
+                            row.style.opacity = '1';
 
-                        const rowActions = row.querySelector('.row-actions') as HTMLElement;
-                        if (message.success && rowActions) {
-                            rowActions.remove();
-                        } else if (!message.success) {
+                            const labelInline = row.querySelector('.status-label-inline');
+                            if (labelInline) labelInline.remove();
+
+                            const rowActions = row.querySelector('.row-actions') as HTMLElement;
+                            if (rowActions) rowActions.remove();
+                        } else {
+                            row.classList.remove('status-applying', 'status-success');
+                            row.classList.add('status-failed');
+                            if (iconEl) {
+                                iconEl.innerHTML = '<span class="codicon codicon-error" style="color:var(--vscode-charts-red)"></span>';
+                            }
+                            row.style.background = '';
+                            row.style.opacity = '1';
+
+                            const labelInline = row.querySelector('.status-label-inline');
+                            if (labelInline) labelInline.remove();
+
+                            const rowActions = row.querySelector('.row-actions') as HTMLElement;
                             const isSystemId = message.messageId?.startsWith('self_correction') || message.messageId?.startsWith('guardian') || message.messageId?.startsWith('system') || message.messageId?.startsWith('inspection');
                             if (!isSystemId) {
                                 let activeActions = rowActions;
@@ -1801,7 +1831,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 }
                             }
                         }
-                    }
+                    });
 
                     // 1. Resilient Card Lookup across XML file mutation cards and standard code blocks
                     let blockEl: HTMLDetailsElement | null = null;
@@ -1980,6 +2010,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             if (tab) {
                                 if (message.alreadyApplied) {
                                     tab.classList.add('status-completed');
+                                    tab.classList.remove('status-failed');
                                     tab.querySelector('.hunk-status-icon i')!.className = 'codicon codicon-check';
                                 } else {
                                     tab.classList.remove('status-completed');
@@ -1990,6 +2021,17 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             if (pane) {
                                 const hunkBtn = pane.querySelector('.apply-btn') as HTMLButtonElement;
                                 if (hunkBtn) restoreBtn(hunkBtn);
+                            }
+
+                            // If all hunk tabs in this block are now completed, mark the block's main button as applied too
+                            const allHunkTabs = blockEl.querySelectorAll('.hunk-tab');
+                            const completedTabs = blockEl.querySelectorAll('.hunk-tab.status-completed');
+                            if (allHunkTabs.length > 0 && allHunkTabs.length === completedTabs.length) {
+                                const mainBtn = blockEl.querySelector('.code-actions .apply-btn, .apply-mutation-btn') as HTMLButtonElement;
+                                if (mainBtn) restoreBtn(mainBtn);
+                                if (!state.appliedState[message.messageId][message.blockIndex].includes(-1)) {
+                                    state.appliedState[message.messageId][message.blockIndex].push(-1);
+                                }
                             }
                         } else {
                             if (mainApplyBtn) restoreBtn(mainApplyBtn);
@@ -2003,9 +2045,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             });
                         }
 
-                        // Re-sync main button state for the entire message
+                        // Re-sync main button state and results list for the entire message
                         if (message.messageId) {
-                            checkAndSyncMessageAppliedState(message.messageId);
+                            import('./messageRenderer.js').then(m => {
+                                m.syncResultsListRows(message.messageId);
+                                m.checkAndSyncMessageAppliedState(message.messageId);
+                            });
                         }
 
                         // Collapse block automatically upon application
@@ -2152,13 +2197,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (message.messageId) {
                         checkAndSyncMessageAppliedState(message.messageId);
 
-                        const resultsList = row?.closest('.apply-results-list') || document.getElementById(`results-${message.messageId}`);
+                        const resultsList = document.getElementById(`results-${message.messageId}`) || wrapper?.querySelector('.apply-results-list');
                         if (resultsList && isUndo) {
                             const stillPending = resultsList.querySelectorAll('.spinner, .codicon-loading').length;
                             if (stillPending === 0) {
                                 const progressBar = document.getElementById(`progress-container-${message.messageId}`);
                                 if (progressBar) progressBar.style.display = 'none';
-                                resultsList.style.display = 'none';
+                                (resultsList as HTMLElement).style.display = 'none';
                             }
                         }
                     }                    

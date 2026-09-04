@@ -80,6 +80,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         profileId: string,
         selectedFolders: string[],
         contextSelection?: string,
+        userPreferences?: string,
         sendToAi: boolean
     }) => {
         const workspaceFolder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
@@ -96,6 +97,9 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         if (discussion.capabilities) {
             discussion.capabilities.responseProfileId = params.profileId;
             discussion.capabilities.selectedFolders = params.selectedFolders;
+            if (params.userPreferences !== undefined) {
+                discussion.capabilities.userPreferences = params.userPreferences;
+            }
 
             // Build localized Folder Settings based on selected folders
             const folderSettings: Record<string, any> = {};

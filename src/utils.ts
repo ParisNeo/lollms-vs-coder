@@ -216,6 +216,7 @@ export interface DiscussionCapabilities {
     contextGovernorEnabled?: boolean; // New key
     contextGovernorPermanentPruning?: boolean; // New key
     enableSymbolMode?: boolean; // New key
+    userPreferences?: string; // Custom user preferences and coding guidelines injected into system prompt
     isExport?: boolean; // True when exporting context & prompt for external clipboard use
     guiState?: {
         agentBadge: boolean;
@@ -361,9 +362,9 @@ export function applySearchReplace(content: string, searchBlock: string, replace
 
     const contentLines = normalizedContent.split('\n');
     const searchLines = normalizedSearch.split('\n');
-    const replaceLines = normalizedReplace.split('\n');
+    const replaceLines = normalizedReplace === "" ? [] : normalizedReplace.split('\n');
 
-    // 2. Find Match using an optimized and secure sliding window
+    // 2. Find Match using an optimized and bounds-safe sliding window
     for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
         let match = true;
 
@@ -409,8 +410,10 @@ export function applySearchReplace(content: string, searchBlock: string, replace
 
             const before = contentLines.slice(0, i);
             const after = contentLines.slice(i + searchLines.length);
-            const finalResult = [...before, ...adjustedReplace, ...after].join('\n');
-
+            const finalResult = normalizedReplace === ""
+                ? [...before, ...after].join('\n')
+                : [...before, ...adjustedReplace, ...after].join('\n');
+            
             return { 
                 success: true, 
                 result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult 
@@ -816,18 +819,28 @@ const sparqlDynamicRule = isSparqlActive ? `
         }).map((t: any) => `- \`${t.name}\`: ${t.description.split('.')[0]}`).join('\n    ');
 
         operationalMandate = `
-    ### 🧠 DYNAMIC MODE PROTOCOL (ACTIVE)
-    You are operating under **Dynamic Mode (Multi-Turn Chat loop)**.
-    This means you can call tools, receive results, and iterate *inside this single chat turn* without waiting for user interaction!
+    ### 🧠 CO-ENGINEER DYNAMIC MODE (MULTI-TURN INTERACTIVE LOOP)
+    You are operating under **Co-Engineer Mode (Dynamic Multi-Turn Loop)**.
+    You have direct authority to call tools, query the architecture ontology, and load files *inside this single turn*.
 ${sparqlDynamicRule}
-    **STRICT OPERATIONAL RULES:**
-    1. **INTERCEPTED EXECUTION**: When you output an XML tool tag, the system will instantly intercept your stream, run the tool, and prompt you to continue.
-    2. **ONE TOOL AT A TIME**: Output exactly ONE tool call or context tag per message, and immediately STOP writing. Do not output multiple tools or trailing prose after the closing tag.
-    3. **EXCLUSIVE FILE DISCOVERY VIA <add_files_to_context>**: You do NOT have a file-reading tool in this mode. To inspect, read, or edit files, you **MUST EXCLUSIVELY** use the \`<add_files_to_context>\` tag to add them to your context from the project tree. Once added, their full contents will be in your prompt.
-    4. **NO REDUNDANT ADDITIONS**: Never request files that are already marked **[C]** in the tree.
-    5. **NO PROJECT-WIDE ADDITIONS**: You are **STRICTLY FORBIDDEN** from importing the entire project directory (\`.\` or the workspace root). Target specific files.
-    6. **TOKEN BUDGET LIMIT**: If your active context exceeds **85%** of the model's limit, prune using \`<remove_files_from_context>\` before requesting more.
-    7. **NO AUTO-APPLY**: Any code updates you suggest must be presented to the user to review and apply manually.
+    **⚡ THE ACTION-FIRST MANDATE (ZERO CONVERSATIONAL PROCRASTINATION):**
+    1. **NEVER OUTPUT EMPTY PROMISES**: You are **STRICTLY FORBIDDEN** from replying with conversational intentions like "I'll start by loading the files...", "Let me check the backend...", or "I will begin by inspecting...".
+    2. **ACT IMMEDIATELY**: If you need files from the project, output the \`<add_files_to_context>\` tag starting on **LINE 1** with ZERO conversational filler!
+    3. **ALL FILES AT ONCE**: Examine the \`### 🌳 PROJECT STRUCTURE\`, identify ALL files related to the user's issue (backend services, routers, models, stores, frontend views/components), and list them all inside a single \`<add_files_to_context>\` block on separate lines.
+    4. **ONE ACTION PER TURN**: Output exactly ONE tool call or context tag per message, and immediately STOP writing. Do not output multiple tools or trailing prose after the closing tag.
+    5. **EXCLUSIVE FILE DISCOVERY VIA <add_files_to_context>**: You do NOT have a file-reading tool in this mode. To inspect, read, or edit files, you **MUST EXCLUSIVELY** use the \`<add_files_to_context>\` tag.
+    6. **NO REDUNDANT ADDITIONS**: Never request files that are already marked **[C]** in the tree.
+    7. **NO PROJECT-WIDE ADDITIONS**: You are **STRICTLY FORBIDDEN** from importing the entire project directory (\`.\` or workspace root). Target specific files.
+    8. **TOKEN BUDGET LIMIT**: If active context exceeds **85%**, prune using \`<remove_files_from_context>\` before requesting more.
+    9. **NO AUTO-APPLY**: Any code updates must be presented to the user to review and apply manually using \`<file path="..." action="write|patch|update_symbol">\`.
+
+    **CORRECT BEHAVIOR EXAMPLE:**
+    <add_files_to_context>
+    backend/llm.py
+    backend/routers/chat.py
+    frontend/src/stores/chat.ts
+    frontend/src/views/ChatStudio.vue
+    </add_files_to_context>
 
     **AUTHORIZED TOOLS (OUTPUT XML TAGS VERBATIM):**
     ${authorizedXmlTags}

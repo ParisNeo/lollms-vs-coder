@@ -352,6 +352,162 @@ private _cachedTreeString: string | null = null;
   // TREE GENERATION
   // ─────────────────────────────────────────────────────────────
 
+  private formatFileList(
+    fileNames: string[],
+    fullRelPath: string,
+    baseFolder: vscode.WorkspaceFolder,
+    isUnpacked: boolean,
+    maxFilesInFolder: number = 30
+  ): string {
+    const formattedFiles = fileNames.map(fileName => {
+      const filePath = fullRelPath ? `${fullRelPath}/${fileName}` : fileName;
+      const fileUri = vscode.Uri.joinPath(baseFolder.uri, filePath);
+      const fileState = this.contextStateProvider?.getStateForUri(fileUri);
+      let tag = '';
+      if (fileState === 'included') tag = ' [C]';
+      else if (fileState === 'definitions-only') tag = ' [D]';
+      return `${fileName}${tag}`;
+    });
+
+    if (formattedFiles.length <= maxFilesInFolder || isUnpacked) {
+      return `[${formattedFiles.join(', ')}]`;
+    } else {
+      const preview = formattedFiles.slice(0, 20).join(', ');
+      const remaining = formattedFiles.length - 20;
+      return `[${preview}, ... +${remaining} more]`;
+    }
+  }
+
+  private renderIndentedScopeHierarchy(
+    obj: any,
+    baseFolder: vscode.WorkspaceFolder,
+    rootName: string = '',
+    maxFilesInFolder: number = 30
+  ): string {
+    const lines: string[] = [];
+
+    const renderNode = (currentObj: any, currentRelPath: string, indent: string, isRootLevel: boolean) => {
+      if (!currentObj || typeof currentObj !== 'object') return;
+
+      const entries = Object.keys(currentObj).sort((a, b) => a.localeCompare(b));
+      const fileNames: string[] = [];
+      const dirKeys: string[] = [];
+
+      for (const entry of entries) {
+        if (currentObj[entry] === null) {
+          fileNames.push(entry);
+        } else {
+          dirKeys.push(entry);
+        }
+      }
+
+      const renderSubDir = (
+        subObj: any,
+        rawDirName: string,
+        fullSubRelPath: string,
+        currentIndent: string
+      ) => {
+        if (!subObj || typeof subObj !== 'object') return;
+
+        const dirUri = vscode.Uri.joinPath(baseFolder.uri, fullSubRelPath);
+        const state = this.contextStateProvider?.getStateForUri(dirUri);
+        if (state === 'fully-excluded') return;
+        const isCollapsed = state === 'collapsed';
+
+        let displayDirName = rawDirName;
+        let effectiveSubObj = subObj;
+        let effectiveRelPath = fullSubRelPath;
+
+        if (!isCollapsed) {
+          while (effectiveSubObj && typeof effectiveSubObj === 'object') {
+            const subEntries = Object.keys(effectiveSubObj);
+            const subFiles = subEntries.filter(k => effectiveSubObj[k] === null);
+            const subDirs = subEntries.filter(k => effectiveSubObj[k] !== null);
+
+            if (subFiles.length === 0 && subDirs.length === 1) {
+              const onlyChild = subDirs[0];
+              const nextRelPath = `${effectiveRelPath}/${onlyChild}`;
+              const nextUri = vscode.Uri.joinPath(baseFolder.uri, nextRelPath);
+              const nextState = this.contextStateProvider?.getStateForUri(nextUri);
+              if (nextState === 'collapsed' || nextState === 'fully-excluded') break;
+
+              displayDirName = `${displayDirName}/${onlyChild}`;
+              effectiveRelPath = nextRelPath;
+              effectiveSubObj = effectiveSubObj[onlyChild];
+            } else {
+              break;
+            }
+          }
+        }
+
+        const isUnpacked = Boolean(
+          this._unpackedDirectories && (
+            this._unpackedDirectories.has(effectiveRelPath) ||
+            this._unpackedDirectories.has(`${baseFolder.name}/${effectiveRelPath}`)
+          )
+        );
+
+        const effEntries = Object.keys(effectiveSubObj).sort((a, b) => a.localeCompare(b));
+        const effFiles = effEntries.filter(k => effectiveSubObj[k] === null);
+        const effDirs = effEntries.filter(k => effectiveSubObj[k] !== null);
+
+        if (isCollapsed) {
+          const preview = effFiles.slice(0, 8).join(', ');
+          const more = effFiles.length > 8 ? `, ... +${effFiles.length - 8} more` : '';
+          lines.push(`${currentIndent}${displayDirName}/: [COLLAPSED: ${effFiles.length} files: ${preview}${more}]`);
+          return;
+        }
+
+        if (effDirs.length === 0) {
+          if (effFiles.length === 0) {
+            lines.push(`${currentIndent}${displayDirName}/: []`);
+          } else {
+            const listStr = this.formatFileList(effFiles, effectiveRelPath, baseFolder, isUnpacked, maxFilesInFolder);
+            lines.push(`${currentIndent}${displayDirName}/: ${listStr}`);
+          }
+          return;
+        }
+
+        lines.push(`${currentIndent}${displayDirName}/:`);
+        const nextIndent = currentIndent + '    ';
+
+        if (effFiles.length > 0) {
+          const listStr = this.formatFileList(effFiles, effectiveRelPath, baseFolder, isUnpacked, maxFilesInFolder);
+          lines.push(`${nextIndent}./: ${listStr}`);
+        }
+
+        for (const childDir of effDirs) {
+          const nextChildRel = `${effectiveRelPath}/${childDir}`;
+          renderSubDir(effectiveSubObj[childDir], childDir, nextChildRel, nextIndent);
+        }
+      };
+
+      if (isRootLevel) {
+        if (rootName) {
+          lines.push(`${rootName}/:`);
+          if (fileNames.length > 0) {
+            const listStr = this.formatFileList(fileNames, '', baseFolder, false, maxFilesInFolder);
+            lines.push(`    ./: ${listStr}`);
+          }
+          for (const dirKey of dirKeys) {
+            renderSubDir(currentObj[dirKey], dirKey, dirKey, '    ');
+          }
+        } else {
+          if (fileNames.length > 0) {
+            const listStr = this.formatFileList(fileNames, '', baseFolder, false, maxFilesInFolder);
+            lines.push(`./: ${listStr}`);
+          }
+          for (const dirKey of dirKeys) {
+            renderSubDir(currentObj[dirKey], dirKey, dirKey, '');
+          }
+        }
+      }
+    };
+
+    renderNode(obj, '', '', true);
+    return lines.join('\n');
+  }
+
     public async generateIsolatedProjectTree(
       folder: vscode.WorkspaceFolder,
       signal?: AbortSignal,
@@ -396,7 +552,6 @@ private _cachedTreeString: string | null = null;
         }
       };
 
-      // 1. Explicitly inject all active context files first so they are guaranteed to be in the tree
       for (const file of includedFiles) {
           const rel = file.path.replace(/\\/g, '/');
           const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
@@ -410,7 +565,6 @@ private _cachedTreeString: string | null = null;
           }
       }
 
-      // 2. High-performance tree discovery for unselected files (auto-excluding bloat directories)
       if (this.contextStateProvider) {
           const visibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal, onScanProgress);
           const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
@@ -421,10 +575,9 @@ private _cachedTreeString: string | null = null;
               if (signal?.aborted) return "";
               const file = visibleFiles[idx];
 
-              // Periodically report micro-progress during list loading
               if (onScanProgress && idx % 20 === 0) {
                   const pct = 40 + Math.round((idx / totalFiles) * 40);
-                  onScanProgress(pct, `Assembling file tree: ${path.basename(file)} [${idx}/${totalFiles}]`);
+                  onScanProgress(pct, `Assembling file manifest: ${path.basename(file)} [${idx}/${totalFiles}]`);
               }
 
               let relativePath = file;
@@ -449,63 +602,10 @@ private _cachedTreeString: string | null = null;
           }
       }
 
+      const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
       let treeString = '```text\n';
-      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-      const depthLimit = config.get<number>('contextMaxDepth') ?? 2;
-
-      const render = (obj: any, prefix: string = '', currentLocalPath: string = '', depth: number = 0): string => {
-        if (!obj || typeof obj !== 'object') return '';
-        let out = '';
-        const keys = Object.keys(obj).sort((a, b) => {
-          const aIsDir = obj[a] !== null;
-          const bIsDir = obj[b] !== null;
-          if (aIsDir && !bIsDir) return -1;
-          if (!aIsDir && bIsDir) return 1;
-          return a.localeCompare(b);
-        });
-
-        keys.forEach((key, index) => {
-          const isLast = index === keys.length - 1;
-          const connector = isLast ? '└── ' : '├── ';
-          const isDirectory = obj[key] !== null;
-          const localPath = currentLocalPath ? currentLocalPath + '/' + key : key;
-          const uri = vscode.Uri.joinPath(folder.uri, localPath);
-          const state = this.contextStateProvider?.getStateForUri(uri);
-
-          let suffix = "";
-          let isCollapsed = false;
-
-          if (isDirectory) {
-            if (state === 'collapsed') {
-              isCollapsed = true;
-              suffix = " (Collapsed)";
-            }
-          } else {
-            if (state === 'included') {
-              suffix = " [C]";
-            } else if (state === 'definitions-only') {
-              suffix = " [D]";
-            }
-          }
-
-          out += prefix + connector + key + (isDirectory ? '/' : '') + (suffix ? ` ${suffix}` : '') + '\n';
-
-          if (isDirectory && !isCollapsed) {
-            const hasActiveChild = includedFiles.some(f => {
-              const normalizedF = f.path.replace(/\\/g, '/');
-              return normalizedF === localPath || normalizedF.startsWith(localPath + '/') || normalizedF.endsWith('/' + localPath) || normalizedF.includes('/' + localPath + '/');
-            });
-
-            if (depth < depthLimit || hasActiveChild) {
-              out += render(obj[key], prefix + (isLast ? '    ' : '│   '), localPath, depth + 1);
-            }
-          }
-        });
-        return out;
-      };
-
-      treeString += render(projectTreeObj);
-      treeString += '```\n';
+      treeString += this.renderIndentedScopeHierarchy(projectTreeObj, folder, isMultiRoot ? folder.name : '');
+      treeString += '\n```\n';
 
       if (!signal?.aborted) {
           this._cachedIsolatedTrees.set(cacheKey, treeString);
@@ -634,72 +734,21 @@ private _cachedTreeString: string | null = null;
       }
 
       let treeString = '## 🌳 PROJECT STRUCTURE\n\n```text\n';
-      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-      const depthLimit = config.get<number>('contextMaxDepth') ?? 2;
-      const includedFiles = this.contextStateProvider ? this.contextStateProvider.getIncludedFiles() : [];
+      const isMultiRoot = folders.length > 1;
 
-      const render = (obj: any, prefix: string = '', currentPath: string = '', rootFolder?: vscode.WorkspaceFolder, depth: number = 0): string => {
-        if (!obj || typeof obj !== 'object') return '';
-        let out = '';
-        const keys = Object.keys(obj).sort((a, b) => {
-          const aIsDir = obj[a] !== null;
-          const bIsDir = obj[b] !== null;
-          if (aIsDir && !bIsDir) return -1;
-          if (!aIsDir && bIsDir) return 1;
-          return a.localeCompare(b);
-        });
+      for (const folder of folders) {
+        const settings = folderSettings[folder.uri.toString()];
+        if (settings && settings.tree === false) continue;
 
-        keys.forEach((key, index) => {
-          const isLast = index === keys.length - 1;
-          const connector = isLast ? '└── ' : '├── ';
-          const isDirectory = obj[key] !== null;
-
-          let activeRoot = rootFolder;
-          if (folders.length > 1 && !rootFolder) activeRoot = folders.find(f => f.name === key);
-          else if (folders.length === 1) activeRoot = folders[0];
-
-          if (activeRoot && !rootFolder) {
-            const settings = folderSettings[activeRoot.uri.toString()];
-            if (settings && settings.tree === false) return;
+        const subTreeObj = isMultiRoot ? this._fileTreeObject[folder.name] : this._fileTreeObject;
+        if (subTreeObj) {
+          const manifest = this.renderIndentedScopeHierarchy(subTreeObj, folder, isMultiRoot ? folder.name : '');
+          if (manifest.trim()) {
+            treeString += manifest + '\n';
           }
+        }
+      }
 
-          const isTopLevelProjectName = folders.length > 1 && !rootFolder;
-          let subPath = folders.length > 1
-            ? (currentPath ? currentPath + '/' + key : (rootFolder ? key : ''))
-            : (currentPath ? currentPath + '/' + key : key);
-
-          let suffix = "";
-          let isCollapsed = false;
-
-          if (this.contextStateProvider && activeRoot && !isTopLevelProjectName) {
-            const uri = vscode.Uri.joinPath(activeRoot.uri, subPath || '.');
-            const state = this.contextStateProvider.getStateForUri(uri);
-            if (state === 'fully-excluded') return;
-            if (isDirectory) {
-              if (state === 'collapsed') { isCollapsed = true; suffix = " (Collapsed)"; }
-            } else {
-              if (state === 'included') suffix = " [C]";
-              else if (state === 'definitions-only') suffix = " [D]";
-            }
-          }
-
-          out += prefix + connector + key + (isDirectory ? '/' : '') + (suffix ? ` ${suffix}` : '') + '\n';
-
-          if (isDirectory && !isCollapsed) {
-            const hasActiveChild = includedFiles.some(f => {
-              const normalizedF = f.path.replace(/\\/g, '/');
-              return normalizedF === subPath || normalizedF.startsWith(subPath + '/') || normalizedF.endsWith('/' + subPath) || normalizedF.includes('/' + subPath + '/');
-            });
-
-            if (depth < depthLimit || hasActiveChild) {
-              out += render(obj[key], prefix + (isLast ? '    ' : '│   '), subPath || key, activeRoot, depth + 1);
-            }
-          }
-        });
-        return out;
-      };
-
-      treeString += render(this._fileTreeObject);
       treeString += '```\n';
 
       if (!signal?.aborted) {
@@ -786,18 +835,22 @@ private _cachedTreeString: string | null = null;
     }
 
     result.text = `# 🏢 SOVEREIGN WORKSPACE STRUCTURE\n`;
-    result.text += `You are operating in a multi-root VS Code environment with ${activeFolders.length} independent project(s).\n\n`;
+    result.text += `You are operating in an environment with ${activeFolders.length} active project root(s).\n\n`;
 
-const isAgentMode = options?.capabilities?.agentMode === true;
+    const isAgentMode = options?.capabilities?.agentMode === true;
     result.text += `### 🌐 HOW TO INTERACT\n`;
-    result.text += `1. **Addressing**: Always refer to files using the full namespaced path: \`ProjectName/path/to/file.ext\`.\n`;
-    result.text += `2. **Partial Vision**: The user has selected **${contextFiles.length}** file(s) for your primary context. You can see the full structure in the tree, but you only "possess" the code for specific files.\n`;
-    result.text += `3. **Expansion**: If you see a file in the tree that you need to read but its content is missing below, you MUST use the \`<add_files_to_context>\` tag${isAgentMode ? ' (or `read_file` tool in Agent Mode)' : ''} to request it. Do NOT guess the implementation.\n\n`;
+    if (activeFolders.length > 1) {
+        result.text += `1. **Addressing**: Address files using the namespaced path: \`ProjectName/path/to/file.ext\` matching the project header.\n`;
+    } else {
+        result.text += `1. **Addressing**: Address files using their exact relative path from the workspace root (e.g. \`path/to/file.ext\`, exactly as shown in the tree below). Do NOT invent, assume, or prepend nonexistent root folders.\n`;
+    }
+    result.text += `2. **Possessed Files (DO NOT RE-REQUEST)**: You already possess the complete source code for all **${contextFiles.length}** file(s) marked **\`[C]\`** under 'LOADED FILE CONTENTS'. Calling \`<add_files_to_context>\` or \`read_file\` for possessed files is STRICTLY FORBIDDEN and wastes context tokens.\n`;
+    result.text += `3. **Unpossessed Files (NO PATH HALLUCINATIONS)**: Files with no marker have hidden content. To load them, use \`<add_files_to_context>\` with the EXACT path from the tree. Never guess or hallucinate paths that do not exist in the tree.\n\n`;
 
     result.text += `### 🏷️ CONTEXT MARKERS (LEGEND)\n`;
-    result.text += `- **\`[C]\` (Content Loaded)**: The full source code of this file is available in the 'LOADED FILE CONTENTS' section below.\n`;
-    result.text += `- **\`[D]\` (Definitions Only)**: Only the class/function signatures are loaded. High-level structure is known, but logic is hidden.\n`;
-    result.text += `- **(No Marker)**: The file is visible in the structure, but its content is completely **HIDDEN** from your current memory.\n\n`;
+    result.text += `- **\`[C]\` (Content Loaded)**: Full source code is ALREADY in memory under 'LOADED FILE CONTENTS'. DO NOT request with <add_files_to_context>.\n`;
+    result.text += `- **\`[D]\` (Definitions Only)**: Signatures are loaded.\n`;
+    result.text += `- **(No Marker)**: File content is HIDDEN. Use <add_files_to_context> with the exact tree path to load it.\n\n`;
     
     if (options?.capabilities?.includeGitInfo) {
       let gitInfoText = "### 🐙 GIT ENVIRONMENT\n";
@@ -2107,7 +2160,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     const sharedKnowledge = this.renderBriefing(discussion);
     let allFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
 
-    if (allFiles.length === 0 && fileTree.includes('├──')) {
+    if (allFiles.length === 0 && (fileTree.includes('├──') || fileTree.includes('/: ['))) {
       Logger.warn("Librarian index empty but structure exists. Proceeding with structural mode.");
       const pathsFromTree = [...fileTree.matchAll(/([A-Za-z0-9_.\-\/]+\.[a-z0-9]+)\s*[\[(]/g)].map(m => m[1]);
       allFiles = Array.from(new Set(pathsFromTree));

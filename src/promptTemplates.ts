@@ -194,12 +194,13 @@ public static buildProjectStateMessage(context: {
 
     ### 🛑 CRITICAL SPATIAL AWARENESS RULE
     1. **CHECK THE TREE**: Look at the 'PROJECT STRUCTURE' below. 
-    2. **MARKER [C]**: If a file is marked with **[C]**, its full source code is ALREADY provided in the 'ACCESSIBLE FILE CONTENTS' section.
-    3. **PROHIBITION**: You are STRICTLY FORBIDDEN from using 'read_file' or 'read_files' for any file marked with [C]. Doing so wastes tokens and results in a system penalty.
-    4. **ACTION**: If [C] is present, scroll down, find the code, and proceed directly to analysis or implementation.
+    2. **MARKER [C]**: If a file is marked with **[C]**, its full source code is ALREADY provided in the 'ACCESSIBLE FILE CONTENTS' section below.
+    3. **PROHIBITION (ZERO CONTEXT WASTE)**: You are STRICTLY FORBIDDEN from calling \`<add_files_to_context>\`, \`read_file\`, or \`read_files\` for any file marked with [C] or listed in the 'ACTIVE CONTEXT INVENTORY'. Re-requesting files you already possess is an active waste of context tokens.
+    4. **ACTION**: If [C] is present, find the code under 'ACCESSIBLE FILE CONTENTS' and proceed directly to analysis or implementation.
+    5. **NO PATH HALLUCINATIONS**: When using \`<add_files_to_context>\`, only use paths that appear verbatim in the tree below. Never invent paths.
 
     ### 👁️ ACTIVE CONTEXT INVENTORY (POSSESSED FILES)
-    The following files are ALREADY loaded into your active memory with full content. You must read them from 'ACCESSIBLE FILE CONTENTS' below and are FORBIDDEN from asking the user to upload or add them:
+    The following files are ALREADY loaded into your active memory with full content. You must read them from 'ACCESSIBLE FILE CONTENTS' below and are FORBIDDEN from asking to load or add them again:
     ${filesInventory}
 
     ### 📈 STATE EVOLUTION PROTOCOL (FOR EXTERNAL UI USE)
@@ -492,16 +493,27 @@ ${memorySection}
 2. **STRICT HIERARCHY**: You are restricted to the folders listed in the context. Never attempt to access paths outside of these sovereign project roots.
 
 ### 👁️ CONTEXT COMPREHENSION & FILE DISCOVERY PROTOCOL
-- **MARKER [C] (POSSESSED CODE)**: Files marked **\`[C]\`** in the tree are already fully present under 'LOADED FILE CONTENTS' / 'ACCESSIBLE FILE CONTENTS'. You possess their complete source code. You are **STRICTLY FORBIDDEN** from calling \`read_file\` or \`<add_files_to_context>\` for files marked \`[C]\`.
+- **MARKER [C] (POSSESSED CODE - DO NOT RE-REQUEST)**: Files marked **\`[C]\`** in the manifest are already fully loaded under 'LOADED FILE CONTENTS' / 'ACCESSIBLE FILE CONTENTS'. You possess their complete source code. You are **STRICTLY FORBIDDEN** from calling \`<add_files_to_context>\`, \`read_file\`, or \`read_files\` for files marked \`[C]\`. Re-requesting possessed files is a critical waste of context tokens.
+- **INDENTED SCOPE HIERARCHY (ZERO-HALLUCINATION PATHS)**: The project structure is organized as an indented hierarchy of directory scopes using standard 4-space indentation (PEP 8 compliant):
+  \`\`\`text
+  ./: [.gitignore, package.json]
+  src/:
+      agent/: [failureHandling.ts [C]]
+      commands/:
+          ./: [actionsTreeProvider.ts [C]]
+          chatPanel/webview/: [chatPanel.html [C], dom.ts [C]]
+  \`\`\`
+  * **Scope Resolution**: 4-space indentation represents parent-child directory scope.
+  * **Direct Files**: Files directly inside a directory that also has subdirectories appear under \`./: [...]\`. Leaf directories list their files directly.
+  * **Targeting Any File**: Concatenate the nested directory scopes and the file name (e.g. \`src/\` + \`commands/\` + \`chatPanel/webview/\` + \`dom.ts\` = \`src/commands/chatPanel/webview/dom.ts\`). Every path passed to \`<add_files_to_context>\` MUST exist in this manifest.
 - **\`<add_files_to_context>\` vs \`read_file\` (MUTUALLY EXCLUSIVE)**:
-  * Use **\`<add_files_to_context>\`** ONLY when you need a file persistently added to your active context across turns (for ongoing editing or reference).
-  * Use **\`read_file\`** (via \`<lollms_tool>\`) ONLY when you want to temporarily inspect/peek at an unpossessed file without permanently bloating the context window.
-  * **NEVER combine both in the same turn or for the same file.** If you request \`<add_files_to_context>\`, do NOT call \`read_file\` for that file.
+  * Use **\`<add_files_to_context>\`** ONLY when you need an unpossessed file persistently added to your active context across turns.
+  * Use **\`<peek_files>\`** (or \`read_file\` in Agent Mode) when you want to temporarily inspect an unpossessed file without permanently adding it to context.
+  * Use **\`<unpack_directory>\`** if a directory is truncated with \`... +N more\` and you need to unroll its complete file list.
 - **TOOL PARAMETER HYGIENE**:
-  * For \`read_file\`, the parameter is \`"path"\` (e.g. \`{"name": "read_file", "arguments": {"path": "src/utils.py"}}\`).
+  * For \`read_file\`, the parameter is \`"path"\` (e.g. \`{"name": "read_file", "arguments": {"path": "src/utils.ts"}}\`).
   * For \`read_files\`, the parameter is \`"paths"\` (array of strings).
-- **FAST SHALLOW TREE**: For minimal token usage, branches without active files show \`[CAPPED]\` or \`[COLLAPSED]\`.
-- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Choose either \`<add_files_to_context>\` or \`read_file\` to access it.
+- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Choose \`<add_files_to_context>\` to load it permanently, or \`<peek_files>\` to inspect it temporarily.
 
 ### 🛡️ GUARDIAN PROTOCOL (AUTONOMOUS INTEGRITY)
 1. **VERIFICATION LOOP**: Note that every file you write will be immediately audited by a system linter/compiler. 
@@ -509,14 +521,14 @@ ${memorySection}
 3. **SELF-HEALING**: If you are prompted with a "REPAIR MISSION," you have failed the first pass. Analyze the error trace carefully and fix the logic.
 
 ### 🚷 ANTI-HALLUCINATION & CONTEXT BOUNDARIES (STRICT)
-1. **NO GUESSING**: If a file is visible in the tree but lacks the \`[C]\` or \`[D]\` marker, its content is **HIDDEN**. You MUST NOT assume or hallucinate its implementation.
-2. **STOP & REQUEST**: If you need a hidden file's content to proceed, use the flat, raw XML tag containing relative paths (one per line, no attributes):
+1. **NO GUESSING & NO PATH HALLUCINATIONS**: Every file path passed to \`<add_files_to_context>\` MUST be an exact match from the \`### 🌳 FILE STRUCTURE\`. You are **STRICTLY FORBIDDEN** from inventing paths or assuming standard directory structures (e.g. do NOT invent \`backend/llm.py\` unless you see it in the tree).
+2. **ZERO CONTEXT WASTE**: Never request files that are already marked **\`[C]\`** or listed in \`ACTIVE CONTEXT INVENTORY\`. You already have their full source code.
+3. **STOP & REQUEST**: If you need a hidden file's content to proceed, use the flat, raw XML tag containing relative paths from the tree (one per line, no attributes):
    <add_files_to_context>
-   path/to/file1.ext
+   exact/path/from/tree.ext
    </add_files_to_context>
-   (or the 'read_file' tool if in Agent mode). Do NOT request files that are already marked \`[C]\`.
-3. **NO BLIND EDITS**: Never generate a SEARCH/REPLACE block or full file overwrite for a file you haven't read.
-4. **NO PLACEHOLDERS**: You are strictly forbidden from using comments like \`# ... rest of code\`.
+4. **NO BLIND EDITS**: Never generate a SEARCH/REPLACE block or full file overwrite for a file you haven't read.
+5. **NO PLACEHOLDERS**: You are strictly forbidden from using comments like \`# ... rest of code\`.
 ${visionSection}
 ### 🔍 KNOWLEDGE ACQUISITION PROTOCOL (INSTANT ACQUISITION)
 If you see a file in the tree structure that is mandatory to the task at hand or the user did explicitely ask to add it but its content is missing from your context, you MUST emit <add_files_to_context> immediately to load it.

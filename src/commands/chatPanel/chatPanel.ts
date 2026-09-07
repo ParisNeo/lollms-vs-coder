@@ -3098,7 +3098,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                     return protectedRanges.some(r => index >= r.start && index < r.end);
                 };
 
-                // Find valid file manipulation or query actions on a line-start basis
+                // Discover ALL action tags in the response and record their start positions
                 const patterns = [
                     { tag: 'add_files_to_context', pattern: /^[ \t]*<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/gim },
                     { tag: 'remove_files_from_context', pattern: /^[ \t]*<remove_files_from_context>([\s\S]*?)<\/remove_files_from_context>/gim },
@@ -3106,160 +3106,231 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                     { tag: 'lollms_tool', pattern: /^[ \t]*<lollms_tool>([\s\S]*?)<\/lollms_tool>/gim }
                 ];
 
-                let interceptedTag: string | null = null;
-                let interceptedParams: string | null = null;
+                interface DiscoveredAction {
+                    index: number;
+                    tag: string;
+                    params: string;
+                }
+
+                const discoveredActions: DiscoveredAction[] = [];
 
                 for (const item of patterns) {
                     item.pattern.lastIndex = 0;
                     let pMatch;
                     while ((pMatch = item.pattern.exec(turnResponse)) !== null) {
                         if (!isIndexInsideFence(pMatch.index)) {
-                            interceptedTag = item.tag;
-                            interceptedParams = pMatch[1].trim();
-                            break;
+                            discoveredActions.push({
+                                index: pMatch.index,
+                                tag: item.tag,
+                                params: pMatch[1].trim()
+                            });
                         }
                     }
-                    if (interceptedTag) break;
                 }
 
-                if (interceptedTag) {
-                    this.processManager.updateDescription(processId, `Executing tool: ${interceptedTag}...`);
-                    this.updateGeneratingState();
+                // Sort all discovered actions in their exact order of appearance
+                discoveredActions.sort((a, b) => a.index - b.index);
 
-                    // Synchronize the current text buffer to the persistent database before running
+                if (discoveredActions.length > 0) {
+                    // Check batch loop repetition
+                    const batchFingerprint = discoveredActions.map(a => `${a.tag}:${a.params}`).join('|');
+                    const isDuplicateRepetition = (batchFingerprint === lastExecutedFingerprint);
+                    lastExecutedFingerprint = batchFingerprint;
+
                     await this.updateMessage(assistantMessageId, currentFullResponseBuffer);
 
-                    let toolResult = "";
-                    let isSuccess = true;
+                    interface ExecutedResult {
+                        tag: string;
+                        name: string;
+                        output: string;
+                        success: boolean;
+                    }
 
-                    const currentFingerprint = `${interceptedTag}:${interceptedParams!.trim()}`;
-                    const isDuplicateRepetition = (currentFingerprint === lastExecutedFingerprint);
-                    lastExecutedFingerprint = currentFingerprint;
+                    const executedResults: ExecutedResult[] = [];
+                    let anySuccess = false;
 
-                    try {
-                        if (isDuplicateRepetition) {
+                    for (let aIdx = 0; aIdx < discoveredActions.length; aIdx++) {
+                        if (controller?.signal.aborted) break;
+                        const action = discoveredActions[aIdx];
+
+                        this.processManager.updateDescription(processId, `Executing action ${aIdx + 1}/${discoveredActions.length}: ${action.tag}...`);
+                        this.updateGeneratingState();
+
+                        let toolResult = "";
+                        let isSuccess = true;
+                        let toolDisplayName = action.tag;
+
+                        try {
+                            if (isDuplicateRepetition) {
+                                isSuccess = false;
+                                toolResult = `Error: REPETITIVE CALL DETECTED. You already executed this exact set of actions with identical parameters. Change your approach.`;
+                                completedDynamicActions.push(`Attempted duplicate action ${action.tag} (BLOCKED).`);
+                            } else if (action.tag === 'add_files_to_context') {
+                                const filesToAdd = action.params.split(/[\s\r\n,]+/).map(f => f.trim().replace(/^['"]|['"]$/g, '')).filter(f => f && !f.startsWith('<'));
+                                const hasProjectRoot = filesToAdd.some(f => f === '.' || f === '/' || f === '*');
+                                if (hasProjectRoot) {
+                                    toolResult = "Error: Adding the entire project root folder ('.') is forbidden to prevent context window bloating.";
+                                    isSuccess = false;
+                                    completedDynamicActions.push("Attempted project-wide import (BLOCKED).");
+                                } else {
+                                    const alreadyInContext: string[] = [];
+                                    const toLoad: string[] = [];
+
+                                    for (const f of filesToAdd) {
+                                        if (this._contextManager.isPathInActiveContext(f)) {
+                                            alreadyInContext.push(f);
+                                        } else {
+                                            toLoad.push(f);
+                                        }
+                                    }
+
+                                    if (toLoad.length === 0 && alreadyInContext.length > 0) {
+                                        toolResult = `🛑 CONTEXT WASTE WARNING: The requested file(s) [${alreadyInContext.join(', ')}] are ALREADY loaded in your active context with full content (marked [C]). Do NOT call <add_files_to_context> for files you already possess. Proceed directly to analyze or edit them.`;
+                                        isSuccess = true;
+                                        completedDynamicActions.push(`Checked context: ${alreadyInContext.join(', ')} already loaded.`);
+                                    } else {
+                                        const added = await this._contextManager.getContextStateProvider()?.addFilesToContext(toLoad) || [];
+                                        const notFound = toLoad.filter(p => !added.includes(p));
+
+                                        const outputParts: string[] = [];
+                                        if (added.length > 0) {
+                                            this._contextManager.recordRecentlyAddedFiles(added);
+                                            outputParts.push(`Success: Added ${added.join(', ')} to context.`);
+                                            completedDynamicActions.push("Loaded " + added.length + " files into memory.");
+                                            isSuccess = true;
+                                        }
+                                        if (alreadyInContext.length > 0) {
+                                            outputParts.push(`Notice: [${alreadyInContext.join(', ')}] was ALREADY in context (marked [C]).`);
+                                        }
+                                        if (notFound.length > 0) {
+                                            outputParts.push(`❌ PATH HALLUCINATION ERROR: Could not find [${notFound.join(', ')}] on disk. Check '### 🌳 FILE STRUCTURE' in prompt for exact paths.`);
+                                            if (added.length === 0) {
+                                                isSuccess = false;
+                                                completedDynamicActions.push(`Failed to load paths: ${notFound.join(', ')}.`);
+                                            }
+                                        }
+
+                                        toolResult = outputParts.join('\n\n');
+                                    }
+                                }
+                            } else if (action.tag === 'remove_files_from_context') {
+                                const filesToRemove = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
+                                const uris = [];
+                                for (const p of filesToRemove) {
+                                    const res = await this._contextManager.resolveWorkspaceFromPath(p);
+                                    uris.push(res ? res.uri : vscode.Uri.file(p));
+                                }
+                                await this._contextManager.getContextStateProvider()?.setStateForUris(uris, 'tree-only');
+                                toolResult = `Success: Removed ${filesToRemove.join(', ')} from context.`;
+                                completedDynamicActions.push(`Removed ${filesToRemove.length} files from context.`);
+                            } else if (action.tag === 'query_architecture') {
+                                const sparql = action.params.trim();
+                                const rawResult = await this.agentManager.codeGraphManager.executeSparql(sparql);
+                                toolResult = rawResult || "No matches.";
+                                if (rawResult.includes("Error") || rawResult.includes("failed")) {
+                                    isSuccess = false;
+                                }
+                                completedDynamicActions.push(`Executed SPARQL query: "${sparql.split('\n')[0]}..."`);
+                            } else if (action.tag === 'lollms_tool') {
+                                const rawJson = action.params.trim();
+                                let parsedCall: any = {};
+                                try {
+                                    parsedCall = JSON.parse(rawJson);
+                                } catch (e) {
+                                    const repaired = rawJson.replace(/\\`/g, '`').replace(/[\r\n\t]/g, ' ').replace(/,\s*([\]}])/g, '$1');
+                                    parsedCall = JSON.parse(repaired);
+                                }
+                                const name = parsedCall.name || "unknown_tool";
+                                toolDisplayName = name;
+                                const parsedParams = parsedCall.arguments || parsedCall.params || {};
+
+                                if (!this._discussionCapabilities.agentMode && (name === 'read_file' || name === 'read_files' || name === 'peek_at_context')) {
+                                    toolResult = `Error: Tool '${name}' is disabled in non-agent mode. You must exclusively use <add_files_to_context>\npath/to/file\n</add_files_to_context> to add files from the project tree.`;
+                                    isSuccess = false;
+                                    completedDynamicActions.push(`Attempted ${name} in non-agent mode (BLOCKED).`);
+                                } else {
+                                    const toolDef = this.agentManager.getTools().find((t: any) => t.name === name);
+                                    if (toolDef) {
+                                        const env = { 
+                                            agentManager: this.agentManager, 
+                                            workspaceRoot: folders[0], 
+                                            contextManager: this._contextManager, 
+                                            lollmsApi: this._lollmsAPI,
+                                            skillsManager: this._skillsManager,
+                                            codeGraphManager: this._codeGraphManager,
+                                            personalityManager: this._personalityManager,
+                                            currentPlan: this.agentManager?.currentPlan || null
+                                        };
+                                        const result = await toolDef.execute(parsedParams, env, controller.signal);
+                                        toolResult = result.output;
+                                        isSuccess = result.success;
+                                        completedDynamicActions.push(`Executed tool: ${name}`);
+                                    } else {
+                                        toolResult = `Error: Tool '${name}' is not equipped or does not exist.`;
+                                        isSuccess = false;
+                                        completedDynamicActions.push(`Tool ${name} not found.`);
+                                    }
+                                }
+                            }
+                        } catch (executionErr: any) {
                             isSuccess = false;
-                            toolResult = `Error: REPETITIVE CALL DETECTED. You already attempted to call '${interceptedTag}' with these exact parameters. Please change your tactics.`;
-                            completedDynamicActions.push(`Attempted identical duplicate tool call (BLOCKED).`);
-                        } else if (interceptedTag === 'add_files_to_context') {
-                            const filesToAdd = interceptedParams!.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
-                            const hasProjectRoot = filesToAdd.some(f => f === '.' || f === '/' || f === '*');
-                            if (hasProjectRoot) {
-                                toolResult = "Error: Adding the entire project root folder ('.') is forbidden to prevent context window bloating.";
-                                isSuccess = false;
-                                completedDynamicActions.push("Attempted project-wide import (BLOCKED).");
-                            } else {
-                                const added = await this._contextManager.getContextStateProvider()?.addFilesToContext(filesToAdd) || [];
-                                if (added.length > 0) {
-                                    this._contextManager.recordRecentlyAddedFiles(added);
-                                    toolResult = `Success: Added ${added.join(', ')} to context.`;
-                                    completedDynamicActions.push("Loaded " + added.length + " files into memory.");
-                                } else {
-                                    toolResult = `Error: Could not resolve target files. Check if they exist on disk.`;
-                                    isSuccess = false;
-                                    completedDynamicActions.push("Failed to load requested files (not found).");
-                                }
-                            }
-                        } else if (interceptedTag === 'remove_files_from_context') {
-                            const filesToRemove = interceptedParams!.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
-                            const uris = [];
-                            for (const p of filesToRemove) {
-                                const res = await this._contextManager.resolveWorkspaceFromPath(p);
-                                uris.push(res ? res.uri : vscode.Uri.file(p));
-                            }
-                            await this._contextManager.getContextStateProvider()?.setStateForUris(uris, 'tree-only');
-                            toolResult = `Success: Removed ${filesToRemove.join(', ')} from context.`;
-                            completedDynamicActions.push(`Removed ${filesToRemove.length} files from active attention.`);
-                        } else if (interceptedTag === 'query_architecture') {
-                            const sparql = interceptedParams!.trim();
-                            const rawResult = await this.agentManager.codeGraphManager.executeSparql(sparql);
-                            toolResult = rawResult || "No matches.";
-                            if (rawResult.includes("Error") || rawResult.includes("failed")) {
-                                isSuccess = false;
-                            }
-                            completedDynamicActions.push(`Executed SPARQL query: "${sparql.split('\n')[0]}..."`);
-                        } else if (interceptedTag === 'lollms_tool') {
-                            const rawJson = interceptedParams!.trim();
-                            let parsedCall: any = {};
-                            try {
-                                parsedCall = JSON.parse(rawJson);
-                            } catch (e) {
-                                const repaired = rawJson.replace(/\\`/g, '`').replace(/[\r\n\t]/g, ' ').replace(/,\s*([\]}])/g, '$1');
-                                parsedCall = JSON.parse(repaired);
-                            }
-                            const name = parsedCall.name || "unknown_tool";
-                            const parsedParams = parsedCall.arguments || parsedCall.params || {};
-
-                            if (!this._discussionCapabilities.agentMode && (name === 'read_file' || name === 'read_files' || name === 'peek_at_context')) {
-                                toolResult = `Error: Tool '${name}' is disabled in non-agent mode. You do not have a read_file tool. You must exclusively use <add_files_to_context>\npath/to/file\n</add_files_to_context> to add files from the project tree to your context.`;
-                                isSuccess = false;
-                                completedDynamicActions.push(`Attempted ${name} in non-agent mode (BLOCKED - must use <add_files_to_context>).`);
-                            } else {
-                                const toolDef = this.agentManager.getTools().find((t: any) => t.name === name);
-                                if (toolDef) {
-                                    const env = { 
-                                        agentManager: this.agentManager, 
-                                        workspaceRoot: folders[0], 
-                                        contextManager: this._contextManager, 
-                                        lollmsApi: this._lollmsAPI,
-                                        skillsManager: this._skillsManager,
-                                        codeGraphManager: this._codeGraphManager,
-                                        personalityManager: this._personalityManager,
-                                        currentPlan: this.agentManager?.currentPlan || null
-                                    };
-                                    const result = await toolDef.execute(parsedParams, env, controller.signal);
-                                    toolResult = result.output;
-                                    isSuccess = result.success;
-                                    completedDynamicActions.push(`Executed tool: ${name}`);
-                                } else {
-                                    toolResult = `Error: Tool '${name}' is not equipped or does not exist.`;
-                                    isSuccess = false;
-                                    completedDynamicActions.push(`Failed to run tool: ${name} (not found).`);
-                                }
-                            }
+                            toolResult = `Runtime Error: ${executionErr.message}`;
+                            completedDynamicActions.push(`Crashed executing ${action.tag}.`);
                         }
-                    } catch (executionErr: any) {
-                        isSuccess = false;
-                        toolResult = `Runtime Error: ${executionErr.message}`;
-                        completedDynamicActions.push(`Crashed executing tool.`);
+
+                        if (isSuccess) anySuccess = true;
+
+                        // Build visual block for UI stream
+                        const summaryColor = isSuccess ? '' : 'color:var(--vscode-charts-red);';
+                        const headerPrefix = isSuccess ? 'Action Complete' : 'Action Failed';
+                        let blockWidgetHtml = "";
+
+                        if (action.tag === 'add_files_to_context') {
+                            const filesToAdd = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
+                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-cloud-download' : 'codicon-error'}"></i> ${isSuccess ? 'Loaded Files Context' : 'File Loading Notice'}: ${filesToAdd.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        } else if (action.tag === 'remove_files_from_context') {
+                            const filesToRemove = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
+                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-trash' : 'codicon-error'}"></i> ${isSuccess ? 'Pruned Files Context' : 'Pruning Failed'}: ${filesToRemove.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        } else if (action.tag === 'query_architecture') {
+                            const sparql = action.params.trim();
+                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-graph"></i> ${isSuccess ? 'Ran SPARQL Query' : 'SPARQL Query Failed'}</summary><div class="processing-body">\`\`\`sparql\n${sparql}\n\`\`\`\n\n**Result:**\n${toolResult}</div></details>\n\n`;
+                        } else {
+                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-tools"></i> ${headerPrefix}: ${toolDisplayName}</summary><div class="processing-body">**Output:**\n${toolResult}</div></details>\n\n`;
+                        }
+
+                        currentFullResponseBuffer += blockWidgetHtml;
+
+                        executedResults.push({
+                            tag: action.tag,
+                            name: toolDisplayName,
+                            output: toolResult,
+                            success: isSuccess
+                        });
                     }
 
-                    if (!isSuccess) {
-                        consecutiveFailsCount++;
-                        completedDynamicActions.push(`Refining... Tool failed with: "${toolResult.substring(0, 100)}..."`);
-                    } else {
+                    if (anySuccess) {
                         consecutiveFailsCount = 0;
-                    }
-
-                    // Append the visual widget tag representation of the executed tool block directly into the chat stream buffer
-                    const summaryColor = isSuccess ? '' : 'color:var(--vscode-charts-red);';
-                    const headerPrefix = isSuccess ? 'Ran Tool' : 'Tool Failed';
-
-                    let blockWidgetHtml = "";
-                    if (interceptedTag === 'add_files_to_context') {
-                        const filesToAdd = interceptedParams!.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
-                        blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-cloud-download' : 'codicon-error'}"></i> ${isSuccess ? 'Loaded Files Context' : 'File Loading Failed'}: ${filesToAdd.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
-                    } else if (interceptedTag === 'remove_files_from_context') {
-                        const filesToRemove = interceptedParams!.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
-                        blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-trash' : 'codicon-error'}"></i> ${isSuccess ? 'Pruned Files Context' : 'Pruning Failed'}: ${filesToRemove.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
-                    } else if (interceptedTag === 'query_architecture') {
-                        const sparql = interceptedParams!.trim();
-                        blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-graph"></i> ${isSuccess ? 'Ran SPARQL Query' : 'SPARQL Query Failed'}</summary><div class="processing-body">\`\`\`sparql\n${sparql}\n\`\`\`\n\n**Result:**\n${toolResult}</div></details>\n\n`;
                     } else {
-                        blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-tools"></i> ${headerPrefix}: ${interceptedTag}</summary><div class="processing-body">**Output:**\n${toolResult}</div></details>\n\n`;
+                        consecutiveFailsCount++;
                     }
 
-                    currentFullResponseBuffer += blockWidgetHtml;
+                    // Update UI with all generated action widgets
                     await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
 
-                    // Add the results to the internal loop context and trigger next turn
+                    // Add the assistant response and batch execution observations to context
                     loopMessages.push({ role: 'assistant', content: turnResponse });
+
+                    const batchResultsFormatted = executedResults.map((r, i) => {
+                        const icon = r.success ? '✅' : '❌';
+                        return `#### Action ${i + 1} [${r.tag}: ${r.name}] - ${icon}\n${r.output}`;
+                    }).join('\n\n---\n\n');
+
                     loopMessages.push({ 
                         role: 'user', 
-                        content: `### 📋 TOOL EXECUTION RESULT (${interceptedTag})\n${toolResult}\n\nReview this output, adjust your strategy if needed, and continue with the next logical step of the user request.` 
+                        content: `### 📋 BATCH EXECUTION RESULTS (${executedResults.length} actions executed in order)\n\n${batchResultsFormatted}\n\nReview all results above, adjust your reasoning, and proceed with the next logical step of the user request.` 
                     });
 
-                    // Recurse into next turn step
+                    // Recurse into next turn step with all outputs in context
                     await runTurn();
                 } else {
                     // Final turn completed. Persist clean message to discussion, omitting internal tool artifacts

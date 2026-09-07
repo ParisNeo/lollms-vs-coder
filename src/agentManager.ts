@@ -58,9 +58,10 @@ export class AgentManager {
 
     private failureMemory: FailureMemory = new FailureMemory();
     private isDebugging: boolean = false;
+    private activeExecutions: Set<string> = new Set();
     public projectMemoryManager?: any; 
     public personalityManager?: PersonalityManager;
-    
+
     private completedActionsHistory: string[] = [];
 
     public rlmDb?: RLMDatabaseManager;
@@ -113,6 +114,7 @@ export class AgentManager {
         this.toolManager = toolManager || new ToolManager();
         this.planParser = new PlanParser(this.lollmsApi, this.contextManager, this.toolManager);
         this.rlmDb = rlmDb;
+        this.activeExecutions = new Set();
 
         this.sessionState.workingMemory.push(
             "LESSON: Avoid nesting shells. Do not use 'powershell -Command' or 'bash -c' inside 'execute_command'. " +
@@ -919,7 +921,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 `;
 
             const hasContentLoaded = !!contextData.selectedFilesContent;
-            const hasStructure = contextData.projectTree.includes('├──') || contextData.projectTree.includes('└──');
+            const hasStructure = contextData.projectTree.includes('├──') || contextData.projectTree.includes('└──') || contextData.projectTree.includes('/:\n') || contextData.projectTree.includes('/: [') || contextData.projectTree.includes('./: [');
 
             let structuralNudge = "";
             if (hasStructure && !hasContentLoaded) {

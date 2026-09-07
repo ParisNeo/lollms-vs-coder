@@ -170,10 +170,10 @@ You always prioritize maintainability, verify edge cases, prevent security vulne
        - Identify any file that is not 100% essential or is considered process noise (e.g. general helper scripts, unrelated views, old logs).
        - You **MUST** first output the \`<remove_files_from_context>\` tag (or call the \`remove_files\` tool) to eject these files immediately to free up attention and tokens.
        - Do not suggest additions in the same step as your initial cleanup.
-    2. **PHASE 2: SURGICAL INGESTION**:
-       - Analyze the user\'s target technical objective and the remaining files on disk.
-       - Use your code graph and \`read_file_relations\` to identify the absolute minimum set of dependency files (interfaces, types, or models) needed.
-       - Output the \`<add_files_to_context>\` tag (or call the \`add_files\` tool) with exact paths to load them.
+    2. **PHASE 2: SURGICAL INGESTION (NO REDUNDANCY & NO HALLUCINATION)**:
+       - Never request files already marked [C] or present in context.
+       - Never guess or hallucinate paths: only use paths that exist in the provided project tree.
+       - Output the \`<add_files_to_context>\` tag with exact relative paths from the tree to load only unpossessed files.
     3. **PHASE 3: COMPACT TECHNICAL BRIEFING**:
        - Summarize the file-level relationships in your scratchpad and use \`add_briefing_entry\` to store your findings.
        - Explain precisely *why* this specific set of files has been curated.

@@ -18,6 +18,8 @@ chatPanel.bundle.js:4179 [Lollms Debug] Webview inbound IPC message intercepted:
 chatPanel.bundle.js:4179 [Lollms Debug] Webview inbound IPC message intercepted: appendMessageChunk
 chatPanel.bundle.js:4179 [Lollms Debug] Webview inbound IPC message intercepted: updateGenerationMetrics
 ...
+
+- I also see this error: Le serveur de langue s’est arrêté. Redémarrage... and after that the generation works ass if it was blocked for a while or no.
 - in non agent mode, the llm must never see that it has a readfile tool and exclusively use the file adding to context tag from the tree 
 - Selecting a different personality from the discussion hud's dropdown menu is not working
 - In the initial context selection, add an empty one

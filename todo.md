@@ -1,4 +1,7 @@
 # HOT
+- there are many useless files and logs that needs to be removed from .lollms. also .lollms folder Must never become visible.
+- Files preprocessing Must only concern loaded files, not the whole database.
+- we need to optimize things in separate processes.
 - in non agent mode, the llm must never see that it has a readfile tool and exclusively use the file adding to context tag from the tree 
 - Selecting a different personality from the discussion hud's dropdown menu is not working
 - In the initial context selection, add an empty one

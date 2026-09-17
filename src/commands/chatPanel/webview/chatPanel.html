@@ -673,10 +673,25 @@
                     <div style="margin-bottom: 15px;" id="governor-config-section">
                         <div style="display:flex; justify-content:space-between;">
                             <label style="font-size: 11px; font-weight:bold;">Governor Trigger Threshold</label>
-                            <span id="modal-governor-threshold-val" style="font-size: 11px; opacity: 0.8;">95%</span>
+                            <span id="modal-governor-threshold-val" style="font-size: 11px; opacity: 0.8; font-weight: bold; color: var(--vscode-charts-orange);">95%</span>
                         </div>
                         <input type="range" id="modal-governor-threshold" min="10" max="99" step="1" value="95" style="width:100%; margin: 8px 0;">
-                        <p style="font-size: 10px; opacity: 0.7; margin:0;">Context filling percentage that triggers automatic pruning.</p>
+                        <p style="font-size: 10px; opacity: 0.7; margin:0 0 12px 0;">Context filling percentage that triggers automatic pruning.</p>
+
+                        <div style="display:flex; justify-content:space-between;">
+                            <label style="font-size: 11px; font-weight:bold;">Governor Objective Threshold (Target)</label>
+                            <span id="modal-governor-target-threshold-val" style="font-size: 11px; opacity: 0.8; font-weight: bold; color: var(--vscode-charts-green);">70%</span>
+                        </div>
+                        <input type="range" id="modal-governor-target-threshold" min="10" max="95" step="1" value="70" style="width:100%; margin: 8px 0;">
+                        <p style="font-size: 10px; opacity: 0.7; margin:0 0 12px 0;">Target context percentage to reduce down to once triggered (e.g. trigger at 90%, reduce to 50%).</p>
+
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;">
+                            <div>
+                                <label style="font-size: 11px; font-weight:bold; margin:0;">Governor Max Negotiation Rounds</label>
+                                <p style="font-size: 10px; opacity: 0.7; margin:2px 0 0 0;">Max verification rounds before applying fallback (default: 5).</p>
+                            </div>
+                            <input type="number" id="modal-governor-max-rounds" min="1" max="15" value="5" style="width: 55px; height: 24px; text-align: center;">
+                        </div>
 
                         <div class="checkbox-container" style="margin-top: 12px;">
                             <label class="switch"><input type="checkbox" id="cap-contextGovernorPermanentPruning"><span class="slider"></span></label>
@@ -998,15 +1013,40 @@
         </div>
     </div>
 
+    <!-- 🚀 UNIFIED BULK OPERATIONS MODAL (VISIBILITY & CONTEXT MANAGEMENT) -->
     <div id="bulk-delete-modal" class="modal">
-        <div class="modal-content" style="max-width: 620px; width: 92%;">
+        <div class="modal-content" style="max-width: 720px; width: 94%; max-height: 90vh;">
             <div class="modal-header">
-                <h2 style="margin: 0; font-size: 14px; display: flex; align-items: center; gap: 8px;"><i class="codicon codicon-checklist"></i> Bulk Remove Files from Context</h2>
+                <h2 style="margin: 0; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+                    <i class="codicon codicon-layers" style="color: var(--vscode-charts-blue);"></i> Bulk Context & Visibility Operations
+                </h2>
                 <span class="close-btn" id="bulk-delete-close-btn">&times;</span>
             </div>
-            <div class="modal-body" style="padding: 16px;">
-                <p style="font-size: 11px; opacity: 0.8; margin: 0 0 12px 0;">Select files to uncheck from the active AI context. Files on disk will remain completely intact.</p>
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border); gap: 10px; flex-wrap: wrap;">
+            <div class="modal-body" style="padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto;">
+                <p style="font-size: 11px; opacity: 0.8; margin: 0;">
+                    Select files to adjust visibility (mute/reveal content) or remove them from AI context. Muted files keep their path in the tree with zero content token weight.
+                </p>
+
+                <!-- Saved Hiding Patterns Bar -->
+                <div style="display: flex; justify-content: space-between; align-items: center; background: var(--vscode-editor-inactiveSelectionBackground); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--vscode-widget-border); gap: 10px; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="font-size: 10px; font-weight: 800; text-transform: uppercase; opacity: 0.7;"><i class="codicon codicon-bookmark"></i> Hiding Pattern:</span>
+                        <select id="bulk-mute-pattern-select" style="font-size: 11px; padding: 2px 6px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; max-width: 200px;">
+                            <option value="">-- Apply Saved Pattern --</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; gap: 6px;">
+                        <button id="bulk-save-pattern-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 8px;" title="Save current file muting/visibility setup as a reusable pattern">
+                            <i class="codicon codicon-save"></i> Save Pattern
+                        </button>
+                        <button id="bulk-delete-pattern-btn" class="code-action-btn delete-btn" style="height: 24px; font-size: 10px; padding: 0 6px;" title="Delete selected pattern">
+                            <i class="codicon codicon-trash"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Sorting and Selection Header -->
+                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 6px; border-bottom: 1px solid var(--vscode-widget-border); gap: 10px; flex-wrap: wrap;">
                     <div class="checkbox-container" style="margin: 0; padding: 0; background: transparent; border: none;">
                         <input type="checkbox" id="bulk-delete-select-all" checked style="cursor: pointer; margin: 0 6px 0 0;">
                         <label for="bulk-delete-select-all" id="bulk-delete-select-all-label" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select All</label>
@@ -1028,11 +1068,24 @@
                         </div>
                     </div>
                 </div>
-                <div id="bulk-delete-files-list" style="max-height: 320px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px; display: flex; flex-direction: column; gap: 4px;"></div>
+
+                <div id="bulk-delete-files-list" style="max-height: 320px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; display: flex; flex-direction: column; gap: 4px;"></div>
             </div>
-            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+
+            <!-- Multi-Action Footer -->
+            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background);">
                 <span id="bulk-delete-summary" style="font-size: 11px; opacity: 0.8; font-family: var(--vscode-editor-font-family);">0 selected</span>
-                <button id="bulk-delete-run-btn" class="code-action-btn apply-btn" style="width: auto; padding: 0 16px; justify-content: center; height: 32px;">Remove Selected from Context</button>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <button id="bulk-mute-run-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 12px; font-weight: bold; border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);" title="Hide/Mute content for selected files (keep in tree at 0 tokens)">
+                        <i class="codicon codicon-eye-closed"></i> Mute Content
+                    </button>
+                    <button id="bulk-unmute-run-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 12px; font-weight: bold; border-color: var(--vscode-charts-green); color: var(--vscode-charts-green);" title="Reveal/Unmute content for selected files">
+                        <i class="codicon codicon-eye"></i> Reveal Content
+                    </button>
+                    <button id="bulk-delete-run-btn" class="code-action-btn delete-btn" style="height: 30px; padding: 0 12px; font-weight: bold;" title="Remove selected files completely from AI context">
+                        <i class="codicon codicon-trash"></i> Remove from Context
+                    </button>
+                </div>
             </div>
         </div>
     </div>

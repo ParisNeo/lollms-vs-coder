@@ -1110,6 +1110,8 @@ if (dom.sendButton) {
                 interTokenTimeout: parseInt((document.getElementById('modal-inter-token-timeout') as HTMLInputElement)?.value || '0', 10),
                 contextGovernorEnabled: (document.getElementById('cap-contextGovernorEnabled') as HTMLInputElement)?.checked ?? true,
                 contextGovernorThreshold: parseInt((document.getElementById('modal-governor-threshold') as HTMLInputElement)?.value || '95', 10),
+                contextGovernorTargetThreshold: parseInt((document.getElementById('modal-governor-target-threshold') as HTMLInputElement)?.value || '70', 10),
+                contextGovernorMaxRounds: parseInt((document.getElementById('modal-governor-max-rounds') as HTMLInputElement)?.value || '5', 10),
                 contextGovernorPermanentPruning: (document.getElementById('cap-contextGovernorPermanentPruning') as HTMLInputElement)?.checked ?? false,
                 contextGovernorCropHistory: (document.getElementById('cap-contextGovernorCropHistory') as HTMLInputElement)?.checked ?? true,
                 contextAggression: dom.contextAggressionSelect?.value || 'respect',

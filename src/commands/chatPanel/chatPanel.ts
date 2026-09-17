@@ -5437,6 +5437,89 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     });
                 }
                 break;
+            case 'peekFilesAndCopy':
+                {
+                    const filesToPeek = Array.isArray(message.files) ? message.files : [];
+                    if (this._contextManager && filesToPeek.length > 0) {
+                        try {
+                            const peekResults = await this._contextManager.peekFiles(filesToPeek);
+                            const text = peekResults.map(r => r.error ? `// ${r.path}: ${r.error}` : `// --- ${r.path} ---\n${r.content}`).join('\n\n');
+                            await vscode.env.clipboard.writeText(text);
+                            vscode.window.showInformationMessage(`Copied peeked slice of ${peekResults.length} file(s) to clipboard.`);
+                        } catch (err: any) {
+                            vscode.window.showErrorMessage(`Peek failed: ${err.message}`);
+                        }
+                    }
+                }
+                break;
+            case 'executePeekAndReprompt':
+                {
+                    const filesToPeek = Array.isArray(message.files) ? message.files : [];
+                    if (this._contextManager && filesToPeek.length > 0) {
+                        try {
+                            const peekResults = await this._contextManager.peekFiles(filesToPeek);
+                            const formattedResults = peekResults.map(r => {
+                                if (r.error) return `### ❌ File \`${r.path}\`\nError: ${r.error}`;
+                                return `### 📄 PEEK SLICE: \`${r.path}\`\n\`\`\`\n${r.content}\n\`\`\``;
+                            }).join('\n\n');
+
+                            const repromptMsg: ChatMessage = {
+                                role: 'user',
+                                content: `Here is the requested inspection content from disk:\n\n${formattedResults}\n\nPlease proceed with your analysis or code implementation based on this inspection.`
+                            };
+
+                            await this.sendMessage(repromptMsg);
+                        } catch (err: any) {
+                            vscode.window.showErrorMessage(`Peek and Reprompt failed: ${err.message}`);
+                        }
+                    }
+                }
+                break;
+            case 'executeAllMessageActions':
+                {
+                    const { actions } = message;
+                    if (!Array.isArray(actions) || actions.length === 0) return;
+
+                    const resultsLog: string[] = [];
+                    const provider = this._contextManager.getContextStateProvider();
+
+                    for (const action of actions) {
+                        try {
+                            if (action.type === 'peek') {
+                                const peekRes = await this._contextManager.peekFiles(action.payload);
+                                const sliceText = peekRes.map(r => r.error ? `[${r.path}: ${r.error}]` : `### 📄 ${r.path}\n\`\`\`\n${r.content}\n\`\`\``).join('\n\n');
+                                resultsLog.push(`#### ✅ Peek Execution (${action.payload.length} files)\n${sliceText}`);
+                            } else if (action.type === 'add_context') {
+                                const added = await provider?.addFilesToContext(action.payload) || [];
+                                resultsLog.push(`#### ✅ Added to Context: [${added.join(', ')}]`);
+                            } else if (action.type === 'tool') {
+                                const toolDef = this.agentManager.getTools().find(t => t.name === action.payload.name);
+                                if (toolDef) {
+                                    const env = {
+                                        workspaceRoot: vscode.workspace.workspaceFolders?.[0],
+                                        lollmsApi: this._lollmsAPI,
+                                        contextManager: this._contextManager,
+                                        agentManager: this.agentManager,
+                                        skillsManager: this._skillsManager,
+                                        codeGraphManager: this._codeGraphManager,
+                                        personalityManager: this._personalityManager,
+                                        currentPlan: this.agentManager?.currentPlan || null
+                                    };
+                                    const toolRes = await toolDef.execute(action.payload.params || {}, env as any, new AbortController().signal);
+                                    resultsLog.push(`#### ${toolRes.success ? '✅' : '❌'} Tool: ${action.payload.name}\n${toolRes.output}`);
+                                }
+                            }
+                        } catch (actionErr: any) {
+                            resultsLog.push(`#### ❌ Action Error: ${actionErr.message}`);
+                        }
+                    }
+
+                    this.updateContextAndTokens();
+
+                    const observationPrompt = `### 📋 BATCH EXECUTION RESULTS (${actions.length} actions executed)\n\n${resultsLog.join('\n\n---\n\n')}\n\nReview the observation results above and proceed with your technical answer.`;
+                    await this.sendMessage({ role: 'user', content: observationPrompt });
+                }
+                break;
             case 'addFilesToContext':
                 {
                     const blockId = message.blockId;

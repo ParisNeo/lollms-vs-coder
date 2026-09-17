@@ -219,7 +219,9 @@ export interface DiscussionCapabilities {
     temperature?: number; // Optional temperature value
     ttftTimeout: number;
     interTokenTimeout: number;
-    contextGovernorThreshold: number; // Percentage (0-100)
+    contextGovernorThreshold: number; // Trigger threshold percentage (0-100)
+    contextGovernorTargetThreshold?: number; // Objective threshold percentage to reach (0-100)
+    contextGovernorMaxRounds?: number; // Maximum negotiation rounds (default 5)
     contextGovernorEnabled?: boolean; // New key
     contextGovernorPermanentPruning?: boolean; // New key
     enableSymbolMode?: boolean; // New key
@@ -853,16 +855,17 @@ const sparqlDynamicRule = isSparqlActive ? `
     You are operating under **Co-Engineer Mode (Dynamic Multi-Turn Loop)**.
     You have direct authority to call tools, query the architecture ontology, and load files *inside this single turn*.
 ${sparqlDynamicRule}
-    **⚡ THE ACTION-FIRST MANDATE (ZERO CONVERSATIONAL PROCRASTINATION):**
-    1. **NEVER OUTPUT EMPTY PROMISES**: You are **STRICTLY FORBIDDEN** from replying with conversational intentions like "I'll start by loading the files...", "Let me check the backend...", or "I will begin by inspecting...".
-    2. **ACT IMMEDIATELY**: If you need files from the project, output the \`<add_files_to_context>\` tag starting on **LINE 1** with ZERO conversational filler!
-    3. **ALL FILES AT ONCE**: Examine the \`### 🌳 PROJECT STRUCTURE\` (4-Space Indented Scope Hierarchy), identify ALL files related to the user's issue, and list them all inside a single \`<add_files_to_context>\` block on separate lines.
-    4. **BATCH ACTIONS IN SAME ROUND**: If you need to perform multiple actions in the same turn (e.g. load files with \`<add_files_to_context>\` AND query architecture with \`<query_architecture>\` or call tools with \`<lollms_tool>\`), you CAN output them all in the same response.
-    5. **EXCLUSIVE FILE DISCOVERY VIA <add_files_to_context>**: You do NOT have a file-reading tool in this mode. To inspect, read, or edit files, you **MUST EXCLUSIVELY** use the \`<add_files_to_context>\` tag. Use \`<peek_files>\` to inspect contents temporarily without adding them to \`[C]\`.
-    6. **NO REDUNDANT ADDITIONS**: Never request files that are already marked **[C]** in the manifest.
-    7. **NO PROJECT-WIDE ADDITIONS**: You are **STRICTLY FORBIDDEN** from importing the entire project directory (\`.\` or workspace root). Target specific files.
-    8. **TOKEN BUDGET LIMIT**: If active context exceeds **85%**, prune using \`<remove_files_from_context>\` before requesting more.
-    9. **NO AUTO-APPLY**: Any code updates must be presented to the user to review and apply manually using \`<file path="..." action="write|patch|update_symbol">\`.
+    **⚡ THE ACTION-FIRST MANDATE & STEP-BY-STEP REASONING:**
+    1. **ACT IMMEDIATELY**: If you need files from the project, output \`<add_files_to_context>\` or \`<peek_files>\` starting on **LINE 1**.
+    2. **COOPERATIVE STEP-BY-STEP HYDRATION (TOKEN PRESERVATION)**:
+       - If you need to inspect multiple large files, do NOT load them all at once.
+       - Load File A, note what you need into your thoughts/scratchpad, and use \`<remove_files_from_context>\` to mute/evict File A before loading File B.
+    3. **NO INTERMEDIATE CODE PATCHING (STRICT INVARIANT)**:
+       - In Co-Engineer mode, you **NEVER apply patches to disk during intermediate exploration steps** unless \`autoApply\` is explicitly active.
+       - You must keep all code mutations exclusively in your **final synthesized message** after all research and inspections are complete.
+    4. **EXCLUSIVE FILE DISCOVERY VIA <add_files_to_context> & <peek_files>**: To inspect files without bloating context, use \`<peek_files lines="30" from="top">path</peek_files>\`.
+    5. **TOKEN BUDGET LIMIT**: If active context exceeds **85%**, prune using \`<remove_files_from_context>\` before requesting more.
+    6. **USER VALIDATION IN ASSISTANT MODE**: In Assistant Mode, every action is presented to the user for step-by-step confirmation. In Co-Engineer mode, you execute inspections autonomously within the turn.
 
     **CORRECT BEHAVIOR FORMAT (ONLY USE REAL PATHS FROM THE MANIFEST):**
     <add_files_to_context>

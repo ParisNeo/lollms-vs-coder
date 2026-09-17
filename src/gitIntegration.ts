@@ -322,17 +322,19 @@ export class GitIntegration {
       const normalizedPath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
       const commitsMap = new Map<string, GitFileVersionCommit>();
 
-      const parseLogOutput = (stdout: string) => {
+      const parsePipeOutput = (stdout: string) => {
           stdout.split('\n').filter(line => line.trim()).forEach(line => {
-              const parts = line.split('|');
+              const cleanLine = line.replace(/\r$/, '');
+              const parts = cleanLine.split('|');
               if (parts.length >= 5) {
                   const hash = parts[0].trim();
                   if (!commitsMap.has(hash)) {
-                      const message = parts[1] || '';
-                      const author = parts[2] || '';
-                      const date = parts[3] || '';
-                      const relDate = parts[4] || '';
-                      const refs = parts[5] ? parts[5].trim() : undefined;
+                      const refs = parts.length >= 6 ? parts[parts.length - 1].trim() : undefined;
+                      const relDate = parts[parts.length - 2].trim();
+                      const date = parts[parts.length - 3].trim();
+                      const author = parts[parts.length - 4].trim();
+                      const message = parts.slice(1, parts.length - 4).join('|').trim();
+
                       commitsMap.set(hash, {
                           hash,
                           message,
@@ -345,27 +347,13 @@ export class GitIntegration {
           });
       };
 
-      // Query 1: All branches across the entire repository (using %x09 Tab delimiter to prevent cmd.exe pipe collisions)
+      // Query 1: All branches across the entire repository
       try {
           const { stdout: allOut } = await execAsync(
-              `git --no-pager log --all --pretty=format:"%H%x09%s%x09%an%x09%ad%x09%ar%x09%d" --date=short -n ${count} -- "${normalizedPath}"`,
+              `git --no-pager log --all --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short -n ${count} -- "${normalizedPath}"`,
               { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 15000 }
           );
-          allOut.split('\n').filter(line => line.trim()).forEach(line => {
-              const parts = line.split('\t');
-              if (parts.length >= 5) {
-                  const hash = parts[0].trim();
-                  if (!commitsMap.has(hash)) {
-                      commitsMap.set(hash, {
-                          hash,
-                          message: parts[1] || '',
-                          author: parts[2] || '',
-                          date: `${parts[3]} (${parts[4]})`,
-                          refs: parts[5] ? parts[5].trim() : undefined
-                      });
-                  }
-              }
-          });
+          parsePipeOutput(allOut);
       } catch (e: any) {
           console.warn("[GitHistory] git log --all warning:", e.message);
       }
@@ -373,50 +361,22 @@ export class GitIntegration {
       // Query 2: Follow renames along active history
       try {
           const { stdout: followOut } = await execAsync(
-              `git --no-pager log --follow --pretty=format:"%H%x09%s%x09%an%x09%ad%x09%ar%x09%d" --date=short -n ${count} -- "${normalizedPath}"`,
+              `git --no-pager log --follow --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short -n ${count} -- "${normalizedPath}"`,
               { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 15000 }
           );
-          followOut.split('\n').filter(line => line.trim()).forEach(line => {
-              const parts = line.split('\t');
-              if (parts.length >= 5) {
-                  const hash = parts[0].trim();
-                  if (!commitsMap.has(hash)) {
-                      commitsMap.set(hash, {
-                          hash,
-                          message: parts[1] || '',
-                          author: parts[2] || '',
-                          date: `${parts[3]} (${parts[4]})`,
-                          refs: parts[5] ? parts[5].trim() : undefined
-                      });
-                  }
-              }
-          });
+          parsePipeOutput(followOut);
       } catch (e: any) {
           console.warn("[GitHistory] git log --follow warning:", e.message);
       }
 
-      // Fallback: Standard history if both above were empty
+      // Fallback: Standard log if map is still empty
       if (commitsMap.size === 0) {
           try {
               const { stdout: stdOut } = await execAsync(
-                  `git --no-pager log --pretty=format:"%H%x09%s%x09%an%x09%ad%x09%ar%x09%d" --date=short -n ${count} -- "${normalizedPath}"`,
+                  `git --no-pager log --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short -n ${count} -- "${normalizedPath}"`,
                   { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 15000 }
               );
-              stdOut.split('\n').filter(line => line.trim()).forEach(line => {
-                  const parts = line.split('\t');
-                  if (parts.length >= 5) {
-                      const hash = parts[0].trim();
-                      if (!commitsMap.has(hash)) {
-                          commitsMap.set(hash, {
-                              hash,
-                              message: parts[1] || '',
-                              author: parts[2] || '',
-                              date: `${parts[3]} (${parts[4]})`,
-                              refs: parts[5] ? parts[5].trim() : undefined
-                          });
-                      }
-                  }
-              });
+              parsePipeOutput(stdOut);
           } catch (e) {}
       }
 

@@ -158,6 +158,8 @@ export class LollmsAPI {
   public updateConfig(newConfig: LollmsConfig) {
     Logger.info("Updating LollmsAPI Config");
     const oldUrl = this.config.apiUrl;
+    const oldBackend = this.config.backendType;
+    const oldKey = this.config.apiKey;
     this.config = newConfig;
 
     if (!this.config.apiKey) {
@@ -166,10 +168,14 @@ export class LollmsAPI {
 
     this.httpsAgent = this.createHttpsAgent();
     this.baseUrl = this.normalizeBaseUrl(this.config.apiUrl);
-    
-    if (oldUrl !== newConfig.apiUrl && this.globalState) {
+
+    const isDifferent = oldUrl !== newConfig.apiUrl || oldBackend !== newConfig.backendType || oldKey !== newConfig.apiKey;
+    if (isDifferent) {
         this._cachedModels = null;
-        this.globalState.update('lollms_models_cache', undefined);
+        this._cachedContextSizes.clear();
+        if (this.globalState) {
+            this.globalState.update('lollms_models_cache', undefined);
+        }
     }
   }
 
@@ -258,15 +264,22 @@ export class LollmsAPI {
   public async getModels(forceRefresh: boolean = false): Promise<Array<{ id: string }>> {
     Logger.info(`[getModels] Called. URL: ${this.baseUrl}, Force: ${forceRefresh}`);
 
-    if (this._cachedModels && this._cachedModels.length > 0 && !forceRefresh) {
-        return this._cachedModels;
-    }
+    if (forceRefresh) {
+        this._cachedModels = null;
+        if (this.globalState) {
+            this.globalState.update('lollms_models_cache', undefined);
+        }
+    } else {
+        if (this._cachedModels && this._cachedModels.length > 0) {
+            return this._cachedModels;
+        }
 
-    if (!forceRefresh && this.globalState) {
-        const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
-        if (storedModels && storedModels.length > 0) {
-            this._cachedModels = storedModels;
-            return storedModels;
+        if (this.globalState) {
+            const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
+            if (storedModels && storedModels.length > 0) {
+                this._cachedModels = storedModels;
+                return storedModels;
+            }
         }
     }
 
@@ -274,13 +287,21 @@ export class LollmsAPI {
 
     // Anthropic does not provide a models list API
     if (backend === 'anthropic') {
-        const models = [{ id: 'claude-3-5-sonnet-latest' }, { id: 'claude-3-opus-latest' }, { id: 'claude-3-haiku-20240307' }];
+        const models = [
+            { id: 'claude-3-7-sonnet-latest' },
+            { id: 'claude-3-5-sonnet-latest' },
+            { id: 'claude-3-opus-latest' },
+            { id: 'claude-3-haiku-20240307' }
+        ];
         this._cachedModels = models;
         return models;
     }
 
     let url = this.baseUrl;
-    let headers: any = { 'Authorization': `Bearer ${this.config.apiKey}` };
+    let headers: any = {};
+    if (this.config.apiKey) {
+        headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+    }
 
     if (backend === 'ollama') {
         url = url.endsWith('/api/tags') ? url : (url.endsWith('/api') ? `${url}/tags` : `${url}/api/tags`);

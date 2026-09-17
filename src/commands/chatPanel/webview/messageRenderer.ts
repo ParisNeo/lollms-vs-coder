@@ -2444,22 +2444,33 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const matchIndex = pMatch.index;
             const fullMatch = pMatch[0];
 
-            // Strict Line-Start check: verify the match begins at the start of a line
+            // Strict Line-Start check: verify the tag starts on a clean line (not mid-sentence in prose)
             const textBefore = mainProcessedContent.substring(0, matchIndex);
-            // Allow matching at start of line OR immediately after another tag's closing '>'
-            const hasLineStart = matchIndex === 0 || /[\r\n][ \t]*$/.test(textBefore) || />[ \t]*$/.test(textBefore);
+            const lineStartIdx = Math.max(textBefore.lastIndexOf('\n'), textBefore.lastIndexOf('\r'));
+            const prefixOnLine = lineStartIdx === -1 ? textBefore : textBefore.substring(lineStartIdx + 1);
+            const hasLineStart = prefixOnLine.trim() === '' || />[ \t]*$/.test(prefixOnLine);
             if (!hasLineStart) continue;
 
-            // Also check that the closing tag is at the start of a line (if it is not self-closing and closing tag is present)
+            // Verify clean termination: Either on the same clean line, or closing tag starts its own line
             const isSelfClosing = fullMatch.trim().endsWith('/>');
             const hasClosingTag = fullMatch.includes('</');
             if (!isSelfClosing && hasClosingTag) {
                 const closingTagIndex = matchIndex + fullMatch.lastIndexOf('</');
                 const textBeforeClosing = mainProcessedContent.substring(matchIndex, closingTagIndex);
                 const lastNewline = Math.max(textBeforeClosing.lastIndexOf('\n'), textBeforeClosing.lastIndexOf('\r'));
-                const linePrefix = lastNewline === -1 ? textBeforeClosing : textBeforeClosing.substring(lastNewline + 1);
-                const hasClosingLineStart = linePrefix.trim() === '';
-                if (!hasClosingLineStart) continue;
+
+                if (lastNewline !== -1) {
+                    // Multi-line tag: closing tag must start cleanly on its line
+                    const linePrefix = textBeforeClosing.substring(lastNewline + 1);
+                    if (linePrefix.trim() !== '') continue;
+                } else {
+                    // Single-line tag: nothing should trail after the closing tag on that same line
+                    const matchEnd = matchIndex + fullMatch.length;
+                    const textAfter = mainProcessedContent.substring(matchEnd);
+                    const nextNewline = textAfter.search(/[\r\n]/);
+                    const lineSuffix = nextNewline === -1 ? textAfter : textAfter.substring(0, nextNewline);
+                    if (lineSuffix.trim() !== '') continue;
+                }
             }
 
             // Exclude matching if it overlaps with previously matched plugins
@@ -2618,7 +2629,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         }
     });
 
-    // --- APPLY ALL AGGREGATOR (COUNTS BOTH XML <file> TAGS & LEGACY BLOCKS) ---
+    // --- ACTIONS & MUTATIONS AGGREGATOR (EXECUTE ALL & APPLY ALL) ---
     const xmlFileBlocks = extractFileBlocks(sourceText);
     const xmlActionableCount = xmlFileBlocks.filter((b: any) => {
         const attrs = parseFileTagAttributes(b.attrStr, b.rawContent);
@@ -2633,6 +2644,21 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     }).length;
 
     const totalActionableCount = xmlActionableCount + legacyActionableCount;
+
+    // Detect actionable interactive items (Peek, Context Add, Tools)
+    const peekCount = (mainProcessedContent.match(/<peek_files\b/gi) || []).length;
+    const addContextCount = (mainProcessedContent.match(/<add_files_to_context\b/gi) || []).length;
+    const toolCallCount = (mainProcessedContent.match(/<lollms_tool\b/gi) || []).length;
+    const totalExecutableActionsCount = peekCount + addContextCount + toolCallCount;
+
+    if (totalExecutableActionsCount > 1 && isFinal) {
+        finalHtml += `
+            <div class="execute-all-actions-wrapper" style="margin-top: 14px; padding: 0 12px;">
+                <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="width: 100%; height: 32px; font-weight: bold; justify-content: center; background: var(--vscode-charts-purple, #9b59b6) !important; color: white !important;">
+                    <i class="codicon codicon-play"></i> Execute All Actions (${totalExecutableActionsCount} operations: Peeks/Context/Tools)
+                </button>
+            </div>`;
+    }
 
     if (totalActionableCount > 1 && isFinal) {
         finalHtml += `
@@ -2753,6 +2779,52 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     if (isFinal) {
         syncResultsListRows(messageId);
         checkAndSyncMessageAppliedState(messageId);
+    }
+
+    // Attach listener for Execute All Actions button
+    const executeAllBtn = contentDiv.querySelector(`#execute-all-actions-${messageId}`) as HTMLButtonElement;
+    if (executeAllBtn) {
+        executeAllBtn.onclick = () => {
+            executeAllBtn.disabled = true;
+            executeAllBtn.innerHTML = '<div class="spinner"></div> Executing All Actions...';
+
+            const actions: { type: 'peek' | 'add_context' | 'tool'; payload: any }[] = [];
+
+            // 1. Gather peeks
+            contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="peek"]').forEach((card: any) => {
+                try {
+                    const payload = JSON.parse(decodeURIComponent(card.dataset.payload));
+                    actions.push({ type: 'peek', payload });
+                } catch {}
+            });
+
+            // 2. Gather add_files_to_context
+            contentDiv.querySelectorAll('.context-expansion-block').forEach((block: any) => {
+                try {
+                    const files = JSON.parse(block.dataset.files || '[]');
+                    if (files.length > 0) {
+                        actions.push({ type: 'add_context', payload: files });
+                    }
+                } catch {}
+            });
+
+            // 3. Gather lollms_tool calls
+            contentDiv.querySelectorAll('.lollms-tool-card').forEach((tc: any) => {
+                try {
+                    const name = tc.dataset.toolName;
+                    const params = JSON.parse(decodeURIComponent(tc.dataset.params || '{}'));
+                    if (name) {
+                        actions.push({ type: 'tool', payload: { name, params } });
+                    }
+                } catch {}
+            });
+
+            vscode.postMessage({
+                command: 'executeAllMessageActions',
+                messageId,
+                actions
+            });
+        };
     }
 
     // Attach single unified listener for the Apply All button
@@ -3591,7 +3663,7 @@ export class ContextPresenter {
                                         <span class="codicon ${state.fileSortOrder === 'name' ? 'codicon-sort-alphabetically' : (state.fileSortOrder === 'light-to-heavy' ? 'codicon-sort-numeric-up' : 'codicon-sort-numeric-down')}"></span>
                                         <span id="sort-files-label">${state.fileSortOrder === 'name' ? 'A-Z' : (state.fileSortOrder === 'light-to-heavy' ? 'Light to Heavy' : 'Heavy to Light')}</span>
                                     </button>
-                                    ${finalFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn"><span class="codicon codicon-checklist"></span> Bulk Remove</button>` : ''}
+                                    ${finalFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn" title="Bulk manage visibility (mute/reveal) and removal"><span class="codicon codicon-checklist"></span> Bulk Operations</button>` : ''}
                                 </div>
                             </h4>
                             <div class="hud-project-files-list">${projectFilesHtml}</div>
@@ -4039,17 +4111,18 @@ export class ContextBinder {
         // Helper to extract file path string
         const getFilePath = (item: any) => typeof item === 'string' ? item : (item?.path || '');
 
-        // Bind Project Files Bulk Remove button
+        // Bind Project Files Bulk Operations button
         const bulkRemoveProjectBtn = dashboard.querySelector('#bulk-remove-project-btn') as HTMLElement;
         if (bulkRemoveProjectBtn) {
             bulkRemoveProjectBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const projectFiles = files.filter(f => {
+                const currentFiles = state.lastContextData?.files || files || [];
+                const projectFiles = currentFiles.filter((f: any) => {
                     const p = getFilePath(f);
                     return !p.includes('.lollms/') && !p.startsWith('http') && !p.startsWith('external/');
                 });
-                showBulkDeleteModal(projectFiles);
+                showBulkOperationsModal(projectFiles);
             };
         }
 
@@ -4349,26 +4422,34 @@ export function updateContext(
  * Opens a modal to select multiple files for removal from context.
  * Supports sorting by Alphabetical (A-Z / Z-A) and File Size / Tokens (Largest / Smallest).
  */
-export function showBulkDeleteModal(files: any[]) {
+export function showBulkOperationsModal(files: any[]) {
     const modal = document.getElementById('bulk-delete-modal');
     const list = document.getElementById('bulk-delete-files-list');
     const master = document.getElementById('bulk-delete-select-all') as HTMLInputElement;
     const closeBtn = document.getElementById('bulk-delete-close-btn');
-    const runBtn = document.getElementById('bulk-delete-run-btn') as HTMLButtonElement;
+    const removeBtn = document.getElementById('bulk-delete-run-btn') as HTMLButtonElement;
+    const muteBtn = document.getElementById('bulk-mute-run-btn') as HTMLButtonElement;
+    const unmuteBtn = document.getElementById('bulk-unmute-run-btn') as HTMLButtonElement;
     const summaryLabel = document.getElementById('bulk-delete-summary');
     const sortNameBtn = document.getElementById('bulk-sort-name-btn');
     const sortSizeBtn = document.getElementById('bulk-sort-size-btn');
     const sortDirBtn = document.getElementById('bulk-sort-dir-btn');
     const sortDirIcon = document.getElementById('bulk-sort-dir-icon');
 
+    const patternSelect = document.getElementById('bulk-mute-pattern-select') as HTMLSelectElement;
+    const savePatternBtn = document.getElementById('bulk-save-pattern-btn');
+    const deletePatternBtn = document.getElementById('bulk-delete-pattern-btn');
+
     if (!modal || !list) return;
 
     const getFilePath = (item: any) => typeof item === 'string' ? item : (item?.path || '');
     const registry = (window as any).lazyFilesRegistry;
+    const currentMuted = new Set((state.mutedFiles || []).map(p => p.replace(/\\/g, '/').toLowerCase().trim()));
 
-    // Normalize raw file entries to objects with accurate byte count and token estimations
+    // Normalize raw file entries
     const normalizedFiles = files.map(item => {
         const rawPath = getFilePath(item);
+        const cleanLower = rawPath.replace(/\\/g, '/').toLowerCase().trim();
         const regItem = registry?.get(rawPath);
 
         let bytes = 0;
@@ -4388,59 +4469,55 @@ export function showBulkDeleteModal(files: any[]) {
             tokens = state.fileTokensMap[rawPath];
         }
 
-        if (bytes === 0 && tokens > 0) {
-            bytes = Math.round(tokens * 3.5);
-        } else if (tokens === 0 && bytes > 0) {
-            tokens = Math.max(1, Math.ceil(bytes / 3.5));
-        }
+        if (bytes === 0 && tokens > 0) bytes = Math.round(tokens * 3.5);
+        else if (tokens === 0 && bytes > 0) tokens = Math.max(1, Math.ceil(bytes / 3.5));
 
         const fileName = rawPath.split('/').pop() || rawPath;
         const dirName = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+        const isMuted = currentMuted.has(cleanLower);
 
         return {
             path: rawPath,
             fileName,
             dirName,
             bytes,
-            tokens
+            tokens,
+            isMuted
         };
     });
 
-    // Tracking set of selected file paths (initially all selected)
     const selectedPaths = new Set<string>(normalizedFiles.map(f => f.path));
 
     let currentSortCol: 'name' | 'size' = 'size';
-    let currentSortDir: 'asc' | 'desc' = 'desc'; // Default: Largest first
+    let currentSortDir: 'asc' | 'desc' = 'desc';
 
     const updateFooterSummary = () => {
         const checkedCount = selectedPaths.size;
-        let totalFreedTokens = 0;
-        let totalFreedBytes = 0;
+        let totalTokens = 0;
+        let totalBytes = 0;
 
         normalizedFiles.forEach(f => {
             if (selectedPaths.has(f.path)) {
-                totalFreedTokens += f.tokens;
-                totalFreedBytes += f.bytes;
+                totalTokens += f.tokens;
+                totalBytes += f.bytes;
             }
         });
 
         if (summaryLabel) {
-            let sizeFormatted = `${totalFreedBytes} B`;
-            if (totalFreedBytes >= 1024 * 1024) sizeFormatted = `${(totalFreedBytes / (1024 * 1024)).toFixed(1)} MB`;
-            else if (totalFreedBytes >= 1024) sizeFormatted = `${(totalFreedBytes / 1024).toFixed(1)} KB`;
+            let sizeFormatted = `${totalBytes} B`;
+            if (totalBytes >= 1024 * 1024) sizeFormatted = `${(totalBytes / (1024 * 1024)).toFixed(1)} MB`;
+            else if (totalBytes >= 1024) sizeFormatted = `${(totalBytes / 1024).toFixed(1)} KB`;
 
-            const tokDisplay = totalFreedTokens >= 1000 ? `${(totalFreedTokens / 1000).toFixed(1)}k` : `${totalFreedTokens}`;
+            const tokDisplay = totalTokens >= 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : `${totalTokens}`;
             summaryLabel.textContent = checkedCount > 0 
                 ? `${checkedCount} of ${normalizedFiles.length} selected (${sizeFormatted} / ~${tokDisplay} tok)`
                 : `0 of ${normalizedFiles.length} selected`;
         }
 
-        if (runBtn) {
-            runBtn.disabled = checkedCount === 0;
-            runBtn.innerHTML = checkedCount > 0 
-                ? `<span class="codicon codicon-trash"></span> Remove ${checkedCount} File${checkedCount > 1 ? 's' : ''}`
-                : `<span class="codicon codicon-trash"></span> Remove Selected`;
-        }
+        const hasSelection = checkedCount > 0;
+        if (removeBtn) removeBtn.disabled = !hasSelection;
+        if (muteBtn) muteBtn.disabled = !hasSelection;
+        if (unmuteBtn) unmuteBtn.disabled = !hasSelection;
 
         if (master) {
             master.checked = checkedCount === normalizedFiles.length && normalizedFiles.length > 0;
@@ -4450,12 +4527,11 @@ export function showBulkDeleteModal(files: any[]) {
 
     const renderList = () => {
         if (normalizedFiles.length === 0) {
-            list.innerHTML = '<div style="padding: 20px; opacity: 0.6; text-align: center; font-size: 11px;">No files to remove.</div>';
+            list.innerHTML = '<div style="padding: 20px; opacity: 0.6; text-align: center; font-size: 11px;">No files currently in context.</div>';
             updateFooterSummary();
             return;
         }
 
-        // Sort items
         const sorted = [...normalizedFiles].sort((a, b) => {
             const dir = currentSortDir === 'asc' ? 1 : -1;
             if (currentSortCol === 'name') {
@@ -4476,39 +4552,42 @@ export function showBulkDeleteModal(files: any[]) {
             else if (bytes >= 1024) formattedBytes = `${(bytes / 1024).toFixed(1)} KB`;
 
             const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
-            const weightClass = bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light');
-            const tokenBadge = `<span class="file-token-badge ${weightClass}" title="${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`;
+            const weightClass = item.isMuted ? 'weight-muted' : (bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light'));
+            const tokenBadge = item.isMuted
+                ? `<span class="file-token-badge weight-muted">[MUTED / 0 tok]</span>`
+                : `<span class="file-token-badge ${weightClass}">${formattedBytes} (~${displayTok} tok)</span>`;
+
+            const visibilityBadge = item.isMuted
+                ? `<span style="font-size: 10px; color: var(--vscode-charts-orange); font-weight: bold; margin-right: 6px;"><i class="codicon codicon-eye-closed"></i> Muted</span>`
+                : `<span style="font-size: 10px; color: var(--vscode-charts-green); font-weight: bold; margin-right: 6px;"><i class="codicon codicon-eye"></i> Visible</span>`;
 
             return `
-            <div class="checkbox-container bulk-delete-item-row ${isChecked ? 'selected' : ''}" style="margin-bottom: 4px; padding: 6px 10px; border-radius: 4px; background: rgba(0,0,0,0.15); display: flex; align-items: center; border: 1px solid var(--vscode-widget-border); transition: background 0.1s, border-color 0.1s;">
+            <div class="checkbox-container bulk-delete-item-row ${isChecked ? 'selected' : ''}" style="margin-bottom: 4px; padding: 6px 10px; border-radius: 4px; background: rgba(0,0,0,0.15); display: flex; align-items: center; border: 1px solid var(--vscode-widget-border); transition: background 0.1s;">
                 <input type="checkbox" class="bulk-delete-file-check" value="${f}" id="bulk-del-check-${item.path.replace(/[^a-zA-Z0-9]/g, '_')}" ${isChecked ? 'checked' : ''} style="margin: 0 10px 0 0; cursor: pointer;">
                 <label for="bulk-del-check-${item.path.replace(/[^a-zA-Z0-9]/g, '_')}" style="font-size: 11px; cursor: pointer; flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between; user-select: none;">
                     <div style="min-width: 0; overflow: hidden; padding-right: 8px;">
-                        <div style="font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f}">
+                        <div style="font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; ${item.isMuted ? 'text-decoration: line-through; opacity: 0.7;' : ''}" title="${f}">
                             <i class="codicon codicon-file" style="margin-right: 4px; opacity: 0.7;"></i>${item.fileName}
                         </div>
                         ${item.dirName ? `<div style="font-size: 9px; opacity: 0.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.dirName}</div>` : ''}
                     </div>
-                    ${tokenBadge}
+                    <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+                        ${visibilityBadge}
+                        ${tokenBadge}
+                    </div>
                 </label>
             </div>`;
         }).join('');
 
-        // Delegate checkbox listeners
         list.querySelectorAll('.bulk-delete-file-check').forEach((cb: any) => {
             cb.onchange = () => {
-                if (cb.checked) {
-                    selectedPaths.add(cb.value);
-                } else {
-                    selectedPaths.delete(cb.value);
-                }
-                const row = cb.closest('.bulk-delete-item-row');
-                if (row) row.classList.toggle('selected', cb.checked);
+                if (cb.checked) selectedPaths.add(cb.value);
+                else selectedPaths.delete(cb.value);
+                cb.closest('.bulk-delete-item-row')?.classList.toggle('selected', cb.checked);
                 updateFooterSummary();
             };
         });
 
-        // Delegate row clicks
         list.querySelectorAll('.bulk-delete-item-row').forEach((row: any) => {
             row.onclick = (e: MouseEvent) => {
                 const target = e.target as HTMLElement;
@@ -4521,32 +4600,20 @@ export function showBulkDeleteModal(files: any[]) {
             };
         });
 
-        // Update sort button styling
         if (sortNameBtn) sortNameBtn.classList.toggle('active', currentSortCol === 'name');
         if (sortSizeBtn) sortSizeBtn.classList.toggle('active', currentSortCol === 'size');
-        if (sortDirIcon) {
-            sortDirIcon.className = `codicon ${currentSortDir === 'asc' ? 'codicon-arrow-up' : 'codicon-arrow-down'}`;
-        }
-        if (sortDirBtn) {
-            sortDirBtn.title = currentSortCol === 'name' 
-                ? (currentSortDir === 'asc' ? 'Direction: A to Z (Click to switch to Z to A)' : 'Direction: Z to A (Click to switch to A to Z)')
-                : (currentSortDir === 'asc' ? 'Direction: Smallest First (Click for Largest First)' : 'Direction: Largest First (Click for Smallest First)');
-        }
+        if (sortDirIcon) sortDirIcon.className = `codicon ${currentSortDir === 'asc' ? 'codicon-arrow-up' : 'codicon-arrow-down'}`;
 
         updateFooterSummary();
     };
 
-    // Sort button click handlers
+    // Sorting handlers
     if (sortNameBtn) {
         sortNameBtn.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (currentSortCol === 'name') {
-                currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
-            } else {
-                currentSortCol = 'name';
-                currentSortDir = 'asc'; // A-Z default
-            }
+            if (currentSortCol === 'name') currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+            else { currentSortCol = 'name'; currentSortDir = 'asc'; }
             renderList();
         };
     }
@@ -4555,12 +4622,8 @@ export function showBulkDeleteModal(files: any[]) {
         sortSizeBtn.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (currentSortCol === 'size') {
-                currentSortDir = currentSortDir === 'desc' ? 'asc' : 'desc';
-            } else {
-                currentSortCol = 'size';
-                currentSortDir = 'desc'; // Largest first default
-            }
+            if (currentSortCol === 'size') currentSortDir = currentSortDir === 'desc' ? 'asc' : 'desc';
+            else { currentSortCol = 'size'; currentSortDir = 'desc'; }
             renderList();
         };
     }
@@ -4574,45 +4637,121 @@ export function showBulkDeleteModal(files: any[]) {
         };
     }
 
-    // Master Select / Deselect All
     if (master) {
         master.onchange = () => {
-            if (master.checked) {
-                normalizedFiles.forEach(f => selectedPaths.add(f.path));
-            } else {
-                selectedPaths.clear();
-            }
-            list.querySelectorAll('.bulk-delete-file-check').forEach((cb: any) => {
-                cb.checked = master.checked;
-            });
-            list.querySelectorAll('.bulk-delete-item-row').forEach((row: any) => {
-                row.classList.toggle('selected', master.checked);
-            });
+            if (master.checked) normalizedFiles.forEach(f => selectedPaths.add(f.path));
+            else selectedPaths.clear();
+            list.querySelectorAll('.bulk-delete-file-check').forEach((cb: any) => cb.checked = master.checked);
+            list.querySelectorAll('.bulk-delete-item-row').forEach((row: any) => row.classList.toggle('selected', master.checked));
             updateFooterSummary();
         };
     }
 
-    // Initial render
-    renderList();
+    // Refresh Patterns Dropdown
+    const refreshPatterns = () => {
+        if (!patternSelect) return;
+        const saved = JSON.parse(localStorage.getItem('lollms_saved_mute_patterns') || '{}');
+        patternSelect.innerHTML = '<option value="">-- Apply Saved Pattern --</option>';
+        Object.keys(saved).forEach(k => {
+            patternSelect.appendChild(new Option(`${k} (${saved[k].length} muted)`, k));
+        });
+    };
+    refreshPatterns();
 
+    if (patternSelect) {
+        patternSelect.onchange = () => {
+            const patternName = patternSelect.value;
+            if (!patternName) return;
+            const saved = JSON.parse(localStorage.getItem('lollms_saved_mute_patterns') || '{}');
+            const targetMuted = saved[patternName];
+            if (Array.isArray(targetMuted)) {
+                state.mutedFiles = [...targetMuted];
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial: { mutedFiles: state.mutedFiles }
+                });
+                modal.classList.remove('visible');
+                updateContext();
+            }
+        };
+    }
+
+    if (savePatternBtn) {
+        savePatternBtn.onclick = () => {
+            const name = prompt("Enter a name for this hiding/muting pattern:", "Debug Focus");
+            if (!name) return;
+            const cleanName = name.trim();
+            const saved = JSON.parse(localStorage.getItem('lollms_saved_mute_patterns') || '{}');
+            saved[cleanName] = state.mutedFiles || [];
+            localStorage.setItem('lollms_saved_mute_patterns', JSON.stringify(saved));
+            refreshPatterns();
+            vscode.postMessage({ command: 'showError', message: `Hiding pattern '${cleanName}' saved successfully.` });
+        };
+    }
+
+    if (deletePatternBtn) {
+        deletePatternBtn.onclick = () => {
+            const sel = patternSelect?.value;
+            if (!sel) return;
+            if (confirm(`Delete pattern '${sel}'?`)) {
+                const saved = JSON.parse(localStorage.getItem('lollms_saved_mute_patterns') || '{}');
+                delete saved[sel];
+                localStorage.setItem('lollms_saved_mute_patterns', JSON.stringify(saved));
+                refreshPatterns();
+            }
+        };
+    }
+
+    // Bulk Mute Action
+    if (muteBtn) {
+        muteBtn.onclick = () => {
+            const selected = Array.from(selectedPaths);
+            if (selected.length === 0) return;
+            const current = new Set(state.mutedFiles || []);
+            selected.forEach(p => current.add(p));
+            state.mutedFiles = Array.from(current);
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { mutedFiles: state.mutedFiles }
+            });
+            modal.classList.remove('visible');
+            updateContext();
+        };
+    }
+
+    // Bulk Unmute Action
+    if (unmuteBtn) {
+        unmuteBtn.onclick = () => {
+            const selected = new Set(Array.from(selectedPaths).map(p => p.replace(/\\/g, '/').toLowerCase().trim()));
+            state.mutedFiles = (state.mutedFiles || []).filter(p => !selected.has(p.replace(/\\/g, '/').toLowerCase().trim()));
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { mutedFiles: state.mutedFiles }
+            });
+            modal.classList.remove('visible');
+            updateContext();
+        };
+    }
+
+    // Bulk Remove from Context Action
+    if (removeBtn) {
+        removeBtn.onclick = () => {
+            const selected = Array.from(selectedPaths);
+            if (selected.length === 0) return;
+            vscode.postMessage({ command: 'bulkRemoveFiles', paths: selected });
+            modal.classList.remove('visible');
+        };
+    }
+
+    renderList();
     modal.classList.add('visible');
 
     const close = () => modal.classList.remove('visible');
     if (closeBtn) closeBtn.onclick = close;
-
-    if (runBtn) {
-        runBtn.onclick = () => {
-            const selected = Array.from(selectedPaths);
-            if (selected.length > 0) {
-                vscode.postMessage({ command: 'bulkRemoveFiles', paths: selected });
-                modal.classList.remove('visible');
-            }
-        };
-    }
 }
 
-// Expose to global so messageRenderer can trigger it
-(window as any).showBulkDeleteModal = showBulkDeleteModal;
+(window as any).showBulkOperationsModal = showBulkOperationsModal;
+(window as any).showBulkDeleteModal = showBulkOperationsModal;
 
 function showBulkDeleteSkillsModal(skills: any[]) {
     const modal = document.getElementById('bulk-delete-skills-modal');

@@ -86,6 +86,8 @@ export interface DiscussionCapabilities {
     ttftTimeout: number;
     interTokenTimeout: number;
     contextGovernorThreshold: number;
+    contextGovernorTargetThreshold?: number;
+    contextGovernorMaxRounds?: number;
     contextGovernorPermanentPruning?: boolean;
     contextGovernorCropHistory?: boolean;
     selectedFolders?: string[];

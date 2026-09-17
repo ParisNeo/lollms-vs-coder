@@ -324,11 +324,13 @@ export class FileHistoryComparePanel {
 
     private _getHtmlForWebview(): string {
         const codiconsUri = this._panel.webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
+        const cspSource = this._panel.webview.cspSource;
 
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${cspSource}; font-src ${cspSource}; script-src 'unsafe-inline';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>File Version History & Restore</title>
     <link href="${codiconsUri}" rel="stylesheet" />
@@ -625,30 +627,67 @@ export class FileHistoryComparePanel {
             flex: 1;
             overflow: auto;
             white-space: pre;
-            padding: 8px 12px;
+            padding: 0;
+            box-sizing: border-box;
         }
         .unified-diff-content {
             white-space: pre;
-            padding: 12px;
+            padding: 0;
+            box-sizing: border-box;
         }
         .diff-line {
             display: flex;
             width: 100%;
-            min-height: 1.4em;
+            min-height: 1.5em;
+            line-height: 1.5;
+            box-sizing: border-box;
+        }
+        .diff-line-num {
+            width: 48px;
+            text-align: right;
+            padding-right: 8px;
+            color: var(--vscode-editorLineNumber-foreground, #858585);
+            background: var(--vscode-editorGutter-background, rgba(0,0,0,0.2));
+            user-select: none;
+            flex-shrink: 0;
+            border-right: 1px solid var(--vscode-widget-border);
+            margin-right: 8px;
+            font-size: 11px;
+        }
+        .diff-line-content {
+            flex: 1;
+            white-space: pre;
+            overflow-x: visible;
         }
         .diff-line.added {
-            background: var(--added-bg);
-            color: var(--added-fg);
+            background-color: rgba(15, 157, 88, 0.22) !important;
+            color: var(--vscode-charts-green, #4caf50) !important;
+        }
+        .diff-line.added .diff-line-num {
+            color: var(--vscode-charts-green, #4caf50) !important;
+            background: rgba(15, 157, 88, 0.35) !important;
+            font-weight: bold;
         }
         .diff-line.removed {
-            background: var(--removed-bg);
-            color: var(--removed-fg);
+            background-color: rgba(244, 71, 71, 0.22) !important;
+            color: var(--vscode-charts-red, #f44336) !important;
+        }
+        .diff-line.removed .diff-line-num {
+            color: var(--vscode-charts-red, #f44336) !important;
+            background: rgba(244, 71, 71, 0.35) !important;
+            font-weight: bold;
+        }
+        .diff-line.empty-placeholder {
+            background: rgba(128, 128, 128, 0.08) !important;
+            opacity: 0.35;
         }
         .diff-line.header-line {
-            opacity: 0.6;
-            font-weight: bold;
+            background: rgba(86, 156, 214, 0.15);
             color: #569cd6;
+            font-weight: bold;
         }
+
+        
         .diff-stats-badge {
             font-size: 10px;
             padding: 2px 6px;
@@ -866,7 +905,36 @@ export class FileHistoryComparePanel {
 
         function escapeHtml(text) {
             if (!text) return '';
-            return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            return String(text)
+                .split('&').join('&amp;')
+                .split('<').join('&lt;')
+                .split('>').join('&gt;')
+                .split('"').join('&quot;');
+        }
+
+        function parseHunkHeader(line) {
+            if (!line || !line.startsWith('@@')) return null;
+            const endIdx = line.indexOf('@@', 2);
+            if (endIdx === -1) return null;
+            const headerContent = line.substring(2, endIdx).trim();
+            const parts = headerContent.split(' ').filter(function(p) { return p.length > 0; });
+            if (parts.length < 2) return null;
+
+            const partA = parts[0];
+            const partB = parts[1];
+
+            if (!partA.startsWith('-') || !partB.startsWith('+')) return null;
+
+            const subA = partA.substring(1).split(',');
+            const subB = partB.substring(1).split(',');
+
+            const startA = parseInt(subA[0], 10) || 1;
+            const lenA = subA.length > 1 ? (parseInt(subA[1], 10) || 0) : 1;
+
+            const startB = parseInt(subB[0], 10) || 1;
+            const lenB = subB.length > 1 ? (parseInt(subB[1], 10) || 0) : 1;
+
+            return { startA: startA, lenA: lenA, startB: startB, lenB: lenB };
         }
 
         function populateDropdowns() {
@@ -894,7 +962,7 @@ export class FileHistoryComparePanel {
             const selWorkingClass = isWorkingA && isWorkingB ? ' selected-both' : (isWorkingA ? ' selected-a' : (isWorkingB ? ' selected-b' : ''));
             workingRow.className = 'commit-row' + selWorkingClass;
             workingRow.dataset.hash = 'WORKING_TREE';
-            
+
             workingRow.innerHTML = '' +
                 '<div class="commit-top">' +
                     '<span class="commit-hash"><i class="codicon codicon-edit"></i> Working Tree</span>' +
@@ -937,9 +1005,13 @@ export class FileHistoryComparePanel {
                 row.className = 'commit-row' + selClass;
                 row.dataset.hash = commit.hash;
 
-                const refsBadgeHtml = commit.refs 
-                    ? '<span class="ref-badge">' + escapeHtml(commit.refs.replace(/[()]/g, '')) + '</span>' 
-                    : '';
+                let refsBadgeHtml = '';
+                if (commit.refs) {
+                    let cleanRef = commit.refs.trim();
+                    if (cleanRef.startsWith('(')) cleanRef = cleanRef.slice(1);
+                    if (cleanRef.endsWith(')')) cleanRef = cleanRef.slice(0, -1);
+                    refsBadgeHtml = '<span class="ref-badge">' + escapeHtml(cleanRef) + '</span>';
+                }
 
                 row.innerHTML = '' +
                     '<div class="commit-top">' +
@@ -1007,18 +1079,168 @@ export class FileHistoryComparePanel {
             });
         }
 
+        const NL = String.fromCharCode(10);
+        const CR = String.fromCharCode(13);
+
+        function cleanLine(l) {
+            return l.endsWith(CR) ? l.slice(0, -1) : l;
+        }
+
+        function buildSideBySideDiff(contentA, contentB, rawDiff) {
+            const linesA = contentA ? contentA.split(NL).map(cleanLine) : [];
+            const linesB = contentB ? contentB.split(NL).map(cleanLine) : [];
+
+            if (!rawDiff || !rawDiff.trim()) {
+                const max = Math.max(linesA.length, linesB.length);
+                const rowsA = [];
+                const rowsB = [];
+                const isIdentical = contentA === contentB;
+                for (let i = 0; i < max; i++) {
+                    const textA = i < linesA.length ? linesA[i] : '';
+                    const textB = i < linesB.length ? linesB[i] : '';
+                    rowsA.push({
+                        num: i < linesA.length ? (i + 1) : '',
+                        text: textA,
+                        type: isIdentical ? 'unchanged' : (i < linesA.length ? 'removed' : 'empty')
+                    });
+                    rowsB.push({
+                        num: i < linesB.length ? (i + 1) : '',
+                        text: textB,
+                        type: isIdentical ? 'unchanged' : (i < linesB.length ? 'added' : 'empty')
+                    });
+                }
+                return { rowsA: rowsA, rowsB: rowsB };
+            }
+
+            const diffLines = rawDiff.split(NL).map(cleanLine);
+            const hunks = [];
+            let curHunk = null;
+
+            for (let i = 0; i < diffLines.length; i++) {
+                const line = diffLines[i];
+                if (line.startsWith('@@')) {
+                    if (curHunk) hunks.push(curHunk);
+                    const parsed = parseHunkHeader(line);
+                    if (parsed) {
+                        curHunk = {
+                            startA: parsed.startA,
+                            lenA: parsed.lenA,
+                            startB: parsed.startB,
+                            lenB: parsed.lenB,
+                            lines: []
+                        };
+                    } else {
+                        curHunk = { startA: 1, lenA: 1, startB: 1, lenB: 1, lines: [] };
+                    }
+                } else if (curHunk) {
+                    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ') || line.startsWith('index ')) {
+                        // skip header
+                    } else if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ') || line === '') {
+                        curHunk.lines.push(line);
+                    }
+                }
+            }
+            if (curHunk) hunks.push(curHunk);
+
+            if (hunks.length === 0) {
+                const max = Math.max(linesA.length, linesB.length);
+                const rowsA = [];
+                const rowsB = [];
+                for (let i = 0; i < max; i++) {
+                    rowsA.push({ num: i < linesA.length ? (i + 1) : '', text: linesA[i] || '', type: 'unchanged' });
+                    rowsB.push({ num: i < linesB.length ? (i + 1) : '', text: linesB[i] || '', type: 'unchanged' });
+                }
+                return { rowsA: rowsA, rowsB: rowsB };
+            }
+
+            const rowsA = [];
+            const rowsB = [];
+
+            let lineIdxA = 1;
+            let lineIdxB = 1;
+
+            for (let h = 0; h < hunks.length; h++) {
+                const hunk = hunks[h];
+
+                // Lines before this hunk are unchanged
+                while (lineIdxA < hunk.startA && lineIdxA <= linesA.length) {
+                    const textA = linesA[lineIdxA - 1] !== undefined ? linesA[lineIdxA - 1] : '';
+                    const textB = lineIdxB <= linesB.length ? linesB[lineIdxB - 1] : '';
+                    rowsA.push({ num: lineIdxA, text: textA, type: 'unchanged' });
+                    rowsB.push({ num: lineIdxB, text: textB, type: 'unchanged' });
+                    lineIdxA++;
+                    lineIdxB++;
+                }
+
+                // Process hunk lines
+                let curHunkIdx = 0;
+                while (curHunkIdx < hunk.lines.length) {
+                    const hLine = hunk.lines[curHunkIdx];
+                    if (hLine.startsWith(' ')) {
+                        const text = hLine.substring(1);
+                        rowsA.push({ num: lineIdxA, text: linesA[lineIdxA - 1] !== undefined ? linesA[lineIdxA - 1] : text, type: 'unchanged' });
+                        rowsB.push({ num: lineIdxB, text: linesB[lineIdxB - 1] !== undefined ? linesB[lineIdxB - 1] : text, type: 'unchanged' });
+                        lineIdxA++;
+                        lineIdxB++;
+                        curHunkIdx++;
+                    } else {
+                        const removed = [];
+                        const added = [];
+                        while (curHunkIdx < hunk.lines.length && (hunk.lines[curHunkIdx].startsWith('-') || hunk.lines[curHunkIdx].startsWith('+'))) {
+                            if (hunk.lines[curHunkIdx].startsWith('-')) {
+                                removed.push(hunk.lines[curHunkIdx].substring(1));
+                            } else if (hunk.lines[curHunkIdx].startsWith('+')) {
+                                added.push(hunk.lines[curHunkIdx].substring(1));
+                            }
+                            curHunkIdx++;
+                        }
+
+                        const maxChange = Math.max(removed.length, added.length);
+                        for (let k = 0; k < maxChange; k++) {
+                            if (k < removed.length) {
+                                rowsA.push({ num: lineIdxA, text: linesA[lineIdxA - 1] !== undefined ? linesA[lineIdxA - 1] : removed[k], type: 'removed' });
+                                lineIdxA++;
+                            } else {
+                                rowsA.push({ num: '', text: '', type: 'empty' });
+                            }
+
+                            if (k < added.length) {
+                                rowsB.push({ num: lineIdxB, text: linesB[lineIdxB - 1] !== undefined ? linesB[lineIdxB - 1] : added[k], type: 'added' });
+                                lineIdxB++;
+                            } else {
+                                rowsB.push({ num: '', text: '', type: 'empty' });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Output remaining lines after all hunks
+            while (lineIdxA <= linesA.length || lineIdxB <= linesB.length) {
+                const textA = lineIdxA <= linesA.length ? linesA[lineIdxA - 1] : '';
+                const textB = lineIdxB <= linesB.length ? linesB[lineIdxB - 1] : '';
+                rowsA.push({ num: lineIdxA <= linesA.length ? lineIdxA : '', text: textA, type: 'unchanged' });
+                rowsB.push({ num: lineIdxB <= linesB.length ? lineIdxB : '', text: textB, type: 'unchanged' });
+                lineIdxA++;
+                lineIdxB++;
+            }
+
+            return { rowsA: rowsA, rowsB: rowsB };
+        }
+
         function updateDiffStats(diffText) {
-            if (!diffText || diffText.trim() === '') {
+            if (!diffText || !diffText.trim()) {
                 statsBadge.style.display = 'none';
                 return;
             }
-            const lines = diffText.split('\n');
+            const lines = diffText.split(NL);
             let added = 0;
             let removed = 0;
-            lines.forEach(function(l) {
+            for (let i = 0; i < lines.length; i++) {
+                const l = lines[i];
                 if (l.startsWith('+') && !l.startsWith('+++')) added++;
                 else if (l.startsWith('-') && !l.startsWith('---')) removed++;
-            });
+            }
             statsBadge.style.display = 'inline-block';
             statsBadge.textContent = '+' + added + ' -' + removed + ' lines';
         }
@@ -1037,15 +1259,41 @@ export class FileHistoryComparePanel {
             const labelA = currentInfoA ? currentInfoA.label : activeRefA.substring(0, 7);
             const labelB = currentInfoB ? currentInfoB.label : activeRefB.substring(0, 7);
 
+            const sideBySide = buildSideBySideDiff(currentContentA, currentContentB, currentRawDiff);
+            const rowsA = sideBySide.rowsA;
+            const rowsB = sideBySide.rowsB;
+
+            let htmlA = '';
+            for (let i = 0; i < rowsA.length; i++) {
+                const r = rowsA[i];
+                const cls = r.type === 'removed' ? ' removed' : (r.type === 'empty' ? ' empty-placeholder' : '');
+                const numStr = r.num !== '' ? String(r.num) : '&nbsp;';
+                htmlA += '<div class="diff-line' + cls + '">' +
+                    '<span class="diff-line-num">' + numStr + '</span>' +
+                    '<span class="diff-line-content">' + escapeHtml(r.text) + '</span>' +
+                    '</div>';
+            }
+
+            let htmlB = '';
+            for (let i = 0; i < rowsB.length; i++) {
+                const r = rowsB[i];
+                const cls = r.type === 'added' ? ' added' : (r.type === 'empty' ? ' empty-placeholder' : '');
+                const numStr = r.num !== '' ? String(r.num) : '&nbsp;';
+                htmlB += '<div class="diff-line' + cls + '">' +
+                    '<span class="diff-line-num">' + numStr + '</span>' +
+                    '<span class="diff-line-content">' + escapeHtml(r.text) + '</span>' +
+                    '</div>';
+            }
+
             diffArea.innerHTML = '' +
                 '<div class="split-diff-container">' +
                     '<div class="split-pane">' +
                         '<div class="split-pane-header" style="color:#007acc"><i class="codicon codicon-circle-filled"></i> Base (A): ' + escapeHtml(labelA) + '</div>' +
-                        '<div class="split-pane-content" id="split-content-a">' + escapeHtml(currentContentA) + '</div>' +
+                        '<div class="split-pane-content" id="split-content-a">' + htmlA + '</div>' +
                     '</div>' +
                     '<div class="split-pane">' +
                         '<div class="split-pane-header" style="color:#9b59b6"><i class="codicon codicon-circle-filled"></i> Compare (B): ' + escapeHtml(labelB) + '</div>' +
-                        '<div class="split-pane-content" id="split-content-b">' + escapeHtml(currentContentB) + '</div>' +
+                        '<div class="split-pane-content" id="split-content-b">' + htmlB + '</div>' +
                     '</div>' +
                 '</div>';
 
@@ -1075,7 +1323,7 @@ export class FileHistoryComparePanel {
         }
 
         function renderUnifiedView() {
-            if (!currentRawDiff || currentRawDiff.trim() === '') {
+            if (!currentRawDiff || !currentRawDiff.trim()) {
                 diffArea.innerHTML = '' +
                     '<div class="diff-empty">' +
                         '<i class="codicon codicon-check" style="font-size:32px; color:#28a745"></i>' +
@@ -1085,27 +1333,177 @@ export class FileHistoryComparePanel {
                 return;
             }
 
-            const lines = currentRawDiff.split(/\r?\n/);
+            const rawLines = currentRawDiff.split(NL).map(cleanLine);
             let html = '<div class="unified-diff-content">';
+            let lineNumA = 0;
+            let lineNumB = 0;
 
-            lines.forEach(function(line) {
+            for (let i = 0; i < rawLines.length; i++) {
+                const line = rawLines[i];
                 const escaped = escapeHtml(line);
-                if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ')) {
-                    html += '<div class="diff-line header-line">' + escaped + '</div>';
-                } else if (line.startsWith('@@')) {
-                    html += '<div class="diff-line header-line" style="background:rgba(86,156,214,0.1);">' + escaped + '</div>';
-                } else if (line.startsWith('+')) {
-                    html += '<div class="diff-line added">' + escaped + '</div>';
-                } else if (line.startsWith('-')) {
-                    html += '<div class="diff-line removed">' + escaped + '</div>';
+
+                if (line.startsWith('@@')) {
+                    const parsed = parseHunkHeader(line);
+                    if (parsed) {
+                        lineNumA = parsed.startA;
+                        lineNumB = parsed.startB;
+                    }
+                    html += '<div class="diff-line header-line"><span class="diff-line-num">...</span><span class="diff-line-content">' + escaped + '</span></div>';
+                } else if (line.startsWith('+') && !line.startsWith('+++')) {
+                    html += '<div class="diff-line added"><span class="diff-line-num">+' + lineNumB + '</span><span class="diff-line-content">' + escaped + '</span></div>';
+                    lineNumB++;
+                } else if (line.startsWith('-') && !line.startsWith('---')) {
+                    html += '<div class="diff-line removed"><span class="diff-line-num">-' + lineNumA + '</span><span class="diff-line-content">' + escaped + '</span></div>';
+                    lineNumA++;
+                } else if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ') || line.startsWith('index ')) {
+                    html += '<div class="diff-line header-line"><span class="diff-line-num">&nbsp;</span><span class="diff-line-content">' + escaped + '</span></div>';
                 } else {
-                    html += '<div class="diff-line">' + escaped + '</div>';
+                    const numDisplay = lineNumA > 0 ? lineNumA : '';
+                    html += '<div class="diff-line"><span class="diff-line-num">' + (numDisplay || '&nbsp;') + '</span><span class="diff-line-content">' + escaped + '</span></div>';
+                    if (lineNumA > 0) lineNumA++;
+                    if (lineNumB > 0) lineNumB++;
                 }
-            });
+            }
 
             html += '</div>';
             diffArea.innerHTML = html;
         }
+
+        function buildSideBySideDiff(contentA, contentB, rawDiff) {
+            const linesA = contentA.split('\\n').map(function(l) { return l.endsWith('\\r') ? l.slice(0, -1) : l; });
+            const linesB = contentB.split('\\n').map(function(l) { return l.endsWith('\\r') ? l.slice(0, -1) : l; });
+
+            if (!rawDiff || !rawDiff.trim()) {
+                const max = Math.max(linesA.length, linesB.length);
+                const rowsA = [];
+                const rowsB = [];
+                for (let i = 0; i < max; i++) {
+                    const textA = i < linesA.length ? linesA[i] : '';
+                    const textB = i < linesB.length ? linesB[i] : '';
+                    const isIdentical = contentA === contentB;
+                    rowsA.push({
+                        num: i < linesA.length ? i + 1 : '',
+                        text: textA,
+                        type: isIdentical ? 'unchanged' : (i < linesA.length ? 'removed' : 'empty')
+                    });
+                    rowsB.push({
+                        num: i < linesB.length ? i + 1 : '',
+                        text: textB,
+                        type: isIdentical ? 'unchanged' : (i < linesB.length ? 'added' : 'empty')
+                    });
+                }
+                return { rowsA: rowsA, rowsB: rowsB };
+            }
+
+            const diffLines = rawDiff.split('\\n').map(function(l) { return l.endsWith('\\r') ? l.slice(0, -1) : l; });
+            const hunks = [];
+            let curHunk = null;
+
+            for (let i = 0; i < diffLines.length; i++) {
+                const line = diffLines[i];
+                const match = line.match(/^@@\\s+-(\\d+)(?:,(\\d+))?\\s+\\+(\\d+)(?:,(\\d+))?\\s+@@/);
+                if (match) {
+                    if (curHunk) hunks.push(curHunk);
+                    curHunk = {
+                        startA: parseInt(match[1], 10),
+                        lenA: match[2] !== undefined ? parseInt(match[2], 10) : 1,
+                        startB: parseInt(match[3], 10),
+                        lenB: match[4] !== undefined ? parseInt(match[4], 10) : 1,
+                        lines: []
+                    };
+                } else if (curHunk) {
+                    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ') || line.startsWith('index ')) {
+                        // skip header
+                    } else if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ') || line === '') {
+                        curHunk.lines.push(line);
+                    }
+                }
+            }
+            if (curHunk) hunks.push(curHunk);
+
+            if (hunks.length === 0) {
+                const max = Math.max(linesA.length, linesB.length);
+                const rowsA = [];
+                const rowsB = [];
+                for (let i = 0; i < max; i++) {
+                    rowsA.push({ num: i < linesA.length ? i + 1 : '', text: linesA[i] || '', type: 'unchanged' });
+                    rowsB.push({ num: i < linesB.length ? i + 1 : '', text: linesB[i] || '', type: 'unchanged' });
+                }
+                return { rowsA: rowsA, rowsB: rowsB };
+            }
+
+            const rowsA = [];
+            const rowsB = [];
+
+            let lineIdxA = 1;
+            let lineIdxB = 1;
+
+            for (let h = 0; h < hunks.length; h++) {
+                const hunk = hunks[h];
+
+                while (lineIdxA < hunk.startA && lineIdxA <= linesA.length) {
+                    const textA = linesA[lineIdxA - 1] !== undefined ? linesA[lineIdxA - 1] : '';
+                    const textB = lineIdxB <= linesB.length ? linesB[lineIdxB - 1] : '';
+                    rowsA.push({ num: lineIdxA, text: textA, type: 'unchanged' });
+                    rowsB.push({ num: lineIdxB <= linesB.length ? lineIdxB : '', text: textB, type: 'unchanged' });
+                    lineIdxA++;
+                    lineIdxB++;
+                }
+
+                let curHunkIdx = 0;
+                while (curHunkIdx < hunk.lines.length) {
+                    const hLine = hunk.lines[curHunkIdx];
+                    if (hLine.startsWith(' ')) {
+                        const text = hLine.substring(1);
+                        rowsA.push({ num: lineIdxA, text: linesA[lineIdxA - 1] !== undefined ? linesA[lineIdxA - 1] : text, type: 'unchanged' });
+                        rowsB.push({ num: lineIdxB, text: linesB[lineIdxB - 1] !== undefined ? linesB[lineIdxB - 1] : text, type: 'unchanged' });
+                        lineIdxA++;
+                        lineIdxB++;
+                        curHunkIdx++;
+                    } else {
+                        const removed = [];
+                        const added = [];
+                        while (curHunkIdx < hunk.lines.length && (hunk.lines[curHunkIdx].startsWith('-') || hunk.lines[curHunkIdx].startsWith('+'))) {
+                            if (hunk.lines[curHunkIdx].startsWith('-')) {
+                                removed.push(hunk.lines[curHunkIdx].substring(1));
+                            } else if (hunk.lines[curHunkIdx].startsWith('+')) {
+                                added.push(hunk.lines[curHunkIdx].substring(1));
+                            }
+                            curHunkIdx++;
+                        }
+
+                        const maxChange = Math.max(removed.length, added.length);
+                        for (let k = 0; k < maxChange; k++) {
+                            if (k < removed.length) {
+                                rowsA.push({ num: lineIdxA, text: linesA[lineIdxA - 1] !== undefined ? linesA[lineIdxA - 1] : removed[k], type: 'removed' });
+                                lineIdxA++;
+                            } else {
+                                rowsA.push({ num: '', text: '', type: 'empty' });
+                            }
+
+                            if (k < added.length) {
+                                rowsB.push({ num: lineIdxB, text: linesB[lineIdxB - 1] !== undefined ? linesB[lineIdxB - 1] : added[k], type: 'added' });
+                                lineIdxB++;
+                            } else {
+                                rowsB.push({ num: '', text: '', type: 'empty' });
+                            }
+                        }
+                    }
+                }
+            }
+
+            while (lineIdxA <= linesA.length || lineIdxB <= linesB.length) {
+                const textA = lineIdxA <= linesA.length ? linesA[lineIdxA - 1] : '';
+                const textB = lineIdxB <= linesB.length ? linesB[lineIdxB - 1] : '';
+                rowsA.push({ num: lineIdxA <= linesA.length ? lineIdxA : '', text: textA, type: 'unchanged' });
+                rowsB.push({ num: lineIdxB <= linesB.length ? lineIdxB : '', text: textB, type: 'unchanged' });
+                lineIdxA++;
+                lineIdxB++;
+            }
+
+            return { rowsA: rowsA, rowsB: rowsB };
+        }
+
 
         // Notify extension host that webview is ready
         vscode.postMessage({ command: 'webview-ready' });

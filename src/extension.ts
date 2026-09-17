@@ -155,9 +155,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
                 apiUrl: config.get<string>('apiUrl') || 'http://localhost:9642',
                 apiKey: config.get<string>('apiKey')?.trim() || '',
                 modelName: config.get<string>('modelName') || 'ollama/mistral',
+                ttiModelName: config.get<string>('ttiModelName') || '',
                 disableSslVerification: config.get<boolean>('disableSslVerification') || false,
                 sslCertPath: config.get<string>('sslCertPath') || '',
-                backendType: config.get<'lollms' | 'openai' | 'ollama'>('backendType') || 'lollms',
+                backendType: config.get<any>('backendType') || 'lollms',
                 useLollmsExtensions: config.get<boolean>('useLollmsExtensions') ?? true
             });
             vscode.window.showInformationMessage('Lollms client successfully re-initialized.');

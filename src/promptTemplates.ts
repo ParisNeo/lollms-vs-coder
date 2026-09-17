@@ -556,13 +556,20 @@ ${memorySection}
   * **Direct Files**: Files directly inside a directory that also has subdirectories appear under \`./: [...]\`. Leaf directories list their files directly.
   * **Targeting Any File**: Concatenate the nested directory scopes and the file name (e.g. \`src/\` + \`commands/\` + \`chatPanel/webview/\` + \`dom.ts\` = \`src/commands/chatPanel/webview/dom.ts\`). Every path passed to \`<add_files_to_context>\` MUST exist in this manifest.
 ${isExport ? `- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Output \`<add_files_to_context>\` on line 1 with the exact path from the tree to load it into the next turn.` : `- **\`<add_files_to_context>\` vs \`read_file\` (MUTUALLY EXCLUSIVE)**:
-  * Use **\`<add_files_to_context>\`** ONLY when you need an unpossessed file persistently added to your active context across turns.
-  * Use **\`<peek_files>\`** (or \`read_file\` in Agent Mode) when you want to temporarily inspect an unpossessed file without permanently adding it to context.
-  * Use **\`<unpack_directory>\`** ONLY if a directory in the tree ends with \`... +N more\` and you need to unroll its complete file list. Do NOT invent or call this on directories that do not exist in the tree.
+
+
+- **\`add_files_to_context\` vs \`peek_files\` vs \`read_file\`**:
+  * Use **\`add_files_to_context\`** ONLY when you need an unpossessed file persistently added to your active context across turns.
+  * Use **\`peek_files\`** (available in both Assistant & Co-Engineer modes) to temporarily inspect a surgical slice of an unpossessed file without bloating your context window.
+  * **ENHANCED PEEKING ATTRIBUTES**:
+    - Lines: \`<peek_files lines="30" from="top|bottom" offset="10">path/to/file.ext</peek_files>\`
+    - Words: \`<peek_files words="150" from="bottom">path/to/file.ext</peek_files>\`
+    - Regex: \`<peek_files regex="function\s+parse">path/to/file.ext</peek_files>\`
+  * Use **\`unpack_directory\`** ONLY if a directory in the tree ends with \`... +N more\` and you need to unroll its complete file list. Do NOT invent or call this on directories that do not exist in the tree.
 - **TOOL PARAMETER HYGIENE**:
   * For \`read_file\`, the parameter is \`"path"\` (e.g. \`{"name": "read_file", "arguments": {"path": "src/utils.ts"}}\`).
   * For \`read_files\`, the parameter is \`"paths"\` (array of strings).
-- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Choose \`<add_files_to_context>\` to load it permanently, or \`<peek_files>\` to inspect it temporarily.`}
+- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Choose \`add_files_to_context\` to load it permanently, or \`peek_files\` to inspect it temporarily.`}
 
 ### 🛡️ GUARDIAN PROTOCOL (AUTONOMOUS INTEGRITY)
 1. **VERIFICATION LOOP**: Note that every file you write will be immediately audited by a system linter/compiler. 
@@ -597,12 +604,19 @@ Consistent parameter usage for file operations:
 - **Sovereign XML Tags** (STRICTLY FORBIDDEN from being wrapped inside markdown code blocks, backticks, or \`\`\`xml blocks. Write them as raw, naked XML in your response):
 ${authorizedTagsList}`}
 
-- **STRICT TAG HYGIENE**: Active orchestration tags **MUST NEVER** reside inside backticks or markdown code fences (e.g. \`\`\`xml or \`\`\`python). Doing so makes them completely invisible to our system parser.
-- **STRICT NEW-LINE RULE**: All active orchestration XML tags (including those above) MUST start on a **new line** (spaces/tabs before are allowed) to trigger automation. If you write them inline inside a sentence (e.g., "I will use <add_files_to_context> to..."), they will be treated as inert text. Always place each tag on its own line.
-- **STRICT TAG ISOLATION MANDATE (CRITICAL - NO TRAILING TEXT)**: 
-  * Every opening tag (e.g. \`<add_files_to_context>\`, \`<peek_files>\`, \`<file ...>\`) MUST be alone on its line.
-  * Every closing tag (e.g. \`</add_files_to_context>\`, \`</peek_files>\`, \`</file>\`) MUST be alone on its line with **ZERO trailing characters**.
-  * You are **STRICTLY FORBIDDEN** from putting markdown headers, code, or text immediately after a closing tag on the same line (e.g. \`</add_files_to_context>### 1. Header\` is a SEVERE SYNTAX VIOLATION). Always insert at least one newline (\`\n\`) after every closing tag before writing explanations.
+
+- **STRICT TAG HYGIENE & EXECUTION PROTOCOL**: Active orchestration tags (\`<peek_files>\`, \`<add_files_to_context>\`, \`<file>\`, etc.) **MUST NEVER** reside inside backticks or markdown code fences (e.g. \`\`\`xml or \`\`\`python).
+- **NO INLINE EMBEDDING IN PROSE**: Never embed an operational tag mid-sentence (e.g., do NOT write "I will inspect using \`<peek_files>file.py</peek_files>\`"). Inline occurrences inside explanatory paragraphs are treated as conversational text and will NOT execute.
+- **CLEAN LINE EXECUTION MANDATE**:
+  * An executable tag **MUST** be placed on its own clean line (spaces or tabs before are allowed).
+  * **Single-line format** (entire tag with parameters and closing on one clean line):
+    \`<peek_files lines="30" from="top">path/to/file.ext</peek_files>\`
+  * **Multi-line format** (each tag alone on its line):
+    <peek_files lines="30" from="top">
+    path/to/file.ext
+    </peek_files>
+  * Zero trailing commentary on the line of the closing tag. Always insert a newline after the tag before continuing any explanations.
+
 ${isExport ? `- **File Operations**:
   <delete_files>
   path/to/file_or_folder1

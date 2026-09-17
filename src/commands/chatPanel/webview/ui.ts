@@ -2134,7 +2134,9 @@ export function updateBadges() {
             projectMemoryEnabled: true,
             ttftTimeout: 180000,
             interTokenTimeout: 10000,
-            contextGovernorThreshold: 95
+            contextGovernorThreshold: 95,
+            contextGovernorTargetThreshold: 70,
+            contextGovernorMaxRounds: 5
         };
     }
 

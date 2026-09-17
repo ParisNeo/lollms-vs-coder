@@ -482,7 +482,16 @@ export class SettingsPanel {
               }
               return;
             
-            case 'testConnection':
+            case 'testConnection': {
+                const conn = (message as any).connection;
+                if (conn) {
+                    if (conn.apiKey !== undefined) this._pendingConfig.apiKey = conn.apiKey;
+                    if (conn.apiUrl !== undefined) this._pendingConfig.apiUrl = conn.apiUrl;
+                    if (conn.backendType !== undefined) this._pendingConfig.backendType = conn.backendType;
+                    if (conn.disableSslVerification !== undefined) this._pendingConfig.disableSslVerification = conn.disableSslVerification;
+                    if (conn.sslCertPath !== undefined) this._pendingConfig.sslCertPath = conn.sslCertPath;
+                    if (conn.useLollmsExtensions !== undefined) this._pendingConfig.useLollmsExtensions = conn.useLollmsExtensions;
+                }
                 const testConfig: LollmsConfig = {
                     apiKey: this._pendingConfig.apiKey,
                     apiUrl: this._pendingConfig.apiUrl,
@@ -508,11 +517,19 @@ export class SettingsPanel {
                     });
                 }
                 return;
-  
+            }
             case 'saveConfig':
               try {
                 Logger.info('=== START SAVE CONFIGURATION ===');
-                
+                if ((message as any).currentValues) {
+                    const cv = (message as any).currentValues;
+                    for (const [k, v] of Object.entries(cv)) {
+                        if (k in this._pendingConfig) {
+                            (this._pendingConfig as any)[k] = v;
+                        }
+                    }
+                }
+
                 if (this._pendingConfig.sslCertPath) {
                   this._pendingConfig.sslCertPath = this._pendingConfig.sslCertPath
                     .replace(/^['"]|['"]$/g, '')
@@ -717,12 +734,22 @@ export class SettingsPanel {
                 }
                 return;
   
-            case 'fetchModels':
+            case 'fetchModels': {
               console.log("[Lollms Extension] Received 'fetchModels' command from Webview.");
               Logger.info("[ConfigView] Received model refresh request.");
-              
+
               if (this._panel) {
                 try {
+                  const conn = (message as any).connection;
+                  if (conn) {
+                      if (conn.apiKey !== undefined) this._pendingConfig.apiKey = conn.apiKey;
+                      if (conn.apiUrl !== undefined) this._pendingConfig.apiUrl = conn.apiUrl;
+                      if (conn.backendType !== undefined) this._pendingConfig.backendType = conn.backendType;
+                      if (conn.disableSslVerification !== undefined) this._pendingConfig.disableSslVerification = conn.disableSslVerification;
+                      if (conn.sslCertPath !== undefined) this._pendingConfig.sslCertPath = conn.sslCertPath;
+                      if (conn.useLollmsExtensions !== undefined) this._pendingConfig.useLollmsExtensions = conn.useLollmsExtensions;
+                  }
+
                   const tempConfig: LollmsConfig = {
                       apiKey: this._pendingConfig.apiKey,
                       apiUrl: this._pendingConfig.apiUrl,
@@ -732,11 +759,11 @@ export class SettingsPanel {
                       backendType: this._pendingConfig.backendType as any,
                       useLollmsExtensions: this._pendingConfig.useLollmsExtensions
                   };
-                  
+
                   Logger.info(`[ConfigView] Fetching models for ${tempConfig.backendType} at ${tempConfig.apiUrl}`);
                   const tempApi = new LollmsAPI(tempConfig); 
                   const models = await tempApi.getModels(true); 
-                  
+
                   if (this._panel && !(this as any)._isDisposed) {
                       this._panel.webview.postMessage({ command: 'modelsList', models: models || [] });
                   }
@@ -748,6 +775,7 @@ export class SettingsPanel {
                 }
               }
               return;
+            }
             case 'editPrompts':
                 vscode.commands.executeCommand('lollms-vs-coder.editPromptsFile');
                 return;
@@ -960,10 +988,9 @@ export class SettingsPanel {
             <div id="connectionWarning" class="connection-warning-banner">
                 <i class="codicon codicon-warning"></i>
                 <div class="connection-warning-text">
-                    <strong>Connection Settings Modified.</strong><br>
-                    You must <b>Save Changes</b> before the model lists and connection tests can be accurately refreshed.
+                    <strong>Connection Settings Modified.</strong> Testing connection or refreshing models will query this new server directly. Remember to save to persist your setup.
                 </div>
-            </div>          
+            </div>
             <div class="header-row">
               <div class="toolbar">
                 <button class="toolbar-btn save" id="saveToolbar" title="Save Configuration"><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v13a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg></button>
@@ -974,35 +1001,38 @@ export class SettingsPanel {
             </div>
           
             <div class="tabs">
-              <button class="tab-link active" onclick="openTab(event, 'TabApi')">🔌 API & Model</button>
+              <button class="tab-link active" onclick="openTab(event, 'TabServer')">🔌 Server & Binding</button>
+              <button class="tab-link" onclick="openTab(event, 'TabModels')">🤖 Models & Assignments</button>
               <button class="tab-link" onclick="openTab(event, 'TabGeneral')">⚡ General</button>
               <button class="tab-link" onclick="openTab(event, 'TabContext')">🧠 Context</button>
-              <button class="tab-link" onclick="openTab(event, 'TabAgent')">🤖 Agent & Tools</button>
+              <button class="tab-link" onclick="openTab(event, 'TabAgent')">🛠️ Agent & Tools</button>
               <button class="tab-link" onclick="openTab(event, 'TabRemote')">📡 Remote</button>
               <button class="tab-link" onclick="openTab(event, 'TabBilling')">💲 Billing & Spend</button>
               <button class="tab-link" onclick="openTab(event, 'TabGit')">🐙 Git</button>
               <button class="tab-link" onclick="openTab(event, 'TabPersonas')">🎭 Personas</button>
               <button class="tab-link" onclick="openTab(event, 'TabUi')">🎨 UI & Graph</button>
-              <button class="tab-link" onclick="openTab(event, 'TabAdvanced')">🛠️ Advanced</button>
+              <button class="tab-link" onclick="openTab(event, 'TabAdvanced')">⚙️ Advanced</button>
               <button class="tab-link" onclick="openTab(event, 'TabMaintenance')">🔧 Maintenance</button>
               <button class="tab-link" onclick="openTab(event, 'TabLog')">📋 Log</button>
-              </div>
+            </div>
 
             <div id="saveToast" class="save-success-toast">
                 <i class="codicon codicon-check"></i> Saved Successfully
             </div>
 
-            <div id="TabApi" class="tab-content active">
+            <!-- TAB 1: SERVER & BINDING SELECTION -->
+            <div id="TabServer" class="tab-content active">
                 <div style="display:flex; justify-content: space-between; align-items: center;">
-                    <h2 style="margin:0; border:none; padding:0;">${t('config.section.apiAndModel', 'API & Model')}</h2>
+                    <h2 style="margin:0; border:none; padding:0;">🔌 Server & Binding Selection</h2>
                     <div style="display:flex; gap:8px;">
                         <button id="importConfig" class="secondary-button" style="margin:0;" title="Import from .env/JSON"><i class="codicon codicon-cloud-upload"></i> Import</button>
                         <button id="exportConfig" class="secondary-button" style="margin:0;" title="Export to .env/JSON"><i class="codicon codicon-cloud-download"></i> Export</button>
                     </div>
                 </div>
+                <p class="help-text">Configure your target AI backend and host connection. Once connection is established, proceed to the <strong>Models & Assignments</strong> tab.</p>
 
                 <div class="card" style="margin-top: 15px; padding: 12px; border-style: dashed; background: var(--vscode-editor-inactiveSelectionBackground);">
-                    <label style="margin-top:0; font-size: 11px;">🚀 Connection Profiles</label>
+                    <label style="margin-top:0; font-size: 11px;">🚀 Saved Connection Environments</label>
                     <div class="input-group" style="margin-top:5px;">
                         <select id="connectionProfileSelect" style="flex:1;">
                             <option value="">-- Select a Saved Environment --</option>
@@ -1010,53 +1040,73 @@ export class SettingsPanel {
                         <button id="saveCurrentAsProfile" class="icon-btn" title="Save current settings as new profile"><i class="codicon codicon-save"></i></button>
                         <button id="deleteProfile" class="icon-btn remove-btn" title="Delete selected profile"><i class="codicon codicon-trash"></i></button>
                     </div>
-                    <p class="help-text">Quickly switch between local (Ollama) and cloud (OpenAI/Anthropic) setups.</p>
+                    <p class="help-text">Quickly switch between local (Ollama/Lollms) and remote/cloud (OpenAI/Anthropic/Groq) setups.</p>
                 </div>
 
-                <label for="backendType">Backend Type</label>
+                <label for="backendType">Backend Binding Type</label>
                 <select id="backendType">
-                    <option value="lollms" ${backendType === 'lollms' ? 'selected' : ''}>Lollms Server</option>
+                    <option value="lollms" ${backendType === 'lollms' ? 'selected' : ''}>Lollms Server (Full Suite)</option>
                     <option value="openai" ${backendType === 'openai' ? 'selected' : ''}>OpenAI Compatible</option>
                     <option value="ollama" ${backendType === 'ollama' ? 'selected' : ''}>Ollama</option>
                     <option value="anthropic" ${backendType === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
                     <option value="google" ${backendType === 'google' ? 'selected' : ''}>Google Gemini</option>
-                    <option value="groq" ${backendType === 'groq' ? 'selected' : ''}>Groq</option>
+                    <option value="groq" ${backendType === 'groq' ? 'selected' : ''}>Groq Cloud</option>
                     <option value="grok" ${backendType === 'grok' ? 'selected' : ''}>xAI Grok</option>
                     <option value="novitai" ${backendType === 'novitai' ? 'selected' : ''}>Novita AI</option>
                     <option value="openwebui" ${backendType === 'openwebui' ? 'selected' : ''}>Open WebUI</option>
                     <option value="openrouter" ${backendType === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
                 </select>
-                <div class="checkbox-container" style="display: flex; align-items: center; gap: 8px;">
-                    <input type="checkbox" id="useLollmsExtensions" ${useLollmsExtensions ? 'checked' : ''}>
-                    <label for="useLollmsExtensions" style="margin: 0;">Use Lollms Extensions</label>
-                    <button id="lollmsExtensionsHelp" class="toolbar-btn" style="width: 18px; height: 18px; border: none; opacity: 0.7;" title="What is this?">
-                        <i class="codicon codicon-question"></i>
-                    </button>
-                </div>
-                <label for="apiUrl">${t('config.apiUrl.label', 'API Host')}</label>
-                <div class="input-group">
-                    <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
-                    <button id="testConnection" type="button" class="icon-btn" title="Test Connection"><i class="codicon codicon-broadcast"></i></button>
+
+                <!-- LOLLMS EXCLUSIVE FEATURES ZONE -->
+                <div id="lollmsExtensionsZone" style="display: ${backendType === 'lollms' ? 'block' : 'none'}; margin: 12px 0; padding: 10px; border-left: 3px solid var(--vscode-charts-blue); background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 4px;">
+                    <div class="checkbox-container" style="display: flex; align-items: center; gap: 8px; margin: 0;">
+                        <input type="checkbox" id="useLollmsExtensions" ${useLollmsExtensions ? 'checked' : ''}>
+                        <label for="useLollmsExtensions" style="margin: 0; font-weight: bold;">Use Lollms Native Extensions</label>
+                        <button id="lollmsExtensionsHelp" class="toolbar-btn" style="width: 18px; height: 18px; border: none; opacity: 0.7;" title="What is this?">
+                            <i class="codicon codicon-question"></i>
+                        </button>
+                    </div>
+                    <p class="help-text" style="margin-top: 4px;">Enables LoLLMs server-side BPE tokenization, automated model context size lookup, and visual pipeline extensions.</p>
                 </div>
 
-                <label for="apiKey">${t('config.apiKey.label', 'API Key')}</label>
+                <label for="apiUrl">${t('config.apiUrl.label', 'API Host URL')}</label>
                 <div class="input-group">
-                    <input type="password" id="apiKey" value="${apiKey}" placeholder="Enter your API key" autocomplete="off" style="flex:1;" />
+                    <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
+                    <button id="testConnection" type="button" class="icon-btn" title="Test Connection to this Host"><i class="codicon codicon-broadcast"></i> Test Connection</button>
+                </div>
+
+                <label for="apiKey">${t('config.apiKey.label', 'API Key / Secret')}</label>
+                <div class="input-group">
+                    <input type="password" id="apiKey" value="${apiKey}" placeholder="Optional for local servers (Ollama/Lollms)" autocomplete="off" style="flex:1;" />
                     <button id="toggleApiKey" type="button" class="icon-btn" title="Show/Hide"><i class="codicon codicon-eye"></i></button>
                     <button id="copyApiKey" type="button" class="icon-btn" title="Copy Key"><i class="codicon codicon-copy"></i></button>
                 </div>
 
                 <div class="checkbox-container">
                     <input type="checkbox" id="disableSsl" ${disableSslVerification ? 'checked' : ''}>
-                    <label for="disableSsl">${t('config.disableSslVerification.label', 'Disable SSL Verification')}</label>
+                    <label for="disableSsl">${t('config.disableSslVerification.label', 'Disable SSL Verification (Self-Signed Certificates)')}</label>
                 </div>
-                <label for="sslCertPath">${t('config.sslCertPath.label', 'Custom SSL Certificate')}</label>
+                <label for="sslCertPath">${t('config.sslCertPath.label', 'Custom SSL Certificate Path (PEM/CRT)')}</label>
                 <div class="input-group">
                     <input type="text" id="sslCertPath" value="${sslCertPath}" placeholder="path/to/certificate.pem" />
                     <button id="browseCertPath" type="button" class="icon-btn" title="Browse"><i class="codicon codicon-folder-opened"></i></button>
                 </div>
 
-                <label for="modelSelect">${t('config.modelName.label', 'Chat Model')}</label>
+                <label for="requestTimeout">${t('config.requestTimeout.label', 'Request Timeout (ms)')}</label>
+                <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
+            </div>
+
+            <!-- TAB 2: MODELS & SPECIALIST ASSIGNMENTS -->
+            <div id="TabModels" class="tab-content">
+                <div style="display:flex; justify-content: space-between; align-items: center;">
+                    <h2 style="margin:0; border:none; padding:0;">🤖 Models & Specialist Assignments</h2>
+                    <button id="refreshModels" type="button" class="secondary-button" style="margin:0;" title="${t('command.refresh.title', 'Refresh Model List from Configured Server')}">
+                        <i class="codicon codicon-refresh"></i> Query Server Models
+                    </button>
+                </div>
+                <p class="help-text">Select models from the active server binding for specific roles.</p>
+
+                <label for="modelSelect">${t('config.modelName.label', 'Primary Chat Model (Default)')}</label>
                 <div class="input-group">
                     <select id="modelSelect" class="model-dropdown" style="flex:1;">
                         <option value="">Loading Models...</option>
@@ -1064,56 +1114,50 @@ export class SettingsPanel {
                     <button id="copyModelName" type="button" class="icon-btn" title="Copy Model Name">
                         <i class="codicon codicon-copy"></i>
                     </button>
-                    <button id="refreshModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}">
-                        <i class="codicon codicon-refresh"></i>
-                    </button>
                 </div>
+
+                <label for="architectModelSelect">Architect & Planner Model (Agent Mode)</label>
+                <div class="input-group">
+                    <select id="architectModelSelect" class="model-dropdown">
+                        <option value="">Same as Chat Model (Default)</option>
+                    </select>
+                </div>
+                <span class="help-text">Used for deep multi-step planning and ReAct loop orchestrations.</span>
 
                 <label for="ttiModelSelect">Image Generation (TTI) Model</label>
                 <div class="input-group">
                     <select id="ttiModelSelect" class="model-dropdown" style="flex:1;">
-                        <option value="">Loading Models...</option>
+                        <option value="">✨ Automatic (Let Server Decide)</option>
                     </select>
                 </div>
-                <span class="help-text">Leave as "Automatic" to let Lollms select the best active TTI binding.</span>
 
                 <label for="dreamModelSelect">Memory Dream Cycle Model</label>
                 <div class="input-group">
                     <select id="dreamModelSelect" class="model-dropdown" style="flex:1;">
-                        <option value="">Loading Models...</option>
+                        <option value="">Same as Chat Model (Default)</option>
                     </select>
                 </div>
-                <span class="help-text">Used for background memory consolidation, hashtag generation, and engram pruning.</span>
-
-                <label for="architectModelSelect">Architect/Planner Model (Agent Mode)</label>
-                <div class="input-group">
-                    <select id="architectModelSelect" class="model-dropdown">
-                        <option value="">Loading Models...</option>
-                    </select>
-                </div>
-                <span class="help-text">Used for planning complex tasks.</span>
+                <span class="help-text">Consolidates memory engrams, hashtags, and project DNA during idle periods.</span>
 
                 <div class="card" style="margin-top:20px; padding:15px; border:1px solid var(--vscode-widget-border); border-radius:8px;">
-                    <h3 style="margin-top:0;">Task-Specific Models</h3>
-                    <p class="help-text">Assign specific models to background tasks. Leave as "Default" to use the main Chat Model.</p>
-                    
-                    <label>Titling Model (Discussion Names)</label>
+                    <h3 style="margin-top:0;">Specialized Background Sub-Models</h3>
+                    <p class="help-text">Assign smaller, faster models to specialized auxiliary passes. Defaults to Primary Chat Model.</p>
+
+                    <label>Discussion Titling Model</label>
                     <select id="titlingModelSelect" class="model-dropdown"></select>
-                    
-                    <label>Git Commit Model (Message Gen)</label>
+
+                    <label>Git Commit Message Generator Model</label>
                     <select id="gitCommitModelSelect" class="model-dropdown"></select>
-                    
-                    <label>Surgical Model (Refactoring/Repair)</label>
+
+                    <label>Surgical Repair & Linter Fix Model</label>
                     <select id="surgicalModelSelect" class="model-dropdown"></select>
 
-                    <label>Summarization Model (Big Files)</label>
+                    <label>Document & Context Summarizer Model</label>
                     <select id="summarizationModelSelect" class="model-dropdown"></select>
 
-                    <label>Architecture Graph Model (Query)</label>
+                    <label>Architecture Graph & SPARQL Model</label>
                     <select id="graphModelSelect" class="model-dropdown"></select>
                 </div>
-                <label for="requestTimeout">${t('config.requestTimeout.label', 'Request Timeout (ms)')}</label>
-                <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
             </div>
 
             <div id="TabGeneral" class="tab-content">
@@ -1216,7 +1260,9 @@ export class SettingsPanel {
               <div class="checkbox-container"><input type="checkbox" id="enableCodeInspector" ${enableCodeInspector ? 'checked' : ''}><label for="enableCodeInspector">${t('config.enableCodeInspector.label', 'Enable Code Inspector')}</label></div>
               <label for="inspectorModelName">${t('config.inspectorModelName.label', 'Inspector Model Name')}</label>
               <div class="input-group">
-                  <select id="inspectorModelName" class="model-dropdown"></select>
+                  <select id="inspectorModelName" class="model-dropdown">
+                      <option value="">Same as Chat Model (Default)</option>
+                  </select>
                   <button id="refreshInspectorModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
               </div>
 
@@ -1577,9 +1623,7 @@ export class SettingsPanel {
 
             function checkReactivity() {
                 const warning = document.getElementById('connectionWarning');
-                const refreshBtn = document.getElementById('refreshModels');
-                const testBtn = document.getElementById('testConnection');
-                
+
                 let isDirty = false;
                 for (const field of connectionFields) {
                     const el = document.getElementById(field);
@@ -1591,11 +1635,43 @@ export class SettingsPanel {
 
                 if (isDirty) {
                     warning.classList.add('visible');
-                    if (refreshBtn) refreshBtn.classList.add('disabled');
                 } else {
                     warning.classList.remove('visible');
-                    if (refreshBtn) refreshBtn.classList.remove('disabled');
                 }
+            }
+
+            function updateBindingUi() {
+                const backendEl = document.getElementById('backendType');
+                const backend = backendEl ? backendEl.value : 'lollms';
+                const lollmsZone = document.getElementById('lollmsExtensionsZone');
+                const useExt = document.getElementById('useLollmsExtensions');
+
+                if (lollmsZone) {
+                    lollmsZone.style.display = (backend === 'lollms') ? 'block' : 'none';
+                }
+
+                if (useExt && backend !== 'lollms') {
+                    useExt.checked = false;
+                    postTempUpdate('useLollmsExtensions', false);
+                }
+            }
+
+            function getCurrentConnectionSettings() {
+                const apiUrlEl = document.getElementById('apiUrl');
+                const apiKeyEl = document.getElementById('apiKey');
+                const backendEl = document.getElementById('backendType');
+                const sslCertEl = document.getElementById('sslCertPath');
+                const disableSslEl = document.getElementById('disableSsl');
+                const useExtEl = document.getElementById('useLollmsExtensions');
+                const currentBackend = backendEl ? backendEl.value : (config.backendType || 'lollms');
+                return {
+                    apiUrl: apiUrlEl ? apiUrlEl.value.trim() : (config.apiUrl || ''),
+                    apiKey: apiKeyEl ? apiKeyEl.value.trim() : (config.apiKey || ''),
+                    backendType: currentBackend,
+                    sslCertPath: sslCertEl ? sslCertEl.value.trim() : (config.sslCertPath || ''),
+                    disableSslVerification: disableSslEl ? disableSslEl.checked : (config.disableSslVerification || false),
+                    useLollmsExtensions: currentBackend === 'lollms' ? (useExtEl ? useExtEl.checked : true) : false
+                };
             }
 
             function postTempUpdate(key, value) { 
@@ -1605,15 +1681,17 @@ export class SettingsPanel {
             const bind = (id, key) => {
                 const el = document.getElementById(id);
                 if(!el) return;
-                const event = el.type === 'checkbox' ? 'change' : 'input';
-                el.addEventListener(event, () => {
-                    let val = el.type === 'checkbox' ? el.checked : el.value;
-                    if(el.type === 'number') val = parseFloat(val);
-                    if(['contextFileExceptions', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].includes(key)) {
-                        val = val.split('\\n').map(s=>s.trim()).filter(Boolean);
-                    }
-                    postTempUpdate(key, val);
-                    if (connectionFields.includes(id)) checkReactivity();
+                const events = (el.tagName === 'SELECT' || el.type === 'checkbox') ? ['change', 'input'] : ['input', 'change'];
+                events.forEach(ev => {
+                    el.addEventListener(ev, () => {
+                        let val = el.type === 'checkbox' ? el.checked : el.value;
+                        if(el.type === 'number') val = parseFloat(val);
+                        if(['contextFileExceptions', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].includes(key)) {
+                            val = String(val).split(String.fromCharCode(10)).map(s=>s.trim()).filter(Boolean);
+                        }
+                        postTempUpdate(key, val);
+                        if (connectionFields.includes(id)) checkReactivity();
+                    });
                 });
             };
 
@@ -1831,18 +1909,19 @@ export class SettingsPanel {
                     updateCappingVisibility();
                 }
 
-                if(config.contextFileExceptions) document.getElementById('contextFileExceptions').value = config.contextFileExceptions.join('\\n');
+                if(config.contextFileExceptions) document.getElementById('contextFileExceptions').value = config.contextFileExceptions.join(String.fromCharCode(10));
                 safeSet('contextMaxDepth', config.contextMaxDepth);
 
                 renderRatesTable();
-                if(config.remoteAllowedUsers) document.getElementById('remoteAllowedUsers').value = config.remoteAllowedUsers.join('\\n');
-                if(config.remoteAdminUsers) document.getElementById('remoteAdminUsers').value = config.remoteAdminUsers.join('\\n');
-                if(config.remoteAllowedChannels) document.getElementById('remoteAllowedChannels').value = config.remoteAllowedChannels.join('\\n');
+                if(config.remoteAllowedUsers) document.getElementById('remoteAllowedUsers').value = config.remoteAllowedUsers.join(String.fromCharCode(10));
+                if(config.remoteAdminUsers) document.getElementById('remoteAdminUsers').value = config.remoteAdminUsers.join(String.fromCharCode(10));
+                if(config.remoteAllowedChannels) document.getElementById('remoteAllowedChannels').value = config.remoteAllowedChannels.join(String.fromCharCode(10));
 
                 renderProfiles();
                 renderConnectionProfiles();
                 renderMcpServers();
                 updatePersonaSelects();
+                updateBindingUi();
                 refreshModelsList(false);
 
                 bind('graphModelSelect', 'graphModelName');
@@ -1893,13 +1972,16 @@ export class SettingsPanel {
                 textKeys.forEach(id => {
                     const el = document.getElementById(id);
                     if (el) {
-                        el.addEventListener('input', () => {
-                            let val = el.value;
-                            if (['contextFileExceptions', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].includes(id)) {
-                                val = val.split('\\n').map(s => s.trim()).filter(Boolean);
-                            }
-                            postTempUpdate(id, val);
-                            highlightSaveBtn();
+                        const events = el.tagName === 'SELECT' ? ['change', 'input'] : ['input', 'change'];
+                        events.forEach(ev => {
+                            el.addEventListener(ev, () => {
+                                let val = el.value;
+                                if (['contextFileExceptions', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].includes(id)) {
+                                    val = String(val).split(String.fromCharCode(10)).map(s => s.trim()).filter(Boolean);
+                                }
+                                postTempUpdate(id, val);
+                                highlightSaveBtn();
+                            });
                         });
                     }
                 });
@@ -1945,8 +2027,13 @@ export class SettingsPanel {
                         selectElement.appendChild(opt);
                     });
 
-                    if (previousValue) {
+                    if (previousValue && loadedModels.some(m => m.id === previousValue)) {
                         selectElement.value = previousValue;
+                    } else if (selectElement.id === 'modelSelect') {
+                        selectElement.value = loadedModels[0].id;
+                        postTempUpdate('modelName', loadedModels[0].id);
+                    } else {
+                        selectElement.value = "";
                     }
                 } else {
                     selectElement.appendChild(new Option(previousValue ? previousValue + " (offline)" : "No models found", previousValue || ""));
@@ -1962,7 +2049,8 @@ export class SettingsPanel {
                         const btn = i.parentElement;
                         if (btn) btn.classList.add('disabled');
                     });
-                    vscode.postMessage({ command: 'fetchModels', value: force });
+                    const conn = getCurrentConnectionSettings();
+                    vscode.postMessage({ command: 'fetchModels', value: force, connection: conn });
                 } catch (err) {
                     console.error("[Lollms Config] Critical error in refreshModelsList:", err);
                 }
@@ -2039,7 +2127,62 @@ export class SettingsPanel {
                 }
             };
 
-            attach('saveToolbar', () => vscode.postMessage({ command: 'saveConfig' }));
+            function getFormValues() {
+                const values = {};
+                const textFields = ['apiKey', 'apiUrl', 'backendType', 'sslCertPath', 'language', 'codeInspectorPersona', 'chatPersona', 'agentPersona', 'commitMessagePersona', 'searchProvider', 'searchApiKey', 'searchCx', 'clipboardInsertRole', 'userInfoName', 'userInfoEmail', 'userInfoLicense', 'userInfoCodingStyle', 'mcpServers', 'unstagedChangesBehavior', 'systemCustomInfo', 'moltbookApiKey', 'moltbookBotName', 'moltbookBotPurpose', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret'];
+                textFields.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) values[id] = el.value;
+                });
+                const numFields = ['requestTimeout', 'agentMaxRetries', 'maxImageSize', 'failsafeContextSize', 'contextMaxDepth', 'remoteServerPort', 'billingBudgetCap'];
+                numFields.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) values[id] = parseFloat(el.value) || 0;
+                });
+                const checkFields = [
+                    ['useLollmsExtensions', 'useLollmsExtensions'],
+                    ['disableSsl', 'disableSslVerification'],
+                    ['verifyAndCorrectCodeBlocks', 'verifyAndCorrectCodeBlocks'],
+                    ['autoUpdateChangelog', 'autoUpdateChangelog'],
+                    ['autoGenerateTitle', 'autoGenerateTitle'],
+                    ['addPedagogicalInstruction', 'addPedagogicalInstruction'],
+                    ['showOs', 'showOs'],
+                    ['showIp', 'showIp'],
+                    ['showShells', 'showShells'],
+                    ['agentShellExecution', 'agentShellExecution'],
+                    ['agentFilesystemWrite', 'agentFilesystemWrite'],
+                    ['agentFilesystemRead', 'agentFilesystemRead'],
+                    ['agentInternetAccess', 'agentInternetAccess'],
+                    ['agentScreenCapture', 'agentScreenCapture'],
+                    ['agentWebTesting', 'agentWebTesting'],
+                    ['agentUseRLM', 'agentUseRLM'],
+                    ['enableCodeInspector', 'enableCodeInspector'],
+                    ['moltbookEnable', 'moltbookEnable'],
+                    ['remoteDiscordEnabled', 'remoteDiscordEnabled'],
+                    ['remoteSlackEnabled', 'remoteSlackEnabled'],
+                    ['developerDebugTools', 'developerDebugTools'],
+                    ['billingEnabled', 'billingEnabled'],
+                    ['billingEnableCapping', 'billingEnableCapping'],
+                    ['preciseTokenization', 'preciseTokenization']
+                ];
+                checkFields.forEach(([id, key]) => {
+                    const el = document.getElementById(id);
+                    if (el) values[key] = el.checked;
+                });
+                const linesFields = [
+                    ['contextFileExceptions', 'contextFileExceptions'],
+                    ['remoteAllowedUsers', 'remoteAllowedUsers'],
+                    ['remoteAdminUsers', 'remoteAdminUsers'],
+                    ['remoteAllowedChannels', 'remoteAllowedChannels']
+                ];
+                linesFields.forEach(([id, key]) => {
+                    const el = document.getElementById(id);
+                    if (el) values[key] = String(el.value).split(String.fromCharCode(10)).map(s => s.trim()).filter(Boolean);
+                });
+                return values;
+            }
+
+            attach('saveToolbar', () => vscode.postMessage({ command: 'saveConfig', currentValues: getFormValues() }));
             attach('resetToolbar', () => vscode.postMessage({ command: 'resetConfig' }));
 
             attach('lollmsExtensionsHelp', () => {
@@ -2083,9 +2226,16 @@ export class SettingsPanel {
                 location.reload();
             });
             attach('closeToolbar', () => vscode.postMessage({ command: 'closePanel' }));
-            attach('testConnection', () => vscode.postMessage({ command: 'testConnection' }));
-            attach('refreshModels', () => refreshModelsList(true));
-            attach('refreshInspectorModels', () => refreshModelsList(true));
+            attach('testConnection', () => {
+                const conn = getCurrentConnectionSettings();
+                vscode.postMessage({ command: 'testConnection', connection: conn });
+            });
+            attach('refreshModels', () => {
+                refreshModelsList(true);
+            });
+            attach('refreshInspectorModels', () => {
+                refreshModelsList(true);
+            });
 
             document.getElementById('saveCurrentAsProfile').onclick = () => vscode.postMessage({ command: 'requestProfileName' });
 
@@ -2135,6 +2285,7 @@ export class SettingsPanel {
                 safeSet('summarizationModelSelect', p.summarizationModelName || '');
                 safeSet('disableSsl', p.disableSslVerification, true);
                 safeSet('sslCertPath', p.sslCertPath);
+                updateBindingUi();
                 
                 checkReactivity();
                 
@@ -2171,6 +2322,35 @@ export class SettingsPanel {
             document.querySelectorAll('.model-dropdown').forEach(el => {
                 el.addEventListener('change', handleModelDropdownChange);
             });
+
+            const backendTypeSelect = document.getElementById('backendType');
+            if (backendTypeSelect) {
+                backendTypeSelect.addEventListener('change', (e) => {
+                    const newBackend = e.target.value;
+                    postTempUpdate('backendType', newBackend);
+
+                    const apiUrlInput = document.getElementById('apiUrl');
+                    if (apiUrlInput) {
+                        const curUrl = apiUrlInput.value.trim().toLowerCase();
+                        if (newBackend === 'ollama' && (curUrl === 'http://localhost:9642' || curUrl === '')) {
+                            apiUrlInput.value = 'http://localhost:11434';
+                            postTempUpdate('apiUrl', 'http://localhost:11434');
+                        } else if (newBackend === 'lollms' && (curUrl === 'http://localhost:11434' || curUrl === '')) {
+                            apiUrlInput.value = 'http://localhost:9642';
+                            postTempUpdate('apiUrl', 'http://localhost:9642');
+                        } else if (newBackend === 'openrouter' && (curUrl.includes('localhost') || curUrl === '')) {
+                            apiUrlInput.value = 'https://openrouter.ai/api';
+                            postTempUpdate('apiUrl', 'https://openrouter.ai/api');
+                        } else if (newBackend === 'groq' && (curUrl.includes('localhost') || curUrl === '')) {
+                            apiUrlInput.value = 'https://api.groq.com/openai';
+                            postTempUpdate('apiUrl', 'https://api.groq.com/openai');
+                        }
+                    }
+
+                    updateBindingUi();
+                    checkReactivity();
+                });
+            }
 
             ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','halApiKey','scopusApiKey','clipboardInsertRole','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose','remoteServerPort','remoteDiscordToken','remoteSlackToken','remoteSlackSigningSecret','sslCertPath'].forEach(k => bind(k, k));
             ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','includeGitInfo','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions', 'billingEnabled', 'billingEnableCapping', 'preciseTokenization'].forEach(id => {
@@ -2216,6 +2396,7 @@ export class SettingsPanel {
                             populateModelDropdown(el, valToRestore, m.error);
                         }
                     });
+                    checkReactivity();
                 } else if (m.command === 'configSaved') {
                     config = m.newConfig;
                     checkReactivity();

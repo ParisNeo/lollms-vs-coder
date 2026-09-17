@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.26",
+  "version": "1.0.27",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1382,6 +1382,16 @@
           "type": "number",
           "default": 95,
           "description": "Default context filling percentage (10-99%) that triggers automatic Context Governor pruning."
+        },
+        "lollmsVsCoder.contextGovernorTargetThreshold": {
+          "type": "number",
+          "default": 70,
+          "description": "Target context percentage (10-90%) to reduce down to once the Governor is triggered."
+        },
+        "lollmsVsCoder.contextGovernorMaxRounds": {
+          "type": "number",
+          "default": 5,
+          "description": "Maximum negotiation rounds for Context Governor to verify and satisfy the objective threshold."
         },
         "lollmsVsCoder.contextMaxDepth": {
           "type": "number",

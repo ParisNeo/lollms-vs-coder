@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { LollmsServices } from '../lollmsContext';
 import { CommitInspectorPanel } from '../commands/commitInspectorPanel';
 import { GitManagerPanel } from '../commands/gitManagerPanel';

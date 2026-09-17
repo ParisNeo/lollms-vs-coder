@@ -288,9 +288,13 @@ private _cachedTreeString: string | null = null;
     this.clearRenderedTreeCache();
   }
 
-  public async peekFiles(filePaths: string[]): Promise<{ path: string; content: string; error?: string }[]> {
+  public async peekFiles(
+    files: (string | { path: string; lines?: number; words?: number; offset?: number; from?: 'top' | 'bottom'; regex?: string })[]
+  ): Promise<{ path: string; content: string; error?: string }[]> {
     const results: { path: string; content: string; error?: string }[] = [];
-    for (const p of filePaths) {
+    for (const item of files) {
+      const p = typeof item === 'string' ? item : item.path;
+      const opts = typeof item === 'object' ? item : {};
       const clean = p.replace(/\\/g, '/').replace(/^\.?\//, '').trim();
       const resolution = await this.resolveWorkspaceFromPath(clean);
       if (!resolution) {
@@ -299,8 +303,68 @@ private _cachedTreeString: string | null = null;
       }
       try {
         const bytes = await vscode.workspace.fs.readFile(resolution.uri);
-        const text = Buffer.from(bytes).toString('utf8');
-        results.push({ path: clean, content: text });
+        const fullText = Buffer.from(bytes).toString('utf8');
+        let processedText = fullText;
+
+        // 1. Regex search slice
+        if (opts.regex) {
+          try {
+            const re = new RegExp(opts.regex, 'gim');
+            const lines = fullText.split('\n');
+            const matchedRanges: Set<number> = new Set();
+            lines.forEach((line, idx) => {
+              if (re.test(line)) {
+                const start = Math.max(0, idx - 5);
+                const end = Math.min(lines.length - 1, idx + 5);
+                for (let r = start; r <= end; r++) matchedRanges.add(r);
+              }
+              re.lastIndex = 0;
+            });
+
+            if (matchedRanges.size > 0) {
+              const sortedIdx = Array.from(matchedRanges).sort((a, b) => a - b);
+              processedText = sortedIdx.map(i => `${i + 1}: ${lines[i]}`).join('\n');
+            } else {
+              processedText = `(No matches found for regex: "${opts.regex}")`;
+            }
+          } catch (e: any) {
+            processedText = `(Regex error: ${e.message})`;
+          }
+        } else if (opts.lines !== undefined || opts.offset !== undefined) {
+          // 2. Line-based slicing with offset and direction
+          const allLines = fullText.split('\n');
+          const fromBottom = opts.from === 'bottom';
+          let start = 0;
+          let count = opts.lines || 50;
+
+          if (fromBottom) {
+            const offset = opts.offset || 0;
+            start = Math.max(0, allLines.length - offset - count);
+            const end = Math.max(0, allLines.length - offset);
+            processedText = allLines.slice(start, end).join('\n');
+          } else {
+            start = Math.max(0, opts.offset || 0);
+            processedText = allLines.slice(start, start + count).join('\n');
+          }
+        } else if (opts.words !== undefined) {
+          // 3. Word-based slicing
+          const words = fullText.split(/\s+/);
+          const fromBottom = opts.from === 'bottom';
+          const count = opts.words;
+          if (fromBottom) {
+            processedText = words.slice(Math.max(0, words.length - count)).join(' ');
+          } else {
+            const start = opts.offset || 0;
+            processedText = words.slice(start, start + count).join(' ');
+          }
+        } else {
+          // Default: cap preview at 3500 chars if not specified
+          if (processedText.length > 3500) {
+            processedText = processedText.substring(0, 3500) + '\n... [Preview capped. Specify lines, words, or regex for deeper inspection]';
+          }
+        }
+
+        results.push({ path: clean, content: processedText });
       } catch (err: any) {
         results.push({ path: clean, content: "", error: err.message });
       }

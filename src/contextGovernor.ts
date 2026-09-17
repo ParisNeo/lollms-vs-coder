@@ -88,10 +88,23 @@ export class ContextGovernor {
             : (currentDiscussion?.lastTokenMetrics?.contextSize || 128000);
 
         const maxTokens = authoritativeMaxTokens;
-        const targetThresholdPercent = capabilities.contextGovernorThreshold !== undefined
+
+        // Trigger threshold: Percentage that triggers Governor into action
+        const triggerThresholdPercent = capabilities.contextGovernorThreshold !== undefined
             ? capabilities.contextGovernorThreshold
             : 95;
-        const triggerThreshold = Math.round(maxTokens * (targetThresholdPercent / 100));
+        const triggerThreshold = Math.round(maxTokens * (triggerThresholdPercent / 100));
+
+        // Objective threshold: Target percentage to reduce down to once triggered
+        const objectiveThresholdPercent = capabilities.contextGovernorTargetThreshold !== undefined
+            ? capabilities.contextGovernorTargetThreshold
+            : Math.min(triggerThresholdPercent, 70);
+        const objectiveThreshold = Math.round(maxTokens * (objectiveThresholdPercent / 100));
+
+        const maxNegotiationRounds = capabilities.contextGovernorMaxRounds !== undefined
+            ? capabilities.contextGovernorMaxRounds
+            : 5;
+
         const hardCap120 = Math.round(maxTokens * 1.2);
 
         // 2. Calculate Base Non-File Fixed Loads
@@ -165,17 +178,18 @@ export class ContextGovernor {
             return this.buildPassingResult(contextData, baseInstructions, history, currentPromptMessage, totalEstimated, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities);
         }
 
-        // If context is comfortably within threshold, pass through immediately
+        // If context is comfortably within trigger threshold, pass through immediately
         if (totalEstimated <= triggerThreshold) {
             return this.buildPassingResult(contextData, baseInstructions, history, currentPromptMessage, totalEstimated, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities);
         }
 
-        // 4. Overload Detected (up to 1000%+): Engage Context Governor
+        // 4. Overload Detected (up to 1000%+): Engage Context Governor toward Objective Threshold
         if (onStatusUpdate) {
-            onStatusUpdate(`⚖️ Governor: Context at ${initialUsagePercent}% (${totalEstimated.toLocaleString()} / ${maxTokens.toLocaleString()} tok). Optimizing...`);
+            onStatusUpdate(`⚖️ Governor: Context at ${initialUsagePercent}% (Trigger: ${triggerThresholdPercent}%, Objective: ${objectiveThresholdPercent}%). Optimizing...`);
         }
 
-        let overflow = totalEstimated - triggerThreshold;
+        // The overflow to eliminate is based on the Objective Target Threshold
+        let overflow = Math.max(0, totalEstimated - objectiveThreshold);
         const pruneMsgId = 'system_prune_' + Date.now();
 
         if (onAddMessage) {
@@ -183,8 +197,9 @@ export class ContextGovernor {
                 id: pruneMsgId,
                 role: 'system',
                 content: `⚖️ **Context Governor: Overload Optimization Engaged**
-Initial Load: **${initialUsagePercent}%** (${totalEstimated.toLocaleString()} / ${maxTokens.toLocaleString()} tokens, threshold: ${targetThresholdPercent}%).
-*Analyzing candidate relevance, shielding current mission files, and reducing payload...*`,
+Initial Load: **${initialUsagePercent}%** (${totalEstimated.toLocaleString()} / ${maxTokens.toLocaleString()} tokens).
+Trigger Threshold: **${triggerThresholdPercent}%** &middot; Objective Target: **${objectiveThresholdPercent}%** (~${objectiveThreshold.toLocaleString()} tokens) &middot; Max Verification Rounds: **${maxNegotiationRounds}**.
+*Analyzing candidate relevance, verifying reduction targets, and executing multi-round optimization...*`,
                 skipInPrompt: true
             });
         }
@@ -216,7 +231,7 @@ Initial Load: **${initialUsagePercent}%** (${totalEstimated.toLocaleString()} / 
 
         const canAvoidEvictingCurrentPrompt = tokensAvailableFromOlder >= overflow;
 
-        // Stage 3: Multi-Round Governor Negotiation (Up to 5 Rounds, 1-Round Favored)
+        // Stage 3: Multi-Round Governor Negotiation with Objective Verification Loop
         let governorDecision: any = null;
         let roundsUsed = 0;
         let chunkingNotice: string | undefined = undefined;
@@ -231,21 +246,23 @@ Initial Load: **${initialUsagePercent}%** (${totalEstimated.toLocaleString()} / 
                 fileCandidates,
                 totalEstimated,
                 maxTokens,
-                targetThresholdPercent,
+                triggerThresholdPercent,
+                objectiveThresholdPercent,
+                objectiveThreshold,
                 overflow,
                 canAvoidEvictingCurrentPrompt,
                 keywords,
+                maxRounds: maxNegotiationRounds,
                 onStatusUpdate,
                 onRoundUsed: (r) => { roundsUsed = r; }
             });
         } else {
-            // History cropping already satisfied the budget
             fileCandidates.forEach(b => {
                 b.keep = true;
-                b.justification = "Preserved: History optimization liberated sufficient token budget.";
+                b.justification = "Preserved: Context already meets objective threshold.";
             });
             governorDecision = {
-                rationale: "Token budget was satisfied by cropping and summarizing older conversation history. All files preserved.",
+                rationale: "Token budget satisfied. All files preserved.",
                 keep: fileCandidates.map(b => ({ path: b.path, justification: b.justification })),
                 evict: []
             };
@@ -255,9 +272,9 @@ Initial Load: **${initialUsagePercent}%** (${totalEstimated.toLocaleString()} / 
         let candidateEvictList = Array.isArray(governorDecision?.evict) ? governorDecision.evict : [];
         let candidateKeepList = Array.isArray(governorDecision?.keep) ? governorDecision.keep : [];
 
-        // If Governor failed or produced empty lists while overflow exists, engage deterministic ranking fallback
+        // If Governor failed or produced insufficient reduction, engage deterministic ranking fallback to guarantee objective
         if (!governorDecision || (candidateEvictList.length === 0 && candidateKeepList.length === 0 && overflow > 0)) {
-            governorDecision = this.buildDeterministicFallback(fileCandidates, overflow, canAvoidEvictingCurrentPrompt, targetThresholdPercent, triggerThreshold);
+            governorDecision = this.buildDeterministicFallback(fileCandidates, overflow, canAvoidEvictingCurrentPrompt, objectiveThresholdPercent, objectiveThreshold);
             candidateEvictList = Array.isArray(governorDecision?.evict) ? governorDecision.evict : [];
             candidateKeepList = Array.isArray(governorDecision?.keep) ? governorDecision.keep : [];
         }
@@ -314,12 +331,11 @@ Initial Load: **${initialUsagePercent}%** (${totalEstimated.toLocaleString()} / 
         // Check if context is saturated (even after eviction, remaining kept files still exceed target or 120%)
         let newTotal = Math.max(0, totalEstimated - liberatedTokens - liberatedHistoryTokens);
 
-        // Emergency prune if remaining files still exceed triggerThreshold (e.g. from 1000% load)
-        if (newTotal > triggerThreshold) {
+        // Emergency prune if remaining files still exceed objectiveThreshold (e.g. from 1000% load)
+        if (newTotal > objectiveThreshold) {
             const sortedKept = fileCandidates
                 .filter(b => b.keep)
                 .sort((a, b) => {
-                    // Keep current prompt files, then sort by relevance score descending
                     if (a.isCurrentPromptFile !== b.isCurrentPromptFile) {
                         return a.isCurrentPromptFile ? -1 : 1;
                     }
@@ -327,13 +343,13 @@ Initial Load: **${initialUsagePercent}%** (${totalEstimated.toLocaleString()} / 
                 });
 
             for (let idx = sortedKept.length - 1; idx >= 0; idx--) {
-                if (newTotal <= triggerThreshold) break;
+                if (newTotal <= objectiveThreshold) break;
                 const candidateToDrop = sortedKept[idx];
                 candidateToDrop.keep = false;
                 liberatedTokens += candidateToDrop.tokens;
                 newTotal -= candidateToDrop.tokens;
                 evictedPaths.push(candidateToDrop.path);
-                evictedReport.push(`- ✂️ \`${candidateToDrop.path}\` (~${candidateToDrop.tokens.toLocaleString()} tok) — *Emergency capacity reduction.*`);
+                evictedReport.push(`- ✂️ \`${candidateToDrop.path}\` (~${candidateToDrop.tokens.toLocaleString()} tok) — *Emergency reduction to guarantee ${objectiveThresholdPercent}% objective.*`);
             }
 
             // If context saturation occurred, generate the chunking directive
@@ -380,8 +396,9 @@ The codebase context required for this request is extremely large. It is mathema
 
         const addFilesTagStr = '<' + 'add_files_to_context>';
         const reportMarkdown = `⚖️ **Context Governor: Context Optimization Complete**
-Optimization reduced payload from **${initialUsagePercent}%** to **${newUsagePercent}%** (${newTotal.toLocaleString()} / ${maxTokens.toLocaleString()} tokens, threshold: ${targetThresholdPercent}%). Total liberated: **${totalLiberated.toLocaleString()}** tokens.
-${roundsUsed > 1 ? `*(Exploration: ${roundsUsed} rounds)*\n` : ''}
+Optimization reduced payload from **${initialUsagePercent}%** to **${newUsagePercent}%** (${newTotal.toLocaleString()} / ${maxTokens.toLocaleString()} tokens, Trigger: ${triggerThresholdPercent}%, Objective: ${objectiveThresholdPercent}%). Total liberated: **${totalLiberated.toLocaleString()}** tokens.
+*(Negotiation & Verification: ${roundsUsed} round${roundsUsed === 1 ? '' : 's'} / max ${maxNegotiationRounds})*
+
 🧠 **ARCHITECTURAL STRATEGY & RATIONALE**:
 ${rationale}
 
@@ -473,7 +490,8 @@ ${chunkingDirectiveText}`.trim();
     }
 
     /**
-     * Executes up to 5 rounds of negotiation with the LLM Governor, favoring single-round completion.
+     * Executes up to `maxRounds` rounds of negotiation and verification with the LLM Governor.
+     * In each round, recalculates token load to rigorously verify that the objective threshold is reached.
      */
     private static async runGovernorNegotiation(options: {
         lollmsAPI: LollmsAPI;
@@ -484,10 +502,13 @@ ${chunkingDirectiveText}`.trim();
         fileCandidates: ParsedFileCandidate[];
         totalEstimated: number;
         maxTokens: number;
-        targetThresholdPercent: number;
+        triggerThresholdPercent: number;
+        objectiveThresholdPercent: number;
+        objectiveThreshold: number;
         overflow: number;
         canAvoidEvictingCurrentPrompt: boolean;
         keywords: string[];
+        maxRounds: number;
         onStatusUpdate?: (status: string) => void;
         onRoundUsed?: (rounds: number) => void;
     }): Promise<any> {
@@ -500,48 +521,55 @@ ${chunkingDirectiveText}`.trim();
             fileCandidates,
             totalEstimated,
             maxTokens,
-            targetThresholdPercent,
+            triggerThresholdPercent,
+            objectiveThresholdPercent,
+            objectiveThreshold,
             overflow,
             canAvoidEvictingCurrentPrompt,
+            maxRounds,
             onStatusUpdate,
             onRoundUsed
         } = options;
 
-        const maxRounds = 5;
         let currentRound = 0;
+        let lastCandidateDecision: any = null;
 
-        // Build compact candidate catalog (NO raw code bodies, strictly compact metadata)
         const compactCatalog = this.buildCompactCatalog(fileCandidates);
 
         const systemPrompt = `You are the **Sovereign Context Governor**.
-Your goal is to optimize the active prompt context to fit within the model's capacity limit.
-You select which files to keep in memory and which to evict.
+Your goal is to optimize the active prompt context to strictly meet the Objective Target Threshold (${objectiveThresholdPercent}%, max ${objectiveThreshold.toLocaleString()} tokens).
+Capacity limit: ${maxTokens.toLocaleString()} tokens. Initial estimated load: ${totalEstimated.toLocaleString()} tokens.
 
-### RULES:
-1. **FAVOR SINGLE ROUND**: If the compact catalog and relevance data provided below are sufficient, return your final keep/evict decision immediately in Round 1.
-2. **STRICT SHIELD**: Files marked [ADDED FOR CURRENT PROMPT] MUST be kept unless older files alone cannot meet the required token liberation.
-3. **EXPLORATION OPTION (UP TO 5 ROUNDS MAX)**: If you genuinely need more evidence to determine if a file is relevant before deciding, you may output \`{"action": "grep", "query": "searchTerm"}\`.
-4. **DECISION FORMAT**: When ready to conclude, output JSON:
+### GOVERNOR OBJECTIVE & VERIFICATION RULES:
+1. **OBJECTIVE REQUIREMENT**: You MUST evict enough file tokens so that total tokens fall below the objective threshold (~${objectiveThreshold.toLocaleString()} tokens). Required reduction: ~${overflow.toLocaleString()} tokens.
+2. **VERIFICATION LOOP**: Your decision will be mathematically audited. If your proposed eviction does not reach the objective threshold, you will be recalled for another round (up to ${maxRounds} rounds).
+3. **STRICT SHIELD**: Files marked [ADDED FOR CURRENT PROMPT] must be kept unless older files alone cannot satisfy the reduction.
+4. **DECISION FORMAT**:
 \`\`\`json
 {
   "action": "decide",
-  "rationale": "High-level summary of your context optimization strategy",
+  "rationale": "Summary of decision and why evicted files can be safely removed or read sequentially",
+  "hydration_steps": [
+    "Step 1: Inspect File A for imports and interface definitions.",
+    "Step 2: Mute File A and load File B to execute the modification."
+  ],
   "keep": [
-    { "path": "path/to/file.ts", "justification": "Why this file is necessary for the immediate task" }
+    { "path": "path/to/file.ts", "justification": "Why this file is necessary right now" }
   ],
   "evict": [
-    { "path": "path/to/file.py", "reason": "Why this file can be safely removed" }
+    { "path": "path/to/file.py", "reason": "Why this file should be muted or evicted for this turn" }
   ]
 }
 \`\`\``;
 
         const promptSummary = userPromptText.length > 500 ? userPromptText.substring(0, 500) + '...' : userPromptText;
 
-        const initialUserPrompt = `### 📊 CONTEXT & CAPACITY
-- Total Estimated: ${totalEstimated.toLocaleString()} tokens
+        const initialUserPrompt = `### 📊 CONTEXT & CAPACITY AUDIT
+- Total Initial Load: ${totalEstimated.toLocaleString()} tokens
 - Model Window Capacity: ${maxTokens.toLocaleString()} tokens
-- Target Threshold (${targetThresholdPercent}%): ${Math.round(maxTokens * (targetThresholdPercent / 100)).toLocaleString()} tokens
-- Required Token Reduction (Overflow): ~${Math.round(overflow).toLocaleString()} tokens
+- Trigger Threshold (${triggerThresholdPercent}%): ${Math.round(maxTokens * (triggerThresholdPercent / 100)).toLocaleString()} tokens
+- Objective Threshold (${objectiveThresholdPercent}%): ${objectiveThreshold.toLocaleString()} tokens
+- Required Reduction (Overflow): ~${overflow.toLocaleString()} tokens
 - Shield Policy: ${canAvoidEvictingCurrentPrompt ? 'Older files contain enough tokens to meet budget: DO NOT evict files marked [ADDED FOR CURRENT PROMPT].' : 'Older files alone cannot meet the budget: evict older files first, then only the minimum necessary recent files.'}
 
 ### 🎯 USER OBJECTIVE
@@ -550,7 +578,7 @@ You select which files to keep in memory and which to evict.
 ### 📄 LOADED FILES COMPACT CATALOG (${fileCandidates.length} files)
 ${compactCatalog}
 
-Make your decision or request a grep exploration. Output JSON only.`;
+Make your decision to reach the objective threshold of ${objectiveThresholdPercent}% (${objectiveThreshold.toLocaleString()} tokens). Output JSON only.`;
 
         const conversation: ChatMessage[] = [
             { role: 'system', content: systemPrompt },
@@ -563,7 +591,7 @@ Make your decision or request a grep exploration. Output JSON only.`;
             if (onRoundUsed) onRoundUsed(currentRound);
 
             if (onStatusUpdate) {
-                onStatusUpdate(`⚖️ Governor: Reasoning (Round ${currentRound}/${maxRounds})...`);
+                onStatusUpdate(`⚖️ Governor: Verifying Objective (${currentRound}/${maxRounds})...`);
             }
 
             try {
@@ -571,18 +599,11 @@ Make your decision or request a grep exploration. Output JSON only.`;
                 const cleanResponse = stripThinkingTags(response);
 
                 const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
-                if (!jsonMatch) {
-                    break;
-                }
+                if (!jsonMatch) break;
 
                 const parsed = JSON.parse(jsonMatch[0]);
 
-                // Case 1: Final Decision (Single Round or Concluded)
-                if (parsed.action === 'decide' || (Array.isArray(parsed.keep) && Array.isArray(parsed.evict))) {
-                    return parsed;
-                }
-
-                // Case 2: Grep exploration request
+                // Case: Grep exploration request
                 if (parsed.action === 'grep' && parsed.query) {
                     if (onStatusUpdate) onStatusUpdate(`⚖️ Governor: Grep exploration for "${parsed.query}"...`);
                     const searchResults = await contextManager.searchWorkspaceContent(parsed.query, { matchCase: false, wholeWord: false });
@@ -591,13 +612,54 @@ Make your decision or request a grep exploration. Output JSON only.`;
                     conversation.push({ role: 'assistant', content: cleanResponse });
                     conversation.push({
                         role: 'user',
-                        content: `### 🔍 GREP RESULTS FOR "${parsed.query}"\n${searchSnippet}\n\nNow finalize your keep/evict decision with {"action": "decide", ...}.`
+                        content: `### 🔍 GREP RESULTS FOR "${parsed.query}"\n${searchSnippet}\n\nNow finalize your keep/evict decision with {"action": "decide", ...} to meet the ${objectiveThresholdPercent}% objective.`
                     });
                     continue;
                 }
 
-                // Fallback: If action is unknown but keep/evict exist
-                if (parsed.keep || parsed.evict) {
+                // Case: Candidate Decision proposed
+                if (parsed.action === 'decide' || (Array.isArray(parsed.keep) && Array.isArray(parsed.evict))) {
+                    lastCandidateDecision = parsed;
+
+                    // Audit token reduction mathematically
+                    const proposedEvict = Array.isArray(parsed.evict) ? parsed.evict : [];
+                    let proposedLiberatedTokens = 0;
+
+                    for (const candidate of fileCandidates) {
+                        const isEvicted = proposedEvict.some((e: any) => this.pathsMatch(e.path || e, candidate.path));
+                        if (isEvicted) {
+                            proposedLiberatedTokens += candidate.tokens;
+                        }
+                    }
+
+                    const resultingLoad = Math.max(0, totalEstimated - proposedLiberatedTokens);
+
+                    // VERIFICATION CHECK: Did the decision satisfy the objective threshold?
+                    if (resultingLoad <= objectiveThreshold) {
+                        Logger.info(`[Governor] Objective threshold verified in round ${currentRound}: ${resultingLoad.toLocaleString()} <= ${objectiveThreshold.toLocaleString()} tokens.`);
+                        return parsed;
+                    }
+
+                    // Target NOT met: If more rounds available, challenge the Governor to reduce further
+                    if (currentRound < maxRounds) {
+                        const shortfall = resultingLoad - objectiveThreshold;
+                        const remainingPercent = Math.round((resultingLoad / maxTokens) * 100);
+
+                        Logger.warn(`[Governor] Round ${currentRound}: Proposed eviction fell short by ${shortfall.toLocaleString()} tokens (${remainingPercent}% > ${objectiveThresholdPercent}%). Recalling...`);
+
+                        conversation.push({ role: 'assistant', content: cleanResponse });
+                        conversation.push({
+                            role: 'user',
+                            content: `⚠️ **OBJECTIVE THRESHOLD NOT REACHED (Round ${currentRound} of ${maxRounds})**
+Your proposed eviction only liberated ~${proposedLiberatedTokens.toLocaleString()} tokens, leaving the context at ~${resultingLoad.toLocaleString()} tokens (**${remainingPercent}%**).
+The Objective Threshold is **${objectiveThresholdPercent}%** (~${objectiveThreshold.toLocaleString()} tokens).
+You are still **${shortfall.toLocaleString()} tokens short** of the target.
+You MUST evict more files from the catalog to reach the ${objectiveThresholdPercent}% objective. Provide your updated decision.`
+                        });
+                        continue;
+                    }
+
+                    // Max rounds reached: accept the best attempt (deterministic fallback will close remaining gap)
                     return parsed;
                 }
 
@@ -608,7 +670,7 @@ Make your decision or request a grep exploration. Output JSON only.`;
             }
         }
 
-        return null;
+        return lastCandidateDecision;
     }
 
     /**

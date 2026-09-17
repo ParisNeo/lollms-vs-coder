@@ -141,27 +141,78 @@ export class OnboardingPanel {
     }
 
     private getGlobalProfiles(): ArchitecturalProfile[] {
-        const defaultProfiles: ArchitecturalProfile[] = [
+        const defaultProfiles: (ArchitecturalProfile & { doctrine?: string })[] = [
             {
                 id: "profile_python_vibe",
                 name: "Python Rapid Prototyping (Vibe)",
-                objectives: "Build fast, modular Python features (Pygame, FastAPI) using clean f-strings, type hints, and lightweight packages.",
-                style: "Prioritize velocity and high-fidelity rendering. Use expressive, descriptive variable names. Prefer pathlib over os.",
-                prefProfileId: "pythonic_pep8"
+                objectives: "Build fast, modular Python applications and interactive features (Pygame, lightweight APIs, automation scripts) using clean f-strings, type hints, and modern libraries.",
+                style: "Prioritize velocity, clean formatting, and high-fidelity runtime results. Use expressive, self-documenting naming. Prefer pathlib over raw os.path.",
+                prefProfileId: "pythonic_pep8",
+                doctrine: "- PEP 8 compliance with modern Python 3.11+ type annotations.\n- Keep logic modular and avoid monolith scripts.\n- Fail fast with descriptive custom exceptions.\n- Never hardcode file paths; use relative pathlib paths."
+            },
+            {
+                id: "profile_fastapi_backend",
+                name: "FastAPI & PostgreSQL Backend (Production)",
+                objectives: "Architect a production-ready, asynchronous REST API using FastAPI, Pydantic v2 schemas, SQLAlchemy/SQLModel ORM, and PostgreSQL with Alembic migrations.",
+                style: "Follow Clean Architecture with strict separation of routes, services, schemas, and database models. Use dependency injection for db sessions and auth. Enforce typed request/response models.",
+                prefProfileId: "clean_craftsman",
+                doctrine: "- All database access must be asynchronous (async/await).\n- Never expose raw database entities directly through API endpoints; always map through Pydantic schemas.\n- Enforce parameterized queries to eliminate SQL injection.\n- Validate and sanitize all external query parameters."
+            },
+            {
+                id: "profile_react_ts",
+                name: "React TypeScript & Tailwind (Modern Web)",
+                objectives: "Build accessible, highly responsive frontend interfaces using React, TypeScript strict mode, Tailwind CSS utility classes, and custom state hooks.",
+                style: "Component-driven design with small, single-purpose components. Never use 'any'. Enforce readonly prop interfaces, semantic HTML5, and keyboard accessibility (WCAG AA).",
+                prefProfileId: "strict_typescript",
+                doctrine: "- Strict TypeScript typing with zero implicit or explicit 'any'.\n- Reusable functional components with immutable state paradigms.\n- Semantic HTML5 structure with proper ARIA attributes for screen readers.\n- Graceful async handling with loading, error, and empty states."
+            },
+            {
+                id: "profile_vue_frontend",
+                name: "Vue 3 & Vite (Composition API)",
+                objectives: "Develop performant, modular web frontends using Vue 3 `<script setup>` Single-File Components (SFC), Pinia state management, and modern CSS/Tailwind utilities.",
+                style: "Use Vue 3 Composition API with `<script setup lang=\"ts\">`. Structure components into atomic presentation and smart container layers. Avoid mutating props directly.",
+                prefProfileId: "fullstack_modern",
+                doctrine: "- Strict `<script setup lang=\"ts\">` on all Vue components.\n- Centralize global state strictly in Pinia stores with typed actions.\n- Keep template logic clean; compute derived data with `computed()`.\n- Emit typed events instead of direct parent-child mutation."
+            },
+            {
+                id: "profile_rust_systems",
+                name: "Rust Systems & CLI (Zero-Cost)",
+                objectives: "Develop memory-safe, ultra-low-latency system utilities, CLI tools (Clap), and asynchronous services (Tokio) without garbage collection.",
+                style: "Embrace idiomatic ownership and borrowing rules. Eliminate unneeded clones. Use exhaustive pattern matching and return `Result<T, E>` / `Option<T>` for error handling instead of unwrap().",
+                prefProfileId: "rust_systems",
+                doctrine: "- Strict memory safety: no `unsafe` blocks without documented proof invariants.\n- Zero panics in runtime paths; handle all errors via `Result`.\n- Implement deterministic RAII resource cleanup.\n- Keep allocations off the critical performance path."
             },
             {
                 id: "profile_embedded_c",
                 name: "Embedded Systems C (Rigorous)",
-                objectives: "Develop low-level bare-metal or RTOS drivers for STM32 microcontrollers. Focus on register-level efficiency and DMA.",
-                style: "Strict MISRA C:2012 compliance. Prevent dynamic allocations entirely. No printf inside ISRs. Highly compact, self-contained functions with clear bit-shifting comments.",
-                prefProfileId: "rust_systems"
+                objectives: "Develop low-level bare-metal or RTOS drivers and firmware for STM32/ESP32 microcontrollers. Focus on register-level efficiency, DMA, and interrupt safety.",
+                style: "Strict MISRA C:2012 compliance. Prevent dynamic memory allocations (no malloc/free). No blocking calls or printf inside ISRs. Use explicit bitmask macros and volatile pointers.",
+                prefProfileId: "rust_systems",
+                doctrine: "- Zero dynamic memory allocation (no malloc/free) after startup.\n- MISRA C:2012 adherence with explicit fixed-width integer types (uint32_t, etc.).\n- Fast, non-blocking Interrupt Service Routines (ISRs).\n- Volatile qualifier on all hardware peripheral registers and shared flags."
             },
             {
-                id: "profile_react_ts",
-                name: "React TypeScript & Tailwind (Modern)",
-                objectives: "Build accessible, performant UI components using React Server Components, TS strict typing, and responsive layout flows.",
-                style: "Utility-first classes (Tailwind CSS) only. Enforce strict WCAG accessibility attributes (ARIA), reusable hooks, and full type safety for all component props.",
-                prefProfileId: "strict_typescript"
+                id: "profile_godot_game",
+                name: "Godot 4 GDScript (Game Builder)",
+                objectives: "Build 2D and 3D indie game mechanics in Godot 4 using GDScript, node hierarchy composition, signals, and finite state machines.",
+                style: "Signal-driven architecture ('call down, signal up'). Use static typing in GDScript (`var health: int = 100`). Keep physics logic strictly inside `_physics_process(delta)`.",
+                prefProfileId: "clean_craftsman",
+                doctrine: "- Enforce static typing annotations on all GDScript variables and functions.\n- Adhere to the 'Call Down, Signal Up' decoupled node architecture.\n- Frame-rate independent physics inside `_physics_process(delta)`.\n- Cache node references with `@onready` instead of repeating `get_node()` in loops."
+            },
+            {
+                id: "profile_security_pentest",
+                name: "Zero-Trust Security & Pentesting (Agentic)",
+                objectives: "Conduct rigorous security audits, vulnerability hunting, and automated defense hardening across application boundaries and APIs.",
+                style: "Zero-Trust security posture. Verify all input boundaries, parameterize all queries, block path traversals, and test edge-case payloads before shipping.",
+                prefProfileId: "security_hardened",
+                doctrine: "- Apply Zero-Trust boundary validation on all external inputs (headers, params, payloads).\n- Never hardcode secrets, tokens, or credentials in codebase.\n- Prevent injection flaws (SQLi, Command Injection, SSRF, XSS) via strict sanitization.\n- Fail closed with generic user-facing errors while logging structured diagnostics internally."
+            },
+            {
+                id: "profile_ml_research",
+                name: "AI/ML & PyTorch Research Pipeline",
+                objectives: "Construct reproducible machine learning and deep learning pipelines with PyTorch, clean DataLoader wrappers, model architectures, and validation checkpoints.",
+                style: "Modularize models, datasets, and training loops. Always seed random number generators for determinism. Use device-agnostic tensor allocation (`to(device)`). Document tensor shapes.",
+                prefProfileId: "pythonic_pep8",
+                doctrine: "- Ensure full reproducibility by seeding random generators (torch, numpy, random).\n- Device-agnostic code (`device = 'cuda' if torch.cuda.is_available() else 'cpu'`).\n- Document input and output tensor shapes in docstrings for custom modules.\n- Separate model definition, dataset loading, and training loop into distinct modules."
             }
         ];
 
@@ -649,10 +700,19 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     if (selectedIdx !== "") {
                         const p = globalProfiles[selectedIdx];
                         if (p) {
-                            document.getElementById('instructions').value = p.objectives;
-                            document.getElementById('preferences').value = p.style;
+                            document.getElementById('instructions').value = p.objectives || '';
+                            document.getElementById('preferences').value = p.style || '';
+                            if (p.doctrine) {
+                                document.getElementById('doctrine').value = p.doctrine;
+                            }
                             if (p.prefProfileId) {
                                 document.getElementById('pref-profile-select').value = p.prefProfileId;
+                            }
+                            // Auto-set the destiny archetype based on template focus
+                            if (p.id.includes('vibe') || p.id.includes('godot')) {
+                                selectDestiny('vibe');
+                            } else {
+                                selectDestiny('agentic');
                             }
                             syncTextareas();
                         }

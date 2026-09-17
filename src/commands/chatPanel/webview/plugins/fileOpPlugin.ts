@@ -567,28 +567,59 @@ export const unpackDirectoryPlugin: TagPlugin = {
 export const peekFilesPlugin: TagPlugin = {
     id: 'peek_files',
     tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/gim,
-    render: (match) => {
+    render: (match, context) => {
+        const attrStr = match[1] || "";
         const inner = (match[2] || "").trim();
-        const files = inner.split(/[\s\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(p => p && !p.startsWith('<'));
-        if (files.length === 0) return null;
-        const encodedFiles = encodeURIComponent(JSON.stringify(files));
+        const rawPaths = inner.split(/[\s\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(p => p && !p.startsWith('<'));
+        if (rawPaths.length === 0) return null;
+
+        const linesMatch = attrStr.match(/lines=["']?(\d+)["']?/i);
+        const wordsMatch = attrStr.match(/words=["']?(\d+)["']?/i);
+        const offsetMatch = attrStr.match(/offset=["']?(\d+)["']?/i);
+        const fromMatch = attrStr.match(/from=["']?(top|bottom)["']?/i);
+        const regexMatch = attrStr.match(/regex=["']([^"']+)["']/i);
+
+        const peekOptions: any = {};
+        if (linesMatch) peekOptions.lines = parseInt(linesMatch[1], 10);
+        if (wordsMatch) peekOptions.words = parseInt(wordsMatch[1], 10);
+        if (offsetMatch) peekOptions.offset = parseInt(offsetMatch[1], 10);
+        if (fromMatch) peekOptions.from = fromMatch[1].toLowerCase();
+        if (regexMatch) peekOptions.regex = regexMatch[1];
+
+        const filesPayload = rawPaths.map(p => ({
+            path: p,
+            ...peekOptions
+        }));
+
+        const encodedPayload = encodeURIComponent(JSON.stringify(filesPayload));
+        const blockId = `peek-block-${context.messageId}-${Date.now().toString(36)}`;
+
+        let criteriaLabel = "";
+        if (peekOptions.regex) criteriaLabel = ` &middot; Regex: <code>${peekOptions.regex}</code>`;
+        else if (peekOptions.lines) criteriaLabel = ` &middot; ${peekOptions.lines} lines (${peekOptions.from || 'top'})`;
+        else if (peekOptions.words) criteriaLabel = ` &middot; ${peekOptions.words} words (${peekOptions.from || 'top'})`;
 
         return `
-        <div class="file-operation-block peek-files-block" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-left: 4px solid var(--vscode-charts-green); border-radius: 8px; margin: 12px 0; overflow: hidden;">
-            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px;">
+        <div class="file-operation-block peek-files-block assistant-executable-card" id="${blockId}" data-action-type="peek" data-payload="${encodedPayload}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-green); border-radius: 8px; margin: 12px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border);">
                 <div style="display: flex; align-items: center; gap: 8px;">
-                    <span class="codicon codicon-eye"></span> 
-                    <span>Peek Files Request (${files.length})</span>
+                    <span class="codicon codicon-eye" style="color: var(--vscode-charts-green);"></span> 
+                    <span>Peek Files Request (${rawPaths.length}${criteriaLabel})</span>
                 </div>
-                <button class="code-action-btn copy-peek-output-btn" data-files="${encodedFiles}" title="Copy peeked file content to clipboard" style="height: 22px; font-size: 10px; padding: 0 8px;">
-                    <i class="codicon codicon-copy"></i> Copy Output
-                </button>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                    <button class="code-action-btn secondary-btn copy-peek-output-btn" data-payload="${encodedPayload}" title="Copy peeked slice to clipboard" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                        <i class="codicon codicon-copy"></i> Copy Slice
+                    </button>
+                    <button class="code-action-btn apply-btn execute-peek-reprompt-btn" data-payload="${encodedPayload}" data-message-id="${context.messageId}" title="Inspect files on disk and immediately send results back to the AI as next turn" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold; background: var(--vscode-charts-green) !important; color: white !important;">
+                        <i class="codicon codicon-sync"></i> Peek & Reprompt AI
+                    </button>
+                </div>
             </div>
-            <div class="expansion-body" style="padding: 12px;">
-                <div style="font-size: 12px; margin-bottom: 8px;">Temporary inspection of: <strong>${files.join(', ')}</strong></div>
+            <div class="expansion-body" style="padding: 10px 12px;">
                 <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                    ${files.map(f => `<button class="code-action-btn secondary-btn peek-file-open-btn" data-path="${f}" style="font-size: 10px; height: 22px;"><i class="codicon codicon-file"></i> ${f.split('/').pop()}</button>`).join('')}
+                    ${rawPaths.map(f => `<button class="code-action-btn secondary-btn peek-file-open-btn" data-path="${f}" style="font-size: 10px; height: 22px;"><i class="codicon codicon-file"></i> ${f.split('/').pop()}</button>`).join('')}
                 </div>
+                <div class="peek-render-preview" style="display:none; margin-top:8px; max-height:220px; overflow-y:auto; font-family:var(--vscode-editor-font-family); font-size:11px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); border-radius:4px; padding:8px; white-space:pre-wrap;"></div>
             </div>
         </div>`;
     },
@@ -607,22 +638,44 @@ export const peekFilesPlugin: TagPlugin = {
             (btn as HTMLElement).onclick = (e: MouseEvent) => {
                 e.stopPropagation();
                 const btnEl = btn as HTMLButtonElement;
-                const encodedFiles = btnEl.dataset.files;
-                if (!encodedFiles) return;
+                const encoded = btnEl.dataset.payload;
+                if (!encoded) return;
 
                 try {
-                    const files: string[] = JSON.parse(decodeURIComponent(encodedFiles));
+                    const payload = JSON.parse(decodeURIComponent(encoded));
                     context.vscode.postMessage({
-                        command: 'copyFilesToClipboard',
-                        files: files
+                        command: 'peekFilesAndCopy',
+                        files: payload
                     });
 
                     const origHtml = btnEl.innerHTML;
                     btnEl.innerHTML = '<i class="codicon codicon-check"></i> Copied!';
-                    setTimeout(() => {
-                        btnEl.innerHTML = origHtml;
-                    }, 2000);
+                    setTimeout(() => { btnEl.innerHTML = origHtml; }, 2000);
                 } catch {}
+            };
+        });
+
+        container.querySelectorAll('.execute-peek-reprompt-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const encoded = btnEl.dataset.payload;
+                if (!encoded) return;
+
+                btnEl.disabled = true;
+                btnEl.innerHTML = '<div class="spinner"></div> Peeking & Answering...';
+
+                try {
+                    const payload = JSON.parse(decodeURIComponent(encoded));
+                    context.vscode.postMessage({
+                        command: 'executePeekAndReprompt',
+                        files: payload,
+                        messageId: btnEl.dataset.messageId
+                    });
+                } catch (err: any) {
+                    btnEl.disabled = false;
+                    btnEl.innerHTML = '<i class="codicon codicon-error"></i> Failed';
+                }
             };
         });
     }

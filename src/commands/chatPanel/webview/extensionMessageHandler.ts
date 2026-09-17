@@ -861,6 +861,20 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         govRange.oninput = () => { govLabel.textContent = govRange.value + '%'; };
                     }
 
+                    const govTargetRange = document.getElementById('modal-governor-target-threshold') as HTMLInputElement;
+                    const govTargetLabel = document.getElementById('modal-governor-target-threshold-val');
+                    if (govTargetRange && govTargetLabel) {
+                        const targetThreshold = caps.contextGovernorTargetThreshold !== undefined ? caps.contextGovernorTargetThreshold : 70;
+                        govTargetRange.value = targetThreshold.toString();
+                        govTargetLabel.textContent = targetThreshold + '%';
+                        govTargetRange.oninput = () => { govTargetLabel.textContent = govTargetRange.value + '%'; };
+                    }
+
+                    const govRoundsInput = document.getElementById('modal-governor-max-rounds') as HTMLInputElement;
+                    if (govRoundsInput) {
+                        govRoundsInput.value = (caps.contextGovernorMaxRounds || 5).toString();
+                    }
+
                     const govCheck = document.getElementById('cap-contextGovernorEnabled') as HTMLInputElement;
                     const govSection = document.getElementById('governor-config-section');
                     if (govCheck && govSection) {

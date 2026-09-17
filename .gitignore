@@ -143,3 +143,4 @@ settings.json
 
 # Lollms vscoder files
 .lollms
+.lollms_code

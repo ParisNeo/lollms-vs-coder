@@ -98,6 +98,20 @@ function isMetaPlaceholder(line: string): boolean {
     return false;
 }
 
+export function sanitizeAiderMarkers(text: string): string {
+    if (!text) return '';
+    return text
+        .split('\n')
+        .filter(line => {
+            const trimmed = line.trim();
+            if (/^<{7}\s*SEARCH$/.test(trimmed)) return false;
+            if (/^={5,}$/.test(trimmed)) return false;
+            if (/^>{7}\s*REPLACE$/.test(trimmed)) return false;
+            return true;
+        })
+        .join('\n');
+}
+
 /**
  * Normalizes Aider Search/Replace block content in the webview.
  * Handles standard Aider, indented markers, and lone "=======" separators.
@@ -109,12 +123,21 @@ export function normalizeAiderContent(rawBlock: string): string {
 
     // 1. If it already has <<<<<<< SEARCH and >>>>>>> REPLACE, normalize markers to line start
     if (text.includes('<<<<<<< SEARCH') && text.includes('>>>>>>> REPLACE')) {
-        return text.replace(/^[ \t]*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)[ \t]*/gm, '$1');
+        return text.replace(/^[ \t]*(<<<<<<< SEARCH|={5,}|>>>>>>> REPLACE)[ \t]*/gm, (match, marker) => {
+            if (marker.startsWith('<')) return '<<<<<<< SEARCH';
+            if (marker.startsWith('=')) return '=======';
+            if (marker.startsWith('>')) return '>>>>>>> REPLACE';
+            return match;
+        });
     }
 
     // 2. If it has <<<<<<< SEARCH and ======= but missing closing >>>>>>> REPLACE
     if (text.includes('<<<<<<< SEARCH') && text.includes('=======')) {
-        let normalized = text.replace(/^[ \t]*(<<<<<<< SEARCH|=======)[ \t]*/gm, '$1');
+        let normalized = text.replace(/^[ \t]*(<<<<<<< SEARCH|={5,})[ \t]*/gm, (match, marker) => {
+            if (marker.startsWith('<')) return '<<<<<<< SEARCH';
+            if (marker.startsWith('=')) return '=======';
+            return match;
+        });
         if (!normalized.includes('>>>>>>> REPLACE')) {
             normalized = normalized.trimEnd() + '\n>>>>>>> REPLACE';
         }
@@ -124,7 +147,8 @@ export function normalizeAiderContent(rawBlock: string): string {
     // 3. If the AI emitted ONLY the ======= separator without outer markers
     const separatorRegex = /^[ \t]*={5,}[ \t]*$/m;
     if (separatorRegex.test(text)) {
-        const parts = text.split(separatorRegex);
+        const cleanText = text.replace(/^[ \t]*>{7}\s*REPLACE[ \t]*$/gm, '').replace(/^[ \t]*<{7}\s*SEARCH[ \t]*$/gm, '');
+        const parts = cleanText.split(separatorRegex);
         if (parts.length === 2) {
             const searchPart = parts[0];
             const replacePart = parts[1];
@@ -161,9 +185,13 @@ export function parseAiderHunks(rawBlock: string): AiderHunk[] {
     const lines = rawBlock.replace(/\r\n/g, '\n').split('\n');
     let i = 0;
 
+    const isSearchMarker = (l: string) => /^<{7}\s*search\b/i.test(l.trim());
+    const isReplaceMarker = (l: string) => /^>{7}\s*replace\b/i.test(l.trim());
+    const isSeparatorMarker = (l: string) => /^={5,}$/.test(l.trim());
+
     while (i < lines.length) {
         const line = lines[i];
-        if (line.trim().startsWith('<<<<<<< SEARCH')) {
+        if (isSearchMarker(line)) {
             const startLineIdx = i;
             const searchLines: string[] = [];
             const replaceLines: string[] = [];
@@ -177,25 +205,34 @@ export function parseAiderHunks(rawBlock: string): AiderHunk[] {
                 const trimmed = curLine.trim();
 
                 if (!inReplace) {
-                    if (trimmed.startsWith('<<<<<<< SEARCH')) {
+                    if (isSearchMarker(curLine)) {
                         depth++;
                         searchLines.push(curLine);
-                    } else if (trimmed.startsWith('>>>>>>> REPLACE')) {
+                    } else if (isReplaceMarker(curLine)) {
                         if (depth > 1) {
                             depth--;
+                            searchLines.push(curLine);
+                        } else {
+                            isClosed = true;
+                            break;
                         }
-                        searchLines.push(curLine);
-                    } else if (trimmed.startsWith('=======') && depth === 1) {
+                    } else if (isSeparatorMarker(curLine) && depth === 1) {
                         inReplace = true;
                         depth = 0;
                     } else {
                         searchLines.push(curLine);
                     }
                 } else {
-                    if (trimmed.startsWith('<<<<<<< SEARCH')) {
-                        depth++;
-                        replaceLines.push(curLine);
-                    } else if (trimmed.startsWith('>>>>>>> REPLACE')) {
+                    if (isSearchMarker(curLine)) {
+                        if (depth === 0) {
+                            isClosed = true;
+                            i--;
+                            break;
+                        } else {
+                            depth++;
+                            replaceLines.push(curLine);
+                        }
+                    } else if (isReplaceMarker(curLine)) {
                         if (depth > 0) {
                             depth--;
                             replaceLines.push(curLine);
@@ -203,6 +240,10 @@ export function parseAiderHunks(rawBlock: string): AiderHunk[] {
                             isClosed = true;
                             break;
                         }
+                    } else if (isSeparatorMarker(curLine) && depth === 0) {
+                        // Skip duplicate separator line to avoid leaking ======= into replace output
+                        i++;
+                        continue;
                     } else {
                         replaceLines.push(curLine);
                     }
@@ -211,8 +252,8 @@ export function parseAiderHunks(rawBlock: string): AiderHunk[] {
             }
 
             if (isClosed || inReplace) {
-                const searchPart = searchLines.join('\n');
-                const replacePart = replaceLines.join('\n');
+                const searchPart = sanitizeAiderMarkers(searchLines.join('\n'));
+                const replacePart = sanitizeAiderMarkers(replaceLines.join('\n'));
                 const fullMatch = lines.slice(startLineIdx, i + 1).join('\n');
                 hunks.push({
                     fullMatch,
@@ -234,8 +275,8 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     const normalizedContent = content.replace(/\r\n/g, '\n');
     const contentLines = normalizedContent.split('\n');
 
-    let normalizedSearch = (searchBlock || "").replace(/\r\n/g, '\n');
-    let normalizedReplace = (replaceBlock || "").replace(/\r\n/g, '\n');
+    let normalizedSearch = sanitizeAiderMarkers((searchBlock || "").replace(/\r\n/g, '\n'));
+    let normalizedReplace = sanitizeAiderMarkers((replaceBlock || "").replace(/\r\n/g, '\n'));
     const replaceLines = normalizedReplace.split('\n');
 
     if (normalizedSearch.trim() === "") {
@@ -353,4 +394,64 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         result: content, 
         error: `Matching failed. Best match score: ${Math.round(bestScore * 100)}%.` 
     };
+}
+
+export interface FileTagAttributes {
+    path: string;
+    action: 'write' | 'patch' | 'update_symbol';
+    symbol?: string;
+}
+
+/**
+ * Parses attributes from <file ...> tags resiliently.
+ * Handles synonymous attribute names like file="...", filepath="...", target="...",
+ * unquoted values, or missing actions.
+ */
+export function parseFileTagAttributes(attrStr: string, rawContent?: string): FileTagAttributes | null {
+    if (!attrStr && !rawContent) return null;
+    const cleanAttr = (attrStr || "").trim();
+
+    // 1. Extract path with all common synonyms
+    const pathRegex = /(?:^|\s+)(?:path|file_path|filepath|file|target|name|filename)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
+    const pathMatch = cleanAttr.match(pathRegex);
+    let filePath = pathMatch ? (pathMatch[1] || pathMatch[2] || "").trim() : "";
+
+    // Fallback: Check if attribute string starts with unkeyed path
+    if (!filePath) {
+        const unkeyedMatch = cleanAttr.match(/^(?:["']([^"']+)["']|([^\s=>"']+\.[a-zA-Z0-9_\-]+))/);
+        if (unkeyedMatch) {
+            filePath = (unkeyedMatch[1] || unkeyedMatch[2] || "").trim();
+        }
+    }
+
+    if (!filePath) return null;
+
+    filePath = filePath.replace(/^['"]|['"]$/g, '').trim();
+
+    // 2. Extract action
+    const actionRegex = /(?:^|\s+)(?:action|type|mode)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
+    const actionMatch = cleanAttr.match(actionRegex);
+    const actionRaw = actionMatch ? (actionMatch[1] || actionMatch[2] || "").toLowerCase().trim() : "";
+
+    // 3. Extract symbol
+    const symbolRegex = /(?:^|\s+)(?:symbol|function|method|class)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
+    const symbolMatch = cleanAttr.match(symbolRegex);
+    let symbol = symbolMatch ? (symbolMatch[1] || symbolMatch[2] || "").trim() : "";
+
+    if (!symbol && filePath.includes(':') && !/^[a-zA-Z]:[\\/]/.test(filePath)) {
+        const parts = filePath.split(':');
+        filePath = parts[0].trim();
+        symbol = parts.slice(1).join(':').trim();
+    }
+
+    let action: 'write' | 'patch' | 'update_symbol' = 'write';
+    if (actionRaw === 'patch' || (rawContent && rawContent.includes('<<<<<<< SEARCH'))) {
+        action = 'patch';
+    } else if (actionRaw === 'update_symbol' || (symbol && actionRaw !== 'write')) {
+        action = 'update_symbol';
+    } else if (actionRaw === 'write' || actionRaw === 'create' || actionRaw === 'overwrite' || actionRaw === 'new') {
+        action = 'write';
+    }
+
+    return { path: filePath, action, symbol: symbol || undefined };
 }

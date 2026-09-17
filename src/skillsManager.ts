@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import * as yaml from 'js-yaml';
+import { Logger } from './logger';
+import { stripThinkingTags } from './utils';
 
 export interface Skill {
     id: string;
@@ -20,27 +23,49 @@ export interface Skill {
 // --- Markdown & YAML Helpers ---
 
 export function parseSkillMd(content: string, defaultId: string, scope: 'global' | 'local'): Skill {
+    const trimmed = content.trim();
     const parts = content.split(/^---\s*$/m);
     let frontmatter: any = {};
     let body = content;
-    
-    if (parts.length >= 3 && content.trim().startsWith('---')) {
+
+    if (parts.length >= 3 && trimmed.startsWith('---')) {
+        const yamlRaw = parts[1];
+        body = parts.slice(2).join('---').trim();
         try {
-            frontmatter = yaml.load(parts[1]) || {};
-            body = parts.slice(2).join('---').trim();
+            frontmatter = yaml.load(yamlRaw) || {};
         } catch (e) {
-            console.warn("Failed to parse YAML frontmatter", e);
+            // Resilient line-by-line regex fallback parser if YAML fails
+            const nameMatch = yamlRaw.match(/^name:\s*["']?(.*?)["']?$/m);
+            const descMatch = yamlRaw.match(/^description:\s*(?:[>|]\s*)?(.*?)(?=\n[a-z_]+:|$)/ms);
+            const catMatch = yamlRaw.match(/^category:\s*["']?(.*?)["']?$/m);
+            const authorMatch = yamlRaw.match(/^author:\s*["']?(.*?)["']?$/m);
+            const versionMatch = yamlRaw.match(/^version:\s*["']?(.*?)["']?$/m);
+            const iconMatch = yamlRaw.match(/^icon:\s*["']?(.*?)["']?$/m);
+            const tagsMatch = yamlRaw.match(/^tags:\s*(.*)$/m);
+
+            frontmatter = {
+                name: nameMatch ? nameMatch[1].trim() : undefined,
+                description: descMatch ? descMatch[1].trim().replace(/\n\s+/g, ' ') : undefined,
+                category: catMatch ? catMatch[1].trim() : undefined,
+                author: authorMatch ? authorMatch[1].trim() : undefined,
+                version: versionMatch ? versionMatch[1].trim() : undefined,
+                icon: iconMatch ? iconMatch[1].trim() : undefined,
+                tags: tagsMatch ? tagsMatch[1].replace(/[\[\]'"]/g, '').split(',').map((t: string) => t.trim()).filter(Boolean) : []
+            };
         }
     }
-    
+
     let tags = frontmatter.tags || [];
     if (typeof tags === 'string') {
-        tags = tags.split(',').map((t: string) => t.trim());
+        tags = tags.split(',').map((t: string) => t.trim()).filter(Boolean);
     }
 
+    const cleanId = (frontmatter.name || defaultId).toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    const cleanName = frontmatter.name || defaultId;
+
     return {
-        id: frontmatter.name || defaultId,
-        name: frontmatter.name || defaultId,
+        id: cleanId,
+        name: cleanName,
         description: frontmatter.description || '',
         category: frontmatter.category || 'general',
         author: frontmatter.author || '',
@@ -179,20 +204,32 @@ export interface SkillsZooRepo {
     id: string;
     name: string;
     url: string;
+    branch?: string;
+    enabled?: boolean;
 }
 
 export class SkillsManager {
     private globalSkillsDir: vscode.Uri;
     private extensionUri?: vscode.Uri;
     private zooCacheDir: vscode.Uri;
+    private context?: vscode.ExtensionContext;
 
     private cachedGlobalSkills: Skill[] | null = null;
     private cachedLocalSkills: Skill[] | null = null;
 
-    constructor(globalStorageUri: vscode.Uri) {
+    constructor(globalStorageUri: vscode.Uri, context?: vscode.ExtensionContext) {
         this.globalSkillsDir = vscode.Uri.joinPath(globalStorageUri, 'skills');
         this.zooCacheDir = vscode.Uri.joinPath(globalStorageUri, 'skills_zoo_cache');
+        this.context = context;
         this.initializeGlobalStorage();
+    }
+
+    public setContext(context: vscode.ExtensionContext) {
+        this.context = context;
+    }
+
+    public getZooRepoPath(repoId: string): string {
+        return path.join(this.zooCacheDir.fsPath, repoId);
     }
 
     public invalidateCache(scope?: 'global' | 'local') {
@@ -299,65 +336,179 @@ ${rawText.substring(0, 8000)}`;
         const defaultRepo: SkillsZooRepo = {
             id: 'official_zoo',
             name: 'Lollms Skills Zoo (Official)',
-            url: 'https://github.com/ParisNeo/lollms_skills_zoo'
+            url: 'https://github.com/ParisNeo/lollms_skills_zoo.git',
+            enabled: true
         };
-        const saved = this.context.globalState.get<SkillsZooRepo[]>('lollms_skills_zoo_registries', []);
-        // Deduplicate official repo if present
-        const filtered = saved.filter(r => r.id !== 'official_zoo');
-        return [defaultRepo, ...filtered];
+
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const configuredRepos = config.get<SkillsZooRepo[]>('skills.gitRepositories') || [];
+        const stateRepos = this.context?.globalState.get<SkillsZooRepo[]>('lollms_skills_zoo_registries', []) || [];
+
+        const combined = [...stateRepos, ...configuredRepos];
+        const unique = new Map<string, SkillsZooRepo>();
+        unique.set(defaultRepo.id, defaultRepo);
+
+        combined.forEach(r => {
+            if (r && r.url) {
+                const normUrl = r.url.trim();
+                const id = r.id || `repo_${Buffer.from(normUrl).toString('hex').substring(0, 10)}`;
+                unique.set(id, { ...r, id, url: normUrl, enabled: r.enabled !== false });
+            }
+        });
+
+        return Array.from(unique.values());
     }
 
-    public async addZooRepo(name: string, url: string): Promise<void> {
-        const repos = this.getZooRepos().filter(r => r.id !== 'official_zoo');
-        const id = `repo_${Date.now()}`;
-        repos.push({ id, name, url });
-        await this.context.globalState.update('lollms_skills_zoo_registries', repos);
-        this.invalidateCache();
+    public async addZooRepo(name: string, url: string): Promise<SkillsZooRepo> {
+        const cleanUrl = url.trim();
+        const cleanName = name.trim() || path.basename(cleanUrl.replace(/\.git$/, ''));
+        const id = `repo_${cleanName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${Date.now().toString(36)}`;
+        const newRepo: SkillsZooRepo = { id, name: cleanName, url: cleanUrl, enabled: true };
+
+        const current = this.getZooRepos().filter(r => r.id !== 'official_zoo');
+        current.push(newRepo);
+
+        if (this.context) {
+            await this.context.globalState.update('lollms_skills_zoo_registries', current);
+        }
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        await config.update('skills.gitRepositories', current, vscode.ConfigurationTarget.Global);
+
+        return newRepo;
     }
 
     public async deleteZooRepo(id: string): Promise<void> {
-        const repos = this.getZooRepos().filter(r => r.id !== 'official_zoo' && r.id !== id);
-        await this.context.globalState.update('lollms_skills_zoo_registries', repos);
-        this.invalidateCache();
+        if (id === 'official_zoo') {
+            throw new Error("Cannot delete the official Lollms Skills Zoo repository.");
+        }
+        const current = this.getZooRepos().filter(r => r.id !== 'official_zoo' && r.id !== id);
+        if (this.context) {
+            await this.context.globalState.update('lollms_skills_zoo_registries', current);
+        }
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        await config.update('skills.gitRepositories', current, vscode.ConfigurationTarget.Global);
+
+        // Clean local cloned repository cache
+        const targetPath = path.join(this.zooCacheDir.fsPath, id);
+        try {
+            if (fs.existsSync(targetPath)) {
+                await fs.promises.rm(targetPath, { recursive: true, force: true });
+            }
+        } catch {}
     }
 
     /**
-     * Executes git clone/pull to sync the target repo locally
+     * Executes git clone/pull to sync the target repo locally and discover its skills.
      */
-    public async syncZooRepo(repo: SkillsZooRepo, progress?: (status: string) => void): Promise<void> {
+    public async syncZooRepo(repo: SkillsZooRepo, progress?: (status: string) => void): Promise<Skill[]> {
         const targetPath = path.join(this.zooCacheDir.fsPath, repo.id);
         const exists = fs.existsSync(targetPath);
         const { exec } = require('child_process');
-        const execPromise = (cmd: string) => new Promise<void>((res, rej) => {
-            exec(cmd, { cwd: exists ? targetPath : this.zooCacheDir.fsPath }, (err: any, stdout: string) => {
-                if (err) rej(err);
+        const execPromise = (cmd: string, cwd: string) => new Promise<void>((res, rej) => {
+            exec(cmd, { cwd }, (err: any, stdout: string, stderr: string) => {
+                if (err) rej(new Error(stderr || stdout || err.message));
                 else res();
             });
         });
 
-        if (progress) progress(`Connecting to ${repo.name} git stream...`);
+        if (progress) progress(`Connecting to ${repo.name}...`);
 
-        if (exists) {
-            if (progress) progress(`Pulling latest changes...`);
-            await execPromise(`git pull origin main`);
+        if (exists && fs.existsSync(path.join(targetPath, '.git'))) {
+            if (progress) progress(`Pulling latest changes for ${repo.name}...`);
+            try {
+                await execPromise(`git pull`, targetPath);
+            } catch (pullErr: any) {
+                try {
+                    await execPromise(`git fetch origin && git reset --hard origin/HEAD`, targetPath);
+                } catch {
+                    await fs.promises.rm(targetPath, { recursive: true, force: true });
+                    await execPromise(`git clone "${repo.url}" "${repo.id}"`, this.zooCacheDir.fsPath);
+                }
+            }
         } else {
-            if (progress) progress(`Cloning repository into sandbox...`);
-            await execPromise(`git clone "${repo.url}" "${repo.id}"`);
+            if (progress) progress(`Cloning ${repo.name} (${repo.url})...`);
+            if (exists) {
+                await fs.promises.rm(targetPath, { recursive: true, force: true });
+            }
+            await execPromise(`git clone "${repo.url}" "${repo.id}"`, this.zooCacheDir.fsPath);
         }
+
+        const repoUri = vscode.Uri.file(targetPath);
+        return await this.loadSkillsFromDir(repoUri, 'global');
+    }
+
+    /**
+     * Synchronizes all registered and enabled Git repositories.
+     */
+    public async syncAllZooRepos(progress?: (status: string) => void): Promise<{ repo: SkillsZooRepo, skills: Skill[] }[]> {
+        const repos = this.getZooRepos().filter(r => r.enabled !== false);
+        const results: { repo: SkillsZooRepo, skills: Skill[] }[] = [];
+
+        for (const repo of repos) {
+            try {
+                const skills = await this.syncZooRepo(repo, progress);
+                results.push({ repo, skills });
+            } catch (err: any) {
+                Logger.error(`Failed to sync skills repo ${repo.name}:`, err);
+                vscode.window.showWarningMessage(`Failed to sync repository '${repo.name}': ${err.message}`);
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Reads all skills currently cached across all synced Git repositories.
+     */
+    public async getAllZooSkills(): Promise<{ repo: SkillsZooRepo, skills: Skill[] }[]> {
+        const repos = this.getZooRepos().filter(r => r.enabled !== false);
+        const results: { repo: SkillsZooRepo, skills: Skill[] }[] = [];
+
+        for (const repo of repos) {
+            const targetPath = path.join(this.zooCacheDir.fsPath, repo.id);
+            if (fs.existsSync(targetPath)) {
+                try {
+                    const skills = await this.loadSkillsFromDir(vscode.Uri.file(targetPath), 'global');
+                    results.push({ repo, skills });
+                } catch (e) {}
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Installs a skill discovered in a Git repository into the user's Global or Project (Local) library.
+     */
+    public async installZooSkill(skill: Skill, targetScope: 'global' | 'local'): Promise<void> {
+        const installable: Skill = {
+            ...skill,
+            scope: targetScope,
+            timestamp: Date.now()
+        };
+        await this.writeSkillToFile(installable);
+        this.invalidateCache(targetScope);
     }
 
     /**
      * Explores the synchronized repo directory and returns a structured Category Tree of available Zoo Skills.
+     * Handles:
+     * 1. Direct folders: repo/<skill_name>/SKILL.md (or skill.md, sklikk.md)
+     * 2. Category folders: repo/<category>/<skill_name>/SKILL.md (or nested categories)
      */
     public async exploreZooRepo(repo: SkillsZooRepo): Promise<any> {
-        const repoPath = vscode.Uri.file(path.join(this.zooCacheDir.fsPath, repo.id));
-        const skills = await this.loadSkillsFromDir(repoPath, 'global'); // Read with dummy scope
+        const targetPath = path.join(this.zooCacheDir.fsPath, repo.id);
+        if (!fs.existsSync(targetPath)) {
+            // Automatically clone and sync if not yet present in cache
+            await this.syncZooRepo(repo);
+        }
+
+        const repoUri = vscode.Uri.file(targetPath);
+        const skills = await this.loadSkillsFromDir(repoUri, 'local');
 
         const root: any = { id: repo.id, label: repo.name, children: [], isSkill: false };
 
         skills.forEach(skill => {
-            const category = skill.category || 'Uncategorized';
-            const parts = category.split('/').filter(p => p);
+            const category = skill.category || 'General';
+            const parts = category.replace(/\\/g, '/').split('/').filter(p => p.length > 0);
 
             let current = root;
             let pathSoFar = repo.id;
@@ -372,34 +523,65 @@ ${rawText.substring(0, 8000)}`;
                 current = existing;
             });
 
-            // Read potential license and icon if present in the target folder
-            let licenseText = "";
-            let iconUriString = "";
-
-            if (skill.category) {
-                const targetFolder = path.join(repoPath.fsPath, skill.category, skill.id);
-                try {
-                    const lFile = fs.existsSync(path.join(targetFolder, 'LICENSE.txt')) ? 'LICENSE.txt' : (fs.existsSync(path.join(targetFolder, 'LICENSE.md')) ? 'LICENSE.md' : '');
-                    if (lFile) {
-                        licenseText = fs.readFileSync(path.join(targetFolder, lFile), 'utf8');
-                    }
-                } catch {}
-            }
-
             current.children.push({
                 id: skill.id,
                 label: skill.name,
                 isSkill: true,
                 description: skill.description,
-                license: licenseText,
                 skill: {
                     ...skill,
-                    scope: 'local' // Defaults to local for pulls
+                    scope: 'local'
                 }
             });
         });
 
         return root;
+    }
+
+    /**
+     * Completely resets all skills and Git repositories to default.
+     * 1. Wipes custom local and global skills.
+     * 2. Resets the Git Zoo repository registry to the default official repository:
+     *    https://github.com/ParisNeo/lollms_skills_zoo.git
+     * 3. Re-synchronizes the official repository and restores bootstrap skills.
+     */
+    public async resetToDefaultSkills(progress?: (status: string) => void): Promise<void> {
+        if (progress) progress("Clearing current skill libraries...");
+
+        await this.deleteAllSkills();
+
+        const defaultRepo: SkillsZooRepo = {
+            id: 'official_zoo',
+            name: 'Lollms Skills Zoo (Official)',
+            url: 'https://github.com/ParisNeo/lollms_skills_zoo.git',
+            enabled: true
+        };
+
+        if (this.context) {
+            await this.context.globalState.update('lollms_skills_zoo_registries', [defaultRepo]);
+        }
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        await config.update('skills.gitRepositories', [defaultRepo], vscode.ConfigurationTarget.Global);
+
+        // Wipe and recreate zoo cache directory
+        if (fs.existsSync(this.zooCacheDir.fsPath)) {
+            try {
+                await fs.promises.rm(this.zooCacheDir.fsPath, { recursive: true, force: true });
+                await fs.promises.mkdir(this.zooCacheDir.fsPath, { recursive: true });
+            } catch (e) {}
+        }
+
+        if (progress) progress("Restoring default bootstrap skills...");
+        await this.ensureBootstrapSkills();
+
+        if (progress) progress("Synchronizing official Skills Zoo repository...");
+        try {
+            await this.syncZooRepo(defaultRepo, progress);
+        } catch (syncErr: any) {
+            Logger.warn("Could not sync official Skills Zoo on reset (offline or network unavailable)", syncErr);
+        }
+
+        this.invalidateCache();
     }
 
     private async ensureBootstrapSkills() {
@@ -538,6 +720,11 @@ ${rawText.substring(0, 8000)}`;
         const skills: Skill[] = [];
         const visitedPaths = new Set<string>();
 
+        const isSkillFile = (name: string) => {
+            const lower = name.toLowerCase();
+            return lower === 'skill.md' || lower === 'sklikk.md';
+        };
+
         const walk = async (uri: vscode.Uri) => {
             const fsPath = uri.fsPath;
             if (visitedPaths.has(fsPath)) return;
@@ -548,40 +735,47 @@ ${rawText.substring(0, 8000)}`;
                 entries = await vscode.workspace.fs.readDirectory(uri); 
             } catch (e) { return; }
 
-            // Priority: Check if this directory IS a skill (Format A)
-            const hasSkillMd = entries.find(([n, t]) => n.toLowerCase() === 'skill.md' && t === vscode.FileType.File);
+            // Filter out system and dependency directories
+            entries = entries.filter(([name]) => !name.startsWith('.git') && !name.startsWith('.github') && name !== 'node_modules');
+
+            // 1. Direct or Nested Skill Folder: Folder containing SKILL.md (or typo/case variants)
+            const hasSkillMd = entries.find(([n, t]) => isSkillFile(n) && t === vscode.FileType.File);
             if (hasSkillMd) {
                 try {
                     const content = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(uri, hasSkillMd[0]));
                     const skillId = path.basename(uri.fsPath);
                     const skill = parseSkillMd(content.toString(), skillId, scope);
 
-                    // Auto-infer category from relative directory structure (e.g. skills/theme/name/SKILL.md)
+                    // Auto-infer category from relative path between repo root and the skill folder:
+                    // Example A: repo/skill_name/SKILL.md -> category is 'general'
+                    // Example B: repo/category/skill_name/SKILL.md -> category is 'category'
+                    // Example C: repo/cat1/cat2/skill_name/SKILL.md -> category is 'cat1/cat2'
                     const relPath = path.relative(dir.fsPath, uri.fsPath).replace(/\\/g, '/');
                     const parts = relPath.split('/').filter(p => p);
                     if (parts.length > 1) {
                         skill.category = parts.slice(0, -1).join('/');
+                    } else {
+                        skill.category = skill.category || 'general';
                     }
 
                     skills.push(skill);
                 } catch (e) {}
-                return; // Stop recursion for this branch, we found the skill leaf
+                return; // Stop deeper recursion into this skill folder
             }
 
+            // 2. Recurse into subdirectories (categories) and parse standalone files
             const promises = entries.map(async ([name, type]) => {
                 const entryUri = vscode.Uri.joinPath(uri, name);
 
                 if (type === vscode.FileType.Directory) {
-                    // Recurse into subdirectories (categories)
                     await walk(entryUri);
                 } else if (type === vscode.FileType.File) {
-                    if (name.endsWith('.md') && name.toLowerCase() !== 'skill.md') {
+                    if (name.endsWith('.md') && !isSkillFile(name)) {
                         try {
                             const content = await vscode.workspace.fs.readFile(entryUri);
                             const skillId = name.replace(/\.md$/, '');
                             const skill = parseSkillMd(content.toString(), skillId, scope);
 
-                            // Auto-infer category for loose files in subdirectories (e.g. skills/theme/file.md)
                             const relPath = path.relative(dir.fsPath, uri.fsPath).replace(/\\/g, '/');
                             const parts = relPath.split('/').filter(p => p);
                             if (parts.length > 0) {
@@ -595,7 +789,6 @@ ${rawText.substring(0, 8000)}`;
                             const content = await vscode.workspace.fs.readFile(entryUri);
                             const skill = xmlToSkill(content.toString(), scope);
 
-                            // Auto-infer category for XML files in subdirectories
                             const relPath = path.relative(dir.fsPath, uri.fsPath).replace(/\\/g, '/');
                             const parts = relPath.split('/').filter(p => p);
                             if (parts.length > 0) {

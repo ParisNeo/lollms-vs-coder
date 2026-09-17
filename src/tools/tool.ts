@@ -6,6 +6,14 @@ import type { CodeGraphManager } from '../codeGraphManager';
 import { SkillsManager } from '../skillsManager';
 import { PersonalityManager } from '../personalityManager';
 
+export type WorkerRole = 'scout' | 'coder' | 'tester' | 'auditor';
+
+export interface WorkerScope {
+    role: WorkerRole;
+    targetFiles?: string[];
+    focus: string;
+}
+
 export interface Task {
     id: number;
     task_type: 'simple_action' | 'agentic_action' | 'markdown_coding' | 'safety_check';
@@ -21,6 +29,7 @@ export interface Task {
     progress?: number; // 0 to 100
     current_substep?: string;
     result: string | null;
+    worker_scope?: WorkerScope;
     memory_delta?: {
         variables?: Record<string, any>;
         discoveries?: string[];

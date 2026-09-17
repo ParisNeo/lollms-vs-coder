@@ -86,6 +86,8 @@ export interface DiscussionCapabilities {
     ttftTimeout: number;
     interTokenTimeout: number;
     contextGovernorThreshold: number;
+    contextGovernorPermanentPruning?: boolean;
+    contextGovernorCropHistory?: boolean;
     selectedFolders?: string[];
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     clipboardInsertRole: 'user' | 'assistant';
@@ -95,7 +97,9 @@ export interface DiscussionCapabilities {
     grepEnabled?: boolean;   // Control background ripgrep indexing
     enableTemperature?: boolean; // Enabled state for custom temperature override
     temperature?: number;
+    mutedFiles?: string[];
     userPreferences?: string;
+    userPreferenceProfileId?: string;
     isExport?: boolean;
     guiState?: {
         agentBadge: boolean;
@@ -113,11 +117,13 @@ export const state: {
     isInspectorEnabled: boolean,
     streamingMessages: { [key: string]: { buffer: string, timer: any } },
     isGenerating: boolean,
+    isHudExpanded: boolean,
     appliedState: Record<string, Record<number, number[]>>, // Persistent applied hunks
+    excludedPatches: Record<string, Set<string>>, // Excluded hunks/files from Apply All per messageId
     matrixStats: Record<string, { tree: number, files: number }>, // Per-folder token stats
     usageData: { project: any[], extra: any[] },
     currentUsageSort: { column: 'name' | 'tokens', direction: 'asc' | 'desc' },
-    lastContextData: { context: string, files: (string | { path: string, tokens?: number, state?: string })[], skills: any[], tools: any[], diagrams: any[], briefing: string, skillIds?: string[] } | null,
+    lastContextData: { context: string, files: (string | { path: string, tokens?: number, state?: string })[], skills: any[], tools: any[], diagrams: any[], briefing: string, skillIds?: string[], mutedFiles?: string[] } | null,
     fileTokensMap: Record<string, number>,
     fileSortOrder: 'heavy-to-light' | 'light-to-heavy' | 'name',
     capabilities: DiscussionCapabilities | null,
@@ -127,7 +133,12 @@ export const state: {
     currentModelName: string,
     personalities: any[],
     agentProfiles: any[],
+    mutedFiles: string[],
+    mutedTools: string[],
+    mutedSkills: string[],
+    mutedDiagrams: string[],
     profiles: any[],
+    userPreferenceProfiles: any[],
     pendingImages: any[],
     lastTokenMetrics?: {
         totalTokens: number;
@@ -136,12 +147,15 @@ export const state: {
         segments?: Record<string, number>;
     }
 } = {
+    isHudExpanded: false,
     searchMatches: [],
     currentMatchIndex: -1,
     isInspectorEnabled: false,
     streamingMessages: {},
     isGenerating: false,
     appliedState: {},
+    excludedPatches: {},
+    searchScope: 'discussion', // 'discussion' (default: text/prose only) | 'all' (includes code/files)
     usageData: { project: [], extra: [] },
     currentUsageSort: { column: 'tokens', direction: 'desc' }, // Default to biggest first
     lastContextData: { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "" },
@@ -154,7 +168,12 @@ export const state: {
     currentModelName: 'Loading...',
     personalities: [],
     agentProfiles: [],
+    mutedFiles: [],
+    mutedTools: [],
+    mutedSkills: [],
+    mutedDiagrams: [],
     profiles: [],
+    userPreferenceProfiles: [],
     pendingImages: []
 };
 
@@ -216,11 +235,17 @@ export const dom = {
     get contextLoadingSpinner() { return document.getElementById('context-loading-spinner') as HTMLDivElement; },
     get searchBar() { return document.getElementById('search-bar') as HTMLDivElement; },
     get searchButton() { return document.getElementById('searchButton') as HTMLButtonElement; },
-    get searchInput() { return document.getElementById('searchInput') as HTMLInputElement; },
-    get searchResultsCount() { return document.getElementById('search-results-count') as HTMLSpanElement; },
-    get searchPrevBtn() { return document.getElementById('search-prev') as HTMLButtonElement; },
-    get searchNextBtn() { return document.getElementById('search-next') as HTMLButtonElement; },
-    get searchCloseBtn() { return document.getElementById('search-close') as HTMLButtonElement; },
+    get searchInput() { return (document.getElementById('hud-search-input') || document.getElementById('searchInput')) as HTMLInputElement; },
+    get searchResultsCount() { return (document.getElementById('hud-search-count') || document.getElementById('search-results-count')) as HTMLSpanElement; },
+    get searchPrevBtn() { return (document.getElementById('hud-search-prev') || document.getElementById('search-prev')) as HTMLButtonElement; },
+    get searchNextBtn() { return (document.getElementById('hud-search-next') || document.getElementById('search-next')) as HTMLButtonElement; },
+    get searchCloseBtn() { return (document.getElementById('hud-search-clear') || document.getElementById('search-close')) as HTMLButtonElement; },
+    get hudSearchInput() { return document.getElementById('hud-search-input') as HTMLInputElement; },
+    get hudSearchCount() { return document.getElementById('hud-search-count') as HTMLSpanElement; },
+    get hudSearchPrev() { return document.getElementById('hud-search-prev') as HTMLButtonElement; },
+    get hudSearchNext() { return document.getElementById('hud-search-next') as HTMLButtonElement; },
+    get hudSearchClear() { return document.getElementById('hud-search-clear') as HTMLButtonElement; },
+    get hudSearchAllBtn() { return document.getElementById('hud-search-all-btn') as HTMLButtonElement; },
     get discussionToolsButton() { return document.getElementById('discussionToolsButton') || document.getElementById('discussion-tools-btn'); },
     get agentToolsButton() { return document.getElementById('agentToolsButton') || document.getElementById('agent-tools-btn'); },
     get agentSettingsModal() { return document.getElementById('agent-settings-modal') as HTMLDivElement; },
@@ -264,6 +289,9 @@ export const dom = {
     get activeToolsIndicator() { return document.getElementById('active-tools-indicator') as HTMLDivElement; },
     
     get capUserPreferences() { return document.getElementById('cap-userPreferences') as HTMLTextAreaElement; },
+    get capPreferencesProfile() { return document.getElementById('cap-preferences-profile') as HTMLSelectElement; },
+    get capSavePrefProfileBtn() { return document.getElementById('cap-save-pref-profile-btn') as HTMLButtonElement; },
+    get capContextGovernorCropHistory() { return document.getElementById('cap-contextGovernorCropHistory') as HTMLInputElement; },
     get capForceFullCode() { return document.getElementById('cap-forceFullCode') as HTMLInputElement; },
     get capAllowFullFallback() { return document.getElementById('cap-allowFullFallback') as HTMLInputElement; },
     get capExplainCode() { return document.getElementById('cap-explainCode') as HTMLInputElement; },
@@ -415,6 +443,9 @@ export const dom = {
     get wizardPrompt() { return document.getElementById('wizard-prompt') as HTMLTextAreaElement; },
     get wizardPersonality() { return document.getElementById('wizard-personality') as HTMLSelectElement; },
     get wizardProfile() { return document.getElementById('wizard-profile') as HTMLSelectElement; },
+    get wizardPreferencesProfile() { return document.getElementById('wizard-preferences-profile') as HTMLSelectElement; },
+    get wizardUserPreferences() { return document.getElementById('wizard-user-preferences') as HTMLTextAreaElement; },
+    get wizardSavePrefProfileBtn() { return document.getElementById('wizard-save-pref-profile-btn') as HTMLButtonElement; },
     get wizardMatrixContainer() { return document.getElementById('wizard-matrix-container') as HTMLDivElement; },
     get wizardCancelBtn() { return document.getElementById('wizard-cancel-btn') as HTMLButtonElement; },
     get wizardSubmitBtn() { return document.getElementById('wizard-submit-btn') as HTMLButtonElement; }

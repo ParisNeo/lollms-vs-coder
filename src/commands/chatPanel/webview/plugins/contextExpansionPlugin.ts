@@ -5,7 +5,7 @@ import DOMPurify from 'dompurify';
 export const contextExpansionPlugin: TagPlugin = {
     id: 'add_files_to_context',
     // Support <add_files_to_context paths='[...]'>Body</add_files_to_context>
-    tagPattern: /^[ \t]*<add_files_to_context\b([^>]*?)>([\s\S]*?)<\/add_files_to_context>/gim,
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<add_files_to_context\b([^>]*?)>([\s\S]*?)<\/add_files_to_context>/gim,
 
     render: (match, context) => {
         const attrPart = match[1] || "";

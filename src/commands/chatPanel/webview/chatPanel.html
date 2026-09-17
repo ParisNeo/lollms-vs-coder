@@ -13,24 +13,105 @@
         worker-src {{cspSource}} 'self' blob: https://cdnjs.cloudflare.com;
     ">
     <title>Lollms Chat</title>
-    <!-- Secure KaTeX Math typesetting with Subresource Integrity -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
-    <script nonce="{{nonce}}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
-    <script nonce="{{nonce}}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
 
-    <!-- PDF.js for local rendering (Pure TS/JS, no backend required) -->
-    <script nonce="{{nonce}}" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <!-- 1. Critical Instant FOUC Prevention Styles (Zero Network Dependencies) -->
+    <style>
+        html, body {
+            background-color: var(--vscode-editor-background, #1e1e1e);
+            color: var(--vscode-editor-foreground, #cccccc);
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+        }
+        /* Immediately hide un-hydrated modals and menus before initialization */
+        body:not(.webview-ready) .modal, 
+        body:not(.webview-ready) #image-zoom-overlay,
+        body:not(.webview-ready) #image-editor-modal,
+        body:not(.webview-ready) .generating-overlay,
+        body:not(.webview-ready) .token-counting-overlay,
+        body:not(.webview-ready) .search-bar,
+        body:not(.webview-ready) .special-zone-message,
+        body:not(.webview-ready) #welcome-message {
+            display: none !important;
+        }
+
+        /* FOUC Shield for Menus: Hide initially, but allow JS to override via .visible class */
+        #more-actions-menu,
+        .menu-view,
+        #menu-modes, 
+        #menu-protocols, 
+        #menu-ai,
+        .custom-menu {
+            display: none;
+        }
+
+        #more-actions-menu.visible,
+        .menu-view.visible,
+        .custom-menu.visible {
+            display: block !important;
+        }
+        /* Pre-hydration visual shield */
+        body {
+            opacity: 0;
+            transition: opacity 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        body.webview-ready {
+            opacity: 1 !important;
+        }
+        #initial-webview-loader {
+            position: fixed;
+            inset: 0;
+            background-color: var(--vscode-editor-background, #1e1e1e);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            z-index: 999999;
+            font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+            font-size: 12px;
+            color: var(--vscode-descriptionForeground, #888888);
+            transition: opacity 0.2s ease-out;
+            pointer-events: none;
+        }
+        #initial-webview-loader .loader-spinner {
+            width: 22px;
+            height: 22px;
+            border: 2px solid var(--vscode-textLink-foreground, #007acc);
+            border-bottom-color: transparent;
+            border-radius: 50%;
+            animation: lollms-preload-spin 0.8s linear infinite;
+        }
+        @keyframes lollms-preload-spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+
+    <!-- 2. Local CSS loaded with highest priority -->
+    <link href="{{codiconsUri}}" rel="stylesheet" />
+    <link href="{{cssUri}}" rel="stylesheet" />
+    <link href="{{prismThemeUri}}" rel="stylesheet" />
+
+    <!-- 3. Deferred External CDN Assets -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+    <script defer nonce="{{nonce}}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
+    <script defer nonce="{{nonce}}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
+    <script defer nonce="{{nonce}}" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script nonce="{{nonce}}">
-        // Disable worker to avoid cross-origin/blob CSP issues in VS Code webview
         if (typeof pdfjsLib !== 'undefined') {
             pdfjsLib.GlobalWorkerOptions.workerSrc = '';
         }
     </script>
-    <link href="{{codiconsUri}}" rel="stylesheet" />
-    <link href="{{cssUri}}" rel="stylesheet" />
-    <link href="{{prismThemeUri}}" rel="stylesheet" />
 </head>
 <body>
+    <!-- Pre-Hydration Loading Screen -->
+    <div id="initial-webview-loader">
+        <div class="loader-spinner"></div>
+        <span>Hydrating workspace context...</span>
+    </div>
+
     <div class="chat-container">
         <div class="chat-content-wrapper">
             <!-- 🤖 Sidebar ON THE LEFT -->
@@ -63,6 +144,39 @@
                         </div>
                     </div>
                     <div id="chat-messages-container">
+                        <!-- 🚀 WELCOME BANNER (TOP OF DISCUSSION STREAM) -->
+                        <div id="welcome-message" class="welcome-banner" style="display: none;">
+                            <div class="welcome-header">
+                                <div class="welcome-icon"><i class="codicon codicon-rocket"></i></div>
+                                <div class="welcome-title-group">
+                                    <h3>Welcome to Lollms VS Coder</h3>
+                                    <p>Your Sovereign AI Software Architect & Development Companion</p>
+                                </div>
+                            </div>
+                            <div class="welcome-grid">
+                                <div class="welcome-card">
+                                    <i class="codicon codicon-files"></i>
+                                    <strong>Project Context</strong>
+                                    <span>Include files or folders via the Explorer to ground the AI in your codebase.</span>
+                                </div>
+                                <div class="welcome-card">
+                                    <i class="codicon codicon-circuit-board"></i>
+                                    <strong>Sovereign Modes</strong>
+                                    <span>Switch between 👤 Assistant, 🧠 Co-Engineer (interactive tools), and 🤖 Agent modes.</span>
+                                </div>
+                                <div class="welcome-card">
+                                    <i class="codicon codicon-lightbulb"></i>
+                                    <strong>Skills & Protocols</strong>
+                                    <span>Import project-specific rules, schemas, or architectural skills from the library.</span>
+                                </div>
+                                <div class="welcome-card">
+                                    <i class="codicon codicon-shield"></i>
+                                    <strong>Guardian Protocol</strong>
+                                    <span>Automated verification and iterative repair ensure clean, zero-error code delivery.</span>
+                                </div>
+                            </div>
+                        </div>
+
                         <div id="message-insertion-controls">
                             <button id="add-user-message-btn"><i class="codicon codicon-add"></i> Add User Message</button>
                             <button id="add-ai-message-btn"><i class="codicon codicon-add"></i> Add AI Message</button>
@@ -70,31 +184,24 @@
                     </div>
                 </div>
 
-                <div id="generating-overlay" class="generating-overlay" style="display: none; height: auto; min-height: 40px; padding: 8px 12px; flex-direction: column; align-items: stretch; gap: 8px;">
-                    <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
-                        <div class="generating-content" style="flex: 1; min-width: 0;">
-                            <div class="ai-orb-container" style="margin-right: 8px;">
-                                <div class="genie-orb-portal" style="transform: scale(0.65);">
-                                    <div class="orb-ring-outer"></div>
-                                    <div class="orb-ring-inner"></div>
-                                    <div class="orb-core"></div>
-                                </div>
-                            </div>
-                            <span id="generating-status-text" style="font-size: 12px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Processing...</span>
+                <div id="generating-overlay" class="generating-overlay" style="display: none;">
+                    <div class="generating-inner-row">
+                        <div class="generating-status-group">
+                            <div class="spinner agent-running-spinner"></div>
+                            <span id="generating-status-text">Lollms is thinking...</span>
                         </div>
-                        <div style="display: flex; gap: 8px; flex-shrink: 0;">
-                            <button id="raiseHandButton" class="stop-btn-red" style="display: none; height: 24px; font-size: 11px; padding: 2px 8px; background-color: var(--vscode-charts-orange) !important; border-color: var(--vscode-charts-orange) !important; color: white !important;" title="Pause and provide feedback">
+                        <div class="generating-actions-group">
+                            <button id="raiseHandButton" class="stop-btn-orange" style="display: none;" title="Pause agent and give feedback">
                                 <i class="codicon codicon-hand"></i>
-                                <span>Raise Hand</span>
+                                <span>Pause</span>
                             </button>
-                            <button id="stopButton" class="stop-btn-red" style="height: 24px; font-size: 11px; padding: 2px 8px;">
+                            <button id="stopButton" class="stop-btn-red" title="Stop execution immediately">
                                 <i class="codicon codicon-primitive-square"></i>
-                                <span>Cancel Task</span>
+                                <span>Stop Agent</span>
                             </button>
                         </div>
                     </div>
 
-                    <!-- 📈 REAL-TIME PROGRESS BAR & DETAILED SUB-STEP LOGS -->
                     <div id="fused-scout-loader-bar" style="display: none; flex-direction: column; gap: 4px; border-top: 1px solid var(--vscode-widget-border); padding-top: 6px;">
                         <div class="token-progress-container" style="height: 4px; border-radius: 2px; background: rgba(255,255,255,0.03);">
                             <div class="token-progress-bar calculating" id="scout-progress-fill" style="width: 0%;"></div>
@@ -102,25 +209,6 @@
                         <div style="display: flex; justify-content: space-between; font-size: 9px; opacity: 0.6; font-family: var(--vscode-editor-font-family);">
                             <span id="scout-progress-details">Initializing scan...</span>
                             <span id="scout-progress-percent">0%</span>
-                        </div>
-                    </div>
-
-                    <div class="generating-details" style="display: none;">
-                        <div class="step-timeline" id="step-timeline">
-                            <div class="step-dot active"></div>
-                            <div class="step-dot"></div>
-                            <div class="step-dot"></div>
-                            <div class="step-dot"></div>
-                        </div>
-                        <div id="generating-metrics" class="generating-metrics" style="display: none;">
-                            <div class="metric-item">
-                                <i class="codicon codicon-dashboard"></i>
-                                <span id="metrics-tps" class="metric-value">0.0</span> <span class="metric-label">t/s</span>
-                            </div>
-                            <div class="metric-item">
-                                <i class="codicon codicon-symbol-parameter"></i>
-                                <span id="metrics-count" class="metric-value">0</span> <span class="metric-label">tokens</span>
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -265,8 +353,6 @@
                 </div>
             </div>
 
-            <div id="plan-resizer"></div>
-            <div id="agent-plan-zone"></div>
             <button id="scrollToBottomBtn" title="Scroll to bottom">
                 <i class="codicon codicon-arrow-down"></i>
             </button>
@@ -445,12 +531,21 @@
             </div>
             <div class="modal-body">
                 <div class="modal-section" style="border-left: 4px solid var(--vscode-charts-blue);">
-                    <h3 style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">
-                        <span class="codicon codicon-person"></span> User Preferences & Instructions
-                    </h3>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <h3 style="display: flex; align-items: center; gap: 6px; margin: 0;">
+                            <span class="codicon codicon-person"></span> User Preferences & Instructions
+                        </h3>
+                        <button id="cap-save-pref-profile-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 8px;" title="Save current text as a reusable profile">
+                            <i class="codicon codicon-save"></i> Save as Profile
+                        </button>
+                    </div>
                     <p style="font-size: 11px; opacity: 0.8; margin-top: 0; margin-bottom: 8px;">
-                        Specify custom coding guidelines, language requirements, architectural preferences, or formatting rules. These are directly injected into the AI system prompt on every turn.
+                        Select a developer profile or customize your rules. These are injected into the AI system prompt on every turn.
                     </p>
+                    <div class="form-group" style="margin-bottom: 8px;">
+                        <label for="cap-preferences-profile" style="font-size: 10px; font-weight: bold; opacity: 0.7; margin-bottom: 2px; display: block;">Preset Developer Profile</label>
+                        <select id="cap-preferences-profile" class="menu-select" style="width: 100%; margin: 0;"></select>
+                    </div>
                     <div class="form-group" style="margin: 0;">
                         <textarea id="cap-userPreferences" class="commit-textarea" style="height: 90px; width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family); font-size: 12px;" placeholder="e.g. Always use TypeScript strict mode. Prefer functional programming and immutability. Use Tailwind for styling. Keep explanations concise and never use placeholders in code."></textarea>
                     </div>
@@ -586,6 +681,10 @@
                         <div class="checkbox-container" style="margin-top: 12px;">
                             <label class="switch"><input type="checkbox" id="cap-contextGovernorPermanentPruning"><span class="slider"></span></label>
                             <label for="cap-contextGovernorPermanentPruning"><strong>Permanent File Pruning:</strong> Evicted files are permanently removed from context explorer selection.</label>
+                        </div>
+                        <div class="checkbox-container" style="margin-top: 12px;">
+                            <label class="switch"><input type="checkbox" id="cap-contextGovernorCropHistory" checked><span class="slider"></span></label>
+                            <label for="cap-contextGovernorCropHistory"><strong>Crop History when Bloated:</strong> Summarize earlier conversation and important stuff to do when budget is tight.</label>
                         </div>
                     </div>
                     <div class="checkbox-container">
@@ -1222,8 +1321,14 @@
                 </div>
 
                 <div class="form-group">
-                    <label for="wizard-user-preferences" style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8;">Custom User Preferences (Injected into System Prompt)</label>
-                    <textarea id="wizard-user-preferences" rows="2" placeholder="e.g. Strict TypeScript, functional style, no placeholders..." style="width:100%; box-sizing:border-box; font-family:inherit;"></textarea>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                        <label for="wizard-preferences-profile" style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8; margin:0;">User Preferences Profile</label>
+                        <button id="wizard-save-pref-profile-btn" class="code-action-btn secondary-btn" style="height:20px; font-size:10px; padding:0 6px;" title="Save current text as a reusable profile">
+                            <i class="codicon codicon-save"></i> Save as Profile
+                        </button>
+                    </div>
+                    <select id="wizard-preferences-profile" style="width:100%; margin-bottom:6px;"></select>
+                    <textarea id="wizard-user-preferences" rows="3" placeholder="e.g. Strict TypeScript, functional style, no placeholders..." style="width:100%; box-sizing:border-box; font-family:inherit;"></textarea>
                 </div>
 
                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
@@ -1479,7 +1584,7 @@
         try {
             const vscode = acquireVsCodeApi();
             window.vscode = vscode;
-            
+
             window.onerror = function(message, source, lineno, colno, error) {
                 vscode.postMessage({
                     command: 'showError',
@@ -1487,6 +1592,60 @@
                 });
                 console.error("Webview Error:", message, error);
             };
+
+            // Master Listener: Ensures Generating state, Stop button, and Plan visibility update reliably
+            window.addEventListener('message', function(event) {
+                const data = event.data;
+                if (!data) return;
+
+                if (data.command === 'setGeneratingState') {
+                    const overlay = document.getElementById('generating-overlay');
+                    const statusText = document.getElementById('generating-status-text');
+                    const stopBtn = document.getElementById('stopButton');
+                    const sendBtn = document.getElementById('sendButton');
+
+                    if (data.isGenerating) {
+                        if (overlay) overlay.style.setProperty('display', 'flex', 'important');
+                        if (statusText && data.statusText) statusText.textContent = data.statusText;
+                        if (stopBtn) stopBtn.style.setProperty('display', 'inline-flex', 'important');
+                        if (sendBtn) {
+                            sendBtn.innerHTML = '<i class="codicon codicon-primitive-square" style="color: var(--vscode-charts-red, #e51400); font-size: 16px;"></i>';
+                            sendBtn.title = 'Stop Generation (Esc)';
+                            sendBtn.classList.add('is-stopping');
+                        }
+                    } else {
+                        if (overlay) overlay.style.setProperty('display', 'none', 'important');
+                        if (sendBtn) {
+                            sendBtn.innerHTML = '<i class="codicon codicon-send"></i>';
+                            sendBtn.title = 'Send Message (Enter)';
+                            sendBtn.classList.remove('is-stopping');
+                        }
+                    }
+                } else if (data.command === 'displayPlan') {
+                    const plan = data.plan;
+                    const hasActive = !!(plan && (plan.objective || (plan.tasks && plan.tasks.length > 0)));
+                    document.body.classList.toggle('has-active-plan', hasActive);
+                }
+            });
+
+            // Master Hook for Stop Button, morphed Send Button, and Escape Key
+            document.addEventListener('click', function(e) {
+                const target = e.target;
+                if (!target) return;
+                const stopBtn = target.closest('#stopButton, #sendButton.is-stopping');
+                if (stopBtn) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    vscode.postMessage({ command: 'stopGeneration' });
+                    const overlay = document.getElementById('generating-overlay');
+                    if (overlay) overlay.style.setProperty('display', 'none', 'important');
+                    const sendBtn = document.getElementById('sendButton');
+                    if (sendBtn) {
+                        sendBtn.innerHTML = '<i class="codicon codicon-send"></i>';
+                        sendBtn.classList.remove('is-stopping');
+                    }
+                }
+            });
 
             console.log("Webview Bootstrap: API acquired");
             vscode.postMessage({ command: 'webview-bootstrap-ok' });

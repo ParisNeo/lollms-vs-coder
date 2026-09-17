@@ -1,5 +1,5 @@
 import { dom, vscode, state } from './dom.js';
-import { isScrolledToBottom, collapseBlockWithScrollPreservation, parseAiderHunks } from './utils.js';
+import { isScrolledToBottom, collapseBlockWithScrollPreservation, parseAiderHunks, parseFileTagAttributes } from './utils.js';
 import { extractFileBlocks } from './plugins/fileOpPlugin.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -11,7 +11,7 @@ import cytoscapeDagre from 'cytoscape-dagre';
 
 cytoscape.use(coseBilkent);
 cytoscape.use(cytoscapeDagre);
-import { renderWorkspaceMatrix, openRawCodeModal, updateProgressBar } from './ui.js';
+import { renderWorkspaceMatrix, openRawCodeModal, updateProgressBar, setCalculatingTokens } from './ui.js';
 import { applyDiffToString, applySearchReplace, normalizeAiderContent } from './utils.js';
 
 // CodeMirror imports
@@ -33,7 +33,7 @@ import { projectMemoryPlugin } from './plugins/projectMemoryPlugin.js';
 import { milestonePlugin } from './plugins/milestonePlugin.js';
 import { processingPlugin } from './plugins/processingPlugin.js';
 import { formPlugin } from './plugins/formPlugin.js';
-import { fileOpPlugin, fileMutationPlugin } from './plugins/fileOpPlugin.js';
+import { fileOpPlugin, fileMutationPlugin, unpackDirectoryPlugin, peekFilesPlugin } from './plugins/fileOpPlugin.js';
 import { breakpointPlugin } from './plugins/breakpointPlugin.js';
 import { imageAssetPlugin } from './plugins/imageAssetPlugin.js';
 import { imageGenPlugin } from './plugins/imageGenPlugin.js';
@@ -41,6 +41,7 @@ import { imageResultPlugin } from './plugins/imageResultPlugin.js';
 import { planStatusPlugin } from './plugins/planStatusPlugin.js';
 import { toolPlugin } from './plugins/toolPlugin.js';
 import { sparqlPlugin } from './plugins/sparqlPlugin.js';
+import { missionBriefingPlugin } from './plugins/missionBriefingPlugin.js';
 
 function initPlugins() {
     pluginRegistry.length = 0; 
@@ -51,6 +52,8 @@ function initPlugins() {
     registerPlugin(formPlugin);
     registerPlugin(fileOpPlugin);
     registerPlugin(fileMutationPlugin);
+    registerPlugin(unpackDirectoryPlugin);
+    registerPlugin(peekFilesPlugin);
     registerPlugin(breakpointPlugin);
     registerPlugin(imageAssetPlugin);
     registerPlugin(imageGenPlugin);
@@ -58,6 +61,7 @@ function initPlugins() {
     registerPlugin(planStatusPlugin);
     registerPlugin(toolPlugin);
     registerPlugin(sparqlPlugin);
+    registerPlugin(missionBriefingPlugin);
 }
 
 initPlugins();
@@ -908,8 +912,7 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
 // Safely expose startEdit globally after its complete definition
 (window as any).startEdit = startEdit;
 
-function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean, start: number, end: number })[] {
-    // 🧠 Strip thinking blocks BEFORE running path extraction to keep index alignments perfect
+function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean, start: number, end: number, fenceLength?: number })[] {
     const cleanContent = (window as any).processThinkTags ? (window as any).processThinkTags(content).processedContent : content;
     const fileBlocks = extractFileBlocks(cleanContent);
     const fileRanges = fileBlocks.map(b => ({ start: b.start, end: b.end }));
@@ -917,6 +920,9 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
     const isInsideFileBlock = (offset: number) => {
         return fileRanges.some(r => offset >= r.start && offset < r.end);
     };
+
+    const isSearchMarker = (l: string) => /^<{7}\s*search\b/i.test(l.trim());
+    const isReplaceMarker = (l: string) => /^>{7}\s*replace\b/i.test(l.trim());
 
     const infos: any[] = [];
     const lines = cleanContent.split('\n');
@@ -930,27 +936,41 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
         const lineWithNewline = lines[i] + (i < lines.length - 1 ? '\n' : '');
         const lineText = lines[i]; 
         const line = lineText.trim();
-        const match = lineText.match(/^(\s*)(`{3,})/); // Indentation agnostic match
+        const match = lineText.match(/^(\s*)(`{3,})/);
 
-        // Skip any line that resides inside a top-level <file> block
         if (isInsideFileBlock(currentOffset)) {
             currentOffset += lineWithNewline.length;
             continue;
         }
 
         if (!inBlock) {
-            // --- NAKED AIDER DETECTION (OUTSIDE <file> TAGS ONLY) ---
-            if (line.startsWith('<<<<<<< SEARCH')) {
+            // Permissive naked Aider detection (handles <<<<<<< SEARCH, <<<<<<<SEARCH, <<<<<<< search)
+            if (isSearchMarker(line)) {
                 inBlock = true;
                 fenceLength = 0;
                 depth = 1;
                 blockStartOffset = currentOffset;
                 let inferredPath = "";
-                for (let k = i - 1; k >= Math.max(0, i - 10); k--) {
-                    const pathMatch = lines[k].match(/[`"']?([a-zA-Z0-9._\-\/]+\.[a-z0-9]+)[`"']?/);
-                    if (pathMatch) { inferredPath = pathMatch[1]; break; }
+                const knownExts = /\.(py|ts|js|jsx|tsx|json|html|css|scss|md|txt|c|cpp|h|hpp|rs|go|java|cs|php|rb|sh|yaml|yml|xml|toml|sql|vue|svelte)$/i;
+
+                for (let k = i - 1; k >= Math.max(0, i - 15); k--) {
+                    const lineK = lines[k];
+                    const allBackticks = [...lineK.matchAll(/`([^`]+)`/g)].map(m => m[1].trim());
+                    const bestBacktick = allBackticks.find(b => knownExts.test(b) || b.includes('/') || b.includes('\\'));
+                    if (bestBacktick) {
+                        inferredPath = bestBacktick;
+                        break;
+                    }
+                    const pathMatch = lineK.match(/([a-zA-Z0-9._\-\/]+\.[a-zA-Z0-9]+)/);
+                    if (pathMatch && knownExts.test(pathMatch[1])) {
+                        inferredPath = pathMatch[1];
+                        break;
+                    }
+                    if (allBackticks.length > 0 && !inferredPath) {
+                        inferredPath = allBackticks[allBackticks.length - 1];
+                    }
                 }
-                infos.push({ type: 'replace', path: inferredPath, stripFirstLine: false, start: blockStartOffset, isClosed: false });
+                infos.push({ type: 'replace', path: inferredPath, stripFirstLine: false, start: blockStartOffset, isClosed: false, fenceLength: 0 });
                 currentOffset += lineWithNewline.length;
                 continue;
             }
@@ -1017,14 +1037,28 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                 }
 
                 if (!pathStr) {
-                    let j = i - 1;
-                    while (j >= 0 && lines[j].trim() === '') j--;
-                    if (j >= 0) {
-                        const prevLine = lines[j].trim();
-                        const m = prevLine.match(/^(?:(?:\textbf|__)?(File|Diff|Insert|Replace|DeleteCode)(?:\textbf|__)?[:\s])\s*(.+)$/i);
-                        if (m) {
-                            const map: any = { 'File': 'file', 'Diff': 'diff', 'Insert': 'insert', 'Replace': 'replace', 'DeleteCode': 'delete' };
-                            type = map[m[1]]; pathStr = m[2].trim();
+                    const knownExts = /\.(py|ts|js|jsx|tsx|json|html|css|scss|md|txt|c|cpp|h|hpp|rs|go|java|cs|php|rb|sh|yaml|yml|xml|toml|sql|vue|svelte)$/i;
+                    for (let k = i - 1; k >= Math.max(0, i - 15); k--) {
+                        const lineK = lines[k].trim();
+                        if (!lineK) continue;
+
+                        const headerMatch = lineK.match(/^(?:(?:\*\*|__)?(?:File|Diff|Insert|Replace|DeleteCode|Patch)(?:\*\*|__)?[:\s])\s*[`"']?([^\s`"']+\.[a-zA-Z0-9_\-]+)[`"']?/i);
+                        if (headerMatch) {
+                            pathStr = headerMatch[1].trim();
+                            break;
+                        }
+
+                        const allBackticks = [...lineK.matchAll(/`([^`]+)`/g)].map(m => m[1].trim());
+                        const bestBacktick = allBackticks.find(b => knownExts.test(b) || ((b.includes('/') || b.includes('\\')) && b.includes('.')));
+                        if (bestBacktick) {
+                            pathStr = bestBacktick;
+                            break;
+                        }
+
+                        const pathMatch = lineK.match(/([a-zA-Z0-9._\-\/]+\.[a-zA-Z0-9_\-]+)/);
+                        if (pathMatch && knownExts.test(pathMatch[1])) {
+                            pathStr = pathMatch[1];
+                            break;
                         }
                     }
                 }
@@ -1032,11 +1066,11 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                 infos.push({ type, path: pathStr, stripFirstLine, start: blockStartOffset, isClosed: false });
             }
         } else {
-            if (lineText.startsWith('<<<<<<< SEARCH')) {
+            if (isSearchMarker(lineText)) {
                 infos[infos.length - 1].type = 'replace';
             }
 
-            if (fenceLength === 0 && line.startsWith('>>>>>>> REPLACE')) {
+            if (fenceLength === 0 && isReplaceMarker(line)) {
                 inBlock = false;
                 depth = 0;
                 infos[infos.length - 1].end = currentOffset + lineWithNewline.length;
@@ -1089,7 +1123,8 @@ function looksLikeDiff(text: string): boolean {
 }
 
 function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSource?: any, isFinal: boolean = false) {
-    const pres = Array.from(container.querySelectorAll('pre.lollms-placeholder'));
+    // Select both placeholders and any un-enhanced markdown code blocks containing Aider markers
+    const pres = Array.from(container.querySelectorAll('pre.lollms-placeholder, pre:not(.code-line-gutter)'));
     if (pres.length === 0) return;
 
     // Capture the existing details expansion states before we modify the DOM
@@ -1187,10 +1222,11 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
 
         const details = document.createElement('details');
         details.className = 'code-collapsible' + (isMalformedAider ? ' malformed' : '');
-        // Collapse by default if already applied to preserve screen space
         details.open = !isAlreadyAppliedOnLoad;
         details.dataset.rawCode = codeText;
         details.id = `block-${messageId}-${blockIdx}`;
+        details.dataset.path = pathVal;
+        details.dataset.blockIndex = String(blockIdx);
 
         // Format path representation to display targeted OOP members beautifully if present
         let displayPathVal = pathVal;
@@ -1270,7 +1306,9 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
 
         
         // ADDED: Inspect Code Block Button
-        if (pathVal) {
+        const isValidPath = pathVal && pathVal.trim().length > 0 && !/^block\s+\d+$/i.test(pathVal.trim());
+
+        if (isValidPath) {
             actions.appendChild(createButton('Inspect', 'codicon-eye', () => {
                 const isApplied = state.appliedState?.[messageId]?.[blockIdx]?.includes(-1) || false;
                 vscode.postMessage({ 
@@ -1285,7 +1323,7 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             }, 'code-action-btn', 'Inspect this code for potential errors'));
         }
 
-        if (pathVal && ['file', 'replace', 'insert', 'diff'].includes(info?.type || (isAider ? 'replace' : ''))) {
+        if (isValidPath && ['file', 'replace', 'insert', 'diff'].includes(info?.type || (isAider ? 'replace' : ''))) {
             actionableBlockCount++;
             const currentMsgId = messageId;
             const applyBtnId = `apply-btn-${currentMsgId}-${blockIdx}`;
@@ -1880,6 +1918,9 @@ function renderAiderDiff(pre: HTMLElement, rawCode: string, filePath: string, me
     details.open = true;
     details.id = `block-${messageId}-${blockIdx}`;
     details.setAttribute('data-raw-code', rawCode);
+    details.dataset.rawCode = rawCode;
+    details.dataset.path = filePath;
+    details.dataset.blockIndex = String(blockIdx);
 
     const summary = document.createElement('summary');
     summary.className = 'code-summary';
@@ -1955,13 +1996,11 @@ function renderAiderDiff(pre: HTMLElement, rawCode: string, filePath: string, me
     const hunkGroup = document.createElement('div');
     hunkGroup.className = 'aider-hunk-group';
 
-    // IMPROVED REGEX: More permissive with line endings to ensure no hunks are missed
-    const aiderRegex = /<<<<<<< SEARCH\s*[\r\n]+([\s\S]*?)[\r\n]+=======(?:[\r\n]+(?!>>>>>>> REPLACE)([\s\S]*?))?[\r\n]+>>>>>>> REPLACE/g;
-    const matches = [...rawCode.matchAll(aiderRegex)];
+    const hunks = parseAiderHunks(normalizeAiderContent(rawCode));
 
-    matches.forEach((match, hIdx) => {
-        const searchPart = match[1] || "";
-        const replacePart = match[2] || "";
+    hunks.forEach((hunk, hIdx) => {
+        const searchPart = hunk.searchPart || "";
+        const replacePart = hunk.replacePart || "";
 
         const hunkBubble = document.createElement('div');
         hunkBubble.className = 'aider-hunk-bubble';
@@ -1969,7 +2008,7 @@ function renderAiderDiff(pre: HTMLElement, rawCode: string, filePath: string, me
             <div class="aider-hunk-header" onclick="this.closest('.aider-hunk-bubble').classList.toggle('collapsed')">
                 <div style="display:flex; align-items:center; gap:8px; pointer-events: none;">
                     <i class="codicon codicon-chevron-down hunk-toggle-icon"></i>
-                    <span>HUNK ${hIdx + 1} of ${matches.length}</span>
+                    <span>HUNK ${hIdx + 1} of ${hunks.length}</span>
                 </div>
                 <div class="aider-hunk-actions">
                     <button class="code-action-btn apply-btn" data-block-index="${blockIdx}" data-hunk-index="${hIdx}">
@@ -2097,8 +2136,12 @@ function renderFormBlock(xmlContent: string, messageId: string): string {
     const title = titleMatch ? titleMatch[1] : "Decision Required";
     const formId = idMatch ? idMatch[1] : "generic-form";
 
-    // Parse nested input elements
-    const inputRegex = /<input\s+([^>]*?)\s*\/>/gi;
+    const descMatch = xmlContent.match(/<description>([\s\S]*?)<\/description>/i) ||
+                      xmlContent.match(/<p\b[^>]*>([\s\S]*?)<\/p>/i);
+    const descHtml = descMatch ? `<div class="form-description" style="font-size:11px; opacity:0.85; margin-bottom:10px;">${descMatch[1]}</div>` : '';
+
+    // Parse nested input elements supporting both self-closing and standard tags
+    const inputRegex = /<input\s+([^>]*?)\s*\/?>/gi;
     let inputsHtml = "";
     let match;
     const radioGroups: Record<string, string[]> = {};
@@ -2146,6 +2189,7 @@ function renderFormBlock(xmlContent: string, messageId: string): string {
             <span>${sanitizer.sanitize(title)}</span>
         </div>
         <div class="lollms-form-body">
+            ${descHtml}
             ${inputsHtml}
         </div>
         <div class="lollms-form-footer">
@@ -2243,7 +2287,14 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     // 1. EXTRACT AND PACKAGE COHERENT REASONING BLOCKS (THOUGHTS)
     const thinkResult = processThinkTags(sourceText);
-    const mainProcessedContent = thinkResult.processedContent;
+    let mainProcessedContent = thinkResult.processedContent;
+
+    // 🛡️ SANITIZE RESILIENCE: Automatically separate glued text/headers from closing tags
+    // e.g. '</add_files_to_context>### 1. Header' -> '</add_files_to_context>\n\n### 1. Header'
+    mainProcessedContent = mainProcessedContent.replace(
+        /(<\/(?:add_files_to_context|remove_files_from_context|unpack_directory|peek_files|file|project_memory|skill)>)([^\r\n\s<])/gi,
+        '$1\n\n$2'
+    );
 
     // Partition zones in contentDiv to ensure DOM elements (like the animated spinner) are preserved in-place
     let thoughtsZone = contentDiv.querySelector(':scope > .message-thoughts-zone') as HTMLElement;
@@ -2394,7 +2445,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const fullMatch = pMatch[0];
 
             // Strict Line-Start check: verify the match begins at the start of a line
-            const hasLineStart = matchIndex === 0 || mainProcessedContent[matchIndex - 1] === '\n' || mainProcessedContent[matchIndex - 1] === '\r';
+            const textBefore = mainProcessedContent.substring(0, matchIndex);
+            // Allow matching at start of line OR immediately after another tag's closing '>'
+            const hasLineStart = matchIndex === 0 || /[\r\n][ \t]*$/.test(textBefore) || />[ \t]*$/.test(textBefore);
             if (!hasLineStart) continue;
 
             // Also check that the closing tag is at the start of a line (if it is not self-closing and closing tag is present)
@@ -2450,9 +2503,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         const match = firstLine.match(/^`{3,}(\S*)/);
         const language = match ? match[1] : '';
 
-        const rawCode = block.isClosed 
-            ? lines.slice(1, lines.length - 1).join('\n') 
-            : lines.slice(1).join('\n');
+        // For naked Aider blocks (fenceLength === 0), do NOT slice off lines 0 and length-1!
+        const rawCode = (block.fenceLength === 0)
+            ? lines.join('\n')
+            : (block.isClosed ? lines.slice(1, lines.length - 1).join('\n') : lines.slice(1).join('\n'));
 
         const escapedCode = rawCode
             .replace(/&/g, "&amp;")
@@ -2513,7 +2567,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 return forbiddenRanges.some(r => index >= r.start && index < r.end);
             };
 
-            const inlineTagRegex = /<(add_files_to_context|query_architecture|project_memory|lollms_tool|move_files|copy_files|delete_files|remove_files_from_context|skill)\b([^>]*?)>([\s\S]*?)<\/\1>/gi;
+            const inlineTagRegex = /<(add_files_to_context|query_architecture|project_memory|lollms_tool|move_files|copy_files|delete_files|remove_files_from_context|skill|unpack_directory|peek_files)\b([^>]*?)>([\s\S]*?)<\/\1>/gi;
             seg.content = seg.content.replace(inlineTagRegex, (match, tag, attrs, body, offset) => {
                 if (isIndexInsideFence(offset)) return match;
                 return `\`<${tag}${attrs}>${body}</${tag}>\``;
@@ -2566,9 +2620,14 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     // --- APPLY ALL AGGREGATOR (COUNTS BOTH XML <file> TAGS & LEGACY BLOCKS) ---
     const xmlFileBlocks = extractFileBlocks(sourceText);
-    const xmlActionableCount = xmlFileBlocks.filter((b: any) => /path=["'][^"']+["']/i.test(b.attrStr)).length;
+    const xmlActionableCount = xmlFileBlocks.filter((b: any) => {
+        const attrs = parseFileTagAttributes(b.attrStr, b.rawContent);
+        return !!(attrs && attrs.path && !/^block\s+\d+$/i.test(attrs.path.trim()));
+    }).length;
 
-    const globalBlockInfos = extractFilePaths(sourceText);
+    const globalBlockInfos = extractFilePaths(sourceText).filter(info => {
+        return info.path && !/^block\s+\d+$/i.test(info.path.trim());
+    });
     const legacyActionableCount = globalBlockInfos.filter(info => {
         return info.path && ['file', 'diff', 'insert', 'replace', 'delete'].includes(info.type || '');
     }).length;
@@ -2595,7 +2654,75 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     }
 
     if (bodyZone) {
-        bodyZone.innerHTML = DOMPurify.sanitize(finalHtml, SANITIZE_CONFIG);
+        const sanitized = DOMPurify.sanitize(finalHtml, SANITIZE_CONFIG);
+
+        if (!isFinal && bodyZone.children.length > 0) {
+            const tempContainer = document.createElement('div');
+            tempContainer.innerHTML = sanitized;
+
+            const newNodes = Array.from(tempContainer.childNodes);
+            let canReconcileInPlace = true;
+
+            // Stream Stabilization: Reconcile matching cards in-place WITHOUT detaching them from the document.
+            // This ensures CSS rotation animations are never interrupted or reset to 0deg.
+            if (newNodes.length === bodyZone.childNodes.length) {
+                for (let i = 0; i < newNodes.length; i++) {
+                    const oldNode = bodyZone.childNodes[i] as HTMLElement;
+                    const newNode = newNodes[i] as HTMLElement;
+
+                    if (oldNode.nodeType === Node.ELEMENT_NODE && newNode.nodeType === Node.ELEMENT_NODE) {
+                        if (oldNode.id && newNode.id && oldNode.id === newNode.id) {
+                            if (oldNode.classList.contains('file-mutation-card')) {
+                                oldNode.dataset.rawCode = newNode.dataset.rawCode;
+
+                                // Update card body (lines/code) only; leave the summary and running spinners intact
+                                while (oldNode.children.length > 1) {
+                                    oldNode.removeChild(oldNode.lastChild!);
+                                }
+                                const newChildren = Array.from(newNode.children).slice(1);
+                                newChildren.forEach(child => oldNode.appendChild(child));
+                                continue;
+                            }
+                        } else if (oldNode.classList.contains('markdown-body') && newNode.classList.contains('markdown-body')) {
+                            oldNode.innerHTML = newNode.innerHTML;
+                            continue;
+                        }
+                    }
+                    canReconcileInPlace = false;
+                    break;
+                }
+            } else {
+                canReconcileInPlace = false;
+            }
+
+            if (!canReconcileInPlace) {
+                const existingCardsMap = new Map<string, HTMLDetailsElement>();
+                bodyZone.querySelectorAll('.file-mutation-card[id]').forEach((c: any) => {
+                    existingCardsMap.set(c.id, c);
+                });
+
+                const fragment = document.createDocumentFragment();
+                newNodes.forEach((node: any) => {
+                    if (node.nodeType === Node.ELEMENT_NODE && node.id && existingCardsMap.has(node.id)) {
+                        const existingCard = existingCardsMap.get(node.id)!;
+                        existingCard.dataset.rawCode = node.dataset.rawCode;
+
+                        while (existingCard.children.length > 1) {
+                            existingCard.removeChild(existingCard.lastChild!);
+                        }
+                        const newChildren = Array.from(node.children).slice(1);
+                        newChildren.forEach((child: any) => existingCard.appendChild(child));
+                        fragment.appendChild(existingCard);
+                    } else {
+                        fragment.appendChild(node);
+                    }
+                });
+
+                bodyZone.replaceChildren(fragment);
+            }
+        } else {
+            bodyZone.innerHTML = sanitized;
+        }
     }
 
     // Secure Auto-render invocation for Math expressions in Chat Messages
@@ -2621,6 +2748,12 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     });
 
     enhanceCodeBlocks(bodyZone, messageId, rawContent, isFinal);
+
+    // Synchronize master batch button and populate the results list rows
+    if (isFinal) {
+        syncResultsListRows(messageId);
+        checkAndSyncMessageAppliedState(messageId);
+    }
 
     // Attach single unified listener for the Apply All button
     const applyAllBtn = contentDiv.querySelector(`#apply-all-${messageId}`) as HTMLButtonElement;
@@ -2698,6 +2831,7 @@ export interface PatchItem {
     type: 'replace' | 'file' | 'diff';
     blockId: string;
     isApplied: boolean;
+    isExcluded?: boolean;
 }
 
 export function getPatchesForMessage(messageId: string): PatchItem[] {
@@ -2706,6 +2840,7 @@ export function getPatchesForMessage(messageId: string): PatchItem[] {
     if (!wrapper) return patches;
 
     const appliedStateForMsg = state.appliedState?.[messageId] || {};
+    const excludedSet = state.excludedPatches?.[messageId] || new Set<string>();
     const blocks = Array.from(new Set(wrapper.querySelectorAll('details.code-collapsible, .file-mutation-card')));
 
     blocks.forEach((block: any, idx: number) => {
@@ -2734,9 +2869,10 @@ export function getPatchesForMessage(messageId: string): PatchItem[] {
                     const hunkBtn = pane?.querySelector('.apply-btn');
                     const isHunkApplied = isBlockFullyApplied || appliedHunks.includes(hIdx) || 
                         tab.classList.contains('status-completed') || hunkBtn?.classList.contains('applied') || false;
+                    const patchId = `${blockIndex}-${hIdx}`;
 
                     patches.push({
-                        id: `${blockIndex}-${hIdx}`,
+                        id: patchId,
                         blockIndex,
                         hunkIndex: hIdx,
                         path: targetPath,
@@ -2744,13 +2880,15 @@ export function getPatchesForMessage(messageId: string): PatchItem[] {
                         content: codeText,
                         type: changeType,
                         blockId: block.id,
-                        isApplied: isHunkApplied
+                        isApplied: isHunkApplied,
+                        isExcluded: excludedSet.has(patchId)
                     });
                 });
             } else {
                 const isApplied = isBlockFullyApplied || appliedHunks.length > 0 || applyBtn?.classList.contains('applied') || false;
+                const patchId = `${blockIndex}-full`;
                 patches.push({
-                    id: `${blockIndex}-full`,
+                    id: patchId,
                     blockIndex,
                     hunkIndex: undefined,
                     path: targetPath,
@@ -2758,7 +2896,8 @@ export function getPatchesForMessage(messageId: string): PatchItem[] {
                     content: codeText,
                     type: changeType,
                     blockId: block.id,
-                    isApplied
+                    isApplied,
+                    isExcluded: excludedSet.has(patchId)
                 });
             }
             return;
@@ -2771,10 +2910,22 @@ export function getPatchesForMessage(messageId: string): PatchItem[] {
             if (!isNaN(parsed)) blockIndex = parsed;
         }
 
-        const rawCode = block.dataset.rawCode || "";
+        const rawCode = block.dataset.rawCode || block.querySelector('pre code')?.textContent || "";
         const pathInp = block.querySelector('.path-editor-input') as HTMLInputElement;
-        const path = pathInp ? pathInp.value.trim() : (block.dataset.path || "");
-        if (!path) return;
+        let path = (pathInp ? pathInp.value.trim() : '') || block.dataset.path || "";
+        if (!path) {
+            const labelEl = block.querySelector('.path-display-label, .summary-lang-label');
+            if (labelEl) {
+                const text = (labelEl.textContent || '').trim();
+                const m = text.match(/([a-zA-Z0-9._\-\/]+\.[a-zA-Z0-9_\-]+)/);
+                if (m) path = m[1];
+            }
+        }
+
+        // Strictly ignore blocks without an explicit file path (do not treat "Block X" as a patch or file)
+        if (!path || /^block\s+\d+$/i.test(path.trim())) {
+            return;
+        }
 
         const hunkTabs = Array.from(block.querySelectorAll('.hunk-tab')) as HTMLElement[];
         const hunkBubbles = Array.from(block.querySelectorAll('.aider-hunk-bubble'));
@@ -2785,9 +2936,10 @@ export function getPatchesForMessage(messageId: string): PatchItem[] {
                 const hunkBtn = pane?.querySelector('.apply-btn');
                 const isHunkApplied = isBlockFullyApplied || appliedHunks.includes(hIdx) || 
                     tab.classList.contains('status-completed') || hunkBtn?.classList.contains('applied') || false;
+                const patchId = `${blockIndex}-${hIdx}`;
 
                 patches.push({
-                    id: `${blockIndex}-${hIdx}`,
+                    id: patchId,
                     blockIndex,
                     hunkIndex: hIdx,
                     path,
@@ -2795,16 +2947,18 @@ export function getPatchesForMessage(messageId: string): PatchItem[] {
                     content: rawCode,
                     type: 'replace',
                     blockId: block.id,
-                    isApplied: isHunkApplied
+                    isApplied: isHunkApplied,
+                    isExcluded: excludedSet.has(patchId)
                 });
             });
         } else if (hunkBubbles.length > 0) {
             hunkBubbles.forEach((hunk: any, hIdx: number) => {
                 const btn = hunk.querySelector('.apply-btn');
                 const isHunkApplied = isBlockFullyApplied || appliedHunks.includes(hIdx) || btn?.classList.contains('applied') || false;
+                const patchId = `${blockIndex}-${hIdx}`;
 
                 patches.push({
-                    id: `${blockIndex}-${hIdx}`,
+                    id: patchId,
                     blockIndex,
                     hunkIndex: hIdx,
                     path,
@@ -2812,7 +2966,8 @@ export function getPatchesForMessage(messageId: string): PatchItem[] {
                     content: rawCode,
                     type: 'replace',
                     blockId: block.id,
-                    isApplied: isHunkApplied
+                    isApplied: isHunkApplied,
+                    isExcluded: excludedSet.has(patchId)
                 });
             });
         } else {
@@ -2820,9 +2975,10 @@ export function getPatchesForMessage(messageId: string): PatchItem[] {
             const labelText = block.querySelector('.summary-lang-label span')?.textContent || "";
             const changeType = labelText.toLowerCase().includes('diff') ? 'diff' : 'file';
             const isApplied = isBlockFullyApplied || appliedHunks.length > 0 || applyBtn?.classList.contains('applied') || false;
+            const patchId = `${blockIndex}-full`;
 
             patches.push({
-                id: `${blockIndex}-full`,
+                id: patchId,
                 blockIndex,
                 hunkIndex: undefined,
                 path,
@@ -2830,7 +2986,8 @@ export function getPatchesForMessage(messageId: string): PatchItem[] {
                 content: rawCode,
                 type: changeType,
                 blockId: block.id,
-                isApplied
+                isApplied,
+                isExcluded: excludedSet.has(patchId)
             });
         }
     });
@@ -2851,7 +3008,7 @@ export function gatherChangesFromBlocks(messageId: string, isUndo: boolean = fal
             blockId: p.blockId
         }));
     } else {
-        return patches.filter(p => !p.isApplied).map(p => ({
+        return patches.filter(p => !p.isApplied && !p.isExcluded).map(p => ({
             type: p.type,
             path: p.path,
             content: p.content,
@@ -3040,6 +3197,10 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
 
         if (role === 'user') {
             avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
+        } else if (role === 'system') {
+            avatarDiv.innerHTML = '<span class="codicon codicon-warning" style="color:var(--vscode-charts-red)"></span>';
+        } else {
+            avatarDiv.innerHTML = '<span class="codicon codicon-hubot" style="color:var(--vscode-textLink-foreground)"></span>';
         }
 
         messageDiv.appendChild(avatarDiv);
@@ -3128,16 +3289,26 @@ export class ContextPresenter {
         emptyMsg: string, 
         allowSummarize: boolean = false,
         fileTokensMap: Record<string, number> = {},
-        sortOrder: 'heavy-to-light' | 'light-to-heavy' | 'name' = 'heavy-to-light'
+        sortOrder: 'heavy-to-light' | 'light-to-heavy' | 'name' = 'heavy-to-light',
+        mutedFiles: string[] = []
     ): string {
         if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
 
         const registry = (window as any).lazyFilesRegistry;
 
+        const isPathMuted = (p: string) => {
+            const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+            return mutedFiles.some((m: string) => {
+                const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                return cleanM === cleanP || cleanP.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanP);
+            });
+        };
+
         // Normalize list items to objects with byte sizes and approximate token conversions
         const normalized = list.map(item => {
             const rawPath = typeof item === 'string' ? item : item.path;
             const regItem = registry?.get(rawPath);
+            const isMuted = isPathMuted(rawPath);
 
             let bytes = 0;
             let tokens = 0;
@@ -3173,7 +3344,7 @@ export class ContextPresenter {
                 tokens = Math.max(1, Math.ceil(bytes / 3.5));
             }
 
-            return { path: rawPath, bytes, tokens, state: fileState };
+            return { path: rawPath, bytes, tokens, state: fileState, isMuted };
         });
 
         // Apply sorting
@@ -3188,6 +3359,7 @@ export class ContextPresenter {
         return `<ul class="context-file-list">
             ${normalized.map(item => {
                 const f = item.path;
+                const isMuted = item.isMuted;
                 const bytes = item.bytes || 0;
                 const tokens = item.tokens || (bytes > 0 ? Math.ceil(bytes / 3.5) : 0);
                 const uniqueDomId = f.replace(/[^a-zA-Z0-9]/g, '_');
@@ -3203,16 +3375,27 @@ export class ContextPresenter {
                 }
 
                 const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
-                const weightClass = bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light');
-                const tokenBadge = `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`;
+                const weightClass = isMuted ? 'weight-muted' : (bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light'));
+                const tokenBadge = isMuted
+                    ? `<span class="file-token-badge weight-muted" title="File is deactivated for this discussion only">[MUTED]</span>`
+                    : `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`;
+
+                const muteIcon = isMuted ? 'codicon-eye-closed' : 'codicon-eye';
+                const muteClass = isMuted ? 'is-muted' : 'is-active';
+                const muteTitle = isMuted 
+                    ? 'Reactivate file content for this discussion (Unmute)' 
+                    : 'Deactivate file content for this discussion (Mute / Manual Governor)';
 
                 return `
-                <li class="context-item" style="flex-direction: column; align-items: stretch; gap: 4px;">
-                    <div style="display:flex; align-items:center; width:100%; gap: 6px;">
+                <li class="context-item ${isMuted ? 'file-muted' : ''}" style="flex-direction: column; align-items: stretch; gap: 4px;">
+                    <div style="display:flex; align-items:center; width:100%; gap: 4px;">
+                        <button class="toggle-mute-file-btn ${muteClass}" data-path="${f}" title="${muteTitle}">
+                            <span class="codicon ${muteIcon}"></span>
+                        </button>
                         <details class="info-collapsible lazy-file-accordion" data-path="${f}" style="flex: 1; min-width:0; border:none; padding:0;">
                             <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600; display:flex; align-items:center; gap: 6px;">
                                 <span class="codicon codicon-file"></span>
-                                <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;" title="${f}">${fileName}</span>
+                                <span class="path-text" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;" title="${f}">${fileName}</span>
                                 ${dirName ? `<span style="font-size:9px; opacity:0.45; margin-right:4px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${dirName}</span>` : ''}
                                 ${tokenBadge}
                             </summary>
@@ -3228,7 +3411,7 @@ export class ContextPresenter {
                             <button class="open-context-btn" data-value="${f}" title="Inspect / Edit File">
                                 <span class="codicon codicon-edit"></span>
                             </button>
-                            <button class="remove-context-btn" data-type="file" data-value="${f}" title="Remove from context">
+                            <button class="remove-context-btn" data-type="file" data-value="${f}" title="Remove from context across all discussions">
                                 <span class="codicon codicon-close"></span>
                             </button>
                         </div>
@@ -3237,22 +3420,34 @@ export class ContextPresenter {
            </ul>`;
     }
 
-    public static renderSkills(skills: any[]): string {
+    public static renderSkills(skills: any[], mutedSkills: string[] = []): string {
         return skills && skills.length > 0
             ? `<div class="context-skill-list">
-                ${skills.map(s => `
-                    <div class="context-item skill-item" style="display: flex; align-items: flex-start; gap: 8px; border-bottom: 1px solid var(--vscode-widget-border); padding: 4px 0;">
+                ${skills.map(s => {
+                    const isMuted = mutedSkills.includes(s.id);
+                    const muteIcon = isMuted ? 'codicon-eye-closed' : 'codicon-eye';
+                    const muteClass = isMuted ? 'is-muted' : 'is-active';
+                    const muteTitle = isMuted ? 'Reactivate skill for this discussion' : 'Deactivate skill for this discussion (Mute)';
+
+                    return `
+                    <div class="context-item skill-item ${isMuted ? 'file-muted' : ''}" style="display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--vscode-widget-border); padding: 4px 6px;">
+                        <button class="toggle-mute-skill-btn ${muteClass}" data-id="${s.id}" title="${muteTitle}">
+                            <span class="codicon ${muteIcon}"></span>
+                        </button>
                         <details class="info-collapsible" style="flex: 1; border: none; padding: 0;">
-                            <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600;">${DOMPurify.sanitize(s.name)}</summary>
+                            <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600; display:flex; align-items:center; gap:4px;">
+                                <span class="path-text">${DOMPurify.sanitize(s.name)}</span>
+                                ${isMuted ? '<span class="file-token-badge weight-muted">[MUTED]</span>' : ''}
+                            </summary>
                             <div class="skill-content" style="padding: 8px; background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 4px; font-family: var(--vscode-editor-font-family); font-size: 10px; max-height: 150px; overflow-y: auto;">
                                 ${DOMPurify.sanitize(s.content)}
                             </div>
                         </details>
-                        <button class="remove-context-btn" data-type="skill" data-value="${s.id}" title="Remove skill" style="padding: 2px; opacity: 0.6;">
+                        <button class="remove-context-btn" data-type="skill" data-value="${s.id}" title="Remove skill from project" style="padding: 2px; opacity: 0.6;">
                             <span class="codicon codicon-close"></span>
                         </button>
                     </div>
-                `).join('')}
+                `;}).join('')}
                </div>`
             : '<div class="empty-context-msg">No specialized skills currently active.</div>';
     }
@@ -3260,190 +3455,237 @@ export class ContextPresenter {
     public static getDashboardHtml(
         themeClass: string,
         isAgentActive: boolean,
-        isNewDiscussion: boolean,
         finalSelections: string[],
         finalFilesCount: number,
+        finalSkillsCount: number,
         projectFilesHtml: string,
         externalFilesHtml: string,
         finalDiagrams: any[],
         finalTools: any[],
         briefing: string,
         skillsHtml: string,
-        briefingHtml: string
+        briefingHtml: string,
+        isExpanded: boolean = false,
+        mutedTools: string[] = [],
+        mutedDiagrams: string[] = []
     ): string {
+        const expandIcon = isExpanded ? 'codicon-chevron-up' : 'codicon-chevron-down';
+        const expandText = isExpanded ? 'Collapse' : 'Expand';
+
         return `
-        <div class="context-message ${themeClass}" id="fused-context-dashboard">
-            <details class="fused-context-details">
-                <summary>
-                    <div class="fused-hud-header" style="display: flex; flex-direction: column; gap: 10px; padding: 12px; background: rgba(0,0,0,0.2);">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div id="badge-dashboard-panel" style="display: flex; align-items: center; gap: 10px;">
-                                ${isAgentActive 
-                                    ? `<div class="agent-active-indicator">
-                                        <div class="genie-orb-portal" style="transform: scale(0.55);">
-                                            <div class="orb-ring-outer"></div>
-                                            <div class="orb-ring-inner"></div>
-                                            <div class="orb-core"></div>
+        <div class="context-message ${themeClass}" id="fused-context-dashboard" data-expanded="${isExpanded ? 'true' : 'false'}">
+            <div class="fused-hud-header" style="display: flex; flex-direction: column; gap: 10px; padding: 12px; background: rgba(0,0,0,0.2);">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
+                    <div id="badge-dashboard-panel" style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;">
+                        ${isAgentActive 
+                            ? `<div class="agent-active-indicator">
+                                <div class="genie-orb-portal" style="transform: scale(0.55);">
+                                    <div class="orb-ring-outer"></div>
+                                    <div class="orb-ring-inner"></div>
+                                    <div class="orb-core"></div>
+                                </div>
+                               </div>` 
+                            : '<span class="codicon codicon-library" style="opacity:0.6;"></span>'}
+                        <div class="active-badges" id="active-badges"></div>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+                        <div class="hud-search-container" id="hud-search-bar" style="display: flex; align-items: center; gap: 4px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; padding: 2px 6px; height: 26px; box-sizing: border-box;">
+                            <i class="codicon codicon-search" style="font-size: 12px; opacity: 0.7; color: var(--vscode-input-foreground); margin-left: 2px;"></i>
+                            <input type="text" id="hud-search-input" placeholder="Search discussion..." style="background: transparent; border: none; color: var(--vscode-input-foreground); outline: none; font-family: var(--vscode-font-family); font-size: 11px; width: 140px; padding: 0 4px;" />
+                            <span id="hud-search-count" style="font-size: 10px; opacity: 0.6; min-width: 25px; text-align: center; font-family: var(--vscode-editor-font-family); user-select: none;"></span>
+                            <button id="hud-search-code-toggle" class="icon-btn" title="Search Scope: Discussion Text Only (Click to include Code & Files)" style="width: 18px; height: 18px; padding: 0; opacity: 0.5;">
+                                <i class="codicon codicon-code" style="font-size: 11px;"></i>
+                            </button>
+                            <button id="hud-search-prev" class="icon-btn" title="Previous Match (Shift+Enter)" style="width: 18px; height: 18px; padding: 0;">
+                                <i class="codicon codicon-arrow-up" style="font-size: 11px;"></i>
+                            </button>
+                            <button id="hud-search-next" class="icon-btn" title="Next Match (Enter)" style="width: 18px; height: 18px; padding: 0;">
+                                <i class="codicon codicon-arrow-down" style="font-size: 11px;"></i>
+                            </button>
+                            <button id="hud-search-clear" class="icon-btn" title="Clear Search (Escape)" style="width: 18px; height: 18px; padding: 0; display: none;">
+                                <i class="codicon codicon-close" style="font-size: 11px;"></i>
+                            </button>
+                            <div style="width: 1px; height: 12px; background: var(--vscode-widget-border); margin: 0 2px;"></div>
+                            <button id="hud-search-all-btn" class="icon-btn" title="Deep Search across ALL discussions..." style="width: 18px; height: 18px; padding: 0; color: var(--vscode-textLink-foreground);">
+                                <i class="codicon codicon-globe" style="font-size: 11px;"></i>
+                            </button>
+                        </div>
+
+                        <!-- 🚀 EXPLICIT DEDICATED COLLAPSE / UNCOLLAPSE BUTTON -->
+                        <button id="hud-toggle-expand-btn" class="code-action-btn secondary-btn hud-expand-btn" title="${isExpanded ? 'Collapse Context Panel' : 'Expand Context Panel to inspect & configure'}" style="height: 26px; font-size: 11px; padding: 0 10px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;">
+                            <i class="codicon ${expandIcon}" id="hud-expand-icon"></i>
+                            <span id="hud-expand-label">${expandText}</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="token-fused-bar" style="display: flex; flex-direction: column; gap: 4px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <button id="hud-quick-refresh-btn" class="icon-btn" title="Refresh & Recalculate Context Tokens" style="padding: 2px; color: var(--vscode-textLink-foreground); opacity: 0.9; cursor: pointer;">
+                            <i class="codicon codicon-refresh" style="font-size: 12px;"></i>
+                        </button>
+                        <div class="token-progress-container" id="token-progress-container" style="flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.06);">
+                            <div class="token-progress-bar" id="token-progress-bar"></div>
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span id="token-count-label" style="font-size: 9px; opacity: 0.75; font-family: var(--vscode-editor-font-family);">Tokens: Initializing...</span>
+                        <div id="token-bar-legend" class="token-legend" style="display: none; gap: 10px;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Controlled expandable panel -->
+            <div class="hud-body-panel" id="hud-body-panel" style="display: ${isExpanded ? 'flex' : 'none'}; flex-direction: column;">
+                <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 12px; padding: 0 4px;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="role-name" style="font-size: 12px;">Intelligence Context Explorer</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
+                        <select id="hud-selections-dropdown" ${finalSelections.length === 0 ? 'disabled' : ''} style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: ${finalSelections.length === 0 ? 'default' : 'pointer'}; height: 22px; max-width: 150px; outline: none; display: inline-block; opacity: ${finalSelections.length === 0 ? '0.5' : '1'};">
+                            <option value="">${finalSelections.length > 0 ? '📁 Select Saved Context...' : '📁 No Saved Contexts'}</option>
+                            ${finalSelections.map((s: string) => `<option value="${s}">${s.replace('.lollms-ctx', '')}</option>`).join('')}
+                        </select>                        
+                        <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
+                        <button id="load-context-btn" class="icon-btn" title="Load Context (Replace Selection)" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
+                        <button id="add-context-btn" class="icon-btn" title="Add Context (Append to Selection)" style="padding: 2px; color: var(--vscode-charts-green);"><i class="codicon codicon-folder-active"></i></button>
+                        <button id="reset-context-bubble-btn" class="icon-btn" title="Full Context Reset" style="padding: 2px; color: var(--vscode-errorForeground);"><i class="codicon codicon-clear-all"></i></button>
+                    </div>
+                </div>
+
+                <div class="hud-scroll-container">
+                    <details class="info-collapsible briefing-details" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-purple);">
+                        <summary>
+                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                <span>Mission Briefing & Constraints</span>
+                                <button id="edit-briefing-btn" class="icon-btn" title="Edit Briefing" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-shield"></i></button>
+                            </div>
+                        </summary>
+                        <div class="collapsible-content">
+                            <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5; color: var(--vscode-editor-foreground);">
+                                ${briefingHtml}
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="info-collapsible files-details" open style="margin-bottom: 8px;">
+                        <summary>
+                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                <span class="files-count-label">Selected Files (${finalFilesCount})</span>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <button id="view-usage-context-btn" class="icon-btn" title="Verify File Sizes / Token Usage"><i class="codicon codicon-dashboard"></i></button>
+                                    <div style="width: 1px; height: 12px; background: var(--vscode-widget-border);"></div>
+                                    <button id="add-file-context-btn" class="icon-btn" title="Add File"><i class="codicon codicon-add"></i></button>
+                                    <button id="web-context-btn" class="icon-btn" title="Web Discovery"><i class="codicon codicon-globe"></i></button>
+                                    <button id="search-add-context-btn" class="icon-btn" title="Power Search"><i class="codicon codicon-search"></i></button>
+                                </div>
+                            </div>
+                        </summary>
+                        <div class="collapsible-content hud-files-container" style="padding-top: 8px;">
+                            <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+                                <span>Project Files</span>
+                                <div style="display: flex; gap: 4px; align-items: center;">
+                                    <button id="sort-files-btn" class="section-bulk-btn" title="Toggle sorting order (Heavy to Light / A-Z)">
+                                        <span class="codicon ${state.fileSortOrder === 'name' ? 'codicon-sort-alphabetically' : (state.fileSortOrder === 'light-to-heavy' ? 'codicon-sort-numeric-up' : 'codicon-sort-numeric-down')}"></span>
+                                        <span id="sort-files-label">${state.fileSortOrder === 'name' ? 'A-Z' : (state.fileSortOrder === 'light-to-heavy' ? 'Light to Heavy' : 'Heavy to Light')}</span>
+                                    </button>
+                                    ${finalFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn"><span class="codicon codicon-checklist"></span> Bulk Remove</button>` : ''}
+                                </div>
+                            </h4>
+                            <div class="hud-project-files-list">${projectFilesHtml}</div>
+                            <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+                                <span>External & Research</span>
+                                ${externalFilesHtml.includes('context-item') ? `<div style="display: flex; gap: 4px;"><button id="bulk-process-external-btn" class="section-bulk-btn"><span class="codicon codicon-wand"></span> Process</button><button id="bulk-delete-external-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Delete</button></div>` : ''}
+                            </h4>
+                            <div class="hud-external-files-list">${externalFilesHtml}</div>
+                        </div>
+                    </details>
+
+                    <details class="info-collapsible diagrams-details" style="margin-bottom: 8px;">
+                        <summary>
+                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                <span class="diagrams-count-label">Active Diagrams (${(finalDiagrams || []).length})</span>
+                                <button id="add-diagram-context-btn" class="icon-btn" title="Add Diagram"><i class="codicon codicon-add"></i></button>
+                            </div>
+                        </summary>
+                        <div class="collapsible-content">
+                                ${finalDiagrams && finalDiagrams.length > 0 ? finalDiagrams.map(d => `
+                                    <div class="context-item" style="flex-direction:column; align-items:stretch; margin-bottom:12px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); border-radius:6px; padding:8px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid var(--vscode-widget-border); padding-bottom:4px;">
+                                            <span style="font-weight:bold; font-size:11px; text-transform:uppercase; color:var(--vscode-textLink-foreground);"><i class="codicon codicon-graph"></i> ${d.type.replace('_', ' ')}</span>
+                                            <button class="remove-context-btn" data-type="diagram" data-value="${d.type}" title="Remove diagram from context"><span class="codicon codicon-close"></span></button>
                                         </div>
-                                       </div>` 
-                                    : '<span class="codicon codicon-library" style="opacity:0.6;"></span>'}
-                                <div class="active-badges" id="active-badges"></div>
-                            </div>
-                        </div>
-
-                        <div class="token-fused-bar" style="display: flex; flex-direction: column; gap: 4px;">
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <button id="hud-quick-refresh-btn" class="icon-btn" title="Refresh & Recalculate Context Tokens" style="padding: 2px; color: var(--vscode-textLink-foreground); opacity: 0.9; cursor: pointer;">
-                                    <i class="codicon codicon-refresh" style="font-size: 12px;"></i>
-                                </button>
-                                <div class="token-progress-container" id="token-progress-container" style="flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.06);">
-                                    <div class="token-progress-bar" id="token-progress-bar"></div>
-                                </div>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <span id="token-count-label" style="font-size: 9px; opacity: 0.6; font-family: var(--vscode-editor-font-family);">Calculating...</span>
-                                <div id="token-bar-legend" class="token-legend" style="display: none; gap: 10px;"></div>
-                            </div>
-                        </div>
-                    </div>
-                </summary>
-
-                <div class="message-body">
-                    <div id="welcome-message" style="display: ${isNewDiscussion ? 'block' : 'none'}; padding: 12px; margin-bottom: 20px; background: rgba(0,0,0,0.15); border-radius: 6px; border: 1px dashed var(--vscode-widget-border);">
-                        <h3 style="margin:0 0 8px 0; font-size:13px; color: var(--vscode-textLink-foreground); display:flex; align-items:center; gap:8px;">
-                            <i class="codicon codicon-rocket"></i> Welcome to Lollms VS Coder
-                        </h3>
-                        <ul style="padding-left: 20px; margin: 0; font-size: 11px; opacity: 0.85; display: flex; flex-direction: column; gap: 4px;">
-                            <li>Right-click files in the explorer to <b>Include in AI Context</b>.</li>
-                            <li>Toggle 🤖 <b>Agent Mode</b> for complex autonomous missions.</li>
-                            <li>Toggle 🧠 <b>Auto-Context</b> to let the AI scout relevant files for you.</li>
-                            <li>Select your preferred 🔌 <b>Model and Persona</b> in the header above.</li>
-                        </ul>
-                    </div>
-
-                    <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 12px;">
-                        <div style="display:flex; align-items:center; gap:8px;">
-                            <span class="role-name">Intelligence Context</span>
-                        </div>
-                        <div style="display: flex; gap: 8px; align-items: center;">
-                            <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
-                            <select id="hud-selections-dropdown" ${finalSelections.length === 0 ? 'disabled' : ''} style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: ${finalSelections.length === 0 ? 'default' : 'pointer'}; height: 22px; max-width: 150px; outline: none; display: inline-block; opacity: ${finalSelections.length === 0 ? '0.5' : '1'};">
-                                <option value="">${finalSelections.length > 0 ? '📁 Select Saved Context...' : '📁 No Saved Contexts'}</option>
-                                ${finalSelections.map((s: string) => `<option value="${s}">${s.replace('.lollms-ctx', '')}</option>`).join('')}
-                            </select>                        
-                            <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
-                            <button id="load-context-btn" class="icon-btn" title="Load Context (Replace Selection)" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
-                            <button id="add-context-btn" class="icon-btn" title="Add Context (Append to Selection)" style="padding: 2px; color: var(--vscode-charts-green);"><i class="codicon codicon-folder-active"></i></button>
-                            <button id="reset-context-bubble-btn" class="icon-btn" title="Full Context Reset" style="padding: 2px; color: var(--vscode-errorForeground);"><i class="codicon codicon-clear-all"></i></button>
-                        </div>
-                    </div>
-                    <div class="hud-scroll-container">
-                        <details class="info-collapsible briefing-details" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);">
-                            <summary>
-                                <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                    <span>Mission Briefing & Constraints</span>
-                                    <button id="edit-briefing-btn" class="icon-btn" title="Edit Briefing" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-shield"></i></button>
-                                </div>
-                            </summary>
-                            <div class="collapsible-content">
-                                <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5; color: var(--vscode-editor-foreground);">
-                                    ${briefingHtml}
-                                </div>
-                            </div>
-                        </details>
-
-                        <details class="info-collapsible files-details" style="margin-bottom: 6px;">
-                            <summary>
-                                <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                    <span class="files-count-label">Selected Files (${finalFilesCount})</span>
-                                    <div style="display: flex; gap: 8px; align-items: center;">
-                                        <button id="view-usage-context-btn" class="icon-btn" title="Verify File Sizes / Token Usage"><i class="codicon codicon-dashboard"></i></button>
-                                        <div style="width: 1px; height: 12px; background: var(--vscode-widget-border);"></div>
-                                        <button id="add-file-context-btn" class="icon-btn" title="Add File"><i class="codicon codicon-add"></i></button>
-                                        <button id="web-context-btn" class="icon-btn" title="Web Discovery"><i class="codicon codicon-globe"></i></button>
-                                        <button id="search-add-context-btn" class="icon-btn" title="Power Search"><i class="codicon codicon-search"></i></button>
+                                        <div class="hud-diagram-render-container" data-type="${d.type}" style="overflow:auto; max-height:450px;">
+                                            <pre class="mermaid" style="background:transparent; border:none; padding:0; margin:0;">${d.mermaid}</pre>
+                                        </div>
                                     </div>
+                                `).join('') : '<div class="empty-context-msg">No diagrams included. Click the + button above to generate a Call Graph, Inheritance Diagram, or Import Graph.</div>'}
+                        </div>
+                    </details>
+
+                    <details class="info-collapsible tools-details" style="margin-bottom: 8px;">
+                        <summary>
+                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                <span class="tools-count-label">Active Tools (${(!state.capabilities?.agentMode && !state.capabilities?.dynamicMode) ? '0 - Disabled in Assistant Mode' : finalTools.length})</span>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <button id="add-tool-context-btn" class="icon-btn" title="Equip Tool"><i class="codicon codicon-add"></i></button>
+                                    ${(!state.capabilities?.agentMode && !state.capabilities?.dynamicMode) ? '' : (finalTools.length > 0 ? `<button id="bulk-remove-tools-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Clear</button>` : '')}
                                 </div>
-                            </summary>
-                            <div class="collapsible-content hud-files-container" style="padding-top: 8px;">
-                                <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
-                                    <span>Project Files</span>
-                                    <div style="display: flex; gap: 4px; align-items: center;">
-                                        <button id="sort-files-btn" class="section-bulk-btn" title="Toggle sorting order (Heavy to Light / A-Z)">
-                                            <span class="codicon ${state.fileSortOrder === 'name' ? 'codicon-sort-alphabetically' : (state.fileSortOrder === 'light-to-heavy' ? 'codicon-sort-numeric-up' : 'codicon-sort-numeric-down')}"></span>
-                                            <span id="sort-files-label">${state.fileSortOrder === 'name' ? 'A-Z' : (state.fileSortOrder === 'light-to-heavy' ? 'Light to Heavy' : 'Heavy to Light')}</span>
-                                        </button>
-                                        ${finalFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn"><span class="codicon codicon-checklist"></span> Bulk Remove</button>` : ''}
-                                    </div>
-                                </h4>
-                                <div class="hud-project-files-list">${projectFilesHtml}</div>
-                                <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
-                                    <span>External & Research</span>
-                                    ${externalFilesHtml.includes('context-item') ? `<div style="display: flex; gap: 4px;"><button id="bulk-process-external-btn" class="section-bulk-btn"><span class="codicon codicon-wand"></span> Process</button><button id="bulk-delete-external-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Delete</button></div>` : ''}
-                                </h4>
-                                <div class="hud-external-files-list">${externalFilesHtml}</div>
                             </div>
-                        </details>
-                        <details class="info-collapsible diagrams-details" style="margin-bottom: 6px;">
-                            <summary>
-                                <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                    <span class="diagrams-count-label">Active Diagrams (${(finalDiagrams || []).length})</span>
-                                    <button id="add-diagram-context-btn" class="icon-btn" title="Add Diagram"><i class="codicon codicon-add"></i></button>
-                                </div>
-                            </summary>
-                            <div class="collapsible-content">
-                                ${finalDiagrams && finalDiagrams.length > 0 ? finalDiagrams.map(d => `<div class="context-item" style="flex-direction:column; align-items:stretch;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;"><span style="font-weight:bold; font-size:11px;">${d.type.replace('_', ' ').toUpperCase()}</span><button class="remove-context-btn" data-type="diagram" data-value="${d.type}"><span class="codicon codicon-close"></span></button></div><pre class="mermaid" style="background:var(--vscode-editor-background); border-radius:4px; padding:5px;">${d.mermaid}</pre></div>`).join('') : '<div class="empty-context-msg">No diagrams included.</div>'}
-                            </div>
-                        </details>
-                        <details class="info-collapsible tools-details" style="margin-bottom: 6px;">
-                            <summary>
-                                <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                    <span class="tools-count-label">Active Tools (${finalTools.length})</span>
-                                    <div style="display: flex; gap: 8px; align-items: center;">
-                                        <button id="add-tool-context-btn" class="icon-btn" title="Equip Tool"><i class="codicon codicon-add"></i></button>
-                                        ${finalTools.length > 0 ? `<button id="bulk-remove-tools-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Clear</button>` : ''}
-                                    </div>
-                                </div>
-                            </summary>
-                            <div class="collapsible-content collapsible-content-inner-tools" style="padding-top: 8px;">
-                                <div class="hud-tools-list">
-                                    ${finalTools && finalTools.length > 0
+                        </summary>
+                        <div class="collapsible-content collapsible-content-inner-tools" style="padding-top: 8px;">
+                            <div class="hud-tools-list">
+                                ${(!state.capabilities?.agentMode && !state.capabilities?.dynamicMode)
+                                    ? '<div class="empty-context-msg">Tools are deactivated in Assistant mode. Switch to <strong>Co-Engineer (🧠)</strong> or <strong>Agent (🤖)</strong> mode to enable tools.</div>'
+                                    : (finalTools && finalTools.length > 0
                                         ? `<div class="context-file-list">
-                                            ${finalTools.map(t => `
-                                                <div class="context-item" style="padding: 4px 8px;">
+                                            ${finalTools.map(t => {
+                                                const isMuted = mutedTools.includes(t.name);
+                                                const muteIcon = isMuted ? 'codicon-eye-closed' : 'codicon-eye';
+                                                const muteClass = isMuted ? 'is-muted' : 'is-active';
+                                                const muteTitle = isMuted ? 'Reactivate tool for this discussion' : 'Deactivate tool for this discussion (Mute)';
+
+                                                return `
+                                                <div class="context-item ${isMuted ? 'file-muted' : ''}" style="padding: 4px 8px; display:flex; align-items:center; gap:6px;">
+                                                    <button class="toggle-mute-tool-btn ${muteClass}" data-name="${t.name}" title="${muteTitle}">
+                                                        <span class="codicon ${muteIcon}"></span>
+                                                    </button>
                                                     <span class="codicon codicon-wrench" style="color:var(--vscode-charts-orange); opacity:0.8;"></span>
-                                                    <span class="context-item-label" title="${t.description}">${t.name}</span>
-                                                    <button class="remove-context-btn" data-type="tool" data-value="${t.name}" title="Unequip Tool">
+                                                    <span class="context-item-label path-text" title="${t.description}">${t.name}</span>
+                                                    ${isMuted ? '<span class="file-token-badge weight-muted">[MUTED]</span>' : ''}
+                                                    <button class="remove-context-btn" data-type="tool" data-value="${t.name}" title="Unequip Tool" style="margin-left:auto;">
                                                         <span class="codicon codicon-close"></span>
                                                     </button>
                                                 </div>
-                                            `).join('')}
+                                            `;}).join('')}
                                            </div>`
                                         : '<div class="empty-context-msg">No specialized tools equipped. Using defaults only.</div>'
-                                    }
-                                </div>
+                                    )
+                                }
                             </div>
-                        </details>
+                        </div>
+                    </details>
 
-                        <details class="info-collapsible skills-details">
-                            <summary>
-                                <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                    <span class="skills-count-label">Active Skills (${skillsHtml.includes('skill-item') ? 'Active' : '0'})</span>
-                                    <div style="display: flex; gap: 8px; align-items: center;">
-                                        <button id="add-skill-context-btn" class="icon-btn" title="Import Skill"><i class="codicon codicon-add"></i></button>
-                                        ${skillsHtml.includes('skill-item') ? `<button id="bulk-delete-skills-btn" class="section-bulk-btn delete" style="margin-right: 5px;"><span class="codicon codicon-trash"></span> Bulk Remove</button>` : ''}
-                                    </div>
-                                </div>
-                            </summary>
-                            <div class="collapsible-content collapsible-content-inner-skills" style="padding-top: 8px;">
-                                <div class="hud-skills-list">
-                                    ${skillsHtml}
+                    <details class="info-collapsible skills-details">
+                        <summary>
+                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                <span class="skills-count-label">Active Skills (${finalSkillsCount})</span>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <button id="add-skill-context-btn" class="icon-btn" title="Import Skill"><i class="codicon codicon-add"></i></button>
+                                    ${finalSkillsCount > 0 ? `<button id="bulk-delete-skills-btn" class="section-bulk-btn delete" style="margin-right: 5px;"><span class="codicon codicon-trash"></span> Bulk Remove</button>` : ''}
                                 </div>
                             </div>
-                        </details>
-                    </div>
+                        </summary>
+                        <div class="collapsible-content collapsible-content-inner-skills" style="padding-top: 8px;">
+                            <div class="hud-skills-list">
+                                ${skillsHtml}
+                            </div>
+                        </div>
+                    </details>
                 </div>
-            </details>
+            </div>
         </div>`;
     }
 }
@@ -3474,11 +3716,10 @@ export class ContextBinder {
         if (manual) {
             manual.onclick = (e) => {
                 e.stopPropagation();
-                const name = prompt("Enter model name/id (e.g. ollama/mistral):");
-                if (name) {
-                    vscode.postMessage({ command: 'updateDiscussionModel', model: name.trim() });
-                    vscode.postMessage({ command: 'calculateTokens' });
-                }
+                vscode.postMessage({ 
+                    command: 'executeLollmsCommand', 
+                    details: { command: 'lollms-vs-coder.selectModel' } 
+                });
                 menu.classList.remove('visible');
             };
         }
@@ -3509,23 +3750,112 @@ export class ContextBinder {
     }
 
     public static bindGestures(dashboard: HTMLElement, files: string[], skills: any[]) {
-        // Prevent collapse when clicking details elements inside HUD header panels
-        const hudSummary = dashboard.querySelector('.fused-context-details summary');
-        if (hudSummary) {
-            hudSummary.addEventListener('click', (e) => {
-                const target = e.target as HTMLElement;
-                if (
-                    target.closest('button') || 
-                    target.closest('select') || 
-                    target.closest('input') || 
-                    target.closest('.active-badges') || 
-                    target.closest('.token-progress-container') ||
-                    target.closest('.token-legend')
-                ) {
+        // Bind HUD in-discussion search bar events
+        const hudSearchInp = dashboard.querySelector('#hud-search-input') as HTMLInputElement;
+        const hudCodeToggle = dashboard.querySelector('#hud-search-code-toggle') as HTMLElement;
+        const hudPrev = dashboard.querySelector('#hud-search-prev') as HTMLElement;
+        const hudNext = dashboard.querySelector('#hud-search-next') as HTMLElement;
+        const hudClear = dashboard.querySelector('#hud-search-clear') as HTMLElement;
+        const hudAllBtn = dashboard.querySelector('#hud-search-all-btn') as HTMLElement;
+
+        if (hudSearchInp) {
+            import('./search.js').then(searchModule => {
+                let debounceTimer: any;
+
+                if (hudCodeToggle) {
+                    const isCodeActive = state.searchScope === 'all';
+                    hudCodeToggle.classList.toggle('active', isCodeActive);
+                    hudCodeToggle.style.opacity = isCodeActive ? '1' : '0.5';
+                    hudCodeToggle.style.color = isCodeActive ? 'var(--vscode-textLink-foreground)' : '';
+                    hudCodeToggle.title = isCodeActive
+                        ? "Search Scope: Discussion & Code Files (Click for Discussion Text only)"
+                        : "Search Scope: Discussion Text Only (Click to include Code & Files)";
+
+                    hudCodeToggle.onclick = (e: MouseEvent) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        state.searchScope = state.searchScope === 'discussion' ? 'all' : 'discussion';
+                        const nowActive = state.searchScope === 'all';
+                        hudCodeToggle.classList.toggle('active', nowActive);
+                        hudCodeToggle.style.opacity = nowActive ? '1' : '0.5';
+                        hudCodeToggle.style.color = nowActive ? 'var(--vscode-textLink-foreground)' : '';
+                        hudCodeToggle.title = nowActive
+                            ? "Search Scope: Discussion & Code Files (Click for Discussion Text only)"
+                            : "Search Scope: Discussion Text Only (Click to include Code & Files)";
+                        searchModule.performSearch();
+                    };
+                }
+
+                hudSearchInp.oninput = () => {
+                    clearTimeout(debounceTimer);
+                    if (hudClear) hudClear.style.display = hudSearchInp.value.length > 0 ? 'inline-flex' : 'none';
+                    debounceTimer = setTimeout(() => {
+                        searchModule.performSearch();
+                    }, 150);
+                };
+
+                hudSearchInp.onkeydown = (e: KeyboardEvent) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (e.shiftKey) {
+                            searchModule.navigateSearch(-1);
+                        } else {
+                            if (state.searchMatches.length === 0) searchModule.performSearch();
+                            else searchModule.navigateSearch(1);
+                        }
+                    } else if (e.key === 'Escape') {
+                        hudSearchInp.value = '';
+                        if (hudClear) hudClear.style.display = 'none';
+                        searchModule.clearSearch();
+                        hudSearchInp.blur();
+                    }
+                };
+
+                if (hudPrev) hudPrev.onclick = (e) => { e.preventDefault(); e.stopPropagation(); searchModule.navigateSearch(-1); };
+                if (hudNext) hudNext.onclick = (e) => { e.preventDefault(); e.stopPropagation(); searchModule.navigateSearch(1); };
+                if (hudClear) hudClear.onclick = (e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                }
+                    hudSearchInp.value = '';
+                    hudClear.style.display = 'none';
+                    searchModule.clearSearch();
+                };
+                if (hudAllBtn) hudAllBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (dom.discussionSearchModal) {
+                        dom.discussionSearchModal.classList.add('visible');
+                        if (dom.discussionSearchInput) {
+                            dom.discussionSearchInput.value = hudSearchInp.value;
+                            dom.discussionSearchInput.focus();
+                        }
+                    }
+                };
             });
+        }
+
+        // Explicit Expand/Collapse Button Binding
+        const toggleExpandBtn = dashboard.querySelector('#hud-toggle-expand-btn') as HTMLElement;
+        const hudBodyPanel = dashboard.querySelector('#hud-body-panel') as HTMLElement;
+        const expandIcon = dashboard.querySelector('#hud-expand-icon') as HTMLElement;
+        const expandLabel = dashboard.querySelector('#hud-expand-label') as HTMLElement;
+
+        if (toggleExpandBtn && hudBodyPanel) {
+            toggleExpandBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                state.isHudExpanded = !state.isHudExpanded;
+                dashboard.dataset.expanded = state.isHudExpanded ? 'true' : 'false';
+                hudBodyPanel.style.display = state.isHudExpanded ? 'flex' : 'none';
+
+                if (expandIcon) {
+                    expandIcon.className = `codicon ${state.isHudExpanded ? 'codicon-chevron-up' : 'codicon-chevron-down'}`;
+                }
+                if (expandLabel) {
+                    expandLabel.textContent = state.isHudExpanded ? 'Collapse' : 'Expand';
+                }
+                toggleExpandBtn.title = state.isHudExpanded ? 'Collapse Context Panel' : 'Expand Context Panel to inspect & configure';
+            };
         }
 
         // Dedicated HUD Quick Refresh Binding
@@ -3559,6 +3889,86 @@ export class ContextBinder {
                         });
                     }
                 }
+            });
+        });
+
+        // Bind mute / deactivate toggle buttons for files, tools, skills, and diagrams
+        dashboard.querySelectorAll('.toggle-mute-file-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const pathVal = (btn as HTMLElement).dataset.path;
+                if (pathVal) {
+                    if (!state.mutedFiles) state.mutedFiles = [];
+                    const normPath = pathVal.replace(/\\/g, '/').trim().toLowerCase();
+                    const idx = state.mutedFiles.findIndex(p => {
+                        const cleanP = p.replace(/\\/g, '/').trim().toLowerCase();
+                        return cleanP === normPath || cleanP.endsWith('/' + normPath) || normPath.endsWith('/' + cleanP);
+                    });
+                    const isMutingNow = idx === -1;
+                    if (isMutingNow) {
+                        state.mutedFiles.push(pathVal);
+                    } else {
+                        state.mutedFiles.splice(idx, 1);
+                    }
+                    if (state.lastContextData) {
+                        state.lastContextData.mutedFiles = [...state.mutedFiles];
+                    }
+
+                    // Optimistic token metrics update
+                    const fileTok = state.fileTokensMap?.[pathVal] || 0;
+                    if (state.lastTokenMetrics && fileTok > 0) {
+                        if (isMutingNow) {
+                            state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - fileTok);
+                            if (state.lastTokenMetrics.segments && state.lastTokenMetrics.segments.files !== undefined) {
+                                state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - fileTok);
+                            }
+                        } else {
+                            state.lastTokenMetrics.totalTokens += fileTok;
+                            if (state.lastTokenMetrics.segments && state.lastTokenMetrics.segments.files !== undefined) {
+                                state.lastTokenMetrics.segments.files += fileTok;
+                            }
+                        }
+
+                        const barContainer = document.getElementById('token-progress-container');
+                        const labelEl = document.getElementById('token-count-label');
+                        if (labelEl) {
+                            labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()}`;
+                        }
+                        updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
+                    }
+
+                    setCalculatingTokens(true, "Updating tokens...");
+                    vscode.postMessage({ command: 'toggleMuteFile', path: pathVal });
+                    import('./messageRenderer.js').then(m => m.updateContext());
+                }
+            });
+        });
+
+        dashboard.querySelectorAll('.toggle-mute-tool-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const nameVal = (btn as HTMLElement).dataset.name;
+                if (nameVal) vscode.postMessage({ command: 'toggleMuteTool', toolName: nameVal });
+            });
+        });
+
+        dashboard.querySelectorAll('.toggle-mute-skill-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const idVal = (btn as HTMLElement).dataset.id;
+                if (idVal) vscode.postMessage({ command: 'toggleMuteSkill', skillId: idVal });
+            });
+        });
+
+        dashboard.querySelectorAll('.toggle-mute-diagram-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const typeVal = (btn as HTMLElement).dataset.type;
+                if (typeVal) vscode.postMessage({ command: 'toggleMuteDiagram', diagType: typeVal });
             });
         });
 
@@ -3751,7 +4161,19 @@ export class ContextBinder {
     }
 }
 
-export function updateContext(contextText?: string, files?: string[], skills?: any[], tools?: any[], diagrams?: any[], briefing?: string, selections?: string[]) {
+export function updateContext(
+    contextText?: string, 
+    files?: string[], 
+    skills?: any[], 
+    tools?: any[], 
+    diagrams?: any[], 
+    briefing?: string, 
+    selections?: string[], 
+    mutedFiles?: string[],
+    mutedTools?: string[],
+    mutedSkills?: string[],
+    mutedDiagrams?: string[]
+) {
     if(!dom.contextContainer) return;
 
     // 0. CAPTURE CURRENT EXPANSION STATE
@@ -3762,7 +4184,7 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     });
 
     // 1. MERGE WITH EXISTING STATE (Partial updates)
-    const prev = state.lastContextData || { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "", selections: [] };
+    const prev = state.lastContextData || { context: "", files: [], skills: [], tools: [], diagrams: [], briefing: "", selections: [], mutedFiles: [], mutedTools: [], mutedSkills: [], mutedDiagrams: [] };
 
     if (files && Array.isArray(files)) {
         if (!state.fileTokensMap) state.fileTokensMap = {};
@@ -3774,12 +4196,21 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
         });
     }
 
+    if (mutedFiles) state.mutedFiles = mutedFiles;
+    if (mutedTools) state.mutedTools = mutedTools;
+    if (mutedSkills) state.mutedSkills = mutedSkills;
+    if (mutedDiagrams) state.mutedDiagrams = mutedDiagrams;
+
     state.lastContextData = {
         context: contextText !== undefined ? contextText : (prev.context || ""),
         files: files !== undefined ? files : (prev.files || []),
         skills: skills !== undefined ? skills : (prev.skills || []),
         tools: tools !== undefined ? tools : (prev.tools || []),
         diagrams: diagrams !== undefined ? diagrams : (prev.diagrams || []),
+        mutedFiles: mutedFiles !== undefined ? mutedFiles : (prev.mutedFiles || state.mutedFiles || []),
+        mutedTools: mutedTools !== undefined ? mutedTools : (prev.mutedTools || state.mutedTools || []),
+        mutedSkills: mutedSkills !== undefined ? mutedSkills : (prev.mutedSkills || state.mutedSkills || []),
+        mutedDiagrams: mutedDiagrams !== undefined ? mutedDiagrams : (prev.mutedDiagrams || state.mutedDiagrams || []),
         briefing: briefing !== undefined ? briefing : (prev.briefing || ""),
         selections: selections !== undefined ? selections : ((prev as any).selections || [])
     };
@@ -3790,9 +4221,6 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     const finalSelections = (state.lastContextData as any).selections || [];
     const finalDiagrams = state.lastContextData.diagrams || [];
     const finalBriefing = state.lastContextData.briefing || "";
-
-    // Detection for Welcome Message integration
-    const isNewDiscussion = !document.querySelector('.message-wrapper:not(.context-message)');
 
     const getFilePath = (item: any) => typeof item === 'string' ? item : item.path;
 
@@ -3806,7 +4234,6 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
     const externalFiles = finalFiles.filter(f => !isProjectFile(f));
 
     try {
-        // Decoupled templates generated via ContextPresenter with token weights
         const safeProjectFiles = Array.isArray(projectFiles) ? projectFiles : [];
         const safeExternalFiles = Array.isArray(externalFiles) ? externalFiles : [];
         const safeFinalSkills = Array.isArray(finalSkills) ? finalSkills : [];
@@ -3816,10 +4243,14 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
 
         const tokenMap = state.fileTokensMap || {};
         const sortOrder = state.fileSortOrder || 'heavy-to-light';
+        const currentMutedFiles = state.lastContextData.mutedFiles || state.mutedFiles || [];
+        const currentMutedTools = state.lastContextData.mutedTools || state.mutedTools || [];
+        const currentMutedSkills = state.lastContextData.mutedSkills || state.mutedSkills || [];
+        const currentMutedDiagrams = state.lastContextData.mutedDiagrams || state.mutedDiagrams || [];
 
-        const projectFilesHtml = ContextPresenter.renderFileList(safeProjectFiles, "No project files selected.", false, tokenMap, sortOrder);
-        const externalFilesHtml = ContextPresenter.renderFileList(safeExternalFiles, "No search results in context.", true, tokenMap, sortOrder);
-        const skillsHtml = ContextPresenter.renderSkills(safeFinalSkills);
+        const projectFilesHtml = ContextPresenter.renderFileList(safeProjectFiles, "No project files selected.", false, tokenMap, sortOrder, currentMutedFiles);
+        const externalFilesHtml = ContextPresenter.renderFileList(safeExternalFiles, "No search results in context.", true, tokenMap, sortOrder, currentMutedFiles);
+        const skillsHtml = ContextPresenter.renderSkills(safeFinalSkills, currentMutedSkills);
         const briefingHtml = finalBriefing ? renderDataBriefing(finalBriefing) : '<div style="font-style:italic; opacity:0.5;">No specific task constraints defined. Click the shield to add instructions.</div>';
 
         const isAgentActive = state.capabilities?.agentMode === true;
@@ -3829,16 +4260,19 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
         dom.contextContainer.innerHTML = ContextPresenter.getDashboardHtml(
             themeClass,
             isAgentActive,
-            isNewDiscussion,
             safeFinalSelections,
             safeProjectFiles.length + safeExternalFiles.length,
+            safeFinalSkills.length,
             projectFilesHtml,
             externalFilesHtml,
             safeFinalDiagrams,
             safeFinalTools,
             finalBriefing,
             skillsHtml,
-            briefingHtml
+            briefingHtml,
+            state.isHudExpanded,
+            currentMutedTools,
+            currentMutedDiagrams
         );
 
         const dashboard = document.getElementById('fused-context-dashboard');
@@ -3857,6 +4291,28 @@ export function updateContext(contextText?: string, files?: string[], skills?: a
                 const barContainer = document.getElementById('token-progress-container');
                 updateProgressBar(barContainer, normalizedTotal, size, segments);
             }
+
+            // Render any active diagrams with Mermaid dynamically
+            dashboard.querySelectorAll('.hud-diagram-render-container pre.mermaid').forEach((preEl: any) => {
+                if (!preEl.hasAttribute('data-processed')) {
+                    const rawCode = preEl.textContent || '';
+                    if (rawCode.trim()) {
+                        const uniqueId = `mermaid-hud-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                        try {
+                            (window as any).mermaid?.render(uniqueId, preprocessMermaid(rawCode)).then((res: any) => {
+                                const svg = typeof res === 'string' ? res : res.svg;
+                                const parentContainer = preEl.parentElement;
+                                if (parentContainer) {
+                                    parentContainer.innerHTML = svg;
+                                    enablePanZoom(parentContainer);
+                                }
+                            }).catch(() => {
+                                preEl.setAttribute('data-processed', 'true');
+                            });
+                        } catch {}
+                    }
+                }
+            });
         }
     } catch (renderError: any) {
         console.error("❌ FAILED HUD PRESENTATION RENDERING:", renderError);
@@ -4545,6 +5001,25 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                     ${sanitizer.sanitize(task.description)}
                 </div>` : '';
 
+            // Two-Tiered Worker Scope Badge & Target Pill
+            let workerBadgeHtml = '';
+            if (task.worker_scope) {
+                const role = task.worker_scope.role;
+                const roleLabel = role === 'scout' ? '🔍 Scout' :
+                                  role === 'coder' ? '🛠️ Coder' :
+                                  role === 'tester' ? '🧪 Tester' : '🛡️ Auditor';
+                const filesPill = task.worker_scope.targetFiles && task.worker_scope.targetFiles.length > 0
+                    ? `<span class="worker-scope-pill" title="Target files: ${task.worker_scope.targetFiles.join(', ')}"><i class="codicon codicon-files"></i> ${task.worker_scope.targetFiles.length} file${task.worker_scope.targetFiles.length > 1 ? 's' : ''}</span>`
+                    : '';
+                workerBadgeHtml = `
+                    <div class="worker-tier-indicator worker-${role}">
+                        <span class="worker-role-badge">${roleLabel}</span>
+                        <span class="worker-focus-text">${sanitizer.sanitize(task.worker_scope.focus)}</span>
+                        ${filesPill}
+                    </div>
+                `;
+            }
+
             // 2. Simplified Execution Card
             const cardHtml = `
                 <li class="agent-card status-${task.status} ${isActive ? 'active-task' : ''}" data-task-id="${task.id}" style="margin-top: 15px;">
@@ -4559,6 +5034,7 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                         </div>
                     </div>
                     <div class="agent-card-body" style="padding-top: 8px;">
+                        ${workerBadgeHtml}
                         ${approvalButtonHtml}
                         ${progressHtml}
                         ${metaTabsHtml}
@@ -4607,10 +5083,13 @@ let lastTaskStates = "";
 export function displayPlan(plan: any) {
     if (!dom.agentPlanZone) return;
 
-    if (!plan) {
+    // Toggle active plan visibility on body so sidebar only appears when a plan exists
+    if (!plan || (Array.isArray(plan.tasks) && plan.tasks.length === 0 && !plan.objective && !plan.scratchpad)) {
         dom.agentPlanZone.innerHTML = '';
+        document.body.classList.remove('has-active-plan');
         return;
     }
+    document.body.classList.add('has-active-plan');
 
     const oldScroll = dom.agentPlanZone.scrollTop;
     (window as any).lastPlan = plan;
@@ -4803,79 +5282,159 @@ export function syncResultsListRows(messageId: string) {
     const patches = getPatchesForMessage(messageId);
     if (patches.length === 0) return;
 
+    if (!state.excludedPatches) state.excludedPatches = {};
+    if (!state.excludedPatches[messageId]) state.excludedPatches[messageId] = new Set<string>();
+    const excludedSet = state.excludedPatches[messageId];
+
     resList.style.display = 'flex';
     resList.style.flexDirection = 'column';
     resList.style.gap = '4px';
 
-    const existingRows = Array.from(resList.querySelectorAll('.apply-row'));
-    if (existingRows.length !== patches.length) {
-        resList.innerHTML = patches.map(p => {
-            const isDone = p.isApplied;
-            const iconHtml = isDone 
-                ? '<span class="status-icon"><i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i></span>'
-                : '<span class="status-icon"><i class="codicon codicon-circle-large-outline" style="opacity:0.4"></i></span>';
-            const badgeHtml = isDone 
-                ? '<span class="validated-badge" style="margin-left:auto; font-size:10px; color:var(--vscode-charts-green); font-weight:bold; display:flex; align-items:center; gap:4px;"><i class="codicon codicon-pass-filled"></i> Validated</span>'
-                : '<span class="pending-badge" style="margin-left:auto; font-size:10px; opacity:0.6;">Pending</span>';
+    const renderRowHtml = (p: PatchItem) => {
+        const isDone = p.isApplied;
+        const isExcluded = p.isExcluded || excludedSet.has(p.id);
 
-            return `
-                <div class="apply-row ${isDone ? 'status-success' : 'status-pending'}" 
-                     data-block-index="${p.blockIndex}" 
-                     ${p.hunkIndex !== undefined ? `data-hunk-index="${p.hunkIndex}"` : ''}
-                     style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:4px; border:1px solid var(--vscode-widget-border);">
-                    ${iconHtml}
-                    <span class="row-path clickable" title="Click to open file in editor" onclick="vscode.postMessage({command:'openFile', path:'${p.path}'})">${p.label}</span>
-                    ${badgeHtml}
-                    <div class="row-actions" style="display:none"></div>
-                </div>`;
-        }).join('');
-    } else {
-        patches.forEach(p => {
-            const hunkAttr = p.hunkIndex !== undefined ? `[data-hunk-index='${p.hunkIndex}']` : ':not([data-hunk-index])';
-            const row = resList.querySelector(`.apply-row[data-block-index='${p.blockIndex}']${hunkAttr}`) as HTMLElement;
-            if (!row) return;
+        let iconHtml = '';
+        if (isDone) {
+            iconHtml = '<span class="status-icon"><i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i></span>';
+        } else {
+            iconHtml = `
+                <input type="checkbox" 
+                       class="row-include-check" 
+                       data-patch-id="${p.id}" 
+                       data-block-index="${p.blockIndex}"
+                       ${p.hunkIndex !== undefined ? `data-hunk-index="${p.hunkIndex}"` : ''}
+                       ${isExcluded ? '' : 'checked'} 
+                       title="${isExcluded ? 'Check to include in Apply All' : 'Uncheck to exclude from Apply All'}"
+                       style="cursor:pointer; margin:0 2px 0 0; width:14px; height:14px; accent-color:var(--vscode-charts-blue); flex-shrink:0;">
+            `;
+        }
 
-            const iconEl = row.querySelector('.status-icon');
-            if (p.isApplied) {
-                row.classList.remove('status-failed', 'status-pending', 'status-applying');
-                row.classList.add('status-success');
-                if (iconEl) {
-                    iconEl.innerHTML = '<i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i>';
+        let badgeHtml = '';
+        if (isDone) {
+            badgeHtml = '<span class="validated-badge" style="margin-left:auto; font-size:10px; color:var(--vscode-charts-green); font-weight:bold; display:flex; align-items:center; gap:4px;"><i class="codicon codicon-pass-filled"></i> Validated</span>';
+        } else if (isExcluded) {
+            badgeHtml = '<span class="excluded-badge" style="margin-left:auto; font-size:10px; color:var(--vscode-descriptionForeground); font-style:italic; opacity:0.7;">Excluded</span>';
+        } else {
+            badgeHtml = '<span class="pending-badge" style="margin-left:auto; font-size:10px; opacity:0.6;">Pending</span>';
+        }
+
+        const jumpToBtn = `
+            <button class="icon-btn row-jump-btn" 
+                    data-block-id="${p.blockId}"
+                    data-hunk-index="${p.hunkIndex !== undefined ? p.hunkIndex : ''}"
+                    title="Scroll directly to this hunk's code block in chat"
+                    style="width:20px; height:20px; padding:0; margin-left:4px; opacity:0.75; flex-shrink:0;">
+                <i class="codicon codicon-link-external" style="font-size:11px; color:var(--vscode-textLink-foreground);"></i>
+            </button>
+        `;
+
+        const singleApplyBtn = !isDone ? `
+            <button class="code-action-btn secondary-btn row-single-apply-btn" 
+                    data-patch-id="${p.id}"
+                    data-block-index="${p.blockIndex}"
+                    ${p.hunkIndex !== undefined ? `data-hunk-index="${p.hunkIndex}"` : ''}
+                    title="Apply only this change individually"
+                    style="height:20px; font-size:9px; padding:0 6px; margin-left:4px; display:inline-flex; align-items:center; gap:3px;">
+                <i class="codicon codicon-play"></i> Apply
+            </button>
+        ` : '';
+
+        const rowStateClass = isDone ? 'status-success' : (isExcluded ? 'status-excluded' : 'status-pending');
+        const rowOpacity = isExcluded ? 'opacity: 0.55;' : '';
+
+        return `
+            <div class="apply-row ${rowStateClass}" 
+                 data-patch-id="${p.id}"
+                 data-block-index="${p.blockIndex}" 
+                 ${p.hunkIndex !== undefined ? `data-hunk-index="${p.hunkIndex}"` : ''}
+                 style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:4px; border:1px solid var(--vscode-widget-border); ${rowOpacity}">
+                ${iconHtml}
+                <span class="row-path clickable" title="Click to open file in editor" onclick="vscode.postMessage({command:'openFile', path:'${p.path}'})" style="${isExcluded ? 'text-decoration: line-through; opacity: 0.7;' : ''}">${p.label}</span>
+                ${jumpToBtn}
+                ${badgeHtml}
+                ${singleApplyBtn}
+                <div class="row-actions" style="display:none"></div>
+            </div>`;
+    };
+
+    resList.innerHTML = patches.map(renderRowHtml).join('');
+
+    // Attach click listeners to jump directly to the hunk code block and switch tab
+    resList.querySelectorAll('.row-jump-btn').forEach((btn: any) => {
+        btn.addEventListener('click', (e: MouseEvent) => {
+            e.stopPropagation();
+            const blockId = btn.dataset.blockId;
+            const hunkIdxStr = btn.dataset.hunkIndex;
+            const blockEl = blockId ? document.getElementById(blockId) as HTMLDetailsElement : null;
+
+            if (blockEl) {
+                blockEl.open = true;
+                if (hunkIdxStr !== undefined && hunkIdxStr !== '') {
+                    const tab = blockEl.querySelector(`.hunk-tab-${hunkIdxStr}`) as HTMLElement;
+                    if (tab) tab.click();
                 }
-                row.style.background = '';
-                row.style.opacity = '1';
-
-                row.querySelector('.row-actions')?.remove();
-                row.querySelector('.status-label-inline')?.remove();
-
-                let badge = row.querySelector('.validated-badge');
-                if (!badge) {
-                    row.querySelector('.pending-badge')?.remove();
-                    badge = document.createElement('span');
-                    badge.className = 'validated-badge';
-                    badge.style.cssText = 'margin-left:auto; font-size:10px; color:var(--vscode-charts-green); font-weight:bold; display:flex; align-items:center; gap:4px;';
-                    badge.innerHTML = '<i class="codicon codicon-pass-filled"></i> Validated';
-                    row.appendChild(badge);
-                }
-            } else {
-                if (!row.classList.contains('status-failed')) {
-                    row.classList.remove('status-success', 'status-applying');
-                    row.classList.add('status-pending');
-                    if (iconEl) {
-                        iconEl.innerHTML = '<i class="codicon codicon-circle-large-outline" style="opacity:0.4"></i>';
-                    }
-                    row.querySelector('.validated-badge')?.remove();
-                    if (!row.querySelector('.pending-badge')) {
-                        const badge = document.createElement('span');
-                        badge.className = 'pending-badge';
-                        badge.style.cssText = 'margin-left:auto; font-size:10px; opacity:0.6;';
-                        badge.textContent = 'Pending';
-                        row.appendChild(badge);
-                    }
-                }
+                blockEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                blockEl.classList.add('flash-highlight');
+                setTimeout(() => blockEl.classList.remove('flash-highlight'), 1200);
             }
         });
-    }
+    });
+
+    // Attach listeners to row checkboxes for toggling exclusion
+    resList.querySelectorAll('.row-include-check').forEach((cb: any) => {
+        cb.addEventListener('change', (e: Event) => {
+            e.stopPropagation();
+            const patchId = cb.dataset.patchId;
+            if (!patchId) return;
+
+            if (cb.checked) {
+                excludedSet.delete(patchId);
+            } else {
+                excludedSet.add(patchId);
+            }
+
+            // Sync visual row state and update master Apply button label
+            syncResultsListRows(messageId);
+            checkAndSyncMessageAppliedState(messageId);
+        });
+    });
+
+    // Attach listeners to single apply buttons
+    resList.querySelectorAll('.row-single-apply-btn').forEach((btn: any) => {
+        btn.addEventListener('click', (e: MouseEvent) => {
+            e.stopPropagation();
+            const patchId = btn.dataset.patchId;
+            const patch = patches.find(p => p.id === patchId);
+            if (!patch) return;
+
+            btn.disabled = true;
+            btn.innerHTML = '<div class="spinner"></div>';
+
+            if (patch.type === 'file') {
+                vscode.postMessage({
+                    command: 'applyFileContent',
+                    filePath: patch.path,
+                    content: patch.content,
+                    messageId: messageId,
+                    blockIndex: patch.blockIndex,
+                    blockId: patch.blockId,
+                    options: { silent: false, autoSave: true }
+                });
+            } else {
+                vscode.postMessage({
+                    command: 'replaceCode',
+                    filePath: patch.path,
+                    content: patch.content,
+                    messageId: messageId,
+                    blockIndex: patch.blockIndex,
+                    hunkIndex: patch.hunkIndex,
+                    blockId: patch.blockId,
+                    options: { silent: false, autoSave: true, blockId: patch.blockId, blockIndex: patch.blockIndex, hunkIndex: patch.hunkIndex }
+                });
+            }
+        });
+    });
 
     const totalPatches = patches.length;
     const validatedPatches = patches.filter(p => p.isApplied).length;
@@ -4896,8 +5455,6 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return;
 
-    syncResultsListRows(messageId);
-
     const applyAllBtn = wrapper.querySelector('.apply-all-btn') as HTMLButtonElement;
     if (!applyAllBtn) return;
 
@@ -4905,19 +5462,30 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
     const totalCount = patches.length;
     if (totalCount <= 1) return;
 
+    const excludedSet = state.excludedPatches?.[messageId] || new Set<string>();
     const validatedCount = patches.filter(p => p.isApplied).length;
-    const unappliedCount = totalCount - validatedCount;
+    const pendingPatches = patches.filter(p => !p.isApplied);
+    const includedPending = pendingPatches.filter(p => !excludedSet.has(p.id));
+    const excludedPendingCount = pendingPatches.filter(p => excludedSet.has(p.id)).length;
 
-    if (unappliedCount > 0) {
+    if (pendingPatches.length > 0) {
         applyAllBtn.classList.remove('applied', 'undo-all-btn', 'stop-btn-red', 'sequential-applying');
         applyAllBtn.style.removeProperty('background-color');
         applyAllBtn.style.removeProperty('color');
-        applyAllBtn.disabled = false;
 
-        if (validatedCount > 0) {
-            applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Changes (${unappliedCount} of ${totalCount} files)`;
+        if (includedPending.length === 0) {
+            // All pending patches are excluded
+            applyAllBtn.disabled = true;
+            applyAllBtn.innerHTML = `<span class="codicon codicon-circle-slash"></span> All Pending Changes Excluded (${excludedPendingCount})`;
         } else {
-            applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply All Changes (${totalCount} files)`;
+            applyAllBtn.disabled = false;
+            if (excludedPendingCount > 0) {
+                applyAllBtn.innerHTML = `<span class="codicon codicon-check"></span> Apply Selected Changes (${includedPending.length} of ${pendingPatches.length})`;
+            } else if (validatedCount > 0) {
+                applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Changes (${includedPending.length} of ${totalCount})`;
+            } else {
+                applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply All Changes (${totalCount} files)`;
+            }
         }
     } else {
         applyAllBtn.classList.remove('sequential-applying', 'stop-btn-red');

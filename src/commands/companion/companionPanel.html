@@ -616,6 +616,16 @@
             border: 2px solid rgba(255, 255, 255, 0.2);
             border-top-color: var(--vscode-textLink-foreground);
             animation: spin 0.8s linear infinite;
+            transform-origin: 50% 50% !important;
+            display: inline-block;
+        }
+
+        .spin, .codicon.spin {
+            display: inline-block !important;
+            transform-origin: 50% 50% !important;
+            animation: spin 1s linear infinite !important;
+            line-height: 1 !important;
+            vertical-align: middle;
         }
 
         @keyframes spin { 100% { transform: rotate(360deg); } }
@@ -1336,6 +1346,20 @@
             container.scrollTop = container.scrollHeight;
         }
 
+        function sanitizeAiderMarkers(text) {
+            if (!text) return '';
+            return text
+                .split('\n')
+                .filter(line => {
+                    const trimmed = line.trim();
+                    if (/^<{7}\s*SEARCH$/.test(trimmed)) return false;
+                    if (/^={5,}$/.test(trimmed)) return false;
+                    if (/^>{7}\s*REPLACE$/.test(trimmed)) return false;
+                    return true;
+                })
+                .join('\n');
+        }
+
         function parseAiderHunks(rawBlock) {
             const hunks = [];
             if (!rawBlock || typeof rawBlock !== 'string') return hunks;
@@ -1373,8 +1397,14 @@
                             }
                         } else {
                             if (trimmed.startsWith('<<<<<<< SEARCH')) {
-                                depth++;
-                                replaceLines.push(curLine);
+                                if (depth === 0) {
+                                    isClosed = true;
+                                    i--;
+                                    break;
+                                } else {
+                                    depth++;
+                                    replaceLines.push(curLine);
+                                }
                             } else if (trimmed.startsWith('>>>>>>> REPLACE')) {
                                 if (depth > 0) {
                                     depth--;
@@ -1383,6 +1413,9 @@
                                     isClosed = true;
                                     break;
                                 }
+                            } else if (trimmed.startsWith('=======') && depth === 0) {
+                                i++;
+                                continue;
                             } else {
                                 replaceLines.push(curLine);
                             }
@@ -1391,8 +1424,8 @@
                     }
 
                     if (isClosed || inReplace) {
-                        const searchPart = searchLines.join('\n');
-                        const replacePart = replaceLines.join('\n');
+                        const searchPart = sanitizeAiderMarkers(searchLines.join('\n'));
+                        const replacePart = sanitizeAiderMarkers(replaceLines.join('\n'));
                         const fullMatch = lines.slice(startLineIdx, i + 1).join('\n');
                         hunks.push({
                             fullMatch: fullMatch,
@@ -1417,7 +1450,7 @@
             let match;
 
             while ((match = openTagRegex.exec(text)) !== null) {
-                const start = match.index;
+                let start = match.index;
                 const attrStr = match[1] || "";
                 const bodyStart = match.index + match[0].length;
 
@@ -1448,7 +1481,33 @@
                     }
                 }
 
-                const rawContent = text.substring(bodyStart, bodyEnd);
+                const textBefore = text.substring(0, start);
+                const fenceBeforeMatch = textBefore.match(/(?:^|\n)[ \t]*(`{3,}|~{3,})(?:[a-zA-Z0-9_\-]+)?[ \t]*\r?\n[ \t]*$/);
+
+                let fenceLen = 0;
+                let fenceChar = '';
+                if (fenceBeforeMatch) {
+                    fenceChar = fenceBeforeMatch[1][0];
+                    fenceLen = fenceBeforeMatch[1].length;
+                    const matchOffsetInBefore = textBefore.length - fenceBeforeMatch[0].length;
+                    const newlineIndex = fenceBeforeMatch[0].indexOf('\n');
+                    start = newlineIndex !== -1 ? matchOffsetInBefore + newlineIndex + 1 : matchOffsetInBefore;
+                }
+
+                if (fenceLen > 0 && isClosed) {
+                    const textAfter = text.substring(end);
+                    const fenceAfterRegex = new RegExp(`^[ \\t]*(?:\\r?\\n)[ \\t]*${fenceChar}{${fenceLen},}[ \\t]*(?=\\r?\\n|$)`);
+                    const fenceAfterMatch = textAfter.match(fenceAfterRegex);
+                    if (fenceAfterMatch) {
+                        end += fenceAfterMatch[0].length;
+                    }
+                }
+
+                let rawContent = text.substring(bodyStart, bodyEnd);
+                if (/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s.test(rawContent.trim())) {
+                    rawContent = rawContent.trim().replace(/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s, '$1');
+                }
+
                 const fullMatch = text.substring(start, end);
 
                 blocks.push({
@@ -1465,7 +1524,7 @@
 
             return blocks;
         }
-
+        
         function renderHistoryBubbles(history) {
             // Render all previous history bubbles
             (history || []).forEach((msg, idx) => {
@@ -1983,13 +2042,15 @@
 
         function renderFileMutationCard(attrStr, rawBody) {
             rawBody = (rawBody || "").trim();
-            const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
-            const filePath = pathMatch ? pathMatch[1].trim() : "unspecified_file";
-            const actionMatch = attrStr.match(/action=["']([^"']+)["']/i);
-            const symbolMatch = attrStr.match(/symbol=["']([^"']+)["']/i);
+            const pathRegex = /(?:^|\s+)(?:path|file_path|filepath|file|target|name|filename)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
+            const pathMatch = attrStr.match(pathRegex) || attrStr.match(/^(?:["']([^"']+)["']|([^\s=>"']+\.[a-zA-Z0-9_\-]+))/);
+            const filePath = pathMatch ? (pathMatch[1] || pathMatch[2] || "").replace(/^['"]|['"]$/g, '').trim() : "unspecified_file";
+            const actionMatch = attrStr.match(/(?:action|type|mode)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i);
+            const symbolMatch = attrStr.match(/(?:symbol|function|method|class)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i);
 
-            const action = (actionMatch ? actionMatch[1] : (rawBody.includes('<<<<<<< SEARCH') ? 'patch' : 'write')).toLowerCase();
-            const symbol = symbolMatch ? symbolMatch[1].trim() : "";
+            const action = (actionMatch ? (actionMatch[1] || actionMatch[2]) : (rawBody.includes('<<<<<<< SEARCH') ? 'patch' : 'write')).toLowerCase();
+            const symbol = symbolMatch ? (symbolMatch[1] || symbolMatch[2]).trim() : "";
+            
 
             const isPatch = action === 'patch' || rawBody.includes('<<<<<<< SEARCH');
             const blockId = 'comp-block-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);

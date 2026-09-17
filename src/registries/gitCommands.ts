@@ -4,6 +4,7 @@ import { CommitInspectorPanel } from '../commands/commitInspectorPanel';
 import { GitManagerPanel } from '../commands/gitManagerPanel';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { GitDashboardPanel } from '../commands/gitDashboardPanel';
+import { FileHistoryComparePanel } from '../commands/fileHistoryComparePanel';
 
 export function registerGitCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
@@ -456,26 +457,54 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showGitDashboard', () => {
         GitDashboardPanel.createOrShow(services.extensionUri, services.gitIntegration);
     }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showFileGitHistory', async (uri: vscode.Uri) => {
-        const fileUri = uri || vscode.window.activeTextEditor?.document.uri;
-        if (!fileUri) return;
+    // Command: Compare File Versions & Restore (Across all branches)
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showFileGitHistory', async (arg?: any) => {
+        try {
+            let fileUri: vscode.Uri | undefined;
 
-        const folder = vscode.workspace.getWorkspaceFolder(fileUri);
-        if (!folder) return;
-
-        const relPath = vscode.workspace.asRelativePath(fileUri);
-        
-        // Ensure Dashboard is open
-        GitDashboardPanel.createOrShow(services.extensionUri, services.gitIntegration);
-        
-        // Tell the dashboard to switch to the history view for this file
-        setTimeout(() => {
-            if (GitDashboardPanel.currentPanel) {
-                (GitDashboardPanel.currentPanel as any)._panel.webview.postMessage({
-                    command: 'requestFileHistory',
-                    path: relPath
-                });
+            if (arg instanceof vscode.Uri) {
+                fileUri = arg;
+            } else if (arg && arg.resourceUri instanceof vscode.Uri) {
+                fileUri = arg.resourceUri;
+            } else if (arg && arg.uri instanceof vscode.Uri) {
+                fileUri = arg.uri;
+            } else if (typeof arg === 'string') {
+                fileUri = vscode.Uri.file(arg);
+            } else {
+                fileUri = vscode.window.activeTextEditor?.document.uri;
             }
-        }, 500);
-    }));    
+
+            if (!fileUri || fileUri.scheme !== 'file') {
+                const files = await vscode.window.showOpenDialog({
+                    canSelectMany: false,
+                    openLabel: "View Version History",
+                    title: "Select File to Inspect Git History Across Branches"
+                });
+                if (files && files[0]) {
+                    fileUri = files[0];
+                }
+            }
+
+            if (!fileUri) {
+                vscode.window.showWarningMessage("No file selected for version comparison.");
+                return;
+            }
+
+            const folder = vscode.workspace.getWorkspaceFolder(fileUri) || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
+            if (!folder) {
+                vscode.window.showErrorMessage("Workspace folder required for git version inspection.");
+                return;
+            }
+
+            const relPath = path.relative(folder.uri.fsPath, fileUri.fsPath).replace(/\\/g, '/').replace(/^\/+/, '');
+            await FileHistoryComparePanel.createOrShow(services.extensionUri, services.gitIntegration, folder, relPath);
+        } catch (err: any) {
+            vscode.window.showErrorMessage(`Failed to open File Version History: ${err.message}`);
+        }
+    }));
+
+    // Command Alias: Compare File Versions
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.compareFileVersions', async (arg?: any) => {
+        await vscode.commands.executeCommand('lollms-vs-coder.showFileGitHistory', arg);
+    }));
 }

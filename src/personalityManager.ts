@@ -210,7 +210,15 @@ You always prioritize maintainability, verify edge cases, prevent security vulne
 
     <remove_files_from_context>
     ProjectName/path/to/noisy_file.ext
-    </remove_files_from_context>`,
+    </remove_files_from_context>
+    
+    <unpack_directory>
+    path/to/folder
+    </unpack_directory>
+    
+    <peek_files>
+    path/to/file.ext
+    </peek_files>`,
         isDefault: true
     },
     {

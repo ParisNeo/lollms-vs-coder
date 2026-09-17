@@ -11,10 +11,11 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
     const bodyDiv = wrapper.querySelector('.message-body') as HTMLElement;
     if (!bodyDiv) return;
 
-    // Detect if the message belongs to the user or the assistant
-    const isUser = safeMessageId.startsWith('user_') || safeMessageId.startsWith('msg_') || wrapper.querySelector('.message')?.classList.contains('user-message');
+    // Detect message role accurately
+    const isUser = safeMessageId.startsWith('user_') || wrapper.querySelector('.message')?.classList.contains('user-message');
+    const isSystem = safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message');
 
-    // Check if we need to initialize the assistant-specific layout
+    // Check if we need to initialize the layout
     let layout = bodyDiv.querySelector('.assistant-layout');
     if (!layout) {
         bodyDiv.innerHTML = ''; // Clear prior shells
@@ -24,15 +25,14 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
         const copyButton = `<button class="msg-action-btn copy-msg-btn" title="Copy Message"><i class="codicon codicon-copy"></i></button>`;
         const deleteButton = `<button class="msg-action-btn delete-msg-btn" title="Delete Message"><i class="codicon codicon-trash"></i></button>`;
 
-        // Standard user messages get the sync/regenerate icon; assistant messages get the run/monitor icon
         const middleButton = isUser 
             ? `<button class="msg-action-btn regenerate-msg-btn" title="Regenerate Response"><i class="codicon codicon-sync"></i></button>`
-            : `<button class="msg-action-btn run-monitor-btn" title="Run App & Monitor Logs"><i class="codicon codicon-play"></i></button>`;
+            : (isSystem ? '' : `<button class="msg-action-btn run-monitor-btn" title="Run App & Monitor Logs"><i class="codicon codicon-play"></i></button>`);
 
-        // Floating Message Actions HUD that follows and hovers
+        // Floating Message Actions HUD
         const actions = document.createElement('div');
         actions.className = 'message-actions';
-        actions.innerHTML = `${editButton}${copyButton}${middleButton}${deleteButton}`;
+        actions.innerHTML = isSystem ? `${copyButton}${deleteButton}` : `${editButton}${copyButton}${middleButton}${deleteButton}`;
         bodyDiv.appendChild(actions);
 
         // Header Metadata
@@ -43,6 +43,10 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
         roleSpan.className = 'role-name';
         if (isUser) {
             roleSpan.textContent = 'You';
+        } else if (isSystem) {
+            roleSpan.textContent = 'System Alert';
+            roleSpan.style.color = 'var(--vscode-charts-red)';
+            roleSpan.style.fontWeight = 'bold';
         } else {
             const personaLabel = wrapper.dataset.personalityName || 'Lollms Coder';
             roleSpan.textContent = `${personaLabel} (Assistant)`;

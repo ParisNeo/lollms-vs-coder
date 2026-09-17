@@ -18,7 +18,7 @@ import { BigDataProcessor } from '../../bigDataProcessing';
 import { AutomationPanel } from '../../panels/automationPanel';
 import { LocalizationManager } from '../../utils/localizationManager';
 import { LollmsServices } from '../../lollmsContext';
-import { ChatPanelMessageHandler } from './chatPanelMessageHandler';
+import { ContextGovernor } from '../../contextGovernor';
 
 interface ActiveGeneration {
     messageId: string;
@@ -69,6 +69,7 @@ export class ChatPanel {
   private _discussionCapabilities: DiscussionCapabilities;
   private _tokenAbortController: AbortController | null = null;
   private _isTokenizing: boolean = false;
+  private _currentPromptAddedFiles: Set<string> = new Set<string>();
 
   // Track active listeners to prevent duplication
   private _activeGenerationListener?: (chunk: string) => void;
@@ -177,10 +178,11 @@ export class ChatPanel {
   public setProcessManager(processManager: ProcessManager) { 
       this.processManager = processManager; 
 
-      // Ensure AgentManager is initialized so its logic is available even in discussion mode
+      // Ensure AgentManager is initialized and processManager is wired to both branches
       if (ChatPanel.activeAgents.has(this.discussionId)) {
           this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
           this.agentManager.setUI(this);
+          this.agentManager.setProcessManager(processManager);
           this.agentManager.personalityManager = this._personalityManager;
           this.agentManager.projectMemoryManager = this.projectMemoryManager;
       } else {
@@ -195,6 +197,7 @@ export class ChatPanel {
               this._skillsManager,
               this._toolManager
           );
+          this.agentManager.setProcessManager(processManager);
           this.agentManager.personalityManager = this._personalityManager;
           this.agentManager.projectMemoryManager = this.projectMemoryManager;
           ChatPanel.activeAgents.set(this.discussionId, this.agentManager);
@@ -208,8 +211,48 @@ export class ChatPanel {
         const modifiedFiles = new Set<string>();
         let blockIndex = 0; // Initialize precise index tracker
 
+        // 0. Process Mission Briefing Doctrine Tags (Autonomous in Agent Mode, user-controlled in Assistant/Co-Engineer)
+        const isAgent = this._discussionCapabilities.agentMode === true;
+        const briefingRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<mission_briefing\b([^>]*?)>([\s\S]*?)<\/mission_briefing>/gim;
+        let briefingMatch;
+        while ((briefingMatch = briefingRegex.exec(content)) !== null) {
+            if (signal.aborted) break;
+            if (!isAgent) {
+                // In Assistant and Co-Engineer modes, the interactive proposal card is rendered in the webview for user validation
+                continue;
+            }
+
+            const attrStr = briefingMatch[1] || "";
+            const innerContent = briefingMatch[2].trim();
+
+            const actionMatch = attrStr.match(/action=["'](write|patch)["']/i);
+            const action = (actionMatch ? actionMatch[1].toLowerCase() : (innerContent.includes('<<<<<<< SEARCH') ? 'patch' : 'write')) as 'write' | 'patch';
+
+            const scopeMatch = attrStr.match(/scope=["'](global|local)["']/i);
+            const scope = (scopeMatch ? scopeMatch[1].toLowerCase() : 'global') as 'global' | 'local';
+
+            const updatedBriefing = await this._contextManager.updateMissionBriefing(innerContent, action, scope, this._currentDiscussion);
+
+            if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
+                await this._discussionManager.saveDiscussion(this._currentDiscussion);
+            }
+
+            this._panel.webview.postMessage({
+                command: 'updateBriefingContent',
+                text: updatedBriefing
+            });
+
+            this.log(`Mission Doctrine automatically updated by Agent (Action: ${action}, Scope: ${scope}).`);
+            await this.addMessageToDiscussion({
+                id: 'doctrine_update_' + Date.now(),
+                role: 'system',
+                content: `🎯 **Mission Doctrine Updated by Agent** (${action === 'patch' ? 'Surgical Patch' : 'Rewrite'}, Scope: \`${scope}\`).\n*New constraints locked into workspace context.*`,
+                skipInPrompt: true
+            });
+        }
+
         // 1. Process XML <file> Mutation Tags (Depth-aware extraction handles nested tags)
-        const { extractFileBlocks } = require('../../utils');
+        const { extractFileBlocks, parseFileTagAttributes } = require('../../utils');
         const fileBlocks = extractFileBlocks(content);
 
         for (const fileBlock of fileBlocks) {
@@ -217,15 +260,12 @@ export class ChatPanel {
             const attrStr = fileBlock.attrStr || "";
             const fileBody = fileBlock.rawContent || "";
 
-            const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
-            if (!pathMatch) continue;
+            const fileAttrs = parseFileTagAttributes(attrStr, fileBody);
+            if (!fileAttrs || !fileAttrs.path) continue;
 
-            const filePath = pathMatch[1].trim();
-            const actionMatch = attrStr.match(/action=["']([^"']+)["']/i);
-            const symbolMatch = attrStr.match(/symbol=["']([^"']+)["']/i);
-
-            const action = (actionMatch ? actionMatch[1] : (fileBody.includes('<<<<<<< SEARCH') ? 'patch' : 'write')).toLowerCase();
-            const symbol = symbolMatch ? symbolMatch[1].trim() : "";
+            const filePath = fileAttrs.path;
+            const action = fileAttrs.action;
+            const symbol = fileAttrs.symbol || "";
 
             const currentBlockIndex = blockIndex++;
             modifiedFiles.add(filePath);
@@ -290,6 +330,11 @@ export class ChatPanel {
                 }
             }
 
+            // Skip block if path is absent or looks like a placeholder like "Block 1"
+            if (!filePath || /^block\s+\d+$/i.test(filePath.trim())) {
+                continue;
+            }
+
             modifiedFiles.add(filePath);
 
             if (isAiderInside) {
@@ -334,25 +379,27 @@ export class ChatPanel {
                     const currentBlockIndex = blockIndex++; // Track block index
                     const opts = { silent: true, autoSave: true, blockIndex: currentBlockIndex };
 
-                    // Recover path from preceding text
+                    // Recover path from preceding text with priority for known file extensions
                     let filePath = "";
+                    const knownExts = /\.(py|ts|js|jsx|tsx|json|html|css|scss|md|txt|c|cpp|h|hpp|rs|go|java|cs|php|rb|sh|yaml|yml|xml|toml|sql|vue|svelte)$/i;
                     for (let k = i - 1; k >= Math.max(0, i - 15); k--) {
-                        const backtickMatch = lines[k].match(/`([^`]+)`/);
-                        if (backtickMatch) {
-                            const candidate = backtickMatch[1].trim();
-                            if (candidate.includes('.') || candidate.includes('/')) {
-                                filePath = candidate;
-                                break;
-                            }
+                        const allBackticks = [...lines[k].matchAll(/`([^`]+)`/g)].map(m => m[1].trim());
+                        const best = allBackticks.find(b => knownExts.test(b) || b.includes('/') || b.includes('\\'));
+                        if (best) {
+                            filePath = best;
+                            break;
                         }
                         const pathMatch = lines[k].match(/([a-zA-Z0-9._\-\/]+\.[a-zA-Z0-9]+)/);
-                        if (pathMatch) {
+                        if (pathMatch && knownExts.test(pathMatch[1])) {
                             filePath = pathMatch[1];
                             break;
                         }
+                        if (allBackticks.length > 0 && !filePath) {
+                            filePath = allBackticks[allBackticks.length - 1];
+                        }
                     }
 
-                    if (filePath) {
+                    if (filePath && !/^block\s+\d+$/i.test(filePath.trim())) {
                         modifiedFiles.add(filePath);
                         const normalizedAider = blockContent.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
                         const result: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
@@ -584,6 +631,15 @@ export class ChatPanel {
                       // Recurse into the next attempt
                       await this.triggerSurgicalSelfCorrection(filePath, fixedBlock, nextError, signal, currentAttempt + 1);
                   }
+              } else if (cleanResponse.includes('```')) {
+                  // Fallback: If AI returned fenced block without direct markers, apply it
+                  const match = cleanResponse.match(/```(?:\w+)?\n([\s\S]*?)\n```/);
+                  const block = match ? match[1].trim() : cleanResponse.trim();
+                  const applyResult: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, block, this, correctionMsgId, { silent: true, autoSave: true });
+                  if (applyResult?.success) {
+                      await this.updateMessageContent(correctionMsgId, `🛡️ **Sovereign Shield**: Corrected patch successfully applied to \`${filePath}\`.`);
+                      this._failedPatchesRegistry.delete(filePath);
+                  }
               } else {
                   await this.updateMessageContent(correctionMsgId, `🛡️ **Sovereign Shield**: AI repair produced an invalid format. Please resolve the conflict manually.`);
               }
@@ -602,14 +658,16 @@ export class ChatPanel {
 
         const desc = process?.description || "";
         const isBackgroundProcess = desc.toLowerCase().includes("title") || desc.toLowerCase().includes("counting");
-        const isAgentActive = this.agentManager?.getIsActive() && this._discussionCapabilities.workerType === 'discussion';
+
+        // An active execution is only running if a non-background process or stream is active
+        const isGenerating = !!(((process && !isBackgroundProcess) || !!activeGen) && !this._inputResolver);
+        const isAgentActive = !!this.agentManager?.getIsActive();
         const showRaiseHand = !!(isAgentActive && process && !isBackgroundProcess);
 
-        const isGenerating = ((process && !isBackgroundProcess) || !!activeGen) && !this._inputResolver;
-
         let statusText = vscode.l10n.t("Lollms is thinking...");
-        if (process) statusText = process.description;
+        if (process && !isBackgroundProcess) statusText = process.description;
         else if (activeGen) statusText = vscode.l10n.t("Generating response...");
+        else if (isGenerating && isAgentActive) statusText = "Agent is executing...";
 
         this._panel.webview.postMessage({ 
             command: 'setGeneratingState', 
@@ -815,6 +873,19 @@ export class ChatPanel {
                       discussion.importedSkills = [];
                   }
 
+                  if (!discussion.mutedFiles) {
+                      discussion.mutedFiles = [];
+                  }
+                  if (!discussion.mutedTools) {
+                      discussion.mutedTools = [];
+                  }
+                  if (!discussion.mutedSkills) {
+                      discussion.mutedSkills = [];
+                  }
+                  if (!discussion.mutedDiagrams) {
+                      discussion.mutedDiagrams = [];
+                  }
+
                   this._currentDiscussion = discussion;
 
                   if (this._panel) {
@@ -863,11 +934,14 @@ export class ChatPanel {
         })).filter(item => item.uri !== "");
 
         const { AGENT_MISSION_PROFILES } = require('../../registries/agentProfiles');
+        const { getUserPreferenceProfiles } = require('../../registries/profiles');
+        const userPrefProfiles = getUserPreferenceProfiles(config);
 
         // Immediately update capabilities and render discussion layout on the main thread
         this._panel.webview.postMessage({
             command: 'updateDiscussionCapabilities',
-            capabilities: this._discussionCapabilities
+            capabilities: this._discussionCapabilities,
+            userPreferenceProfiles: userPrefProfiles
         });
 
         this._panel.webview.postMessage({ 
@@ -880,6 +954,7 @@ export class ChatPanel {
             currentTemperature: this._discussionCapabilities.enableTemperature ? (this._discussionCapabilities.temperature ?? 0.7) : undefined,
             workspaceFolders: workspaceFolders,
             agentProfiles: AGENT_MISSION_PROFILES,
+            userPreferenceProfiles: userPrefProfiles,
             initialPrompt: this._initialPrompt
         });
         this._initialPrompt = undefined;
@@ -953,10 +1028,11 @@ export class ChatPanel {
                         ? cachedContext.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Preview truncated for UI performance. Total: ${cachedContext.text.length} chars]`
                         : cachedContext.text;
 
-                    const discussionTools = this._currentDiscussion?.importedTools || [];
-                    const projectTools = await this._contextManager.getActiveProjectTools();
+                    const isAssistant = !this._discussionCapabilities.agentMode && !this._discussionCapabilities.dynamicMode;
+                    const discussionTools = isAssistant ? [] : (this._currentDiscussion?.importedTools || []);
+                    const projectTools = isAssistant ? [] : await this._contextManager.getActiveProjectTools();
                     const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
-                    const equippedTools = this.agentManager.getTools()
+                    const equippedTools = isAssistant ? [] : this.agentManager.getTools()
                         .filter(t => allEquippedNames.includes(t.name))
                         .map(t => ({ name: t.name, description: t.description }));
 
@@ -967,6 +1043,10 @@ export class ChatPanel {
                         skills: cachedContext.importedSkills || [],
                         tools: equippedTools || [],
                         diagrams: cachedContext.diagrams || [],
+                        mutedFiles: this._currentDiscussion?.mutedFiles || [],
+                        mutedTools: this._currentDiscussion?.mutedTools || [],
+                        mutedSkills: this._currentDiscussion?.mutedSkills || [],
+                        mutedDiagrams: this._currentDiscussion?.mutedDiagrams || [],
                         briefing: this._currentDiscussion?.discussion_data_zone || "",
                         selections: savedSelections
                     });
@@ -978,6 +1058,7 @@ export class ChatPanel {
                         files: includedFiles,
                         skills: allSkillIds.map(id => ({ id, name: '...' })),
                         diagrams: (this._currentDiscussion?.activeDiagrams || []).map(type => ({ type, mermaid: '' })),
+                        mutedFiles: this._currentDiscussion?.mutedFiles || [],
                         briefing: this._currentDiscussion?.discussion_data_zone || "",
                         selections: savedSelections
                     });
@@ -1124,6 +1205,69 @@ export class ChatPanel {
         }, 300); // 300ms cushion allows the main UI thread to finish painting completely
     }
 
+  public recordCurrentPromptFiles(files: string[]) {
+      for (const f of files) {
+          if (f) {
+              this._currentPromptAddedFiles.add(f.replace(/\\/g, '/').toLowerCase().trim());
+          }
+      }
+  }
+
+  private getCurrentPromptFiles(): Set<string> {
+      const files = new Set<string>();
+      for (const f of this._currentPromptAddedFiles) {
+          files.add(f.replace(/\\/g, '/').toLowerCase().trim());
+      }
+      if (!this._currentDiscussion) return files;
+      const msgs = this._currentDiscussion.messages || [];
+      const lastUserIdx = [...msgs].reverse().findIndex(m => 
+          m.role === 'user' && 
+          !m.skipInPrompt && 
+          (typeof m.content === 'string' ? !m.content.startsWith('FORM_SUBMISSION:') && !m.content.startsWith('STOP_REQUESTED') : true)
+      );
+      const actualUserIdx = lastUserIdx === -1 ? -1 : (msgs.length - 1 - lastUserIdx);
+
+      const searchSlice = actualUserIdx !== -1 ? msgs.slice(actualUserIdx) : msgs.slice(-4);
+      for (const m of searchSlice) {
+          const text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => p.text || '').join('\n') : '');
+          if (!text) continue;
+          const addMatch = text.match(/<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/gi);
+          if (addMatch) {
+              for (const match of addMatch) {
+                  const inner = match.replace(/<\/?add_files_to_context>/gi, '');
+                  inner.split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).forEach(p => files.add(p.replace(/\\/g, '/').toLowerCase().trim()));
+              }
+          }
+      }
+      return files;
+  }
+
+  private getPreviousTurnFiles(): Set<string> {
+      const files = new Set<string>();
+      if (!this._currentDiscussion) return files;
+      const msgs = this._currentDiscussion.messages || [];
+      const recentMsgs = msgs.slice(-4);
+      for (const m of recentMsgs) {
+          const text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => p.text || '').join('\n') : '');
+          if (!text) continue;
+          const addMatch = text.match(/<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/gi);
+          if (addMatch) {
+              for (const match of addMatch) {
+                  const inner = match.replace(/<\/?add_files_to_context>/gi, '');
+                  inner.split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).forEach(p => files.add(p.toLowerCase()));
+              }
+          }
+          const fileMatch = text.match(/<file\s+([^>]*?)>/gi);
+          if (fileMatch) {
+              for (const fm of fileMatch) {
+                  const pathMatch = fm.match(/path=["']([^"']+)["']/i);
+                  if (pathMatch) files.add(pathMatch[1].trim().toLowerCase());
+              }
+          }
+      }
+      return files;
+  }
+
   public async sendGitBranchState(folder: vscode.WorkspaceFolder) {
       if (!this._gitIntegration) return;
       try {
@@ -1232,7 +1376,11 @@ export class ChatPanel {
                 if (!isBackground) {
                     self._panel.webview.postMessage({ 
                         command: 'updateContext', 
-                        files: rawIncluded
+                        files: rawIncluded,
+                        mutedFiles: self._currentDiscussion?.mutedFiles || [],
+                        mutedTools: self._currentDiscussion?.mutedTools || [],
+                        mutedSkills: self._currentDiscussion?.mutedSkills || [],
+                        mutedDiagrams: self._currentDiscussion?.mutedDiagrams || []
                     });
                 }
 
@@ -1243,6 +1391,9 @@ export class ChatPanel {
                     self.log("Fetching context content...");
                     const importedIds = self._currentDiscussion?.importedSkills || [];
                     const activeDiagramIds = self._currentDiscussion?.activeDiagrams || [];
+                    const mutedFiles = self._currentDiscussion?.mutedFiles || [];
+                    const mutedSkills = self._currentDiscussion?.mutedSkills || [];
+                    const mutedDiagrams = self._currentDiscussion?.mutedDiagrams || [];
 
                     if (forceFull) {
                         self._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Assembling Codebase Map...' });
@@ -1253,6 +1404,9 @@ export class ChatPanel {
                         capabilities: self._discussionCapabilities,
                         importedSkillIds: importedIds,
                         activeDiagramIds: activeDiagramIds,
+                        mutedFiles: mutedFiles,
+                        mutedSkills: mutedSkills,
+                        mutedDiagrams: mutedDiagrams,
                         modelName: modelForTokenization,
                         onProgress: forceFull ? (progressData: any) => {
                             if (!self._isDisposed) {
@@ -1339,10 +1493,10 @@ export class ChatPanel {
                         undefined, 
                         self._discussionCapabilities.forceFullCode, 
                         { 
-                            tree: context.projectTree, 
-                            files: context.selectedFilesContent, 
-                            skills: context.skillsContent, 
-                            memory: projectMemory 
+                            tree: '', 
+                            files: '', 
+                            skills: '', 
+                            memory: '' 
                         }
                     );
 
@@ -1393,10 +1547,11 @@ export class ChatPanel {
                         }));
                         const currentSkills = context.importedSkills || []; 
 
-                        const discussionTools = self._currentDiscussion?.importedTools || [];
-                        const projectTools = await self._contextManager.getActiveProjectTools();
+                        const isAssistant = !self._discussionCapabilities.agentMode && !self._discussionCapabilities.dynamicMode;
+                        const discussionTools = isAssistant ? [] : (self._currentDiscussion?.importedTools || []);
+                        const projectTools = isAssistant ? [] : await self._contextManager.getActiveProjectTools();
                         const allEquippedNames = Array.from(new Set([...discussionTools, ...projectTools]));
-                        const equippedTools = self.agentManager.getTools()
+                        const equippedTools = isAssistant ? [] : self.agentManager.getTools()
                             .filter(t => allEquippedNames.includes(t.name))
                             .map(t => ({ name: t.name, description: t.description }));
 
@@ -1406,14 +1561,26 @@ export class ChatPanel {
                             files: includedFiles,
                             skills: (currentSkills || []).map(s => ({ id: s.id, name: s.name, description: s.description })), // Lightweight descriptors
                             tools: equippedTools || [],
+                            mutedFiles: self._currentDiscussion?.mutedFiles || [],
+                            mutedTools: self._currentDiscussion?.mutedTools || [],
+                            mutedSkills: self._currentDiscussion?.mutedSkills || [],
+                            mutedDiagrams: self._currentDiscussion?.mutedDiagrams || [],
                             briefing: self._currentDiscussion?.discussion_data_zone || "" ,
                             selections: savedSelections || []
                         });
                     }
                     self._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
 
-                    self._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
-                    self._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
+                    const loadedCount = includedFiles.length;
+                    self._panel.webview.postMessage({ 
+                        command: 'tokenCalculationProgressText', 
+                        text: `Tokenizing prompt, history & ${loadedCount} file${loadedCount === 1 ? '' : 's'} for ${modelForTokenization}...` 
+                    });
+                    self._panel.webview.postMessage({ 
+                        command: 'updateStatus', 
+                        status: `Tokenizing context for ${modelForTokenization}...`, 
+                        type: 'info' 
+                    });
 
                     let imageTokens = 0;
                     const visionEnabled = self._discussionCapabilities.enableImages !== false;
@@ -1525,12 +1692,19 @@ export class ChatPanel {
                                     treeTokens = Math.ceil((folderTree || '').length / 3.5);
                                 }
 
-                                // 2. Content Weight (Metadata Heuristic from Loaded Files Only)
+                                // 2. Content Weight (Metadata Heuristic from Loaded Files Only, skipping muted files)
                                 if (settings.content !== false) {
                                     const provider = self._contextManager.getContextStateProvider();
                                     const included = provider?.getIncludedFiles() || [];
 
                                     for (const file of included) {
+                                        const isFileMuted = mutedFiles.some((m: string) => {
+                                            const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                                            const cleanF = file.path.replace(/\\/g, '/').toLowerCase().trim();
+                                            return cleanM === cleanF || cleanM.endsWith('/' + cleanF) || cleanF.endsWith('/' + cleanM);
+                                        });
+                                        if (isFileMuted) continue;
+
                                         const resolution = await self._contextManager.resolveWorkspaceFromPath(file.path);
                                         if (resolution?.folder && areUrisEqual(resolution.folder.uri, folder.uri)) {
                                             filesTokens += (file.tokens || Math.ceil((file.bytes || 0) / 3.5));
@@ -2047,7 +2221,44 @@ export class ChatPanel {
     const root: any = { id: 'root', label: 'Skills Library', children:[], isSkill: false };
     const globalRoot = { id: 'global-lib', label: 'Global Library', children: [], isSkill: false, isBundle: true };
     const projectRoot = { id: 'project-lib', label: 'Project Library', children: [], isSkill: false, isBundle: true };
-    root.children.push(globalRoot, projectRoot);
+    const zooRoot = { id: 'zoo-lib', label: 'Skills Zoo (Git Repos)', children: [], isSkill: false, isBundle: true };
+    root.children.push(globalRoot, projectRoot, zooRoot);
+
+    // Populate Synced Git Zoo Repositories
+    try {
+        const zooRepos = await this._skillsManager.getAllZooSkills();
+        zooRepos.forEach(({ repo, skills }) => {
+            const repoBranch: any = { id: `zoo-${repo.id}`, label: repo.name, children: [], isSkill: false, isBundle: true };
+            zooRoot.children.push(repoBranch);
+
+            skills.forEach(skill => {
+                const category = skill.category || 'general';
+                const parts = category.replace(/\\/g, '/').split('/').filter(p => p);
+                let current = repoBranch;
+                let pathSoFar = `zoo-${repo.id}`;
+
+                parts.forEach(part => {
+                    pathSoFar = `${pathSoFar}/${part}`;
+                    let existing = current.children.find((c: any) => c.label === part && !c.isSkill);
+                    if (!existing) {
+                        existing = { id: pathSoFar, label: part, children: [], isSkill: false, isBundle: true };
+                        current.children.push(existing);
+                    }
+                    current = existing;
+                });
+
+                current.children.push({
+                    id: skill.id,
+                    label: skill.name,
+                    isSkill: true,
+                    description: skill.description,
+                    skill: skill
+                });
+            });
+        });
+    } catch (zooErr) {
+        Logger.warn("Failed to load Git Zoo skills into chat picker", zooErr);
+    }
 
     allSkills.forEach(skill => {
         const category = skill.category || 'Uncategorized';
@@ -2147,20 +2358,18 @@ export class ChatPanel {
                 result = applyDiffToString(originalFileText, block.content);
             } else {
                 const normalizedContent = normalizeAiderContent(block.content);
-                // Handle multiple SEARCH/REPLACE blocks within the same content
-                const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
-                const matches =[...normalizedContent.matchAll(aiderRegex)];
-                
-                if (matches.length > 0) {
+                const hunks = parseAiderHunks(normalizedContent);
+
+                if (hunks.length > 0) {
                     let currentFileState = originalFileText;
                     let allSuccess = true;
                     let firstError = "";
 
-                    for (const match of matches) {
-                        const searchPart = match[1] || "";
-                        const replacePart = match[2] || "";
+                    for (const hunk of hunks) {
+                        const searchPart = hunk.searchPart || "";
+                        const replacePart = hunk.replacePart || "";
                         const srResult = applySearchReplace(currentFileState, searchPart, replacePart);
-                        
+
                         if (srResult.success) {
                             currentFileState = srResult.result;
                         } else {
@@ -2287,9 +2496,19 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                   ...this._discussionCapabilities,
                   agentMode: false,
                   dynamicMode: false,
+                  sparqlEnabled: false,
+                  webSearch: false,
+                  projectMemoryEnabled: false,
+                  enableImages: false,
                   isExport: true
               };
-              const systemPrompt = await getProcessedSystemPrompt('chat', exportCapabilities, personaContent, undefined, forceFullCode, { ...context, tree: '', files: '' });
+              const exportContext = {
+                  ...context,
+                  tree: '',
+                  files: '',
+                  toolManager: undefined
+              };
+              const systemPrompt = await getProcessedSystemPrompt('chat', exportCapabilities, personaContent, undefined, forceFullCode, exportContext);
 
               const projectName = contextData?.projectName || "Unknown Project";
               const filesSection = context.files && context.files.trim().length > 0 
@@ -2309,8 +2528,6 @@ ${filesSection}
 
 ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
 
-${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
-
 ---
 
 ## 🕒 CHAT HISTORY
@@ -2320,8 +2537,16 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
                   this._currentDiscussion.messages
                       .filter(m => !m.skipInPrompt)
                       .forEach(m => {
-                          const content = Array.isArray(m.content) ? m.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n') : m.content;
-                          fullText += `### ${m.role.toUpperCase()}\n${content}\n\n`;
+                          let raw = Array.isArray(m.content) ? m.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n') : (m.content || '');
+                          // Clean internal tool artifacts from chat history for external export
+                          const cleaned = raw
+                              .replace(/<lollms_tool\b[^>]*>[\s\S]*?<\/lollms_tool>/gi, '')
+                              .replace(/<details\s+class=["']processing-block["']>[\s\S]*?<\/details>/gi, '')
+                              .replace(/<details\s+class=["']lollms-form-block["']>[\s\S]*?<\/details>/gi, '')
+                              .trim();
+                          if (cleaned) {
+                              fullText += `### ${m.role.toUpperCase()}\n${cleaned}\n\n`;
+                          }
                       });
               }
               
@@ -2579,16 +2804,15 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
       return new Promise((resolve, reject) => {
           this._inputResolver = resolve;
-          
-          if (!options?.isAgentZone) {
-            this.addMessageToDiscussion({
-                id: 'agent_request_' + Date.now(),
-                role: 'assistant',
-                content: question,
-                model: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
-            });
-          }
-          
+
+          // Always display the prompt or form directly in the chat discussion stream
+          this.addMessageToDiscussion({
+              id: 'agent_request_' + Date.now(),
+              role: 'assistant',
+              content: question,
+              model: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
+          });
+
           this.updateGeneratingState();
 
           const disposable = signal.addEventListener('abort', () => {
@@ -2603,6 +2827,20 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
   public async sendMessage(message: ChatMessage, autoContext: boolean = false) {
     if (this._isDisposed || !this._currentDiscussion || !this.processManager) return;
+
+    // Intercept input resolver if waiting for user decision (e.g. Git Safeguard or interactive forms)
+    if (this._inputResolver) {
+        const resolver = this._inputResolver;
+        this._inputResolver = null;
+        const text = typeof message.content === 'string' 
+            ? message.content 
+            : (Array.isArray(message.content) 
+                ? (message.content.find((p: any) => p.type === 'text')?.text || '')
+                : '');
+        resolver(text);
+        this.updateGeneratingState();
+        return;
+    }
 
     await this.waitForWebviewReady();
 
@@ -2656,6 +2894,16 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     };
 
     // Add user message to discussion history and render it in the webview instantly
+    // Reset shielded prompt-added files set when a brand new user prompt initiates
+    const isNewUserPrompt = userMessage.role === 'user' && 
+        (typeof userMessage.content === 'string' 
+            ? !userMessage.content.startsWith('FORM_SUBMISSION:') && !userMessage.content.startsWith('STOP_REQUESTED')
+            : true);
+    if (isNewUserPrompt) {
+        this._currentPromptAddedFiles.clear();
+    }
+
+    // Add user message to discussion history and render it in the webview instantly
     await this.addMessageToDiscussion(userMessage);
 
     // Turn off the webview's input loading state and trigger immediate "Thinking" display
@@ -2695,7 +2943,12 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
                 ? message.content.find((p: any) => p.type === 'text')?.text || "Run task"
                 : "Run task");
 
-        // Hand off control to the Agent's ReAct planning loop asynchronously to prevent blocking the thread
+        // Unregister the preliminary dispatcher process so it doesn't linger in ProcessManager
+        if (processId) {
+            this.processManager.unregister(processId);
+        }
+
+        // Hand off control to the Agent's ReAct planning loop asynchronously
         setImmediate(async () => {
             await this.agentManager.handleUserMessage(
                 objectiveText,
@@ -2858,26 +3111,40 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
             return;
         }
 
-        this.processManager.updateDescription(processId, "Waiting for model...");
-        this.updateGeneratingState();
-
         const forceFullCode = this._discussionCapabilities?.forceFullCode || false;
-
         const importedIds = this._currentDiscussion?.importedSkills || [];
         const isContextMuted = this._discussionCapabilities?.disableProjectContext === true;
+        const loadedFileCount = this._contextManager.getContextStateProvider()?.getIncludedFiles().length || 0;
+
+        // Phase 1: Context & File Ingestion
+        this.processManager.updateDescription(processId, `Reading ${loadedFileCount} context file${loadedFileCount === 1 ? '' : 's'} & workspace tree...`);
+        this.updateGeneratingState();
+
+        const mutedFiles = this._currentDiscussion.mutedFiles || [];
+        const mutedSkills = this._currentDiscussion.mutedSkills || [];
+        const mutedDiagrams = this._currentDiscussion.mutedDiagrams || [];
 
         // Fetch contextData lexically before utilizing it in sendMessage
         const contextData = await this._contextManager.getContextContent({
             importedSkillIds: importedIds,
             includeTree: !isContextMuted,
+            mutedFiles: mutedFiles,
+            mutedSkills: mutedSkills,
+            mutedDiagrams: mutedDiagrams,
             modelName: targetModel,
             signal: controller.signal
         });
+
+        // Phase 2: Neural Memory & Prompt Assembly
+        this.processManager.updateDescription(processId, "Compiling system instructions & neural memory...");
+        this.updateGeneratingState();
 
         const memManager = (this as any).projectMemoryManager || this.agentManager?.projectMemoryManager;
         const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && memManager)
             ? await memManager.getFormattedMemoryBlock(typeof message.content === 'string' ? message.content : '', this._skillsManager)
             : "";
+
+        const isAssistantMode = !this._discussionCapabilities.agentMode && !this._discussionCapabilities.dynamicMode;
 
         const localContext = { 
             tree: contextData.projectTree, 
@@ -2898,7 +3165,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
                 tree: '', 
                 files: '', 
                 projectName: contextData.projectName,
-                toolManager: this.agentManager?.['toolManager']
+                toolManager: isAssistantMode ? undefined : this.agentManager?.['toolManager']
             } 
         );
 
@@ -2915,6 +3182,34 @@ ${localContext.tree ? `#### 🌳 PROJECT STRUCTURE\n${localContext.tree}\n` : ""
 ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No files currently selected)*"}
 --------------------------------------------------
 `.trim();
+
+        // Phase 3: Fast Server Probe
+        this.processManager.updateDescription(processId, `Verifying connection to ${targetModel}...`);
+        this.updateGeneratingState();
+
+        // ⚡ FAST OFFLINE GUARD: Verify server connectivity before mounting empty assistant bubbles
+        const pingResult = await this._lollmsAPI.pingServer(2000);
+        if (!pingResult.online) {
+            const offlineErrorMsg = `### 🔌 Server Offline
+Could not connect to the AI server at \`${this._lollmsAPI.config.apiUrl}\`.
+
+**Reason:** ${pingResult.error || 'Server is not responding'}
+
+**Troubleshooting:**
+1. Ensure your backend server (**${this._lollmsAPI.config.backendType}**) is running locally or accessible on your network.
+2. Verify the **API URL** in **Discussion Settings** or **Global Settings**.
+3. If using a local model, verify the server port (e.g. \`9642\` for Lollms, \`11434\` for Ollama).`;
+
+            await this.addMessageToDiscussion({
+                id: 'error_' + Date.now(),
+                role: 'system',
+                content: offlineErrorMsg
+            });
+
+            if (processId) this.processManager.unregister(processId);
+            this.updateGeneratingState();
+            return;
+        }
 
         // --- MULTIMODAL INJECTION ---
         let projectContextContent: any = projectStateText;
@@ -3007,6 +3302,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                 const currentData = await this._contextManager.getContextContent({ 
                     importedSkillIds: importedIds,
                     includeTree: !isContextMuted,
+                    mutedFiles: this._currentDiscussion?.mutedFiles || [],
                     modelName: targetModel 
                 });
 
@@ -3100,10 +3396,13 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
 
                 // Discover ALL action tags in the response and record their start positions
                 const patterns = [
-                    { tag: 'add_files_to_context', pattern: /^[ \t]*<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/gim },
-                    { tag: 'remove_files_from_context', pattern: /^[ \t]*<remove_files_from_context>([\s\S]*?)<\/remove_files_from_context>/gim },
-                    { tag: 'query_architecture', pattern: /^[ \t]*<query_architecture>([\s\S]*?)<\/query_architecture>/gim },
-                    { tag: 'lollms_tool', pattern: /^[ \t]*<lollms_tool>([\s\S]*?)<\/lollms_tool>/gim }
+                    { tag: 'add_files_to_context', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<add_files_to_context\b([^>]*?)>([\s\S]*?)<\/add_files_to_context>/gim },
+                    { tag: 'remove_files_from_context', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<remove_files_from_context\b([^>]*?)>([\s\S]*?)<\/remove_files_from_context>/gim },
+                    { tag: 'unpack_directory', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<unpack_directory\b([^>]*?)>([\s\S]*?)<\/unpack_directory>/gim },
+                    { tag: 'peek_files', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/gim },
+                    { tag: 'query_architecture', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<query_architecture\b([^>]*?)>([\s\S]*?)<\/query_architecture>/gim },
+                    { tag: 'mission_briefing', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<mission_briefing\b([^>]*?)>([\s\S]*?)<\/mission_briefing>/gim },
+                    { tag: 'lollms_tool', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<lollms_tool\b([^>]*?)>([\s\S]*?)<\/lollms_tool>|(?:^[ \t]*|(?<=>)[ \t]*)<lollms_tool\s+([^>]*?)\s*(?:\/>)/gim }
                 ];
 
                 interface DiscoveredAction {
@@ -3195,6 +3494,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                                         const outputParts: string[] = [];
                                         if (added.length > 0) {
                                             this._contextManager.recordRecentlyAddedFiles(added);
+                                            this.recordCurrentPromptFiles(added);
                                             outputParts.push(`Success: Added ${added.join(', ')} to context.`);
                                             completedDynamicActions.push("Loaded " + added.length + " files into memory.");
                                             isSuccess = true;
@@ -3223,6 +3523,50 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                                 await this._contextManager.getContextStateProvider()?.setStateForUris(uris, 'tree-only');
                                 toolResult = `Success: Removed ${filesToRemove.join(', ')} from context.`;
                                 completedDynamicActions.push(`Removed ${filesToRemove.length} files from context.`);
+                            } else if (action.tag === 'unpack_directory') {
+                                const rawDirs = action.params.split(/[\s\r\n,]+/).map((d: string) => d.trim().replace(/^['"]|['"]$/g, '')).filter((d: string) => d && !d.startsWith('<'));
+                                if (rawDirs.length === 0) {
+                                    toolResult = "Error: No directory path provided in <unpack_directory>.";
+                                    isSuccess = false;
+                                } else {
+                                    const outMsgs: string[] = [];
+                                    let allOk = true;
+                                    for (const dir of rawDirs) {
+                                        const res = await this._contextManager.unpackDirectory(dir);
+                                        outMsgs.push(res.message);
+                                        if (!res.success) allOk = false;
+                                    }
+                                    toolResult = outMsgs.join('\n\n');
+                                    isSuccess = allOk;
+                                    completedDynamicActions.push(allOk ? `Unpacked directory: ${rawDirs.join(', ')}.` : `Failed to unpack: ${rawDirs.join(', ')}.`);
+                                }
+                            } else if (action.tag === 'peek_files') {
+                                const rawPaths = action.params.split(/[\s\r\n,]+/).map((p: string) => p.trim().replace(/^['"]|['"]$/g, '')).filter((p: string) => p && !p.startsWith('<'));
+                                if (rawPaths.length === 0) {
+                                    toolResult = "Error: No file path provided in <peek_files>.";
+                                    isSuccess = false;
+                                } else {
+                                    const peekRes = await this._contextManager.peekFiles(rawPaths);
+                                    const outMsgs: string[] = [];
+                                    let anyOk = false;
+                                    for (const pr of peekRes) {
+                                        if (pr.error) {
+                                            outMsgs.push(`❌ ${pr.path}: ${pr.error}`);
+                                        } else {
+                                            anyOk = true;
+                                            const preview = pr.content.length > 3000 ? pr.content.substring(0, 3000) + '\n... [truncated]' : pr.content;
+                                            outMsgs.push(`### 📄 PEEK: \`${pr.path}\`\n\`\`\`\n${preview}\n\`\`\``);
+                                        }
+                                    }
+                                    toolResult = outMsgs.join('\n\n');
+                                    isSuccess = anyOk;
+                                    completedDynamicActions.push(`Peeked at ${rawPaths.length} file(s).`);
+                                }
+                            } else if (action.tag === 'mission_briefing') {
+                                // In Co-Engineer mode, doctrine updates are proposed to the user for manual approval
+                                toolResult = `Proposed mission doctrine update. An interactive review card has been presented to the user to inspect diff and apply.`;
+                                isSuccess = true;
+                                completedDynamicActions.push(`Proposed mission doctrine update for user review.`);
                             } else if (action.tag === 'query_architecture') {
                                 const sparql = action.params.trim();
                                 const rawResult = await this.agentManager.codeGraphManager.executeSparql(sparql);
@@ -3291,6 +3635,12 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                         } else if (action.tag === 'remove_files_from_context') {
                             const filesToRemove = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
                             blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-trash' : 'codicon-error'}"></i> ${isSuccess ? 'Pruned Files Context' : 'Pruning Failed'}: ${filesToRemove.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        } else if (action.tag === 'unpack_directory') {
+                            const dirs = action.params.split(/[\s\r\n,]+/).map((f: string) => f.trim()).filter((f: string) => f);
+                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-folder-opened' : 'codicon-error'}"></i> ${isSuccess ? 'Unpacked Directory' : 'Directory Unpack Notice'}: ${dirs.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        } else if (action.tag === 'peek_files') {
+                            const files = action.params.split(/[\s\r\n,]+/).map((f: string) => f.trim()).filter((f: string) => f);
+                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-eye' : 'codicon-error'}"></i> ${isSuccess ? 'Peeked at Files' : 'Peek Notice'}: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
                         } else if (action.tag === 'query_architecture') {
                             const sparql = action.params.trim();
                             blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-graph"></i> ${isSuccess ? 'Ran SPARQL Query' : 'SPARQL Query Failed'}</summary><div class="processing-body">\`\`\`sparql\n${sparql}\n\`\`\`\n\n**Result:**\n${toolResult}</div></details>\n\n`;
@@ -3398,281 +3748,54 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
         const reqTemperature = this._discussionCapabilities.enableTemperature ? (this._discussionCapabilities.temperature ?? 0.7) : undefined;
 
         // =========================================================================
-        // 🛡️ CONTEXT GOVERNOR: LLM-DRIVEN SMART PRUNING
+        // 🛡️ CONTEXT GOVERNOR & 120% HARD-CAP ARBITRATION
         // =========================================================================
-
-        const fileBlocks: { fullMatch: string, path: string, tokens: number, keep: boolean, reason?: string }[] = [];
-
-        const isGovernorEnabled = this._discussionCapabilities.contextGovernorEnabled !== false;
-
         try {
-            const metrics = this._currentDiscussion?.lastTokenMetrics;
-
-            if (isGovernorEnabled && metrics) {
-                const totalEstimated = metrics.total;
-                const maxTokens = metrics.contextSize;
-
-                // Read User-Defined Threshold (Default to 95 if missing)
-                const userThresholdPercent = this._discussionCapabilities.contextGovernorThreshold !== undefined
-                    ? this._discussionCapabilities.contextGovernorThreshold
-                    : 95;
-                const triggerThreshold = maxTokens * (userThresholdPercent / 100);
-
-                const fillPercentage = Math.round((totalEstimated / maxTokens) * 100);
-
-                if (totalEstimated > triggerThreshold) {
-                    this.processManager.updateDescription(processId, "⚖️ Governor: Analyzing context relevance...");
-                    this.updateGeneratingState();
-
-                    const userPromptText = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
-                    const overflow = totalEstimated - triggerThreshold;
-                    const pruneMsgId = 'system_prune_' + Date.now();
-
-                    // 1. Check for History Overflow (Immutable part)
-                    const fixedLoad = metrics.segments.system + metrics.segments.briefing + metrics.segments.history + metrics.segments.images;
-                    if (fixedLoad > triggerThreshold) {
-                        await this.addMessageToDiscussion({
-                            role: 'system',
-                            content: `🛑 **Context Overflow Blocked**\nHistory and instructions (~${fixedLoad.toLocaleString()} tokens) exceed your configured ${userThresholdPercent}% threshold (**${maxTokens.toLocaleString()}**).\n\n**To continue:** Delete old messages or start a "New Discussion".`
-                        });
-                        this.processManager.unregister(processId);
+            const userPromptText = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+            const arbitrationResult = await ContextGovernor.arbitrate({
+                lollmsAPI: this._lollmsAPI,
+                contextManager: this._contextManager,
+                discussionManager: this._discussionManager,
+                currentDiscussion: this._currentDiscussion,
+                contextData,
+                baseInstructions,
+                history,
+                currentPromptMessage,
+                userPromptText,
+                targetModel,
+                capabilities: this._discussionCapabilities,
+                currentPromptAddedFiles: this.getCurrentPromptFiles(),
+                signal: controller.signal,
+                onStatusUpdate: (status) => {
+                    if (processId) {
+                        this.processManager.updateDescription(processId, status);
                         this.updateGeneratingState();
-                        return;
                     }
+                },
+                onAddMessage: (msg) => this.addMessageToDiscussion(msg),
+                onUpdateMessage: (msgId, content) => this.updateMessageContent(msgId, content)
+            });
 
-                    await this.addMessageToDiscussion({
-                        id: pruneMsgId,
-                        role: 'system',
-                        content: `⚖️ **Context Governor: Pruning Triggered**
-        Trigger Reason: Authoritative HUD payload reached **${fillPercentage}%** (${totalEstimated.toLocaleString()} / ${maxTokens.toLocaleString()} tokens).
-        *Summoning the Pruning Specialist to optimize relevance based on project structure and mission history...*`,
-                        skipInPrompt: true
-                    });
-
-                    // 2. Parse file blocks and build peeks supporting XML <file> tags and fallback fences
-                    const { extractFileBlocks: extractBlocksForGovernor } = require('../../utils');
-                    const extractedBlocks = extractBlocksForGovernor(contextData.selectedFilesContent);
-
-                    if (extractedBlocks.length > 0) {
-                        for (const fb of extractedBlocks) {
-                            const pMatch = fb.attrStr.match(/path=["']([^"']+)["']/i);
-                            const filePath = pMatch ? pMatch[1].trim() : "";
-                            if (!filePath || filePath.includes('<<<<<<< SEARCH')) continue;
-
-                            const lines = fb.rawContent.split('\n');
-                            const peekLines = lines.slice(0, 40).join('\n');
-                            const peek = lines.length > 40 ? `${peekLines}\n... [Truncated ${lines.length - 40} lines. Use grep_search if you need more context]` : peekLines;
-
-                            fileBlocks.push({
-                                fullMatch: fb.fullMatch,
-                                path: filePath,
-                                tokens: Math.ceil(fb.fullMatch.length / 3.5),
-                                peek: peek,
-                                keep: true
-                            });
-                        }
-                    } else {
-                        const blockRegex = /<file\s+path=["']([^"']+)["'][^>]*>([\s\S]*?)<\/file>|```(?:\w+)?[:]?([^\n]+)[\r\n]([\s\S]*?)[\r\n]```/gi;
-                        let fileMatch;
-                        while ((fileMatch = blockRegex.exec(contextData.selectedFilesContent)) !== null) {
-                            const filePath = (fileMatch[1] || fileMatch[3] || '').trim();
-                            if (!filePath || filePath.includes('<<<<<<< SEARCH')) continue;
-
-                            const fileBody = fileMatch[2] || fileMatch[4] || '';
-                            const lines = fileBody.split('\n');
-                            const peekLines = lines.slice(0, 40).join('\n');
-                            const peek = lines.length > 40 ? `${peekLines}\n... [Truncated ${lines.length - 40} lines. Use grep_search if you need more context]` : peekLines;
-
-                            fileBlocks.push({
-                                fullMatch: fileMatch[0],
-                                path: filePath,
-                                tokens: Math.ceil(fileMatch[0].length / 3.5),
-                                peek: peek,
-                                keep: true 
-                            });
-                        }
-                    }
-
-                    // 3. AGENTIC DECISION PASS
-                    // Provide the LLM with the tree (grounded with markers) and recent history
-                    const recentHistory = history.slice(-3).map(m => {
-                        const role = m.role.toUpperCase();
-                        const content = typeof m.content === 'string' ? m.content : "[Multipart Content]";
-                        return `### ${role}\n${content.substring(0, 1000)}${content.length > 1000 ? '...' : ''}`;
-                    }).join('\n\n');
-
-                    const recentSearchText = (userPromptText + "\n" + recentHistory).toLowerCase();
-                    const isMentionedInPrompt = (filePath: string) => {
-                        const base = path.basename(filePath).toLowerCase();
-                        return recentSearchText.includes(base) || recentSearchText.includes(filePath.toLowerCase());
-                    };
-
-                    const isProtected = (filePath: string): boolean => {
-                        if (this._contextManager.isRecentlyAdded(filePath)) return true;
-                        if (isMentionedInPrompt(filePath)) return true;
-                        const lower = filePath.toLowerCase();
-                        if (lower.includes('core') || lower.includes('mixin') || lower.includes('types') || lower.includes('interface') || lower.includes('api')) return true;
-                        return false;
-                    };
-
-                    const decisionPrompt = `You are the **Sovereign Context Governor**. 
-The current request payload (**${totalEstimated.toLocaleString()}** tokens) has reached **${fillPercentage}%** of the model's limit (**${maxTokens.toLocaleString()}**).
-You must select which files to evict from the 'possessed' context to liberate at least **${Math.round(overflow).toLocaleString()}** tokens.
-
-### 🌳 PROJECT STRUCTURE & CONTEXT STATUS
-${contextData.projectTree}
-*(Legend: [C] = Content in memory, No marker = path only)*
-
-### 🕒 RECENT MISSION HISTORY
-${recentHistory || "No previous history."}
-
-### 🎯 CURRENT USER PROMPT
-"${userPromptText}"
-
-### 📄 LOADED FILES (MEMOIZED CONTENT & PEEKS)
-Analyze their relevance to the current mission and history.
-${fileBlocks.map(b => {
-    const protectedTag = isProtected(b.path) ? " [PROTECTED - JUST ADDED / CURRENTLY REFERENCED - DO NOT EVICT]" : "";
-    return `
-- **File**: \`${b.path}\` (${b.tokens} tokens)${protectedTag}
-  **Content Peek (First 40 lines)**:
-  \`\`\`
-  ${b.peek}
-  \`\`\`
-`;
-}).join('\n')}
-
-### 📝 PRUNING RULES:
-1. **ZERO-EVICTION FOR RECENT ADDITIONS (CRITICAL)**: You MUST NEVER evict files marked [PROTECTED] or files recently requested by the user or agent. Evicting files that were just added creates a destructive infinite oscillation loop.
-2. **PROTECT CORE & TYPES**: Do NOT evict files containing "core", "mixin", "types", "interface", or "api" unless they are explicitly unrelated to the prompt.
-3. **PROTECT RECENT REFERENCES**: If the user prompt or recent history refers to a specific file or logic found in one of these files, KEEP it.
-4. **EVICT NOISE FIRST**: Target old, digested files, large unrelated utilities, or documentation that has already been analyzed.
-
-**OUTPUT FORMAT**: JSON only.
-{
-"keep": ["path/to/relevant/file.ts"],
-"evict": [
-{"path": "path/to/noise.py", "reason": "Short explanation why this is being evicted"}
-]
-}
-`;
-                let decision;
-                try {
-                    const decisionRes = await this._lollmsAPI.sendChat([
-                        { role: 'system', content: "You are an architectural context governor. Output ONLY JSON." },
-                        { role: 'user', content: decisionPrompt }
-                    ], null, controller.signal, targetModel);
-                    decision = JSON.parse(stripThinkingTags(decisionRes));
-                } catch (e) {
-                    // Fallback: Evict just enough tokens to clear the overflow, strictly protecting recently added/core files
-                    const sortedBySize = [...fileBlocks].sort((a, b) => b.tokens - a.tokens);
-                    const evictList: any[] = [];
-                    let liberated = 0;
-
-                    for (const block of sortedBySize) {
-                        if (isProtected(block.path)) continue;
-
-                        evictList.push({ path: block.path, reason: "Fallback: Removed to clear token overflow." });
-                        liberated += block.tokens;
-                        if (liberated >= overflow) break;
-                    }
-
-                    decision = { keep: [], evict: evictList };
-                }
-
-                // 4. APPLY DECISIONS
-                const candidateEvictedPaths = (decision.evict || []).map((e: any) => e.path);
-                let liberatedTokens = 0;
-                const keptList: string[] = [];
-                const evictedReport: string[] = [];
-                const evictedPaths: string[] = [];
-
-                fileBlocks.forEach(b => {
-                    const wantsToEvict = candidateEvictedPaths.some((ep: string) => {
-                        const cleanEp = ep.replace(/\\/g, '/').toLowerCase().trim();
-                        const cleanBp = b.path.replace(/\\/g, '/').toLowerCase().trim();
-                        return cleanEp === cleanBp || cleanEp.endsWith('/' + cleanBp) || cleanBp.endsWith('/' + cleanEp);
-                    });
-
-                    // Anti-Oscillation Gate: If file is protected, prevent eviction even if LLM tried to evict it
-                    if (wantsToEvict && isProtected(b.path)) {
-                        this.log(`Context Governor Shield: Prevented eviction of protected/recently added file: ${b.path}`, 'INFO');
-                        b.keep = true;
-                        keptList.push(`- 🛡️ \`${b.path}\` (Protected from eviction)`);
-                    } else if (wantsToEvict) {
-                        b.keep = false;
-                        liberatedTokens += b.tokens;
-                        evictedPaths.push(b.path);
-                        const matchEntry = decision.evict.find((e: any) => e.path && e.path.toLowerCase().includes(path.basename(b.path).toLowerCase()));
-                        const reason = matchEntry?.reason || "Irrelevant to current prompt.";
-                        evictedReport.push(`- ✂️ \`${b.path}\`: ${reason}`);
-                    } else {
-                        keptList.push(`- ✅ \`${b.path}\``);
-                    }
-                });
-
-                // 5. UPDATE CONTEXT
-                const keptBlocks = fileBlocks.filter(b => b.keep);
-                contextData.selectedFilesContent = keptBlocks.map(b => b.fullMatch).join('\n\n');
-
-                // 5.5 PERMANENT PRUNING SYNC
-                if (this._discussionCapabilities.contextGovernorPermanentPruning && evictedPaths.length > 0) {
-                    this.log(`Governor: Performing permanent eviction of ${evictedPaths.length} files from Workspace State...`);
-                    const urisToEvict: vscode.Uri[] = [];
-                    for (const p of evictedPaths) {
-                        const res = await this._contextManager.resolveWorkspaceFromPath(p);
-                        if (res) urisToEvict.push(res.uri);
-                    }
-                    if (urisToEvict.length > 0) {
-                        await this._contextManager.getContextStateProvider()?.setStateForUris(urisToEvict, 'tree-only');
-                    }
-                }
-
-                // 6. DETAILED REPORT
-                const newTotal = metrics ? (metrics.total - liberatedTokens) : 0;
-                const newPct = metrics ? Math.round((newTotal / metrics.contextSize) * 100) : 0;
-
-                await this.updateMessageContent(pruneMsgId, `⚖️ **Context Governor: Optimization Complete**
-                Pruning liberated **${liberatedTokens.toLocaleString()}** tokens. New authoritative usage: **${newPct}%**.
-
-                **📦 PRESERVED (Locked for Mission):**
-                ${keptList.join('\n') || "- (None)"}
-
-                **🗑️ EVICTED (Context Pruned):**
-                ${evictedReport.join('\n')}
-
-                *Evicted files remain in the Project Tree. Use \`<add_files_to_context>\` if they are needed in subsequent turns.*`);
-
-                // Rebuild messagesToSend with the newly pruned context
-                const briefingContent = this._contextManager.renderBriefing(this._currentDiscussion);
-                const projectStateText = `
-### 📂 ATTACHED PROJECT CONTEXT
-I am providing you with the current, ground-truth state of my project files and the Librarian's technical briefing. 
-
-${briefingContent && !briefingContent.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefingContent}\n` : ""}
-${contextData.projectTree ? `#### 🌳 PROJECT STRUCTURE\n${contextData.projectTree}\n` : ""}
-${contextData.selectedFilesContent ? `#### 📄 FILE CONTENTS\n${contextData.selectedFilesContent}` : "*(No files currently selected)*"}
---------------------------------------------------
-`.trim();
-
-                const projectContextUserMessage: ChatMessage = {
-                    role: 'user',
-                    content: projectStateText
-                };
-
-                messagesToSend = [
-                    { role: 'system', content: baseInstructions },
-                    ...history,
-                    projectContextUserMessage
-                ];
-
-                if (currentPromptMessage) {
-                    messagesToSend.push(currentPromptMessage);
-                }
+            if (!arbitrationResult) {
+                if (processId) this.processManager.unregister(processId);
+                this.updateGeneratingState();
+                return;
             }
-        }
+
+            messagesToSend = arbitrationResult.messagesToSend;
+            history = arbitrationResult.history;
+
+            if (this._panel && this._panel.webview) {
+                this._panel.webview.postMessage({
+                    command: 'updateTokenProgress',
+                    totalTokens: arbitrationResult.totalTokens,
+                    contextSize: arbitrationResult.contextSize,
+                    isApproximate: true,
+                    segments: this._currentDiscussion?.lastTokenMetrics?.segments
+                });
+            }
         } catch (e: any) {
-            this.log(`Error during context pruning: ${e.message}`, 'ERROR');
+            this.log(`Error during context arbitration: ${e.message}`, 'ERROR');
         }
 
         // =========================================================================
@@ -3680,8 +3803,7 @@ ${contextData.selectedFilesContent ? `#### 📄 FILE CONTENTS\n${contextData.sel
         // =========================================================================
         
         // --- DIAGNOSTIC: Log Context Payload ---
-        const includedFiles = fileBlocks.filter(b => b.keep).map(b => b.path);
-        Logger.info(`[ContextCheck] Sending ${includedFiles.length} files to LLM: ${includedFiles.join(', ')}`);
+        Logger.info(`[ContextCheck] Outbound payload prepared: ${messagesToSend.length} message(s) for ${targetModel}`);
 
         messagesToSend.forEach((msg, idx) => {
             const role = msg.role.toUpperCase();
@@ -3690,7 +3812,6 @@ ${contextData.selectedFilesContent ? `#### 📄 FILE CONTENTS\n${contextData.sel
             if (contentPrev.length > 1000) {
                 const head = contentPrev.substring(0, 500);
                 const tail = contentPrev.substring(contentPrev.length - 500);
-            } else {
             }
         });
         // =========================================================================
@@ -3745,6 +3866,10 @@ ${contextData.selectedFilesContent ? `#### 📄 FILE CONTENTS\n${contextData.sel
         let firstTokenReceived = false;
         this.log(`Outbound Stream: Initiating API call to Lollms Server at ${this._lollmsAPI.config.apiUrl}. Model: ${this._currentDiscussion.model || 'default'}.`);
 
+        // Phase 4: Active Network Connection
+        this.processManager.updateDescription(processId, `Connecting to ${targetModel} (waiting for first token)...`);
+        this.updateGeneratingState();
+
         // 🛡️ SANITIZE OPTIONS: Strip complex local options map before sending to external API providers (like Kimi or Groq)
         // to prevent silent connection drop failures.
         const cleanOptions: any = {};
@@ -3765,7 +3890,7 @@ ${contextData.selectedFilesContent ? `#### 📄 FILE CONTENTS\n${contextData.sel
                 if (!firstTokenReceived) {
                     firstTokenReceived = true;
                     this.log("Outbound Stream: First token chunk successfully received from API server.");
-                    if (processId) this.processManager.updateDescription(processId, "Worker: Drafting solution...");
+                    if (processId) this.processManager.updateDescription(processId, `Streaming response from ${targetModel}...`);
                     this.updateGeneratingState();
                 }
 
@@ -4271,16 +4396,24 @@ If there are no meaningful docs to update, find the README.md and add a "Latest 
         } else {
             this.log(`Message delivery failed: ${error.message}`, 'ERROR');
 
-            // 2. Add the system error to the message history
-            await this.addMessageToDiscussion({ 
-                id: 'error_' + Date.now(),
-                role: 'system', 
-                content: `### 🔌 Connection Error\nLollms could not reach the server at \`${this._lollmsAPI.config.apiUrl}\`.\n\n**Reason:** ${error.message}\n\n*Please check if your server is running and try again.*`,
-                timestamp: Date.now()
-            }); 
+            const errorMessage = `### 🔌 Connection Error
+Lollms could not complete the request to \`${this._lollmsAPI.config.apiUrl}\`.
 
-            // 3. CRITICAL: Force a full UI reload. 
-            await this.loadDiscussion();
+**Reason:** ${error.message}
+
+*Please check if your server is running and try again.*`;
+
+            // If an assistant bubble was already created in the webview, replace its content in-place with the error
+            if (assistantMessageId) {
+                await this.updateMessageContent(assistantMessageId, errorMessage);
+            } else {
+                await this.addMessageToDiscussion({ 
+                    id: 'error_' + Date.now(),
+                    role: 'system', 
+                    content: errorMessage,
+                    timestamp: Date.now()
+                });
+            }
         }
     }
     finally { 
@@ -4415,13 +4548,12 @@ If there are no meaningful docs to update, find the README.md and add a "Latest 
       if (!isApplied) {
           // Apply in memory
           if (type === 'replace' || content.includes('<<<<<<< SEARCH')) {
-            // Handle multiple SEARCH/REPLACE blocks within the same content
-            const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
-            const matches =[...content.matchAll(aiderRegex)];
-              if (matches.length > 0) {
+              const normalizedContent = normalizeAiderContent(content);
+              const hunks = parseAiderHunks(normalizedContent);
+              if (hunks.length > 0) {
                   let tempContent = currentContent;
-                  for (const match of matches) {
-                      const result = applySearchReplace(tempContent, match[1], match[2]);
+                  for (const hunk of hunks) {
+                      const result = applySearchReplace(tempContent, hunk.searchPart, hunk.replacePart);
                       if (result.success) {
                           tempContent = result.result;
                       } else {
@@ -4699,7 +4831,7 @@ ${targetContent}
         // Force clear any active progress states in the loader
         this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
 
-        this.processManager.updateDescription(processId, "Waiting for model response...");
+        this.processManager.updateDescription(processId, `Connecting to ${targetModel} (waiting for first token)...`);
         this.updateGeneratingState();
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -4755,7 +4887,7 @@ ${targetContent}
                 if (controller.signal.aborted) return;
                 if (!firstTokenReceived) {
                     firstTokenReceived = true;
-                    if (processId) this.processManager.updateDescription(processId, "Worker: Drafting solution...");
+                    if (processId) this.processManager.updateDescription(processId, `Streaming response from ${targetModel}...`);
                     this.updateGeneratingState();
                 }
 
@@ -5325,6 +5457,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
 
                             if (addedPaths.length > 0) {
                                 this._contextManager.recordRecentlyAddedFiles(addedPaths);
+                                this.recordCurrentPromptFiles(addedPaths);
 
                                 // Notify UI immediately to stop the spinner and show updated visual states (checkmarks)
                                 webview.postMessage({
@@ -5694,20 +5827,56 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
             // requestAddFileToContext removed - now handled by webview file input
             // to ensure files are treated as discussion attachments.
             case 'requestAddDiagramToContext':
-                const diagType = await vscode.window.showQuickPick([
-                    { label: 'Inheritance Diagram', id: 'class_diagram' },
-                    { label: 'Call Graph', id: 'call_graph' },
-                    { label: 'Import Graph', id: 'import_graph' },
-                    { label: 'Function Signatures', id: 'function_signatures' },
-                    { label: 'Textual Architecture Summary (Token Efficient)', id: 'text_summary' }
-                ], { placeHolder: 'Select diagram type to include in AI context' });
+                {
+                    const diagType = await vscode.window.showQuickPick([
+                        { label: '$(type-hierarchy) Inheritance Diagram', id: 'class_diagram', description: 'Classes, structs, and inheritance hierarchies' },
+                        { label: '$(symbol-method) Call Graph', id: 'call_graph', description: 'Function and method invocation flow' },
+                        { label: '$(repo) Import Graph', id: 'import_graph', description: 'Module import relationships and dependencies' },
+                        { label: '$(symbol-interface) Function Signatures', id: 'function_signatures', description: 'Typed function and method signatures' },
+                        { label: '$(file-text) Textual Architecture Summary (Token Efficient)', id: 'text_summary', description: 'Structured YAML architecture overview' }
+                    ], { placeHolder: 'Select diagram type to include in AI context' });
 
-                if (diagType && this._currentDiscussion) {
-                    if (!this._currentDiscussion.activeDiagrams) this._currentDiscussion.activeDiagrams = [];
-                    if (!this._currentDiscussion.activeDiagrams.includes(diagType.id)) {
-                        this._currentDiscussion.activeDiagrams.push(diagType.id);
-                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
-                        this.updateContextAndTokens();
+                    if (diagType && this._currentDiscussion) {
+                        const { id: processId } = this.processManager.register(
+                            this.discussionId, 
+                            `Generating ${diagType.label}...`
+                        );
+                        this.updateGeneratingState();
+
+                        try {
+                            // Ensure Code Graph is built before generating the diagram
+                            if (this._codeGraphManager) {
+                                if (this._codeGraphManager.getBuildState() !== 'ready' || this._codeGraphManager.getGraphData().nodes.length === 0) {
+                                    this.processManager.updateDescription(processId, "Building Code Architecture Graph...");
+                                    this.updateGeneratingState();
+                                    await this._codeGraphManager.buildGraph((status) => {
+                                        this.processManager.updateDescription(processId, status);
+                                        this.updateGeneratingState();
+                                    });
+                                }
+                            }
+
+                            if (!this._currentDiscussion.activeDiagrams) this._currentDiscussion.activeDiagrams = [];
+                            if (!this._currentDiscussion.activeDiagrams.includes(diagType.id)) {
+                                this._currentDiscussion.activeDiagrams.push(diagType.id);
+                            }
+
+                            if (!this._currentDiscussion.id.startsWith('temp-')) {
+                                await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                            }
+
+                            this.processManager.updateDescription(processId, `Compiling ${diagType.id} diagram...`);
+                            this.updateGeneratingState();
+                            await this.updateContextAndTokens({ isBackgroundSync: false });
+
+                            vscode.window.showInformationMessage(`✅ Added ${diagType.id.replace('_', ' ')} to discussion context.`);
+                        } catch (diagErr: any) {
+                            Logger.error(`Failed to generate diagram: ${diagErr.message}`);
+                            vscode.window.showErrorMessage(`Failed to generate diagram: ${diagErr.message}`);
+                        } finally {
+                            this.processManager.unregister(processId);
+                            this.updateGeneratingState();
+                        }
                     }
                 }
                 break;
@@ -5822,6 +5991,94 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
             case 'bulkCopyFiles':
                 vscode.commands.executeCommand('lollms-vs-coder.bulkCopyFiles', message.operations);
                 break;
+            case 'toggleMuteFile':
+                if (this._currentDiscussion && message.path) {
+                    if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
+                    const targetPath = message.path.replace(/\\/g, '/').trim();
+                    const isMuted = this._currentDiscussion.mutedFiles.some(p => {
+                        const cleanP = p.replace(/\\/g, '/').toLowerCase();
+                        const cleanT = targetPath.toLowerCase();
+                        return cleanP === cleanT || cleanP.endsWith('/' + cleanT) || cleanT.endsWith('/' + cleanP);
+                    });
+
+                    if (isMuted) {
+                        this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(p => {
+                            const cleanP = p.replace(/\\/g, '/').toLowerCase();
+                            const cleanT = targetPath.toLowerCase();
+                            return !(cleanP === cleanT || cleanP.endsWith('/' + cleanT) || cleanT.endsWith('/' + cleanP));
+                        });
+                        vscode.window.showInformationMessage(`Reactivated "${path.basename(targetPath)}" for this discussion.`);
+                    } else {
+                        this._currentDiscussion.mutedFiles.push(targetPath);
+                        vscode.window.showInformationMessage(`Deactivated "${path.basename(targetPath)}" for this discussion (Muted).`);
+                    }
+
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                    this.updateContextAndTokens({ isBackgroundSync: false });
+                }
+                break;
+
+            case 'toggleMuteTool':
+                if (this._currentDiscussion && message.toolName) {
+                    if (!this._currentDiscussion.mutedTools) this._currentDiscussion.mutedTools = [];
+                    const tName = message.toolName.trim();
+                    const idx = this._currentDiscussion.mutedTools.indexOf(tName);
+                    if (idx !== -1) {
+                        this._currentDiscussion.mutedTools.splice(idx, 1);
+                        vscode.window.showInformationMessage(`Reactivated tool "${tName}" for this discussion.`);
+                    } else {
+                        this._currentDiscussion.mutedTools.push(tName);
+                        vscode.window.showInformationMessage(`Deactivated tool "${tName}" for this discussion (Muted).`);
+                    }
+
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                    this.updateContextAndTokens({ isBackgroundSync: false });
+                }
+                break;
+
+            case 'toggleMuteSkill':
+                if (this._currentDiscussion && message.skillId) {
+                    if (!this._currentDiscussion.mutedSkills) this._currentDiscussion.mutedSkills = [];
+                    const sId = message.skillId.trim();
+                    const idx = this._currentDiscussion.mutedSkills.indexOf(sId);
+                    if (idx !== -1) {
+                        this._currentDiscussion.mutedSkills.splice(idx, 1);
+                        vscode.window.showInformationMessage(`Reactivated skill for this discussion.`);
+                    } else {
+                        this._currentDiscussion.mutedSkills.push(sId);
+                        vscode.window.showInformationMessage(`Deactivated skill for this discussion (Muted).`);
+                    }
+
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                    this.updateContextAndTokens({ isBackgroundSync: false });
+                }
+                break;
+
+            case 'toggleMuteDiagram':
+                if (this._currentDiscussion && message.diagType) {
+                    if (!this._currentDiscussion.mutedDiagrams) this._currentDiscussion.mutedDiagrams = [];
+                    const dType = message.diagType.trim();
+                    const idx = this._currentDiscussion.mutedDiagrams.indexOf(dType);
+                    if (idx !== -1) {
+                        this._currentDiscussion.mutedDiagrams.splice(idx, 1);
+                        vscode.window.showInformationMessage(`Reactivated ${dType.replace('_', ' ')} diagram for this discussion.`);
+                    } else {
+                        this._currentDiscussion.mutedDiagrams.push(dType);
+                        vscode.window.showInformationMessage(`Deactivated ${dType.replace('_', ' ')} diagram for this discussion (Muted).`);
+                    }
+
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                    this.updateContextAndTokens({ isBackgroundSync: false });
+                }
+                break;
             case 'removeFileFromContext':
             case 'bulkRemoveFiles':
                 if (this._contextManager) {
@@ -5899,6 +6156,10 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 break;
             case 'requestToolPicker':
                 {
+                    const isAssistant = !this._discussionCapabilities.agentMode && !this._discussionCapabilities.dynamicMode;
+                    if (isAssistant) {
+                        vscode.window.showInformationMessage("Tools are only active in Co-Engineer and Agent modes. Switch mode to activate tools.");
+                    }
                     const allTools = this.agentManager.getTools().map(t => ({ name: t.name, description: t.description }));
                     const discussionTools = this._currentDiscussion?.importedTools || [];
                     const projectTools = await this._contextManager.getActiveProjectTools();
@@ -5906,7 +6167,8 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         command: 'showToolPicker', 
                         allTools, 
                         discussionTools,
-                        projectTools
+                        projectTools,
+                        isAssistantMode: isAssistant
                     });
                 }
                 break;
@@ -5945,6 +6207,8 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
+                    // Immediately recalculate context and tokens for the new model to update the ceiling
+                    this.updateContextAndTokens({ isBackgroundSync: false });
                 }
                 return;
             case 'refreshModels':
@@ -6525,8 +6789,10 @@ Task:
                 await this.handleImportSkills();
                 break;
             case 'importSelectedSkills': {
-                const discussionSkills = message.discussionSkills || [];
-                const projectSkills = message.projectSkills || [];
+                const discussionSkills: string[] = (message.discussionSkills || [])
+                    .filter((id: string) => !id.includes('-lib') && !id.startsWith('zoo-'));
+                const projectSkills: string[] = (message.projectSkills || [])
+                    .filter((id: string) => !id.includes('-lib') && !id.startsWith('zoo-'));
 
                 if (this._currentDiscussion) {
                     // 1. Authoritative State Update
@@ -6534,8 +6800,11 @@ Task:
 
                     // 2. Update Project-level persistence
                     const allSkills = await this._skillsManager.getSkills();
+                    const allSkillIdsLower = new Set(allSkills.map(s => s.id.toLowerCase()));
+
                     for (const skill of allSkills) {
-                        if (projectSkills.includes(skill.id)) {
+                        const isProj = projectSkills.some(id => id.toLowerCase() === skill.id.toLowerCase());
+                        if (isProj) {
                             await this._contextManager.addSkillToProject(skill.id);
                         } else {
                             await this._contextManager.removeSkillFromProject(skill.id);
@@ -6547,26 +6816,42 @@ Task:
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
 
-                    // 4. Update HUD
+                    // 4. Update HUD with full skill records
                     const activeSkillsForHUD = allSkills.filter(s => 
-                        this._currentDiscussion?.importedSkills?.includes(s.id) || projectSkills.includes(s.id)
+                        this._currentDiscussion?.importedSkills?.some(id => id.toLowerCase() === s.id.toLowerCase()) || 
+                        projectSkills.some(id => id.toLowerCase() === s.id.toLowerCase())
                     );
 
                     this._panel.webview.postMessage({ 
                         command: 'updateContext', 
                         skills: activeSkillsForHUD,
-                        context: "", 
                         files: this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || []
                     });
 
                     // 5. Trigger Re-tokenization
                     this.updateContextAndTokens();
-                    vscode.window.showInformationMessage(`✅ Skills context updated.`);
+                    vscode.window.showInformationMessage(`✅ Active skills updated (${activeSkillsForHUD.length} skill${activeSkillsForHUD.length === 1 ? '' : 's'} active).`);
                 }
                 break;
             }
             case 'runAndMonitorApp':
                 vscode.commands.executeCommand('lollms-vs-coder.runAndMonitorApp', this, message.messageId);
+                break;
+            case 'saveUserPreferenceProfile':
+                {
+                    const { saveUserPreferenceProfile, getUserPreferenceProfiles } = require('../../registries/profiles');
+                    if (message.profile) {
+                        await saveUserPreferenceProfile(message.profile);
+                        vscode.window.showInformationMessage(`User preference profile '${message.profile.name}' saved.`);
+                        const allPrefProfiles = getUserPreferenceProfiles(vscode.workspace.getConfiguration('lollmsVsCoder'));
+                        ChatPanel.panels.forEach(p => {
+                            p._panel.webview.postMessage({
+                                command: 'updateUserPreferenceProfiles',
+                                userPreferenceProfiles: allPrefProfiles
+                            });
+                        });
+                    }
+                }
                 break;
             case 'openSettings':
                 vscode.commands.executeCommand('lollms-vs-coder.showConfigView');
@@ -6736,6 +7021,12 @@ Task:
                 }
                 break;
             case 'runTool':
+                const isAssistantForTool = !this._discussionCapabilities.agentMode && !this._discussionCapabilities.dynamicMode;
+                if (isAssistantForTool) {
+                    vscode.window.showWarningMessage("Tools are deactivated in Assistant mode. Switch to Co-Engineer (🧠) or Agent (🤖) mode to use tools.");
+                    break;
+                }
+
                 const toolName = message.tool;
                 const toolParams = message.params;
                 const buttonId = message.buttonId; // Captured from step 1
@@ -7035,6 +7326,39 @@ Task:
                     vscode.window.showErrorMessage("Failed to read clipboard: " + e.message);
                 }
                 break;
+            case 'applyMissionBriefing':
+                {
+                    const { content: bContent, action: bAction, scope: bScope, cardId } = message;
+                    const effectiveAction = (bAction === 'patch' || (bContent && bContent.includes('<<<<<<< SEARCH'))) ? 'patch' : 'write';
+                    const effectiveScope = (bScope === 'local') ? 'local' : 'global';
+
+                    const updatedBriefing = await this._contextManager.updateMissionBriefing(
+                        bContent,
+                        effectiveAction,
+                        effectiveScope,
+                        this._currentDiscussion
+                    );
+
+                    if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+
+                    webview.postMessage({
+                        command: 'updateBriefingContent',
+                        text: updatedBriefing
+                    });
+
+                    webview.postMessage({
+                        command: 'missionBriefingApplied',
+                        action: effectiveAction,
+                        scope: effectiveScope,
+                        cardId: cardId
+                    });
+
+                    this.updateContextAndTokens({ isBackgroundSync: false });
+                    vscode.window.showInformationMessage(`🎯 Mission Doctrine updated (${effectiveAction.toUpperCase()}, ${effectiveScope.toUpperCase()}).`);
+                }
+                break;
             case 'saveMissionBriefing':
                 const { content, scope } = message;
                 
@@ -7243,9 +7567,17 @@ Task:
                   ...this._discussionCapabilities,
                   agentMode: false,
                   dynamicMode: false,
+                  sparqlEnabled: false,
+                  webSearch: false,
+                  projectMemoryEnabled: false,
+                  enableImages: false,
                   isExport: true
               };
-              const systemPrompt = await getProcessedSystemPrompt('chat', exportCapabilities, personaContent, undefined, forceFullCode, context);
+              const exportContext = {
+                  ...context,
+                  toolManager: undefined
+              };
+              const systemPrompt = await getProcessedSystemPrompt('chat', exportCapabilities, personaContent, undefined, forceFullCode, exportContext);
 
 
               await vscode.env.clipboard.writeText(systemPrompt);
@@ -7469,25 +7801,26 @@ private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
 
         const l10nStrings = JSON.stringify(LocalizationManager.getBundleForWebview());
 
-        // Resolve path to chatPanel.html safely in a multi-platform environment
-        const htmlPath = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.html');
+        const srcHtmlPath = vscode.Uri.joinPath(this._extensionUri, 'src', 'commands', 'chatPanel', 'webview', 'chatPanel.html');
+        const outHtmlPath = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.html');
+        const srcCssPath = vscode.Uri.joinPath(this._extensionUri, 'src', 'commands', 'chatPanel', 'webview', 'chatPanel.css');
+        const outCssPath = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.css');
+
         let htmlContent = "";
         try {
-            const rawBytes = await vscode.workspace.fs.readFile(htmlPath);
+            // Read directly from src template so layout updates apply instantly
+            const rawBytes = await vscode.workspace.fs.readFile(srcHtmlPath);
             htmlContent = Buffer.from(rawBytes).toString('utf8');
-        } catch (err: any) {
-            // Self-healing fallback: read from source template and restore to out/
-            try {
-                const srcPath = vscode.Uri.joinPath(this._extensionUri, 'src', 'commands', 'chatPanel', 'webview', 'chatPanel.html');
-                const rawBytes = await vscode.workspace.fs.readFile(srcPath);
-                htmlContent = Buffer.from(rawBytes).toString('utf8');
-                const outDir = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview');
-                await vscode.workspace.fs.createDirectory(outDir);
-                await vscode.workspace.fs.writeFile(htmlPath, rawBytes);
-            } catch (fallbackErr: any) {
-                return `<h3>Error loading Chat Panel layout. Details: ${err.message}</h3>`;
-            }
+            await vscode.workspace.fs.writeFile(outHtmlPath, rawBytes);
+        } catch {
+            const rawBytes = await vscode.workspace.fs.readFile(outHtmlPath);
+            htmlContent = Buffer.from(rawBytes).toString('utf8');
         }
+
+        try {
+            const cssBytes = await vscode.workspace.fs.readFile(srcCssPath);
+            await vscode.workspace.fs.writeFile(outCssPath, cssBytes);
+        } catch {}
 
         return htmlContent
             .replace(/\{\{cspSource\}\}/g, webview.cspSource)

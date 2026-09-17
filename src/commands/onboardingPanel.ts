@@ -5,12 +5,14 @@ import { ChatPanel } from './chatPanel/chatPanel';
 import { AgentManager } from '../agentManager';
 import { Logger } from '../logger';
 import { stripThinkingTags } from '../utils';
+import { getUserPreferenceProfiles, UserPreferenceProfile } from '../registries/profiles';
 
 export interface ArchitecturalProfile {
     id: string;
     name: string;
     objectives: string;
     style: string;
+    prefProfileId?: string;
 }
 
 export class OnboardingPanel {
@@ -54,10 +56,15 @@ export class OnboardingPanel {
                             id: `custom_${Date.now()}`,
                             name: msg.data.profileName,
                             objectives: msg.data.objectives,
-                            style: msg.data.style
+                            style: msg.data.style,
+                            prefProfileId: msg.data.prefProfileId,
+                            doctrine: msg.data.doctrine
                         });
                     }
                     await this.handleOnboarding(msg.data);
+                    break;
+                case 'discoverDoctrine':
+                    await this.handleDiscoverDoctrine();
                     break;
                 case 'exportProfile':
                     await this.handleExportProfile(msg.data);
@@ -74,45 +81,21 @@ export class OnboardingPanel {
             }
         }, null, this._disposables);
 
-        // Send saved profiles and pre-fill existing workspace setup
-        this.sendGlobalProfilesToWebview().then(() => {
+        // Send saved profiles and preference presets to webview, then pre-fill existing workspace setup
+        this.sendInitialDataToWebview().then(() => {
             this.hydrateFormFromCurrentState();
         });
     }
 
-    private async hydrateFormWithActiveState() {
-        if (!this.services.projectMemoryManager) return;
+    private async sendInitialDataToWebview() {
+        const architecturalProfiles = this.getGlobalProfiles();
+        const userPrefProfiles = getUserPreferenceProfiles(vscode.workspace.getConfiguration('lollmsVsCoder'));
 
-        try {
-            const engrams = await this.services.projectMemoryManager.getMemories();
-            const projectDna = engrams.find((e: any) => e.id === 'project_dna');
-            const userDna = engrams.find((e: any) => e.id === 'user_dna' || e.id === 'user_preferences');
-
-            const caps = this.services.discussionManager.getLastCapabilities();
-
-            // Extract plain text back from the engrams
-            const cleanContent = (text: string) => {
-                if (!text) return "";
-                return text
-                    .replace(/## 🧬 PROJECT DNA\n-\s*Objectives:\s*/i, '')
-                    .replace(/## 👤 USER DNA\n-\s*Preferences:\s*/i, '')
-                    .replace(/- Structure:[\s\S]*?###/g, '') // strip system-generated tree snapshots
-                    .replace(/#[\w_]+/g, '') // Strip hashtags
-                    .trim();
-            };
-
-            this._panel.webview.postMessage({
-                command: 'loadProfileData',
-                data: {
-                    destiny: caps.profileType || (caps.agentMode ? 'agentic' : 'vibe'),
-                    instructions: projectDna ? cleanContent(projectDna.content) : '',
-                    preferences: userDna ? cleanContent(userDna.content) : '',
-                    pathway: caps.agentMode ? 'prd' : 'none'
-                }
-            });
-        } catch (e) {
-            Logger.debug("No active onboarding engrams to pre-populate. Displaying clean form.");
-        }
+        this._panel.webview.postMessage({
+            command: 'updateInitialData',
+            architecturalProfiles,
+            userPrefProfiles
+        });
     }
 
     private async hydrateFormFromCurrentState() {
@@ -123,6 +106,7 @@ export class OnboardingPanel {
             const projectDna = engrams.find((e: any) => e.id === 'project_dna');
             const userDna = engrams.find((e: any) => e.id === 'user_dna');
             const caps = this.services.discussionManager.getLastCapabilities();
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
 
             const cleanContent = (text: string) => {
                 if (!text) return "";
@@ -131,16 +115,23 @@ export class OnboardingPanel {
                     .replace(/^## 👤 USER DNA\n/i, '')
                     .replace(/^- Objectives:\s*/i, '')
                     .replace(/^- Preferences:\s*/i, '')
-                    .replace(/#[\w_]+/g, '') // Strip tags
+                    .replace(/#[\w_]+/g, '')
                     .trim();
             };
+
+            const userPrefProfileId = caps.userPreferenceProfileId || config.get<string>('defaultUserPreferenceProfileId') || 'clean_craftsman';
+            const userPrefText = caps.userPreferences || (userDna ? cleanContent(userDna.content) : config.get<string>('userPreferences') || '');
+
+            const globalDoctrine = this.services.contextManager.getGlobalBriefing();
 
             this._panel.webview.postMessage({
                 command: 'loadProfileData',
                 data: {
                     destiny: caps.profileType || (caps.agentMode ? 'agentic' : 'vibe'),
                     instructions: projectDna ? cleanContent(projectDna.content) : '',
-                    preferences: userDna ? cleanContent(userDna.content) : '',
+                    preferences: userPrefText,
+                    prefProfileId: userPrefProfileId,
+                    doctrine: globalDoctrine || '',
                     pathway: caps.agentMode ? 'prd' : 'none'
                 }
             });
@@ -155,29 +146,27 @@ export class OnboardingPanel {
                 id: "profile_python_vibe",
                 name: "Python Rapid Prototyping (Vibe)",
                 objectives: "Build fast, modular Python features (Pygame, FastAPI) using clean f-strings, type hints, and lightweight packages.",
-                style: "Prioritize velocity and high-fidelity rendering. Use expressive, descriptive variable names and comments. Prefer pathlib over os."
+                style: "Prioritize velocity and high-fidelity rendering. Use expressive, descriptive variable names. Prefer pathlib over os.",
+                prefProfileId: "pythonic_pep8"
             },
             {
                 id: "profile_embedded_c",
                 name: "Embedded Systems C (Rigorous)",
                 objectives: "Develop low-level bare-metal or RTOS drivers for STM32 microcontrollers. Focus on register-level efficiency and DMA.",
-                style: "Strict MISRA C:2012 compliance. Prevent dynamic allocations entirely. No printf inside ISRs. Highly compact, self-contained functions with clear hardware bit-shifting comments."
+                style: "Strict MISRA C:2012 compliance. Prevent dynamic allocations entirely. No printf inside ISRs. Highly compact, self-contained functions with clear bit-shifting comments.",
+                prefProfileId: "rust_systems"
             },
             {
                 id: "profile_react_ts",
                 name: "React TypeScript & Tailwind (Modern)",
                 objectives: "Build accessible, performant UI components using React Server Components, TS strict typing, and responsive layout flows.",
-                style: "Utility-first classes (Tailwind CSS) only. Enforce strict WCAG accessibility attributes (ARIA), reusable hooks, and full type safety for all component props."
+                style: "Utility-first classes (Tailwind CSS) only. Enforce strict WCAG accessibility attributes (ARIA), reusable hooks, and full type safety for all component props.",
+                prefProfileId: "strict_typescript"
             }
         ];
 
         const saved = this.services.discussionManager.context.globalState.get<ArchitecturalProfile[]>('lollms_saved_architectural_profiles', []);
         return [...defaultProfiles, ...saved];
-    }
-
-    private async sendGlobalProfilesToWebview() {
-        const profiles = this.getGlobalProfiles();
-        this._panel.webview.postMessage({ command: 'updateGlobalProfiles', profiles });
     }
 
     private async handleSaveGlobalProfile(profile: ArchitecturalProfile) {
@@ -189,7 +178,7 @@ export class OnboardingPanel {
         saved.push(cleanProfile);
         await this.services.discussionManager.context.globalState.update('lollms_saved_architectural_profiles', saved);
         vscode.window.showInformationMessage(`Architectural profile "${profile.name}" saved globally.`);
-        await this.sendGlobalProfilesToWebview();
+        await this.sendInitialDataToWebview();
     }
 
     private async handleDeleteGlobalProfile(id: string) {
@@ -202,16 +191,17 @@ export class OnboardingPanel {
         await this.services.discussionManager.context.globalState.update('lollms_saved_architectural_profiles', saved);
 
         vscode.window.showInformationMessage("Profile removed from library.");
-        await this.sendGlobalProfilesToWebview();
+        await this.sendInitialDataToWebview();
     }
 
     private async handleExportProfile(data: any) {
-        const { name, objectives, style } = data;
+        const { name, objectives, style, prefProfileId } = data;
         const profile = {
             version: 1,
             name: name || "Custom Architectural Profile",
             objectives,
-            style
+            style,
+            prefProfileId
         };
 
         const uri = await vscode.window.showSaveDialog({
@@ -248,7 +238,8 @@ export class OnboardingPanel {
                         data: {
                             name: profile.name || '',
                             objectives: profile.objectives || '',
-                            style: profile.style || ''
+                            style: profile.style || '',
+                            prefProfileId: profile.prefProfileId || 'clean_craftsman'
                         }
                     });
                     vscode.window.showInformationMessage(`Profile imported successfully from: ${path.basename(uris[0].fsPath)}`);
@@ -261,21 +252,97 @@ export class OnboardingPanel {
         }
     }    
 
+    private async handleDiscoverDoctrine() {
+        const folder = this.folder;
+        if (!folder) return;
+
+        const candidateFiles = [
+            'package.json', 'tsconfig.json', 'requirements.txt', 'pyproject.toml',
+            'Cargo.toml', 'go.mod', 'pom.xml', 'build.gradle', 'README.md',
+            'ARCHITECTURE.md', 'CONTRIBUTING.md', '.env.example', 'Makefile'
+        ];
+
+        const snippets: string[] = [];
+        for (const fileName of candidateFiles) {
+            try {
+                const fileUri = vscode.Uri.joinPath(folder.uri, fileName);
+                const bytes = await vscode.workspace.fs.readFile(fileUri);
+                const text = Buffer.from(bytes).toString('utf8');
+                if (text.trim()) {
+                    snippets.push(`--- ${fileName} ---\n${text.substring(0, 1500)}`);
+                }
+            } catch {}
+            if (snippets.length >= 6) break;
+        }
+
+        const existingBriefing = this.services.contextManager.getGlobalBriefing();
+        if (existingBriefing) {
+            snippets.push(`--- Existing Global Doctrine ---\n${existingBriefing}`);
+        }
+
+        const prompt = `You are a Lead Software Architect and Doctrine Officer.
+Analyze the following project files and configuration snippets:
+
+${snippets.join('\n\n') || "No manifest files detected in root."}
+
+TASK:
+Extract the non-negotiable architectural constraints, framework requirements, and coding doctrine of this project.
+Formulate a high-density, authoritative list of 4-7 strict constraints (e.g., target frameworks, typing strictness, prohibited libraries, architectural boundaries).
+Output ONLY a bulleted list of constraints. No conversational chatter.`;
+
+        try {
+            const model = this.services.lollmsAPI.getModelName();
+            const response = await this.services.lollmsAPI.sendChat([
+                { role: 'system', content: "You are a software architect extracting strict project doctrine. Output only bullet points." },
+                { role: 'user', content: prompt }
+            ], null, undefined, model);
+
+            const cleanDoctrine = stripThinkingTags(response).trim();
+            this._panel.webview.postMessage({
+                command: 'doctrineDiscovered',
+                doctrine: cleanDoctrine
+            });
+        } catch (e: any) {
+            Logger.warn("Automated doctrine discovery failed", e);
+            this._panel.webview.postMessage({
+                command: 'doctrineDiscovered',
+                doctrine: `- Enforce Clean Code and SOLID principles.\n- Maintain strict typing with no implicit 'any'.\n- Handle all error boundaries explicitly without swallowing exceptions.`
+            });
+        }
+    }
+
     private async handleOnboarding(data: any) {
-        const { destiny, objectives, style, pathway } = data;
+        const { destiny, objectives, style, prefProfileId, pathway, doctrine } = data;
 
         // 1. Save Workspace State
         await this.services.discussionManager.context.workspaceState.update('lollms_workspace_onboarded', true);
 
-        // 2. Update Global/Active capabilities
+        // 2. Update Global/Active capabilities & settings
         const caps = this.services.discussionManager.getLastCapabilities();
         caps.profileType = destiny;
         caps.agentMode = destiny === 'agentic';
+        caps.userPreferences = style;
+        caps.userPreferenceProfileId = prefProfileId;
         await this.services.discussionManager.saveLastCapabilities(caps);
 
-        // 3. AI Graph Generation Pass
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        if (style) {
+            await config.update('userPreferences', style, vscode.ConfigurationTarget.Global);
+            await config.update('userInfo.codingStyle', style, vscode.ConfigurationTarget.Global);
+        }
+        if (prefProfileId) {
+            await config.update('defaultUserPreferenceProfileId', prefProfileId, vscode.ConfigurationTarget.Global);
+        }
+
+        // 3. Lock Mission Doctrine & Global Constraints
+        if (doctrine && doctrine.trim()) {
+            await this.services.contextManager.setGlobalBriefing(doctrine.trim());
+        }
+
+        // 4. AI Graph Generation Pass
         const rawObjectives = objectives || "General software development.";
         const rawStyle = style || "Standard professional development.";
+        const rawDoctrine = doctrine || "";
 
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -355,20 +422,22 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
             } catch (err: any) {
                 Logger.error("Failed to generate structured engrams from onboarding inputs, falling back to flat write.", err);
                 
-                // Fallback: Write basic flat engrams if AI parsing crashed
                 if (this.services.projectMemoryManager) {
                     await this.services.projectMemoryManager.updateMemory('add', 'project_dna', 'Project DNA & Standards', `## 🧬 PROJECT DNA\n- Objectives: ${rawObjectives}\n- Indentation Standard: 4 spaces\n`, 'standards', 100);
                     await this.services.projectMemoryManager.updateMemory('add', 'user_dna', 'User Persona & Preferences', `## 👤 USER DNA\n- Preferences: ${rawStyle}\n`, 'user', 95);
+                    if (rawDoctrine) {
+                        await this.services.projectMemoryManager.updateMemory('add', 'project_doctrine', 'Project Doctrine & Constraints', `## 🎯 PROJECT DOCTRINE\n${rawDoctrine}\n`, 'rules', 100, [{ verb: 'has_tag', targetId: 'doctrine' }]);
+                    }
                 }
             }
         });
 
-        // 4. Refresh tree views to display the newly compiled project capabilities & memories
+        // 4. Refresh tree views to display newly compiled project capabilities & memories
         this.services.treeProviders.discussion?.refresh();
         vscode.commands.executeCommand('lollmsProjectMemoryView.focus');
 
         vscode.window.showInformationMessage(
-            `🚀 Project "${this.folder.name}" initialized successfully! We have mapped your custom standards to Project Memory.`,
+            `🚀 Project "${this.folder.name}" initialized successfully! Preferences saved to profile and mapped to Project Memory.`,
             "Ok"
         );
 
@@ -469,8 +538,31 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     </div>
 
                     <div class="form-group">
-                        <label for="preferences">3. User Persona & Preferences</label>
-                        <textarea id="preferences" rows="3" placeholder="e.g., 'I am a junior developer learning embedded C. I prefer very simple, step-by-step code with rich inline comments. I hate over-engineering...'"></textarea>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                            <label for="pref-profile-select" style="margin:0;">3. Developer Preferences Profile</label>
+                        </div>
+                        <select id="pref-profile-select" style="margin-bottom:8px;">
+                            <option value="clean_craftsman">Clean Code & SOLID (Default)</option>
+                            <option value="strict_typescript">Strict TypeScript & Immutability</option>
+                            <option value="pythonic_pep8">Pythonic, PEP 8 & Modern Type Hints</option>
+                            <option value="rust_systems">High-Performance Systems (Rust & C++)</option>
+                            <option value="fullstack_modern">Modern Full-Stack & UI/UX Best Practices</option>
+                            <option value="security_hardened">Zero-Trust & Security Hardened</option>
+                            <option value="tdd_test_first">Test-Driven & High Coverage (TDD)</option>
+                            <option value="minimalist_pragmatist">Minimalist & Pragmatic</option>
+                            <option value="custom">✏️ Custom Preferences</option>
+                        </select>
+                        <textarea id="preferences" rows="4" placeholder="e.g., Follow Clean Code and SOLID principles. Keep functions small and single-purpose. Use strict types and explicit error handling..."></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                            <label for="doctrine" style="margin:0;">4. Project Doctrine & Mission Constraints (Non-Negotiables)</label>
+                            <button class="btn secondary" id="btn-discover-doctrine" onclick="discoverDoctrine()" style="width:auto; height:26px; padding:0 10px; font-size:11px;">
+                                <i class="codicon codicon-sparkle"></i> Auto-Discover Doctrine with AI
+                            </button>
+                        </div>
+                        <textarea id="doctrine" rows="4" placeholder="e.g., - Non-negotiable architectural invariants&#10;- Strict typing and zero 'any'&#10;- Prohibited packages or patterns&#10;- Enforce atomic database operations"></textarea>
                     </div>
 
                     <div class="checkbox-container" style="margin-bottom: 20px;">
@@ -519,6 +611,7 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                 let selectedDestiny = 'vibe';
                 let selectedPathway = 'prd';
                 let globalProfiles = [];
+                let userPrefProfiles = [];
 
                 function selectDestiny(val) {
                     selectedDestiny = val;
@@ -558,10 +651,29 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                         if (p) {
                             document.getElementById('instructions').value = p.objectives;
                             document.getElementById('preferences').value = p.style;
+                            if (p.prefProfileId) {
+                                document.getElementById('pref-profile-select').value = p.prefProfileId;
+                            }
                             syncTextareas();
                         }
                     }
                 };
+
+                const prefProfileSelect = document.getElementById('pref-profile-select');
+                prefProfileSelect.onchange = () => {
+                    const val = prefProfileSelect.value;
+                    const matched = userPrefProfiles.find(p => p.id === val);
+                    if (matched) {
+                        document.getElementById('preferences').value = matched.preferences;
+                        syncTextareas();
+                    }
+                };
+
+                document.getElementById('preferences').addEventListener('input', () => {
+                    const currentText = document.getElementById('preferences').value.trim();
+                    const matched = userPrefProfiles.find(p => p.preferences.trim() === currentText);
+                    prefProfileSelect.value = matched ? matched.id : 'custom';
+                });
 
                 document.getElementById('delete-profile-btn').onclick = () => {
                     const idx = globalSelect.value;
@@ -587,13 +699,15 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                 function exportProfile() {
                     const objectives = document.getElementById('instructions').value.trim();
                     const style = document.getElementById('preferences').value.trim();
+                    const prefProfileId = document.getElementById('pref-profile-select').value;
 
                     vscode.postMessage({
                         command: 'exportProfile',
                         data: {
                             name: saveProfileNameInput.value.trim() || undefined,
                             objectives: objectives,
-                            style: style
+                            style: style,
+                            prefProfileId: prefProfileId
                         }
                     });
                 }
@@ -602,12 +716,22 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     vscode.postMessage({ command: 'importProfile' });
                 }
 
+                function discoverDoctrine() {
+                    const btn = document.getElementById('btn-discover-doctrine');
+                    if (!btn || btn.disabled) return;
+                    btn.disabled = true;
+                    btn.innerHTML = '<i class="codicon codicon-loading spin"></i> Discovering Doctrine...';
+                    vscode.postMessage({ command: 'discoverDoctrine' });
+                }
+
                 function submit() {
                     const btn = document.getElementById('submit-btn');
                     if (btn.disabled) return;
 
                     const objectives = document.getElementById('instructions').value.trim();
                     const style = document.getElementById('preferences').value.trim();
+                    const doctrine = document.getElementById('doctrine').value.trim();
+                    const prefProfileId = document.getElementById('pref-profile-select').value;
                     const profileName = saveProfileNameInput.value.trim();
 
                     if (saveAsGlobalCheck.checked && !profileName) {
@@ -624,14 +748,15 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                         el.style.opacity = '0.6';
                     });
 
-                    // Save to global library first if requested
                     if (saveAsGlobalCheck.checked) {
                         vscode.postMessage({
                             command: 'saveGlobalProfile',
                             profile: {
                                 name: profileName,
                                 objectives: objectives,
-                                style: style
+                                style: style,
+                                prefProfileId: prefProfileId,
+                                doctrine: doctrine
                             }
                         });
                     }
@@ -642,6 +767,8 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                             destiny: selectedDestiny,
                             objectives: objectives,
                             style: style,
+                            doctrine: doctrine,
+                            prefProfileId: prefProfileId,
                             pathway: selectedDestiny === 'agentic' ? selectedPathway : 'none'
                         }
                     });
@@ -651,14 +778,45 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     const message = event.data;
                     if (message.command === 'loadProfileData') {
                         const d = message.data;
-                        document.getElementById('instructions').value = d.objectives || '';
-                        document.getElementById('preferences').value = d.style || '';
+                        if (d.destiny) selectDestiny(d.destiny);
+                        if (d.pathway) selectPathway(d.pathway);
+                        document.getElementById('instructions').value = d.instructions || d.objectives || '';
+                        document.getElementById('preferences').value = d.preferences || d.style || '';
+                        document.getElementById('doctrine').value = d.doctrine || '';
+                        if (d.prefProfileId) {
+                            document.getElementById('pref-profile-select').value = d.prefProfileId;
+                        }
                         if (d.name) {
                             saveAsGlobalCheck.checked = true;
                             saveProfileNameGroup.style.display = 'block';
                             saveProfileNameInput.value = d.name;
                         }
                         syncTextareas();
+                    } else if (message.command === 'updateInitialData') {
+                        globalProfiles = message.architecturalProfiles || [];
+                        userPrefProfiles = message.userPrefProfiles || [];
+
+                        // 1. Populate Architectural Templates Dropdown
+                        globalSelect.innerHTML = '<option value="">-- Select from Library --</option>';
+                        globalProfiles.forEach((p, idx) => {
+                            globalSelect.appendChild(new Option(p.name, idx));
+                        });
+
+                        // 2. Populate Developer Preferences Profile Dropdown
+                        prefProfileSelect.innerHTML = userPrefProfiles.map(p => 
+                            \`<option value="\${p.id}" \${p.isDefault ? 'selected' : ''}>\${p.name}</option>\`
+                        ).join('') + \`<option value="custom">✏️ Custom Preferences</option>\`;
+                    } else if (message.command === 'doctrineDiscovered') {
+                        const btn = document.getElementById('btn-discover-doctrine');
+                        if (btn) {
+                            btn.disabled = false;
+                            btn.innerHTML = '<i class="codicon codicon-check"></i> Doctrine Discovered';
+                        }
+                        const doctrineArea = document.getElementById('doctrine');
+                        if (doctrineArea && message.doctrine) {
+                            doctrineArea.value = message.doctrine;
+                            syncTextareas();
+                        }
                     } else if (message.command === 'updateGlobalProfiles') {
                         globalProfiles = message.profiles || [];
                         globalSelect.innerHTML = '<option value="">-- Select from Library --</option>';

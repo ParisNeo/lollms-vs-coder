@@ -557,73 +557,59 @@ const isEquipped = allEquipped.has(t.name);
         const isClean = await this.gitIntegration.isClean(folder);
 
         if (!isClean) {
-            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-            const autoGit = this.currentDiscussion?.capabilities?.gitAutoWorkflow || config.get<boolean>('gitAutoWorkflow');
-            const unstagedBehavior = config.get<string>('git.unstagedChangesBehavior') || 'stash';
-
-            if (autoGit || unstagedBehavior === 'stash') {
-                await this.gitIntegration.stash(folder, `Lollms: Stash before mission ${Date.now()}`);
-                this.completedActionsHistory.push(`[GIT] 📦 STASHED: Automatically saved uncommitted changes to stash.`);
-                this.sessionState.isSafetyCheckPassed = true;
-            } else if (unstagedBehavior === 'commit') {
-                const msg = await this.gitIntegration.generateCommitMessage(folder);
-                const finalMsg = msg?.trim() || `chore: pre-flight checkpoint ${Date.now()}`;
-                await this.gitIntegration.stageAllAndCommit(finalMsg, folder);
-                this.completedActionsHistory.push(`[GIT] 💾 COMMITTED: Auto-saved pre-flight checkpoint.`);
-                this.sessionState.isSafetyCheckPassed = true;
-            } else {
-                const formPrompt = `
-<lollms_form id="preflight_safety" title="Uncommitted Changes Detected">
-<input type="radio" name="decision" label="Stash changes and create a clean AI branch" value="stash" checked="true" />
-<input type="radio" name="decision" label="Commit them now" value="commit" />
-<input type="radio" name="decision" label="Proceed anyway (Dangerous)" value="proceed" />
-<submit label="Confirm Safety Action" />
+            // DOCTRINE ENFORCEMENT: We ALWAYS start with a clean git environment.
+            // If dirty, ask the user: Stash or Commit?
+            const formPrompt = `
+<lollms_form id="git_safeguard" title="🛡️ Git Safeguard: Clean Workspace Doctrine">
+<p style="font-size:11px; margin-bottom:8px; opacity:0.85;">
+    <strong>Doctrine Invariant:</strong> The Agentic Engine requires a clean Git environment before starting to ensure safe, isolated rollbacks.
+</p>
+<input type="radio" name="decision" label="📦 Stash uncommitted changes (git stash)" value="stash" checked="true" />
+<input type="radio" name="decision" label="💾 Commit uncommitted changes (git commit checkpoint)" value="commit" />
+<input type="radio" name="decision" label="🛑 Abort mission (cancel and resolve manually)" value="abort" />
+<submit label="Confirm Git Safeguard" />
 </lollms_form>`.trim();
 
-                const safetyTask: Task = {
-                    id: -1,
-                    task_type: 'safety_check',
-                    description: "🛡️ Uncommitted changes detected. Please choose a safety action to continue.",
-                    action: "safety_check",
-                    parameters: { lollms_form: formPrompt },
-                    status: 'pending',
-                    result: null,
-                    retries: 0
-                };
+            const safetyTask: Task = {
+                id: -1,
+                task_type: 'safety_check',
+                description: "🛡️ Git Safeguard: Uncommitted changes detected. Stash or Commit required by Doctrine.",
+                action: "safety_check",
+                parameters: { lollms_form: formPrompt },
+                status: 'pending',
+                result: null,
+                retries: 0
+            };
 
-                this.currentPlan!.tasks = [safetyTask];
+            this.currentPlan!.tasks = [safetyTask];
+            await this.displayPlan(this.currentPlan);
+
+            Logger.info(`[Git Safeguard] Emitting Clean Workspace Form to Discussion Stream...`);
+            const response = await this.ui.requestUserInput(`🛡️ **Git Safeguard Doctrine**: Uncommitted changes detected on branch \`${currentBranch}\`.\n\n${formPrompt}`, signal, { isAgentZone: false });
+
+            if (this.currentPlan) {
+                this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.id !== -1);
                 await this.displayPlan(this.currentPlan);
+            }
 
-                Logger.info(`[Phase 0] Emitting Safety Form to Discussion Stream...`);
-                const response = await this.ui.requestUserInput(`🛡️ **Safety Gate**: Uncommitted changes detected.\n\n${formPrompt}`, signal, { isAgentZone: false });
+            let choice = this.parseFormResponse(response, "git_safeguard");
+            const safeChoice = (choice || "").toLowerCase().trim();
 
-                if (this.currentPlan) {
-                    this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.id !== -1);
-                    await this.displayPlan(this.currentPlan);
-                }
-
-                let choice = this.parseFormResponse(response, "preflight_safety");
-                const safeChoice = (choice || "").toLowerCase().trim();
-
-                if (safeChoice === 'stash') {
-                    await this.gitIntegration.stash(folder, "Genie: Stashed before mission");
-                    this.completedActionsHistory.push(`[GIT] 📦 STASHED: Uncommitted changes moved to stash.`);
-                    this.sessionState.isSafetyCheckPassed = true;
-                } else if (safeChoice === 'commit') {
-                    const msg = await this.gitIntegration.generateCommitMessage(folder);
-                    const finalMsg = msg?.trim() || "Genie: pre-flight backup";
-                    await this.gitIntegration.stageAllAndCommit(finalMsg, folder);
-                    this.completedActionsHistory.push(`[GIT] 💾 COMMITTED: Pre-flight backup created.`);
-                    this.sessionState.isSafetyCheckPassed = true;
-                } else if (safeChoice === 'proceed' || safeChoice === 'continue') {
-                    this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Safety Bypass**: Proceeding with uncommitted changes on \`${currentBranch}\`.` });
-                    this.completedActionsHistory.push(`[GIT] ⚠️ BYPASS: User chose to proceed with a dirty workspace.`);
-                    this.sessionState.isSafetyCheckPassed = true;
-                    return true; 
-                } else {
-                    this.ui.addMessageToDiscussion({ role: 'system', content: `🛑 **Operation cancelled** by user.` });
-                    return false;
-                }
+            if (safeChoice === 'stash') {
+                await this.gitIntegration.stash(folder, `Lollms: Stashed before AI mission ${Date.now()}`);
+                this.completedActionsHistory.push(`[GIT SAFEGUARD] 📦 STASHED: Working tree cleaned before mission start.`);
+                await this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Git Safeguard:** Changes stashed. Working tree is now clean.` });
+                this.sessionState.isSafetyCheckPassed = true;
+            } else if (safeChoice === 'commit') {
+                const msg = await this.gitIntegration.generateCommitMessage(folder);
+                const finalMsg = msg?.trim() || `chore: pre-mission checkpoint ${Date.now()}`;
+                await this.gitIntegration.stageAllAndCommit(finalMsg, folder);
+                this.completedActionsHistory.push(`[GIT SAFEGUARD] 💾 COMMITTED: Saved pre-mission checkpoint (\`${finalMsg}\`).`);
+                await this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Git Safeguard:** Changes committed (\`${finalMsg}\`). Working tree is now clean.` });
+                this.sessionState.isSafetyCheckPassed = true;
+            } else {
+                this.ui.addMessageToDiscussion({ role: 'system', content: `🛑 **Mission Aborted:** Working tree is dirty. Doctrine requires starting with a clean Git environment.` });
+                return false;
             }
         }
 
@@ -663,7 +649,6 @@ const isEquipped = allEquipped.has(t.name);
         }
         return response;
     }
-
     public async handleUserMessage(
         content: string, 
         discussion: Discussion, 
@@ -671,11 +656,14 @@ const isEquipped = allEquipped.has(t.name);
         permissions: UserPermissions = { canExecute: true, canRead: true }
     ) {
         const isDebugActive = discussion.capabilities?.debugMode || false;
+        if (!this.processManager && (this.ui as any).processManager) {
+            this.processManager = (this.ui as any).processManager;
+        }
         if (!this.processManager) return;
 
         this.currentWorkspaceFolder = workspaceFolder;
         this.currentDiscussion = discussion;
-        this.chatHistory = [...discussion.messages];
+        this.chatHistory = discussion.messages.filter(m => !m.skipInPrompt);
         this.currentUserPermissions = permissions;
 
         const currentVersion = vscode.extensions.getExtension('parisneo.lollms-vs-coder')?.packageJSON.version || "0.0.0";
@@ -986,9 +974,12 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                 }
             });
 
+            // In the autonomous ReAct loop, scope conversation history to recent turns to avoid context overflow
+            const recentHistory = this.chatHistory.slice(-4);
+
             const messages: ChatMessage[] = [
                 systemPrompt,
-                ...this.chatHistory,
+                ...recentHistory,
                 ...extraHistory,
                 { role: 'user', content: visionParts }
             ];
@@ -1080,12 +1071,15 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                     break;
                 }
 
+                const workerScope = action.worker || action.worker_scope || this.inferWorkerScope(action.tool, action.params, action.thought || "");
+
                 task = {
                     id: stepCount,
                     task_type: 'simple_action',
                     description: action.thought || action.new_remark || `Executing tool ${action.tool}...`,
                     action: action.tool,
                     parameters: action.params || {},
+                    worker_scope: workerScope,
                     status: 'pending',
                     result: null,
                     retries: 0
@@ -1156,12 +1150,21 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                         ? result.output.substring(0, 1500) + "\n\n... [Output truncated for readability]" 
                         : result.output;
 
+                    const worker = task.worker_scope;
+                    const workerBadge = worker?.role === 'scout' ? '🔍 Scout Worker' :
+                                        worker?.role === 'coder' ? '🛠️ Coder Worker' :
+                                        worker?.role === 'tester' ? '🧪 Test Worker' : '🛡️ Audit Worker';
+
+                    const filesScopeStr = worker?.targetFiles && worker.targetFiles.length > 0
+                        ? `\n**Worker Scope Targets:** \`${worker.targetFiles.join(', ')}\``
+                        : '';
+
                     await this.ui.updateMessageContent(
                         `agent_task_${task.id}`, 
-                        `### ${statusIcon} Step ${task.id}: Executing Tool \`${task.action}\` (${summaryLabel})\n` +
-                        `**Intent:** *${task.description}*\n` +
-                        `**Arguments:**\n\`\`\`json\n${JSON.stringify(task.parameters, null, 2)}\n\`\`\`\n` +
-                        `**Observation Output:**\n\`\`\`text\n${outputPreview || '[No output returned]'}\n\`\`\``
+                        `### ${statusIcon} Step ${task.id}: [${workerBadge}] \`${task.action}\` (${summaryLabel})\n` +
+                        `**Orchestrator Intent:** *${task.description}*${filesScopeStr}\n` +
+                        `**Worker Arguments:**\n\`\`\`json\n${JSON.stringify(task.parameters, null, 2)}\n\`\`\`\n` +
+                        `**Worker Observation Output:**\n\`\`\`text\n${outputPreview || '[No output returned]'}\n\`\`\``
                     );
                 }
             } catch (e: any) {
@@ -1194,6 +1197,36 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                 content: `⚠️ **Mission Step Budget Reached (${maxSteps} steps).** Autonomous loop concluded.` 
             });
         }
+    }
+
+    private inferWorkerScope(action: string, params: any, description: string): import('./tools/tool').WorkerScope {
+        if (['read_file', 'read_files', 'search_files', 'grep_search', 'read_code_graph', 'query_architecture', 'peek_at_context', 'smart_scout'].includes(action)) {
+            const files = params?.path ? [params.path] : (params?.paths || []);
+            return {
+                role: 'scout',
+                focus: 'Codebase & Architecture Reconnaissance',
+                targetFiles: files
+            };
+        }
+        if (['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'markdown_coding', 'delete_file', 'move_file'].includes(action)) {
+            const files = [params?.file_path || params?.path || params?.source || params?.destination].filter(Boolean);
+            return {
+                role: 'coder',
+                focus: 'Surgical Implementation & Refactoring',
+                targetFiles: files
+            };
+        }
+        if (['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'secure_run'].includes(action)) {
+            return {
+                role: 'tester',
+                focus: 'Runtime Execution & Testing',
+                targetFiles: params?.file ? [params.file] : []
+            };
+        }
+        return {
+            role: 'auditor',
+            focus: 'Integrity & Quality Audit'
+        };
     }
 
     private async checkMoltbookKeyExists(): Promise<boolean> {
@@ -2048,9 +2081,8 @@ Please provide a clear, concise final response to the user summarizing the outco
 
         let resolvedPath = normalized;
         if (!path.isAbsolute(resolvedPath)) {
-            // Namespace resolution: check if the first segment matches an open workspace folder name
             const projectFolder = folders.length > 1
-                ? folders.find(f => f.name === segments[0])
+                ? folders.find(f => f.name.toLowerCase() === segments[0].toLowerCase())
                 : undefined;
             if (projectFolder && segments.length > 1) {
                 resolvedPath = path.resolve(projectFolder.uri.fsPath, segments.slice(1).join('/'));
@@ -2064,13 +2096,26 @@ Please provide a clear, concise final response to the user summarizing the outco
 
         const normalizedPath = resolvedPath;
         const allowedRoots = folders
-            .filter(f => this.currentDiscussion!.capabilities!.selectedFolders!.includes(f.uri.toString()))
+            .filter(f => this.currentDiscussion!.capabilities!.selectedFolders!.some(sf => {
+                const cleanSf = decodeURIComponent(sf).toLowerCase();
+                const cleanUri = decodeURIComponent(f.uri.toString()).toLowerCase();
+                return cleanSf === cleanUri || cleanSf === f.uri.fsPath.toLowerCase();
+            }))
             .map(f => f.uri.fsPath);
 
-        const isAllowed = allowedRoots.some(root => {
+        const effectiveRoots = allowedRoots.length > 0 ? allowedRoots : folders.map(f => f.uri.fsPath);
+        const isWindows = process.platform === 'win32';
+
+        const isAllowed = effectiveRoots.some(root => {
             const resolvedRoot = path.resolve(root);
+            if (isWindows) {
+                const nLower = normalizedPath.toLowerCase();
+                const rLower = resolvedRoot.toLowerCase();
+                return nLower === rLower || nLower.startsWith(rLower + path.sep);
+            }
             return normalizedPath === resolvedRoot || normalizedPath.startsWith(resolvedRoot + path.sep);
         });
+
         return isAllowed 
             ? { allowed: true } 
             : { allowed: false, message: `Permission Denied: Access to ${filePath} is outside the selected workspace scope.` };

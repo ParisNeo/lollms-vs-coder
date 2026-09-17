@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.15",
+  "version": "1.0.26",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -33,7 +33,9 @@
     "onCommand:lollms-vs-coder.switchDiscussion",
     "onCommand:lollms-vs-coder.startChat",
     "onCommand:lollms-vs-coder.newDiscussion",
-    "onCommand:lollms-vs-coder.triggerCodeAction"
+    "onCommand:lollms-vs-coder.triggerCodeAction",
+    "onCommand:lollms-vs-coder.showFileGitHistory",
+    "onCommand:lollms-vs-coder.compareFileVersions"
   ],
   "contributes": {
     "commands": [
@@ -41,10 +43,6 @@
         "command": "lollms-vs-coder.retriggerOnboarding",
         "title": "Lollms: Reconfigure Project DNA & Style",
         "icon": "$(settings-gear)"
-      },
-      {
-        "command": "lollms-vs-coder.triggerInlineSuggestion",
-        "title": "Lollms: Trigger Inline Completion Suggestion"
       },
       {
         "command": "lollms-vs-coder.viewKnowledge",
@@ -690,7 +688,12 @@
       },
       {
         "command": "lollms-vs-coder.showFileGitHistory",
-        "title": "Lollms: Show File Git History"
+        "title": "Lollms: Compare File Versions Across Branches & Restore"
+      },
+      {
+        "command": "lollms-vs-coder.compareFileVersions",
+        "title": "Lollms: Compare File Versions (Git History & Restore)",
+        "icon": "$(history)"
       }
     ],
     "keybindings": [
@@ -1735,6 +1738,11 @@
         }
       ],
       "editor/context": [
+        {
+          "command": "lollms-vs-coder.showFileGitHistory",
+          "group": "1_modification@0",
+          "when": "resourceScheme == file"
+        },
         {
           "command": "lollms-vs-coder.learnSelectionAsSkill",
           "when": "editorHasSelection",

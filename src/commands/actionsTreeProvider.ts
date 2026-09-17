@@ -42,9 +42,11 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
         if (hasWorkspace) {
             actions.push(new ActionItem(vscode.l10n.t('Reconfigure Project DNA & Style'), 'lollms-vs-coder.retriggerOnboarding', 'settings-gear', 'Update Destiny, objectives, and styling preferences'));
             actions.push(new ActionItem(vscode.l10n.t('Lollms Studio (Skills/Personas)'), 'lollms-vs-coder.openStudio', 'beaker', 'Open the building studio'));
+            actions.push(new ActionItem('Reset Skills to Default', 'lollms-vs-coder.resetSkillsToDefault', 'discard', 'Reset all skills and Git repositories to defaults'));
             actions.push(new ActionItem(vscode.l10n.t('Validate CVE Legitimacy'), 'lollms-vs-coder.analyzeCveLegitimacy', 'shield-check', 'Analyze code against a specific CVE'));
             actions.push(new ActionItem(vscode.l10n.t('CVE Report Builder'), 'lollms-vs-coder.openCveBuilder', 'shield', 'Build a vulnerability report'));
             actions.push(new ActionItem(vscode.l10n.t('Fix All Workspace Errors'), 'lollms-vs-coder.fixAllErrors', 'zap', 'Autonomous repair loop'));
+            actions.push(new ActionItem('Compare File Versions & Restore', 'lollms-vs-coder.showFileGitHistory', 'history', 'Inspect all commits across all branches, view diffs, and restore previous versions'));
             actions.push(new ActionItem(vscode.l10n.t('Copy All Problems'), 'lollms-vs-coder.copyAllErrors', 'clippy', 'Copy error list to clipboard'));
             actions.push(new ActionItem(vscode.l10n.t('Deep Workspace Search'), 'lollms-vs-coder.showFileSearch', 'search', 'Search code content'));
             actions.push(new ActionItem(vscode.l10n.t('Generate Tutorial Notebook'), 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', 'Generate ipynb file'));

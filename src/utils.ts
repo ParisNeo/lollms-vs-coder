@@ -133,7 +133,14 @@ export interface ResponseProfile {
  * These prompts are defined in code. Even if settings.json has old versions,
  * the extension logic will use these unless the user explicitly creates a custom profile.
  */
-export { ResponseProfile, SYSTEM_RESPONSE_PROFILES } from './registries/profiles';
+export { 
+    ResponseProfile, 
+    SYSTEM_RESPONSE_PROFILES, 
+    UserPreferenceProfile, 
+    DEFAULT_USER_PREFERENCE_PROFILES, 
+    getUserPreferenceProfiles, 
+    saveUserPreferenceProfile 
+} from './registries/profiles';
 
 export interface DiscussionCapabilities {
     generationFormats: {
@@ -217,6 +224,7 @@ export interface DiscussionCapabilities {
     contextGovernorPermanentPruning?: boolean; // New key
     enableSymbolMode?: boolean; // New key
     userPreferences?: string; // Custom user preferences and coding guidelines injected into system prompt
+    userPreferenceProfileId?: string; // Selected user preference profile ID
     isExport?: boolean; // True when exporting context & prompt for external clipboard use
     guiState?: {
         agentBadge: boolean;
@@ -295,6 +303,20 @@ function calculateLineSimilarity(line1: string, line2: string): number {
     return 1.0 - (dist / maxLen);
 }
 
+export function sanitizeAiderMarkers(text: string): string {
+    if (!text) return '';
+    return text
+        .split('\n')
+        .filter(line => {
+            const trimmed = line.trim();
+            if (/^<{7}\s*SEARCH$/.test(trimmed)) return false;
+            if (/^={5,}$/.test(trimmed)) return false;
+            if (/^>{7}\s*REPLACE$/.test(trimmed)) return false;
+            return true;
+        })
+        .join('\n');
+}
+
 /**
  * Normalizes Aider Search/Replace block content.
  * Handles:
@@ -309,22 +331,32 @@ export function normalizeAiderContent(rawBlock: string): string {
 
     // 1. If it already has <<<<<<< SEARCH and >>>>>>> REPLACE, normalize markers to line start
     if (text.includes('<<<<<<< SEARCH') && text.includes('>>>>>>> REPLACE')) {
-        return text.replace(/^[ \t]*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)[ \t]*/gm, '$1');
+        return text.replace(/^[ \t]*(<<<<<<< SEARCH|={5,}|>>>>>>> REPLACE)[ \t]*/gm, (match, marker) => {
+            if (marker.startsWith('<')) return '<<<<<<< SEARCH';
+            if (marker.startsWith('=')) return '=======';
+            if (marker.startsWith('>')) return '>>>>>>> REPLACE';
+            return match;
+        });
     }
 
     // 2. If it has <<<<<<< SEARCH and ======= but missing closing >>>>>>> REPLACE
     if (text.includes('<<<<<<< SEARCH') && text.includes('=======')) {
-        let normalized = text.replace(/^[ \t]*(<<<<<<< SEARCH|=======)[ \t]*/gm, '$1');
+        let normalized = text.replace(/^[ \t]*(<<<<<<< SEARCH|={5,})[ \t]*/gm, (match, marker) => {
+            if (marker.startsWith('<')) return '<<<<<<< SEARCH';
+            if (marker.startsWith('=')) return '=======';
+            return match;
+        });
         if (!normalized.includes('>>>>>>> REPLACE')) {
             normalized = normalized.trimEnd() + '\n>>>>>>> REPLACE';
         }
         return normalized;
     }
 
-    // 3. If the AI emitted ONLY the ======= separator without <<<<<<< SEARCH and >>>>>>> REPLACE
+    // 3. If the AI emitted ONLY the ======= separator without outer markers
     const separatorRegex = /^[ \t]*={5,}[ \t]*$/m;
     if (separatorRegex.test(text)) {
-        const parts = text.split(separatorRegex);
+        const cleanText = text.replace(/^[ \t]*>{7}\s*REPLACE[ \t]*$/gm, '').replace(/^[ \t]*<{7}\s*SEARCH[ \t]*$/gm, '');
+        const parts = cleanText.split(separatorRegex);
         if (parts.length === 2) {
             const searchPart = parts[0];
             const replacePart = parts[1];
@@ -351,8 +383,8 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     const isCrlf = content.includes('\r\n');
     const normalizedContent = content.replace(/\r\n/g, '\n');
 
-    let normalizedSearch = (searchBlock || "").replace(/\r\n/g, '\n');
-    let normalizedReplace = (replaceBlock || "").replace(/\r\n/g, '\n');
+    let normalizedSearch = sanitizeAiderMarkers((searchBlock || "").replace(/\r\n/g, '\n'));
+    let normalizedReplace = sanitizeAiderMarkers((replaceBlock || "").replace(/\r\n/g, '\n'));
 
     // 1. Handle Empty Search (Prepend/Append logic)
     if (normalizedSearch.trim() === "") {
@@ -364,6 +396,7 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     const searchLines = normalizedSearch.split('\n');
     const replaceLines = normalizedReplace === "" ? [] : normalizedReplace.split('\n');
 
+    
     // 2. Find Match using an optimized and bounds-safe sliding window
     for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
         let match = true;
@@ -603,10 +636,14 @@ export async function applyDiff(diffContent: string, targetFilePath?: string) {
 /**
  * Generates a standardized Environment Awareness block for all agent prompts.
  */
-export async function getEnvironmentAwarenessBlock(): Promise<string> {
+export async function getEnvironmentAwarenessBlock(isExport: boolean = false): Promise<string> {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const userName = config.get<string>('userInfo.name') || os.userInfo().username || 'Developer';
     const shells = await getAvailableShells();
+
+    const toolRule = isExport
+        ? `- **Sovereign Rule**: This is a MULTILINGUAL environment. Verify the availability of tools or provide cross-platform solutions.`
+        : `- **Sovereign Rule**: This is a MULTILINGUAL environment. DO NOT assume Python, Node.js, or any compiler is installed. You MUST use 'get_environment_details' or 'execute_command' to verify the availability of tools before proposing scripts.`;
 
     return `
     ### 💻 ENVIRONMENT AWARENESS
@@ -614,7 +651,7 @@ export async function getEnvironmentAwarenessBlock(): Promise<string> {
     - **Operating System**: ${os.platform()} (${os.type()} ${os.release()})
     - **Primary Shell**: ${os.platform() === 'win32' ? 'cmd / powershell' : 'bash / zsh'}
     - **Available Shells**: ${shells.join(', ')}
-    - **Sovereign Rule**: This is a MULTILINGUAL environment. DO NOT assume Python, Node.js, or any compiler is installed. You MUST use 'get_environment_details' or 'execute_command' to verify the availability of tools before proposing scripts.
+    ${toolRule}
     - **Current Date**: ${new Date().toLocaleDateString()}
     - **Current Time**: ${new Date().toLocaleTimeString()}
     - **Timezone**: ${Intl.DateTimeFormat().resolvedOptions().timeZone}
@@ -652,8 +689,9 @@ export async function getProcessedSystemPrompt(
         finalPersona = `### 🧠 LIBRARIAN'S CONTEXT ANALYSIS\n${workingMemory}\n\n${finalPersona}`;
     }
 
+    const isExport = (capabilities as any)?.isExport === true;
     const shells = await getAvailableShells();
-    const envAwareness = await getEnvironmentAwarenessBlock();
+    const envAwareness = await getEnvironmentAwarenessBlock(isExport);
 
     const fileMutationProtocol = `
 ### 📁 FILE MUTATION PROTOCOL (XML SPECIFICATION)
@@ -680,8 +718,10 @@ You are STRICTLY FORBIDDEN from using colon-delimited markdown backticks (like \
 [New complete implementation of this class, function, or method]
 </file>
 
-**STRICT RULES**:
-- Always specify the path attribute with the relative workspace path.
+**STRICT RULES & ATTRIBUTE ENFORCEMENT**:
+- **MANDATORY ATTRIBUTE NAME**: You MUST use \`path="..."\` (e.g. \`<file path="src/main.py" action="write">\`). You are STRICTLY FORBIDDEN from using \`file="..."\`, \`name="..."\`, or \`filename="..."\`.
+- Always specify the relative workspace path in \`path="..."\`.
+- Always specify the \`action="..."\` attribute (\`write\`, \`patch\`, or \`update_symbol\`).
 - The closing </file> tag MUST be placed on its own line after the code content.
 - Do NOT nest <file> tags inside markdown code fences.
 `;
@@ -758,7 +798,6 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
     }
 
     // 🛡️ PROTOCOL GATE: Mode-Specific Operational Constraints
-    const isExport = (capabilities as any)?.isExport === true;
     const isAutonomous = !isExport && (capabilities?.agentMode === true || promptType === 'agent');
     const isBuilder = !isExport && capabilities?.workerType === 'builder';
     const isDynamic = !isExport && capabilities?.dynamicMode === true;
@@ -766,24 +805,13 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
     let operationalMandate = "";
 
     if (isExport) {
-        const isMemoryActive = capabilities?.projectMemoryEnabled !== false;
-        const isVisionActive = capabilities?.enableImages !== false;
-
-        const authorizedExportTags = [
-            `- \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>\`: Request that a file from the project tree be loaded into your context.`,
-            `- \`<remove_files_from_context>\npath/to/file.ext\n</remove_files_from_context>\`: Eject files from context.`,
-            capabilities?.fileRename !== false ? `- \`<move_files>\nsource->destination\n</move_files>\`: Move or rename files.` : null,
-            `- \`<copy_files>\nsource->destination\n</copy_files>\`: Copy files.`,
-            capabilities?.fileDelete !== false ? `- \`<delete_files>\npath\n</delete_files>\`: Delete files.` : null,
-            isMemoryActive ? `- \`<project_memory action="add" id="...">content</project_memory>\`: Save an architectural fact or rule.` : null,
-            isVisionActive ? `- \`<generate_image path="..." width="..." height="...">prompt</generate_image>\`: Generate visual assets.` : null
-        ].filter(Boolean).join('\n    ');
-
         operationalMandate = `
     ### 🛡️ EXTERNAL LLM OPERATIONAL PROTOCOL (TAGS EXCLUSIVE - NO TOOLS)
     You are an external assistant. Tool calling is completely deactivated. You do NOT have access to tools or \`<lollms_tool>\`.
     You MUST EXCLUSIVELY use top-level XML tags starting on a new line to interact with the project:
-    ${authorizedExportTags}
+    - \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>\`: Request that a file from the project tree be loaded into your context.
+    - \`<remove_files_from_context>\npath/to/file.ext\n</remove_files_from_context>\`: Eject files from context.
+    - \`<delete_files>\npath/to/file.ext\n</delete_files>\`: Delete files.
     `;
     } else if (promptType === 'surgical_agent') {
         operationalMandate = "\n### 🚫 STRICT OPERATIONAL RULE\nYou are a single-file refactoring engine. You are FORBIDDEN from using, referencing, or outputting any JSON tool calls, XML tags, or external commands. Your only authorized action is to output the SEARCH/REPLACE block modifying the code.\n";
@@ -804,6 +832,8 @@ const sparqlDynamicRule = isSparqlActive ? `
         const authorizedXmlTags = [
             `<add_files_to_context>\npath/to/file\n</add_files_to_context>`,
             `<remove_files_from_context>\npath/to/file\n</remove_files_from_context>`,
+            `<unpack_directory>\npath/to/folder\n</unpack_directory>`,
+            `<peek_files>\npath/to/file.ext\n</peek_files>`,
             isSparqlActive ? `<query_architecture>\nSELECT ?x WHERE { ?x s:type s:Class }\n</query_architecture>` : null,
             `<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>`
         ].filter(Boolean).map(tag => `- \`${tag}\``).join('\n    ');
@@ -1126,9 +1156,13 @@ export function parseAiderHunks(rawBlock: string): AiderHunk[] {
     const lines = rawBlock.replace(/\r\n/g, '\n').split('\n');
     let i = 0;
 
+    const isSearchMarker = (l: string) => /^<{7}\s*search\b/i.test(l.trim());
+    const isReplaceMarker = (l: string) => /^>{7}\s*replace\b/i.test(l.trim());
+    const isSeparatorMarker = (l: string) => /^={5,}$/.test(l.trim());
+
     while (i < lines.length) {
         const line = lines[i];
-        if (line.trim().startsWith('<<<<<<< SEARCH')) {
+        if (isSearchMarker(line)) {
             const startLineIdx = i;
             const searchLines: string[] = [];
             const replaceLines: string[] = [];
@@ -1142,25 +1176,34 @@ export function parseAiderHunks(rawBlock: string): AiderHunk[] {
                 const trimmed = curLine.trim();
 
                 if (!inReplace) {
-                    if (trimmed.startsWith('<<<<<<< SEARCH')) {
+                    if (isSearchMarker(curLine)) {
                         depth++;
                         searchLines.push(curLine);
-                    } else if (trimmed.startsWith('>>>>>>> REPLACE')) {
+                    } else if (isReplaceMarker(curLine)) {
                         if (depth > 1) {
                             depth--;
+                            searchLines.push(curLine);
+                        } else {
+                            isClosed = true;
+                            break;
                         }
-                        searchLines.push(curLine);
-                    } else if (trimmed.startsWith('=======') && depth === 1) {
+                    } else if (isSeparatorMarker(curLine) && depth === 1) {
                         inReplace = true;
                         depth = 0;
                     } else {
                         searchLines.push(curLine);
                     }
                 } else {
-                    if (trimmed.startsWith('<<<<<<< SEARCH')) {
-                        depth++;
-                        replaceLines.push(curLine);
-                    } else if (trimmed.startsWith('>>>>>>> REPLACE')) {
+                    if (isSearchMarker(curLine)) {
+                        if (depth === 0) {
+                            isClosed = true;
+                            i--;
+                            break;
+                        } else {
+                            depth++;
+                            replaceLines.push(curLine);
+                        }
+                    } else if (isReplaceMarker(curLine)) {
                         if (depth > 0) {
                             depth--;
                             replaceLines.push(curLine);
@@ -1168,6 +1211,10 @@ export function parseAiderHunks(rawBlock: string): AiderHunk[] {
                             isClosed = true;
                             break;
                         }
+                    } else if (isSeparatorMarker(curLine) && depth === 0) {
+                        // Skip duplicate separator line to avoid leaking ======= into replace output
+                        i++;
+                        continue;
                     } else {
                         replaceLines.push(curLine);
                     }
@@ -1176,8 +1223,8 @@ export function parseAiderHunks(rawBlock: string): AiderHunk[] {
             }
 
             if (isClosed || inReplace) {
-                const searchPart = searchLines.join('\n');
-                const replacePart = replaceLines.join('\n');
+                const searchPart = sanitizeAiderMarkers(searchLines.join('\n'));
+                const replacePart = sanitizeAiderMarkers(replaceLines.join('\n'));
                 const fullMatch = lines.slice(startLineIdx, i + 1).join('\n');
                 hunks.push({
                     fullMatch,
@@ -1208,6 +1255,78 @@ export interface ExtractedFileBlock {
     isClosed: boolean;
 }
 
+export interface ExtractedFileBlock {
+    attrStr: string;
+    rawContent: string;
+    fullMatch: string;
+    start: number;
+    end: number;
+    isClosed: boolean;
+}
+
+export interface FileTagAttributes {
+    path: string;
+    action: 'write' | 'patch' | 'update_symbol';
+    symbol?: string;
+}
+
+/**
+ * Robustly parses attributes from <file ...> tags.
+ * Tolerates edge cases where LLMs hallucinate attribute names like file="...",
+ * filepath="...", target="...", name="...", unquoted values, or missing actions.
+ */
+export function parseFileTagAttributes(attrStr: string, rawContent?: string): FileTagAttributes | null {
+    if (!attrStr && !rawContent) return null;
+    const cleanAttr = (attrStr || "").trim();
+
+    // 1. Extract path using common synonyms (path, file_path, filepath, file, target, name, filename)
+    // Supports double quotes, single quotes, or unquoted values
+    const pathRegex = /(?:^|\s+)(?:path|file_path|filepath|file|target|name|filename)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
+    const pathMatch = cleanAttr.match(pathRegex);
+    let filePath = pathMatch ? (pathMatch[1] || pathMatch[2] || "").trim() : "";
+
+    // Fallback: Check if attribute string starts with an unkeyed path e.g. <file "main.py"> or <file main.py>
+    if (!filePath) {
+        const unkeyedMatch = cleanAttr.match(/^(?:["']([^"']+)["']|([^\s=>"']+\.[a-zA-Z0-9_\-]+))/);
+        if (unkeyedMatch) {
+            filePath = (unkeyedMatch[1] || unkeyedMatch[2] || "").trim();
+        }
+    }
+
+    if (!filePath) return null;
+
+    // Clean any leading/trailing quotes
+    filePath = filePath.replace(/^['"]|['"]$/g, '').trim();
+
+    // 2. Extract action with synonyms (action, type, mode)
+    const actionRegex = /(?:^|\s+)(?:action|type|mode)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
+    const actionMatch = cleanAttr.match(actionRegex);
+    const actionRaw = actionMatch ? (actionMatch[1] || actionMatch[2] || "").toLowerCase().trim() : "";
+
+    // 3. Extract symbol with synonyms (symbol, function, method, class)
+    const symbolRegex = /(?:^|\s+)(?:symbol|function|method|class)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
+    const symbolMatch = cleanAttr.match(symbolRegex);
+    let symbol = symbolMatch ? (symbolMatch[1] || symbolMatch[2] || "").trim() : "";
+
+    // Handle embedded symbol in path (e.g. path="src/main.ts:myMethod")
+    if (!symbol && filePath.includes(':') && !/^[a-zA-Z]:[\\/]/.test(filePath)) {
+        const parts = filePath.split(':');
+        filePath = parts[0].trim();
+        symbol = parts.slice(1).join(':').trim();
+    }
+
+    let action: 'write' | 'patch' | 'update_symbol' = 'write';
+    if (actionRaw === 'patch' || (rawContent && rawContent.includes('<<<<<<< SEARCH'))) {
+        action = 'patch';
+    } else if (actionRaw === 'update_symbol' || (symbol && actionRaw !== 'write')) {
+        action = 'update_symbol';
+    } else if (actionRaw === 'write' || actionRaw === 'create' || actionRaw === 'overwrite' || actionRaw === 'new') {
+        action = 'write';
+    }
+
+    return { path: filePath, action, symbol: symbol || undefined };
+}
+
 /**
  * Depth-aware extractor for <file> mutation blocks.
  * Correctly handles nested <file>...</file> tags inside code strings or templates.
@@ -1220,7 +1339,7 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
     let match: RegExpExecArray | null;
 
     while ((match = openTagRegex.exec(text)) !== null) {
-        const start = match.index;
+        let start = match.index;
         const attrStr = match[1] || "";
         const bodyStart = match.index + match[0].length;
 
@@ -1251,7 +1370,34 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
             }
         }
 
-        const rawContent = text.substring(bodyStart, bodyEnd);
+        // Check if <file> was wrapped inside outer markdown fences (```python ... ```)
+        const textBefore = text.substring(0, start);
+        const fenceBeforeMatch = textBefore.match(/(?:^|\n)[ \t]*(`{3,}|~{3,})(?:[a-zA-Z0-9_\-]+)?[ \t]*\r?\n[ \t]*$/);
+
+        let fenceLen = 0;
+        let fenceChar = '';
+        if (fenceBeforeMatch) {
+            fenceChar = fenceBeforeMatch[1][0];
+            fenceLen = fenceBeforeMatch[1].length;
+            const matchOffsetInBefore = textBefore.length - fenceBeforeMatch[0].length;
+            const newlineIndex = fenceBeforeMatch[0].indexOf('\n');
+            start = newlineIndex !== -1 ? matchOffsetInBefore + newlineIndex + 1 : matchOffsetInBefore;
+        }
+
+        if (fenceLen > 0 && isClosed) {
+            const textAfter = text.substring(end);
+            const fenceAfterRegex = new RegExp(`^[ \\t]*(?:\\r?\\n)[ \\t]*${fenceChar}{${fenceLen},}[ \\t]*(?=\\r?\\n|$)`);
+            const fenceAfterMatch = textAfter.match(fenceAfterRegex);
+            if (fenceAfterMatch) {
+                end += fenceAfterMatch[0].length;
+            }
+        }
+
+        let rawContent = text.substring(bodyStart, bodyEnd);
+        if (/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s.test(rawContent.trim())) {
+            rawContent = rawContent.trim().replace(/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s, '$1');
+        }
+
         const fullMatch = text.substring(start, end);
 
         blocks.push({

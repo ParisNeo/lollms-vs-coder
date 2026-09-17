@@ -1253,170 +1253,77 @@ export function setCalculatingTokens(isCalculating: boolean, text?: string) {
     const quickRefreshIcon = document.querySelector('#hud-quick-refresh-btn .codicon');
 
     if (isCalculating) {
-        if (label) label.textContent = text || 'Counting...';
+        if (label) {
+            if (state.lastTokenMetrics && state.lastTokenMetrics.totalTokens > 0) {
+                const prevTotal = state.lastTokenMetrics.totalTokens.toLocaleString();
+                const prevSize = state.lastTokenMetrics.contextSize.toLocaleString();
+                label.textContent = `Tokens: ${prevTotal} / ${prevSize} (${text || 'Updating...'})`;
+            } else {
+                label.textContent = text || 'Tokens: Measuring context...';
+            }
+        }
         if (quickRefreshIcon) quickRefreshIcon.classList.add('spin');
     } else {
         if (quickRefreshIcon) quickRefreshIcon.classList.remove('spin');
     }
 }
+(window as any).setCalculatingTokens = setCalculatingTokens;
 
 
 export function setGeneratingState(isGenerating: boolean, statusText?: string, showRaiseHand: boolean = false, buttonLabel?: string) {
     // Ensure project loader is cleared if we are starting a real generation
     if (isGenerating) hideProjectLoader();
 
-    const overlay = dom.generatingOverlay;
-    if (!overlay) return;
-    // Update internal state
-    state.isGenerating = isGenerating;
+    const overlay = document.getElementById('generating-overlay') || dom.generatingOverlay;
+    if (overlay) {
+        overlay.style.setProperty('display', isGenerating ? 'flex' : 'none', 'important');
 
-    // Toggle global "Genie Presence" class
-    if (state.capabilities?.agentMode) {
-        document.body.classList.add('agent-mode-active');
-    } else {
-        document.body.classList.remove('agent-mode-active');
-    }
-
-    const raiseHandBtn = document.getElementById('raiseHandButton');
-    if (raiseHandBtn) {
-        // Force visibility based on the flag provided by the extension
-        raiseHandBtn.style.setProperty('display', (isGenerating && showRaiseHand) ? 'flex' : 'none', 'important');
-    }
-
-    if (statusText) {
-        const topStatus = document.getElementById('status-text');
-        if (topStatus) topStatus.textContent = statusText;
-        if (dom.statusText) dom.statusText.textContent = statusText;
-        
-        // --- STEP TIMELINE LOGIC ---
-        const dots = document.querySelectorAll('.step-dot');
-        const lowerStatus = statusText.toLowerCase();
-        let activeIdx = 0;
-
-        if (lowerStatus.includes('plan') || lowerStatus.includes('analyz')) activeIdx = 0;
-        else if (lowerStatus.includes('search') || lowerStatus.includes('librarian') || lowerStatus.includes('web')) activeIdx = 1;
-        else if (lowerStatus.includes('generat') || lowerStatus.includes('writing')) activeIdx = 2;
-        else if (lowerStatus.includes('apply') || lowerStatus.includes('finish')) activeIdx = 3;
-
-        dots.forEach((dot, i) => {
-            dot.classList.toggle('active', i <= activeIdx);
-        });
-    }
-
-    if (dom.messageInput) {
-        // Keep editable during generation so the user can prepare the next prompt
-        dom.messageInput.disabled = false;
-    }
-
-    // --- GLOBAL BUTTON LOCKDOWN ---
-    // Restrict button lockdown to chat messages (.messages) and the context HUD (#context-container).
-    // This explicitly prevents locking the Image Editor modal so you can draw/annotate while a task runs.
-    const actionableButtons = document.querySelectorAll('.messages .apply-btn, .messages .lollms-command-btn, .messages .code-action-btn, .messages .msg-action-btn, .messages .summarize-context-btn, .messages .open-context-btn, .messages .remove-context-btn, #context-container button');
-    actionableButtons.forEach((btn: any) => {
-        if (isGenerating) {
-            // Discrete lockdown: disable and fade, but DO NOT replace content with spinners
-            btn.disabled = true;
-            btn.style.pointerEvents = 'none';
-            btn.style.opacity = '0.4'; 
-        } else {
-            btn.disabled = false;
-            btn.style.pointerEvents = 'auto';
-            btn.style.opacity = '1';
-        }
-    });
-
-    if (dom.sendButton) {
-        if (isGenerating) {
-            dom.sendButton.style.opacity = '0.4';
-            dom.sendButton.style.cursor = 'not-allowed';
-            dom.sendButton.title = 'Generation in progress...';
-        } else {
-            dom.sendButton.style.opacity = '';
-            dom.sendButton.style.cursor = '';
-            dom.sendButton.title = 'Send Message';
-        }
-    }
-
-    if(dom.agentModeCheckbox) dom.agentModeCheckbox.disabled = isGenerating;
-
-    if(dom.modelSelector) dom.modelSelector.disabled = isGenerating;
-    if(dom.attachButton) dom.attachButton.disabled = isGenerating;
-    if(dom.executeButton) dom.executeButton.disabled = isGenerating;
-    if(dom.setEntryPointButton) dom.setEntryPointButton.disabled = isGenerating;
-    if(dom.debugRestartButton) dom.debugRestartButton.disabled = isGenerating;
-
-    if (dom.inputAreaWrapper) {
-        dom.inputAreaWrapper.style.display = 'block'; // Always keep input area visible
-    }
-
-    if (dom.generatingOverlay) {
-        dom.generatingOverlay.style.display = isGenerating ? 'flex' : 'none';
-        
-        // --- INJECT HIGH-FIDELITY ORB ---
-        const orbContainer = dom.generatingOverlay.querySelector('.ai-orb-container');
-        if (orbContainer) {
-            orbContainer.innerHTML = `
-                <div class="genie-orb-portal">
-                    <div class="orb-ring-outer"></div>
-                    <div class="orb-ring-inner"></div>
-                    <div class="orb-core"></div>
-                </div>
-            `;
-        }
         const statusEl = document.getElementById('generating-status-text');
         const raiseHandBtn = document.getElementById('raiseHandButton');
         const stopBtn = document.getElementById('stopButton');
 
         if (raiseHandBtn) {
-            raiseHandBtn.style.display = showRaiseHand ? 'flex' : 'none';
+            raiseHandBtn.style.setProperty('display', (isGenerating && showRaiseHand) ? 'inline-flex' : 'none', 'important');
         }
 
-        // Clear progress bar state on completion
+        if (stopBtn) {
+            stopBtn.style.setProperty('display', isGenerating ? 'inline-flex' : 'none', 'important');
+            const btnLabel = stopBtn.querySelector('span');
+            if (btnLabel) {
+                btnLabel.textContent = buttonLabel ? buttonLabel : (state.capabilities?.agentMode ? "Stop Agent" : "Stop Generation");
+            }
+        }
+
         if (!isGenerating) {
             const barContainer = document.getElementById('fused-scout-loader-bar');
             if (barContainer) barContainer.style.display = 'none';
         }
 
-        if (stopBtn) {
-            // The stop button should only be visible while generating
-            stopBtn.style.display = isGenerating ? 'flex' : 'none';
-        }
-
         if (statusEl && statusText) {
             const emoji = getStatusEmoji(statusText);
             statusEl.textContent = `${emoji} ${statusText}`;
-
-            // Context-aware button labeling
-            const lowerStatus = statusText.toLowerCase();
-            const isApplying = lowerStatus.includes("apply") || lowerStatus.includes("repair") || lowerStatus.includes("writ");
-            const isSearching = lowerStatus.includes("search") || lowerStatus.includes("librarian");
-            const isThinking = lowerStatus.includes("reason") || lowerStatus.includes("plan");
-
-            if (dom.stopButton) {
-                const btnLabel = dom.stopButton.querySelector('span');
-                if (btnLabel) {
-                    if (buttonLabel) {
-                        btnLabel.textContent = buttonLabel.toUpperCase();
-                    } else {
-                        if (isApplying) btnLabel.textContent = "STOP APPLICATION";
-                        else if (isSearching) btnLabel.textContent = "STOP SEARCH";
-                        else if (isThinking) btnLabel.textContent = "STOP REASONING";
-                        else btnLabel.textContent = "STOP GENERATION";
-                    }
-                }
-            }
         }
+    }
 
-        // Hide metrics initially when starting a new process (e.g. searching)
-        // They will be shown by updateGenerationMetrics once streaming starts
-        const metricsEl = document.getElementById('generating-metrics');
-        if (metricsEl && !statusText?.includes('...')) {
-             metricsEl.style.display = 'none';
+    // Transform Send Button into a Stop Button whenever generating
+    if (dom.sendButton) {
+        if (isGenerating) {
+            dom.sendButton.innerHTML = '<i class="codicon codicon-primitive-square" style="color: var(--vscode-charts-red, #e51400); font-size: 16px;"></i>';
+            dom.sendButton.title = 'Stop Generation (Esc)';
+            dom.sendButton.classList.add('is-stopping');
+            dom.sendButton.style.opacity = '1';
+            dom.sendButton.style.cursor = 'pointer';
+        } else {
+            dom.sendButton.innerHTML = '<i class="codicon codicon-send"></i>';
+            dom.sendButton.title = 'Send Message (Enter)';
+            dom.sendButton.classList.remove('is-stopping');
+            dom.sendButton.style.opacity = '';
+            dom.sendButton.style.cursor = '';
         }
     }
 
     if (!isGenerating) {
-        if (dom.generatingOverlay) dom.generatingOverlay.style.display = 'none';
+        if (overlay) overlay.style.setProperty('display', 'none', 'important');
         if (dom.inputAreaWrapper) {
             dom.inputAreaWrapper.style.display = 'block';
             dom.inputAreaWrapper.style.pointerEvents = 'auto';
@@ -1432,11 +1339,10 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
 
         if (dom.messageInput) {
             dom.messageInput.disabled = false;
-            dom.messageInput.focus();
         }
     } else {
         dom.scrollToBottomBtn.style.display = 'none';
-        if (dom.inputArea) dom.inputArea.classList.remove('disabled'); // Keep active during generation
+        if (dom.inputArea) dom.inputArea.classList.remove('disabled');
     }
 }
 
@@ -1899,11 +1805,10 @@ export class BadgesBinder {
         if (manual) {
             manual.onclick = (e) => {
                 e.stopPropagation();
-                const name = prompt("Enter model name/id (e.g. ollama/mistral):");
-                if (name) {
-                    vscode.postMessage({ command: 'updateDiscussionModel', model: name.trim() });
-                    vscode.postMessage({ command: 'calculateTokens' });
-                }
+                vscode.postMessage({ 
+                    command: 'executeLollmsCommand', 
+                    details: { command: 'lollms-vs-coder.selectModel' } 
+                });
                 menu.classList.remove('visible');
             };
         }
@@ -2685,17 +2590,28 @@ export function renderSkillsTree(container: HTMLElement, node: any, discussionSk
         li.className = 'skills-tree-item';
 
         // Ensure strictly type-safe inclusion check
-        const isDiscussionActive = discussionSkills.some(id => String(id) === String(child.id));
-        const isProjectActive = projectSkills.some(id => String(id) === String(child.id));
+        const isDiscussionActive = child.isSkill && discussionSkills.some(id => String(id).toLowerCase() === String(child.id).toLowerCase());
+        const isProjectActive = child.isSkill && projectSkills.some(id => String(id).toLowerCase() === String(child.id).toLowerCase());
 
-        const controlsHtml = `
+        const controlsHtml = child.isSkill ? `
             <div class="skill-controls" style="display: flex; gap: 20px; flex-shrink: 0;">
                 <label class="switch" style="width: 24px; height: 14px;" title="Active in this Chat">
-                    <input type="checkbox" value="${child.id}" class="skill-discussion-checkbox ${child.isSkill ? '' : 'bundle-discussion'}" ${isDiscussionActive ? 'checked' : ''}>
+                    <input type="checkbox" value="${child.id}" class="skill-discussion-checkbox" ${isDiscussionActive ? 'checked' : ''}>
                     <span class="slider" style="border-radius: 14px;"></span>
                 </label>
                 <label class="switch" style="width: 24px; height: 14px;" title="Active for the whole Project">
-                    <input type="checkbox" value="${child.id}" class="skill-project-checkbox ${child.isSkill ? '' : 'bundle-project'}" ${isProjectActive ? 'checked' : ''}>
+                    <input type="checkbox" value="${child.id}" class="skill-project-checkbox" ${isProjectActive ? 'checked' : ''}>
+                    <span class="slider" style="border-radius: 14px;"></span>
+                </label>
+            </div>
+        ` : `
+            <div class="skill-controls" style="display: flex; gap: 20px; flex-shrink: 0;">
+                <label class="switch" style="width: 24px; height: 14px;" title="Select/Deselect All in Folder (Chat)">
+                    <input type="checkbox" class="bundle-discussion-checkbox">
+                    <span class="slider" style="border-radius: 14px;"></span>
+                </label>
+                <label class="switch" style="width: 24px; height: 14px;" title="Select/Deselect All in Folder (Project)">
+                    <input type="checkbox" class="bundle-project-checkbox">
                     <span class="slider" style="border-radius: 14px;"></span>
                 </label>
             </div>
@@ -2705,37 +2621,42 @@ export function renderSkillsTree(container: HTMLElement, node: any, discussionSk
             const displayLabel = child.label.replace(/SOURCE OF TRUTH:\s*/gi, '').trim();
             const div = document.createElement('div');
             div.className = 'skill-node';
-            div.style.cssText = "display: flex; justify-content: space-between; align-items: center; width: 100%;";
+            div.style.cssText = "display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 4px 6px; border-radius: 4px;";
             div.innerHTML = `
-                <label title="${child.description || ''}" style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                    <span class="codicon codicon-bookmark"></span> 💎 ${displayLabel}
+                <label title="${child.description || ''}" style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;">
+                    <span class="codicon codicon-bookmark" style="color:var(--vscode-charts-blue)"></span> 💎 ${displayLabel}
                 </label>
                 ${controlsHtml}
             `;
             li.appendChild(div);
         } else {
             const details = document.createElement('details');
-            details.open = false;
+            // Auto-expand the main top-level libraries so skills are immediately visible
+            details.open = node.id === 'root' || child.id === 'global-lib' || child.id === 'project-lib';
             const summary = document.createElement('summary');
             summary.className = 'skill-summary';
-            summary.style.cssText = "display: flex; justify-content: space-between; align-items: center; width: 100%;";
+            summary.style.cssText = "display: flex; justify-content: space-between; align-items: center; width: 100%; cursor: pointer; padding: 4px 2px;";
 
             summary.innerHTML = `
-                <div style="display: flex; align-items: center; flex: 1; min-width: 0;">
+                <div style="display: flex; align-items: center; flex: 1; min-width: 0; gap: 4px;">
                     <span class="folder-handle codicon"></span>
-                    <span class="skill-folder-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    <span class="skill-folder-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600;">
                         <span class="codicon codicon-folder"></span> ${child.label}
                     </span>
                 </div>
                 ${controlsHtml}
             `;
 
-            // Cascade Logic
+            // Robust folder cascade logic
             summary.querySelectorAll('input').forEach(input => {
                 input.addEventListener('change', (e) => {
-                    const type = input.classList.contains('bundle-discussion') ? '.skill-discussion-checkbox' : '.skill-project-checkbox';
+                    e.stopPropagation();
+                    const isChat = input.classList.contains('bundle-discussion-checkbox');
+                    const targetClass = isChat ? '.skill-discussion-checkbox' : '.skill-project-checkbox';
                     const checked = (e.target as HTMLInputElement).checked;
-                    li.querySelectorAll(type).forEach((cb: any) => cb.checked = checked);
+                    li.querySelectorAll(targetClass).forEach((cb: any) => {
+                        cb.checked = checked;
+                    });
                 });
             });
 
@@ -3398,7 +3319,7 @@ export function renderContextUsage(usage: any[]) {
 /**
  * Renders the Tool Picker modal allowing users to equip specific agent capabilities.
  */
-export function renderToolPicker(allTools: any[], discussionTools: string[], projectTools: string[]) {
+export function renderToolPicker(allTools: any[], discussionTools: string[], projectTools: string[], isAssistantMode: boolean = false) {
     const modal = document.getElementById('tool-picker-modal');
     const list = document.getElementById('tool-picker-list');
     const searchInp = document.getElementById('tool-picker-search') as HTMLInputElement;
@@ -3406,10 +3327,21 @@ export function renderToolPicker(allTools: any[], discussionTools: string[], pro
 
     if (searchInp) searchInp.value = '';
 
+    const isAssistant = isAssistantMode || (!state.capabilities?.agentMode && !state.capabilities?.dynamicMode);
+
     const renderList = (filter = "") => {
         const query = filter.toLowerCase();
 
-        let html = `
+        let html = '';
+        if (isAssistant) {
+            html += `
+                <div style="padding: 8px 10px; margin-bottom: 10px; background: rgba(244, 160, 0, 0.1); border: 1px solid var(--vscode-charts-orange); border-radius: 4px; font-size: 11px; color: var(--vscode-charts-orange);">
+                    <i class="codicon codicon-warning"></i> <strong>Assistant Mode Active</strong>: Tools are deactivated in Assistant mode. Switch to <strong>Co-Engineer (🧠)</strong> or <strong>Agent (🤖)</strong> mode to activate equipped tools.
+                </div>
+            `;
+        }
+
+        html += `
             <div style="display: flex; justify-content: flex-end; padding: 0 10px 8px 10px; border-bottom: 1px solid var(--vscode-widget-border); margin-bottom: 10px;">
                 <div style="display: flex; gap: 20px;">
                     <span style="font-size: 9px; font-weight: 800; opacity: 0.6;">CHAT</span>
@@ -3583,10 +3515,21 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
     // 4. Render Matrix Folder Rows inside Wizard
     renderWizardMatrix();
 
-    // 5. Populate User Preferences in Wizard
+    // 5. Populate User Preference Profiles in Wizard
+    const prefSelect = document.getElementById('wizard-preferences-profile') as HTMLSelectElement;
     const wizardUserPref = document.getElementById('wizard-user-preferences') as HTMLTextAreaElement;
+    const profiles = (state as any).userPreferenceProfiles || [];
+    const activeProfileId = state.capabilities?.userPreferenceProfileId || 'clean_craftsman';
+
+    if (prefSelect && profiles.length > 0) {
+        prefSelect.innerHTML = profiles.map((p: any) => 
+            `<option value="${p.id}" ${p.id === activeProfileId ? 'selected' : ''}>${p.name}</option>`
+        ).join('') + `<option value="custom" ${activeProfileId === 'custom' ? 'selected' : ''}>✏️ Custom Preferences</option>`;
+    }
+
     if (wizardUserPref) {
-        wizardUserPref.value = state.capabilities?.userPreferences || '';
+        const matched = profiles.find((p: any) => p.id === activeProfileId);
+        wizardUserPref.value = state.capabilities?.userPreferences || matched?.preferences || '';
     }
 
     // 6. Reveal Modal and focus the input field
@@ -4147,13 +4090,12 @@ function renderSplitDiff(oldText: string, patch: string) {
 
     // 1. Calculate the final state as intended by the patch
     let newText = oldText;
-    const normalizedPatch = normalizeAiderContent(patch);
-    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======(?:\r?\n(?!>>>>>>> REPLACE)([\s\S]*?))?\r?\n>>>>>>> REPLACE/g;
-    const matches = [...normalizedPatch.matchAll(aiderRegex)];
+    const normalizedPatch = typeof normalizeAiderContent === 'function' ? normalizeAiderContent(patch) : patch;
+    const hunks = parseAiderHunks(normalizedPatch);
 
-    if (matches.length > 0) {
-        for (const match of matches) {
-            const res = applySearchReplace(newText, match[1] || "", match[2] || "");
+    if (hunks.length > 0) {
+        for (const hunk of hunks) {
+            const res = applySearchReplace(newText, hunk.searchPart || "", hunk.replacePart || "");
             if (res.success) newText = res.result;
         }
     } else {

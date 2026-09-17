@@ -70,8 +70,12 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                     }, async () => {
                         await provider.setStateForUris(targetUris, state);
                     });
+                    services.contextManager.recordRecentlyAddedFiles(targetUris.map(u => vscode.workspace.asRelativePath(u, false)));
                 } else {
                     await provider.setStateForUris(targetUris, state);
+                    if (state === 'included') {
+                        services.contextManager.recordRecentlyAddedFiles(targetUris.map(u => vscode.workspace.asRelativePath(u, false)));
+                    }
                 }
 
                 // Immediately refresh the current chat bubble if open
@@ -86,14 +90,32 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextIncluded', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'included')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextTreeOnly', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'tree-only')));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextExcluded', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'fully-excluded')));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextCollapsed', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'collapsed')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextExcluded', async (uri?: vscode.Uri, uris?: vscode.Uri[]) => {
+        const targetUris = getSelectedUris(uri, uris);
+        if (targetUris.length > 0 && services.contextManager) {
+            services.contextManager.clearRenderedTreeCache();
+            await services.contextManager.getContextStateProvider()?.setStateForUris(targetUris, 'fully-excluded');
+            refreshViews();
+        }
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextCollapsed', async (uri?: vscode.Uri, uris?: vscode.Uri[]) => {
+        const targetUris = getSelectedUris(uri, uris);
+        if (targetUris.length > 0 && services.contextManager) {
+            services.contextManager.clearRenderedTreeCache();
+            await services.contextManager.getContextStateProvider()?.setStateForUris(targetUris, 'collapsed');
+            refreshViews();
+        }
+    }));    
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextDefinitionsOnly', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'definitions-only')));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFilesToContext', async (files: string[]) => {
         const provider = services.contextManager.getContextStateProvider();
         if (provider) {
             const added = await provider.addFilesToContext(files);
+
+            if (added.length > 0) {
+                services.contextManager.recordRecentlyAddedFiles(added);
+            }
 
             // Immediately refresh the current chat bubble if open
             if (ChatPanel.currentPanel && added.length > 0) {

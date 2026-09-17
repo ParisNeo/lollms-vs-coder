@@ -243,6 +243,7 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
                 description: plan.thought || plan.new_remark || "Executing tool...",
                 action: plan.tool,
                 parameters: plan.params || {},
+                worker_scope: plan.worker || plan.worker_scope,
                 status: 'pending',
                 result: null,
                 retries: 0
@@ -272,8 +273,43 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
             task.status = 'pending';
             task.result = null;
             task.retries = 0;
-            if (!task.dependencies) task.dependencies =[]; // Normalize to empty array
+            if (!task.dependencies) task.dependencies = [];
+
+            // Auto-infer Worker Tier & Scope if not explicitly structured
+            if (!task.worker_scope) {
+                task.worker_scope = this.inferWorkerScope(task.action, task.parameters, task.description);
+            }
         }
+    }
+
+    private inferWorkerScope(action: string, params: any, description: string): import('./tools/tool').WorkerScope {
+        if (['read_file', 'read_files', 'search_files', 'grep_search', 'read_code_graph', 'query_architecture', 'peek_at_context', 'smart_scout'].includes(action)) {
+            const files = params?.path ? [params.path] : (params?.paths || []);
+            return {
+                role: 'scout',
+                focus: 'Codebase & Architecture Reconnaissance',
+                targetFiles: files
+            };
+        }
+        if (['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'markdown_coding', 'delete_file', 'move_file'].includes(action)) {
+            const files = [params?.file_path || params?.path || params?.source || params?.destination].filter(Boolean);
+            return {
+                role: 'coder',
+                focus: 'Surgical Implementation & Refactoring',
+                targetFiles: files
+            };
+        }
+        if (['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'secure_run'].includes(action)) {
+            return {
+                role: 'tester',
+                focus: 'Runtime Execution & Testing',
+                targetFiles: params?.file ? [params.file] : []
+            };
+        }
+        return {
+            role: 'auditor',
+            focus: 'Integrity & Quality Audit'
+        };
     }
 
     public extractJson(text: string): string | null {
@@ -484,10 +520,19 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
 
         const content = `${baseSystemInfo}
 
-        # 🧞 THE GENIE PROTOCOL (RE-ACT)
+        # 🏛️ TWO-TIERED AGENTIC SYSTEM: ORCHESTRATOR & SPECIALIZED WORKERS
         ${profileProtocol}
-You are a **Project Manager (Lead Architect)** with high-level vision of the project.
-You practice **Layered Agentic Development**. This means you delegate specific tasks to **Specialists** who are well-conditioned for their roles, while maintaining complete project overview.
+You operate as the **Tier 1: Lead Orchestrator**. You hold the global architectural model, manage turn budgets, and coordinate the mission.
+You delegate technical tasks to **Tier 2: Specialized Workers**, each with a strictly defined scope:
+- 🔍 **Scout Worker**: Reconnaissance, symbol mapping, and dependency discovery.
+- 🛠️ **Coder Worker**: Focused surgical code modifications on designated target files.
+- 🧪 **Test Worker**: Runtime execution, compilation, and automated test suite verification.
+- 🛡️ **Audit Worker**: Integrity, security boundary checks, and acceptance criteria verification.
+
+### 🛡️ GIT SAFEGUARD DOCTRINE
+- We ALWAYS start missions with a clean Git environment.
+- Any dirty working directory is cleaned (stashed or committed) and isolated on a sandbox task branch before autonomous execution begins.
+
 You operate in a high-frequency autonomous loop with conditions: **Reason -> Act -> Observe -> Test/Verify -> Debug -> Conclude**.
 
 ### 🔄 THE CONDITIONAL AUTONOMOUS LOOP RULES (RE-ACT PROTOCOL)
@@ -547,6 +592,7 @@ You have two modes of operation:
 2. **CODING MODE (Implementation)**:
    - If the task is to **write or edit code**, do NOT wrap the code in a JSON string.
    - Instead, output structured XML **\`<file path="..." action="write|patch|update_symbol">\`** tags:
+     *   **MANDATORY ATTRIBUTE**: You MUST use the exact attribute name \`path="..."\` (e.g. \`<file path="src/main.py" action="write">\`). NEVER use \`file="..."\`, \`name="..."\`, or \`filename="..."\`.
      *   **action="patch"**: Use Aider SEARCH/REPLACE blocks for surgical modifications to existing files.
      *   **action="write"**: Output the complete file content from line 1 to the end for new files or major rewrites.
      *   **action="update_symbol" symbol="..."**: Output standalone function/class replacements.

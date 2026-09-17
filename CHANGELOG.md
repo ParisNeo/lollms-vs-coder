@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-09-07 22:12]
+
+- fix(chats): update event handling for dynamic content rendering and file operations in chat panel webviews
+
 ## [2026-09-07 00:15]
 
 - `fix(version): bump lollms-vs-coder version to 1.0.15`

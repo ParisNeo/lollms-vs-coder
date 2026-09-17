@@ -80,6 +80,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         profileId: string,
         selectedFolders: string[],
         contextSelection?: string,
+        userPreferenceProfileId?: string,
         userPreferences?: string,
         sendToAi: boolean
     }) => {
@@ -97,6 +98,9 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         if (discussion.capabilities) {
             discussion.capabilities.responseProfileId = params.profileId;
             discussion.capabilities.selectedFolders = params.selectedFolders;
+            if (params.userPreferenceProfileId !== undefined) {
+                discussion.capabilities.userPreferenceProfileId = params.userPreferenceProfileId;
+            }
             if (params.userPreferences !== undefined) {
                 discussion.capabilities.userPreferences = params.userPreferences;
             }

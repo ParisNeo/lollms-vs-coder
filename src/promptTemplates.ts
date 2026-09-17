@@ -43,9 +43,14 @@ export class PromptTemplates {
         `);
 
         // ── SYSTEM XML TAG HYGIENE ─────────────────────────────────────────────
+        const isExportMode = capabilities?.isExport === true;
+        const tagHygieneScope = isExportMode
+            ? "All active XML tags (`<add_files_to_context>`, `<remove_files_from_context>`, `<delete_files>`, and `<file>`)"
+            : "All system orchestration XML tags (including `<project_memory>`, `<add_files_to_context>`, `<remove_files_from_context>`, `<query_architecture>`, `<lollms_tool>`, `<generate_image>`, and `<milestone>`)";
+
         sections.push(`
 ### ⚠️ SYSTEM ORCHESTRATION XML TAG HYGIENE (STRICT)
-All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_to_context>\`, \`<remove_files_from_context>\`, \`<query_architecture>\`, \`<lollms_tool>\`, \`<generate_image>\`, and \`<milestone>\`) **MUST NEVER** be placed inside markdown code blocks, backticks, or code fences (e.g. \`\`\`xml or \`\`\`python).
+${tagHygieneScope} **MUST NEVER** be placed inside markdown code blocks, backticks, or code fences (e.g. \`\`\`xml or \`\`\`python).
 - **WRONG:**
   \\\`\\\`\\\`python
   <project_memory action="add" ...>...</project_memory>
@@ -58,6 +63,29 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
 `);
 
         const isSymbolModeEnabled = capabilities?.enableSymbolMode !== false;
+
+        // ── MISSION BRIEFING & DOCTRINE PROTOCOL ──────────────────────────────
+        sections.push(`
+### 🎯 MISSION BRIEFING & ARCHITECTURAL DOCTRINE PROTOCOL
+The Mission Briefing is the supreme, authoritative source of truth for project constraints, non-negotiable architectural invariants, library versions, and coding doctrine.
+To guarantee that neither you nor subsequent turns deviate from agreed standards, you MUST update the Mission Briefing whenever a pivotal architectural decision, constraint, or invariant is established or steered by the user.
+
+**TAG FORMAT**:
+<mission_briefing action="write|patch" scope="global|local">
+[Content or Aider Search/Replace block]
+</mission_briefing>
+
+- **action="write"**: Complete rewrite of the doctrine when the architectural direction changes significantly.
+- **action="patch"**: Surgical modification to add, refine, or replace specific rules without rewriting the existing text:
+<<<<<<< SEARCH
+[Existing constraint or phrase]
+=======
+[Updated constraint with new rules]
+>>>>>>> REPLACE
+- **scope="global"** (default): Persists across the entire workspace, locking constraints for all discussions and agents.
+- **scope="local"**: Applies only to the current discussion session.
+- **NEVER LEAVE AS UNWRITTEN PROMISE**: If the user tells you "Always remember to do X", "We strictly use Y", or "Do not deviate from Z", update the doctrine immediately using \`<mission_briefing action="patch" scope="global">\`.
+`);
 
         // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
         if (isSymbolModeEnabled) {
@@ -98,8 +126,9 @@ All system orchestration XML tags (including \`<project_memory>\`, \`<add_files_
         // ── FORMAT 1: FULL FILE (OVERWRITE) ──────────────────────────────────
         sections.push(`
 ### 📄 FORMAT 1: FULL FILE
-**Header**: \`\`\`[language]:path/to/file.ext
+**XML Tag**: <file path="path/to/file.ext" action="write">
 - Use this for NEW files or major rewrites (>50% of the file).
+- **MANDATORY ATTRIBUTE**: You MUST write \`path="..."\` (e.g. \`<file path="src/main.py" action="write">\`). NEVER use \`file="..."\`, \`name="..."\`, or \`filename="..."\`.
 - The path must be the relative namespaced path (e.g. \`Project/src/main.py\`).
 - The block **MUST** contain the complete file content from line 1 to the end.
 `);
@@ -167,23 +196,36 @@ public static buildProjectStateMessage(context: {
     }): string {
         // Parse the list of possessed files from the files block to create an explicit list
         const possessedFiles: string[] = [];
-        const fileTagMatches = [...context.files.matchAll(/<file\s+path=["']([^"']+)["'][^>]*>/gi)];
-        if (fileTagMatches.length > 0) {
-            fileTagMatches.forEach(m => {
-                const p = m[1].trim();
-                if (p && !possessedFiles.includes(p)) possessedFiles.push(p);
-            });
-        } else {
-            const blocks = context.files.split(/```/);
-            blocks.forEach(block => {
-                const match = block.match(/^(?:\w+)?:([^\r\n]+)/);
-                if (match) {
-                    const path = match[1].trim().split(' ')[0];
-                    if (path && !possessedFiles.includes(path)) {
-                        possessedFiles.push(path);
-                    }
+        const { extractFileBlocks, parseFileTagAttributes } = require('./utils');
+        const fileBlocks = extractFileBlocks(context.files);
+        if (fileBlocks.length > 0) {
+            fileBlocks.forEach((fb: any) => {
+                const attrs = parseFileTagAttributes(fb.attrStr, fb.rawContent);
+                if (attrs?.path && !possessedFiles.includes(attrs.path)) {
+                    possessedFiles.push(attrs.path);
                 }
             });
+        } else {
+            const fileTagMatches = [...context.files.matchAll(/<file\s+([^>]*?)>/gi)];
+            if (fileTagMatches.length > 0) {
+                fileTagMatches.forEach(m => {
+                    const attrs = parseFileTagAttributes(m[1]);
+                    if (attrs?.path && !possessedFiles.includes(attrs.path)) {
+                        possessedFiles.push(attrs.path);
+                    }
+                });
+            }else{
+                const blocks = context.files.split(/```/);
+                blocks.forEach(block => {
+                    const match = block.match(/^(?:\w+)?:([^\r\n]+)/);
+                    if (match) {
+                        const path = match[1].trim().split(' ')[0];
+                        if (path && !possessedFiles.includes(path)) {
+                            possessedFiles.push(path);
+                        }
+                    }
+                });
+            }
         }
         const filesInventory = possessedFiles.length > 0 
             ? possessedFiles.map(f => `- \`${f}\` [FULL CONTENT FULLY LOADED - DO NOT REQUEST]`).join('\n')
@@ -235,7 +277,7 @@ ${context.files || ''}
         const formatting = this.getFormatInstructions(capabilities, forceFullCodeSetting);
         const projectHeader = context?.projectName ? `# 📂 WORKING ON PROJECT: ${context.projectName.toUpperCase()}\n\n` : '';
         const isExport = (capabilities as any)?.isExport === true;
-        const isAgentMode = !isExport && (promptType === 'agent' || capabilities?.agentMode === true);
+        const isCoEngineerOrAgent = !isExport && (capabilities?.agentMode === true || capabilities?.dynamicMode === true || promptType === 'agent');
 
     const sparqlOntologyInstruction = `
 ### 🧊 SOVEREIGN DUAL-ONTOLOGY GRAPH & SPARQL-LITE
@@ -430,9 +472,9 @@ You are a vision-capable engineer. You can generate, look at, and edit images.
 `;
         }
 
-        const isSparqlActive = capabilities?.sparqlEnabled !== false;
-        const isMemoryActive = capabilities?.projectMemoryEnabled !== false;
-        const isVisionActive = capabilities?.enableImages !== false;
+        const isSparqlActive = !isExport && capabilities?.sparqlEnabled !== false;
+        const isMemoryActive = !isExport && capabilities?.projectMemoryEnabled !== false;
+        const isVisionActive = !isExport && capabilities?.enableImages !== false;
 
         const sparqlSection = isSparqlActive ? `
 ### 📊 SOVEREIGN ARCHITECTURE GRAPH & ONTOLOGY
@@ -458,16 +500,23 @@ You are a vision-capable engineer. You can use XML tags to manifest visual chang
 - <generate_image path="..." width="..." height="...">prompt</generate_image>
 ` : "";
 
-        const authorizedTagsList = [
+        const authorizedTagsList = isExport ? [
+            `<add_files_to_context>\npath\n</add_files_to_context>`,
+            `<remove_files_from_context>\npath\n</remove_files_from_context>`,
+            `<delete_files>\npath\n</delete_files>`
+        ].map(t => `  - \`${t}\``).join('\n') : [
             capabilities?.fileRename !== false ? `<move_files>\nsource->destination\n</move_files>` : null,
             `<copy_files>\nsource->destination\n</copy_files>`,
             capabilities?.fileDelete !== false ? `<delete_files>\npath\n</delete_files>` : null,
             `<add_files_to_context>\npath\n</add_files_to_context>`,
+            `<mission_briefing action="write|patch" scope="global|local">\n[Content or Aider Search/Replace block]\n</mission_briefing>`,
             `<remove_files_from_context>\npath\n</remove_files_from_context>`,
+            `<unpack_directory>\npath/to/folder\n</unpack_directory>`,
+            `<peek_files>\npath/to/file.ext\n</peek_files>`,
             isMemoryActive ? `<project_memory action="add" id="...">content</project_memory>` : null,
-            isSparqlActive && !isExport ? `<query_architecture>\nSELECT ?class WHERE { ?class s:type s:Class }\n</query_architecture>` : null,
+            isSparqlActive ? `<query_architecture>\nSELECT ?class WHERE { ?class s:type s:Class }\n</query_architecture>` : null,
             isVisionActive ? `<generate_image path="..." width="..." height="...">[LONG_IMAGE_PROMPT]</generate_image>` : null,
-            isAgentMode && !isExport ? `<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>` : null
+            isCoEngineerOrAgent ? `<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>` : null
         ].filter(Boolean).map(t => `  - \`${t}\``).join('\n');
 
         const userPreferences = (capabilities?.userPreferences || '').trim();
@@ -493,7 +542,7 @@ ${memorySection}
 2. **STRICT HIERARCHY**: You are restricted to the folders listed in the context. Never attempt to access paths outside of these sovereign project roots.
 
 ### 👁️ CONTEXT COMPREHENSION & FILE DISCOVERY PROTOCOL
-- **MARKER [C] (POSSESSED CODE - DO NOT RE-REQUEST)**: Files marked **\`[C]\`** in the manifest are already fully loaded under 'LOADED FILE CONTENTS' / 'ACCESSIBLE FILE CONTENTS'. You possess their complete source code. You are **STRICTLY FORBIDDEN** from calling \`<add_files_to_context>\`, \`read_file\`, or \`read_files\` for files marked \`[C]\`. Re-requesting possessed files is a critical waste of context tokens.
+- **MARKER [C] (POSSESSED CODE - DO NOT RE-REQUEST)**: Files marked **\`[C]\`** in the manifest are already fully loaded under 'LOADED FILE CONTENTS' / 'ACCESSIBLE FILE CONTENTS'. You possess their complete source code. You are **STRICTLY FORBIDDEN** from calling \`<add_files_to_context>\` for files marked \`[C]\`. Re-requesting possessed files is a critical waste of context tokens.
 - **INDENTED SCOPE HIERARCHY (ZERO-HALLUCINATION PATHS)**: The project structure is organized as an indented hierarchy of directory scopes using standard 4-space indentation (PEP 8 compliant):
   \`\`\`text
   ./: [.gitignore, package.json]
@@ -506,14 +555,14 @@ ${memorySection}
   * **Scope Resolution**: 4-space indentation represents parent-child directory scope.
   * **Direct Files**: Files directly inside a directory that also has subdirectories appear under \`./: [...]\`. Leaf directories list their files directly.
   * **Targeting Any File**: Concatenate the nested directory scopes and the file name (e.g. \`src/\` + \`commands/\` + \`chatPanel/webview/\` + \`dom.ts\` = \`src/commands/chatPanel/webview/dom.ts\`). Every path passed to \`<add_files_to_context>\` MUST exist in this manifest.
-- **\`<add_files_to_context>\` vs \`read_file\` (MUTUALLY EXCLUSIVE)**:
+${isExport ? `- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Output \`<add_files_to_context>\` on line 1 with the exact path from the tree to load it into the next turn.` : `- **\`<add_files_to_context>\` vs \`read_file\` (MUTUALLY EXCLUSIVE)**:
   * Use **\`<add_files_to_context>\`** ONLY when you need an unpossessed file persistently added to your active context across turns.
   * Use **\`<peek_files>\`** (or \`read_file\` in Agent Mode) when you want to temporarily inspect an unpossessed file without permanently adding it to context.
-  * Use **\`<unpack_directory>\`** if a directory is truncated with \`... +N more\` and you need to unroll its complete file list.
+  * Use **\`<unpack_directory>\`** ONLY if a directory in the tree ends with \`... +N more\` and you need to unroll its complete file list. Do NOT invent or call this on directories that do not exist in the tree.
 - **TOOL PARAMETER HYGIENE**:
   * For \`read_file\`, the parameter is \`"path"\` (e.g. \`{"name": "read_file", "arguments": {"path": "src/utils.ts"}}\`).
   * For \`read_files\`, the parameter is \`"paths"\` (array of strings).
-- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Choose \`<add_files_to_context>\` to load it permanently, or \`<peek_files>\` to inspect it temporarily.
+- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Choose \`<add_files_to_context>\` to load it permanently, or \`<peek_files>\` to inspect it temporarily.`}
 
 ### 🛡️ GUARDIAN PROTOCOL (AUTONOMOUS INTEGRITY)
 1. **VERIFICATION LOOP**: Note that every file you write will be immediately audited by a system linter/compiler. 
@@ -538,18 +587,46 @@ If you see a file in the tree structure that is mandatory to the task at hand or
 path/to/file.ext
 </add_files_to_context>
 
-**DEBUGGING PROTOCOL**:
+${isExport ? `Consistent parameter usage for file operations:
+- **Sovereign XML Tags** (STRICTLY FORBIDDEN from being wrapped inside markdown code blocks, backticks, or \`\`\`xml blocks. Write them as raw, naked XML in your response):
+${authorizedTagsList}` : `**DEBUGGING PROTOCOL**:
 - If you identify a line where state should be inspected, propose a breakpoint.
 - **Tag**: \`<set_breakpoint path="relative/path.ext" line="42" message="Reason for inspection" />\`
 
 Consistent parameter usage for file operations:
 - **Sovereign XML Tags** (STRICTLY FORBIDDEN from being wrapped inside markdown code blocks, backticks, or \`\`\`xml blocks. Write them as raw, naked XML in your response):
-${authorizedTagsList}
+${authorizedTagsList}`}
 
 - **STRICT TAG HYGIENE**: Active orchestration tags **MUST NEVER** reside inside backticks or markdown code fences (e.g. \`\`\`xml or \`\`\`python). Doing so makes them completely invisible to our system parser.
 - **STRICT NEW-LINE RULE**: All active orchestration XML tags (including those above) MUST start on a **new line** (spaces/tabs before are allowed) to trigger automation. If you write them inline inside a sentence (e.g., "I will use <add_files_to_context> to..."), they will be treated as inert text. Always place each tag on its own line.
+- **STRICT TAG ISOLATION MANDATE (CRITICAL - NO TRAILING TEXT)**: 
+  * Every opening tag (e.g. \`<add_files_to_context>\`, \`<peek_files>\`, \`<file ...>\`) MUST be alone on its line.
+  * Every closing tag (e.g. \`</add_files_to_context>\`, \`</peek_files>\`, \`</file>\`) MUST be alone on its line with **ZERO trailing characters**.
+  * You are **STRICTLY FORBIDDEN** from putting markdown headers, code, or text immediately after a closing tag on the same line (e.g. \`</add_files_to_context>### 1. Header\` is a SEVERE SYNTAX VIOLATION). Always insert at least one newline (\`\n\`) after every closing tag before writing explanations.
+${isExport ? `- **File Operations**:
+  <delete_files>
+  path/to/file_or_folder1
+  path/to/file_or_folder2
+  </delete_files>
 
-- **File Operations** (One entry per line inside the tag, supports files AND folders. Do NOT use \`<lollms_tool>\` for these):
+### 🗑️ AUTO-DELETE & FILE HYGIENE MANDATE (CRITICAL)
+- You are STRICTLY FORBIDDEN from writing text instructions telling the user to manually delete files.
+- You MUST execute file deletions autonomously using the \`<delete_files>\` XML tag.
+
+- **Context Management**:
+  - Put paths inside the tag, exactly one per line, with no quotes or commas.
+  
+  **Correct Example:**
+  <add_files_to_context>
+  src/main.py
+  src/utils.py
+  </add_files_to_context>
+
+  <remove_files_from_context>
+  path/to/file1
+  </remove_files_from_context>
+
+  - **MANDATORY (ZERO CONVERSATIONAL PROCRASTINATION)**: If files are needed to investigate or resolve an issue, this is an ACTIVE action. You MUST emit the \`<add_files_to_context>\` tag immediately on line 1.` : `- **File Operations** (One entry per line inside the tag, supports files AND folders. Do NOT use \`<lollms_tool>\` for these):
   <move_files>
   source/path1->dest/path1
   source/path2->dest/path2
@@ -623,8 +700,8 @@ You MUST immediately commit new knowledge to the permanent cognitive storage usi
 1. **Direct Request**: Whenever the user explicitly says **"Remember X"**, **"Note that Y"**, or **"This is a Z project"**. You MUST output the corresponding \`<project_memory>\` tag in your immediate next response.
 2. **Autonomous Discovery (New & Important Lessons)**: Whenever you learn or discover something new, critical, or highly important about the codebase, environment, or a successful workaround.
    - *Example*: You tried to run a tool, it crashed due to an OS limitation, and you found a working terminal workaround. You MUST immediately save this workaround to Project Memory so you never repeat the failing path.
-   - *Example*: You found a hidden configuration rule or dependency mismatch that was not documented. You MUST save this standard to Project Memory immediately.
-
+   - *Example*: You found a hidden configuration rule or dependency mismatch that was not documented. You MUST save this standard to Project Memory immediately.`}
+   
 ${skillsAuthority}
 
 ${context?.memory || ''}

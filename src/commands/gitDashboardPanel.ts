@@ -249,12 +249,7 @@ export class GitDashboardPanel {
                         vscode.window.showInformationMessage(`Checked out ${msg.ref}`);
                         break;
                     case 'mergeRef':
-                        const confirmMerge = await vscode.window.showWarningMessage(`Merge ${msg.ref} into current branch?`, { modal: true }, "Merge");
-                        if (confirmMerge === "Merge") {
-                            const output = await this._git.mergeBranch(folder, msg.ref);
-                            await this.refresh();
-                            vscode.window.showInformationMessage(`Merged ${msg.ref}:\n${output}`);
-                        }
+                        await this.handleMergeRef(folder, msg.ref);
                         break;
                     case 'rebaseRef':
                         const confirmRebase = await vscode.window.showWarningMessage(`Rebase current branch onto ${msg.ref}? This will rewrite history.`, { modal: true }, "Rebase");
@@ -426,6 +421,101 @@ export class GitDashboardPanel {
                 vscode.window.showErrorMessage(e.message); 
             }
         }, null, this._disposables);
+    }
+
+    private async handleMergeRef(folder: vscode.WorkspaceFolder, sourceBranch: string) {
+        try {
+            const currentBranch = await this._git.getCurrentBranch(folder);
+            if (!currentBranch) {
+                vscode.window.showErrorMessage("Could not detect active Git branch.");
+                return;
+            }
+
+            if (currentBranch === sourceBranch) {
+                vscode.window.showInformationMessage(`Cannot merge branch '${sourceBranch}' into itself.`);
+                return;
+            }
+
+            // 1. Check for uncommitted changes and provide recovery
+            const isClean = await this._git.isClean(folder);
+            let stashed = false;
+
+            if (!isClean) {
+                const choice = await vscode.window.showWarningMessage(
+                    `You have uncommitted changes on '${currentBranch}'. How would you like to handle them before merging '${sourceBranch}'?`,
+                    { modal: true },
+                    "📦 Stash & Merge",
+                    "💾 Commit & Merge",
+                    "Cancel"
+                );
+
+                if (!choice || choice === "Cancel") return;
+
+                if (choice === "📦 Stash & Merge") {
+                    await this._git.stash(folder, `Auto-stash before merging ${sourceBranch}`);
+                    stashed = true;
+                } else if (choice === "💾 Commit & Merge") {
+                    const msg = await this._git.generateCommitMessage(folder);
+                    const finalMsg = await vscode.window.showInputBox({
+                        prompt: "Commit message for uncommitted changes",
+                        value: msg || `chore: save changes before merging ${sourceBranch}`
+                    });
+                    if (!finalMsg) return;
+                    await this._git.commitWithMessage(finalMsg, folder);
+                }
+            }
+
+            // 2. Execute the merge
+            const confirm = await vscode.window.showInformationMessage(
+                `Merge branch '${sourceBranch}' into active branch '${currentBranch}'?`,
+                { modal: true },
+                "Merge"
+            );
+
+            if (confirm !== "Merge") {
+                if (stashed) {
+                    await this._git.stashPop(folder).catch(() => {});
+                }
+                return;
+            }
+
+            const output = await this._git.mergeBranch(folder, sourceBranch);
+
+            if (stashed) {
+                await this._git.stashPop(folder).catch(() => {
+                    vscode.window.showWarningMessage("Merge completed, but unstashing changes produced conflicts. Check git stash.");
+                });
+            }
+
+            await this.refresh();
+
+            if (output.includes("Already up to date")) {
+                vscode.window.showInformationMessage(`Branch '${sourceBranch}' is already up to date with '${currentBranch}'.`);
+            } else {
+                vscode.window.showInformationMessage(`✅ Successfully merged '${sourceBranch}' into '${currentBranch}'.`);
+            }
+
+            // 3. Optional cleanup for AI task branches
+            if (sourceBranch.startsWith('ai-task-') || sourceBranch.startsWith('debug/')) {
+                const deleteChoice = await vscode.window.showInformationMessage(
+                    `Delete temporary feature branch '${sourceBranch}'?`,
+                    "Delete Branch",
+                    "Keep Branch"
+                );
+                if (deleteChoice === "Delete Branch") {
+                    await this._git.deleteBranch(folder, sourceBranch);
+                    await this.refresh();
+                    vscode.window.showInformationMessage(`Deleted branch '${sourceBranch}'.`);
+                }
+            }
+        } catch (e: any) {
+            await this.refresh();
+            if (e.message && e.message.includes("Merge Conflict")) {
+                vscode.window.showErrorMessage(`Merge Conflict: Merge is in progress with conflicts. Resolve conflicts in files and commit.`);
+            } else {
+                vscode.window.showErrorMessage(`Merge failed: ${e.message}`);
+            }
+        }
     }
 
     public dispose() {

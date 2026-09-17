@@ -27,12 +27,12 @@ export function renderAgentMessage(messageId: string, rawContent: any, isFinal: 
         // Header Metadata with Agentic Style
         const header = document.createElement('div');
         header.className = 'message-header';
-        const personaLabel = wrapper.dataset.personalityName || 'Autonomous Agent';
+        const personaLabel = wrapper.dataset.personalityName || 'Lead Orchestrator';
 
         const roleSpan = document.createElement('span');
         roleSpan.className = 'role-name';
-        roleSpan.style.cssText = 'color: var(--vscode-charts-red); font-weight: 800; letter-spacing: 0.5px;';
-        roleSpan.textContent = `🤖 ${personaLabel} (Agent Mission)`;
+        roleSpan.style.cssText = 'color: var(--vscode-charts-orange); font-weight: 800; letter-spacing: 0.5px;';
+        roleSpan.textContent = `🏛️ ${personaLabel} (Tier 1: Orchestrator)`;
         header.appendChild(roleSpan);
         bodyDiv.appendChild(header);
 
@@ -58,8 +58,7 @@ export function renderAgentMessage(messageId: string, rawContent: any, isFinal: 
     const textContent = typeof rawContent === 'string' ? rawContent : '';
     
     // Check if the message content contains structured agentic task tags
-    const containsAgentTask = textContent.includes('<agent_task') || textContent.includes('<builder_report') || textContent.includes('<milestone');
-
+    const containsAgentTask = textContent.includes('<agent_task') || textContent.includes('<builder_report') || textContent.includes('<milestone') || textContent.includes('### [🔍 Scout Worker]') || textContent.includes('### [🛠️ Coder Worker]') || textContent.includes('### [🧪 Test Worker]') || textContent.includes('### [🛡️ Audit Worker]');
     if (containsAgentTask) {
         // Render as structured progress cards matching the plan/timeline styles
         let processedHtml = textContent;

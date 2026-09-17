@@ -21,6 +21,10 @@ export interface Discussion {
     selectedFolders?: string[]; // URIs of selected workspace folders
     activeDiagrams?: string[]; // e.g., ['class_diagram', 'call_graph']
     importedTools?: string[]; // List of tool names explicitly added to context
+    mutedFiles?: string[]; // List of file paths deactivated specifically for this discussion
+    mutedTools?: string[]; // List of tool names deactivated specifically for this discussion
+    mutedSkills?: string[]; // List of skill IDs deactivated specifically for this discussion
+    mutedDiagrams?: string[]; // List of diagram types deactivated specifically for this discussion
     appliedState?: Record<string, Record<number, number[]>>;
     discussion_data_zone?: string;
     lastTokenMetrics?: {
@@ -96,9 +100,14 @@ export class DiscussionManager {
     public getDefaultCapabilities(): DiscussionCapabilities {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const defaultProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
-        const globalPreferences = config.get<string>('userPreferences') || config.get<string>('userInfo.codingStyle') || '';
+        const defaultPrefProfileId = config.get<string>('defaultUserPreferenceProfileId') || 'clean_craftsman';
+        const { getUserPreferenceProfiles } = require('./registries/profiles');
+        const prefProfiles = getUserPreferenceProfiles(config);
+        const matchedProfile = prefProfiles.find((p: any) => p.id === defaultPrefProfileId) || prefProfiles[0];
+        const globalPreferences = config.get<string>('userPreferences') || matchedProfile?.preferences || config.get<string>('userInfo.codingStyle') || '';
 
         return {
+            userPreferenceProfileId: defaultPrefProfileId,
             userPreferences: globalPreferences,
             workerType: 'discussion',
             responseProfileId: defaultProfileId,
@@ -153,6 +162,7 @@ export class DiscussionManager {
             ttftTimeout: 0,
             interTokenTimeout: 0,
             contextGovernorThreshold: config.get<number>('contextGovernorThreshold') ?? 95,
+            contextGovernorCropHistory: config.get<boolean>('contextGovernorCropHistory') ?? true,
             contextAggression: 'respect',
             tokenEconomyMode: false,
             disableProjectContext: false,
@@ -230,7 +240,11 @@ export class DiscussionManager {
             plan: null,
             capabilities: caps,
             personalityId: activePersonality,
-            importedSkills:[]
+            importedSkills: [],
+            mutedFiles: [],
+            mutedTools: [],
+            mutedSkills: [],
+            mutedDiagrams: []
         };
     }
 
@@ -276,8 +290,12 @@ export class DiscussionManager {
             // Migration: Ensure mandatory arrays exist
                 if (!data.messages) data.messages =[];
                 if (!data.importedSkills) data.importedSkills =[];
+                if (!data.mutedFiles) data.mutedFiles = [];
+                if (!data.mutedTools) data.mutedTools = [];
+                if (!data.mutedSkills) data.mutedSkills = [];
+                if (!data.mutedDiagrams) data.mutedDiagrams = [];
                 if (!data.capabilities) data.capabilities = this.getLastCapabilities();
-                
+
                 return data;
         } catch (error) { 
             // Skip to next folder if not found

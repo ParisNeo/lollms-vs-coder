@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsServices } from '../lollmsContext';
-import { applyDiff, applySearchReplace, stripThinkingTags, normalizeAiderContent, parseAiderHunks } from '../utils';
+import { applyDiff, applySearchReplace, stripThinkingTags, normalizeAiderContent, parseAiderHunks, parseFileTagAttributes } from '../utils';
 import { normalizeToDocument } from '../utils/promptUtils';
 import { Logger } from '../logger';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
@@ -896,11 +896,11 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             let fMatch;
             while ((fMatch = fileXmlRegex.exec(messageText)) !== null) {
                 const attrStr = fMatch[1];
-                const pMatch = attrStr.match(/path=["']([^"']+)["']/i);
+                const fileAttrs = parseFileTagAttributes(attrStr, fMatch[2]);
                 extractedBlocks.push({
                     content: fMatch[2].trim(),
                     fullMatch: fMatch[0],
-                    path: pMatch ? pMatch[1].trim() : undefined
+                    path: fileAttrs?.path
                 });
             }
 

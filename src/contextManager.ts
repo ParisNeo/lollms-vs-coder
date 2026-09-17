@@ -81,6 +81,7 @@ private _cachedTreeString: string | null = null;
   private _cachedIsolatedTrees = new Map<string, string>(); // Caches the rendered tree per workspace folder
   private _cachedVisibleFiles: string[] | null = null;
   private _recentlyAddedFiles: Map<string, number> = new Map();
+  private _unpackedDirectories: Set<string> = new Set();
   private static PROJECT_TOOLS_KEY = 'lollms_project_active_tools';
 
   constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
@@ -98,9 +99,9 @@ private _cachedTreeString: string | null = null;
     }
   }
 
-  public isRecentlyAdded(filePath: string, windowMs: number = 10 * 60 * 1000): boolean {
+  public isRecentlyAdded(filePath: string, windowMs: number = 30 * 60 * 1000): boolean {
     if (!filePath) return false;
-    const normalized = this.normalize(filePath).trim().replace(/^\.?\/+/, '');
+    const normalized = this.normalize(filePath).trim().replace(/^\.?\/+/, '').toLowerCase();
     const now = Date.now();
 
     // Prune stale entries
@@ -112,7 +113,8 @@ private _cachedTreeString: string | null = null;
 
     for (const [key, time] of this._recentlyAddedFiles.entries()) {
       if (now - time <= windowMs) {
-        if (key === normalized || key.endsWith('/' + normalized) || normalized.endsWith('/' + key)) {
+        const cleanK = key.toLowerCase();
+        if (cleanK === normalized || cleanK.endsWith('/' + normalized) || normalized.endsWith('/' + cleanK) || path.basename(cleanK) === path.basename(normalized)) {
           return true;
         }
       }
@@ -204,7 +206,106 @@ private _cachedTreeString: string | null = null;
     this._isTreeDirty = true;
     this._fileTreeObject = null;
     this._cachedVisibleFiles = null;
+    this._unpackedDirectories.clear();
     this._fileContentCache?.clear();
+  }
+
+  public async unpackDirectory(dirPath: string): Promise<{ success: boolean; message: string; files?: string[] }> {
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (folders.length === 0) {
+      return { success: false, message: "No workspace open." };
+    }
+
+    const clean = dirPath.replace(/\\/g, '/').replace(/^\.?\//, '').replace(/\/+$/, '').trim();
+    if (!clean) {
+      return { success: false, message: "Empty directory path provided." };
+    }
+
+    const resolution = await this.resolveWorkspaceFromPath(clean);
+    let targetUri: vscode.Uri | null = null;
+    let effectiveRelPath = clean;
+    let baseFolder: vscode.WorkspaceFolder | undefined = undefined;
+
+    if (resolution) {
+      targetUri = resolution.uri;
+      effectiveRelPath = resolution.relativePath;
+      baseFolder = resolution.folder;
+    } else {
+      for (const f of folders) {
+        const candidate = vscode.Uri.joinPath(f.uri, clean);
+        try {
+          const st = await vscode.workspace.fs.stat(candidate);
+          if (st.type === vscode.FileType.Directory) {
+            targetUri = candidate;
+            effectiveRelPath = clean;
+            baseFolder = f;
+            break;
+          }
+        } catch {}
+      }
+    }
+
+    if (!targetUri) {
+      return {
+        success: false,
+        message: `❌ DIRECTORY NOT FOUND: "${dirPath}" does not exist on disk. Check the '### 🌳 FILE STRUCTURE' manifest for exact paths.`
+      };
+    }
+
+    try {
+      const stat = await vscode.workspace.fs.stat(targetUri);
+      if (stat.type !== vscode.FileType.Directory) {
+        return { success: false, message: `❌ NOT A DIRECTORY: "${dirPath}" is a file, not a directory.` };
+      }
+
+      this._unpackedDirectories.add(effectiveRelPath);
+      if (baseFolder) {
+        this._unpackedDirectories.add(`${baseFolder.name}/${effectiveRelPath}`);
+      }
+
+      const entries = await vscode.workspace.fs.readDirectory(targetUri);
+      const filesFound = entries.map(([name, type]) => `${name}${type === vscode.FileType.Directory ? '/' : ''}`);
+
+      this.clearRenderedTreeCache();
+
+      return {
+        success: true,
+        message: `✅ Directory unrolled (${filesFound.length} entries): [${filesFound.join(', ')}]`,
+        files: filesFound
+      };
+    } catch (err: any) {
+      return { success: false, message: `Failed to unpack directory "${dirPath}": ${err.message}` };
+    }
+  }
+
+  public isDirectoryUnpacked(dirPath: string): boolean {
+    const clean = dirPath.replace(/\\/g, '/').replace(/^\.?\//, '').replace(/\/+$/, '').trim();
+    return this._unpackedDirectories.has(clean);
+  }
+
+  public clearUnpackedDirectories(): void {
+    this._unpackedDirectories.clear();
+    this.clearRenderedTreeCache();
+  }
+
+  public async peekFiles(filePaths: string[]): Promise<{ path: string; content: string; error?: string }[]> {
+    const results: { path: string; content: string; error?: string }[] = [];
+    for (const p of filePaths) {
+      const clean = p.replace(/\\/g, '/').replace(/^\.?\//, '').trim();
+      const resolution = await this.resolveWorkspaceFromPath(clean);
+      if (!resolution) {
+        results.push({ path: clean, content: "", error: "File not found on disk." });
+        continue;
+      }
+      try {
+        const bytes = await vscode.workspace.fs.readFile(resolution.uri);
+        const text = Buffer.from(bytes).toString('utf8');
+        results.push({ path: clean, content: text });
+      } catch (err: any) {
+        results.push({ path: clean, content: "", error: err.message });
+      }
+    }
+    return results;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -218,6 +319,68 @@ private _cachedTreeString: string | null = null;
   }
   public async setGlobalBriefing(content: string) {
     await this.context.workspaceState.update('lollms_global_briefing', content);
+  }
+
+  public async updateMissionBriefing(
+    content: string,
+    action: 'write' | 'patch' = 'write',
+    scope: 'global' | 'local' = 'global',
+    discussion?: any
+  ): Promise<string> {
+    const isGlobal = scope === 'global' || !discussion;
+    let currentText = isGlobal ? this.getGlobalBriefing() : "";
+    if (!isGlobal && discussion) {
+      if (discussion.discussion_data_zone) {
+        try {
+          const parsed = JSON.parse(discussion.discussion_data_zone);
+          currentText = parsed.user_constraints || discussion.discussion_data_zone;
+        } catch {
+          currentText = discussion.discussion_data_zone;
+        }
+      }
+    }
+
+    const { normalizeAiderContent, parseAiderHunks, applySearchReplace } = require('./utils');
+    let updatedText = "";
+
+    if (action === 'patch') {
+      const normalizedAider = normalizeAiderContent(content);
+      const hunks = parseAiderHunks(normalizedAider);
+      if (hunks.length > 0) {
+        updatedText = currentText;
+        for (const hunk of hunks) {
+          const res = applySearchReplace(updatedText, hunk.searchPart, hunk.replacePart);
+          if (res.success) {
+            updatedText = res.result;
+          }
+        }
+      } else {
+        updatedText = currentText ? `${currentText.trim()}\n\n${content.trim()}` : content.trim();
+      }
+    } else {
+      updatedText = content.trim();
+    }
+
+    if (isGlobal) {
+      await this.setGlobalBriefing(updatedText);
+    }
+
+    if (discussion) {
+      let parsed: any = {};
+      if (discussion.discussion_data_zone) {
+        try {
+          parsed = JSON.parse(discussion.discussion_data_zone);
+        } catch {
+          parsed = { legacy: discussion.discussion_data_zone };
+        }
+      }
+      if (!isGlobal) {
+        parsed.user_constraints = updatedText;
+      }
+      discussion.discussion_data_zone = JSON.stringify(parsed, null, 2);
+    }
+
+    return updatedText;
   }
 
   public setContextStateProvider(provider: ContextStateProvider | undefined) {
@@ -529,13 +692,22 @@ private _cachedTreeString: string | null = null;
         const parts = normalizedPath.split('/').filter(p => p.length > 0 && p !== '.' && p !== '..');
         if (parts.length === 0) return;
 
-        let current: any = projectTreeObj;
+        let current = projectTreeObj;
         let checkUri = folder.uri;
+
+        const { isDangerousOrBlocked } = require('./commands/contextStateProvider');
+        if (isDangerousOrBlocked(relPath)) {
+            return;
+        }
 
         for (let i = 0; i < parts.length; i++) {
           const part = parts[i];
           const isLast = i === parts.length - 1;
           checkUri = vscode.Uri.joinPath(checkUri, part);
+
+          if (isDangerousOrBlocked(part)) {
+            return;
+          }
 
           const state = this.contextStateProvider?.getStateForUri(checkUri);
           if (this.contextStateProvider?.isStrictlyIgnored(checkUri) || state === 'fully-excluded') {
@@ -768,6 +940,9 @@ private _cachedTreeString: string | null = null;
     activeDiagramIds?: string[],
     modelName?: string,
     allowRLM?: boolean,
+    mutedFiles?: string[],
+    mutedSkills?: string[],
+    mutedDiagrams?: string[],
     onProgress?: (pct: number) => void,
     onLoadProgress?: (progress: { current: number, total: number, percentage: number, fileName: string }) => void,
     onScanProgress?: (pct: number, status: string) => void,
@@ -789,6 +964,7 @@ private _cachedTreeString: string | null = null;
     activeDiagramIds?: string[],
     modelName?: string,
     allowRLM?: boolean,
+    mutedFiles?: string[],
     onProgress?: (pct: number) => void,
     onLoadProgress?: (progress: { current: number, total: number, percentage: number, fileName: string }) => void,
     onScanProgress?: (pct: number, status: string) => void,
@@ -801,6 +977,9 @@ private _cachedTreeString: string | null = null;
     };
 
     const signal = options?.signal;
+    const mutedFiles = options?.mutedFiles || (options?.capabilities as any)?.mutedFiles || [];
+    const mutedSkills = options?.mutedSkills || (options?.capabilities as any)?.mutedSkills || [];
+    const mutedDiagrams = options?.mutedDiagrams || (options?.capabilities as any)?.mutedDiagrams || [];
     const enableVision = options?.capabilities?.enableImages !== false;
     const includeTree = options?.includeTree !== false;
     const folderSettings = options?.capabilities?.folderSettings || {};
@@ -885,6 +1064,9 @@ private _cachedTreeString: string | null = null;
       for (const skill of skills) {
         if (allSkillIds.includes(skill.id)) {
           result.importedSkills.push(skill);
+          if (mutedSkills.includes(skill.id)) {
+            continue; // Muted for this discussion
+          }
           const scopeLabel = skill.scope === 'global' ? 'GLOBAL' : 'PROJECT';
           const cleanName = skill.name.replace(/SOURCE OF TRUTH:\s*/gi, '').trim();
           result.skillsContent += `\n#### 💎 SOURCE OF TRUTH: ${cleanName.toUpperCase()} (${scopeLabel} SKILL)\n`;
@@ -905,7 +1087,9 @@ private _cachedTreeString: string | null = null;
       result.diagrams = [];
       for (const diagType of activeDiagramIds) {
         if (diagType === 'text_summary') {
-          result.text += `\n### PROJECT ARCHITECTURE SUMMARY\n\`\`\`yaml\n${this.codeGraphManager.generateTextSummary()}\n\`\`\`\n\n`;
+          if (!mutedDiagrams.includes(diagType)) {
+            result.text += `\n### PROJECT ARCHITECTURE SUMMARY\n\`\`\`yaml\n${this.codeGraphManager.generateTextSummary()}\n\`\`\`\n\n`;
+          }
         } else {
           result.diagrams.push({ type: diagType, mermaid: this.codeGraphManager.generateMermaid(diagType) });
         }
@@ -1019,6 +1203,21 @@ private _cachedTreeString: string | null = null;
           // Stat check to ensure file exists and verify cache validity against disk metadata
           const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
           if (!stat || stat.type !== vscode.FileType.File) continue;
+
+          const isMuted = mutedFiles.some((m: string) => {
+            const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+            const cleanH = headerPath.toLowerCase().trim();
+            const cleanR = relativePath.toLowerCase().trim();
+            return cleanM === cleanH || cleanM === cleanR || 
+                   cleanH.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanH) ||
+                   cleanR.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanR);
+          });
+
+          if (isMuted) {
+            projectContentBuffer += `### 📄 \`${headerPath}\` [MUTED FOR THIS DISCUSSION]\n> Content deactivated for this discussion by manual governor. Reactivate from HUD when needed.\n\n`;
+            filesInThisFolderCount++;
+            continue;
+          }
 
           const cached = this._fileContentCache.get(cacheKey);
 

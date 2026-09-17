@@ -17,6 +17,14 @@ export interface GitCommit {
     date: string;
 }
 
+export interface GitFileVersionCommit {
+    hash: string;
+    message: string;
+    author: string;
+    date: string;
+    refs?: string;
+}
+
 export interface GitSearchOptions {
     message?: string;
     author?: string;
@@ -260,15 +268,15 @@ export class GitIntegration {
           if (currentBranch === sourceBranch) {
               throw new Error(`Cannot merge branch into itself (already on ${currentBranch}).`);
           }
-          await execAsync(`git fetch origin`, { cwd: folder.uri.fsPath, timeout: 30000 }).catch(() => {});
-          const { stdout } = await execAsync(`git merge "${sourceBranch}"`, { cwd: folder.uri.fsPath });
-          await vscode.commands.executeCommand('git.refresh');
+          const { stdout } = await execAsync(`git merge "${sourceBranch}"`, { cwd: folder.uri.fsPath, timeout: 30000 });
+          await vscode.commands.executeCommand('git.refresh').then(undefined, () => {});
           return stdout;
       } catch (e: any) {
-          if (e.stdout && e.stdout.includes("CONFLICT")) {
-              throw new Error(`Merge Conflict: Please resolve manually in the editor.`);
+          const combinedOutput = `${e.stdout || ''}\n${e.stderr || ''}\n${e.message || ''}`;
+          if (combinedOutput.includes("CONFLICT") || combinedOutput.includes("Automatic merge failed")) {
+              throw new Error(`Merge Conflict: Automatic merge failed. Conflicts have been marked in your files.`);
           }
-          throw new Error(`Merge failed: ${e.message}`);
+          throw new Error(e.stderr || e.stdout || e.message || "Merge failed.");
       }
   }
 
@@ -303,6 +311,201 @@ export class GitIntegration {
       } catch (error) {
           console.error(`Failed to fetch history for ${filePath}:`, error);
           return [];
+      }
+  }
+
+  /**
+   * Retrieves full commit history for a file across ALL local and remote branches.
+   * Merges `git log --all` with `git log --follow` to capture multi-branch and renamed commits reliably.
+   */
+  public async getFileHistoryAllBranches(folder: vscode.WorkspaceFolder, filePath: string, count: number = 250): Promise<GitFileVersionCommit[]> {
+      const normalizedPath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+      const commitsMap = new Map<string, GitFileVersionCommit>();
+
+      const parseLogOutput = (stdout: string) => {
+          stdout.split('\n').filter(line => line.trim()).forEach(line => {
+              const parts = line.split('|');
+              if (parts.length >= 5) {
+                  const hash = parts[0].trim();
+                  if (!commitsMap.has(hash)) {
+                      const message = parts[1] || '';
+                      const author = parts[2] || '';
+                      const date = parts[3] || '';
+                      const relDate = parts[4] || '';
+                      const refs = parts[5] ? parts[5].trim() : undefined;
+                      commitsMap.set(hash, {
+                          hash,
+                          message,
+                          author,
+                          date: `${date} (${relDate})`,
+                          refs: refs || undefined
+                      });
+                  }
+              }
+          });
+      };
+
+      // Query 1: All branches across the entire repository (using %x09 Tab delimiter to prevent cmd.exe pipe collisions)
+      try {
+          const { stdout: allOut } = await execAsync(
+              `git --no-pager log --all --pretty=format:"%H%x09%s%x09%an%x09%ad%x09%ar%x09%d" --date=short -n ${count} -- "${normalizedPath}"`,
+              { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 15000 }
+          );
+          allOut.split('\n').filter(line => line.trim()).forEach(line => {
+              const parts = line.split('\t');
+              if (parts.length >= 5) {
+                  const hash = parts[0].trim();
+                  if (!commitsMap.has(hash)) {
+                      commitsMap.set(hash, {
+                          hash,
+                          message: parts[1] || '',
+                          author: parts[2] || '',
+                          date: `${parts[3]} (${parts[4]})`,
+                          refs: parts[5] ? parts[5].trim() : undefined
+                      });
+                  }
+              }
+          });
+      } catch (e: any) {
+          console.warn("[GitHistory] git log --all warning:", e.message);
+      }
+
+      // Query 2: Follow renames along active history
+      try {
+          const { stdout: followOut } = await execAsync(
+              `git --no-pager log --follow --pretty=format:"%H%x09%s%x09%an%x09%ad%x09%ar%x09%d" --date=short -n ${count} -- "${normalizedPath}"`,
+              { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 15000 }
+          );
+          followOut.split('\n').filter(line => line.trim()).forEach(line => {
+              const parts = line.split('\t');
+              if (parts.length >= 5) {
+                  const hash = parts[0].trim();
+                  if (!commitsMap.has(hash)) {
+                      commitsMap.set(hash, {
+                          hash,
+                          message: parts[1] || '',
+                          author: parts[2] || '',
+                          date: `${parts[3]} (${parts[4]})`,
+                          refs: parts[5] ? parts[5].trim() : undefined
+                      });
+                  }
+              }
+          });
+      } catch (e: any) {
+          console.warn("[GitHistory] git log --follow warning:", e.message);
+      }
+
+      // Fallback: Standard history if both above were empty
+      if (commitsMap.size === 0) {
+          try {
+              const { stdout: stdOut } = await execAsync(
+                  `git --no-pager log --pretty=format:"%H%x09%s%x09%an%x09%ad%x09%ar%x09%d" --date=short -n ${count} -- "${normalizedPath}"`,
+                  { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 15000 }
+              );
+              stdOut.split('\n').filter(line => line.trim()).forEach(line => {
+                  const parts = line.split('\t');
+                  if (parts.length >= 5) {
+                      const hash = parts[0].trim();
+                      if (!commitsMap.has(hash)) {
+                          commitsMap.set(hash, {
+                              hash,
+                              message: parts[1] || '',
+                              author: parts[2] || '',
+                              date: `${parts[3]} (${parts[4]})`,
+                              refs: parts[5] ? parts[5].trim() : undefined
+                          });
+                      }
+                  }
+              });
+          } catch (e) {}
+      }
+
+      return Array.from(commitsMap.values());
+  }
+
+  /**
+   * Retrieves file content at a specific ref/commit, or from the active working tree.
+   */
+  public async getFileContentAtRef(folder: vscode.WorkspaceFolder, ref: string, filePath: string): Promise<string> {
+      const normalizedPath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+
+      if (ref === 'WORKING_TREE' || ref === 'HEAD_WORKING') {
+          const fileUri = vscode.Uri.joinPath(folder.uri, normalizedPath);
+          try {
+              const bytes = await vscode.workspace.fs.readFile(fileUri);
+              return Buffer.from(bytes).toString('utf8');
+          } catch (e: any) {
+              return `(File does not exist on disk: ${e.message})`;
+          }
+      }
+
+      try {
+          const { stdout } = await execAsync(`git --no-pager show "${ref}:${normalizedPath}"`, {
+              cwd: folder.uri.fsPath,
+              maxBuffer: MAX_BUFFER_SIZE,
+              timeout: 15000
+          });
+          return stdout;
+      } catch (e: any) {
+          // Fallback: File was renamed or moved; locate blob by filename
+          try {
+              const baseName = path.basename(normalizedPath);
+              const { stdout: treeOut } = await execAsync(`git --no-pager ls-tree -r "${ref}"`, {
+                  cwd: folder.uri.fsPath,
+                  maxBuffer: MAX_BUFFER_SIZE,
+                  timeout: 10000
+              });
+              const lines = treeOut.split('\n');
+              const matchedLine = lines.find(l => l.endsWith(`/${baseName}`) || l.endsWith(`\t${baseName}`));
+              if (matchedLine) {
+                  const blobMatch = matchedLine.match(/blob\s+([a-f0-9]+)\s+/);
+                  if (blobMatch) {
+                      const { stdout: catOut } = await execAsync(`git --no-pager cat-file -p ${blobMatch[1]}`, {
+                          cwd: folder.uri.fsPath,
+                          maxBuffer: MAX_BUFFER_SIZE,
+                          timeout: 10000
+                      });
+                      return catOut;
+                  }
+              }
+          } catch {}
+          return `(Content unavailable at commit ${ref.substring(0, 7)})`;
+      }
+  }
+
+  /**
+   * Generates a unified diff between two refs for a specific file.
+   */
+  public async getFileDiffBetweenRefs(folder: vscode.WorkspaceFolder, refA: string, refB: string, filePath: string): Promise<string> {
+      const normalizedPath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+      try {
+          if (refA === 'WORKING_TREE' && refB === 'WORKING_TREE') {
+              return '';
+          }
+          if (refB === 'WORKING_TREE') {
+              const { stdout } = await execAsync(`git --no-pager diff "${refA}" -- "${normalizedPath}"`, {
+                  cwd: folder.uri.fsPath,
+                  maxBuffer: MAX_BUFFER_SIZE,
+                  timeout: 15000
+              });
+              return stdout;
+          }
+          if (refA === 'WORKING_TREE') {
+              const { stdout } = await execAsync(`git --no-pager diff -R "${refB}" -- "${normalizedPath}"`, {
+                  cwd: folder.uri.fsPath,
+                  maxBuffer: MAX_BUFFER_SIZE,
+                  timeout: 15000
+              });
+              return stdout;
+          }
+          const { stdout } = await execAsync(`git --no-pager diff "${refA}" "${refB}" -- "${normalizedPath}"`, {
+              cwd: folder.uri.fsPath,
+              maxBuffer: MAX_BUFFER_SIZE,
+              timeout: 15000
+          });
+          return stdout;
+      } catch (e: any) {
+          return '';
       }
   }
 

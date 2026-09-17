@@ -90,7 +90,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
 
     const memoryManager = new MemoryManager(context.globalStorageUri);
     const contextManager = new ContextManager(context, lollmsAPI);
-    const skillsManager = new SkillsManager(context.globalStorageUri); 
+    const skillsManager = new SkillsManager(context.globalStorageUri, context); 
     const scriptRunner = new ScriptRunner(pythonExtApi);
     const promptManager = new PromptManager(context.globalStorageUri);
     const personalityManager = new PersonalityManager(context.globalStorageUri);
@@ -229,8 +229,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
     // HUD Logic moved to Hover Provider in SelectionDecorator
     context.subscriptions.push(new SelectionDecorator(context.extensionUri));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new DebugCodeLensProvider(debugErrorManager)));
-    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ pattern: '**' }, inlineDiffProvider));
-    context.subscriptions.push(vscode.languages.registerHoverProvider({ pattern: '**' }, new SelectionHoverProvider()));
+    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
+    context.subscriptions.push(vscode.languages.registerHoverProvider({ scheme: 'file' }, new SelectionHoverProvider()));
     context.subscriptions.push(vscode.notebooks.registerNotebookCellStatusBarItemProvider('jupyter-notebook', new LollmsNotebookCellActionProvider()));
     context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(DiffManager.SCHEME, diffManager));
 
@@ -245,16 +245,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
     // --- HIGH-PERFORMANCE ASYNCHRONOUS DEBOUNCE QUEUE ---
     const watcher = vscode.workspace.createFileSystemWatcher('**/*');
 
+    const { isDangerousOrBlocked } = require('./commands/contextStateProvider');
+
     const isIgnored = (uri: vscode.Uri) => {
         const p = uri.fsPath;
-        // Allow .lollms/skills to pass through so we can refresh the library
         if (p.includes(path.join('.lollms', 'skills'))) return false;
-        const segments = p.split(/[\\/]/).map(s => s.toLowerCase());
-        return segments.some(s => [
-            '.lollms', '.git', 'node_modules', 'venv', '.venv', 'env', '.env',
-            'bin', 'obj', 'dist', 'build', 'out', 'target', '__pycache__',
-            'data', 'data_workspace'
-        ].includes(s));
+        return isDangerousOrBlocked(p);
     };
 
     let watcherDebounceTimer: NodeJS.Timeout | undefined;
@@ -272,13 +268,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         const isSparqlActive = caps.sparqlEnabled !== false ? true : false;
 
         for (const [fsPath, type] of events) {
+            if (isDangerousOrBlocked(fsPath)) continue;
             const uri = vscode.Uri.file(fsPath);
             const relPath = vscode.workspace.asRelativePath(uri, false);
 
             if (type === 'change') {
                 contextManager.refreshFileInCache(uri);
 
-                // Incremental Sync only: Update the file cache without rebuilding the entire graph structure
                 if (isSparqlActive && codeGraphManager.getBuildState() === 'ready') {
                     await codeGraphManager.updateFileInGraph(uri);
                 }
@@ -300,9 +296,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
             }
         }
 
-        // Only trigger token recalculation if an active context file changed or file structure was modified
-        const hasRelevantChange = events.some(([fsPath, type]) => {
-            if (type === 'create' || type === 'delete') return true;
+        // Only trigger token recalculation if an actively loaded context file was modified
+        const hasRelevantChange = events.some(([fsPath]) => {
+            if (isDangerousOrBlocked(fsPath)) return false;
             return contextManager.isPathInActiveContext(fsPath);
         });
 
@@ -490,6 +486,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
         const folders = vscode.workspace.workspaceFolders;
         if (!editor || !folders || folders.length <= 1) return;
+        // Never trigger workspace switching for non-file schemes (git diff buffers, lollms-diff, output, etc.)
+        if (editor.document.uri.scheme !== 'file') return;
         const workspace = vscode.workspace.getWorkspaceFolder(editor.document.uri);
         if (workspace && workspace.uri.toString() !== activeWorkspaceFolder?.uri.toString()) {
             switchActiveWorkspace(workspace);

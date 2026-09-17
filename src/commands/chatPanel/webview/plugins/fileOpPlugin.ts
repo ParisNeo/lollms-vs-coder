@@ -1,6 +1,6 @@
 import { TagPlugin, PluginContext } from '../pluginSystem';
 import { state } from '../dom.js';
-import { normalizeAiderContent, parseAiderHunks } from '../utils.js';
+import { normalizeAiderContent, parseAiderHunks, parseFileTagAttributes } from '../utils.js';
 
 function renderDiffLines(lines: string[], type: 'added' | 'removed' | 'unchanged'): string {
     return lines.map(line => {
@@ -108,18 +108,18 @@ export const fileMutationPlugin: TagPlugin = {
             rawContent = rawContent.replace(/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s, '$1').trim();
         }
 
-        const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
-        if (!pathMatch) return null;
+        const fileAttrs = parseFileTagAttributes(attrStr, rawContent);
+        if (!fileAttrs || !fileAttrs.path) return null;
 
-        const filePath = pathMatch[1].trim();
-        const actionMatch = attrStr.match(/action=["']([^"']+)["']/i);
-        const symbolMatch = attrStr.match(/symbol=["']([^"']+)["']/i);
+        const filePath = fileAttrs.path;
+        const action = fileAttrs.action;
+        const symbol = fileAttrs.symbol || "";
 
-        const action = (actionMatch ? actionMatch[1] : (rawContent.includes('<<<<<<< SEARCH') ? 'patch' : 'write')).toLowerCase();
-        const symbol = symbolMatch ? symbolMatch[1].trim() : "";
+        
 
         const isPatch = action === 'patch' || rawContent.includes('<<<<<<< SEARCH');
-        const blockId = `file-op-block-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        const blockIdx = context.blockIndex !== undefined ? context.blockIndex : 0;
+        const blockId = `file-mutation-${context.messageId}-${blockIdx}`;
         const actionLabel = isPatch ? 'SURGICAL PATCH' : (symbol ? `SYMBOL: ${symbol}` : 'WRITE FILE');
         const actionIcon = isPatch ? 'codicon-diff-modified' : (symbol ? 'codicon-symbol-method' : 'codicon-file-code');
 
@@ -127,7 +127,6 @@ export const fileMutationPlugin: TagPlugin = {
         const isStreaming = !context.isFinal && !match[0].includes('</file>');
 
         // Check persisted state
-        const blockIdx = context.blockIndex !== undefined ? context.blockIndex : 0;
         const activeState = state?.appliedState ? state : (window as any).state;
         const appliedHunks = activeState?.appliedState?.[context.messageId]?.[blockIdx] || [];
         const isApplied = appliedHunks.includes(-1);
@@ -177,6 +176,8 @@ export const fileMutationPlugin: TagPlugin = {
                                     <div style="font-size: 10px; opacity:0.7;">Hunk ${hIdx + 1} of ${hunks.length}</div>
                                     <div class="aider-hunk-actions">
                                         <button class="code-action-btn delete-btn undo-hunk-btn" style="display: ${isHunkApplied ? 'inline-flex' : 'none'};" data-hunk-index="${hIdx}" title="Undo this hunk"><i class="codicon codicon-discard"></i> Undo</button>
+                                        <button class="code-action-btn secondary-btn raw-hunk-btn" data-hunk-index="${hIdx}" title="Open Raw Stitching view for this hunk"><i class="codicon codicon-tools"></i> Raw</button>
+                                        <button class="code-action-btn apply-btn hunk-fix-ai-btn" data-hunk-index="${hIdx}" style="background-color: var(--vscode-charts-purple) !important; color: white !important;" title="Ask AI to repair this specific hunk"><i class="codicon codicon-sparkle"></i> Fix Hunk</button>
                                         <button class="code-action-btn apply-btn apply-hunk-btn ${isHunkApplied ? 'applied' : ''}" data-hunk-index="${hIdx}" title="Apply this hunk"><i class="codicon ${isHunkApplied ? 'codicon-check' : 'codicon-arrow-swap'}"></i> Apply Hunk</button>
                                     </div>
                                 </div>
@@ -244,7 +245,7 @@ export const fileMutationPlugin: TagPlugin = {
                         <i class="codicon ${actionIcon}"></i> ${filePath}${symbol ? ` (${symbol})` : ''}
                     </span>
                     <span class="mode-badge active" style="font-size: 9px; padding: 1px 6px; margin-left: 6px;">${actionLabel}</span>
-                    ${isStreaming ? '<span class="status-label-inline" style="font-size:10px; color:var(--vscode-charts-blue); margin-left:8px;"><i class="codicon codicon-sync spin"></i> Streaming...</span>' : ''}
+                    ${isStreaming ? '<span class="file-stream-indicator" style="display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--vscode-charts-blue); font-weight: bold; margin-left: 6px;"><i class="codicon codicon-sync spin"></i> Streaming...</span>' : ''}
                     <button class="code-action-btn goto-file-btn" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto: Open this file">Goto</button>
                 </div>
                 <div class="code-actions">
@@ -301,6 +302,37 @@ export const fileMutationPlugin: TagPlugin = {
                         hunkIndex: hIdx,
                         blockId: card.id,
                         options: { silent: false, autoSave: false, blockId: card.id, blockIndex: blockIndex, hunkIndex: hIdx }
+                    });
+                };
+            });
+
+            // Individual Hunk Fix with AI buttons directly inside the hunk pane
+            card.querySelectorAll('.hunk-fix-ai-btn').forEach((fixBtn: HTMLElement) => {
+                fixBtn.onclick = (e: MouseEvent) => {
+                    e.stopPropagation();
+                    const hIdx = parseInt((fixBtn as HTMLElement).dataset.hunkIndex || "0", 10);
+                    (fixBtn as HTMLButtonElement).disabled = true;
+                    fixBtn.innerHTML = '<div class="spinner"></div> Fixing...';
+
+                    context.vscode.postMessage({
+                        command: 'replaceCode',
+                        filePath,
+                        content: "REPAIR_REQUESTED",
+                        messageId: context.messageId,
+                        blockIndex: blockIndex,
+                        hunkIndex: hIdx,
+                        options: { silent: true, blockIndex: blockIndex, hunkIndex: hIdx }
+                    });
+                };
+            });
+
+            // Individual Hunk Raw Stitch buttons directly inside the hunk pane
+            card.querySelectorAll('.raw-hunk-btn').forEach((rawBtn: HTMLElement) => {
+                rawBtn.onclick = (e: MouseEvent) => {
+                    e.stopPropagation();
+                    const hIdx = parseInt((rawBtn as HTMLElement).dataset.hunkIndex || "0", 10);
+                    import('../ui.js').then(ui => {
+                        ui.openRawCodeModal(context.messageId, blockIndex, filePath, rawContent, hIdx, card.id);
                     });
                 };
             });
@@ -398,7 +430,7 @@ export const fileMutationPlugin: TagPlugin = {
                 rawStitchBtn.onclick = (e: MouseEvent) => {
                     e.stopPropagation();
                     import('../ui.js').then(ui => {
-                        ui.openRawCodeModal(context.messageId, blockIndex, filePath, rawContent, 0);
+                        ui.openRawCodeModal(context.messageId, blockIndex, filePath, rawContent, 0, card.id);
                     });
                 };
             }
@@ -408,7 +440,7 @@ export const fileMutationPlugin: TagPlugin = {
 
 export const fileOpPlugin: TagPlugin = {
     id: 'file_operations',
-    tagPattern: /^[ \t]*<(move_files|copy_files|delete_files|remove_files_from_context)\b([^>]*?)>([\s\S]*?)<\/\1>/gim,
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(move_files|copy_files|delete_files|remove_files_from_context)\b([^>]*?)>([\s\S]*?)<\/\1>/gim,
     render: (match) => {
         const type = match[1];
         const attrPart = match[2] || "";
@@ -507,6 +539,90 @@ export const fileOpPlugin: TagPlugin = {
                 context.vscode.postMessage({ command: d.command, ...parsedPayload });
                 (btn as HTMLButtonElement).disabled = true;
                 btn.innerHTML = '<i class="codicon codicon-check"></i> Applied';
+            };
+        });
+    }
+};
+
+export const unpackDirectoryPlugin: TagPlugin = {
+    id: 'unpack_directory',
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<unpack_directory\b([^>]*?)>([\s\S]*?)<\/unpack_directory>/gim,
+    render: (match) => {
+        const inner = (match[2] || "").trim();
+        const dirs = inner.split(/[\s\r\n,]+/).map(d => d.trim().replace(/^['"]|['"]$/g, '')).filter(d => d && !d.startsWith('<'));
+        if (dirs.length === 0) return null;
+        return `
+        <div class="file-operation-block" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-left: 4px solid var(--vscode-charts-blue); border-radius: 8px; margin: 12px 0; overflow: hidden;">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 12px;">
+                <span class="codicon codicon-folder-opened"></span> 
+                <span>Directory Unpack Request</span>
+            </div>
+            <div class="expansion-body" style="padding: 12px;">
+                <div style="font-size: 12px; margin-bottom: 8px;">Unroll truncated folder: <strong>${dirs.join(', ')}</strong></div>
+            </div>
+        </div>`;
+    }
+};
+
+export const peekFilesPlugin: TagPlugin = {
+    id: 'peek_files',
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/gim,
+    render: (match) => {
+        const inner = (match[2] || "").trim();
+        const files = inner.split(/[\s\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(p => p && !p.startsWith('<'));
+        if (files.length === 0) return null;
+        const encodedFiles = encodeURIComponent(JSON.stringify(files));
+
+        return `
+        <div class="file-operation-block peek-files-block" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-left: 4px solid var(--vscode-charts-green); border-radius: 8px; margin: 12px 0; overflow: hidden;">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span class="codicon codicon-eye"></span> 
+                    <span>Peek Files Request (${files.length})</span>
+                </div>
+                <button class="code-action-btn copy-peek-output-btn" data-files="${encodedFiles}" title="Copy peeked file content to clipboard" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                    <i class="codicon codicon-copy"></i> Copy Output
+                </button>
+            </div>
+            <div class="expansion-body" style="padding: 12px;">
+                <div style="font-size: 12px; margin-bottom: 8px;">Temporary inspection of: <strong>${files.join(', ')}</strong></div>
+                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                    ${files.map(f => `<button class="code-action-btn secondary-btn peek-file-open-btn" data-path="${f}" style="font-size: 10px; height: 22px;"><i class="codicon codicon-file"></i> ${f.split('/').pop()}</button>`).join('')}
+                </div>
+            </div>
+        </div>`;
+    },
+    initialize: (container, context) => {
+        container.querySelectorAll('.peek-file-open-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const filePath = (btn as HTMLElement).dataset.path;
+                if (filePath) {
+                    context.vscode.postMessage({ command: 'openFile', path: filePath });
+                }
+            };
+        });
+
+        container.querySelectorAll('.copy-peek-output-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const encodedFiles = btnEl.dataset.files;
+                if (!encodedFiles) return;
+
+                try {
+                    const files: string[] = JSON.parse(decodeURIComponent(encodedFiles));
+                    context.vscode.postMessage({
+                        command: 'copyFilesToClipboard',
+                        files: files
+                    });
+
+                    const origHtml = btnEl.innerHTML;
+                    btnEl.innerHTML = '<i class="codicon codicon-check"></i> Copied!';
+                    setTimeout(() => {
+                        btnEl.innerHTML = origHtml;
+                    }, 2000);
+                } catch {}
             };
         });
     }

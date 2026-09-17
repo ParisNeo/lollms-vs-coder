@@ -177,6 +177,38 @@ export class LollmsAPI {
       return this.config.modelName;
   }
 
+  /**
+   * Fast connection probe (timeout within 2.5s) to detect offline server before initiating long generation passes.
+   */
+  public async pingServer(timeoutMs: number = 2500): Promise<{ online: boolean; error?: string }> {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+          const testUrl = this.config.backendType === 'ollama' 
+              ? `${this.baseUrl}/api/tags`
+              : (this.config.backendType === 'lollms' ? `${this.baseUrl}/` : `${this.baseUrl}/v1/models`);
+
+          const isHttps = testUrl.startsWith('https');
+          const response = await fetch(testUrl, {
+              method: 'GET',
+              headers: this.config.apiKey ? { 'Authorization': `Bearer ${this.config.apiKey}` } : {},
+              signal: controller.signal,
+              agent: isHttps && testUrl.startsWith(this.baseUrl) ? this.httpsAgent : undefined
+          });
+
+          return { online: response.status < 500 };
+      } catch (err: any) {
+          const isTimeout = err.name === 'AbortError';
+          const msg = isTimeout 
+              ? `Server timed out after ${timeoutMs}ms` 
+              : (err.code === 'ECONNREFUSED' ? 'Connection refused (ECONNREFUSED)' : err.message);
+          return { online: false, error: msg };
+      } finally {
+          clearTimeout(timer);
+      }
+  }
+
   public async testConnection(): Promise<{ success: boolean; message: string; details?: string }> {
       try {
           Logger.info("Testing connection...");

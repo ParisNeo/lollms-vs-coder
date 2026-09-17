@@ -154,8 +154,161 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, service
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.installZooSkillPrompt', async (skill: Skill) => {
+        if (!skill) return;
+
+        const choice = await vscode.window.showQuickPick([
+            { label: '$(folder) Install into Project Library', value: 'local', description: 'Available for this project (.lollms/skills)' },
+            { label: '$(globe) Install into Global Library', value: 'global', description: 'Available across all projects (~/.lollms/skills)' },
+            { label: '$(eye) View Skill Content', value: 'view', description: 'Preview instructions and rules' }
+        ], { placeHolder: `Action for "${skill.name}"` });
+
+        if (!choice) return;
+
+        if (choice.value === 'view') {
+            const { InfoPanel } = await import('../commands/infoPanel');
+            InfoPanel.createOrShow(services.extensionUri, `Skill: ${skill.name}`, `## ${skill.name}\n${skill.description}\n\n\`\`\`${skill.language || 'markdown'}\n${skill.content}\n\`\`\``);
+        } else {
+            const scope = choice.value as 'global' | 'local';
+            try {
+                await services.skillsManager.installZooSkill(skill, scope);
+                vscode.window.showInformationMessage(`Installed "${skill.name}" into your ${scope === 'global' ? 'Global' : 'Project'} library.`);
+                services.treeProviders.skills?.refresh();
+            } catch (err: any) {
+                vscode.window.showErrorMessage(`Failed to install skill: ${err.message}`);
+            }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.resetSkillsToDefault', async () => {
+        const confirm = await vscode.window.showWarningMessage(
+            "Are you sure you want to reset all skills and Git repositories to defaults? This will restore the official Skills Zoo (https://github.com/ParisNeo/lollms_skills_zoo.git) and default skills.",
+            { modal: true },
+            "Reset to Defaults"
+        );
+
+        if (confirm === "Reset to Defaults") {
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Lollms: Resetting skills to default...",
+                cancellable: false
+            }, async (progress) => {
+                try {
+                    await services.skillsManager.resetToDefaultSkills((s: string) => progress.report({ message: s }));
+                    vscode.window.showInformationMessage("Skills library and repositories have been reset to defaults.");
+                    services.treeProviders.skills?.refresh();
+                    if (SkillsManagerPanel.currentPanel) {
+                        (SkillsManagerPanel.currentPanel as any)._update();
+                    }
+                } catch (err: any) {
+                    vscode.window.showErrorMessage(`Reset failed: ${err.message}`);
+                }
+            });
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshSkills', () => {
         services.skillsManager.invalidateCache();
         services.treeProviders.skills?.refresh();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addSkillsRepo', async () => {
+        const url = await vscode.window.showInputBox({
+            prompt: "Enter Git Repository URL containing skills",
+            placeHolder: "https://github.com/ParisNeo/lollms_skills_zoo.git",
+            value: "https://github.com/ParisNeo/lollms_skills_zoo.git"
+        });
+
+        if (!url) return;
+
+        const defaultName = path.basename(url.trim().replace(/\.git$/, ''));
+        const name = await vscode.window.showInputBox({
+            prompt: "Enter display name for this repository",
+            placeHolder: "e.g. My Team Skills Zoo",
+            value: defaultName
+        });
+
+        if (!name) return;
+
+        try {
+            const repo = await services.skillsManager.addZooRepo(name, url);
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: `Cloning & Indexing skills from '${name}'...`,
+                cancellable: false
+            }, async (progress) => {
+                const skills = await services.skillsManager.syncZooRepo(repo, status => progress.report({ message: status }));
+                vscode.window.showInformationMessage(`Repository '${name}' synchronized. Discovered ${skills.length} skill(s).`);
+            });
+            services.treeProviders.skills?.refresh();
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Failed to add skills repository: ${e.message}`);
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.syncSkillsZoo', async () => {
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Syncing all skills Git repositories...",
+            cancellable: false
+        }, async (progress) => {
+            try {
+                const results = await services.skillsManager.syncAllZooRepos(status => progress.report({ message: status }));
+                const totalSkills = results.reduce((acc, r) => acc + r.skills.length, 0);
+                vscode.window.showInformationMessage(`Skills Zoo synchronized: ${totalSkills} skill(s) indexed across ${results.length} repositories.`);
+                services.treeProviders.skills?.refresh();
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Sync failed: ${e.message}`);
+            }
+        });
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.manageSkillsRepos', async () => {
+        const repos = services.skillsManager.getZooRepos();
+        const items = repos.map(r => ({
+            label: `$(repo) ${r.name}`,
+            description: r.url,
+            detail: r.id === 'official_zoo' ? 'Default Official Zoo' : 'Custom Repository',
+            repo: r
+        }));
+
+        const selected = await vscode.window.showQuickPick(
+            [
+                { label: '$(add) Add New Git Repository...', action: 'add' } as any,
+                { label: '$(sync) Sync All Repositories Now', action: 'sync' } as any,
+                ...items
+            ],
+            { placeHolder: "Manage Skills Git Repositories" }
+        );
+
+        if (!selected) return;
+
+        if (selected.action === 'add') {
+            vscode.commands.executeCommand('lollms-vs-coder.addSkillsRepo');
+        } else if (selected.action === 'sync') {
+            vscode.commands.executeCommand('lollms-vs-coder.syncSkillsZoo');
+        } else if (selected.repo) {
+            const action = await vscode.window.showQuickPick([
+                { label: '$(sync) Sync This Repository', id: 'sync' },
+                { label: '$(trash) Remove Repository', id: 'delete' }
+            ]);
+
+            if (action?.id === 'sync') {
+                await vscode.window.withProgress({
+                    location: vscode.ProgressLocation.Notification,
+                    title: `Syncing ${selected.repo.name}...`
+                }, async (progress) => {
+                    const skills = await services.skillsManager.syncZooRepo(selected.repo, s => progress.report({ message: s }));
+                    vscode.window.showInformationMessage(`Found ${skills.length} skills in '${selected.repo.name}'.`);
+                });
+            } else if (action?.id === 'delete') {
+                try {
+                    await services.skillsManager.deleteZooRepo(selected.repo.id);
+                    vscode.window.showInformationMessage(`Repository '${selected.repo.name}' removed.`);
+                } catch (e: any) {
+                    vscode.window.showErrorMessage(e.message);
+                }
+            }
+        }
     }));
 }

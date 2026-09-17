@@ -1,7 +1,7 @@
 import { dom, vscode, state } from './dom.js';
 import { performSearch, navigateSearch, clearSearch } from './search.js';
 import { insertNewMessageEditor } from './messageRenderer.js';
-import { setGeneratingState, updateBadges, openImageEditor, renderPendingImages, renderWorkspaceMatrix, openRawCodeModal } from './ui.js';
+import { setGeneratingState, updateBadges, openImageEditor, renderPendingImages, renderWorkspaceMatrix, openRawCodeModal, setCalculatingTokens } from './ui.js';
 import { isScrolledToBottom, parseAiderHunks } from "./utils.js";
 
 export function initEventHandlers() {
@@ -23,8 +23,9 @@ export function initEventHandlers() {
         window.addEventListener('mousemove', (e) => {
             if (!isResizing) return;
             const rect = wrapper.getBoundingClientRect();
-            const newWidth = rect.right - e.clientX;
-            if (newWidth > 150 && newWidth < rect.width * 0.85) {
+            // Sidebar is on the LEFT: calculate width from the left boundary to mouse position
+            const newWidth = e.clientX - rect.left;
+            if (newWidth > 180 && newWidth < rect.width * 0.75) {
                 planZone.style.width = `${newWidth}px`;
             }
         });
@@ -65,7 +66,11 @@ export function initEventHandlers() {
 
 if (dom.sendButton) {
     dom.sendButton.addEventListener('click', () => {
-        if (state.isGenerating) return; // Prevent sending another message while processing
+        if (state.isGenerating) {
+            // Clicking the morphed send button while generating immediately stops execution
+            dom.stopButton?.click();
+            return;
+        }
         const text = dom.messageInput.value.trim();
         if (text || state.pendingImages.length > 0) {
             let content: any = text;
@@ -258,7 +263,7 @@ if (dom.sendButton) {
 
     if (dom.stopButton) {
         dom.stopButton.addEventListener('click', () => {
-            // If we are waiting for an input (like the Safety Gate), resolve it with a stop signal
+            // If waiting for an input (such as Safety Gate), resolve it with a stop signal
             if ((window as any).inputResolver) {
                 vscode.postMessage({
                     command: 'sendMessage',
@@ -266,23 +271,24 @@ if (dom.sendButton) {
                 });
             }
 
-            // Force reset generating state UI-side if it's hanging
-            if (state.isGenerating) {
-                setGeneratingState(false);
-            }            
-            // Stop any ongoing speech synthesis
             if (window.speechSynthesis) {
                 window.speechSynthesis.cancel();
             }
-            // Trigger the global cleanup logic defined in main.ts if it was manual speech
             if (typeof (window as any).resetActiveSpeakButton === 'function') {
                 (window as any).resetActiveSpeakButton();
             }
-            
+
             vscode.postMessage({ command: 'stopGeneration' });
             setGeneratingState(false);
         });
     }
+
+    // Global keyboard shortcut: Escape stops active generation
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && state.isGenerating) {
+            dom.stopButton?.click();
+        }
+    });
 
     const raiseHandBtn = document.getElementById('raiseHandButton');
     if (raiseHandBtn) {
@@ -1004,10 +1010,79 @@ if (dom.sendButton) {
         });
     }
 
+    if (dom.capPreferencesProfile) {
+        dom.capPreferencesProfile.addEventListener('change', () => {
+            const selectedId = dom.capPreferencesProfile.value;
+            const profiles = (state as any).userPreferenceProfiles || [];
+            const matched = profiles.find((p: any) => p.id === selectedId);
+            if (matched && dom.capUserPreferences) {
+                dom.capUserPreferences.value = matched.preferences;
+            }
+        });
+    }
+
+    if (dom.capSavePrefProfileBtn) {
+        dom.capSavePrefProfileBtn.addEventListener('click', () => {
+            const text = dom.capUserPreferences?.value?.trim();
+            if (!text) {
+                vscode.postMessage({ command: 'showError', message: 'Preferences text is empty.' });
+                return;
+            }
+            const name = prompt("Enter a name for this preference profile:", "My Custom Profile");
+            if (name) {
+                vscode.postMessage({
+                    command: 'saveUserPreferenceProfile',
+                    profile: {
+                        id: 'custom_' + Date.now(),
+                        name: name.trim(),
+                        description: 'Custom user preference profile',
+                        preferences: text
+                    }
+                });
+            }
+        });
+    }
+
+    if (dom.wizardPreferencesProfile) {
+        dom.wizardPreferencesProfile.addEventListener('change', () => {
+            const selectedId = dom.wizardPreferencesProfile.value;
+            const profiles = (state as any).userPreferenceProfiles || [];
+            const matched = profiles.find((p: any) => p.id === selectedId);
+            if (matched && dom.wizardUserPreferences) {
+                dom.wizardUserPreferences.value = matched.preferences;
+            }
+        });
+    }
+
+    if (dom.wizardSavePrefProfileBtn) {
+        dom.wizardSavePrefProfileBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const text = dom.wizardUserPreferences?.value?.trim();
+            if (!text) {
+                vscode.postMessage({ command: 'showError', message: 'Preferences text is empty.' });
+                return;
+            }
+            const name = prompt("Enter a name for this preference profile:", "My Custom Profile");
+            if (name) {
+                vscode.postMessage({
+                    command: 'saveUserPreferenceProfile',
+                    profile: {
+                        id: 'custom_' + Date.now(),
+                        name: name.trim(),
+                        description: 'Custom user preference profile',
+                        preferences: text
+                    }
+                });
+            }
+        });
+    }
+
     if (dom.saveDiscussionToolsBtn) {
         dom.saveDiscussionToolsBtn.addEventListener('click', () => {
             const partialFormat = (document.querySelector('input[name="cap-partialFormat"]:checked') as HTMLInputElement)?.value || 'aider';
             const selectedProfileId = (document.getElementById('modal-default-profile-select') as HTMLSelectElement)?.value;
+            const selectedPrefProfileId = dom.capPreferencesProfile?.value || 'clean_craftsman';
 
             // CRITICAL: Sync current list of profiles and the chosen default back to Global Settings
             vscode.postMessage({ 
@@ -1020,6 +1095,7 @@ if (dom.sendButton) {
             const isTempEnabled = enableTempInput ? enableTempInput.checked : false;
 
             const caps = {
+                userPreferenceProfileId: selectedPrefProfileId,
                 userPreferences: (document.getElementById('cap-userPreferences') as HTMLTextAreaElement)?.value?.trim() ?? '',
                 generationFormats: {
                     fullFile: dom.capAllowFullFallback?.checked ?? true,
@@ -1035,6 +1111,7 @@ if (dom.sendButton) {
                 contextGovernorEnabled: (document.getElementById('cap-contextGovernorEnabled') as HTMLInputElement)?.checked ?? true,
                 contextGovernorThreshold: parseInt((document.getElementById('modal-governor-threshold') as HTMLInputElement)?.value || '95', 10),
                 contextGovernorPermanentPruning: (document.getElementById('cap-contextGovernorPermanentPruning') as HTMLInputElement)?.checked ?? false,
+                contextGovernorCropHistory: (document.getElementById('cap-contextGovernorCropHistory') as HTMLInputElement)?.checked ?? true,
                 contextAggression: dom.contextAggressionSelect?.value || 'respect',
                 forceFullCode: dom.capForceFullCode?.checked ?? false,
                 enableSymbolMode: (document.getElementById('cap-enableSymbolMode') as HTMLInputElement)?.checked ?? true,
@@ -1143,11 +1220,14 @@ if (dom.sendButton) {
 
     if (dom.skillsImportBtn) {
         dom.skillsImportBtn.addEventListener('click', () => {
-            const discussionSkills = Array.from(dom.skillsTreeContainer.querySelectorAll('.skill-discussion-checkbox:checked'))
-                .map((el: any) => el.value);
-            const projectSkills = Array.from(dom.skillsTreeContainer.querySelectorAll('.skill-project-checkbox:checked'))
-                .map((el: any) => el.value);
-            
+            // Strictly select leaf skill checkboxes only (excludes any folder/bundle switches)
+            const discussionSkills = Array.from(dom.skillsTreeContainer.querySelectorAll('.skill-node input.skill-discussion-checkbox:checked'))
+                .map((el: any) => el.value)
+                .filter(Boolean);
+            const projectSkills = Array.from(dom.skillsTreeContainer.querySelectorAll('.skill-node input.skill-project-checkbox:checked'))
+                .map((el: any) => el.value)
+                .filter(Boolean);
+
             vscode.postMessage({ command: 'importSelectedSkills', discussionSkills, projectSkills });
             dom.skillsModal.classList.remove('visible');
         });
@@ -1477,37 +1557,59 @@ if (dom.sendButton) {
                     (window as any).progressiveSearchState = null;
                 }
 
+                const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
+                const blockEl = (blockId ? document.getElementById(blockId) : null)
+                    || (wrapper ? wrapper.querySelector(`.file-mutation-card[data-path='${filePath}'], details[data-path='${filePath}'], .file-mutation-card[data-block-index='${blockIndex}']`) : null)
+                    || document.getElementById(`block-${messageId}-${blockIndex}`)
+                    || document.querySelector(`.file-mutation-card[data-path='${filePath}']`);
+
+                const allTabs = blockEl ? blockEl.querySelectorAll('.hunk-tab') : [];
+                const isSingleHunk = allTabs.length <= 1;
+                const hunkVal = isSingleHunk ? -1 : (hunkIndex !== undefined ? hunkIndex : -1);
+
                 // 1. Immediately update in-memory applied state
                 if (!state.appliedState[messageId]) state.appliedState[messageId] = {};
                 if (!state.appliedState[messageId][blockIndex]) state.appliedState[messageId][blockIndex] = [];
 
-                const hunkVal = hunkIndex !== undefined ? hunkIndex : -1;
                 if (!state.appliedState[messageId][blockIndex].includes(hunkVal)) {
                     state.appliedState[messageId][blockIndex].push(hunkVal);
                 }
-
-                // If block has only one hunk or entire block applied, register full block completion
-                const blockEl = (blockId ? document.getElementById(blockId) : null)
-                    || document.getElementById(`block-${messageId}-${blockIndex}`)
-                    || document.querySelector(`.file-mutation-card[data-block-index='${blockIndex}']`);
-                const allTabs = blockEl ? blockEl.querySelectorAll('.hunk-tab') : [];
-                if (allTabs.length <= 1) {
-                    if (!state.appliedState[messageId][blockIndex].includes(-1)) {
-                        state.appliedState[messageId][blockIndex].push(-1);
-                    }
+                if (isSingleHunk && !state.appliedState[messageId][blockIndex].includes(-1)) {
+                    state.appliedState[messageId][blockIndex].push(-1);
                 }
 
-                // 2. Notify extension host to persist to disk
+                // 2. Clear visual failure states and restore buttons directly on the card
+                if (blockEl) {
+                    blockEl.classList.remove('malformed', 'apply-failed');
+                    blockEl.style.removeProperty('border');
+                    blockEl.style.removeProperty('background-color');
+                    (blockEl as HTMLElement).style.border = '';
+                    (blockEl as HTMLElement).style.backgroundColor = '';
+
+                    // Remove injected repair and manual stitch buttons
+                    blockEl.querySelectorAll('.fix-ai-btn, .manual-fix-btn, .repairBtn').forEach(el => el.remove());
+
+                    // Transform failed/apply buttons to green checkmark
+                    blockEl.querySelectorAll('.apply-btn, .apply-mutation-btn, .apply-failed-btn').forEach((btn: any) => {
+                        btn.classList.remove('delete-btn', 'apply-failed-btn', 'sequential-applying');
+                        btn.classList.add('applied');
+                        btn.innerHTML = '<i class="codicon codicon-check"></i>';
+                        btn.title = "Successfully applied. Click to re-apply.";
+                        btn.disabled = false;
+                    });
+                }
+
+                // 3. Notify extension host to persist applied state to disk
                 vscode.postMessage({
                     command: 'markHunkApplied',
                     messageId,
                     blockIndex,
                     hunkIndex: hunkVal,
                     filePath,
-                    blockId
+                    blockId: blockEl?.id || blockId
                 });
 
-                // 3. Immediately dispatch applyAllResult locally to update rows, cards and master button
+                // 4. Immediately dispatch applyAllResult locally to update rows, cards and master button
                 window.dispatchEvent(new MessageEvent('message', {
                     data: {
                         command: 'applyAllResult',
@@ -1515,19 +1617,19 @@ if (dom.sendButton) {
                         blockIndex,
                         hunkIndex: hunkVal,
                         filePath,
-                        blockId,
+                        blockId: blockEl?.id || blockId,
                         success: true,
                         alreadyApplied: true
                     }
                 }));
 
-                // 4. Force synchronization of rows and master apply-all button
+                // 5. Force synchronization of results list rows and master button
                 import('./messageRenderer.js').then(m => {
                     m.syncResultsListRows(messageId);
                     m.checkAndSyncMessageAppliedState(messageId);
                 });
 
-                // 5. Clean up modal and search states
+                // 6. Clean up modal and search states
                 if (dom.rawSearchResultsMini) dom.rawSearchResultsMini.style.display = 'none';
                 clearRawSearch();
                 if (dom.rawSearchInput) dom.rawSearchInput.value = '';
@@ -1538,12 +1640,66 @@ if (dom.sendButton) {
         });
     }
 
+    const setupSearchEvents = (inputEl: HTMLInputElement | null, prevBtn: HTMLElement | null, nextBtn: HTMLElement | null, clearBtn: HTMLElement | null, allBtn?: HTMLElement | null) => {
+        if (!inputEl) return;
+
+        let debounceTimer: any;
+
+        inputEl.addEventListener('input', () => {
+            clearTimeout(debounceTimer);
+            if (clearBtn) clearBtn.style.display = inputEl.value.length > 0 ? 'inline-flex' : 'none';
+            debounceTimer = setTimeout(() => {
+                performSearch();
+            }, 200);
+        });
+
+        inputEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (e.shiftKey) {
+                    navigateSearch(-1);
+                } else {
+                    if (state.searchMatches.length === 0) performSearch();
+                    else navigateSearch(1);
+                }
+            } else if (e.key === 'Escape') {
+                inputEl.value = '';
+                if (clearBtn) clearBtn.style.display = 'none';
+                clearSearch();
+                inputEl.blur();
+            }
+        });
+
+        if (prevBtn) prevBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); navigateSearch(-1); };
+        if (nextBtn) nextBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); navigateSearch(1); };
+        if (clearBtn) clearBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            inputEl.value = '';
+            clearBtn.style.display = 'none';
+            clearSearch();
+        };
+        if (allBtn) allBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (dom.discussionSearchModal) {
+                dom.discussionSearchModal.classList.add('visible');
+                if (dom.discussionSearchInput) {
+                    dom.discussionSearchInput.value = inputEl.value;
+                    dom.discussionSearchInput.focus();
+                }
+            }
+        };
+    };
+
+    // Bind both the HUD search bar and legacy search bar
+    setupSearchEvents(dom.hudSearchInput, dom.hudSearchPrev, dom.hudSearchNext, dom.hudSearchClear, dom.hudSearchAllBtn);
+    setupSearchEvents(dom.searchInput, dom.searchPrevBtn, dom.searchNextBtn, dom.searchCloseBtn);
+
     if (dom.searchCloseBtn) dom.searchCloseBtn.addEventListener('click', () => {
         if(dom.searchBar) dom.searchBar.style.display = 'none';
         clearSearch();
     });
-    if (dom.searchPrevBtn) dom.searchPrevBtn.addEventListener('click', () => navigateSearch(-1));
-    if (dom.searchNextBtn) dom.searchNextBtn.addEventListener('click', () => navigateSearch(1));
 
     // Workspace Matrix Events ---
     if (dom.hudMatrixBtn) {
@@ -1592,6 +1748,7 @@ if (dom.sendButton) {
         const title = dom.wizardTitle.value.trim() || undefined;
         const personalityId = dom.wizardPersonality.value;
         const profileId = dom.wizardProfile.value;
+        const prefProfileId = dom.wizardPreferencesProfile?.value || 'clean_craftsman';
         const userPreferences = (document.getElementById('wizard-user-preferences') as HTMLTextAreaElement)?.value?.trim();
         const contextSelectEl = document.getElementById('wizard-context-selection') as HTMLSelectElement;
         const contextSelection = contextSelectEl ? contextSelectEl.value : 'current';
@@ -1615,6 +1772,7 @@ if (dom.sendButton) {
                     profileId,
                     selectedFolders,
                     contextSelection,
+                    userPreferenceProfileId: prefProfileId,
                     userPreferences,
                     sendToAi
                 }
@@ -1753,7 +1911,6 @@ if (dom.sendButton) {
     });
     window.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-            // Check if focus is currently inside a CodeMirror editor or a message edit input
             const activeEl = document.activeElement;
             const isInsideEditor = activeEl && (
                 activeEl.classList.contains('cm-content') || 
@@ -1762,18 +1919,17 @@ if (dom.sendButton) {
             );
 
             if (isInsideEditor) {
-                // Let the inline editor handle its own Ctrl+F search panel
                 return;
             }
 
-            if (dom.searchBar) {
-                e.preventDefault();
-                if (dom.searchBar.style.display === 'none' || !dom.searchBar.style.display) {
-                    dom.searchBar.style.display = 'flex';
-                    dom.searchInput.focus();
-                } else {
-                    dom.searchInput.focus();
-                }
+            e.preventDefault();
+            const hudInput = document.getElementById('hud-search-input') as HTMLInputElement;
+            if (hudInput) {
+                hudInput.focus();
+                hudInput.select();
+            } else if (dom.searchBar) {
+                dom.searchBar.style.display = 'flex';
+                dom.searchInput.focus();
             }
         }
     });
@@ -1857,7 +2013,15 @@ if (dom.sendButton) {
             const icon = refreshBtn.querySelector('.codicon');
             if (icon) icon.classList.add('spin');
             const label = document.getElementById('token-count-label');
-            if (label) label.textContent = 'Counting tokens...';
+            if (label) {
+                if (state.lastTokenMetrics && state.lastTokenMetrics.totalTokens > 0) {
+                    const prevTotal = state.lastTokenMetrics.totalTokens.toLocaleString();
+                    const prevSize = state.lastTokenMetrics.contextSize.toLocaleString();
+                    label.textContent = `Tokens: ${prevTotal} / ${prevSize} (Recalculating...)`;
+                } else {
+                    label.textContent = 'Tokens: Recalculating...';
+                }
+            }
             vscode.postMessage({ command: 'calculateTokens' });
             setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1200);
             return;
@@ -2439,11 +2603,11 @@ if (dom.sendButton) {
                 const hunkIndex = card.dataset.hunkIndex !== undefined ? parseInt(card.dataset.hunkIndex, 10) : 0;
 
                 // Retrieve the raw code from the corresponding block element on the page
-                const blockEl = document.getElementById(`block-${messageId}-${blockIndex}`) as HTMLElement;
-                const rawCode = blockEl ? blockEl.dataset.rawCode || "" : "";
+                const blockEl = (wrapper.querySelector(`.file-mutation-card[data-block-index='${blockIndex}'], details[id='block-${messageId}-${blockIndex}']`)) as HTMLElement;
+                const rawCode = blockEl ? (blockEl.dataset.rawCode ? decodeURIComponent(blockEl.dataset.rawCode) : (blockEl.textContent || "")) : "";
 
                 if (filePath && rawCode) {
-                    openRawCodeModal(messageId, blockIndex, filePath, rawCode, hunkIndex);
+                    openRawCodeModal(messageId, blockIndex, filePath, rawCode, hunkIndex, blockEl?.id);
                 }
             }
             return;

@@ -59,7 +59,7 @@ import 'prismjs/components/prism-sass';
 import 'prismjs/components/prism-scss';
 import 'prismjs/components/prism-jsx';
 import 'prismjs/components/prism-tsx';
-import { setGeneratingState, updateBadges, renderPendingImages, openImageEditor, filterSkillsTree, renderWorkspaceMatrix, openRawCodeModal } from './ui.js';
+import { setGeneratingState, updateBadges, renderPendingImages, openImageEditor, filterSkillsTree, renderWorkspaceMatrix, openRawCodeModal, setCalculatingTokens } from './ui.js';
 
 // Initialize DOMPurify
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
@@ -73,6 +73,7 @@ const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) :
 (window as any).openImageEditor = openImageEditor;
 (window as any).filterSkillsTree = filterSkillsTree;
 (window as any).openRawCodeModal = openRawCodeModal;
+(window as any).setCalculatingTokens = setCalculatingTokens;
 
 // Expose Progressive Hunk Matching handlers globally
 import { progressiveSearchState, runProgressiveHunkSearch, handleProgressiveSearchResults } from './ui.js';
@@ -386,6 +387,14 @@ document.getElementById('ttsButton')?.addEventListener('click', () => {
                 const { initAutomationUI } = require('./ui.js');
                 initAutomationUI();
             } catch (e) {}
+
+            // Reveal hydrated webview and dismiss pre-loader
+            document.body.classList.add('webview-ready');
+            const preloader = document.getElementById('initial-webview-loader');
+            if (preloader) {
+                preloader.style.opacity = '0';
+                setTimeout(() => preloader.remove(), 250);
+            }
 
             // Notify extension that webview is ready
             console.log("[Lollms Debug] Emitting webview-ready bootstrap handshake to extension host...");

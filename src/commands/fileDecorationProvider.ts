@@ -34,6 +34,16 @@ export class FileDecorationProvider implements vscode.FileDecorationProvider {
             return undefined;
         }
 
+        // Fast rejection: never process non-file schemes or blocked/hidden directories
+        if (uri.scheme !== 'file') {
+            return undefined;
+        }
+
+        const { isDangerousOrBlocked } = require('./contextStateProvider');
+        if (isDangerousOrBlocked(uri.fsPath)) {
+            return undefined;
+        }
+
         const state: ContextState = this.stateProvider.getStateForUri(uri);
 
         switch (state) {

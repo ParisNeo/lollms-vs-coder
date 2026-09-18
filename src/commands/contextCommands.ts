@@ -203,24 +203,60 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.resetContextSelection', async () => {
         await services.contextManager.getContextStateProvider()?.softReset();
-        vscode.window.showInformationMessage("Reset included files to default.");
-        
-        // Immediately refresh the current chat bubble if open
+        services.contextManager.clearAllCaches();
+
         if (ChatPanel.currentPanel) {
-            ChatPanel.currentPanel.updateContextAndTokens();
+            const disc = ChatPanel.currentPanel.getCurrentDiscussion();
+            if (disc) {
+                disc.mutedFiles = [];
+                disc.importedTools = [];
+                disc.activeDiagrams = [];
+                if (!disc.id.startsWith('temp-')) {
+                    await services.discussionManager.saveDiscussion(disc);
+                }
+            }
+            ChatPanel.currentPanel._panel.webview.postMessage({
+                command: 'updateContext',
+                files: [],
+                tools: [],
+                diagrams: [],
+                mutedFiles: [],
+                mutedTools: [],
+                mutedDiagrams: []
+            });
+            ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: false });
         }
+        vscode.window.showInformationMessage("Reset included files and discussion context.");
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fullResetContext', async () => {
         const confirm = await vscode.window.showWarningMessage(vscode.l10n.t('prompt.confirmResetContext'), { modal: true }, vscode.l10n.t('label.reset'));
         if (confirm === vscode.l10n.t('label.reset')) {
             await services.contextManager.getContextStateProvider()?.fullReset();
-            vscode.window.showInformationMessage(vscode.l10n.t('info.contextReset'));
-            
-            // Immediately refresh the current chat bubble if open
+            services.contextManager.clearAllCaches();
+
             if (ChatPanel.currentPanel) {
-                ChatPanel.currentPanel.updateContextAndTokens();
+                const disc = ChatPanel.currentPanel.getCurrentDiscussion();
+                if (disc) {
+                    disc.mutedFiles = [];
+                    disc.importedTools = [];
+                    disc.activeDiagrams = [];
+                    if (!disc.id.startsWith('temp-')) {
+                        await services.discussionManager.saveDiscussion(disc);
+                    }
+                }
+                ChatPanel.currentPanel._panel.webview.postMessage({
+                    command: 'updateContext',
+                    files: [],
+                    tools: [],
+                    diagrams: [],
+                    mutedFiles: [],
+                    mutedTools: [],
+                    mutedDiagrams: []
+                });
+                ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: false });
             }
+            vscode.window.showInformationMessage(vscode.l10n.t('info.contextReset'));
         }
     }));
 

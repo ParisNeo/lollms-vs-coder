@@ -584,15 +584,23 @@ private _cachedTreeString: string | null = null;
     fullRelPath: string,
     baseFolder: vscode.WorkspaceFolder,
     isUnpacked: boolean,
-    maxFilesInFolder: number = 30
+    maxFilesInFolder: number = 30,
+    mutedFiles: string[] = []
   ): string {
     const formattedFiles = fileNames.map(fileName => {
       const filePath = fullRelPath ? `${fullRelPath}/${fileName}` : fileName;
       const fileUri = vscode.Uri.joinPath(baseFolder.uri, filePath);
       const fileState = this.contextStateProvider?.getStateForUri(fileUri);
+
+      const isMuted = mutedFiles.some(m => {
+        const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+        const cleanF = filePath.toLowerCase().trim();
+        return cleanM === cleanF || cleanM.endsWith('/' + cleanF) || cleanF.endsWith('/' + cleanM);
+      });
+
       let tag = '';
-      if (fileState === 'included') tag = ' [C]';
-      else if (fileState === 'definitions-only') tag = ' [D]';
+      if (fileState === 'included' && !isMuted) tag = ' [C]';
+      else if (fileState === 'definitions-only' && !isMuted) tag = ' [D]';
       return `${fileName}${tag}`;
     });
 
@@ -609,7 +617,8 @@ private _cachedTreeString: string | null = null;
     obj: any,
     baseFolder: vscode.WorkspaceFolder,
     rootName: string = '',
-    maxFilesInFolder: number = 30
+    maxFilesInFolder: number = 30,
+    mutedFiles: string[] = []
   ): string {
     const lines: string[] = [];
 
@@ -689,7 +698,7 @@ private _cachedTreeString: string | null = null;
           if (effFiles.length === 0) {
             lines.push(`${currentIndent}${displayDirName}/: []`);
           } else {
-            const listStr = this.formatFileList(effFiles, effectiveRelPath, baseFolder, isUnpacked, maxFilesInFolder);
+            const listStr = this.formatFileList(effFiles, effectiveRelPath, baseFolder, isUnpacked, maxFilesInFolder, mutedFiles);
             lines.push(`${currentIndent}${displayDirName}/: ${listStr}`);
           }
           return;
@@ -699,7 +708,7 @@ private _cachedTreeString: string | null = null;
         const nextIndent = currentIndent + '    ';
 
         if (effFiles.length > 0) {
-          const listStr = this.formatFileList(effFiles, effectiveRelPath, baseFolder, isUnpacked, maxFilesInFolder);
+          const listStr = this.formatFileList(effFiles, effectiveRelPath, baseFolder, isUnpacked, maxFilesInFolder, mutedFiles);
           lines.push(`${nextIndent}./: ${listStr}`);
         }
 
@@ -713,7 +722,7 @@ private _cachedTreeString: string | null = null;
         if (rootName) {
           lines.push(`${rootName}/:`);
           if (fileNames.length > 0) {
-            const listStr = this.formatFileList(fileNames, '', baseFolder, false, maxFilesInFolder);
+            const listStr = this.formatFileList(fileNames, '', baseFolder, false, maxFilesInFolder, mutedFiles);
             lines.push(`    ./: ${listStr}`);
           }
           for (const dirKey of dirKeys) {
@@ -721,7 +730,7 @@ private _cachedTreeString: string | null = null;
           }
         } else {
           if (fileNames.length > 0) {
-            const listStr = this.formatFileList(fileNames, '', baseFolder, false, maxFilesInFolder);
+            const listStr = this.formatFileList(fileNames, '', baseFolder, false, maxFilesInFolder, mutedFiles);
             lines.push(`./: ${listStr}`);
           }
           for (const dirKey of dirKeys) {
@@ -839,8 +848,9 @@ private _cachedTreeString: string | null = null;
       }
 
       const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
+      const mutedFilesList = capabilities?.mutedFiles || [];
       let treeString = '```text\n';
-      treeString += this.renderIndentedScopeHierarchy(projectTreeObj, folder, isMultiRoot ? folder.name : '');
+      treeString += this.renderIndentedScopeHierarchy(projectTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList);
       treeString += '\n```\n';
 
       if (!signal?.aborted) {
@@ -978,7 +988,8 @@ private _cachedTreeString: string | null = null;
 
         const subTreeObj = isMultiRoot ? this._fileTreeObject[folder.name] : this._fileTreeObject;
         if (subTreeObj) {
-          const manifest = this.renderIndentedScopeHierarchy(subTreeObj, folder, isMultiRoot ? folder.name : '');
+          const mutedFilesList = capabilities?.mutedFiles || [];
+          const manifest = this.renderIndentedScopeHierarchy(subTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList);
           if (manifest.trim()) {
             treeString += manifest + '\n';
           }

@@ -17,6 +17,9 @@ export class FileHistoryComparePanel {
     private _refB: string = '';
     private _contentCache: Map<string, string> = new Map();
     private _isWebviewReady: boolean = false;
+    private _skipCount: number = 0;
+    private readonly _pageSize: number = 50;
+    private _hasMoreCommits: boolean = true;
 
     public static async createOrShow(
         extensionUri: vscode.Uri,
@@ -85,10 +88,13 @@ export class FileHistoryComparePanel {
         this._currentFolder = folder;
         this._currentFilePath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
         this._contentCache.clear();
+        this._commits = [];
+        this._skipCount = 0;
+        this._hasMoreCommits = true;
         this._refA = 'WORKING_TREE';
         this._refB = '';
         this._panel.title = `History: ${path.basename(filePath)}`;
-        await this.loadHistory();
+        await this.loadHistory(false);
     }
 
     public dispose() {
@@ -102,13 +108,31 @@ export class FileHistoryComparePanel {
         }
     }
 
-    private async loadHistory() {
-        this._panel.webview.postMessage({ command: 'setLoading', loading: true, status: 'Fetching history across all branches...' });
+    private async loadHistory(append: boolean = false) {
+        this._panel.webview.postMessage({ command: 'setLoading', loading: true, status: append ? 'Loading more commits...' : 'Fetching history across all branches...' });
 
         try {
-            this._commits = await this._gitIntegration.getFileHistoryAllBranches(this._currentFolder, this._currentFilePath, 250);
+            const newBatch = await this._gitIntegration.getFileHistoryAllBranches(
+                this._currentFolder, 
+                this._currentFilePath, 
+                this._pageSize, 
+                this._skipCount
+            );
 
-            // Default Version B to the most recent commit if available
+            if (append) {
+                const existingHashes = new Set(this._commits.map(c => c.hash));
+                for (const c of newBatch) {
+                    if (!existingHashes.has(c.hash)) {
+                        this._commits.push(c);
+                    }
+                }
+            } else {
+                this._commits = newBatch;
+            }
+
+            this._skipCount += this._pageSize;
+            this._hasMoreCommits = newBatch.length >= this._pageSize;
+
             if (this._commits.length > 0) {
                 if (!this._refB || this._refB === 'WORKING_TREE') {
                     this._refB = this._commits[0].hash;
@@ -123,10 +147,13 @@ export class FileHistoryComparePanel {
                 fileName: path.basename(this._currentFilePath),
                 commits: this._commits,
                 refA: this._refA,
-                refB: this._refB
+                refB: this._refB,
+                hasMore: this._hasMoreCommits
             });
 
-            await this.updateDiffView();
+            if (!append) {
+                await this.updateDiffView();
+            }
         } catch (err: any) {
             Logger.error(`Failed to load history for ${this._currentFilePath}`, err);
             this._panel.webview.postMessage({ command: 'setError', error: err.message || 'Failed to read git history.' });
@@ -213,7 +240,12 @@ export class FileHistoryComparePanel {
                 }
                 case 'refresh':
                     this._contentCache.clear();
-                    await this.loadHistory();
+                    this._skipCount = 0;
+                    this._commits = [];
+                    await this.loadHistory(false);
+                    break;
+                case 'loadMore':
+                    await this.loadHistory(true);
                     break;
                 case 'copyContent': {
                     const content = await this.getFileContent(message.ref);
@@ -755,6 +787,9 @@ export class FileHistoryComparePanel {
             <div class="commits-list" id="commits-list">
                 <div style="padding: 20px; text-align: center; opacity: 0.6;">Loading history...</div>
             </div>
+            <div id="sidebar-footer" style="padding: 8px 12px; border-top: 1px solid var(--vscode-widget-border); display: none; justify-content: center; background: var(--vscode-sideBar-background);">
+                <button id="btn-load-more-commits" style="width: 100%; justify-content: center;"><i class="codicon codicon-arrow-down"></i> Load More Commits</button>
+            </div>
         </div>
 
         <!-- Main Panel: Diff & Restoration Controls -->
@@ -858,6 +893,7 @@ export class FileHistoryComparePanel {
         document.getElementById('btn-refresh').onclick = function() { vscode.postMessage({ command: 'refresh' }); };
         document.getElementById('btn-change-file').onclick = function() { vscode.postMessage({ command: 'chooseDifferentFile' }); };
         document.getElementById('btn-swap').onclick = function() { vscode.postMessage({ command: 'swapRefs' }); };
+        document.getElementById('btn-load-more-commits').onclick = function() { vscode.postMessage({ command: 'loadMore' }); };
 
         document.getElementById('btn-copy-a').onclick = function() { vscode.postMessage({ command: 'copyContent', ref: activeRefA }); };
         document.getElementById('btn-copy-b').onclick = function() { vscode.postMessage({ command: 'copyContent', ref: activeRefB || activeRefA }); };
@@ -881,6 +917,12 @@ export class FileHistoryComparePanel {
                     activeRefA = msg.refA || 'WORKING_TREE';
                     activeRefB = msg.refB || (commitsData.length > 0 ? commitsData[0].hash : 'WORKING_TREE');
                     document.getElementById('commit-count').textContent = commitsData.length;
+
+                    const footer = document.getElementById('sidebar-footer');
+                    if (footer) {
+                        footer.style.display = msg.hasMore ? 'flex' : 'none';
+                    }
+
                     populateDropdowns();
                     renderCommitList();
                     break;
@@ -1263,42 +1305,60 @@ export class FileHistoryComparePanel {
             const rowsA = sideBySide.rowsA;
             const rowsB = sideBySide.rowsB;
 
-            let htmlA = '';
-            for (let i = 0; i < rowsA.length; i++) {
-                const r = rowsA[i];
-                const cls = r.type === 'removed' ? ' removed' : (r.type === 'empty' ? ' empty-placeholder' : '');
-                const numStr = r.num !== '' ? String(r.num) : '&nbsp;';
-                htmlA += '<div class="diff-line' + cls + '">' +
-                    '<span class="diff-line-num">' + numStr + '</span>' +
-                    '<span class="diff-line-content">' + escapeHtml(r.text) + '</span>' +
-                    '</div>';
-            }
-
-            let htmlB = '';
-            for (let i = 0; i < rowsB.length; i++) {
-                const r = rowsB[i];
-                const cls = r.type === 'added' ? ' added' : (r.type === 'empty' ? ' empty-placeholder' : '');
-                const numStr = r.num !== '' ? String(r.num) : '&nbsp;';
-                htmlB += '<div class="diff-line' + cls + '">' +
-                    '<span class="diff-line-num">' + numStr + '</span>' +
-                    '<span class="diff-line-content">' + escapeHtml(r.text) + '</span>' +
-                    '</div>';
-            }
-
             diffArea.innerHTML = '' +
                 '<div class="split-diff-container">' +
                     '<div class="split-pane">' +
                         '<div class="split-pane-header" style="color:#007acc"><i class="codicon codicon-circle-filled"></i> Base (A): ' + escapeHtml(labelA) + '</div>' +
-                        '<div class="split-pane-content" id="split-content-a">' + htmlA + '</div>' +
+                        '<div class="split-pane-content" id="split-content-a"></div>' +
                     '</div>' +
                     '<div class="split-pane">' +
                         '<div class="split-pane-header" style="color:#9b59b6"><i class="codicon codicon-circle-filled"></i> Compare (B): ' + escapeHtml(labelB) + '</div>' +
-                        '<div class="split-pane-content" id="split-content-b">' + htmlB + '</div>' +
+                        '<div class="split-pane-content" id="split-content-b"></div>' +
                     '</div>' +
                 '</div>';
 
             const paneA = document.getElementById('split-content-a');
             const paneB = document.getElementById('split-content-b');
+
+            // Non-blocking chunked line insertion
+            const totalRows = rowsA.length;
+            const chunkSize = 500;
+            let currentIdx = 0;
+
+            function renderNextChunk() {
+                const end = Math.min(currentIdx + chunkSize, totalRows);
+                let chunkHtmlA = '';
+                let chunkHtmlB = '';
+
+                for (let i = currentIdx; i < end; i++) {
+                    const rA = rowsA[i];
+                    const clsA = rA.type === 'removed' ? ' removed' : (rA.type === 'empty' ? ' empty-placeholder' : '');
+                    const numStrA = rA.num !== '' ? String(rA.num) : '&nbsp;';
+                    chunkHtmlA += '<div class="diff-line' + clsA + '">' +
+                        '<span class="diff-line-num">' + numStrA + '</span>' +
+                        '<span class="diff-line-content">' + escapeHtml(rA.text) + '</span>' +
+                        '</div>';
+
+                    const rB = rowsB[i];
+                    const clsB = rB.type === 'added' ? ' added' : (rB.type === 'empty' ? ' empty-placeholder' : '');
+                    const numStrB = rB.num !== '' ? String(rB.num) : '&nbsp;';
+                    chunkHtmlB += '<div class="diff-line' + clsB + '">' +
+                        '<span class="diff-line-num">' + numStrB + '</span>' +
+                        '<span class="diff-line-content">' + escapeHtml(rB.text) + '</span>' +
+                        '</div>';
+                }
+
+                if (paneA) paneA.insertAdjacentHTML('beforeend', chunkHtmlA);
+                if (paneB) paneB.insertAdjacentHTML('beforeend', chunkHtmlB);
+
+                currentIdx = end;
+                if (currentIdx < totalRows) {
+                    requestAnimationFrame(renderNextChunk);
+                }
+            }
+
+            renderNextChunk();
+
             if (paneA && paneB) {
                 let syncFromA = false;
                 let syncFromB = false;

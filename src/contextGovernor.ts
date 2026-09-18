@@ -375,9 +375,11 @@ The codebase context required for this request is extremely large. It is mathema
             return null;
         }
 
-        // Reconstruct selected files content
+        // Reconstruct selected files content and synchronize tree markers
         const keptBlocks = fileCandidates.filter(b => b.keep);
         const newSelectedFilesContent = keptBlocks.map(b => b.fullMatch).join('\n\n');
+        const updatedProjectTree = this.updateTreeWithKeptFiles(contextData.projectTree, keptBlocks.map(b => b.path));
+        contextData.projectTree = updatedProjectTree;
 
         // Permanent eviction to workspace state if enabled
         if (capabilities.contextGovernorPermanentPruning && evictedPaths.length > 0) {
@@ -423,7 +425,7 @@ ${chunkingNotice ? `\n---\n${chunkingNotice}\n` : ''}`;
 I am providing you with the current, ground-truth state of my project files and the technical briefing.
 
 ${updatedBriefing && !updatedBriefing.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${updatedBriefing}\n` : ""}
-${contextData.projectTree ? `#### 🌳 PROJECT STRUCTURE\n${contextData.projectTree}\n` : ""}
+${updatedProjectTree ? `#### 🌳 PROJECT STRUCTURE\n${updatedProjectTree}\n` : ""}
 ${newSelectedFilesContent ? `#### 📄 FILE CONTENTS\n${newSelectedFilesContent}` : "*(No files currently selected)*"}
 --------------------------------------------------
 ${chunkingDirectiveText}`.trim();
@@ -923,6 +925,21 @@ ${transcript}`;
             newHistoryTokens,
             croppedCount: olderHistory.length
         };
+    }
+
+    /**
+     * Strips [C] from project tree for any file not in keptPaths.
+     */
+    private static updateTreeWithKeptFiles(tree: string, keptPaths: string[]): string {
+        if (!tree) return tree;
+        const keptSet = new Set(keptPaths.map(p => path.basename(p.replace(/\\/g, '/')).toLowerCase()));
+
+        return tree.replace(/([^\s,\[\]\(\)\/]+)\s*\[C\]/g, (match, fileName) => {
+            if (keptSet.has(fileName.toLowerCase())) {
+                return match;
+            }
+            return fileName;
+        });
     }
 
     private static pathsMatch(p1: string, p2: string): boolean {

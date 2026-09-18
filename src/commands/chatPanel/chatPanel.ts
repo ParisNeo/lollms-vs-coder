@@ -6301,8 +6301,8 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 this.updateContextAndTokens({ forceFullScan: message.force === true });
                 break;
             case 'markHunkApplied':
-                await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex, message.undo === true);
-                // Send confirmation back to the webview to synchronize the specific Hunk tabs and Apply buttons
+                const isUndo = message.undo === true;
+                await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex, isUndo);
                 webview.postMessage({
                     command: 'applyAllResult',
                     messageId: message.messageId,
@@ -6311,7 +6311,8 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     blockId: message.blockId,
                     filePath: message.filePath,
                     success: true,
-                    alreadyApplied: true
+                    alreadyApplied: !isUndo,
+                    undo: isUndo
                 });
                 break;
             case 'stopTokenCalculation':
@@ -6394,7 +6395,27 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 } else if (command === 'gitCommit') {
                     vscode.commands.executeCommand('lollms-vs-coder.gitCommit', params.message);
                 } else if (command === 'resetContext') {
-                    vscode.commands.executeCommand('lollms-vs-coder.resetContextSelection');
+                    await this._contextManager.getContextStateProvider()?.softReset();
+                    this._contextManager.clearAllCaches();
+                    if (this._currentDiscussion) {
+                        this._currentDiscussion.mutedFiles = [];
+                        this._currentDiscussion.importedTools = [];
+                        this._currentDiscussion.activeDiagrams = [];
+                        if (!this._currentDiscussion.id.startsWith('temp-')) {
+                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                        }
+                    }
+                    this._panel.webview.postMessage({
+                        command: 'updateContext',
+                        files: [],
+                        tools: [],
+                        diagrams: [],
+                        mutedFiles: [],
+                        mutedTools: [],
+                        mutedDiagrams: []
+                    });
+                    this.updateContextAndTokens({ isBackgroundSync: false });
+                    vscode.window.showInformationMessage("Reset included files and discussion context.");
                 } else if (command === 'saveContext') {
                     vscode.commands.executeCommand('lollms-vs-coder.saveContextSelection');
                 } else if (command === 'loadContext') {

@@ -810,8 +810,12 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     public async fullReset(): Promise<void> {
+        this._cachedStateKeys = null;
+        this._activeParentPrefixes.clear();
+        this._isTreeDirty = true;
+        this._cachedVisibleFiles = null;
         await this.context.workspaceState.update(this.stateKey, {});
-        this.refresh();
+        this.refresh(true);
         this._onDidChangeFileDecorations.fire(undefined); 
     }
 
@@ -827,8 +831,12 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             }
         }
 
+        this._cachedStateKeys = null;
+        this._activeParentPrefixes.clear();
+        this._isTreeDirty = true;
+        this._cachedVisibleFiles = null;
         await this.context.workspaceState.update(this.stateKey, newState);
-        this.refresh();
+        this.refresh(true);
         this._onDidChangeFileDecorations.fire(undefined);
     }
 

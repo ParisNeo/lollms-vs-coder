@@ -1550,95 +1550,101 @@ if (dom.sendButton) {
             const messageId = display.dataset.messageId;
             const blockIndex = parseInt(display.dataset.blockIndex || "0", 10);
             const hunkIndexRaw = display.dataset.hunkIndex;
-            const hunkIndex = hunkIndexRaw === "" ? undefined : parseInt(hunkIndexRaw || "0", 10);
+            const hunkIndex = hunkIndexRaw === "" ? 0 : parseInt(hunkIndexRaw || "0", 10);
+            const totalHunks = parseInt(display.dataset.totalHunks || "1", 10);
             const filePath = display.dataset.filePath || dom.rawCodeFilename.textContent || "";
             const blockId = display.dataset.blockId;
 
-            if (messageId) {
-                if ((window as any).progressiveSearchState !== undefined) {
-                    (window as any).progressiveSearchState = null;
-                }
+            if (!messageId) return;
 
-                const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
-                const blockEl = (blockId ? document.getElementById(blockId) : null)
-                    || (wrapper ? wrapper.querySelector(`.file-mutation-card[data-path='${filePath}'], details[data-path='${filePath}'], .file-mutation-card[data-block-index='${blockIndex}']`) : null)
-                    || document.getElementById(`block-${messageId}-${blockIndex}`)
-                    || document.querySelector(`.file-mutation-card[data-path='${filePath}']`);
+            // Target the specific hunk value
+            const hunkVal = totalHunks > 1 ? hunkIndex : -1;
 
-                const allTabs = blockEl ? blockEl.querySelectorAll('.hunk-tab') : [];
-                const isSingleHunk = allTabs.length <= 1;
-                const hunkVal = isSingleHunk ? -1 : (hunkIndex !== undefined ? hunkIndex : -1);
+            if (!state.appliedState[messageId]) state.appliedState[messageId] = {};
+            if (!state.appliedState[messageId][blockIndex]) state.appliedState[messageId][blockIndex] = [];
 
-                // 1. Immediately update in-memory applied state
-                if (!state.appliedState[messageId]) state.appliedState[messageId] = {};
-                if (!state.appliedState[messageId][blockIndex]) state.appliedState[messageId][blockIndex] = [];
+            const appliedList = state.appliedState[messageId][blockIndex];
+            const isAlreadyApplied = appliedList.includes(hunkVal) || (totalHunks > 1 && appliedList.includes(hunkIndex));
+            const isUndo = isAlreadyApplied;
 
-                if (!state.appliedState[messageId][blockIndex].includes(hunkVal)) {
-                    state.appliedState[messageId][blockIndex].push(hunkVal);
-                }
-                if (isSingleHunk && !state.appliedState[messageId][blockIndex].includes(-1)) {
-                    state.appliedState[messageId][blockIndex].push(-1);
-                }
-
-                // 2. Clear visual failure states and restore buttons directly on the card
-                if (blockEl) {
-                    blockEl.classList.remove('malformed', 'apply-failed');
-                    blockEl.style.removeProperty('border');
-                    blockEl.style.removeProperty('background-color');
-                    (blockEl as HTMLElement).style.border = '';
-                    (blockEl as HTMLElement).style.backgroundColor = '';
-
-                    // Remove injected repair and manual stitch buttons
-                    blockEl.querySelectorAll('.fix-ai-btn, .manual-fix-btn, .repairBtn').forEach(el => el.remove());
-
-                    // Transform failed/apply buttons to green checkmark
-                    blockEl.querySelectorAll('.apply-btn, .apply-mutation-btn, .apply-failed-btn').forEach((btn: any) => {
-                        btn.classList.remove('delete-btn', 'apply-failed-btn', 'sequential-applying');
-                        btn.classList.add('applied');
-                        btn.innerHTML = '<i class="codicon codicon-check"></i>';
-                        btn.title = "Successfully applied. Click to re-apply.";
-                        btn.disabled = false;
-                    });
-                }
-
-                // 3. Notify extension host to persist applied state to disk
-                vscode.postMessage({
-                    command: 'markHunkApplied',
-                    messageId,
-                    blockIndex,
-                    hunkIndex: hunkVal,
-                    filePath,
-                    blockId: blockEl?.id || blockId
-                });
-
-                // 4. Immediately dispatch applyAllResult locally to update rows, cards and master button
-                window.dispatchEvent(new MessageEvent('message', {
-                    data: {
-                        command: 'applyAllResult',
-                        messageId,
-                        blockIndex,
-                        hunkIndex: hunkVal,
-                        filePath,
-                        blockId: blockEl?.id || blockId,
-                        success: true,
-                        alreadyApplied: true
+            // 1. Toggle applied state for this specific hunk
+            if (isUndo) {
+                state.appliedState[messageId][blockIndex] = appliedList.filter(v => v !== hunkVal && v !== hunkIndex && v !== -1);
+            } else {
+                if (!appliedList.includes(hunkVal)) appliedList.push(hunkVal);
+                // Check if all hunks are now applied
+                if (totalHunks > 1) {
+                    let allHunksDone = true;
+                    for (let i = 0; i < totalHunks; i++) {
+                        if (!appliedList.includes(i)) { allHunksDone = false; break; }
                     }
-                }));
-
-                // 5. Force synchronization of results list rows and master button
-                import('./messageRenderer.js').then(m => {
-                    m.syncResultsListRows(messageId);
-                    m.checkAndSyncMessageAppliedState(messageId);
-                });
-
-                // 6. Clean up modal and search states
-                if (dom.rawSearchResultsMini) dom.rawSearchResultsMini.style.display = 'none';
-                clearRawSearch();
-                if (dom.rawSearchInput) dom.rawSearchInput.value = '';
-
-                dom.rawCodeModal.style.display = 'none';
-                dom.rawCodeModal.classList.remove('visible');
+                    if (allHunksDone && !appliedList.includes(-1)) {
+                        appliedList.push(-1);
+                    }
+                }
             }
+
+            // 2. Synchronize the modal button text and styling
+            dom.markAppliedBtn.classList.toggle('applied', !isUndo);
+            dom.markAppliedBtn.innerHTML = !isUndo 
+                ? `<span class="codicon codicon-check"></span> Hunk ${hunkIndex + 1} Applied (Click to Unmark)`
+                : `<span class="codicon codicon-check"></span> Mark Hunk ${hunkIndex + 1} as Applied`;
+
+            // 3. Update the modal tab icon
+            const tabBar = document.getElementById('modal-hunk-tabs');
+            if (tabBar && tabBar.children[hunkIndex]) {
+                const modalTab = tabBar.children[hunkIndex] as HTMLElement;
+                modalTab.classList.toggle('status-completed', !isUndo);
+                modalTab.innerHTML = `<i class="codicon ${!isUndo ? 'codicon-check' : 'codicon-primitive-dot'}"></i> HUNK ${hunkIndex + 1}`;
+            }
+
+            // 4. Update the card element in the chat stream specifically for this hunk
+            const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
+            const blockEl = (blockId ? document.getElementById(blockId) : null)
+                || (wrapper ? wrapper.querySelector(`.file-mutation-card[data-block-index='${blockIndex}'], details[id='block-${messageId}-${blockIndex}']`) : null);
+
+            if (blockEl) {
+                // Update only this hunk's tab and pane button on the card
+                const cardHunkTab = blockEl.querySelector(`.hunk-tab-${hunkIndex}`) as HTMLElement;
+                if (cardHunkTab) {
+                    cardHunkTab.classList.toggle('status-completed', !isUndo);
+                    const tabIcon = cardHunkTab.querySelector('.hunk-status-icon i');
+                    if (tabIcon) tabIcon.className = `codicon ${!isUndo ? 'codicon-check' : 'codicon-primitive-dot'}`;
+                }
+
+                const cardHunkPane = blockEl.querySelector(`.hunk-pane-${hunkIndex}`);
+                const hunkApplyBtn = cardHunkPane?.querySelector('.apply-btn, .apply-hunk-btn') as HTMLElement;
+                const hunkUndoBtn = cardHunkPane?.querySelector('.undo-hunk-btn') as HTMLElement;
+
+                if (hunkApplyBtn) hunkApplyBtn.classList.toggle('applied', !isUndo);
+                if (hunkUndoBtn) hunkUndoBtn.style.display = !isUndo ? 'inline-flex' : 'none';
+
+                // Only mark the master card button if all hunks are applied
+                const currentApplied = state.appliedState[messageId][blockIndex];
+                const allDone = currentApplied.includes(-1) || (totalHunks > 1 && currentApplied.length >= totalHunks);
+
+                const mainBtn = blockEl.querySelector('.code-actions .apply-mutation-btn, .code-actions .apply-btn') as HTMLElement;
+                if (mainBtn) {
+                    mainBtn.classList.toggle('applied', allDone);
+                }
+            }
+
+            // 5. Notify extension host to persist applied state
+            vscode.postMessage({
+                command: 'markHunkApplied',
+                messageId,
+                blockIndex,
+                hunkIndex: hunkVal,
+                undo: isUndo,
+                filePath,
+                blockId: blockEl?.id || blockId
+            });
+
+            // 6. Update results list rows
+            import('./messageRenderer.js').then(m => {
+                m.syncResultsListRows(messageId);
+                m.checkAndSyncMessageAppliedState(messageId);
+            });
         });
     }
 

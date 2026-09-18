@@ -318,13 +318,21 @@ export class GitIntegration {
    * Retrieves full commit history for a file across ALL local and remote branches.
    * Merges `git log --all` with `git log --follow` to capture multi-branch and renamed commits reliably.
    */
-  public async getFileHistoryAllBranches(folder: vscode.WorkspaceFolder, filePath: string, count: number = 250): Promise<GitFileVersionCommit[]> {
+  public async getFileHistoryAllBranches(
+      folder: vscode.WorkspaceFolder, 
+      filePath: string, 
+      count: number = 50,
+      skip: number = 0
+  ): Promise<GitFileVersionCommit[]> {
       const normalizedPath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
       const commitsMap = new Map<string, GitFileVersionCommit>();
 
       const parsePipeOutput = (stdout: string) => {
-          stdout.split('\n').filter(line => line.trim()).forEach(line => {
-              const cleanLine = line.replace(/\r$/, '');
+          if (!stdout) return;
+          const lines = stdout.split('\n');
+          for (let i = 0; i < lines.length; i++) {
+              const cleanLine = lines[i].replace(/\r$/, '').trim();
+              if (!cleanLine) continue;
               const parts = cleanLine.split('|');
               if (parts.length >= 5) {
                   const hash = parts[0].trim();
@@ -344,41 +352,22 @@ export class GitIntegration {
                       });
                   }
               }
-          });
+          }
       };
 
-      // Query 1: All branches across the entire repository
-      try {
-          const { stdout: allOut } = await execAsync(
-              `git --no-pager log --all --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short -n ${count} -- "${normalizedPath}"`,
-              { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 15000 }
-          );
-          parsePipeOutput(allOut);
-      } catch (e: any) {
-          console.warn("[GitHistory] git log --all warning:", e.message);
-      }
+      const q1 = execAsync(
+          `git --no-pager log --all --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short --max-count=${count} --skip=${skip} -- "${normalizedPath}"`,
+          { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 10000 }
+      ).catch(() => ({ stdout: '' }));
 
-      // Query 2: Follow renames along active history
-      try {
-          const { stdout: followOut } = await execAsync(
-              `git --no-pager log --follow --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short -n ${count} -- "${normalizedPath}"`,
-              { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 15000 }
-          );
-          parsePipeOutput(followOut);
-      } catch (e: any) {
-          console.warn("[GitHistory] git log --follow warning:", e.message);
-      }
+      const q2 = execAsync(
+          `git --no-pager log --follow --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short --max-count=${count} --skip=${skip} -- "${normalizedPath}"`,
+          { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 10000 }
+      ).catch(() => ({ stdout: '' }));
 
-      // Fallback: Standard log if map is still empty
-      if (commitsMap.size === 0) {
-          try {
-              const { stdout: stdOut } = await execAsync(
-                  `git --no-pager log --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short -n ${count} -- "${normalizedPath}"`,
-                  { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 15000 }
-              );
-              parsePipeOutput(stdOut);
-          } catch (e) {}
-      }
+      const [res1, res2] = await Promise.all([q1, q2]);
+      parsePipeOutput(res1.stdout);
+      parsePipeOutput(res2.stdout);
 
       return Array.from(commitsMap.values());
   }

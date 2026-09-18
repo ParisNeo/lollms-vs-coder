@@ -3907,31 +3907,38 @@ export function openRawCodeModal(messageId: string, blockIndex: number, filePath
 
     tabBar.innerHTML = '';
 
+    const hunkIdBadge = document.getElementById('raw-hunk-id');
+    display.dataset.totalHunks = String(matches.length);
+
     const switchHunk = (idx: number) => {
-        const match = matches[idx];
+        const match = matches[idx] || [normalizedRawCode, "", ""];
         display.textContent = match[0];
+        display.dataset.rawText = match[0];
         display.dataset.hunkIndex = String(idx);
 
-        // Update active tab visual
+        if (hunkIdBadge) {
+            hunkIdBadge.textContent = matches.length > 1 ? `Hunk ${idx + 1} of ${matches.length}` : 'Single Hunk';
+        }
+
         tabBar.querySelectorAll('.hunk-tab').forEach((t: any, i) => {
             t.classList.toggle('active', i === idx);
         });
 
-        // Sync "Applied" state of the button inside modal
+        // Sync "Applied" state of this specific hunk
         const appliedHunks = state.appliedState?.[messageId]?.[blockIndex] || [];
-        const isApplied = appliedHunks.includes(idx) || appliedHunks.includes(-1);
-        dom.markAppliedBtn.classList.toggle('applied', isApplied);
-        dom.markAppliedBtn.innerHTML = isApplied 
-            ? '<span class="codicon codicon-check"></span> Applied Manually'
-            : '<span class="codicon codicon-check"></span> Mark as Applied Manually';
+        const isHunkApplied = appliedHunks.includes(idx) || (matches.length <= 1 && appliedHunks.includes(-1));
+
+        dom.markAppliedBtn.classList.toggle('applied', isHunkApplied);
+        dom.markAppliedBtn.innerHTML = isHunkApplied 
+            ? `<span class="codicon codicon-check"></span> Hunk ${idx + 1} Applied (Click to Unmark)`
+            : `<span class="codicon codicon-check"></span> Mark Hunk ${idx + 1} as Applied`;
 
         // --- AUTOMATED STITCH RESEARCH PROTOCOL ---
-        // Automatically find the most plausible insertion site on disk using our progressive search algorithm
         const searchPart = match[1] || "";
-        const cleanLines = searchPart.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        const cleanLines = searchPart.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
 
         if (cleanLines.length > 0) {
-            progressiveSearchState = {
+            (window as any).progressiveSearchState = {
                 lines: cleanLines,
                 currentStartLineIdx: 0,
                 currentEndLineIdx: 0,
@@ -3947,14 +3954,14 @@ export function openRawCodeModal(messageId: string, blockIndex: number, filePath
         }
     };
 
+    tabBar.style.display = matches.length > 1 ? 'flex' : 'none';
     matches.forEach((_, i) => {
         const tab = document.createElement('div');
         tab.className = 'hunk-tab';
-        // Add a dot if the hunk is already applied
         const appliedHunks = state.appliedState?.[messageId]?.[blockIndex] || [];
-        const isApplied = appliedHunks.includes(i) || appliedHunks.includes(-1);
+        const isHunkApplied = appliedHunks.includes(i) || appliedHunks.includes(-1);
 
-        tab.innerHTML = `<i class="codicon ${isApplied ? 'codicon-check' : 'codicon-primitive-dot'}"></i> HUNK ${i + 1}`;
+        tab.innerHTML = `<i class="codicon ${isHunkApplied ? 'codicon-check' : 'codicon-primitive-dot'}"></i> HUNK ${i + 1}`;
         tab.onclick = () => switchHunk(i);
         tabBar.appendChild(tab);
     });

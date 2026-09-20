@@ -952,6 +952,7 @@ export class ChatPanel {
             appliedState: this._currentDiscussion.appliedState || {},
             currentModel: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
             currentTemperature: this._discussionCapabilities.enableTemperature ? (this._discussionCapabilities.temperature ?? 0.7) : undefined,
+            currentMaxTokens: this._discussionCapabilities.enableMaxTokens ? (this._discussionCapabilities.maxTokens ?? 4096) : undefined,
             workspaceFolders: workspaceFolders,
             agentProfiles: AGENT_MISSION_PROFILES,
             userPreferenceProfiles: userPrefProfiles,
@@ -3368,7 +3369,8 @@ Could not connect to the AI server at \`${this._lollmsAPI.config.apiUrl}\`.
                         });
                     }, controller.signal, this._currentDiscussion!.model, {
                         capabilities: this._discussionCapabilities,
-                        temperature: this._discussionCapabilities.temperature
+                        temperature: this._discussionCapabilities.enableTemperature ? this._discussionCapabilities.temperature : undefined,
+                        maxTokens: this._discussionCapabilities.enableMaxTokens ? this._discussionCapabilities.maxTokens : undefined
                     });
                 } catch (err: any) {
                     if (err.name !== 'AbortError') {
@@ -3746,6 +3748,7 @@ Could not connect to the AI server at \`${this._lollmsAPI.config.apiUrl}\`.
 
         // Determine if temperature override is active and configured
         const reqTemperature = this._discussionCapabilities.enableTemperature ? (this._discussionCapabilities.temperature ?? 0.7) : undefined;
+        const reqMaxTokens = this._discussionCapabilities.enableMaxTokens ? (this._discussionCapabilities.maxTokens ?? 4096) : undefined;
 
         // =========================================================================
         // 🛡️ CONTEXT GOVERNOR & 120% HARD-CAP ARBITRATION
@@ -3875,6 +3878,9 @@ Could not connect to the AI server at \`${this._lollmsAPI.config.apiUrl}\`.
         const cleanOptions: any = {};
         if (reqTemperature !== undefined && !isNaN(reqTemperature)) {
             cleanOptions.temperature = reqTemperature;
+        }
+        if (reqMaxTokens !== undefined && !isNaN(reqMaxTokens) && reqMaxTokens > 0) {
+            cleanOptions.maxTokens = reqMaxTokens;
         }
         if (this._discussionCapabilities.thinkingMode) {
             cleanOptions.thinking = true;
@@ -6162,6 +6168,47 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     this.updateContextAndTokens({ isBackgroundSync: false });
                 }
                 break;
+            case 'bulkMuteFiles':
+                if (this._currentDiscussion && Array.isArray(message.paths)) {
+                    if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
+                    let addedCount = 0;
+                    for (const rawP of message.paths) {
+                        const targetPath = String(rawP).replace(/\\/g, '/').trim();
+                        if (!targetPath) continue;
+                        const alreadyMuted = this._currentDiscussion.mutedFiles.some(p => {
+                            const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+                            const cleanT = targetPath.toLowerCase();
+                            return cleanP === cleanT || cleanP.endsWith('/' + cleanT) || cleanT.endsWith('/' + cleanP);
+                        });
+                        if (!alreadyMuted) {
+                            this._currentDiscussion.mutedFiles.push(targetPath);
+                            addedCount++;
+                        }
+                    }
+
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                    this.updateContextAndTokens({ isBackgroundSync: false });
+                    vscode.window.showInformationMessage(`Deactivated content for ${addedCount} file(s) for this discussion (Muted).`);
+                }
+                break;
+            case 'bulkUnmuteFiles':
+                if (this._currentDiscussion && Array.isArray(message.paths)) {
+                    if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
+                    const targetPaths = message.paths.map((rawP: string) => String(rawP).replace(/\\/g, '/').toLowerCase().trim());
+                    this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(p => {
+                        const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+                        return !targetPaths.some((t: string) => cleanP === t || cleanP.endsWith('/' + t) || t.endsWith('/' + cleanP));
+                    });
+
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                    this.updateContextAndTokens({ isBackgroundSync: false });
+                    vscode.window.showInformationMessage(`Reactivated content for selected file(s) for this discussion.`);
+                }
+                break;
             case 'removeFileFromContext':
             case 'bulkRemoveFiles':
                 if (this._contextManager) {
@@ -7029,6 +7076,22 @@ Task:
                         if (partial.importedSkills !== undefined) {
                             this._currentDiscussion.importedSkills = partial.importedSkills;
                             delete partial.importedSkills;
+                        }
+                        if (partial.mutedFiles !== undefined) {
+                            this._currentDiscussion.mutedFiles = partial.mutedFiles;
+                            delete partial.mutedFiles;
+                        }
+                        if (partial.mutedTools !== undefined) {
+                            this._currentDiscussion.mutedTools = partial.mutedTools;
+                            delete partial.mutedTools;
+                        }
+                        if (partial.mutedSkills !== undefined) {
+                            this._currentDiscussion.mutedSkills = partial.mutedSkills;
+                            delete partial.mutedSkills;
+                        }
+                        if (partial.mutedDiagrams !== undefined) {
+                            this._currentDiscussion.mutedDiagrams = partial.mutedDiagrams;
+                            delete partial.mutedDiagrams;
                         }
                     }
 

@@ -217,6 +217,8 @@ export interface DiscussionCapabilities {
     projectMemoryEnabled: boolean;
     enableTemperature?: boolean; // Added to enable/disable temperature control override
     temperature?: number; // Optional temperature value
+    enableMaxTokens?: boolean; // Added to enable/disable maximum generation tokens override
+    maxTokens?: number; // Optional maximum tokens to generate
     ttftTimeout: number;
     interTokenTimeout: number;
     contextGovernorThreshold: number; // Trigger threshold percentage (0-100)

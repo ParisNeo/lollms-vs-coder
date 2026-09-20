@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-09-20 08:57]
+
+- fix(api): update version in package.json to v1.0.30
+
 ## [2026-09-17 12:34]
 
 - `chore(vscode): update release version to 1.0.27 and add lollms_code to .gitignore`

@@ -17,6 +17,8 @@ export class FileHistoryComparePanel {
     private _refB: string = '';
     private _contentCache: Map<string, string> = new Map();
     private _isWebviewReady: boolean = false;
+    private _isLoadingHistory: boolean = false;
+    private _diffRequestId: number = 0;
     private _skipCount: number = 0;
     private readonly _pageSize: number = 50;
     private _hasMoreCommits: boolean = true;
@@ -78,10 +80,10 @@ export class FileHistoryComparePanel {
 
         // Fallback timer: ensures data loads even if the webview-ready handshake is missed
         setTimeout(() => {
-            if (!this._isWebviewReady) {
-                this.loadHistory();
+            if (!this._isWebviewReady && !this._isLoadingHistory) {
+                this.loadHistory(false);
             }
-        }, 300);
+        }, 500);
     }
 
     public async changeFile(folder: vscode.WorkspaceFolder, filePath: string) {
@@ -109,6 +111,9 @@ export class FileHistoryComparePanel {
     }
 
     private async loadHistory(append: boolean = false) {
+        if (this._isLoadingHistory) return;
+        this._isLoadingHistory = true;
+
         this._panel.webview.postMessage({ command: 'setLoading', loading: true, status: append ? 'Loading more commits...' : 'Fetching history across all branches...' });
 
         try {
@@ -133,14 +138,6 @@ export class FileHistoryComparePanel {
             this._skipCount += this._pageSize;
             this._hasMoreCommits = newBatch.length >= this._pageSize;
 
-            if (this._commits.length > 0) {
-                if (!this._refB || this._refB === 'WORKING_TREE') {
-                    this._refB = this._commits[0].hash;
-                }
-            } else {
-                this._refB = 'WORKING_TREE';
-            }
-
             this._panel.webview.postMessage({
                 command: 'setFileDetails',
                 filePath: this._currentFilePath,
@@ -151,13 +148,23 @@ export class FileHistoryComparePanel {
                 hasMore: this._hasMoreCommits
             });
 
-            if (!append) {
+            // LAZY LOADING MANDATE: Do NOT compute/load heavy diffs on initial load.
+            // If the user already explicitly selected a commit refB, update it; otherwise show the placeholder.
+            if (!append && this._refB && this._refB !== 'WORKING_TREE') {
                 await this.updateDiffView();
+            } else if (!append) {
+                this._panel.webview.postMessage({
+                    command: 'showDiffPlaceholder',
+                    fileName: path.basename(this._currentFilePath),
+                    commitCount: this._commits.length,
+                    latestCommit: this._commits.length > 0 ? this._commits[0] : null
+                });
             }
         } catch (err: any) {
             Logger.error(`Failed to load history for ${this._currentFilePath}`, err);
             this._panel.webview.postMessage({ command: 'setError', error: err.message || 'Failed to read git history.' });
         } finally {
+            this._isLoadingHistory = false;
             this._panel.webview.postMessage({ command: 'setLoading', loading: false });
         }
     }
@@ -173,7 +180,14 @@ export class FileHistoryComparePanel {
     }
 
     private async updateDiffView() {
-        this._panel.webview.postMessage({ command: 'setLoading', loading: true, status: 'Generating diff comparison...' });
+        if (!this._refB) return;
+        const currentReq = ++this._diffRequestId;
+
+        this._panel.webview.postMessage({ 
+            command: 'setDiffLoading', 
+            loading: true, 
+            status: `Comparing ${this.getRefDisplayInfo(this._refA).label} ↔ ${this.getRefDisplayInfo(this._refB).label}...` 
+        });
 
         try {
             const [contentA, contentB, rawDiff] = await Promise.all([
@@ -181,6 +195,10 @@ export class FileHistoryComparePanel {
                 this.getFileContent(this._refB || this._refA),
                 this._gitIntegration.getFileDiffBetweenRefs(this._currentFolder, this._refA, this._refB || this._refA, this._currentFilePath)
             ]);
+
+            if (currentReq !== this._diffRequestId) {
+                return; // Newer request superseded this diff computation
+            }
 
             const infoA = this.getRefDisplayInfo(this._refA);
             const infoB = this.getRefDisplayInfo(this._refB || this._refA);
@@ -196,9 +214,13 @@ export class FileHistoryComparePanel {
                 rawDiff
             });
         } catch (err: any) {
-            this._panel.webview.postMessage({ command: 'setError', error: `Diff error: ${err.message}` });
+            if (currentReq === this._diffRequestId) {
+                this._panel.webview.postMessage({ command: 'setError', error: `Diff error: ${err.message}` });
+            }
         } finally {
-            this._panel.webview.postMessage({ command: 'setLoading', loading: false });
+            if (currentReq === this._diffRequestId) {
+                this._panel.webview.postMessage({ command: 'setDiffLoading', loading: false });
+            }
         }
     }
 
@@ -221,7 +243,9 @@ export class FileHistoryComparePanel {
             switch (message.command) {
                 case 'webview-ready':
                     this._isWebviewReady = true;
-                    await this.loadHistory();
+                    if (!this._isLoadingHistory && this._commits.length === 0) {
+                        await this.loadHistory(false);
+                    }
                     break;
                 case 'selectRefA':
                     this._refA = message.ref;
@@ -926,6 +950,14 @@ export class FileHistoryComparePanel {
                     populateDropdowns();
                     renderCommitList();
                     break;
+                case 'showDiffPlaceholder':
+                    renderDiffPlaceholder(msg);
+                    break;
+                case 'setDiffLoading':
+                    if (msg.loading) {
+                        diffArea.innerHTML = '<div class="diff-empty"><div class="spinner" style="width:28px; height:28px; border-width:3px;"></div><span style="font-weight:bold; font-size:13px; margin-top:10px;">' + escapeHtml(msg.status || 'Generating diff...') + '</span></div>';
+                    }
+                    break;
                 case 'renderDiff':
                     activeRefA = msg.refA;
                     activeRefB = msg.refB;
@@ -1137,6 +1169,22 @@ export class FileHistoryComparePanel {
                 const rowsA = [];
                 const rowsB = [];
                 const isIdentical = contentA === contentB;
+
+                // For identical large files, collapse instead of generating thousands of elements
+                if (isIdentical && max > 20) {
+                    for (let i = 0; i < 4; i++) {
+                        rowsA.push({ num: i + 1, text: linesA[i] || '', type: 'unchanged' });
+                        rowsB.push({ num: i + 1, text: linesB[i] || '', type: 'unchanged' });
+                    }
+                    rowsA.push({ num: '...', text: '--- ' + (max - 8) + ' identical lines hidden ---', type: 'collapsed' });
+                    rowsB.push({ num: '...', text: '--- ' + (max - 8) + ' identical lines hidden ---', type: 'collapsed' });
+                    for (let i = max - 4; i < max; i++) {
+                        rowsA.push({ num: i + 1, text: linesA[i] || '', type: 'unchanged' });
+                        rowsB.push({ num: i + 1, text: linesB[i] || '', type: 'unchanged' });
+                    }
+                    return { rowsA: rowsA, rowsB: rowsB };
+                }
+
                 for (let i = 0; i < max; i++) {
                     const textA = i < linesA.length ? linesA[i] : '';
                     const textB = i < linesB.length ? linesB[i] : '';
@@ -1184,32 +1232,40 @@ export class FileHistoryComparePanel {
             }
             if (curHunk) hunks.push(curHunk);
 
-            if (hunks.length === 0) {
-                const max = Math.max(linesA.length, linesB.length);
-                const rowsA = [];
-                const rowsB = [];
-                for (let i = 0; i < max; i++) {
-                    rowsA.push({ num: i < linesA.length ? (i + 1) : '', text: linesA[i] || '', type: 'unchanged' });
-                    rowsB.push({ num: i < linesB.length ? (i + 1) : '', text: linesB[i] || '', type: 'unchanged' });
-                }
-                return { rowsA: rowsA, rowsB: rowsB };
-            }
-
             const rowsA = [];
             const rowsB = [];
+            const CONTEXT_PAD = 4; // Display 4 context lines around changes
 
             let lineIdxA = 1;
             let lineIdxB = 1;
 
             for (let h = 0; h < hunks.length; h++) {
                 const hunk = hunks[h];
+                const distanceA = hunk.startA - lineIdxA;
 
-                // Lines before this hunk are unchanged
+                // Folding / collapsing large spans of unchanged lines
+                if (distanceA > (CONTEXT_PAD * 2 + 2)) {
+                    // 1. Context lines before collapse
+                    for (let c = 0; c < CONTEXT_PAD && lineIdxA < hunk.startA; c++) {
+                        rowsA.push({ num: lineIdxA, text: linesA[lineIdxA - 1] || '', type: 'unchanged' });
+                        rowsB.push({ num: lineIdxB, text: linesB[lineIdxB - 1] || '', type: 'unchanged' });
+                        lineIdxA++;
+                        lineIdxB++;
+                    }
+
+                    const skipCount = (hunk.startA - CONTEXT_PAD) - lineIdxA;
+                    if (skipCount > 0) {
+                        rowsA.push({ num: '...', text: '↕ ' + skipCount + ' unchanged lines hidden', type: 'collapsed' });
+                        rowsB.push({ num: '...', text: '↕ ' + skipCount + ' unchanged lines hidden', type: 'collapsed' });
+                        lineIdxA += skipCount;
+                        lineIdxB += skipCount;
+                    }
+                }
+
+                // Unchanged lines leading directly into the hunk
                 while (lineIdxA < hunk.startA && lineIdxA <= linesA.length) {
-                    const textA = linesA[lineIdxA - 1] !== undefined ? linesA[lineIdxA - 1] : '';
-                    const textB = lineIdxB <= linesB.length ? linesB[lineIdxB - 1] : '';
-                    rowsA.push({ num: lineIdxA, text: textA, type: 'unchanged' });
-                    rowsB.push({ num: lineIdxB, text: textB, type: 'unchanged' });
+                    rowsA.push({ num: lineIdxA, text: linesA[lineIdxA - 1] || '', type: 'unchanged' });
+                    rowsB.push({ num: lineIdxB, text: linesB[lineIdxB - 1] || '', type: 'unchanged' });
                     lineIdxA++;
                     lineIdxB++;
                 }
@@ -1257,7 +1313,24 @@ export class FileHistoryComparePanel {
                 }
             }
 
-            // Output remaining lines after all hunks
+            // Collapse trailing unchanged lines after last hunk
+            const remainingA = linesA.length - lineIdxA + 1;
+            if (remainingA > (CONTEXT_PAD * 2 + 2)) {
+                for (let c = 0; c < CONTEXT_PAD; c++) {
+                    rowsA.push({ num: lineIdxA, text: linesA[lineIdxA - 1] || '', type: 'unchanged' });
+                    rowsB.push({ num: lineIdxB, text: linesB[lineIdxB - 1] || '', type: 'unchanged' });
+                    lineIdxA++;
+                    lineIdxB++;
+                }
+                const skipTrailing = (linesA.length - CONTEXT_PAD) - lineIdxA + 1;
+                if (skipTrailing > 0) {
+                    rowsA.push({ num: '...', text: '↕ ' + skipTrailing + ' unchanged lines hidden', type: 'collapsed' });
+                    rowsB.push({ num: '...', text: '↕ ' + skipTrailing + ' unchanged lines hidden', type: 'collapsed' });
+                    lineIdxA += skipTrailing;
+                    lineIdxB += skipTrailing;
+                }
+            }
+
             while (lineIdxA <= linesA.length || lineIdxB <= linesB.length) {
                 const textA = lineIdxA <= linesA.length ? linesA[lineIdxA - 1] : '';
                 const textB = lineIdxB <= linesB.length ? linesB[lineIdxB - 1] : '';
@@ -1297,6 +1370,40 @@ export class FileHistoryComparePanel {
             }
         }
 
+        function renderDiffPlaceholder(data) {
+            const fileName = data.fileName || 'File';
+            const count = data.commitCount || 0;
+            const latest = data.latestCommit;
+
+            let buttonHtml = '';
+            if (latest) {
+                buttonHtml = '<button class="primary" id="btn-compare-latest" style="margin-top:14px; font-weight:bold; padding:8px 18px; font-size:12px;">' +
+                    '<i class="codicon codicon-git-compare"></i> Compare Working Tree with Latest (' + latest.hash.substring(0, 7) + ')' +
+                '</button>';
+            }
+
+            diffArea.innerHTML = '<div class="diff-empty">' +
+                '<i class="codicon codicon-history" style="font-size:42px; color:var(--vscode-textLink-foreground); opacity:0.85;"></i>' +
+                '<span style="font-weight:bold; font-size:15px; margin-top:10px;">' + escapeHtml(fileName) + ' &middot; History Loaded</span>' +
+                '<span style="font-size:12px; opacity:0.75; max-width:440px; line-height:1.5;">' +
+                    (count > 0 ? count + ' commits recorded across branches.' : 'No previous commits found.') +
+                    '<br>Click any commit in the sidebar to inspect differences, or compare with latest.' +
+                '</span>' +
+                buttonHtml +
+            '</div>';
+
+            const btn = document.getElementById('btn-compare-latest');
+            if (btn && latest) {
+                btn.onclick = function() {
+                    activeRefA = 'WORKING_TREE';
+                    activeRefB = latest.hash;
+                    selectA.value = 'WORKING_TREE';
+                    selectB.value = latest.hash;
+                    vscode.postMessage({ command: 'selectRefB', ref: latest.hash });
+                };
+            }
+        }
+
         function renderSplitView() {
             const labelA = currentInfoA ? currentInfoA.label : activeRefA.substring(0, 7);
             const labelB = currentInfoB ? currentInfoB.label : activeRefB.substring(0, 7);
@@ -1322,7 +1429,7 @@ export class FileHistoryComparePanel {
 
             // Non-blocking chunked line insertion
             const totalRows = rowsA.length;
-            const chunkSize = 500;
+            const chunkSize = 400;
             let currentIdx = 0;
 
             function renderNextChunk() {
@@ -1332,7 +1439,7 @@ export class FileHistoryComparePanel {
 
                 for (let i = currentIdx; i < end; i++) {
                     const rA = rowsA[i];
-                    const clsA = rA.type === 'removed' ? ' removed' : (rA.type === 'empty' ? ' empty-placeholder' : '');
+                    const clsA = rA.type === 'removed' ? ' removed' : (rA.type === 'empty' ? ' empty-placeholder' : (rA.type === 'collapsed' ? ' header-line' : ''));
                     const numStrA = rA.num !== '' ? String(rA.num) : '&nbsp;';
                     chunkHtmlA += '<div class="diff-line' + clsA + '">' +
                         '<span class="diff-line-num">' + numStrA + '</span>' +
@@ -1340,7 +1447,7 @@ export class FileHistoryComparePanel {
                         '</div>';
 
                     const rB = rowsB[i];
-                    const clsB = rB.type === 'added' ? ' added' : (rB.type === 'empty' ? ' empty-placeholder' : '');
+                    const clsB = rB.type === 'added' ? ' added' : (rB.type === 'empty' ? ' empty-placeholder' : (rB.type === 'collapsed' ? ' header-line' : ''));
                     const numStrB = rB.num !== '' ? String(rB.num) : '&nbsp;';
                     chunkHtmlB += '<div class="diff-line' + clsB + '">' +
                         '<span class="diff-line-num">' + numStrB + '</span>' +

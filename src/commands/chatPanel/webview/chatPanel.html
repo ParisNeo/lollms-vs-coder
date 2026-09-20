@@ -340,10 +340,15 @@
                                     <div class="voice-controls">
                                         <button id="sttButton" title="Listen (STT)" class="voice-btn"><i class="codicon codicon-mic"></i></button>
                                         <button id="toggleTempSliderBtn" title="Toggle Custom Temperature" class="voice-btn"><i class="codicon codicon-thermometer"></i></button>
+                                        <button id="toggleMaxTokensSliderBtn" title="Toggle Max Generation Tokens" class="voice-btn"><i class="codicon codicon-symbol-numeric"></i></button>
                                     </div>
                                     <div class="temp-slider-container" id="inputTempContainer" title="Model Temperature (Creativity)" style="display: none;">
                                         <div class="temp-tooltip" id="temp-val-display">0.7</div>
                                         <input type="range" id="temp-slider" min="0" max="2" step="0.1" value="0.7">
+                                    </div>
+                                    <div class="temp-slider-container" id="inputMaxTokensContainer" title="Max Output Tokens" style="display: none;">
+                                        <div class="temp-tooltip" id="max-tokens-val-display">4096</div>
+                                        <input type="range" id="max-tokens-slider" min="128" max="32768" step="128" value="4096">
                                     </div>
                                     <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
                                 </div>
@@ -565,7 +570,20 @@
                         <input type="range" id="modal-temperature" min="0" max="2" step="0.1" style="width:100%; margin: 8px 0;">
                         <p style="font-size: 10px; opacity: 0.7; margin:0;">0.0 = Precise/Deterministic, 1.0+ = Creative/Random.</p>
                     </div>
-                    
+
+                    <div class="checkbox-container" style="margin-bottom: 10px;">
+                        <label class="switch"><input type="checkbox" id="cap-enableMaxTokens"><span class="slider"></span></label>
+                        <label for="cap-enableMaxTokens"><strong>Max Generation Tokens:</strong> Limit maximum tokens generated per response.</label>
+                    </div>
+                    <div style="margin-bottom: 15px; display: none;" id="modal-max-tokens-container">
+                        <div style="display:flex; justify-content: space-between;">
+                            <label style="font-size: 11px; font-weight:bold;">Max Output Tokens</label>
+                            <span id="modal-max-tokens-val" style="font-size: 11px; opacity: 0.8;">4096</span>
+                        </div>
+                        <input type="range" id="modal-max-tokens" min="128" max="32768" step="128" style="width:100%; margin: 8px 0;">
+                        <p style="font-size: 10px; opacity: 0.7; margin:0;">Specifies upper output limit (e.g. 2048, 4096, 8192).</p>
+                    </div>
+
                     <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Timeouts (ms). Set to 0 for Infinity.</p>
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
                         <div class="form-group">

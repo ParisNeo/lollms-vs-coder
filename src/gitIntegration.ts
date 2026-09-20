@@ -355,19 +355,25 @@ export class GitIntegration {
           }
       };
 
-      const q1 = execAsync(
-          `git --no-pager log --all --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short --max-count=${count} --skip=${skip} -- "${normalizedPath}"`,
-          { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 10000 }
-      ).catch(() => ({ stdout: '' }));
+      // 1. Fast Primary Query: Query all branches using path-indexed log without slow rename traversal
+      try {
+          const res1 = await execAsync(
+              `git --no-pager log --all --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short --max-count=${count} --skip=${skip} -- "${normalizedPath}"`,
+              { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 8000 }
+          );
+          parsePipeOutput(res1.stdout);
+      } catch {}
 
-      const q2 = execAsync(
-          `git --no-pager log --follow --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short --max-count=${count} --skip=${skip} -- "${normalizedPath}"`,
-          { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 10000 }
-      ).catch(() => ({ stdout: '' }));
-
-      const [res1, res2] = await Promise.all([q1, q2]);
-      parsePipeOutput(res1.stdout);
-      parsePipeOutput(res2.stdout);
+      // 2. Only if NO commits were found on initial page (skip === 0), try follow-rename as bounded fallback
+      if (commitsMap.size === 0 && skip === 0) {
+          try {
+              const res2 = await execAsync(
+                  `git --no-pager log --follow --pretty=format:"%H|%s|%an|%ad|%ar|%d" --date=short --max-count=${count} -- "${normalizedPath}"`,
+                  { cwd: folder.uri.fsPath, maxBuffer: MAX_BUFFER_SIZE, timeout: 4000 }
+              );
+              parsePipeOutput(res2.stdout);
+          } catch {}
+      }
 
       return Array.from(commitsMap.values());
   }
@@ -392,33 +398,12 @@ export class GitIntegration {
           const { stdout } = await execAsync(`git --no-pager show "${ref}:${normalizedPath}"`, {
               cwd: folder.uri.fsPath,
               maxBuffer: MAX_BUFFER_SIZE,
-              timeout: 15000
+              timeout: 10000
           });
           return stdout;
       } catch (e: any) {
-          // Fallback: File was renamed or moved; locate blob by filename
-          try {
-              const baseName = path.basename(normalizedPath);
-              const { stdout: treeOut } = await execAsync(`git --no-pager ls-tree -r "${ref}"`, {
-                  cwd: folder.uri.fsPath,
-                  maxBuffer: MAX_BUFFER_SIZE,
-                  timeout: 10000
-              });
-              const lines = treeOut.split('\n');
-              const matchedLine = lines.find(l => l.endsWith(`/${baseName}`) || l.endsWith(`\t${baseName}`));
-              if (matchedLine) {
-                  const blobMatch = matchedLine.match(/blob\s+([a-f0-9]+)\s+/);
-                  if (blobMatch) {
-                      const { stdout: catOut } = await execAsync(`git --no-pager cat-file -p ${blobMatch[1]}`, {
-                          cwd: folder.uri.fsPath,
-                          maxBuffer: MAX_BUFFER_SIZE,
-                          timeout: 10000
-                      });
-                      return catOut;
-                  }
-              }
-          } catch {}
-          return `(Content unavailable at commit ${ref.substring(0, 7)})`;
+          // File did not exist at this commit (e.g. before initial commit of this path)
+          return '';
       }
   }
 

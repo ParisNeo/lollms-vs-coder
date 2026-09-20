@@ -845,6 +845,40 @@ if (dom.sendButton) {
         });
     }
 
+    if (dom.maxTokensSlider) {
+        dom.maxTokensSlider.addEventListener('input', (e) => {
+            const val = (e.target as HTMLInputElement).value;
+            if (dom.maxTokensValDisplay) dom.maxTokensValDisplay.textContent = val;
+        });
+
+        dom.maxTokensSlider.addEventListener('change', (e) => {
+            const val = parseInt((e.target as HTMLInputElement).value, 10);
+            vscode.postMessage({ 
+                command: 'updateDiscussionCapabilitiesPartial', 
+                partial: { maxTokens: val, enableMaxTokens: true } 
+            });
+        });
+    }
+
+    if (dom.toggleMaxTokensSliderBtn) {
+        dom.toggleMaxTokensSliderBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isActive = dom.inputMaxTokensContainer.style.display === 'flex';
+            const newEnableState = !isActive;
+
+            dom.inputMaxTokensContainer.style.display = newEnableState ? 'flex' : 'none';
+            dom.toggleMaxTokensSliderBtn.classList.toggle('active', newEnableState);
+
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { 
+                    enableMaxTokens: newEnableState,
+                    maxTokens: newEnableState ? parseInt(dom.maxTokensSlider.value, 10) : undefined
+                }
+            });
+        });
+    }
+
     bindChange(dom.personalitySelector, (e) => {
         const val = (e.target as HTMLSelectElement).value;
         vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: val });
@@ -1003,6 +1037,30 @@ if (dom.sendButton) {
         });
     }
 
+    // Live update of max tokens label
+    const maxTokensRange = document.getElementById('modal-max-tokens') as HTMLInputElement;
+    const maxTokensLabel = document.getElementById('modal-max-tokens-val');
+    if (maxTokensRange && maxTokensLabel) {
+        maxTokensRange.oninput = () => { maxTokensLabel.textContent = maxTokensRange.value; };
+    }
+
+    const modalMaxTokensCheck = document.getElementById('cap-enableMaxTokens') as HTMLInputElement;
+    const modalMaxTokensContainer = document.getElementById('modal-max-tokens-container');
+    if (modalMaxTokensCheck && modalMaxTokensContainer) {
+        modalMaxTokensCheck.addEventListener('change', () => {
+            const isChecked = modalMaxTokensCheck.checked;
+            modalMaxTokensContainer.style.display = isChecked ? 'block' : 'none';
+
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { 
+                    enableMaxTokens: isChecked,
+                    maxTokens: isChecked ? parseInt(maxTokensRange.value, 10) : undefined
+                }
+            });
+        });
+    }
+
     const resetDiscussionToolsBtn = document.getElementById('reset-discussion-tools-btn');
     if (resetDiscussionToolsBtn) {
         resetDiscussionToolsBtn.addEventListener('click', () => {
@@ -1094,6 +1152,9 @@ if (dom.sendButton) {
             const enableTempInput = document.getElementById('cap-enableTemperature') as HTMLInputElement;
             const isTempEnabled = enableTempInput ? enableTempInput.checked : false;
 
+            const enableMaxTokensInput = document.getElementById('cap-enableMaxTokens') as HTMLInputElement;
+            const isMaxTokensEnabled = enableMaxTokensInput ? enableMaxTokensInput.checked : false;
+
             const caps = {
                 userPreferenceProfileId: selectedPrefProfileId,
                 userPreferences: (document.getElementById('cap-userPreferences') as HTMLTextAreaElement)?.value?.trim() ?? '',
@@ -1106,6 +1167,8 @@ if (dom.sendButton) {
                 voice: (document.getElementById('modal-voice') as HTMLSelectElement)?.value || 'default',
                 enableTemperature: isTempEnabled,
                 temperature: isTempEnabled ? parseFloat((document.getElementById('modal-temperature') as HTMLInputElement)?.value || '0.7') : undefined,
+                enableMaxTokens: isMaxTokensEnabled,
+                maxTokens: isMaxTokensEnabled ? parseInt((document.getElementById('modal-max-tokens') as HTMLInputElement)?.value || '4096', 10) : undefined,
                 ttftTimeout: parseInt((document.getElementById('modal-ttft-timeout') as HTMLInputElement)?.value || '0', 10),
                 interTokenTimeout: parseInt((document.getElementById('modal-inter-token-timeout') as HTMLInputElement)?.value || '0', 10),
                 contextGovernorEnabled: (document.getElementById('cap-contextGovernorEnabled') as HTMLInputElement)?.checked ?? true,
@@ -2377,6 +2440,51 @@ if (dom.sendButton) {
                 }, 2000);
             } catch (err) {
                 console.error("Failed to parse file list for clipboard:", err);
+            }
+            return;
+        }
+
+        const copyAllTurnBtn = target.closest('.copy-all-turn-btn, .copy-all-turn-context-btn') as HTMLButtonElement;
+        if (copyAllTurnBtn) {
+            e.stopPropagation();
+            const msgId = copyAllTurnBtn.dataset.messageId;
+            const wrapper = msgId ? document.querySelector(`.message-wrapper[data-message-id='${msgId}']`) : copyAllTurnBtn.closest('.message-wrapper');
+
+            const allFiles: string[] = [];
+            const searchScope = wrapper || document.getElementById('chat-messages-container') || document.body;
+            searchScope.querySelectorAll('.context-expansion-block').forEach((block: any) => {
+                try {
+                    const bFiles = JSON.parse(block.dataset.files || '[]');
+                    if (Array.isArray(bFiles)) {
+                        bFiles.forEach((f: string) => {
+                            if (f && !allFiles.includes(f)) allFiles.push(f);
+                        });
+                    }
+                } catch {}
+            });
+
+            if (allFiles.length === 0 && copyAllTurnBtn.dataset.files) {
+                try {
+                    const fallback = JSON.parse(decodeURIComponent(copyAllTurnBtn.dataset.files));
+                    if (Array.isArray(fallback)) {
+                        fallback.forEach((f: string) => { if (f && !allFiles.includes(f)) allFiles.push(f); });
+                    }
+                } catch {}
+            }
+
+            if (allFiles.length > 0) {
+                vscode.postMessage({
+                    command: 'copyFilesToClipboard',
+                    files: allFiles
+                });
+
+                const origHtml = copyAllTurnBtn.innerHTML;
+                copyAllTurnBtn.classList.add('success');
+                copyAllTurnBtn.innerHTML = `<span class="codicon codicon-check"></span> Copied All (${allFiles.length})!`;
+                setTimeout(() => {
+                    copyAllTurnBtn.classList.remove('success');
+                    copyAllTurnBtn.innerHTML = origHtml;
+                }, 2000);
             }
             return;
         }

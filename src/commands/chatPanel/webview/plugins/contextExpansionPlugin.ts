@@ -106,8 +106,11 @@ export const contextExpansionPlugin: TagPlugin = {
                     <button class="code-action-btn secondary-btn save-selection-btn" data-files="${fileListJson}" title="Save this selection of files as a context file">
                         <span class="codicon codicon-save"></span> Save Selection
                     </button>
-                    <button class="code-action-btn secondary-btn copy-btn" data-files="${fileListJson}">
+                    <button class="code-action-btn secondary-btn copy-btn" data-files="${fileListJson}" title="Copy the contents of the files in this card">
                         <span class="codicon codicon-clippy"></span> Copy Contents
+                    </button>
+                    <button class="code-action-btn secondary-btn copy-all-turn-btn" data-message-id="${context.messageId}" title="Copy the content of all files added to context in the current turn">
+                        <span class="codicon codicon-copy"></span> Copy All
                     </button>
                 </div>
             </div>
@@ -199,9 +202,53 @@ export const contextExpansionPlugin: TagPlugin = {
         });
 
         container.querySelectorAll('.copy-btn').forEach(btn => {
-            (btn as HTMLButtonElement).onclick = () => {
-                const files = JSON.parse((btn as HTMLElement).dataset.files || '[]');
-                context.vscode.postMessage({ command: 'copyFilesToClipboard', files });
+            (btn as HTMLButtonElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const files = JSON.parse(btnEl.dataset.files || '[]');
+                if (files.length > 0) {
+                    context.vscode.postMessage({ command: 'copyFilesToClipboard', files });
+                    const origHtml = btnEl.innerHTML;
+                    btnEl.classList.add('success');
+                    btnEl.innerHTML = `<span class="codicon codicon-check"></span> Copied!`;
+                    setTimeout(() => {
+                        btnEl.classList.remove('success');
+                        btnEl.innerHTML = origHtml;
+                    }, 2000);
+                }
+            };
+        });
+
+        container.querySelectorAll('.copy-all-turn-btn').forEach(btn => {
+            (btn as HTMLButtonElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const msgId = btnEl.dataset.messageId;
+                const wrapper = msgId ? document.querySelector(`.message-wrapper[data-message-id='${msgId}']`) : btnEl.closest('.message-wrapper');
+
+                const allFiles: string[] = [];
+                const searchScope = wrapper || container;
+                searchScope.querySelectorAll('.context-expansion-block').forEach((block: any) => {
+                    try {
+                        const bFiles = JSON.parse(block.dataset.files || '[]');
+                        if (Array.isArray(bFiles)) {
+                            bFiles.forEach((f: string) => {
+                                if (f && !allFiles.includes(f)) allFiles.push(f);
+                            });
+                        }
+                    } catch {}
+                });
+
+                if (allFiles.length > 0) {
+                    context.vscode.postMessage({ command: 'copyFilesToClipboard', files: allFiles });
+                    const origHtml = btnEl.innerHTML;
+                    btnEl.classList.add('success');
+                    btnEl.innerHTML = `<span class="codicon codicon-check"></span> Copied All (${allFiles.length})!`;
+                    setTimeout(() => {
+                        btnEl.classList.remove('success');
+                        btnEl.innerHTML = origHtml;
+                    }, 2000);
+                }
             };
         });
     }

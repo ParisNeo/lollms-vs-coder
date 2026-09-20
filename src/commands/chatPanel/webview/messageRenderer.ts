@@ -2651,12 +2651,37 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     const toolCallCount = (mainProcessedContent.match(/<lollms_tool\b/gi) || []).length;
     const totalExecutableActionsCount = peekCount + addContextCount + toolCallCount;
 
-    if (totalExecutableActionsCount > 1 && isFinal) {
+    // Collect all unique files requested to be added to context across the entire turn
+    const turnContextFiles: string[] = [];
+    const addContextRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<add_files_to_context\b[^>]*?>([\s\S]*?)<\/add_files_to_context>/gim;
+    let acm: RegExpExecArray | null;
+    while ((acm = addContextRegex.exec(mainProcessedContent)) !== null) {
+        const inner = acm[1] || "";
+        const lines = inner.split(/[\s\r\n,]+/)
+            .map(f => f.trim().replace(/^['"]|['"]$/g, ''))
+            .filter(f => f && !f.startsWith('<'));
+        lines.forEach(f => {
+            if (!turnContextFiles.includes(f)) {
+                turnContextFiles.push(f);
+            }
+        });
+    }
+
+    const hasActions = totalExecutableActionsCount > 1;
+    const hasTurnFiles = turnContextFiles.length > 0;
+
+    if ((hasActions || hasTurnFiles) && isFinal) {
+        const encodedTurnFiles = encodeURIComponent(JSON.stringify(turnContextFiles));
         finalHtml += `
-            <div class="execute-all-actions-wrapper" style="margin-top: 14px; padding: 0 12px;">
-                <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="width: 100%; height: 32px; font-weight: bold; justify-content: center; background: var(--vscode-charts-purple, #9b59b6) !important; color: white !important;">
+            <div class="execute-all-actions-wrapper" style="margin-top: 14px; padding: 0 12px; display: flex; gap: 10px; flex-wrap: wrap;">
+                ${hasActions ? `
+                <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="flex: 1; min-width: 220px; height: 34px; font-weight: bold; justify-content: center; background: var(--vscode-charts-purple, #9b59b6) !important; color: white !important;">
                     <i class="codicon codicon-play"></i> Execute All Actions (${totalExecutableActionsCount} operations: Peeks/Context/Tools)
-                </button>
+                </button>` : ''}
+                ${hasTurnFiles ? `
+                <button class="code-action-btn secondary-btn copy-all-turn-context-btn" id="copy-all-turn-context-${messageId}" data-files="${encodedTurnFiles}" style="height: 34px; font-weight: bold; justify-content: center; padding: 0 16px; border: 1px solid var(--vscode-charts-blue); color: var(--vscode-textLink-foreground); display: inline-flex; align-items: center; gap: 6px;" title="Copy the content of all files requested in this turn to clipboard">
+                    <i class="codicon codicon-copy"></i> Copy All (${turnContextFiles.length} file${turnContextFiles.length > 1 ? 's' : ''})
+                </button>` : ''}
             </div>`;
     }
 
@@ -2824,6 +2849,48 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 messageId,
                 actions
             });
+        };
+    }
+
+    // Attach listener for Copy All Turn Files button
+    const copyAllBtn = contentDiv.querySelector(`#copy-all-turn-context-${messageId}`) as HTMLButtonElement;
+    if (copyAllBtn) {
+        copyAllBtn.onclick = () => {
+            const allFiles: string[] = [];
+            contentDiv.querySelectorAll('.context-expansion-block').forEach((block: any) => {
+                try {
+                    const files = JSON.parse(block.dataset.files || '[]');
+                    if (Array.isArray(files)) {
+                        files.forEach((f: string) => {
+                            if (f && !allFiles.includes(f)) allFiles.push(f);
+                        });
+                    }
+                } catch {}
+            });
+
+            if (allFiles.length === 0 && copyAllBtn.dataset.files) {
+                try {
+                    const fallback = JSON.parse(decodeURIComponent(copyAllBtn.dataset.files));
+                    if (Array.isArray(fallback)) {
+                        fallback.forEach(f => { if (f && !allFiles.includes(f)) allFiles.push(f); });
+                    }
+                } catch {}
+            }
+
+            if (allFiles.length > 0) {
+                vscode.postMessage({
+                    command: 'copyFilesToClipboard',
+                    files: allFiles
+                });
+
+                const origHtml = copyAllBtn.innerHTML;
+                copyAllBtn.classList.add('success');
+                copyAllBtn.innerHTML = `<i class="codicon codicon-check"></i> Copied ${allFiles.length} File${allFiles.length > 1 ? 's' : ''}!`;
+                setTimeout(() => {
+                    copyAllBtn.classList.remove('success');
+                    copyAllBtn.innerHTML = origHtml;
+                }, 2000);
+            }
         };
     }
 
@@ -4269,10 +4336,10 @@ export function updateContext(
         });
     }
 
-    if (mutedFiles) state.mutedFiles = mutedFiles;
-    if (mutedTools) state.mutedTools = mutedTools;
-    if (mutedSkills) state.mutedSkills = mutedSkills;
-    if (mutedDiagrams) state.mutedDiagrams = mutedDiagrams;
+    if (mutedFiles !== undefined) state.mutedFiles = mutedFiles;
+    if (mutedTools !== undefined) state.mutedTools = mutedTools;
+    if (mutedSkills !== undefined) state.mutedSkills = mutedSkills;
+    if (mutedDiagrams !== undefined) state.mutedDiagrams = mutedDiagrams;
 
     state.lastContextData = {
         context: contextText !== undefined ? contextText : (prev.context || ""),
@@ -4280,10 +4347,10 @@ export function updateContext(
         skills: skills !== undefined ? skills : (prev.skills || []),
         tools: tools !== undefined ? tools : (prev.tools || []),
         diagrams: diagrams !== undefined ? diagrams : (prev.diagrams || []),
-        mutedFiles: mutedFiles !== undefined ? mutedFiles : (prev.mutedFiles || state.mutedFiles || []),
-        mutedTools: mutedTools !== undefined ? mutedTools : (prev.mutedTools || state.mutedTools || []),
-        mutedSkills: mutedSkills !== undefined ? mutedSkills : (prev.mutedSkills || state.mutedSkills || []),
-        mutedDiagrams: mutedDiagrams !== undefined ? mutedDiagrams : (prev.mutedDiagrams || state.mutedDiagrams || []),
+        mutedFiles: mutedFiles !== undefined ? mutedFiles : (state.mutedFiles || []),
+        mutedTools: mutedTools !== undefined ? mutedTools : (state.mutedTools || []),
+        mutedSkills: mutedSkills !== undefined ? mutedSkills : (state.mutedSkills || []),
+        mutedDiagrams: mutedDiagrams !== undefined ? mutedDiagrams : (state.mutedDiagrams || []),
         briefing: briefing !== undefined ? briefing : (prev.briefing || ""),
         selections: selections !== undefined ? selections : ((prev as any).selections || [])
     };
@@ -4316,10 +4383,10 @@ export function updateContext(
 
         const tokenMap = state.fileTokensMap || {};
         const sortOrder = state.fileSortOrder || 'heavy-to-light';
-        const currentMutedFiles = state.lastContextData.mutedFiles || state.mutedFiles || [];
-        const currentMutedTools = state.lastContextData.mutedTools || state.mutedTools || [];
-        const currentMutedSkills = state.lastContextData.mutedSkills || state.mutedSkills || [];
-        const currentMutedDiagrams = state.lastContextData.mutedDiagrams || state.mutedDiagrams || [];
+        const currentMutedFiles = state.mutedFiles || state.lastContextData.mutedFiles || [];
+        const currentMutedTools = state.mutedTools || state.lastContextData.mutedTools || [];
+        const currentMutedSkills = state.mutedSkills || state.lastContextData.mutedSkills || [];
+        const currentMutedDiagrams = state.mutedDiagrams || state.lastContextData.mutedDiagrams || [];
 
         const projectFilesHtml = ContextPresenter.renderFileList(safeProjectFiles, "No project files selected.", false, tokenMap, sortOrder, currentMutedFiles);
         const externalFilesHtml = ContextPresenter.renderFileList(safeExternalFiles, "No search results in context.", true, tokenMap, sortOrder, currentMutedFiles);
@@ -4444,12 +4511,18 @@ export function showBulkOperationsModal(files: any[]) {
 
     const getFilePath = (item: any) => typeof item === 'string' ? item : (item?.path || '');
     const registry = (window as any).lazyFilesRegistry;
-    const currentMuted = new Set((state.mutedFiles || []).map(p => p.replace(/\\/g, '/').toLowerCase().trim()));
+
+    const isPathMuted = (p: string) => {
+        const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+        return (state.mutedFiles || []).some((m: string) => {
+            const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+            return cleanM === cleanP || cleanP.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanP);
+        });
+    };
 
     // Normalize raw file entries
     const normalizedFiles = files.map(item => {
         const rawPath = getFilePath(item);
-        const cleanLower = rawPath.replace(/\\/g, '/').toLowerCase().trim();
         const regItem = registry?.get(rawPath);
 
         let bytes = 0;
@@ -4474,7 +4547,7 @@ export function showBulkOperationsModal(files: any[]) {
 
         const fileName = rawPath.split('/').pop() || rawPath;
         const dirName = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
-        const isMuted = currentMuted.has(cleanLower);
+        const isMuted = isPathMuted(rawPath);
 
         return {
             path: rawPath,
@@ -4707,13 +4780,48 @@ export function showBulkOperationsModal(files: any[]) {
         muteBtn.onclick = () => {
             const selected = Array.from(selectedPaths);
             if (selected.length === 0) return;
-            const current = new Set(state.mutedFiles || []);
-            selected.forEach(p => current.add(p));
-            state.mutedFiles = Array.from(current);
+            if (!state.mutedFiles) state.mutedFiles = [];
+
+            let mutedTokensDelta = 0;
+            selected.forEach(p => {
+                const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+                const alreadyMuted = state.mutedFiles.some(m => {
+                    const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                    return cleanM === cleanP || cleanP.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanP);
+                });
+                if (!alreadyMuted) {
+                    state.mutedFiles.push(p);
+                    mutedTokensDelta += (state.fileTokensMap?.[p] || 0);
+                }
+            });
+
+            if (state.lastContextData) {
+                state.lastContextData.mutedFiles = [...state.mutedFiles];
+            }
+
+            if (state.lastTokenMetrics && mutedTokensDelta > 0) {
+                state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - mutedTokensDelta);
+                if (state.lastTokenMetrics.segments && state.lastTokenMetrics.segments.files !== undefined) {
+                    state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - mutedTokensDelta);
+                }
+                const barContainer = document.getElementById('token-progress-container');
+                const labelEl = document.getElementById('token-count-label');
+                if (labelEl) {
+                    labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()}`;
+                }
+                updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
+            }
+
+            setCalculatingTokens(true, "Updating tokens...");
+            vscode.postMessage({
+                command: 'bulkMuteFiles',
+                paths: selected
+            });
             vscode.postMessage({
                 command: 'updateDiscussionCapabilitiesPartial',
                 partial: { mutedFiles: state.mutedFiles }
             });
+            modal.style.display = 'none';
             modal.classList.remove('visible');
             updateContext();
         };
@@ -4722,12 +4830,49 @@ export function showBulkOperationsModal(files: any[]) {
     // Bulk Unmute Action
     if (unmuteBtn) {
         unmuteBtn.onclick = () => {
-            const selected = new Set(Array.from(selectedPaths).map(p => p.replace(/\\/g, '/').toLowerCase().trim()));
-            state.mutedFiles = (state.mutedFiles || []).filter(p => !selected.has(p.replace(/\\/g, '/').toLowerCase().trim()));
+            const selected = Array.from(selectedPaths);
+            if (selected.length === 0) return;
+
+            let unmutedTokensDelta = 0;
+            const targetLower = selected.map(p => p.replace(/\\/g, '/').toLowerCase().trim());
+
+            state.mutedFiles = (state.mutedFiles || []).filter(m => {
+                const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                const isMatching = targetLower.some(t => cleanM === t || cleanM.endsWith('/' + t) || t.endsWith('/' + cleanM));
+                if (isMatching) {
+                    unmutedTokensDelta += (state.fileTokensMap?.[m] || 0);
+                    return false;
+                }
+                return true;
+            });
+
+            if (state.lastContextData) {
+                state.lastContextData.mutedFiles = [...state.mutedFiles];
+            }
+
+            if (state.lastTokenMetrics && unmutedTokensDelta > 0) {
+                state.lastTokenMetrics.totalTokens += unmutedTokensDelta;
+                if (state.lastTokenMetrics.segments && state.lastTokenMetrics.segments.files !== undefined) {
+                    state.lastTokenMetrics.segments.files += unmutedTokensDelta;
+                }
+                const barContainer = document.getElementById('token-progress-container');
+                const labelEl = document.getElementById('token-count-label');
+                if (labelEl) {
+                    labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()}`;
+                }
+                updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
+            }
+
+            setCalculatingTokens(true, "Updating tokens...");
+            vscode.postMessage({
+                command: 'bulkUnmuteFiles',
+                paths: selected
+            });
             vscode.postMessage({
                 command: 'updateDiscussionCapabilitiesPartial',
                 partial: { mutedFiles: state.mutedFiles }
             });
+            modal.style.display = 'none';
             modal.classList.remove('visible');
             updateContext();
         };
@@ -4744,10 +4889,17 @@ export function showBulkOperationsModal(files: any[]) {
     }
 
     renderList();
+    modal.style.display = 'flex';
     modal.classList.add('visible');
 
-    const close = () => modal.classList.remove('visible');
+    const close = () => {
+        modal.style.display = 'none';
+        modal.classList.remove('visible');
+    };
     if (closeBtn) closeBtn.onclick = close;
+    modal.onclick = (e) => {
+        if (e.target === modal) close();
+    };
 }
 
 (window as any).showBulkOperationsModal = showBulkOperationsModal;

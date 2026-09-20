@@ -2240,11 +2240,10 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     margin-bottom: 5px;
 }
 
-#temp-slider {
+#temp-slider, #max-tokens-slider {
     -webkit-appearance: none;
     width: 32px; /* Physical length */
     height: 4px;
-    background: linear-gradient(to right, #2ecc71 0%, #f1c40f 50%, #e74c3c 100%);
     border-radius: 2px;
     outline: none;
     cursor: pointer;
@@ -2253,7 +2252,15 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     position: absolute;
 }
 
-#temp-slider::-webkit-slider-thumb {
+#temp-slider {
+    background: linear-gradient(to right, #2ecc71 0%, #f1c40f 50%, #e74c3c 100%);
+}
+
+#max-tokens-slider {
+    background: linear-gradient(to right, #3498db 0%, #9b59b6 50%, #e67e22 100%);
+}
+
+#temp-slider::-webkit-slider-thumb, #max-tokens-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
     width: 12px;
@@ -2265,7 +2272,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     cursor: pointer;
 }
 
-#temp-slider::-moz-range-thumb {
+#temp-slider::-moz-range-thumb, #max-tokens-slider::-moz-range-thumb {
     width: 12px;
     height: 12px;
     border-radius: 50%;

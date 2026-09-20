@@ -481,6 +481,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             if (dom.tempValDisplay) dom.tempValDisplay.textContent = dom.tempSlider.value;
                         }
                     }
+                    if (message.currentMaxTokens !== undefined && message.currentMaxTokens !== null) {
+                        if (dom.maxTokensSlider) {
+                            dom.maxTokensSlider.value = message.currentMaxTokens.toString();
+                            if (dom.maxTokensValDisplay) dom.maxTokensValDisplay.textContent = dom.maxTokensSlider.value;
+                        }
+                    }
                     if (dom.attachmentsContainer) dom.attachmentsContainer.innerHTML = '';
                     if (dom.chatMessagesContainer) {
                         Array.from(dom.chatMessagesContainer.children).forEach(child => {
@@ -727,11 +733,30 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         const isTempEnabled = !!caps.enableTemperature;
                         dom.inputTempContainer.style.display = isTempEnabled ? 'flex' : 'none';
                         dom.toggleTempSliderBtn.classList.toggle('active', isTempEnabled);
-                        
+
                         // Also update modal toggle check if it is active
                         const modalTempCheck = document.getElementById('cap-enableTemperature') as HTMLInputElement;
                         if (modalTempCheck) {
                             modalTempCheck.checked = isTempEnabled;
+                        }
+                    }
+
+                    if (dom.maxTokensSlider) {
+                        const maxTokensValue = (caps.maxTokens !== undefined && caps.maxTokens !== null) 
+                            ? caps.maxTokens 
+                            : 4096;
+                        dom.maxTokensSlider.value = maxTokensValue.toString();
+                        if (dom.maxTokensValDisplay) dom.maxTokensValDisplay.textContent = dom.maxTokensSlider.value;
+                    }
+
+                    if (dom.inputMaxTokensContainer && dom.toggleMaxTokensSliderBtn) {
+                        const isMaxTokensEnabled = !!caps.enableMaxTokens;
+                        dom.inputMaxTokensContainer.style.display = isMaxTokensEnabled ? 'flex' : 'none';
+                        dom.toggleMaxTokensSliderBtn.classList.toggle('active', isMaxTokensEnabled);
+
+                        const modalMaxTokensCheck = document.getElementById('cap-enableMaxTokens') as HTMLInputElement;
+                        if (modalMaxTokensCheck) {
+                            modalMaxTokensCheck.checked = isMaxTokensEnabled;
                         }
                     }
                     if (dom.testModeCheckbox) dom.testModeCheckbox.checked = !!caps.testMode;
@@ -773,6 +798,20 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (modalTempCheck && modalTempContainer) {
                         modalTempCheck.checked = !!caps.enableTemperature;
                         modalTempContainer.style.display = caps.enableTemperature ? 'block' : 'none';
+                    }
+
+                    const maxTokensInput = document.getElementById('modal-max-tokens') as HTMLInputElement;
+                    const maxTokensVal = document.getElementById('modal-max-tokens-val');
+                    if (maxTokensInput) {
+                        maxTokensInput.value = (caps.maxTokens ?? 4096).toString();
+                        if (maxTokensVal) maxTokensVal.textContent = maxTokensInput.value;
+                    }
+
+                    const modalMaxTokensCheck = document.getElementById('cap-enableMaxTokens') as HTMLInputElement;
+                    const modalMaxTokensContainer = document.getElementById('modal-max-tokens-container');
+                    if (modalMaxTokensCheck && modalMaxTokensContainer) {
+                        modalMaxTokensCheck.checked = !!caps.enableMaxTokens;
+                        modalMaxTokensContainer.style.display = caps.enableMaxTokens ? 'block' : 'none';
                     }
 
                     // Trigger a re-population of voices to ensure selection matches

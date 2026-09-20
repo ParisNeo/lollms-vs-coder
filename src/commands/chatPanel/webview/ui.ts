@@ -2132,6 +2132,8 @@ export function updateBadges() {
             contextAggression: 'respect',
             tokenEconomyMode: false,
             projectMemoryEnabled: true,
+            enableMaxTokens: false,
+            maxTokens: 4096,
             ttftTimeout: 180000,
             interTokenTimeout: 10000,
             contextGovernorThreshold: 95,

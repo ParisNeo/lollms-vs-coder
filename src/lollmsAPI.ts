@@ -784,7 +784,7 @@ export class LollmsAPI {
     onChunk?: ((chunk: string) => void) | null,
     signal?: AbortSignal,
     modelOverride?: string,
-    options?: { thinking?: boolean, capabilities?: any, temperature?: number }
+    options?: { thinking?: boolean, capabilities?: any, temperature?: number, maxTokens?: number, max_tokens?: number }
   ): Promise<string> {
     // Tier 3: Universal Agent Enforcement
     // We force the agent on EVERY call in sendChat, regardless of the URL, 
@@ -906,6 +906,7 @@ export class LollmsAPI {
 
     const reasoningEffort = vsConfig.get<string>('reasoningEffort') || 'medium';
     const thinkingBudget = vsConfig.get<number>('thinkingBudget') || 16000;
+    const reqMaxTokens = options?.maxTokens ?? options?.max_tokens;
 
     if (backend === 'ollama') {
         url += '/api/chat';
@@ -914,11 +915,15 @@ export class LollmsAPI {
             messages: sanitizedMessages, 
             stream
         };
-        // Only append options block if temperature is explicitly requested/provided
+        const ollamaOpts: any = {};
         if (options?.temperature !== undefined) {
-            body.options = {
-                temperature: options.temperature
-            };
+            ollamaOpts.temperature = options.temperature;
+        }
+        if (reqMaxTokens !== undefined && reqMaxTokens > 0) {
+            ollamaOpts.num_predict = reqMaxTokens;
+        }
+        if (Object.keys(ollamaOpts).length > 0) {
+            body.options = ollamaOpts;
         }
         // Only inject the 'think' key if explicitly requested to avoid 500 on standard models
         if (isThinkingActive) {
@@ -936,7 +941,8 @@ export class LollmsAPI {
             model,
             messages: sanitizedMessages.filter(m => m.role !== 'system'),
             system: systemMsg ? systemMsg.content : undefined,
-            stream
+            stream,
+            max_tokens: reqMaxTokens && reqMaxTokens > 0 ? reqMaxTokens : 4096
         };
         if (options?.temperature !== undefined) {
             body.temperature = options.temperature;
@@ -954,9 +960,12 @@ export class LollmsAPI {
         if (options?.temperature !== undefined) {
             body.temperature = options.temperature;
         }
+        if (reqMaxTokens !== undefined && reqMaxTokens > 0) {
+            body.max_tokens = reqMaxTokens;
+        }
         if (isThinkingActive) {
             // OpenAI o1/o3 style
-            body.max_completion_tokens = thinkingBudget;
+            body.max_completion_tokens = reqMaxTokens && reqMaxTokens > 0 ? reqMaxTokens : thinkingBudget;
             body.reasoning_effort = reasoningEffort;
             // DeepSeek Reasoner style
             body.thinking = { type: "enabled" };
@@ -973,6 +982,16 @@ export class LollmsAPI {
                 parts: [{ text: m.content }]
             }))
         };
+        const genConfig: any = {};
+        if (options?.temperature !== undefined) {
+            genConfig.temperature = options.temperature;
+        }
+        if (reqMaxTokens !== undefined && reqMaxTokens > 0) {
+            genConfig.maxOutputTokens = reqMaxTokens;
+        }
+        if (Object.keys(genConfig).length > 0) {
+            body.generationConfig = genConfig;
+        }
 
         // --- GOOGLE SEARCH GROUNDING ---
         if (options?.capabilities?.webSearch) {
@@ -986,14 +1005,20 @@ export class LollmsAPI {
             'Authorization': `Bearer ${this.config.apiKey}` 
         };
         body = { model, messages: sanitizedMessages, stream };
+        if (options?.temperature !== undefined) body.temperature = options.temperature;
+        if (reqMaxTokens !== undefined && reqMaxTokens > 0) body.max_tokens = reqMaxTokens;
     } else if (backend === 'openwebui') {
         // OpenWebUI serves OpenAI API at /api/chat/completions
         // We assume the user provides the base URL ending in /api
         url += '/chat/completions';
         body = { model, messages: sanitizedMessages, stream };
+        if (options?.temperature !== undefined) body.temperature = options.temperature;
+        if (reqMaxTokens !== undefined && reqMaxTokens > 0) body.max_tokens = reqMaxTokens;
     } else {
         url += '/v1/chat/completions';
         body = { model, messages: sanitizedMessages, stream };
+        if (options?.temperature !== undefined) body.temperature = options.temperature;
+        if (reqMaxTokens !== undefined && reqMaxTokens > 0) body.max_tokens = reqMaxTokens;
     }
 
 

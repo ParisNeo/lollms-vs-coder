@@ -99,6 +99,8 @@ export interface DiscussionCapabilities {
     grepEnabled?: boolean;   // Control background ripgrep indexing
     enableTemperature?: boolean; // Enabled state for custom temperature override
     temperature?: number;
+    enableMaxTokens?: boolean; // Enabled state for max generation tokens override
+    maxTokens?: number;
     mutedFiles?: string[];
     userPreferences?: string;
     userPreferenceProfileId?: string;
@@ -278,6 +280,10 @@ export const dom = {
     get tempValDisplay() { return document.getElementById('temp-val-display') as HTMLDivElement; },
     get toggleTempSliderBtn() { return document.getElementById('toggleTempSliderBtn') as HTMLButtonElement; },
     get inputTempContainer() { return document.getElementById('inputTempContainer') as HTMLDivElement; },
+    get maxTokensSlider() { return document.getElementById('max-tokens-slider') as HTMLInputElement; },
+    get maxTokensValDisplay() { return document.getElementById('max-tokens-val-display') as HTMLDivElement; },
+    get toggleMaxTokensSliderBtn() { return document.getElementById('toggleMaxTokensSliderBtn') as HTMLButtonElement; },
+    get inputMaxTokensContainer() { return document.getElementById('inputMaxTokensContainer') as HTMLDivElement; },
     get copyContextButton() { return document.getElementById('copyContextButton') as HTMLButtonElement; },
     get statusLabel() { return document.getElementById('status-label') as HTMLDivElement; },
     get hudMatrixBtn() { return document.getElementById('hud-matrix-btn') as HTMLButtonElement; },

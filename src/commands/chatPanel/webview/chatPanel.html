@@ -1804,11 +1804,11 @@
                 }
             });
 
-            // Master Hook for Stop Button, morphed Send Button, and Escape Key
+            // Master Hook for Explicit Stop Button
             document.addEventListener('click', function(e) {
                 const target = e.target;
                 if (!target) return;
-                const stopBtn = target.closest('#stopButton, #sendButton.is-stopping');
+                const stopBtn = target.closest('#stopButton');
                 if (stopBtn) {
                     e.preventDefault();
                     e.stopPropagation();

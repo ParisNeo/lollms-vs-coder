@@ -328,37 +328,75 @@ Select which files to mute and which to keep active. Output <mute> and <worker> 
             return { path: attrs?.path || '', state: 'included' as any };
         }).filter(f => f.path);
 
-        const currentMuted = currentDiscussion?.mutedFiles || [];
+        // Aggregate all muted files across discussion state and capabilities
+        const currentMutedSet = new Set<string>();
+        const addMuted = (list?: string[]) => {
+            if (Array.isArray(list)) {
+                list.forEach(p => {
+                    if (p) currentMutedSet.add(p.replace(/\\/g, '/').toLowerCase().trim().replace(/^\.?\/+/, ''));
+                });
+            }
+        };
+        addMuted(currentDiscussion?.mutedFiles);
+        addMuted(capabilities?.mutedFiles);
+        addMuted(currentDiscussion?.capabilities?.mutedFiles);
+        const currentMuted = Array.from(currentMutedSet);
+
+        const isCandidateMuted = (candidatePath: string): boolean => {
+            if (currentMuted.some(m => this.pathsMatch(m, candidatePath))) return true;
+            // Also check if contextData explicitly marked this file as muted
+            const cleanPath = candidatePath.replace(/\\/g, '/').trim();
+            const cleanBase = cleanPath.split('/').pop() || '';
+            if (contextData.selectedFilesContent && (
+                contextData.selectedFilesContent.includes(`\`${cleanPath}\` [MUTED FOR THIS DISCUSSION]`) ||
+                contextData.selectedFilesContent.includes(`\`${cleanBase}\` [MUTED FOR THIS DISCUSSION]`)
+            )) {
+                return true;
+            }
+            return false;
+        };
 
         for (const f of candidateSourceList) {
             let fullMatch = "";
             let fileBody = "";
             let tokens = (f as any).tokens || 0;
 
-            const cached = (contextManager as any)._fileContentCache?.get(f.path);
-            if (cached?.content) {
-                fileBody = cached.content;
-            } else {
-                const res = await contextManager.resolveWorkspaceFromPath(f.path);
-                if (res) {
-                    try {
-                        const bytes = await vscode.workspace.fs.readFile(res.uri);
-                        fileBody = Buffer.from(bytes).toString('utf8');
-                    } catch {}
+            const isMuted = isCandidateMuted(f.path);
+
+            if (!isMuted) {
+                const cached = (contextManager as any)._fileContentCache?.get(f.path);
+                if (cached?.content) {
+                    fileBody = cached.content;
+                } else {
+                    const res = await contextManager.resolveWorkspaceFromPath(f.path);
+                    if (res) {
+                        try {
+                            const bytes = await vscode.workspace.fs.readFile(res.uri);
+                            fileBody = Buffer.from(bytes).toString('utf8');
+                        } catch {}
+                    }
                 }
+                tokens = tokens || Math.max(1, Math.ceil(fileBody.length / 3.5));
+                const formatted = fileBody.endsWith('\n') ? fileBody : fileBody + '\n';
+                fullMatch = `<file path="${f.path}">\n${formatted}</file>
+
+\n\n`;
+            } else {
+                tokens = (f as any).tokens || 0;
+                if (tokens === 0) {
+                    const cached = (contextManager as any)._fileContentCache?.get(f.path);
+                    if (cached?.content) {
+                        tokens = Math.max(1, Math.ceil(cached.content.length / 3.5));
+                    }
+                }
+                fullMatch = `### 📄 \`${f.path}\` [MUTED FOR THIS DISCUSSION]\n> Content deactivated for this discussion by manual governor. Reactivate from HUD when needed.\n\n`;
             }
-
-            tokens = tokens || Math.max(1, Math.ceil(fileBody.length / 3.5));
-            const formatted = fileBody.endsWith('\n') ? fileBody : fileBody + '\n';
-            fullMatch = `<file path="${f.path}">\n${formatted}</file>
-
-`;
 
             const candidate = this.buildCandidate(fullMatch, f.path, fileBody, tokens, currentPromptAddedFiles, keywords, contextManager);
 
             if (hasGovernorDirective) {
                 const normP = f.path.toLowerCase().replace(/\\/g, '/');
-                const baseP = path.basename(normP);
+                const baseP = normP.split('/').pop() || '';
                 const directiveText = allGovernorDirectives.join(' ').toLowerCase();
                 if (directiveText.includes(normP) || directiveText.includes(baseP)) {
                     candidate.relevanceScore += 5000;
@@ -367,21 +405,12 @@ Select which files to mute and which to keep active. Output <mute> and <worker> 
             fileCandidates.push(candidate);
         }
 
-        const isCandidateMuted = (candidatePath: string): boolean => {
-            return currentMuted.some(m => this.pathsMatch(m, candidatePath));
-        };
+        // Ground truth: Active files tokens derived directly from contextData.selectedFilesContent
+        const actualFilesTokens = Math.max(0, Math.ceil((contextData.selectedFilesContent || '').length / 3.5));
 
-        // Calculate unmuted files load (files whose content is actually loaded in active context)
-        const unmutedCandidates = fileCandidates.filter(b => !isCandidateMuted(b.path));
-        const unmutedFilesLoad = unmutedCandidates.reduce((sum, b) => sum + b.tokens, 0);
-        const allFilesLoad = fileCandidates.reduce((sum, b) => sum + b.tokens, 0);
-
-        // Active context load takes into consideration muted files (0 content tokens for muted files)
-        const activeContextLoad = fixedLoad + unmutedFilesLoad;
+        // Active context load strictly accounts for muted files (0 content tokens for muted files)
+        const activeContextLoad = fixedLoad + actualFilesTokens;
         const activeUsagePercent = maxTokens > 0 ? Math.round((activeContextLoad / maxTokens) * 100) : 0;
-
-        const totalEstimated = fixedLoad + allFilesLoad;
-        const totalUsagePercent = maxTokens > 0 ? Math.round((totalEstimated / maxTokens) * 100) : 0;
 
         // Rule 1: If Governor is disabled and NO explicit governor directive was issued:
         // If the user muted files enough so that active context is under 100% (activeContextLoad <= maxTokens),
@@ -397,9 +426,9 @@ Select which files to mute and which to keep active. Output <mute> and <worker> 
                 return null;
             }
 
-            await this.updateDiscussionMetrics(currentDiscussion, discussionManager, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, unmutedFilesLoad, historyTokens);
+            this.updateDiscussionMetrics(currentDiscussion, discussionManager, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, actualFilesTokens, historyTokens);
 
-            return this.buildPassingResult(contextData, baseInstructions, history, currentPromptMessage, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities, briefingContent);
+            return this.buildPassingResult(contextData, baseInstructions, history, currentPromptMessage, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities, briefingContent, userPromptText);
         }
 
         // Rule 2: If NO explicit governor directive was sent, only run the governor if the active context
@@ -407,11 +436,11 @@ Select which files to mute and which to keep active. Output <mute> and <worker> 
         // Even if the total of all files exceeds the threshold, if activeContextLoad <= triggerThreshold,
         // use the selection as is without calling the governor.
         if (!hasGovernorDirective && activeContextLoad <= triggerThreshold) {
-            await this.updateDiscussionMetrics(currentDiscussion, discussionManager, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, unmutedFilesLoad, historyTokens);
+            this.updateDiscussionMetrics(currentDiscussion, discussionManager, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, actualFilesTokens, historyTokens);
 
-            return this.buildPassingResult(contextData, baseInstructions, history, currentPromptMessage, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities, briefingContent);
+            return this.buildPassingResult(contextData, baseInstructions, history, currentPromptMessage, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities, briefingContent, userPromptText);
         }
-
+        
         // 4. Overload Detected: Engage Context Governor toward Objective Threshold
         if (onStatusUpdate) {
             onStatusUpdate(`⚖️ Governor: Context at ${activeUsagePercent}% (Trigger: ${triggerThresholdPercent}%, Objective: ${objectiveThresholdPercent}%). Optimizing...`);
@@ -1272,12 +1301,17 @@ ${transcript}`;
 
     private static pathsMatch(p1: string, p2: string): boolean {
         if (!p1 || !p2) return false;
-        const c1 = p1.replace(/\\/g, '/').toLowerCase().trim();
-        const c2 = p2.replace(/\\/g, '/').toLowerCase().trim();
-        return c1 === c2 || c1.endsWith('/' + c2) || c2.endsWith('/' + c1) || path.basename(c1) === path.basename(c2);
+        const c1 = p1.replace(/\\/g, '/').toLowerCase().trim().replace(/^\.?\/+/, '');
+        const c2 = p2.replace(/\\/g, '/').toLowerCase().trim().replace(/^\.?\/+/, '');
+        if (c1 === c2) return true;
+        if (c1.endsWith('/' + c2) || c2.endsWith('/' + c1)) return true;
+
+        const base1 = c1.split('/').pop() || '';
+        const base2 = c2.split('/').pop() || '';
+        return base1.length > 0 && base1 === base2;
     }
 
-    private static async updateDiscussionMetrics(
+    private static updateDiscussionMetrics(
         currentDiscussion: Discussion,
         discussionManager: DiscussionManager,
         totalTokens: number,
@@ -1288,7 +1322,7 @@ ${transcript}`;
         skillsTokens: number,
         filesTokens: number,
         historyTokens: number
-    ): Promise<void> {
+    ): void {
         if (!currentDiscussion) return;
         currentDiscussion.lastTokenMetrics = {
             total: totalTokens,
@@ -1306,7 +1340,7 @@ ${transcript}`;
             }
         };
         if (!currentDiscussion.id.startsWith('temp-')) {
-            await discussionManager.saveDiscussion(currentDiscussion);
+            discussionManager.saveDiscussion(currentDiscussion).catch(() => {});
         }
     }
 
@@ -1322,7 +1356,8 @@ ${transcript}`;
         treeTokens: number,
         skillsTokens: number,
         capabilities: DiscussionCapabilities,
-        briefingContent?: string
+        briefingContent?: string,
+        fallbackPromptText?: string
     ): GovernorArbitrationResult {
         const briefingText = briefingContent !== undefined ? briefingContent : "";
         const projectStateText = `
@@ -1335,9 +1370,15 @@ ${contextData.selectedFilesContent ? `#### 📄 FILE CONTENTS\n${contextData.sel
 --------------------------------------------------`.trim();
 
         const { ensureStrictAlternatingRoles, mergeMessageContents } = require('./utils');
+
+        // Ensure user prompt content is preserved under all conditions (including regeneration)
+        const promptContent = (currentPromptMessage && currentPromptMessage.content)
+            ? currentPromptMessage.content
+            : (fallbackPromptText || "");
+
         let singleUserContent: any = projectStateText;
-        if (currentPromptMessage && currentPromptMessage.content) {
-            singleUserContent = mergeMessageContents(projectStateText, currentPromptMessage.content);
+        if (promptContent) {
+            singleUserContent = mergeMessageContents(projectStateText, promptContent);
         }
 
         if (capabilities.enableImages !== false && contextData.images && contextData.images.length > 0) {

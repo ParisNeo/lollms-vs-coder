@@ -2638,12 +2638,22 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
       if (!this._currentDiscussion) return;
       const index = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
       if (index === -1) return;
-      
-      const messageToResend = this._currentDiscussion.messages[index];
+
+      const messageToResend = { ...this._currentDiscussion.messages[index] };
       if (messageToResend.role !== 'user') return;
 
       this.processManager.cancelForDiscussion(this.discussionId);
       ChatPanel.activeGenerations.delete(this.discussionId);
+
+      // Cancel any pending debounced background token calculations before regenerating
+      if ((this as any)._tokenDebounceTimeout) {
+          clearTimeout((this as any)._tokenDebounceTimeout);
+          (this as any)._tokenDebounceTimeout = undefined;
+      }
+      if (this._tokenAbortController) {
+          this._tokenAbortController.abort();
+          this._tokenAbortController = null;
+      }
 
       this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index);
 
@@ -2653,12 +2663,10 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
 
       await this.loadDiscussion();
 
-      // FIXED: Respect Agent Mode during regeneration
-      if (this._discussionCapabilities.agentMode) {
-           await this.sendMessage(messageToResend); // This now correctly routes to AgentManager
-      } else {
-           await this.sendMessage(messageToResend);
-      }
+      // Clear new message ID so it doesn't collide with cached IDs
+      messageToResend.id = 'user_' + Date.now() + Math.random().toString(36).substring(2);
+
+      await this.sendMessage(messageToResend);
   }
   
   private async insertMessage(afterMessageId: string | null, role: 'user' | 'assistant', content: string) {

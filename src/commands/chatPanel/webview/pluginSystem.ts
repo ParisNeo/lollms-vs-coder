@@ -32,5 +32,10 @@ export interface TagPlugin {
 export const pluginRegistry: TagPlugin[] = [];
 
 export function registerPlugin(plugin: TagPlugin) {
-    pluginRegistry.push(plugin);
+    if (!plugin) {
+        return;
+    }
+    if (!pluginRegistry.some(p => p && p.id === plugin.id)) {
+        pluginRegistry.push(plugin);
+    }
 }

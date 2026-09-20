@@ -101,6 +101,7 @@ export interface DiscussionCapabilities {
     temperature?: number;
     enableMaxTokens?: boolean; // Enabled state for max generation tokens override
     maxTokens?: number;
+    reasoningEffort?: 'low' | 'medium' | 'high';
     mutedFiles?: string[];
     userPreferences?: string;
     userPreferenceProfileId?: string;
@@ -276,6 +277,10 @@ export const dom = {
     get webcamCancelBtn() { return document.getElementById('webcam-cancel') as HTMLButtonElement; },
     get addUserMessageBtn() { return document.getElementById('add-user-message-btn') as HTMLButtonElement; },
     get addAiMessageBtn() { return document.getElementById('add-ai-message-btn') as HTMLButtonElement; },
+    get toggleReasoningEffortBtn() { return document.getElementById('toggleReasoningEffortBtn') as HTMLButtonElement; },
+    get inputReasoningEffortContainer() { return document.getElementById('inputReasoningEffortContainer') as HTMLDivElement; },
+    get reasoningEffortSelector() { return document.getElementById('reasoning-effort-select') as HTMLSelectElement; },
+    get capReasoningEffort() { return document.getElementById('cap-reasoningEffort') as HTMLSelectElement; },
     get tempSlider() { return document.getElementById('temp-slider') as HTMLInputElement; },
     get tempValDisplay() { return document.getElementById('temp-val-display') as HTMLDivElement; },
     get toggleTempSliderBtn() { return document.getElementById('toggleTempSliderBtn') as HTMLButtonElement; },
@@ -379,6 +384,22 @@ export const dom = {
     get fileSearchAddBtn() { return document.getElementById('file-search-add-btn') as HTMLButtonElement; },
     get fileSearchCloseBtn() { return document.getElementById('file-search-close-btn') as HTMLSpanElement; },
     get fileSearchSelectAll() { return document.getElementById('file-search-select-all') as HTMLInputElement; },
+
+    // Governor Filter Modal Elements
+    get governorFilterModal() { return document.getElementById('governor-filter-modal') as HTMLDivElement; },
+    get governorFilterBtn() { return document.getElementById('governor-filter-btn') as HTMLButtonElement; },
+    get governorFilterPrompt() { return document.getElementById('governor-filter-prompt') as HTMLTextAreaElement; },
+    get governorFilterRunBtn() { return document.getElementById('governor-filter-run-btn') as HTMLButtonElement; },
+    get governorFilterCancelBtn() { return document.getElementById('governor-filter-cancel-btn') as HTMLButtonElement; },
+    get governorFilterCloseBtn() { return document.getElementById('governor-filter-close-btn') as HTMLSpanElement; },
+    get governorUnmuteAllBtn() { return document.getElementById('governor-unmute-all-btn') as HTMLButtonElement; },
+    get governorSavePresetCheck() { return document.getElementById('governor-save-preset-check') as HTMLInputElement; },
+    get governorPresetNameInput() { return document.getElementById('governor-preset-name-input') as HTMLInputElement; },
+    get governorPresetNameContainer() { return document.getElementById('governor-preset-name-container') as HTMLDivElement; },
+    get hudVisibilityPresetSelect() { return document.getElementById('hud-visibility-preset-select') as HTMLSelectElement; },
+    get modalVisibilityPresetSelect() { return document.getElementById('modal-visibility-preset-select') as HTMLSelectElement; },
+    get modalApplyPresetBtn() { return document.getElementById('modal-apply-preset-btn') as HTMLButtonElement; },
+    get modalDeletePresetBtn() { return document.getElementById('modal-delete-preset-btn') as HTMLButtonElement; },
 
     // Skills Modal Elements
     get skillsModal() { return document.getElementById('skills-modal') as HTMLDivElement; },

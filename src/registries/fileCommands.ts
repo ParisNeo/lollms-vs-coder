@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsServices } from '../lollmsContext';
-import { applyDiff, applySearchReplace, stripThinkingTags, normalizeAiderContent, parseAiderHunks, parseFileTagAttributes } from '../utils';
+import { applyDiff, applySearchReplace, stripThinkingTags, normalizeAiderContent, parseAiderHunks, parseFileTagAttributes, isValidFilePath } from '../utils';
 import { normalizeToDocument } from '../utils/promptUtils';
 import { Logger } from '../logger';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
@@ -392,6 +392,13 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean, autoSave?: boolean }) => {
         // Clean up hallucinated metadata like "(2 hunks)" from the file path
         const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
+
+        if (!isValidFilePath(sanitizedFilePath)) {
+            const err = `Invalid file path: "${sanitizedFilePath}". Refusing to create or overwrite file with illegal name.`;
+            if (!options?.silent) vscode.window.showErrorMessage(err);
+            return { success: false, error: err };
+        }
+
         const ext = path.extname(sanitizedFilePath).toLowerCase();
 
         const readOnlyDocExts = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.zip', '.tar', '.gz', '.exe', '.bin', '.pkl', '.onnx', '.db', '.sqlite']);
@@ -851,6 +858,19 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number, autoSave?: boolean, undo?: boolean, blockId?: string }): Promise<{ success: boolean; error?: string; repaired?: boolean; alreadyApplied?: boolean }> => {
         // Clean up hallucinated metadata
         const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
+
+        if (!isValidFilePath(sanitizedFilePath)) {
+            Logger.warn(`replaceCode rejected invalid or dangerous file path: "${sanitizedFilePath}"`);
+            return {
+                success: false,
+                error: `Invalid file path: "${sanitizedFilePath}". Refusing to patch non-file identifier.`,
+                messageId: messageId,
+                blockIndex: options?.blockIndex,
+                hunkIndex: options?.hunkIndex,
+                filePath: sanitizedFilePath
+            };
+        }
+
         const ext = path.extname(sanitizedFilePath).toLowerCase();
 
         const readOnlyDocExts = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.zip', '.tar', '.gz', '.exe', '.bin', '.pkl', '.onnx', '.db', '.sqlite']);
@@ -1098,8 +1118,28 @@ ${originalFileContent}
         try {
             document = await vscode.workspace.openTextDocument(fileUri);
         } catch (e) {
-            // Handle new file creation
             fileExists = false;
+        }
+
+        if (!fileExists) {
+            // A search/replace patch CANNOT be applied to a non-existent file unless it represents a new file creation with empty search block
+            const normalizedContent = normalizeAiderContent(content);
+            const parsedHunks = parseAiderHunks(normalizedContent);
+            const canCreateNew = parsedHunks.length === 1 && parsedHunks[0].searchPart.trim() === "" && parsedHunks[0].replacePart.trim().length > 0;
+
+            if (!canCreateNew) {
+                Logger.warn(`replaceCode: Target file does not exist for patch: ${sanitizedFilePath}`);
+                return {
+                    success: false,
+                    error: `File not found: "${sanitizedFilePath}". Cannot apply search/replace patch to a non-existent file.`,
+                    messageId: messageId,
+                    blockIndex: options?.blockIndex,
+                    hunkIndex: options?.hunkIndex,
+                    filePath: sanitizedFilePath
+                };
+            }
+
+            // Only create the file if it's genuinely a new file creation
             const parentDir = path.dirname(fileUri.fsPath);
             await vscode.workspace.fs.createDirectory(vscode.Uri.file(parentDir));
             await vscode.workspace.fs.writeFile(fileUri, Buffer.from('', 'utf8'));
@@ -1167,17 +1207,21 @@ ${originalFileContent}
                 }
                 
                 // --- SPECIAL CASE: EMPTY SEARCH BLOCK ---
-                // If search is empty, treat as "Create File" if new, or "Append to end" if existing.
+                // If search is empty, ONLY treat as "Create File" if file is new or empty.
+                // Never blindly append to the end of an existing file (prevents misplaced code).
                 if (searchCode.trim() === "") {
-                    const eol = currentContent.includes('\r\n') ? '\r\n' : '\n';
                     if (!fileExists && applyCount === 0) {
                         currentContent = replaceCode;
+                        applyCount++;
+                        continue;
+                    } else if (originalContent.trim() === "") {
+                        currentContent = replaceCode;
+                        applyCount++;
+                        continue;
                     } else {
-                        // Append to the very end of the current content
-                        currentContent = currentContent.trimEnd() + eol + replaceCode;
+                        errors.push(`Hunk ${i + 1} has an empty SEARCH block. A SEARCH block must specify the exact lines to replace in an existing file.`);
+                        continue;
                     }
-                    applyCount++;
-                    continue;
                 }
 
                 // Idempotency check: If content is already present, count as success (only for non-empty replacements)

@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-09-20 20:42]
+
+- fix(chat-panel): update webview components for mission briefing and file op system
+
 ## [2026-09-20 08:57]
 
 - fix(api): update version in package.json to v1.0.30

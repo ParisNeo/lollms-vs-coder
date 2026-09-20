@@ -1,6 +1,6 @@
 import { TagPlugin, PluginContext } from '../pluginSystem';
 import { state } from '../dom.js';
-import { normalizeAiderContent, parseAiderHunks, parseFileTagAttributes } from '../utils.js';
+import { normalizeAiderContent, parseAiderHunks, parseFileTagAttributes, isValidFilePath } from '../utils.js';
 
 function renderDiffLines(lines: string[], type: 'added' | 'removed' | 'unchanged'): string {
     return lines.map(line => {
@@ -109,7 +109,7 @@ export const fileMutationPlugin: TagPlugin = {
         }
 
         const fileAttrs = parseFileTagAttributes(attrStr, rawContent);
-        if (!fileAttrs || !fileAttrs.path) return null;
+        if (!fileAttrs || !fileAttrs.path || !isValidFilePath(fileAttrs.path)) return null;
 
         const filePath = fileAttrs.path;
         const action = fileAttrs.action;
@@ -117,7 +117,7 @@ export const fileMutationPlugin: TagPlugin = {
 
         
 
-        const isPatch = action === 'patch' || rawContent.includes('<<<<<<< SEARCH');
+        const isPatch = action === 'patch' || (action !== 'write' && action !== 'update_symbol' && rawContent.includes('<<<<<<< SEARCH'));
         const blockIdx = context.blockIndex !== undefined ? context.blockIndex : 0;
         const blockId = `file-mutation-${context.messageId}-${blockIdx}`;
         const actionLabel = isPatch ? 'SURGICAL PATCH' : (symbol ? `SYMBOL: ${symbol}` : 'WRITE FILE');
@@ -365,7 +365,7 @@ export const fileMutationPlugin: TagPlugin = {
                     applyBtn.disabled = true;
                     applyBtn.innerHTML = '<div class="spinner"></div>';
 
-                    if (action === 'patch' || rawContent.includes('<<<<<<< SEARCH')) {
+                    if (action === 'patch' || (action !== 'write' && action !== 'update_symbol' && rawContent.includes('<<<<<<< SEARCH'))) {
                         context.vscode.postMessage({
                             command: 'replaceCode',
                             filePath,

@@ -3460,6 +3460,50 @@ export function updateContextFileUsage(filePath: string, tokens: number) {
  * Renders the Workspace Access Matrix rows inside the HUD modal.
  */
 // --- NEW DISCUSSION WIZARD RENDERING ---
+export function refreshVisibilityPresetsDropdowns(presets?: Record<string, string[]>) {
+    const rawSaved = presets || (state as any).visibilityPresets || JSON.parse(localStorage.getItem('lollms_saved_mute_patterns') || '{}');
+    const hudSelect = document.getElementById('hud-visibility-preset-select') as HTMLSelectElement;
+    const modalSelect = document.getElementById('modal-visibility-preset-select') as HTMLSelectElement;
+    const bulkSelect = document.getElementById('bulk-mute-pattern-select') as HTMLSelectElement;
+
+    const populate = (sel: HTMLSelectElement | null, defaultLabel: string) => {
+        if (!sel) return;
+        const currentVal = sel.value;
+        sel.innerHTML = `<option value="">${defaultLabel}</option>`;
+        Object.keys(rawSaved).forEach(name => {
+            const count = Array.isArray(rawSaved[name]) ? rawSaved[name].length : 0;
+            const opt = new Option(`${name} (${count} muted)`, name);
+            if (name === currentVal) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    };
+
+    populate(hudSelect, '📁 Preset...');
+    populate(modalSelect, '-- Select Saved Preset --');
+    populate(bulkSelect, '-- Apply Saved Pattern --');
+}
+(window as any).refreshVisibilityPresetsDropdowns = refreshVisibilityPresetsDropdowns;
+
+export function openGovernorFilterModal() {
+    const modal = document.getElementById('governor-filter-modal');
+    if (!modal) return;
+    refreshVisibilityPresetsDropdowns();
+    const promptInput = document.getElementById('governor-filter-prompt') as HTMLTextAreaElement;
+    const nameInput = document.getElementById('governor-preset-name-input') as HTMLInputElement;
+    const saveCheck = document.getElementById('governor-save-preset-check') as HTMLInputElement;
+    const nameContainer = document.getElementById('governor-preset-name-container');
+
+    if (promptInput) promptInput.value = '';
+    if (nameInput) nameInput.value = '';
+    if (saveCheck) saveCheck.checked = false;
+    if (nameContainer) nameContainer.style.display = 'none';
+
+    modal.style.display = 'flex';
+    modal.classList.add('visible');
+    setTimeout(() => { promptInput?.focus(); }, 100);
+}
+(window as any).openGovernorFilterModal = openGovernorFilterModal;
+
 export function openNewDiscussionWizard(selections: (string | { name: string; fileName: string; fileCount?: number })[] = []) {
     if (!dom.wizardModal) return;
 

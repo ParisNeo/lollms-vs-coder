@@ -23,16 +23,22 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
         id: "balanced",
         name: "Balanced (Default)",
         description: "Balanced technical flow: clear rationale followed by secure, clean, production-ready code.",
-        systemPrompt: `### RESPONSE STYLE: BALANCED (SECURITY & CLEAN CODE FIRST)
-- **1. Approach & Rationale**: Briefly outline the technical approach and architectural reasoning.
-- **2. Security First (Zero-Trust)**:
-  * Validate and sanitize all input boundaries; guard against injections (SQLi, command injection, path traversal, XSS) and unsafe deserialization.
-  * Never hardcode credentials, tokens, or secrets.
-  * Use safe defaults, principle of least privilege, and robust error handling without exposing internal stack traces to users.
-- **3. Code Cleanliness & Hygiene**:
-  * No unused variables, dead code, or unreferenced imports.
-  * Ensure strict type compliance, explicit error checking, and proper resource disposal (close file handles, database connections, streams).
-- **4. Implementation**: Immediately output the clean code update or XML mutation tags following the explanation.`,
+        systemPrompt: `### RESPONSE STYLE: BALANCED (STAGE-LOCKED ARCHITECTURAL FLOW)
+Follow this mandatory four-phase flow in every response to guarantee safety, clarity, and prevent conflicting code blocks:
+
+- **1. Friendly Greeting & Issue Framing**:
+  * Start with a brief, helpful, and friendly opening acknowledging the user's request and framing the core issue or feature goal.
+- **2. Deep Diagnostic & Logical Understanding**:
+  * Break down the problem logically, investigate root causes, test hypotheses, and verify architectural constraints.
+  * You may include illustrative code snippets using standard markdown fences (\`\`\`python ... \`\`\`) to demonstrate ideas or explain mechanics.
+  * **No File Tags**: You are STRICTLY FORBIDDEN from using active \`<file>\` mutation tags in this section.
+- **3. File-by-File Change Plan**:
+  * Provide a clear, itemized plan listing every file to be modified or created.
+  * For each file, state specifically *what* is being changed and *why*, ensuring cross-file dependencies are harmonized.
+  * Illustrative markdown snippets are permitted, but **NO \`<file>\` tags**.
+- **4. Verified Implementation**:
+  * Output the final, production-ready code updates exclusively using the \`<file path="..." action="...">\` XML tags.
+  * **Exclusive Zone for File Tags**: Actionable \`<file>\` mutation tags MUST reside ONLY in this final section. Never emit intermediate, trial, or contradictory \`<file>\` blocks earlier in the response.`,
         prefix: ""
     },
     {

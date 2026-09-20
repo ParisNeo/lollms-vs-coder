@@ -13,7 +13,22 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
 
     // Detect message role accurately
     const isUser = safeMessageId.startsWith('user_') || wrapper.querySelector('.message')?.classList.contains('user-message');
-    const isSystem = safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message');
+    const isGovernor = safeMessageId.startsWith('governor_') || wrapper.dataset.personalityName?.includes('Governor');
+    const isSystem = !isGovernor && (safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message'));
+
+    // Update avatar icon for Governor
+    if (isGovernor) {
+        const avatarDiv = wrapper.querySelector('.message-avatar') as HTMLElement;
+        const msgDiv = wrapper.querySelector('.message') as HTMLElement;
+        if (avatarDiv) {
+            avatarDiv.innerHTML = '<span class="codicon codicon-law" style="color:var(--vscode-charts-orange)"></span>';
+            avatarDiv.style.backgroundColor = 'rgba(214, 122, 13, 0.1)';
+            avatarDiv.style.border = '1px solid var(--vscode-charts-orange)';
+        }
+        if (msgDiv) {
+            msgDiv.style.borderLeftColor = 'var(--vscode-charts-orange)';
+        }
+    }
 
     // Check if we need to initialize the layout
     let layout = bodyDiv.querySelector('.assistant-layout');
@@ -27,12 +42,12 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
 
         const middleButton = isUser 
             ? `<button class="msg-action-btn regenerate-msg-btn" title="Regenerate Response"><i class="codicon codicon-sync"></i></button>`
-            : (isSystem ? '' : `<button class="msg-action-btn run-monitor-btn" title="Run App & Monitor Logs"><i class="codicon codicon-play"></i></button>`);
+            : ((isSystem || isGovernor) ? '' : `<button class="msg-action-btn run-monitor-btn" title="Run App & Monitor Logs"><i class="codicon codicon-play"></i></button>`);
 
         // Floating Message Actions HUD
         const actions = document.createElement('div');
         actions.className = 'message-actions';
-        actions.innerHTML = isSystem ? `${copyButton}${deleteButton}` : `${editButton}${copyButton}${middleButton}${deleteButton}`;
+        actions.innerHTML = (isSystem || isGovernor) ? `${copyButton}${deleteButton}` : `${editButton}${copyButton}${middleButton}${deleteButton}`;
         bodyDiv.appendChild(actions);
 
         // Header Metadata
@@ -43,6 +58,10 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
         roleSpan.className = 'role-name';
         if (isUser) {
             roleSpan.textContent = 'You';
+        } else if (isGovernor) {
+            roleSpan.textContent = '⚖️ Context Governor';
+            roleSpan.style.color = 'var(--vscode-charts-orange)';
+            roleSpan.style.fontWeight = 'bold';
         } else if (isSystem) {
             roleSpan.textContent = 'System Alert';
             roleSpan.style.color = 'var(--vscode-charts-red)';

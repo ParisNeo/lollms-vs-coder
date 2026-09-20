@@ -41,6 +41,7 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
 
         if (hasWorkspace) {
             actions.push(new ActionItem(vscode.l10n.t('Reconfigure Project DNA & Style'), 'lollms-vs-coder.retriggerOnboarding', 'settings-gear', 'Update Destiny, objectives, and styling preferences'));
+            actions.push(new ActionItem('Filter Context with Governor', 'lollms-vs-coder.governorFilterFiles', 'law', 'Select relevant files to keep in context using AI based on a prompt'));
             actions.push(new ActionItem(vscode.l10n.t('Lollms Studio (Skills/Personas)'), 'lollms-vs-coder.openStudio', 'beaker', 'Open the building studio'));
             actions.push(new ActionItem('Reset Skills to Default', 'lollms-vs-coder.resetSkillsToDefault', 'discard', 'Reset all skills and Git repositories to defaults'));
             actions.push(new ActionItem(vscode.l10n.t('Validate CVE Legitimacy'), 'lollms-vs-coder.analyzeCveLegitimacy', 'shield-check', 'Analyze code against a specific CVE'));

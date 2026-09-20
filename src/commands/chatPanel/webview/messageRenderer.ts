@@ -1,5 +1,5 @@
 import { dom, vscode, state } from './dom.js';
-import { isScrolledToBottom, collapseBlockWithScrollPreservation, parseAiderHunks, parseFileTagAttributes } from './utils.js';
+import { isScrolledToBottom, collapseBlockWithScrollPreservation, parseAiderHunks, parseFileTagAttributes, isValidFilePath } from './utils.js';
 import { extractFileBlocks } from './plugins/fileOpPlugin.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -23,11 +23,8 @@ import { markdown } from "@codemirror/lang-markdown";
 import { oneDark } from "@codemirror/theme-one-dark";
 
 
-import { pluginRegistry, PluginContext } from './pluginSystem.js';
-import { contextExpansionPlugin } from './plugins/contextExpansionPlugin.js';
-
 // 🛠️ PLUGINS REGISTRY
-import { registerPlugin, pluginRegistry } from './pluginSystem.js';
+import { registerPlugin, pluginRegistry, PluginContext } from './pluginSystem.js';
 import { contextExpansionPlugin } from './plugins/contextExpansionPlugin.js';
 import { projectMemoryPlugin } from './plugins/projectMemoryPlugin.js';
 import { milestonePlugin } from './plugins/milestonePlugin.js';
@@ -42,29 +39,45 @@ import { planStatusPlugin } from './plugins/planStatusPlugin.js';
 import { toolPlugin } from './plugins/toolPlugin.js';
 import { sparqlPlugin } from './plugins/sparqlPlugin.js';
 import { missionBriefingPlugin } from './plugins/missionBriefingPlugin.js';
+import { governorPlugin } from './plugins/governorPlugin.js';
 
-function initPlugins() {
-    pluginRegistry.length = 0; 
-    registerPlugin(contextExpansionPlugin);
-    registerPlugin(projectMemoryPlugin);
-    registerPlugin(milestonePlugin);
-    registerPlugin(processingPlugin);
-    registerPlugin(formPlugin);
-    registerPlugin(fileOpPlugin);
-    registerPlugin(fileMutationPlugin);
-    registerPlugin(unpackDirectoryPlugin);
-    registerPlugin(peekFilesPlugin);
-    registerPlugin(breakpointPlugin);
-    registerPlugin(imageAssetPlugin);
-    registerPlugin(imageGenPlugin);
-    registerPlugin(imageResultPlugin);
-    registerPlugin(planStatusPlugin);
-    registerPlugin(toolPlugin);
-    registerPlugin(sparqlPlugin);
-    registerPlugin(missionBriefingPlugin);
+let pluginsInitialized = false;
+
+export function ensurePluginsInitialized() {
+    if (pluginsInitialized && pluginRegistry.length > 0) return;
+    pluginRegistry.length = 0;
+    const allPlugins = [
+        contextExpansionPlugin,
+        projectMemoryPlugin,
+        milestonePlugin,
+        processingPlugin,
+        formPlugin,
+        fileOpPlugin,
+        fileMutationPlugin,
+        unpackDirectoryPlugin,
+        peekFilesPlugin,
+        breakpointPlugin,
+        imageAssetPlugin,
+        imageGenPlugin,
+        imageResultPlugin,
+        planStatusPlugin,
+        toolPlugin,
+        sparqlPlugin,
+        missionBriefingPlugin,
+        governorPlugin
+    ];
+    allPlugins.forEach(p => {
+        if (p) {
+            registerPlugin(p);
+        }
+    });
+    if (pluginRegistry.length > 0) {
+        pluginsInitialized = true;
+    }
 }
 
-initPlugins();
+// Initial eager attempt
+ensurePluginsInitialized();
 
 
 const RENDER_THROTTLE_MS = 200;
@@ -955,19 +968,16 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
 
                 for (let k = i - 1; k >= Math.max(0, i - 15); k--) {
                     const lineK = lines[k];
-                    const allBackticks = [...lineK.matchAll(/`([^`]+)`/g)].map(m => m[1].trim());
-                    const bestBacktick = allBackticks.find(b => knownExts.test(b) || b.includes('/') || b.includes('\\'));
+                    const allBackticks = [...lineK.matchAll(/`([^`\n\r]+)`/g)].map(m => m[1].trim());
+                    const bestBacktick = allBackticks.reverse().find(b => isValidFilePath(b));
                     if (bestBacktick) {
                         inferredPath = bestBacktick;
                         break;
                     }
                     const pathMatch = lineK.match(/([a-zA-Z0-9._\-\/]+\.[a-zA-Z0-9]+)/);
-                    if (pathMatch && knownExts.test(pathMatch[1])) {
+                    if (pathMatch && isValidFilePath(pathMatch[1])) {
                         inferredPath = pathMatch[1];
                         break;
-                    }
-                    if (allBackticks.length > 0 && !inferredPath) {
-                        inferredPath = allBackticks[allBackticks.length - 1];
                     }
                 }
                 infos.push({ type: 'replace', path: inferredPath, stripFirstLine: false, start: blockStartOffset, isClosed: false, fenceLength: 0 });
@@ -1037,26 +1047,25 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                 }
 
                 if (!pathStr) {
-                    const knownExts = /\.(py|ts|js|jsx|tsx|json|html|css|scss|md|txt|c|cpp|h|hpp|rs|go|java|cs|php|rb|sh|yaml|yml|xml|toml|sql|vue|svelte)$/i;
                     for (let k = i - 1; k >= Math.max(0, i - 15); k--) {
                         const lineK = lines[k].trim();
                         if (!lineK) continue;
 
                         const headerMatch = lineK.match(/^(?:(?:\*\*|__)?(?:File|Diff|Insert|Replace|DeleteCode|Patch)(?:\*\*|__)?[:\s])\s*[`"']?([^\s`"']+\.[a-zA-Z0-9_\-]+)[`"']?/i);
-                        if (headerMatch) {
+                        if (headerMatch && isValidFilePath(headerMatch[1])) {
                             pathStr = headerMatch[1].trim();
                             break;
                         }
 
-                        const allBackticks = [...lineK.matchAll(/`([^`]+)`/g)].map(m => m[1].trim());
-                        const bestBacktick = allBackticks.find(b => knownExts.test(b) || ((b.includes('/') || b.includes('\\')) && b.includes('.')));
+                        const allBackticks = [...lineK.matchAll(/`([^`\n\r]+)`/g)].map(m => m[1].trim());
+                        const bestBacktick = allBackticks.reverse().find(b => isValidFilePath(b));
                         if (bestBacktick) {
                             pathStr = bestBacktick;
                             break;
                         }
 
                         const pathMatch = lineK.match(/([a-zA-Z0-9._\-\/]+\.[a-zA-Z0-9_\-]+)/);
-                        if (pathMatch && knownExts.test(pathMatch[1])) {
+                        if (pathMatch && isValidFilePath(pathMatch[1])) {
                             pathStr = pathMatch[1];
                             break;
                         }
@@ -1306,7 +1315,7 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
 
         
         // ADDED: Inspect Code Block Button
-        const isValidPath = pathVal && pathVal.trim().length > 0 && !/^block\s+\d+$/i.test(pathVal.trim());
+        const isValidPath = isValidFilePath(pathVal);
 
         if (isValidPath) {
             actions.appendChild(createButton('Inspect', 'codicon-eye', () => {
@@ -2418,7 +2427,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     const ctx: PluginContext = { messageId, isFinal, capabilities: state.capabilities, vscode };
     let mutationTagIndex = 0;
 
+    ensurePluginsInitialized();
+
     pluginRegistry.forEach(plugin => {
+        if (!plugin) return;
         if (plugin.extractBlocks) {
             const extracted = plugin.extractBlocks(mainProcessedContent, ctx);
             extracted.forEach(b => {
@@ -2437,7 +2449,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             return;
         }
 
-        if (!plugin.tagPattern) return;
+        if (!plugin || !plugin.tagPattern) return;
         plugin.tagPattern.lastIndex = 0;
         let pMatch;
         while ((pMatch = plugin.tagPattern.exec(mainProcessedContent)) !== null) {
@@ -2601,7 +2613,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 try {
                     const toolObj = JSON.parse(jMatch[1]);
                     if (toolObj && toolObj.tool) {
-                        const plugin = pluginRegistry.find(p => p.toolName === toolObj.tool);
+                        const plugin = pluginRegistry.find(p => p && p.toolName === toolObj.tool);
                         if (plugin) {
                             const pluginHtml = plugin.render(toolObj, ctx);
                             if (pluginHtml) {
@@ -3723,9 +3735,13 @@ export class ContextPresenter {
                             </div>
                         </summary>
                         <div class="collapsible-content hud-files-container" style="padding-top: 8px;">
-                            <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+                            <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px;">
                                 <span>Project Files</span>
-                                <div style="display: flex; gap: 4px; align-items: center;">
+                                <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
+                                    <select id="hud-visibility-preset-select" class="section-bulk-btn" style="height:20px; font-size:10px; padding: 0 4px; max-width: 130px; cursor: pointer;" title="Quick switch visibility profile / preset">
+                                        <option value="">📁 Preset...</option>
+                                    </select>
+                                    ${finalFilesCount > 0 ? `<button id="governor-filter-btn" class="section-bulk-btn" title="Context Governor: Select files to keep with AI based on prompt"><span class="codicon codicon-law"></span> Governor</button>` : ''}
                                     <button id="sort-files-btn" class="section-bulk-btn" title="Toggle sorting order (Heavy to Light / A-Z)">
                                         <span class="codicon ${state.fileSortOrder === 'name' ? 'codicon-sort-alphabetically' : (state.fileSortOrder === 'light-to-heavy' ? 'codicon-sort-numeric-up' : 'codicon-sort-numeric-down')}"></span>
                                         <span id="sort-files-label">${state.fileSortOrder === 'name' ? 'A-Z' : (state.fileSortOrder === 'light-to-heavy' ? 'Light to Heavy' : 'Heavy to Light')}</span>
@@ -4157,6 +4173,28 @@ export class ContextBinder {
                 }
             });
         });
+
+        // Bind Governor Filter Button
+        const govFilterBtn = dashboard.querySelector('#governor-filter-btn') as HTMLElement;
+        if (govFilterBtn) {
+            govFilterBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                import('./ui.js').then(ui => ui.openGovernorFilterModal());
+            };
+        }
+
+        // Bind Quick Visibility Preset Dropdown in HUD
+        const hudPresetSelect = dashboard.querySelector('#hud-visibility-preset-select') as HTMLSelectElement;
+        if (hudPresetSelect) {
+            import('./ui.js').then(ui => ui.refreshVisibilityPresetsDropdowns());
+            hudPresetSelect.onchange = (e) => {
+                e.stopPropagation();
+                const sel = hudPresetSelect.value;
+                if (!sel) return;
+                vscode.postMessage({ command: 'applyVisibilityPreset', name: sel });
+            };
+        }
 
         // Bind Sort button
         const sortBtn = dashboard.querySelector('#sort-files-btn') as HTMLElement;

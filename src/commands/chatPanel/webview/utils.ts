@@ -98,15 +98,66 @@ function isMetaPlaceholder(line: string): boolean {
     return false;
 }
 
+export function isValidFilePath(filePath: string): boolean {
+    if (!filePath || typeof filePath !== 'string') return false;
+    let clean = filePath.trim().replace(/^['"`]|['"`]$/g, '');
+
+    if (clean.includes(':') && !/^[a-zA-Z]:[\\/]/.test(clean)) {
+        clean = clean.split(':')[0].trim();
+    }
+    if (/^[a-zA-Z]:[\\/]/.test(clean)) {
+        clean = clean.substring(2);
+    }
+
+    clean = clean.replace(/\\/g, '/');
+    if (clean.length < 2) return false;
+    if (/[\[\](){}<>"'`;=*?|,\!@\$^\t\n\r]/.test(clean)) return false;
+    if (/\s/.test(clean)) return false;
+    if (clean.startsWith('/') || clean.endsWith('/') || clean.endsWith('.')) return false;
+
+    if (/^(?:block\s*\d+|file\.ext|path\/to\/file.*|filename\.ext|code_block|snippet|undefined|null|none)$/i.test(clean)) {
+        return false;
+    }
+
+    const base = clean.split('/').pop() || '';
+    if (!base || base === '.' || base === '..') return false;
+
+    const knownFiles = new Set([
+        'dockerfile', 'makefile', 'license', 'procfile', 'gemfile', 'rakefile',
+        '.gitignore', '.env', '.env.example', '.vscodeignore', '.prettierrc',
+        '.eslintrc', '.editorconfig', 'changelog.md', 'readme.md'
+    ]);
+    if (knownFiles.has(base.toLowerCase())) return true;
+
+    const extMatch = base.match(/\.([a-zA-Z0-9_\-]+)$/);
+    if (!extMatch) return false;
+
+    const ext = extMatch[1].toLowerCase();
+    if (ext.length > 10 || /^\d+$/.test(ext)) return false;
+
+    const forbidden = new Set([
+        'def', 'class', 'function', 'return', 'import', 'export', 'from', 'const',
+        'let', 'var', 'if', 'else', 'while', 'for', 'true', 'false', 'null', 'undefined',
+        'dict', 'list', 'str', 'int', 'float', 'bool', 'self', 'this'
+    ]);
+    const baseWithoutExt = base.substring(0, base.lastIndexOf('.')).toLowerCase();
+    if (!clean.includes('/') && forbidden.has(baseWithoutExt) && (ext === 'path' || ext === 'get' || ext === 'set')) {
+        return false;
+    }
+
+    return true;
+}
+
 export function sanitizeAiderMarkers(text: string): string {
     if (!text) return '';
     return text
         .split('\n')
         .filter(line => {
             const trimmed = line.trim();
-            if (/^<{7}\s*SEARCH$/.test(trimmed)) return false;
-            if (/^={5,}$/.test(trimmed)) return false;
-            if (/^>{7}\s*REPLACE$/.test(trimmed)) return false;
+            if (/^<{5,}\s*search\b/i.test(trimmed)) return false;
+            if (/^={5,}(?:\s*.*)?$/.test(trimmed)) return false;
+            if (/^>{5,}\s*replace\b/i.test(trimmed)) return false;
+            if (/^(<{5,}|>{5,})$/.test(trimmed)) return false;
             return true;
         })
         .join('\n');
@@ -273,22 +324,45 @@ export function parseAiderHunks(rawBlock: string): AiderHunk[] {
 export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string } {
     const isCrlf = content.includes('\r\n');
     const normalizedContent = content.replace(/\r\n/g, '\n');
-    const contentLines = normalizedContent.split('\n');
 
     let normalizedSearch = sanitizeAiderMarkers((searchBlock || "").replace(/\r\n/g, '\n'));
     let normalizedReplace = sanitizeAiderMarkers((replaceBlock || "").replace(/\r\n/g, '\n'));
-    const replaceLines = normalizedReplace.split('\n');
 
+    // Strip any residual marker lines from replaceBlock to prevent leaks
+    normalizedReplace = normalizedReplace
+        .split('\n')
+        .filter(l => !/^<{5,}\s*search\b|^={5,}(?:\s*.*)?$|^>{5,}\s*replace\b/i.test(l.trim()))
+        .join('\n');
+
+    // 1. Reject Empty Search on Existing Non-Empty Files (Prevents misplacing code at the end)
     if (normalizedSearch.trim() === "") {
-        const result = normalizedContent.endsWith('\n') ? normalizedContent + normalizedReplace : normalizedContent + '\n' + normalizedReplace;
-        return { success: true, result: isCrlf ? result.replace(/\n/g, '\r\n') : result, strategy: 'append' };
+        if (normalizedContent.trim() === "") {
+            return { success: true, result: isCrlf ? normalizedReplace.replace(/\n/g, '\r\n') : normalizedReplace };
+        }
+        return {
+            success: false,
+            result: content,
+            error: "Empty SEARCH block provided for an existing file. A SEARCH block must specify the exact lines to replace."
+        };
     }
 
+    const contentLines = normalizedContent.split('\n');
     const searchLines = normalizedSearch.split('\n');
+    const replaceLines = normalizedReplace === "" ? [] : normalizedReplace.split('\n');
 
-    // 2. Find Match using an optimized and bounds-safe sliding window
+    // 2. Safe Repetition Guard
+    const trimS = normalizedSearch.trim();
+    const trimR = normalizedReplace.trim();
+    if (trimS.length > 0 && trimR.length > 20 && !normalizedContent.includes(trimS) && normalizedContent.includes(trimR)) {
+        return { success: true, result: content };
+    }
+
+    // 3. Find Matches: Collect all candidate locations
+    const candidateMatches: { index: number; isExactIndent: boolean }[] = [];
+
     for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
         let match = true;
+        let isExact = true;
 
         for (let j = 0; j < searchLines.length; j++) {
             const cLine = contentLines[i + j];
@@ -299,10 +373,13 @@ export function applySearchReplace(content: string, searchBlock: string, replace
                 break;
             }
 
+            if (cLine !== sLine) {
+                isExact = false;
+            }
+
             const cTrim = cLine.trim();
             const sTrim = sLine.trim();
 
-            // Direct comparison or soft white-space check
             if (cTrim !== sTrim && !(cTrim === "" && sTrim === "")) {
                 match = false;
                 break;
@@ -310,89 +387,72 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         }
 
         if (match) {
-            // Find first non-empty line inside the match window to evaluate indentation delta
-            let matchedFileIndent = "";
-            let matchedAiIndent = "";
-            for (let j = 0; j < searchLines.length; j++) {
-                if (searchLines[j].trim().length > 0) {
-                    matchedFileIndent = contentLines[i + j].match(/^\s*/)?.[0] || "";
-                    matchedAiIndent = searchLines[j].match(/^\s*/)?.[0] || "";
-                    break;
-                }
-            }
+            candidateMatches.push({ index: i, isExactIndent: isExact });
+        }
+    }
 
-            const indentDelta = matchedFileIndent.length - matchedAiIndent.length;
-
-            const adjustedReplace = replaceLines.map(line => {
-                if (line.trim().length === 0) return "";
-                const currentLineIndent = line.match(/^\s*/)?.[0] || "";
-                const newIndentLength = Math.max(0, currentLineIndent.length + indentDelta);
-                return " ".repeat(newIndentLength) + line.trimStart();
-            });
-
-            const before = contentLines.slice(0, i);
-            const after = contentLines.slice(i + searchLines.length);
-            const finalResult = [...before, ...adjustedReplace, ...after].join('\n');
-            
-            return { 
-                success: true, 
-                result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult 
+    // 4. Ambiguity Guard: Prevent replacing the wrong place on short search blocks
+    if (candidateMatches.length > 1 && searchLines.length <= 2) {
+        const exactMatches = candidateMatches.filter(m => m.isExactIndent);
+        if (exactMatches.length !== 1) {
+            return {
+                success: false,
+                result: content,
+                error: `Ambiguous SEARCH block: The ${searchLines.length}-line snippet matches ${candidateMatches.length} different locations in the file. Include 2-3 lines of surrounding context to specify which location to replace.`
             };
         }
     }
 
-    // Pass 5: Fuzzy Matching Fallback
-    let bestScore = 0;
-    let bestMatchStart = -1;
-    let bestMatchEnd = -1;
-    const fuzzySearchLines = searchLines.filter(l => {
-        // Safe check for metadata placeholder
-        const trimmed = l.trim();
-        if (/^(\.{3,}|#\s*\.{3,}|(\/\/|--|;)\s*\.{3,})$/.test(trimmed)) return false;
-        if (/(#|\/\/|--)\s*(\.{3,}|existing|rest of|same as)/i.test(trimmed)) return false;
-        return true;
-    });
+    const bestMatch = candidateMatches.find(m => m.isExactIndent) || candidateMatches[0];
 
-    for (let i = 0; i <= contentLines.length - fuzzySearchLines.length; i++) {
-        let totalScore = 0;
-        for (let j = 0; j < fuzzySearchLines.length; j++) {
-            const line1 = contentLines[i + j] || "";
-            const line2 = fuzzySearchLines[j] || "";
-            
-            const l1 = line1.trim();
-            const l2 = line2.trim();
-            let score = 0;
-            if (l1 === l2) {
-                score = 1.0;
-            } else if (l1 === "" || l2 === "") {
-                score = 0.0;
-            } else {
-                const maxLen = Math.max(l1.length, l2.length);
-                score = maxLen > 0 ? (1.0 - (Math.abs(l1.length - l2.length) / maxLen)) : 1.0;
+    if (bestMatch !== undefined) {
+        const i = bestMatch.index;
+
+        let matchedFileIndent = "";
+        let matchedAiIndent = "";
+        for (let j = 0; j < searchLines.length; j++) {
+            if (searchLines[j].trim().length > 0) {
+                matchedFileIndent = contentLines[i + j].match(/^\s*/)?.[0] || "";
+                matchedAiIndent = searchLines[j].match(/^\s*/)?.[0] || "";
+                break;
             }
-            totalScore += score;
         }
-        const avgScore = totalScore / (fuzzySearchLines.length || 1);
-        if (avgScore > bestScore) {
-            bestScore = avgScore;
-            bestMatchStart = i;
-            bestMatchEnd = i + fuzzySearchLines.length;
-        }
-    }
 
-    if (bestScore > 0.8 && bestMatchStart !== -1) {
-        const before = contentLines.slice(0, bestMatchStart);
-        const after = contentLines.slice(bestMatchEnd);
+        const indentDelta = matchedFileIndent.length - matchedAiIndent.length;
+
+        const adjustedReplace = replaceLines.map(line => {
+            if (line.trim().length === 0) return "";
+            const currentLineIndent = line.match(/^\s*/)?.[0] || "";
+            const newIndentLength = Math.max(0, currentLineIndent.length + indentDelta);
+            return " ".repeat(newIndentLength) + line.trimStart();
+        });
+
+        const before = contentLines.slice(0, i);
+        const after = contentLines.slice(i + searchLines.length);
         const finalResult = normalizedReplace === ""
             ? [...before, ...after].join('\n')
-            : [...before, normalizedReplace, ...after].join('\n');
-        return { success: true, result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult };
+            : [...before, ...adjustedReplace, ...after].join('\n');
+
+        // Post-application integrity check: verify no leaked conflict markers
+        const leaked = finalResult.split('\n').find(l => /^<{5,}\s*search\b|^={5,}(?:\s*.*)?$|^>{5,}\s*replace\b/i.test(l.trim()));
+        if (leaked) {
+            return {
+                success: false,
+                result: content,
+                error: `Integrity check failed: Leaked Aider marker detected in replacement (${leaked.trim()}). Modification rejected to protect file integrity.`
+            };
+        }
+
+        return { 
+            success: true, 
+            result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult 
+        };
     }
 
     return { 
         success: false, 
         result: content, 
-        error: `Matching failed. Best match score: ${Math.round(bestScore * 100)}%.` 
+        error: "The SEARCH block was not found in the file. Ensure the code you are trying to match is identical to the file content, including indentation and blank lines." 
     };
 }
 
@@ -428,7 +488,11 @@ export function parseFileTagAttributes(attrStr: string, rawContent?: string): Fi
 
     filePath = filePath.replace(/^['"]|['"]$/g, '').trim();
 
-    // 2. Extract action
+    if (!isValidFilePath(filePath)) {
+        return null;
+    }
+
+    // 2. Extract action with synonyms (action, type, mode)
     const actionRegex = /(?:^|\s+)(?:action|type|mode)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
     const actionMatch = cleanAttr.match(actionRegex);
     const actionRaw = actionMatch ? (actionMatch[1] || actionMatch[2] || "").toLowerCase().trim() : "";
@@ -445,12 +509,12 @@ export function parseFileTagAttributes(attrStr: string, rawContent?: string): Fi
     }
 
     let action: 'write' | 'patch' | 'update_symbol' = 'write';
-    if (actionRaw === 'patch' || (rawContent && rawContent.includes('<<<<<<< SEARCH'))) {
-        action = 'patch';
-    } else if (actionRaw === 'update_symbol' || (symbol && actionRaw !== 'write')) {
-        action = 'update_symbol';
-    } else if (actionRaw === 'write' || actionRaw === 'create' || actionRaw === 'overwrite' || actionRaw === 'new') {
+    if (actionRaw === 'write' || actionRaw === 'create' || actionRaw === 'overwrite' || actionRaw === 'new') {
         action = 'write';
+    } else if (actionRaw === 'update_symbol' || (symbol && actionRaw !== 'patch')) {
+        action = 'update_symbol';
+    } else if (actionRaw === 'patch' || (rawContent && rawContent.includes('<<<<<<< SEARCH'))) {
+        action = 'patch';
     }
 
     return { path: filePath, action, symbol: symbol || undefined };

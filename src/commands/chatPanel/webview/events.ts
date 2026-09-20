@@ -123,6 +123,11 @@ if (dom.sendButton) {
         let replacement = selected;
 
         switch (type) {
+            case 'governor':
+                before = "<governor>\n";
+                after = "\n</governor>";
+                if (!selected) replacement = "Specify instructions directly to Context Governor (e.g. files to keep or mute)...";
+                break;
             case 'python': before = "```python\n"; after = "\n```"; break;
             case 'code': before = "```\n"; after = "\n```"; break;
             case 'text': before = "```text\n"; after = "\n```"; break;
@@ -826,6 +831,30 @@ if (dom.sendButton) {
         });
     }
 
+    if (dom.toggleReasoningEffortBtn) {
+        dom.toggleReasoningEffortBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isActive = dom.inputReasoningEffortContainer.style.display === 'flex';
+            const newShowState = !isActive;
+
+            dom.inputReasoningEffortContainer.style.display = newShowState ? 'flex' : 'none';
+            dom.toggleReasoningEffortBtn.classList.toggle('active', newShowState);
+        });
+    }
+
+    if (dom.reasoningEffortSelector) {
+        dom.reasoningEffortSelector.addEventListener('change', (e) => {
+            const val = (e.target as HTMLSelectElement).value;
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { reasoningEffort: val }
+            });
+            if (dom.capReasoningEffort) {
+                dom.capReasoningEffort.value = val;
+            }
+        });
+    }
+
     if (dom.toggleTempSliderBtn) {
         dom.toggleTempSliderBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -1155,9 +1184,13 @@ if (dom.sendButton) {
             const enableMaxTokensInput = document.getElementById('cap-enableMaxTokens') as HTMLInputElement;
             const isMaxTokensEnabled = enableMaxTokensInput ? enableMaxTokensInput.checked : false;
 
+            const reasoningEffortInput = document.getElementById('cap-reasoningEffort') as HTMLSelectElement;
+            const selectedReasoningEffort = reasoningEffortInput ? reasoningEffortInput.value : 'low';
+
             const caps = {
                 userPreferenceProfileId: selectedPrefProfileId,
                 userPreferences: (document.getElementById('cap-userPreferences') as HTMLTextAreaElement)?.value?.trim() ?? '',
+                reasoningEffort: selectedReasoningEffort,
                 generationFormats: {
                     fullFile: dom.capAllowFullFallback?.checked ?? true,
                     partialFormat: partialFormat
@@ -1310,6 +1343,26 @@ if (dom.sendButton) {
         dom.missionBriefingCloseBtn.addEventListener('click', () => {
             dom.missionBriefingModal.classList.remove('visible');
         });
+    }
+
+    const autoDoctrineBtn = document.getElementById('briefing-auto-doctrine-btn') as HTMLButtonElement;
+    if (autoDoctrineBtn) {
+        autoDoctrineBtn.onclick = () => {
+            autoDoctrineBtn.disabled = true;
+            autoDoctrineBtn.innerHTML = '<span class="spinner" style="width:12px; height:12px; border-width:2px; margin-right:6px;"></span> Scouting Project & Building Doctrine...';
+
+            const eventsContainer = document.getElementById('briefing-doctrine-events');
+            const eventsList = document.getElementById('briefing-doctrine-events-list');
+            const currentPhase = document.getElementById('briefing-doctrine-current-phase');
+
+            if (eventsContainer && eventsList) {
+                eventsContainer.style.display = 'block';
+                eventsList.innerHTML = '';
+                if (currentPhase) currentPhase.textContent = 'Pipeline Starting...';
+            }
+
+            vscode.postMessage({ command: 'autoBuildDoctrine' });
+        };
     }
 
     if (dom.briefingUploadBtn) {
@@ -1771,6 +1824,116 @@ if (dom.sendButton) {
         if(dom.searchBar) dom.searchBar.style.display = 'none';
         clearSearch();
     });
+
+    // --- GOVERNOR FILTER & VISIBILITY PRESETS EVENTS ---
+    if (dom.governorFilterBtn) {
+        dom.governorFilterBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            import('./ui.js').then(ui => ui.openGovernorFilterModal());
+        };
+    }
+
+    if (dom.governorFilterCloseBtn) {
+        dom.governorFilterCloseBtn.onclick = () => {
+            dom.governorFilterModal.style.display = 'none';
+            dom.governorFilterModal.classList.remove('visible');
+        };
+    }
+
+    if (dom.governorFilterCancelBtn) {
+        dom.governorFilterCancelBtn.onclick = () => {
+            dom.governorFilterModal.style.display = 'none';
+            dom.governorFilterModal.classList.remove('visible');
+        };
+    }
+
+    if (dom.governorSavePresetCheck) {
+        dom.governorSavePresetCheck.onchange = () => {
+            if (dom.governorPresetNameContainer) {
+                dom.governorPresetNameContainer.style.display = dom.governorSavePresetCheck.checked ? 'block' : 'none';
+                if (dom.governorSavePresetCheck.checked && dom.governorPresetNameInput) {
+                    dom.governorPresetNameInput.focus();
+                }
+            }
+        };
+    }
+
+    if (dom.governorFilterRunBtn) {
+        dom.governorFilterRunBtn.onclick = () => {
+            const promptVal = dom.governorFilterPrompt?.value?.trim();
+            if (!promptVal) {
+                vscode.postMessage({ command: 'showError', message: 'Please enter a task objective or query for the Governor.' });
+                dom.governorFilterPrompt?.focus();
+                return;
+            }
+
+            const savePreset = dom.governorSavePresetCheck?.checked;
+            const presetName = dom.governorPresetNameInput?.value?.trim();
+            if (savePreset && !presetName) {
+                vscode.postMessage({ command: 'showError', message: 'Please enter a name for the new preset profile.' });
+                dom.governorPresetNameInput?.focus();
+                return;
+            }
+
+            dom.governorFilterRunBtn.disabled = true;
+            dom.governorFilterRunBtn.innerHTML = '<span class="spinner"></span> Filtering with Governor...';
+
+            vscode.postMessage({
+                command: 'runGovernorFilter',
+                prompt: promptVal,
+                presetName: savePreset ? presetName : undefined
+            });
+        };
+    }
+
+    if (dom.governorFilterPrompt) {
+        dom.governorFilterPrompt.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                dom.governorFilterRunBtn?.click();
+            }
+        });
+    }
+
+    if (dom.governorUnmuteAllBtn) {
+        dom.governorUnmuteAllBtn.onclick = () => {
+            const currentMuted = state.mutedFiles || [];
+            if (currentMuted.length === 0) {
+                vscode.postMessage({ command: 'showError', message: 'All files are already visible (no files currently muted).' });
+                return;
+            }
+            vscode.postMessage({ command: 'bulkUnmuteFiles', paths: currentMuted });
+            dom.governorFilterModal.style.display = 'none';
+            dom.governorFilterModal.classList.remove('visible');
+        };
+    }
+
+    if (dom.modalApplyPresetBtn) {
+        dom.modalApplyPresetBtn.onclick = () => {
+            const sel = dom.modalVisibilityPresetSelect?.value;
+            if (!sel) {
+                vscode.postMessage({ command: 'showError', message: 'Please select a preset to apply.' });
+                return;
+            }
+            vscode.postMessage({ command: 'applyVisibilityPreset', name: sel });
+            dom.governorFilterModal.style.display = 'none';
+            dom.governorFilterModal.classList.remove('visible');
+        };
+    }
+
+    if (dom.modalDeletePresetBtn) {
+        dom.modalDeletePresetBtn.onclick = () => {
+            const sel = dom.modalVisibilityPresetSelect?.value;
+            if (!sel) {
+                vscode.postMessage({ command: 'showError', message: 'Please select a preset to delete.' });
+                return;
+            }
+            if (confirm(`Delete visibility profile preset "${sel}"?`)) {
+                vscode.postMessage({ command: 'deleteVisibilityPreset', name: sel });
+            }
+        };
+    }
 
     // Workspace Matrix Events ---
     if (dom.hudMatrixBtn) {

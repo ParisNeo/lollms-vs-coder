@@ -339,6 +339,10 @@ ${snippets.join('\n\n') || "No manifest files detected in root."}
 TASK:
 Extract the non-negotiable architectural constraints, framework requirements, and coding doctrine of this project.
 Formulate a high-density, authoritative list of 4-7 strict constraints (e.g., target frameworks, typing strictness, prohibited libraries, architectural boundaries).
+
+### 🏛️ IMMUTABILITY MANDATE:
+A doctrine is an immutable constitution that constrains developers. NEVER include mutable metadata such as project release versions (e.g., no "v1.0.0" or "v0.8.6"), dates, authors, or temporary task statuses.
+
 Output ONLY a bulleted list of constraints. No conversational chatter.`;
 
         try {

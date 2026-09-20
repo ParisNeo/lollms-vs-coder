@@ -314,6 +314,7 @@
                     <div class="input-area-container">
                         <div class="rich-input-toolbar">
                             <button class="toolbar-tool" id="jump-to-context-btn" title="Jump to Project Context / Dashboard"><i class="codicon codicon-dashboard"></i><span>Context</span></button>
+                            <button class="toolbar-tool" data-wrap-type="governor" title="Direct instructions to Context Governor (seen only by governor)"><i class="codicon codicon-law"></i><span>Governor</span></button>
                             <div class="toolbar-separator"></div>
                             <button class="toolbar-tool" data-wrap-type="python" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
                             <button class="toolbar-tool" data-wrap-type="code" title="Code Block"><i class="codicon codicon-code"></i><span>Code</span></button>
@@ -339,8 +340,16 @@
                                 <div class="control-buttons">
                                     <div class="voice-controls">
                                         <button id="sttButton" title="Listen (STT)" class="voice-btn"><i class="codicon codicon-mic"></i></button>
+                                        <button id="toggleReasoningEffortBtn" title="Toggle Reasoning Effort (Low / Medium / High)" class="voice-btn"><i class="codicon codicon-circuit-board"></i></button>
                                         <button id="toggleTempSliderBtn" title="Toggle Custom Temperature" class="voice-btn"><i class="codicon codicon-thermometer"></i></button>
                                         <button id="toggleMaxTokensSliderBtn" title="Toggle Max Generation Tokens" class="voice-btn"><i class="codicon codicon-symbol-numeric"></i></button>
+                                    </div>
+                                    <div class="temp-slider-container" id="inputReasoningEffortContainer" title="Reasoning Effort" style="display: none;">
+                                        <select id="reasoning-effort-select" class="menu-select" style="width: 75px; height: 26px; font-size: 11px; padding: 2px 4px; margin: 0; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; cursor: pointer;">
+                                            <option value="low" selected>🧠 Low</option>
+                                            <option value="medium">🧠 Med</option>
+                                            <option value="high">🧠 High</option>
+                                        </select>
                                     </div>
                                     <div class="temp-slider-container" id="inputTempContainer" title="Model Temperature (Creativity)" style="display: none;">
                                         <div class="temp-tooltip" id="temp-val-display">0.7</div>
@@ -558,6 +567,16 @@
 
                 <div class="modal-section">
                     <h3>Performance & Creativity</h3>
+                    <div class="form-group" style="margin-bottom: 12px;">
+                        <label for="cap-reasoningEffort" style="font-size: 11px; font-weight: bold; display: block; margin-bottom: 4px;">Reasoning Effort (Thinking / Reasoning Models)</label>
+                        <select id="cap-reasoningEffort" class="menu-select" style="width: 100%; margin: 0;">
+                            <option value="low" selected>Low (Fastest, Cost-Efficient, Default)</option>
+                            <option value="medium">Medium (Standard Reasoning Depth)</option>
+                            <option value="high">High (Deep Search & High Reasoning Budget)</option>
+                        </select>
+                        <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Controls the reasoning depth and budget allocated for thinking/reasoning models (o1/o3, Claude Thinking, DeepSeek, GLM).</p>
+                    </div>
+
                     <div class="checkbox-container" style="margin-bottom: 10px;">
                         <label class="switch"><input type="checkbox" id="cap-enableTemperature"><span class="slider"></span></label>
                         <label for="cap-enableTemperature"><strong>Custom Temperature:</strong> Override model's default creativity parameters.</label>
@@ -1009,6 +1028,73 @@
         </div>
     </div>
 
+    <!-- ⚖️ GOVERNOR FILTER & VISIBILITY PROFILES MODAL -->
+    <div id="governor-filter-modal" class="modal">
+        <div class="modal-content" style="max-width: 620px; width: 92%; max-height: 85vh;">
+            <div class="modal-header">
+                <h2 style="margin:0; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+                    <i class="codicon codicon-law" style="color: var(--vscode-charts-orange);"></i>
+                    <span>Context Governor &middot; Intelligent Visibility Filter</span>
+                </h2>
+                <span class="close-btn" id="governor-filter-close-btn">&times;</span>
+            </div>
+            <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 16px; overflow-y: auto;">
+                <p style="font-size: 11px; opacity: 0.8; margin: 0;">
+                    Input what task or topic you are working on. The Context Governor will analyze all files in context, keep the essential ones active (content loaded), and mute the rest to protect your token budget.
+                </p>
+
+                <!-- Quick Presets Bar -->
+                <div style="background: var(--vscode-editor-inactiveSelectionBackground); padding: 10px 12px; border-radius: 6px; border: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 200px;">
+                        <span style="font-size: 10px; font-weight: 800; text-transform: uppercase; opacity: 0.7;">
+                            <i class="codicon codicon-bookmark"></i> Preset Profile:
+                        </span>
+                        <select id="modal-visibility-preset-select" style="font-size: 11px; padding: 3px 6px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; flex: 1; min-width: 120px;">
+                            <option value="">-- Select Saved Preset --</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; gap: 6px;">
+                        <button id="modal-apply-preset-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 8px;" title="Apply selected preset">
+                            <i class="codicon codicon-check"></i> Apply
+                        </button>
+                        <button id="modal-delete-preset-btn" class="code-action-btn delete-btn" style="height: 24px; font-size: 10px; padding: 0 6px;" title="Delete selected preset">
+                            <i class="codicon codicon-trash"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="form-group" style="margin: 0;">
+                    <label for="governor-filter-prompt" style="font-size: 11px; font-weight: bold; display: block; margin-bottom: 6px;">
+                        Task Objective / Focus Query
+                    </label>
+                    <textarea id="governor-filter-prompt" class="commit-textarea" style="height: 80px; width: 100%; box-sizing: border-box; font-family: var(--vscode-font-family); font-size: 12px; resize: vertical;" placeholder="e.g. 'Fixing JWT authentication token refresh and session middleware', 'Refactoring chatPanel UI webview events'"></textarea>
+                </div>
+
+                <div class="checkbox-container" style="margin: 0; background: transparent; border: none; padding: 0;">
+                    <input type="checkbox" id="governor-save-preset-check" style="cursor: pointer; margin-right: 6px;">
+                    <label for="governor-save-preset-check" style="font-size: 11px; cursor: pointer; font-weight: 600;">
+                        Save this selection as a new Visibility Preset
+                    </label>
+                </div>
+
+                <div id="governor-preset-name-container" style="display: none; margin-top: -6px;">
+                    <input type="text" id="governor-preset-name-input" class="search-modal-input" placeholder="Preset name (e.g. 'Auth & Security', 'Frontend UI', 'Database Models')" style="width: 100%; box-sizing: border-box; font-size: 12px; height: 28px;">
+                </div>
+            </div>
+            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background);">
+                <button id="governor-unmute-all-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 10px;" title="Reveal all files in context (clear all muting)">
+                    <i class="codicon codicon-eye"></i> Unmute All
+                </button>
+                <div style="display: flex; gap: 8px;">
+                    <button id="governor-filter-cancel-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 12px;">Cancel</button>
+                    <button id="governor-filter-run-btn" class="code-action-btn apply-btn" style="height: 30px; padding: 0 14px; font-weight: bold; background: var(--vscode-charts-orange) !important; color: white !important;">
+                        <i class="codicon codicon-law"></i> Filter with Governor
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="bulk-process-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -1324,12 +1410,31 @@
                 
                 <div>
                     <label style="margin-top:0;">Input Method</label>
-                    <div style="display:flex; gap:10px; margin-top:5px;">
-                        <button class="code-action-btn secondary-btn" id="briefing-upload-btn" style="flex:1; justify-content:center; height:32px;"><i class="codicon codicon-file-add"></i> Upload Document (PDF, DOCX, MD)</button>
-                        <button class="code-action-btn secondary-btn" id="briefing-clipboard-btn" style="flex:1; justify-content:center; height:32px;"><i class="codicon codicon-clippy"></i> Paste from Clipboard</button>
+                    <div style="display:flex; gap:10px; margin-top:5px; flex-wrap: wrap;">
+                        <button class="code-action-btn secondary-btn" id="briefing-auto-doctrine-btn" style="flex:1; min-width: 200px; justify-content:center; height:32px; border-color: var(--vscode-charts-purple); color: var(--vscode-charts-purple); font-weight: 600;" title="Auto-scout project tree, architecture diagram, and files to construct an agentic safety doctrine">
+                            <i class="codicon codicon-sparkle"></i> Auto-Build Doctrine (Scout Project)
+                        </button>
+                        <button class="code-action-btn secondary-btn" id="briefing-upload-btn" style="flex:1; min-width: 150px; justify-content:center; height:32px;">
+                            <i class="codicon codicon-file-add"></i> Upload Document
+                        </button>
+                        <button class="code-action-btn secondary-btn" id="briefing-clipboard-btn" style="flex:1; min-width: 150px; justify-content:center; height:32px;">
+                            <i class="codicon codicon-clippy"></i> Paste from Clipboard
+                        </button>
                     </div>
                 </div>
-                
+
+                <!-- 🚀 LIVE PIPELINE EVENT LOG (GRAPH GEN VS LLM GENERATION) -->
+                <div id="briefing-doctrine-events" style="display:none; background: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-left: 3px solid var(--vscode-charts-purple); border-radius: 6px; padding: 10px 14px; font-size: 11px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px; font-weight: bold; color: var(--vscode-charts-purple);">
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <i class="codicon codicon-history"></i>
+                            <span>Doctrine Generation Activity Pipeline</span>
+                        </div>
+                        <span id="briefing-doctrine-current-phase" class="token-mini-badge" style="background: rgba(155, 89, 182, 0.2); color: var(--vscode-charts-purple); border-radius: 10px; padding: 2px 8px; font-size: 10px; font-weight: bold;">Pipeline Running...</span>
+                    </div>
+                    <div id="briefing-doctrine-events-list" style="display:flex; flex-direction:column; gap:6px; max-height: 180px; overflow-y:auto; padding-right: 4px;"></div>
+                </div>
+
                 <div>
                     <label style="margin-top:0; display:flex; justify-content:space-between;">
                         <span>Briefing Content (Task Constraints)</span>

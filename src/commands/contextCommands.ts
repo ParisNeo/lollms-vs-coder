@@ -127,6 +127,16 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
     }));
 
     // Auto Select Context Files Command
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.governorFilterFiles', async () => {
+        const panel = ChatPanel.currentPanel;
+        if (!panel) {
+            vscode.window.showWarningMessage("Open a chat discussion to filter context files with Governor.");
+            return;
+        }
+        panel._panel.reveal();
+        panel._panel.webview.postMessage({ command: 'openGovernorFilterModal' });
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.autoSelectContextFiles', async () => {
         const userInput = await vscode.window.showInputBox({
             prompt: vscode.l10n.t("prompt.enterObjectiveForSelection"),

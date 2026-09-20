@@ -784,7 +784,7 @@ export class LollmsAPI {
     onChunk?: ((chunk: string) => void) | null,
     signal?: AbortSignal,
     modelOverride?: string,
-    options?: { thinking?: boolean, capabilities?: any, temperature?: number, maxTokens?: number, max_tokens?: number }
+    options?: { thinking?: boolean, capabilities?: any, temperature?: number, maxTokens?: number, max_tokens?: number, reasoningEffort?: 'low' | 'medium' | 'high' }
   ): Promise<string> {
     // Tier 3: Universal Agent Enforcement
     // We force the agent on EVERY call in sendChat, regardless of the URL, 
@@ -806,7 +806,10 @@ export class LollmsAPI {
     const visionSupported = options?.capabilities?.enableImages !== false && 
         (!autoSuppress || isModelVisionCapable(model, vsConfig));
 
-    const sanitizedMessages = messages.filter(m => !m.skipInPrompt).map(m => {
+    const { ensureStrictAlternatingRoles } = require('./utils');
+    const normalizedMessages = ensureStrictAlternatingRoles(messages.filter(m => !m.skipInPrompt));
+
+    const sanitizedMessages = normalizedMessages.map((m: any) => {
         let content = m.content;
 
         // --- MULTIMODAL FORMATTING GUARD ---
@@ -904,8 +907,8 @@ export class LollmsAPI {
     // 2. Global Setting fallback
     const isThinkingActive = options?.thinking !== undefined ? options.thinking : (vsConfig.get<boolean>('thinkingMode') || false);
 
-    const reasoningEffort = vsConfig.get<string>('reasoningEffort') || 'medium';
-    const thinkingBudget = vsConfig.get<number>('thinkingBudget') || 16000;
+    const reasoningEffort = options?.reasoningEffort || options?.capabilities?.reasoningEffort || vsConfig.get<string>('reasoningEffort') || 'low';
+    const thinkingBudget = options?.capabilities?.thinkingBudget || vsConfig.get<number>('thinkingBudget') || 16000;
     const reqMaxTokens = options?.maxTokens ?? options?.max_tokens;
 
     if (backend === 'ollama') {
@@ -948,7 +951,8 @@ export class LollmsAPI {
             body.temperature = options.temperature;
         }
         if (isThinkingActive) {
-            body.thinking = { type: "enabled", budget_tokens: thinkingBudget };
+            const dynamicBudget = reasoningEffort === 'low' ? 4096 : (reasoningEffort === 'high' ? 32000 : 16000);
+            body.thinking = { type: "enabled", budget_tokens: dynamicBudget };
         }
     } else if (backend === 'openai' || backend === 'lollms') {
         url += '/v1/chat/completions';
@@ -964,13 +968,10 @@ export class LollmsAPI {
             body.max_tokens = reqMaxTokens;
         }
         if (isThinkingActive) {
-            // OpenAI o1/o3 style
-            body.max_completion_tokens = reqMaxTokens && reqMaxTokens > 0 ? reqMaxTokens : thinkingBudget;
             body.reasoning_effort = reasoningEffort;
-            // DeepSeek Reasoner style
-            body.thinking = { type: "enabled" };
-        } else {
-            body.include_reasoning = false;
+            if (reqMaxTokens !== undefined && reqMaxTokens > 0) {
+                body.max_completion_tokens = reqMaxTokens;
+            }
         }
     } else if (backend === 'google') {
         const method = stream ? 'streamGenerateContent' : 'generateContent';
@@ -1076,22 +1077,41 @@ export class LollmsAPI {
                     try {
                         if (backend === 'ollama') {
                             const data = JSON.parse(trimmed);
-                            content = data.message?.content || '';
+                            content = data.message?.content || 
+                                     data.message?.thinking || 
+                                     data.response || 
+                                     '';
                         } else if (backend === 'anthropic') {
                             if (trimmed.startsWith('data: ')) {
                                 const data = JSON.parse(trimmed.substring(6));
-                                if (data.type === 'content_block_delta') content = data.delta?.text || '';
+                                if (data.type === 'content_block_delta') {
+                                    content = data.delta?.text || 
+                                             data.delta?.thinking || 
+                                             '';
+                                }
                             }
                         } else if (backend === 'google') {
-                            // Google returns a JSON array or objects in chunks
                             const data = JSON.parse(trimmed.startsWith('[') ? trimmed.substring(1) : trimmed);
                             content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
                         } else {
                             if (trimmed.startsWith('data: ')) {
-                                const raw = trimmed.substring(6);
+                                const raw = trimmed.substring(6).trim();
                                 if (raw === '[DONE]') continue;
                                 const data = JSON.parse(raw);
-                                content = data.choices?.[0]?.delta?.content || '';
+                                const delta = data.choices?.[0]?.delta;
+                                if (delta) {
+                                    if (delta.content !== undefined && delta.content !== null) {
+                                        content = delta.content;
+                                    } else if (delta.reasoning_content !== undefined && delta.reasoning_content !== null) {
+                                        content = delta.reasoning_content;
+                                    } else if (delta.reasoning !== undefined && delta.reasoning !== null) {
+                                        content = delta.reasoning;
+                                    } else if (delta.thought !== undefined && delta.thought !== null) {
+                                        content = delta.thought;
+                                    }
+                                } else if (data.choices?.[0]?.text) {
+                                    content = data.choices[0].text;
+                                }
                             }
                         }
                     } catch (e) {}
@@ -1120,10 +1140,21 @@ export class LollmsAPI {
         } else {
             const data = await response.json();
             let resultText = "";
-            if (backend === 'ollama') resultText = data.message?.content || '';
-            else if (backend === 'anthropic') resultText = data.content?.[0]?.text || '';
-            else if (backend === 'google') resultText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-            else resultText = data.choices?.[0]?.message?.content || '';
+            if (backend === 'ollama') {
+                resultText = data.message?.content || data.message?.thinking || data.response || '';
+            } else if (backend === 'anthropic') {
+                resultText = data.content?.[0]?.text || data.content?.[0]?.thinking || '';
+            } else if (backend === 'google') {
+                resultText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            } else {
+                const choice = data.choices?.[0];
+                resultText = choice?.message?.content || 
+                             choice?.message?.reasoning_content || 
+                             choice?.message?.reasoning || 
+                             choice?.message?.thought || 
+                             choice?.text || 
+                             '';
+            }
 
             // Record transaction to billing database
             try {

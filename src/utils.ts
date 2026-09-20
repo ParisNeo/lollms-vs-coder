@@ -219,6 +219,7 @@ export interface DiscussionCapabilities {
     temperature?: number; // Optional temperature value
     enableMaxTokens?: boolean; // Added to enable/disable maximum generation tokens override
     maxTokens?: number; // Optional maximum tokens to generate
+    reasoningEffort?: 'low' | 'medium' | 'high'; // Added reasoning effort configuration (default low)
     ttftTimeout: number;
     interTokenTimeout: number;
     contextGovernorThreshold: number; // Trigger threshold percentage (0-100)
@@ -307,15 +308,92 @@ function calculateLineSimilarity(line1: string, line2: string): number {
     return 1.0 - (dist / maxLen);
 }
 
+/**
+ * Strict validator for file paths to prevent hallucinated code snippets,
+ * syntax tokens, or brackets from being treated as filenames.
+ */
+export function isValidFilePath(filePath: string): boolean {
+    if (!filePath || typeof filePath !== 'string') return false;
+    let clean = filePath.trim().replace(/^['"`]|['"`]$/g, '');
+
+    // Strip symbol suffix if present (e.g. "path/to/file.ts:SymbolName")
+    if (clean.includes(':') && !/^[a-zA-Z]:[\\/]/.test(clean)) {
+        clean = clean.split(':')[0].trim();
+    }
+
+    // Strip leading drive letter on Windows for subsequent checks
+    if (/^[a-zA-Z]:[\\/]/.test(clean)) {
+        clean = clean.substring(2);
+    }
+
+    clean = clean.replace(/\\/g, '/');
+
+    // Reject empty or very short names
+    if (clean.length < 2) return false;
+
+    // Reject if contains illegal characters for paths or code syntax artifacts
+    // [ ] ( ) { } < > " ' ` ; = * ? | , ! @ $ ^ \t \n \r
+    if (/[\[\](){}<>"'`;=*?|,\!@\$^\t\n\r]/.test(clean)) return false;
+
+    // Reject whitespace inside path
+    if (/\s/.test(clean)) return false;
+
+    // Reject if starts or ends with slash or dot
+    if (clean.startsWith('/') || clean.endsWith('/') || clean.endsWith('.')) return false;
+
+    // Reject common placeholders
+    if (/^(?:block\s*\d+|file\.ext|path\/to\/file.*|filename\.ext|code_block|snippet|undefined|null|none)$/i.test(clean)) {
+        return false;
+    }
+
+    const base = path.posix.basename(clean);
+    if (!base || base === '.' || base === '..') return false;
+
+    // Known extensionless files and dotfiles
+    const knownFiles = new Set([
+        'dockerfile', 'makefile', 'license', 'procfile', 'gemfile', 'rakefile',
+        '.gitignore', '.env', '.env.example', '.vscodeignore', '.prettierrc',
+        '.eslintrc', '.editorconfig', 'changelog.md', 'readme.md'
+    ]);
+    if (knownFiles.has(base.toLowerCase())) return true;
+
+    // Must have a valid extension: .ext where ext is 1-10 alphanumeric characters
+    const extMatch = base.match(/\.([a-zA-Z0-9_\-]+)$/);
+    if (!extMatch) {
+        return false;
+    }
+
+    const ext = extMatch[1].toLowerCase();
+    if (ext.length > 10 || /^\d+$/.test(ext)) return false;
+
+    // Reject common programming language keywords as filenames if they have no directory path
+    const forbiddenBasenames = new Set([
+        'def', 'class', 'function', 'return', 'import', 'export', 'from', 'const',
+        'let', 'var', 'if', 'else', 'while', 'for', 'true', 'false', 'null', 'undefined',
+        'dict', 'list', 'str', 'int', 'float', 'bool', 'self', 'this'
+    ]);
+    const baseWithoutExt = base.substring(0, base.lastIndexOf('.')).toLowerCase();
+    if (!clean.includes('/') && forbiddenBasenames.has(baseWithoutExt) && (ext === 'path' || ext === 'get' || ext === 'set')) {
+        return false;
+    }
+
+    return true;
+}
+
 export function sanitizeAiderMarkers(text: string): string {
     if (!text) return '';
     return text
         .split('\n')
         .filter(line => {
             const trimmed = line.trim();
-            if (/^<{7}\s*SEARCH$/.test(trimmed)) return false;
-            if (/^={5,}$/.test(trimmed)) return false;
-            if (/^>{7}\s*REPLACE$/.test(trimmed)) return false;
+            // Match any line that is an aider search marker (case-insensitive, optional trailing notes)
+            if (/^<{5,}\s*search\b/i.test(trimmed)) return false;
+            // Match any line that is an aider separator marker (5 or more '=' optionally followed by comment/whitespace/notes)
+            if (/^={5,}(?:\s*.*)?$/.test(trimmed)) return false;
+            // Match any line that is an aider replace marker (case-insensitive, optional trailing notes)
+            if (/^>{5,}\s*replace\b/i.test(trimmed)) return false;
+            // Match standalone >>>>>>> or <<<<<<<
+            if (/^(<{5,}|>{5,})$/.test(trimmed)) return false;
             return true;
         })
         .join('\n');
@@ -390,20 +468,44 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     let normalizedSearch = sanitizeAiderMarkers((searchBlock || "").replace(/\r\n/g, '\n'));
     let normalizedReplace = sanitizeAiderMarkers((replaceBlock || "").replace(/\r\n/g, '\n'));
 
-    // 1. Handle Empty Search (Prepend/Append logic)
+    // Strip any residual marker lines from replaceBlock to prevent leaks
+    normalizedReplace = normalizedReplace
+        .split('\n')
+        .filter(l => !/^<{5,}\s*search\b|^={5,}(?:\s*.*)?$|^>{5,}\s*replace\b/i.test(l.trim()))
+        .join('\n');
+
+    // 1. Reject Empty Search on Existing Non-Empty Files (Prevents misplacing code at the end)
     if (normalizedSearch.trim() === "") {
-        const result = normalizedContent.endsWith('\n') ? normalizedContent + normalizedReplace : normalizedContent + '\n' + normalizedReplace;
-        return { success: true, result: isCrlf ? result.replace(/\n/g, '\r\n') : result };
+        if (normalizedContent.trim() === "") {
+            // New or empty file: setting initial content is valid
+            return { success: true, result: isCrlf ? normalizedReplace.replace(/\n/g, '\r\n') : normalizedReplace };
+        }
+        return {
+            success: false,
+            result: content,
+            error: "Empty SEARCH block provided for an existing file. A SEARCH block must specify the exact lines to replace."
+        };
     }
 
     const contentLines = normalizedContent.split('\n');
     const searchLines = normalizedSearch.split('\n');
     const replaceLines = normalizedReplace === "" ? [] : normalizedReplace.split('\n');
 
-    
-    // 2. Find Match using an optimized and bounds-safe sliding window
+    // 2. Safe Repetition Guard: Only claim already-applied if:
+    // a) Search block is NOT in the file (if it's still present, it hasn't been replaced!)
+    // b) Replace block is substantial (>20 chars or multiple lines) and already in the file
+    const trimS = normalizedSearch.trim();
+    const trimR = normalizedReplace.trim();
+    if (trimS.length > 0 && trimR.length > 20 && !normalizedContent.includes(trimS) && normalizedContent.includes(trimR)) {
+        return { success: true, result: content };
+    }
+
+    // 3. Find Matches: Collect all candidate locations
+    const candidateMatches: { index: number; isExactIndent: boolean }[] = [];
+
     for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
         let match = true;
+        let isExact = true;
 
         for (let j = 0; j < searchLines.length; j++) {
             const cLine = contentLines[i + j];
@@ -414,10 +516,13 @@ export function applySearchReplace(content: string, searchBlock: string, replace
                 break;
             }
 
+            if (cLine !== sLine) {
+                isExact = false;
+            }
+
             const cTrim = cLine.trim();
             const sTrim = sLine.trim();
 
-            // Direct comparison or soft white-space check
             if (cTrim !== sTrim && !(cTrim === "" && sTrim === "")) {
                 match = false;
                 break;
@@ -425,77 +530,71 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         }
 
         if (match) {
-            // Find first non-empty line inside the match window to evaluate indentation delta
-            let matchedFileIndent = "";
-            let matchedAiIndent = "";
-            for (let j = 0; j < searchLines.length; j++) {
-                if (searchLines[j].trim().length > 0) {
-                    matchedFileIndent = contentLines[i + j].match(/^\s*/)?.[0] || "";
-                    matchedAiIndent = searchLines[j].match(/^\s*/)?.[0] || "";
-                    break;
-                }
-            }
+            candidateMatches.push({ index: i, isExactIndent: isExact });
+        }
+    }
 
-            const indentDelta = matchedFileIndent.length - matchedAiIndent.length;
-
-            const adjustedReplace = replaceLines.map(line => {
-                if (line.trim().length === 0) return "";
-                const currentLineIndent = line.match(/^\s*/)?.[0] || "";
-                const newIndentLength = Math.max(0, currentLineIndent.length + indentDelta);
-                return " ".repeat(newIndentLength) + line.trimStart();
-            });
-
-            const before = contentLines.slice(0, i);
-            const after = contentLines.slice(i + searchLines.length);
-            const finalResult = normalizedReplace === ""
-                ? [...before, ...after].join('\n')
-                : [...before, ...adjustedReplace, ...after].join('\n');
-            
-            return { 
-                success: true, 
-                result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult 
+    // 4. Ambiguity Guard: Prevent replacing the wrong place when a short search block matches multiple locations
+    if (candidateMatches.length > 1 && searchLines.length <= 2) {
+        const exactMatches = candidateMatches.filter(m => m.isExactIndent);
+        if (exactMatches.length !== 1) {
+            return {
+                success: false,
+                result: content,
+                error: `Ambiguous SEARCH block: The ${searchLines.length}-line snippet matches ${candidateMatches.length} different locations in the file. Include 2-3 lines of surrounding context to specify which location to replace.`
             };
         }
     }
 
-    // 3. Fuzzy matching fallback for minor typos or non-consistent whitespace
-    let bestScore = 0;
-    let bestMatchIndex = -1;
-    const THRESHOLD = 0.85; // 85% similarity required to apply the change anyway
+    // Choose the best match (prefer exact whitespace match if available)
+    const bestMatch = candidateMatches.find(m => m.isExactIndent) || candidateMatches[0];
 
-    for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
-        let currentBlockScore = 0;
-        let possible = true;
+    if (bestMatch !== undefined) {
+        const i = bestMatch.index;
 
-        if (calculateLineSimilarity(contentLines[i], searchLines[0]) < 0.5) continue; 
-
+        // Find first non-empty line inside the match window to evaluate indentation delta
+        let matchedFileIndent = "";
+        let matchedAiIndent = "";
         for (let j = 0; j < searchLines.length; j++) {
-            const score = calculateLineSimilarity(contentLines[i + j], searchLines[j]);
-            if (score < 0.4) { 
-                possible = false;
-                break; 
-            }
-            currentBlockScore += score;
-        }
-
-        if (possible) {
-            const averageScore = currentBlockScore / searchLines.length;
-            if (averageScore > bestScore) {
-                bestScore = averageScore;
-                bestMatchIndex = i;
+            if (searchLines[j].trim().length > 0) {
+                matchedFileIndent = contentLines[i + j].match(/^\s*/)?.[0] || "";
+                matchedAiIndent = searchLines[j].match(/^\s*/)?.[0] || "";
+                break;
             }
         }
-    }
 
-    // --- CHECK IF ALREADY APPLIED (Repetition Guard) ---
-    const trimR = normalizedReplace.trim();
-    if (trimR.length > 0) {
-        if (normalizedContent.includes(normalizedReplace) || normalizedContent.includes(trimR)) {
-            return { success: true, result: normalizedContent };
+        const indentDelta = matchedFileIndent.length - matchedAiIndent.length;
+
+        const adjustedReplace = replaceLines.map(line => {
+            if (line.trim().length === 0) return "";
+            const currentLineIndent = line.match(/^\s*/)?.[0] || "";
+            const newIndentLength = Math.max(0, currentLineIndent.length + indentDelta);
+            return " ".repeat(newIndentLength) + line.trimStart();
+        });
+
+        const before = contentLines.slice(0, i);
+        const after = contentLines.slice(i + searchLines.length);
+        const finalResult = normalizedReplace === ""
+            ? [...before, ...after].join('\n')
+            : [...before, ...adjustedReplace, ...after].join('\n');
+
+        // Post-application integrity check: verify no leaked conflict markers
+        const leaked = finalResult.split('\n').find(l => /^<{5,}\s*search\b|^={5,}(?:\s*.*)?$|^>{5,}\s*replace\b/i.test(l.trim()));
+        if (leaked) {
+            return {
+                success: false,
+                result: content,
+                error: `Integrity check failed: Leaked Aider marker detected in replacement (${leaked.trim()}). Modification rejected to protect file integrity.`
+            };
         }
+
+        return { 
+            success: true, 
+            result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult 
+        };
     }
 
-    // 4. Final Fallback: All matching strategies failed.
+    // 5. Final Fallback: All matching strategies failed
     return { 
         success: false, 
         result: content, 
@@ -922,6 +1021,108 @@ ${sparqlDynamicRule}
     return finalizedBasePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness;
 }
 
+/**
+ * Extracts <governor> directives from prompt content.
+ * Returns the cleaned content (with governor tags removed for the worker)
+ * and an array of extracted governor directive strings.
+ */
+/**
+ * Merges two message contents (supporting strings and multipart arrays).
+ */
+export function mergeMessageContents(contentA: any, contentB: any): any {
+    const textA = typeof contentA === 'string' ? contentA : (Array.isArray(contentA) ? contentA.map(p => p.text || '').join('\n') : String(contentA || ''));
+    const textB = typeof contentB === 'string' ? contentB : (Array.isArray(contentB) ? contentB.map(p => p.text || '').join('\n') : String(contentB || ''));
+
+    const mergedText = `${textA.trim()}\n\n${textB.trim()}`.trim();
+
+    const imagesA = Array.isArray(contentA) ? contentA.filter(p => p && p.type === 'image_url') : [];
+    const imagesB = Array.isArray(contentB) ? contentB.filter(p => p && p.type === 'image_url') : [];
+    const allImages = [...imagesA, ...imagesB];
+
+    if (allImages.length > 0) {
+        return [
+            { type: 'text', text: mergedText },
+            ...allImages
+        ];
+    }
+    return mergedText;
+}
+
+/**
+ * Enforces strict alternation between 'user' and 'assistant' roles.
+ * Merges adjacent same-role messages to comply with strict LLM APIs (Anthropic, Gemini, Mistral).
+ */
+export function ensureStrictAlternatingRoles(messages: any[]): any[] {
+    if (!messages || messages.length === 0) return [];
+
+    const result: any[] = [];
+    let systemMessage: any = null;
+
+    let startIdx = 0;
+    if (messages[0]?.role === 'system') {
+        systemMessage = messages[0];
+        startIdx = 1;
+    }
+
+    for (let i = startIdx; i < messages.length; i++) {
+        const current = messages[i];
+        if (!current) continue;
+
+        const role = current.role === 'system' ? 'user' : current.role;
+        const prev = result.length > 0 ? result[result.length - 1] : null;
+
+        if (prev && prev.role === role) {
+            prev.content = mergeMessageContents(prev.content, current.content);
+        } else {
+            result.push({
+                ...current,
+                role: role
+            });
+        }
+    }
+
+    if (result.length > 0 && result[0].role === 'assistant') {
+        result.unshift({
+            role: 'user',
+            content: 'Please proceed with the task according to instructions.'
+        });
+    }
+
+    if (systemMessage) {
+        result.unshift(systemMessage);
+    }
+
+    return result;
+}
+
+export function extractGovernorDirectives(content: string | any[]): { cleanText: any; governorDirectives: string[] } {
+    const directives: string[] = [];
+    if (typeof content === 'string') {
+        const regex = /<governor\b[^>]*>([\s\S]*?)<\/governor>/gi;
+        let match: RegExpExecArray | null;
+        while ((match = regex.exec(content)) !== null) {
+            if (match[1].trim()) {
+                directives.push(match[1].trim());
+            }
+        }
+        const cleanText = content.replace(/<governor\b[^>]*>[\s\S]*?<\/governor>/gi, '').trim();
+        return { cleanText, governorDirectives: directives };
+    } else if (Array.isArray(content)) {
+        const cleanParts: any[] = [];
+        content.forEach(part => {
+            if (part && part.type === 'text' && typeof part.text === 'string') {
+                const res = extractGovernorDirectives(part.text);
+                directives.push(...res.governorDirectives);
+                cleanParts.push({ ...part, text: res.cleanText });
+            } else {
+                cleanParts.push(part);
+            }
+        });
+        return { cleanText: cleanParts, governorDirectives: directives };
+    }
+    return { cleanText: content, governorDirectives: [] };
+}
+
 export function stripAnsiCodes(text: string): string {
     // eslint-disable-next-line no-control-regex
     return text.replace(/[\u001b\u009b][[()#;?]*(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~]*)*)?\u0007?/g, '');
@@ -1300,8 +1501,11 @@ export function parseFileTagAttributes(attrStr: string, rawContent?: string): Fi
 
     if (!filePath) return null;
 
-    // Clean any leading/trailing quotes
     filePath = filePath.replace(/^['"]|['"]$/g, '').trim();
+
+    if (!isValidFilePath(filePath)) {
+        return null;
+    }
 
     // 2. Extract action with synonyms (action, type, mode)
     const actionRegex = /(?:^|\s+)(?:action|type|mode)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
@@ -1321,12 +1525,12 @@ export function parseFileTagAttributes(attrStr: string, rawContent?: string): Fi
     }
 
     let action: 'write' | 'patch' | 'update_symbol' = 'write';
-    if (actionRaw === 'patch' || (rawContent && rawContent.includes('<<<<<<< SEARCH'))) {
-        action = 'patch';
-    } else if (actionRaw === 'update_symbol' || (symbol && actionRaw !== 'write')) {
-        action = 'update_symbol';
-    } else if (actionRaw === 'write' || actionRaw === 'create' || actionRaw === 'overwrite' || actionRaw === 'new') {
+    if (actionRaw === 'write' || actionRaw === 'create' || actionRaw === 'overwrite' || actionRaw === 'new') {
         action = 'write';
+    } else if (actionRaw === 'update_symbol' || (symbol && actionRaw !== 'patch')) {
+        action = 'update_symbol';
+    } else if (actionRaw === 'patch' || (rawContent && rawContent.includes('<<<<<<< SEARCH'))) {
+        action = 'patch';
     }
 
     return { path: filePath, action, symbol: symbol || undefined };

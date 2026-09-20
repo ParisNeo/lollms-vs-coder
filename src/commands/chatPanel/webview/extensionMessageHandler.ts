@@ -218,6 +218,175 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     dom.missionBriefingModal.classList.add('visible');
                 }
                 break;
+            case 'doctrinePipelineEvent':
+                {
+                    const eventsContainer = document.getElementById('briefing-doctrine-events');
+                    const eventsList = document.getElementById('briefing-doctrine-events-list');
+                    const currentPhase = document.getElementById('briefing-doctrine-current-phase');
+
+                    if (eventsContainer && eventsList) {
+                        eventsContainer.style.display = 'block';
+                        const evt = message.event;
+                        if (!evt) break;
+
+                        if (currentPhase) {
+                            currentPhase.textContent = evt.label || 'Running...';
+                            currentPhase.style.color = evt.status === 'failed' ? 'var(--vscode-charts-red)' : 'var(--vscode-charts-purple)';
+                        }
+
+                        const stageId = evt.stage || 'default';
+                        let existingRow = eventsList.querySelector(`.doctrine-event-row[data-stage="${stageId}"]`) as HTMLElement;
+
+                        // When a new stage begins, mark all prior unfinished rows as completed so spinners clear cleanly
+                        if (!existingRow) {
+                            eventsList.querySelectorAll('.doctrine-event-row:not([data-completed="true"])').forEach((r: any) => {
+                                r.setAttribute('data-completed', 'true');
+                                const iconCell = r.querySelector('.event-icon-cell');
+                                if (iconCell && !r.classList.contains('failed')) {
+                                    iconCell.innerHTML = '<i class="codicon codicon-check" style="color:var(--vscode-charts-green);"></i>';
+                                }
+                                const progContainer = r.querySelector('.doctrine-event-progress') as HTMLElement;
+                                if (progContainer) progContainer.style.display = 'none';
+                                const pctText = r.querySelector('.event-pct-text') as HTMLElement;
+                                if (pctText) pctText.textContent = '100%';
+                            });
+                        }
+
+                        // Determine distinct category badge for Graph Gen vs SPARQL vs LLM Gen vs Grep
+                        let badgeBg = 'rgba(155, 89, 182, 0.2)';
+                        let badgeColor = 'var(--vscode-charts-purple)';
+                        let badgeText = 'PIPELINE';
+
+                        if (stageId.includes('sparql') || evt.label.includes('SPARQL')) {
+                            badgeBg = 'rgba(0, 122, 204, 0.2)';
+                            badgeColor = 'var(--vscode-charts-blue)';
+                            badgeText = '📊 SPARQL';
+                        } else if (evt.isGraph || stageId.startsWith('graph')) {
+                            badgeBg = 'rgba(0, 122, 204, 0.2)';
+                            badgeColor = 'var(--vscode-charts-blue)';
+                            badgeText = '📊 GRAPH GEN';
+                        } else if (evt.isLlm || stageId.includes('llm') || stageId.includes('scout') || stageId.includes('synthesis')) {
+                            badgeBg = 'rgba(214, 122, 13, 0.2)';
+                            badgeColor = 'var(--vscode-charts-orange)';
+                            badgeText = '🤖 LLM GEN';
+                        } else if (stageId.includes('grep')) {
+                            badgeBg = 'rgba(155, 89, 182, 0.2)';
+                            badgeColor = '#9b59b6';
+                            badgeText = '🔍 GREP SEARCH';
+                        } else if (stageId.includes('tree')) {
+                            badgeBg = 'rgba(46, 204, 113, 0.2)';
+                            badgeColor = 'var(--vscode-charts-green)';
+                            badgeText = '🌳 PROJECT TREE';
+                        } else if (stageId.includes('manifest') || stageId.includes('dna')) {
+                            badgeBg = 'rgba(232, 67, 147, 0.2)';
+                            badgeColor = '#e84393';
+                            badgeText = '🧬 RECON';
+                        }
+
+                        const isCompleted = evt.status === 'completed';
+                        const isFailed = evt.status === 'failed';
+                        const isRunning = !isCompleted && !isFailed;
+
+                        const statusIconHtml = isCompleted
+                            ? '<i class="codicon codicon-check" style="color:var(--vscode-charts-green);"></i>'
+                            : (isFailed
+                                ? '<i class="codicon codicon-error" style="color:var(--vscode-charts-red);"></i>'
+                                : '<span class="spinner" style="width:10px; height:10px; border-width:2px;"></span>');
+
+                        const hasProgress = typeof evt.progress === 'number' && evt.progress >= 0;
+                        const progressPct = hasProgress ? Math.min(100, Math.max(0, Math.round(evt.progress))) : (isCompleted ? 100 : 0);
+
+                        const progressBarHtml = (hasProgress || isRunning) ? `
+                            <div class="doctrine-event-progress" style="width: 100%; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; margin-top: 4px; display: ${hasProgress ? 'block' : 'none'};">
+                                <div class="doctrine-event-progress-fill" style="width: ${progressPct}%; height: 100%; background: ${badgeColor}; transition: width 0.2s ease; border-radius: 2px;"></div>
+                            </div>
+                        ` : '';
+
+                        if (existingRow) {
+                            // Update existing stage row in-place
+                            const iconContainer = existingRow.querySelector('.event-icon-cell');
+                            if (iconContainer) iconContainer.innerHTML = statusIconHtml;
+
+                            const labelEl = existingRow.querySelector('.event-label-text');
+                            if (labelEl) labelEl.textContent = evt.label;
+
+                            const detailEl = existingRow.querySelector('.event-detail-text');
+                            if (detailEl && evt.detail) detailEl.textContent = evt.detail;
+
+                            const pctEl = existingRow.querySelector('.event-pct-text');
+                            if (pctEl) {
+                                pctEl.textContent = hasProgress ? `${progressPct}%` : '';
+                                (pctEl as HTMLElement).style.display = hasProgress ? 'inline-block' : 'none';
+                            }
+
+                            const progressFill = existingRow.querySelector('.doctrine-event-progress-fill') as HTMLElement;
+                            const progressContainer = existingRow.querySelector('.doctrine-event-progress') as HTMLElement;
+                            if (progressFill && progressContainer) {
+                                if (hasProgress) {
+                                    progressContainer.style.display = 'block';
+                                    progressFill.style.width = `${progressPct}%`;
+                                } else if (isCompleted) {
+                                    progressContainer.style.display = 'none';
+                                }
+                            }
+                        } else {
+                            // Create new distinct stage row
+                            const row = document.createElement('div');
+                            row.className = 'doctrine-event-row';
+                            row.dataset.stage = stageId;
+                            row.style.cssText = 'display: flex; flex-direction: column; gap: 2px; padding: 5px 0; border-bottom: 1px dashed rgba(255,255,255,0.06);';
+                            row.innerHTML = `
+                                <div style="display: flex; align-items: flex-start; gap: 8px;">
+                                    <span class="event-icon-cell" style="display:inline-flex; align-items:center; margin-top:2px;">${statusIconHtml}</span>
+                                    <span style="font-size:9px; font-weight:800; padding:1px 6px; border-radius:4px; background:${badgeBg}; color:${badgeColor}; flex-shrink:0; letter-spacing:0.5px;">${badgeText}</span>
+                                    <div style="flex:1; min-width:0; line-height:1.3;">
+                                        <div class="event-label-text" style="font-weight:600; color:var(--vscode-foreground); font-size:11px;">${evt.label}</div>
+                                        ${evt.detail ? `<div class="event-detail-text" style="font-size:10px; opacity:0.75; font-family:var(--vscode-editor-font-family);">${evt.detail}</div>` : ''}
+                                    </div>
+                                    <span class="event-pct-text" style="font-size:10px; font-weight:bold; font-family:var(--vscode-editor-font-family); color:${badgeColor}; opacity:0.85; display:${hasProgress ? 'inline-block' : 'none'};">${hasProgress ? progressPct + '%' : ''}</span>
+                                </div>
+                                ${progressBarHtml}
+                            `;
+                            eventsList.appendChild(row);
+                        }
+
+                        eventsList.scrollTop = eventsList.scrollHeight;
+                    }
+                }
+                break;
+            case 'doctrineAutoBuilt':
+                {
+                    const autoDocBtn = document.getElementById('briefing-auto-doctrine-btn') as HTMLButtonElement;
+                    if (autoDocBtn) {
+                        autoDocBtn.disabled = false;
+                        autoDocBtn.innerHTML = '<i class="codicon codicon-sparkle"></i> Auto-Build Doctrine (Scout Project)';
+                    }
+
+                    const currentPhase = document.getElementById('briefing-doctrine-current-phase');
+                    if (currentPhase) {
+                        currentPhase.textContent = message.error ? '❌ Error' : '✅ Doctrine Ready';
+                        currentPhase.style.color = message.error ? 'var(--vscode-charts-red)' : 'var(--vscode-charts-green)';
+                    }
+
+                    // Complete all event rows in list
+                    const eventsList = document.getElementById('briefing-doctrine-events-list');
+                    if (eventsList && !message.error) {
+                        eventsList.querySelectorAll('.doctrine-event-row').forEach((r: any) => {
+                            r.setAttribute('data-completed', 'true');
+                            const iconCell = r.querySelector('.event-icon-cell');
+                            if (iconCell && !r.classList.contains('failed')) {
+                                iconCell.innerHTML = '<i class="codicon codicon-check" style="color:var(--vscode-charts-green);"></i>';
+                            }
+                            const progContainer = r.querySelector('.doctrine-event-progress') as HTMLElement;
+                            if (progContainer) progContainer.style.display = 'none';
+                        });
+                    }
+
+                    if (message.doctrine && dom.briefingContentInput) {
+                        dom.briefingContentInput.value = message.doctrine;
+                    }
+                }
+                break;
             case 'updateBriefingContent':
                 if (dom.briefingContentInput) {
                     dom.briefingContentInput.value = message.text || '';
@@ -466,6 +635,76 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'openNewDiscussionWizard':
                 openNewDiscussionWizard(message.selections || []);
                 break;
+            case 'openGovernorFilterModal':
+                import('./ui.js').then(ui => ui.openGovernorFilterModal());
+                break;
+            case 'governorFilterResult':
+                {
+                    const runBtn = document.getElementById('governor-filter-run-btn') as HTMLButtonElement;
+                    if (runBtn) {
+                        runBtn.disabled = false;
+                        runBtn.innerHTML = '<i class="codicon codicon-law"></i> Filter with Governor';
+                    }
+
+                    if (message.error) {
+                        break;
+                    }
+
+                    const modal = document.getElementById('governor-filter-modal');
+                    if (modal) {
+                        modal.style.display = 'none';
+                        modal.classList.remove('visible');
+                    }
+
+                    if (Array.isArray(message.mutedFiles)) {
+                        state.mutedFiles = [...message.mutedFiles];
+                        if (state.lastContextData) {
+                            state.lastContextData.mutedFiles = [...message.mutedFiles];
+                        }
+                    }
+
+                    if (message.presets) {
+                        (state as any).visibilityPresets = message.presets;
+                        try {
+                            localStorage.setItem('lollms_saved_mute_patterns', JSON.stringify(message.presets));
+                        } catch {}
+                    }
+
+                    import('./ui.js').then(ui => {
+                        if (typeof (ui as any).refreshVisibilityPresetsDropdowns === 'function') {
+                            (ui as any).refreshVisibilityPresetsDropdowns(message.presets);
+                        }
+                    });
+
+                    updateContext();
+                }
+                break;
+            case 'updateVisibilityPresets':
+                {
+                    if (message.presets) {
+                        (state as any).visibilityPresets = message.presets;
+                        try {
+                            localStorage.setItem('lollms_saved_mute_patterns', JSON.stringify(message.presets));
+                        } catch {}
+                        import('./ui.js').then(ui => {
+                            if (typeof (ui as any).refreshVisibilityPresetsDropdowns === 'function') {
+                                (ui as any).refreshVisibilityPresetsDropdowns(message.presets);
+                            }
+                        });
+                    }
+                }
+                break;
+            case 'visibilityPresetApplied':
+                {
+                    if (Array.isArray(message.mutedFiles)) {
+                        state.mutedFiles = [...message.mutedFiles];
+                        if (state.lastContextData) {
+                            state.lastContextData.mutedFiles = [...message.mutedFiles];
+                        }
+                        updateContext();
+                    }
+                }
+                break;
             case 'loadDiscussion':
                 {
                     if (message.workspaceFolders) {
@@ -487,6 +726,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             if (dom.maxTokensValDisplay) dom.maxTokensValDisplay.textContent = dom.maxTokensSlider.value;
                         }
                     }
+                    if (message.currentReasoningEffort) {
+                        if (dom.reasoningEffortSelector) dom.reasoningEffortSelector.value = message.currentReasoningEffort;
+                        if (dom.capReasoningEffort) dom.capReasoningEffort.value = message.currentReasoningEffort;
+                    }
                     if (dom.attachmentsContainer) dom.attachmentsContainer.innerHTML = '';
                     if (dom.chatMessagesContainer) {
                         Array.from(dom.chatMessagesContainer.children).forEach(child => {
@@ -504,6 +747,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                     if (message.userPreferenceProfiles) {
                         (state as any).userPreferenceProfiles = message.userPreferenceProfiles;
+                    }
+                    if (message.visibilityPresets) {
+                        (state as any).visibilityPresets = message.visibilityPresets;
+                        try {
+                            localStorage.setItem('lollms_saved_mute_patterns', JSON.stringify(message.visibilityPresets));
+                        } catch {}
                     }
 
                     // Restore Agent Mode UI state (Red vs Blue)
@@ -805,6 +1054,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (maxTokensInput) {
                         maxTokensInput.value = (caps.maxTokens ?? 4096).toString();
                         if (maxTokensVal) maxTokensVal.textContent = maxTokensInput.value;
+                    }
+
+                    const reasoningEffortInput = document.getElementById('cap-reasoningEffort') as HTMLSelectElement;
+                    if (reasoningEffortInput && caps.reasoningEffort) {
+                        reasoningEffortInput.value = caps.reasoningEffort;
+                    }
+                    if (dom.reasoningEffortSelector && caps.reasoningEffort) {
+                        dom.reasoningEffortSelector.value = caps.reasoningEffort;
                     }
 
                     const modalMaxTokensCheck = document.getElementById('cap-enableMaxTokens') as HTMLInputElement;

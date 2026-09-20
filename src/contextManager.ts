@@ -393,6 +393,7 @@ private _cachedTreeString: string | null = null;
   ): Promise<string> {
     const isGlobal = scope === 'global' || !discussion;
     let currentText = isGlobal ? this.getGlobalBriefing() : "";
+
     if (!isGlobal && discussion) {
       if (discussion.discussion_data_zone) {
         try {
@@ -404,6 +405,18 @@ private _cachedTreeString: string | null = null;
       }
     }
 
+    // Fallback: If target scope text is empty, check alternative scope to prevent losing existing baseline
+    if (!currentText.trim()) {
+      if (isGlobal && discussion?.discussion_data_zone) {
+        try {
+          const parsed = JSON.parse(discussion.discussion_data_zone);
+          currentText = parsed.user_constraints || "";
+        } catch {}
+      } else if (!isGlobal) {
+        currentText = this.getGlobalBriefing();
+      }
+    }
+
     const { normalizeAiderContent, parseAiderHunks, applySearchReplace } = require('./utils');
     let updatedText = "";
 
@@ -412,10 +425,21 @@ private _cachedTreeString: string | null = null;
       const hunks = parseAiderHunks(normalizedAider);
       if (hunks.length > 0) {
         updatedText = currentText;
+        let anyHunkApplied = false;
         for (const hunk of hunks) {
           const res = applySearchReplace(updatedText, hunk.searchPart, hunk.replacePart);
           if (res.success) {
             updatedText = res.result;
+            anyHunkApplied = true;
+          }
+        }
+        // If search & replace couldn't find the exact anchor, fall back to clean update
+        if (!anyHunkApplied) {
+          if (!currentText.trim()) {
+            updatedText = hunks.map((h: any) => h.replacePart || '').filter(Boolean).join('\n\n').trim();
+          } else {
+            const additions = hunks.map((h: any) => h.replacePart || '').filter(Boolean).join('\n');
+            updatedText = `${currentText.trim()}\n\n${additions}`.trim();
           }
         }
       } else {
@@ -438,9 +462,7 @@ private _cachedTreeString: string | null = null;
           parsed = { legacy: discussion.discussion_data_zone };
         }
       }
-      if (!isGlobal) {
-        parsed.user_constraints = updatedText;
-      }
+      parsed.user_constraints = updatedText;
       discussion.discussion_data_zone = JSON.stringify(parsed, null, 2);
     }
 
@@ -599,8 +621,9 @@ private _cachedTreeString: string | null = null;
       });
 
       let tag = '';
-      if (fileState === 'included' && !isMuted) tag = ' [C]';
-      else if (fileState === 'definitions-only' && !isMuted) tag = ' [D]';
+      if (isMuted) tag = ' [M]';
+      else if (fileState === 'included') tag = ' [C]';
+      else if (fileState === 'definitions-only') tag = ' [D]';
       return `${fileName}${tag}`;
     });
 
@@ -1103,6 +1126,7 @@ private _cachedTreeString: string | null = null;
 
     result.text += `### 🏷️ CONTEXT MARKERS (LEGEND)\n`;
     result.text += `- **\`[C]\` (Content Loaded)**: Full source code is ALREADY in memory under 'LOADED FILE CONTENTS'. DO NOT request with <add_files_to_context>.\n`;
+    result.text += `- **\`[M]\` (Muted by Governor)**: Content deactivated (0 tokens) to save context budget, but file is tracked in context.\n`;
     result.text += `- **\`[D]\` (Definitions Only)**: Signatures are loaded.\n`;
     result.text += `- **(No Marker)**: File content is HIDDEN. Use <add_files_to_context> with the exact tree path to load it.\n\n`;
     
@@ -2053,8 +2077,297 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
   }
 
   // ─────────────────────────────────────────────────────────────
-  // BRIEFING MANAGEMENT
+  // DOCTRINE SCOUT & BRIEFING MANAGEMENT
   // ─────────────────────────────────────────────────────────────
+
+  public async autoBuildProjectDoctrine(
+    model: string,
+    signal?: AbortSignal,
+    onStatusUpdate?: (status: string) => void,
+    onEvent?: (event: { stage: 'tree' | 'graph' | 'manifest' | 'dna' | 'scout_llm' | 'grep' | 'synthesis_llm' | 'done' | 'error'; label: string; detail?: string; isLlm?: boolean; isGraph?: boolean; status?: 'running' | 'completed' | 'failed' }) => void
+  ): Promise<string> {
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (folders.length === 0) {
+      throw new Error("No workspace folder open.");
+    }
+
+    if (onEvent) onEvent({ stage: 'tree', label: 'Assembling Project Structure', detail: 'Scanning directory tree and workspace hierarchy...', isGraph: false, isLlm: false, status: 'running', progress: 30 });
+    if (onStatusUpdate) onStatusUpdate("Librarian: Gathering project structure & architecture map...");
+
+    // 1. Project Tree
+    let projectTree = "";
+    try {
+      projectTree = await this.generateProjectTree(signal);
+      if (onEvent) onEvent({ stage: 'tree', label: 'Project Structure Gathered', detail: 'Workspace directory tree compiled successfully.', isGraph: false, isLlm: false, status: 'completed', progress: 100 });
+    } catch {
+      projectTree = "(Project tree unavailable)";
+    }
+
+    // 2. Architecture Diagram & Summary from Code Graph
+    let architectureSummary = "";
+    if (this.codeGraphManager) {
+      if (this.codeGraphManager.getBuildState() !== 'ready' || this.codeGraphManager.getGraphData().nodes.length === 0) {
+        if (onEvent) onEvent({ stage: 'graph', label: 'Automated Graph Generation', detail: 'Parsing AST symbols, classes, methods & imports in worker threads...', isGraph: true, isLlm: false, status: 'running', progress: 10 });
+        if (onStatusUpdate) onStatusUpdate("Librarian: Indexing architecture graph...");
+        try {
+          await this.codeGraphManager.buildGraph(undefined, (p) => {
+            if (onEvent) onEvent({ stage: 'graph', label: 'Automated Graph Generation', detail: p.status, isGraph: true, isLlm: false, status: 'running', progress: p.percentage });
+          });
+          if (onEvent) onEvent({ stage: 'graph', label: 'Code Architecture Graph Ready', detail: 'Ontology graph successfully linked across codebase.', isGraph: true, isLlm: false, status: 'completed', progress: 100 });
+        } catch {}
+      } else {
+        if (onEvent) onEvent({ stage: 'graph', label: 'Architecture Graph Loaded', detail: 'Extracted architectural summary from active Code Graph cache.', isGraph: true, isLlm: false, status: 'completed', progress: 100 });
+      }
+      architectureSummary = this.codeGraphManager.generateTextSummary();
+    }
+
+    // 3. Scan Key Project Configuration / Manifest / Doc Files
+    const candidateFiles = [
+      'package.json', 'tsconfig.json', 'requirements.txt', 'pyproject.toml',
+      'Cargo.toml', 'go.mod', 'pom.xml', 'build.gradle', 'README.md',
+      'ARCHITECTURE.md', 'CONTRIBUTING.md', '.env.example', 'Makefile',
+      'CMakeLists.txt', 'vite.config.ts', 'webpack.config.js', 'next.config.js'
+    ];
+
+    if (onEvent) onEvent({ stage: 'manifest', label: 'Reading Key Manifests & Configurations', detail: `Scanning root configs (${candidateFiles.slice(0, 4).join(', ')})...`, isGraph: false, isLlm: false, status: 'running', progress: 10 });
+
+    const snippets: string[] = [];
+    for (let i = 0; i < candidateFiles.length; i++) {
+      const fileName = candidateFiles[i];
+      for (const folder of folders) {
+        try {
+          const fileUri = vscode.Uri.joinPath(folder.uri, fileName);
+          const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
+          if (stat && stat.type === vscode.FileType.File) {
+            const bytes = await vscode.workspace.fs.readFile(fileUri);
+            const text = Buffer.from(bytes).toString('utf8');
+            if (text.trim()) {
+              snippets.push(`### 📄 File: \`${folder.name}/${fileName}\`\n\`\`\`\n${text.substring(0, 2000)}\n\`\`\``);
+            }
+          }
+        } catch {}
+      }
+      const scanPct = Math.round(((i + 1) / candidateFiles.length) * 100);
+      if (onEvent && (i % 3 === 0 || i === candidateFiles.length - 1)) {
+        onEvent({ stage: 'manifest', label: 'Reading Key Manifests & Configurations', detail: `Scanned ${i + 1} of ${candidateFiles.length} candidate files (${snippets.length} found)`, isGraph: false, isLlm: false, status: 'running', progress: scanPct });
+      }
+      if (snippets.length >= 8) break;
+    }
+
+    if (onEvent) onEvent({ stage: 'manifest', label: 'Manifests & Configs Loaded', detail: `Retrieved ${snippets.length} configuration reference snippet(s).`, isGraph: false, isLlm: false, status: 'completed', progress: 100 });
+
+    // 4. Memory DNA (if available)
+    let memoryDNA = "";
+    const memManager = (this as any).agentManager?.projectMemoryManager;
+    if (memManager) {
+      try {
+        memoryDNA = await memManager.getFormattedMemoryBlock();
+        if (memoryDNA && onEvent) {
+          onEvent({ stage: 'dna', label: 'Neural Project DNA Integrated', detail: 'Loaded long-term memory engrams and user constraints.', isGraph: false, isLlm: false, status: 'completed' });
+        }
+      } catch {}
+    }
+
+    // 5. Multi-round Grep / Exploration Loop (Configured by lollmsVsCoder.doctrineScoutingRounds, default 3)
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const maxRounds = config.get<number>('doctrineScoutingRounds') || 3;
+    let currentRound = 0;
+    const investigationLog: string[] = [];
+
+    const systemPrompt = `You are the Lead Sovereign Software Architect and Doctrine Officer.
+Your mission is to establish the non-negotiable **Project Doctrine & Mission Constraints** for this codebase.
+
+The doctrine is the supreme law that all AI agents (Scouts, Coders, Testers, Verifiers) must obey to **prevent project degradation, hallucinations, and architectural destruction**.
+
+### 🏛️ IMMUTABILITY INVARIANT (ZERO VOLATILE / EPHEMERAL DATA):
+- A Doctrine is an **immutable, timeless constitution** that constrains coders.
+- **NO SOFTWARE VERSIONS**: You are **STRICTLY FORBIDDEN** from including the project's own version number (e.g., DO NOT write "ScrapeMaster v0.8.6", write "ScrapeMaster" or describe the system without software version tags). Project release versions change with every bump and violate doctrine immutability.
+- **NO EPHEMERAL METADATA**: Never include release dates, build numbers, timestamps, author names, or temporary task statuses.
+- Target language/runtime baselines (e.g., "Python 3.11+", "TypeScript 5.x", "Node.js 20 LTS") are allowed as language invariants, but the application's own version must NEVER appear.
+
+### 🛡️ AGENTIC SAFETY & COHERENCE CONSTITUTION:
+1. **Architectural Invariants**: Explicit layer boundaries, state management models, data flow rules, and component modularity.
+2. **Language & Type Strictness**: Exact type safety requirements (e.g. strict TypeScript without 'any', PEP 8 with modern type hints, RAII in Rust/C++).
+3. **Refactoring & Modification Safeguards**: Non-negotiable rules to prevent erasing existing functions, breaking public contracts, or introducing monolithic files.
+4. **Security & Boundary Validation**: Input sanitization, zero hardcoded credentials, parameterized queries, and defensive error boundaries.
+5. **Testing & Verification Standards**: How features and bug fixes must be empirically verified before acceptance.
+
+### 🔍 SCOUTING & DISCOVERY PROTOCOL:
+You have up to ${maxRounds} investigation rounds to explore the project structure before finalizing the doctrine.
+You can execute two discovery actions:
+
+1. **SPARQL-lite Architecture Query**:
+   Query the Code Architecture Graph to inspect classes, method invocations, inheritance, or package imports.
+   Tag: \`<sparql query="SELECT ?class WHERE { ?class s:type s:Class }" reason="Auditing class hierarchy" />\`
+   Or JSON: \`{ "action": "sparql", "query": "SELECT ...", "reason": "..." }\`
+
+2. **Grep Code Search**:
+   Search raw codebase content on disk for strings or patterns.
+   Tag: \`<grep query="pattern" reason="Verifying usage" />\`
+   Or JSON: \`{ "action": "grep", "query": "...", "reason": "..." }\`
+
+3. **Finalize with <doctrine> Tag**:
+   When you have gathered sufficient evidence and are ready to formulate the final immutable doctrine, output it inside a \`<doctrine>...</doctrine>\` tag:
+   <doctrine>
+   ### 🎯 MISSION DOCTRINE & NON-NEGOTIABLE CONSTRAINTS
+
+   1. **Architectural Invariants**: ...
+   2. **Type Safety & Hygiene**: ...
+   3. **Refactoring Safeguards**: ...
+   4. **Security & Boundary Validation**: ...
+   5. **Verification & Testing**: ...
+   </doctrine>
+
+Note: Any exploratory reasoning or thoughts MUST remain outside the <doctrine> tag. Only the exact text inside <doctrine>...</doctrine> will be saved as the project doctrine.`;
+
+    const initialUserPrompt = `### 🌳 PROJECT STRUCTURE
+${projectTree}
+
+### 🗺️ ARCHITECTURAL MAP & SYMBOLS
+${architectureSummary || "No architecture graph available."}
+
+### 📄 KEY MANIFESTS & CONFIGURATIONS
+${snippets.join('\n\n') || "No manifest files detected in root."}
+
+${memoryDNA ? `### 🧬 PROJECT MEMORY DNA\n${memoryDNA}\n` : ''}
+Analyze the project architecture, detect frameworks and design patterns, and output either a grep investigation step or the final synthesized Doctrine.`;
+
+    const chatHistory: any[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: initialUserPrompt }
+    ];
+
+    const extractDoctrineTag = (text: string): string | null => {
+      const tagMatch = text.match(/<doctrine\b[^>]*>([\s\S]*?)<\/doctrine>/i);
+      return tagMatch ? tagMatch[1].trim() : null;
+    };
+
+    while (currentRound < maxRounds) {
+      if (signal?.aborted) throw new Error("Operation cancelled");
+      currentRound++;
+
+      const scoutStageKey = `scout_llm_round_${currentRound}`;
+      if (onEvent) onEvent({ stage: scoutStageKey, label: `LLM Reasoning & Scouting (Round ${currentRound}/${maxRounds})`, detail: `Model ${model} is analyzing architecture & querying patterns...`, isLlm: true, isGraph: false, status: 'running' });
+      if (onStatusUpdate) onStatusUpdate(`Scout: Analyzing architecture (Round ${currentRound}/${maxRounds})...`);
+
+      try {
+        const response = await this.lollmsAPI.sendChat(chatHistory, null, signal, model, { thinking: false });
+        const cleanResponse = stripThinkingTags(response).trim();
+
+        // 1. Check for explicit <doctrine> tag output
+        const doctrineInsideTag = extractDoctrineTag(cleanResponse);
+        if (doctrineInsideTag) {
+          if (onEvent) {
+            onEvent({ stage: scoutStageKey, label: `LLM Reasoning (Round ${currentRound}/${maxRounds})`, detail: 'Doctrine formulated and verified.', isLlm: true, isGraph: false, status: 'completed', progress: 100 });
+            onEvent({ stage: 'done', label: 'Project Doctrine Formulated', detail: 'Synthesized architectural rules successfully.', isLlm: false, isGraph: false, status: 'completed' });
+          }
+          return doctrineInsideTag;
+        }
+
+        // 2. Check for SPARQL query tag or JSON
+        const sparqlTagMatch = cleanResponse.match(/<sparql\b[^>]*query=["']([\s\S]*?)["'][^>]*\/>/i) || cleanResponse.match(/<query_architecture>([\s\S]*?)<\/query_architecture>/i);
+        const grepTagMatch = cleanResponse.match(/<grep\b[^>]*query=["']([\s\S]*?)["'][^>]*\/>/i);
+        const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
+
+        let parsedAction: any = null;
+        if (jsonMatch) {
+          try { parsedAction = JSON.parse(jsonMatch[0]); } catch {}
+        }
+
+        // Handle SPARQL action
+        if (sparqlTagMatch || parsedAction?.action === 'sparql') {
+          const query = (sparqlTagMatch ? (sparqlTagMatch[1] || sparqlTagMatch[0]) : parsedAction.query).trim();
+          const reason = parsedAction?.reason || "Auditing Code Architecture Graph";
+          const sparqlStageKey = `sparql_round_${currentRound}`;
+
+          if (onEvent) onEvent({ stage: sparqlStageKey, label: `SPARQL Architecture Query`, detail: `Executing: "${query.substring(0, 60)}..." (${reason})`, isGraph: true, isLlm: false, status: 'running' });
+          if (onStatusUpdate) onStatusUpdate(`Scout: Querying architecture graph with SPARQL...`);
+
+          let sparqlResult = "";
+          if (this.codeGraphManager) {
+            sparqlResult = await this.codeGraphManager.executeSparql(query);
+          } else {
+            sparqlResult = "(Code Graph Manager unavailable)";
+          }
+
+          if (onEvent) onEvent({ stage: sparqlStageKey, label: `SPARQL Architecture Query`, detail: `Query resolved: ${query.substring(0, 60)}...`, isGraph: true, isLlm: false, status: 'completed', progress: 100 });
+
+          chatHistory.push({ role: 'assistant', content: cleanResponse });
+          chatHistory.push({
+            role: 'user',
+            content: `### 📊 SPARQL ARCHITECTURE QUERY RESULTS\n\`\`\`sparql\n${query}\n\`\`\`\n\n${sparqlResult}\n\nContinue scouting (using <sparql> or <grep>) or finalize the immutable doctrine enclosed in <doctrine>...</doctrine>.`
+          });
+          continue;
+        }
+
+        // Handle Grep action
+        if (grepTagMatch || parsedAction?.action === 'grep') {
+          const query = (grepTagMatch ? grepTagMatch[1] : parsedAction.query).trim();
+          const reason = parsedAction?.reason || "Verifying codebase usage";
+          const grepStageKey = `grep_round_${currentRound}`;
+
+          if (onEvent) onEvent({ stage: grepStageKey, label: `Grep Code Search: "${query}"`, detail: `Executing search (${reason})...`, isLlm: false, isGraph: false, status: 'running' });
+          if (onStatusUpdate) onStatusUpdate(`Scout: Inspecting pattern "${query}"...`);
+
+          const searchResults = await this.searchWorkspaceContent(query, { matchCase: false, wholeWord: false });
+          const snippet = searchResults.slice(0, 6).map(r => `${r.path}:${r.line} - ${r.snippet}`).join('\n') || "No matches found.";
+
+          investigationLog.push(`Grep "${query}": ${searchResults.length} matches.`);
+          if (onEvent) onEvent({ stage: grepStageKey, label: `Grep Results: "${query}"`, detail: `Found ${searchResults.length} match(es) across codebase.`, isLlm: false, isGraph: false, status: 'completed', progress: 100 });
+
+          chatHistory.push({ role: 'assistant', content: cleanResponse });
+          chatHistory.push({
+            role: 'user',
+            content: `### 🔍 GREP INVESTIGATION RESULTS FOR "${query}"\n${snippet}\n\nNow decide next investigation step (using <sparql> or <grep>) or finalize the complete doctrine enclosed in <doctrine>...</doctrine>.`
+          });
+          continue;
+        }
+
+        if (parsedAction?.doctrine) {
+          if (onEvent) onEvent({ stage: 'done', label: 'Project Doctrine Formulated', detail: 'Synthesized architectural rules successfully.', isLlm: false, isGraph: false, status: 'completed' });
+          return parsedAction.doctrine.trim();
+        }
+      } catch (err: any) {
+        Logger.warn(`[DoctrineScout] Error in scouting round ${currentRound}: ${err.message}`);
+        break;
+      }
+    }
+
+    if (onEvent) onEvent({ stage: 'synthesis_llm', label: 'LLM Generation: Final Doctrine Synthesis', detail: `Prompting ${model} to formulate non-negotiable mission constraints...`, isLlm: true, isGraph: false, status: 'running' });
+    if (onStatusUpdate) onStatusUpdate("Scout: Synthesizing final mission doctrine...");
+
+    const fallbackPrompt = `Synthesize the complete, high-density Project Doctrine based on all evidence gathered.
+STRICT INSTRUCTIONS:
+- Enclose the final doctrine exclusively inside <doctrine>...</doctrine> tags.
+- The doctrine must contain ONLY timeless, immutable architectural invariants, layer boundaries, and coding laws.
+- NEVER include project release versions (no "v0.8.6"), dates, build numbers, authors, or temporary roadmap statuses.
+
+Example output:
+<doctrine>
+### 🎯 MISSION DOCTRINE & NON-NEGOTIABLE CONSTRAINTS
+
+1. **Architectural Invariants**: ...
+2. **Type Safety & Hygiene**: ...
+3. **Refactoring Safeguards**: ...
+4. **Security & Boundary Validation**: ...
+5. **Verification & Testing**: ...
+</doctrine>`;
+
+    const finalResponse = await this.lollmsAPI.sendChat([
+      ...chatHistory,
+      { role: 'user', content: fallbackPrompt }
+    ], null, signal, model, { thinking: false });
+
+    const finalClean = stripThinkingTags(finalResponse);
+    const finalDoctrine = extractDoctrineTag(finalClean) || finalClean.replace(/^```markdown|```$/g, '').trim();
+
+    if (onEvent) {
+      onEvent({ stage: 'synthesis_llm', label: 'LLM Generation: Final Doctrine Synthesis', detail: 'Doctrine formulated and verified.', isLlm: true, isGraph: false, status: 'completed', progress: 100 });
+      onEvent({ stage: 'done', label: 'Project Doctrine Formulated', detail: 'Safety constraints successfully extracted and populated.', isLlm: false, isGraph: false, status: 'completed' });
+    }
+
+    return finalDoctrine;
+  }
 
   private updateBriefingData(discussion: any, action: 'add' | 'amend', id: string, content: string) {
     if (!discussion) return;

@@ -29,6 +29,7 @@ export interface ArbitrateOptions {
     capabilities: DiscussionCapabilities;
     currentPromptAddedFiles: Set<string>;
     signal: AbortSignal;
+    governorDirectives?: string[];
     onStatusUpdate?: (status: string) => void;
     onAddMessage?: (message: ChatMessage) => Promise<void>;
     onUpdateMessage?: (messageId: string, content: string) => Promise<void>;
@@ -55,6 +56,189 @@ export class ContextGovernor {
         'code', 'function', 'class', 'const', 'let', 'var', 'import', 'export', 'return', 'true', 'false',
         'null', 'undefined', 'async', 'await', 'type', 'interface', 'please', 'help', 'need', 'want', 'like'
     ]);
+
+    /**
+     * Automatically filters files in context based on a user focus prompt.
+     * Selects files to keep active (content loaded) and files to mute (0 tokens, kept in tree).
+     */
+    public static async filterFilesByPrompt(options: {
+        lollmsAPI: LollmsAPI;
+        contextManager: ContextManager;
+        discussionManager: DiscussionManager;
+        currentDiscussion: Discussion;
+        targetModel: string;
+        prompt: string;
+        signal: AbortSignal;
+        onStatusUpdate?: (status: string) => void;
+    }): Promise<{
+        keptFiles: string[];
+        mutedFiles: string[];
+        rationale: string;
+        totalTokens: number;
+        liberatedTokens: number;
+    }> {
+        const { lollmsAPI, contextManager, targetModel, prompt, signal, onStatusUpdate } = options;
+
+        const provider = contextManager.getContextStateProvider();
+        const rawIncluded = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
+
+        if (rawIncluded.length === 0) {
+            return {
+                keptFiles: [],
+                mutedFiles: [],
+                rationale: "No files are currently included in the context explorer.",
+                totalTokens: 0,
+                liberatedTokens: 0
+            };
+        }
+
+        if (onStatusUpdate) onStatusUpdate("Governor: Reading candidate files & metadata...");
+
+        const keywords = this.extractQueryKeywords(prompt, []);
+        const fileCandidates: ParsedFileCandidate[] = [];
+
+        for (const f of rawIncluded) {
+            if (signal.aborted) throw new Error("Operation cancelled");
+            let text = "";
+            let bytesCount = f.bytes || 0;
+            const cached = (contextManager as any)._fileContentCache?.get(f.path);
+            if (cached?.content) {
+                text = cached.content;
+                bytesCount = cached.size || cached.content.length;
+            } else {
+                const res = await contextManager.resolveWorkspaceFromPath(f.path);
+                if (res) {
+                    try {
+                        const fileBytes = await vscode.workspace.fs.readFile(res.uri);
+                        text = Buffer.from(fileBytes).toString('utf8');
+                        bytesCount = fileBytes.length;
+                    } catch {}
+                }
+            }
+
+            const tokens = f.tokens || Math.max(1, Math.ceil(bytesCount > 0 ? bytesCount / 3.5 : text.length / 3.5));
+            const candidate = this.buildCandidate("", f.path, text, tokens, new Set(), keywords, contextManager);
+            fileCandidates.push(candidate);
+        }
+
+        if (onStatusUpdate) onStatusUpdate(`Governor: Asking AI to evaluate ${fileCandidates.length} files...`);
+
+        const compactCatalog = this.buildCompactCatalog(fileCandidates, options.currentDiscussion?.mutedFiles || []);
+
+        const systemPrompt = `You are the **Sovereign Context Governor**.
+Your task is to analyze the user's focus objective and decide which files to keep in active context (content loaded) vs which files to mute (0 tokens, kept in tree tagged [M]).
+
+### CANDIDATE FILES (FULL CATALOG):
+Files marked [C] have full content loaded. Files marked [M] are currently muted.
+${compactCatalog}
+
+### MANDATORY OUTPUT FORMAT (USE THESE EXACT TAGS):
+<mute>
+path/to/file_to_mute.ext
+</mute>
+
+<worker>
+Specific advice, findings, or guidance to forward to the worker model answering the user's request.
+</worker>
+
+RULES:
+1. Put every file that should be MUTED inside <mute>...</mute>, exactly one path per line.
+2. Any file NOT listed inside <mute> will be KEPT ACTIVE with full content loaded ([C]).
+3. If all files should be active, output <mute></mute> empty.
+4. Put concise advice or guidance for the worker model inside <worker>...</worker>.`;
+
+        const userMsg = `### USER FOCUS OBJECTIVE:
+"${prompt}"
+
+Select which files to mute and which to keep active. Output <mute> and <worker> tags.`;
+
+        let rawResponse = "";
+        let mutedFromTags: string[] | null = null;
+        let workerAdvice = "";
+
+        try {
+            rawResponse = await lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userMsg }
+            ], null, signal, targetModel, { thinking: false });
+
+            const cleanResponse = stripThinkingTags(rawResponse).trim();
+
+            const muteMatch = cleanResponse.match(/<mute\b[^>]*>([\s\S]*?)<\/mute>/i);
+            if (muteMatch) {
+                mutedFromTags = muteMatch[1]
+                    .split(/[\r\n,]+/)
+                    .map(l => l.trim().replace(/^['"]|['"]$/g, ''))
+                    .filter(l => l.length > 0 && !l.startsWith('<'));
+            }
+
+            const workerMatch = cleanResponse.match(/<worker\b[^>]*>([\s\S]*?)<\/worker>/i);
+            if (workerMatch) {
+                workerAdvice = workerMatch[1].trim();
+            }
+
+            // JSON fallback if model used JSON
+            if (mutedFromTags === null) {
+                const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    const parsed = JSON.parse(jsonMatch[0]);
+                    if (Array.isArray(parsed.evict)) {
+                        mutedFromTags = parsed.evict.map((e: any) => typeof e === 'string' ? e : e.path).filter(Boolean);
+                    } else if (Array.isArray(parsed.mute)) {
+                        mutedFromTags = parsed.mute.map((e: any) => typeof e === 'string' ? e : e.path).filter(Boolean);
+                    }
+                    if (parsed.worker || parsed.worker_advice) {
+                        workerAdvice = String(parsed.worker || parsed.worker_advice).trim();
+                    }
+                }
+            }
+        } catch (llmErr: any) {
+            Logger.warn(`[Governor] LLM prompt filter failed: ${llmErr.message}, using heuristic fallback.`);
+        }
+
+        const keptFiles: string[] = [];
+        const mutedFiles: string[] = [];
+        let totalTokens = 0;
+        let liberatedTokens = 0;
+
+        for (const candidate of fileCandidates) {
+            let keep = true;
+            if (mutedFromTags !== null) {
+                const shouldMute = mutedFromTags.some(m => this.pathsMatch(m, candidate.path));
+                keep = !shouldMute;
+            } else {
+                keep = candidate.relevanceScore > 0;
+            }
+
+            if (keep) {
+                keptFiles.push(candidate.path);
+                totalTokens += candidate.tokens;
+            } else {
+                mutedFiles.push(candidate.path);
+                liberatedTokens += candidate.tokens;
+            }
+        }
+
+        if (keptFiles.length === 0 && fileCandidates.length > 0) {
+            const highestScoring = [...fileCandidates].sort((a, b) => b.relevanceScore - a.relevanceScore)[0];
+            const idx = mutedFiles.indexOf(highestScoring.path);
+            if (idx !== -1) mutedFiles.splice(idx, 1);
+            keptFiles.push(highestScoring.path);
+            totalTokens += highestScoring.tokens;
+            liberatedTokens -= highestScoring.tokens;
+        }
+
+        const rationale = workerAdvice ||
+            `Filtered context for "${prompt}": Kept ${keptFiles.length} active file(s) and muted ${mutedFiles.length} file(s).`;
+
+        return {
+            keptFiles,
+            mutedFiles,
+            rationale,
+            totalTokens,
+            liberatedTokens
+        };
+    }
 
     /**
      * Executes the Context Governor arbitration algorithm.
@@ -118,78 +302,123 @@ export class ContextGovernor {
 
         let fixedLoad = systemTokens + historyTokens + treeTokens + skillsTokens + briefingTokens + promptTokens;
 
-        // 3. Extract and Parse File Blocks
+        // 3. Extract and Parse File Blocks across ALL candidate files in context
         const extractedBlocks = extractFileBlocks(contextData.selectedFilesContent);
         const fileCandidates: ParsedFileCandidate[] = [];
 
-        // Extract keywords from user prompt and recent conversation for relevance matching
-        const keywords = this.extractQueryKeywords(userPromptText, history);
+        // Extract and combine user governor directives
+        const { extractGovernorDirectives } = require('./utils');
+        const extractedFromPrompt = extractGovernorDirectives(userPromptText);
+        const allGovernorDirectives: string[] = [
+            ...(options.governorDirectives || []),
+            ...extractedFromPrompt.governorDirectives
+        ];
+        const hasGovernorDirective = allGovernorDirectives.length > 0;
 
-        if (extractedBlocks.length > 0) {
-            for (const fb of extractedBlocks) {
-                const attrs = parseFileTagAttributes(fb.attrStr, fb.rawContent);
-                const filePath = attrs?.path || "";
-                if (!filePath || filePath.includes('<<<<<<< SEARCH')) continue;
+        // Extract keywords from user prompt, history, and governor directives for relevance matching
+        const combinedKeywordsSource = `${userPromptText} ${allGovernorDirectives.join(' ')}`;
+        const keywords = this.extractQueryKeywords(combinedKeywordsSource, history);
 
-                const tokens = Math.max(1, Math.ceil(fb.rawContent.length / 3.5));
-                const candidate = this.buildCandidate(fb.fullMatch, filePath, fb.rawContent, tokens, currentPromptAddedFiles, keywords, contextManager);
-                fileCandidates.push(candidate);
-            }
-        } else {
-            // Regex fallback for legacy fenced code blocks constructed with string concatenation
-            const fileOpenTag = '<' + 'file';
-            const fileCloseTag = '<' + '/file>';
-            const blockRegex = new RegExp(fileOpenTag + '\\s+([^>]*?)>([\\s\\S]*?)' + fileCloseTag + '|```(?:\\w+)?[:]?([^\\n]+)[\\r\\n]([\\s\\S]*?)[\\r\\n]```', 'gi');
-            let fileMatch: RegExpExecArray | null;
-            while ((fileMatch = blockRegex.exec(contextData.selectedFilesContent)) !== null) {
-                let filePath = "";
-                let fileBody = "";
-                if (fileMatch[1] !== undefined) {
-                    const attrs = parseFileTagAttributes(fileMatch[1], fileMatch[2]);
-                    filePath = attrs?.path || "";
-                    fileBody = fileMatch[2] || "";
-                } else {
-                    filePath = (fileMatch[3] || '').trim();
-                    fileBody = fileMatch[4] || '';
+        // Always start from the original full list of files included in context
+        const provider = contextManager.getContextStateProvider();
+        const allIncludedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
+
+        const candidateSourceList = allIncludedFiles.length > 0 ? allIncludedFiles : extractedBlocks.map(eb => {
+            const attrs = parseFileTagAttributes(eb.attrStr, eb.rawContent);
+            return { path: attrs?.path || '', state: 'included' as any };
+        }).filter(f => f.path);
+
+        const currentMuted = currentDiscussion?.mutedFiles || [];
+
+        for (const f of candidateSourceList) {
+            let fullMatch = "";
+            let fileBody = "";
+            let tokens = (f as any).tokens || 0;
+
+            const cached = (contextManager as any)._fileContentCache?.get(f.path);
+            if (cached?.content) {
+                fileBody = cached.content;
+            } else {
+                const res = await contextManager.resolveWorkspaceFromPath(f.path);
+                if (res) {
+                    try {
+                        const bytes = await vscode.workspace.fs.readFile(res.uri);
+                        fileBody = Buffer.from(bytes).toString('utf8');
+                    } catch {}
                 }
-                if (!filePath || filePath.includes('<<<<<<< SEARCH')) continue;
-
-                const tokens = Math.max(1, Math.ceil(fileBody.length / 3.5));
-                const candidate = this.buildCandidate(fileMatch[0], filePath, fileBody, tokens, currentPromptAddedFiles, keywords, contextManager);
-                fileCandidates.push(candidate);
             }
+
+            tokens = tokens || Math.max(1, Math.ceil(fileBody.length / 3.5));
+            const formatted = fileBody.endsWith('\n') ? fileBody : fileBody + '\n';
+            fullMatch = `<file path="${f.path}">\n${formatted}</file>
+
+`;
+
+            const candidate = this.buildCandidate(fullMatch, f.path, fileBody, tokens, currentPromptAddedFiles, keywords, contextManager);
+
+            if (hasGovernorDirective) {
+                const normP = f.path.toLowerCase().replace(/\\/g, '/');
+                const baseP = path.basename(normP);
+                const directiveText = allGovernorDirectives.join(' ').toLowerCase();
+                if (directiveText.includes(normP) || directiveText.includes(baseP)) {
+                    candidate.relevanceScore += 5000;
+                }
+            }
+            fileCandidates.push(candidate);
         }
 
-        const filesLoad = fileCandidates.reduce((sum, b) => sum + b.tokens, 0);
-        const totalEstimated = fixedLoad + filesLoad;
-        const initialUsagePercent = Math.round((totalEstimated / maxTokens) * 100);
+        const isCandidateMuted = (candidatePath: string): boolean => {
+            return currentMuted.some(m => this.pathsMatch(m, candidatePath));
+        };
 
-        // If Governor is disabled: enforce only the 120% hard-cap
-        if (capabilities.contextGovernorEnabled === false) {
-            if (totalEstimated > hardCap120) {
+        // Calculate unmuted files load (files whose content is actually loaded in active context)
+        const unmutedCandidates = fileCandidates.filter(b => !isCandidateMuted(b.path));
+        const unmutedFilesLoad = unmutedCandidates.reduce((sum, b) => sum + b.tokens, 0);
+        const allFilesLoad = fileCandidates.reduce((sum, b) => sum + b.tokens, 0);
+
+        // Active context load takes into consideration muted files (0 content tokens for muted files)
+        const activeContextLoad = fixedLoad + unmutedFilesLoad;
+        const activeUsagePercent = maxTokens > 0 ? Math.round((activeContextLoad / maxTokens) * 100) : 0;
+
+        const totalEstimated = fixedLoad + allFilesLoad;
+        const totalUsagePercent = maxTokens > 0 ? Math.round((totalEstimated / maxTokens) * 100) : 0;
+
+        // Rule 1: If Governor is disabled and NO explicit governor directive was issued:
+        // If the user muted files enough so that active context is under 100% (activeContextLoad <= maxTokens),
+        // call the LLM safely with that selection as-is.
+        if (capabilities.contextGovernorEnabled === false && !hasGovernorDirective) {
+            if (activeContextLoad > maxTokens) {
                 if (onAddMessage) {
                     await onAddMessage({
                         role: 'system',
-                        content: `🛑 **Context Limit Exceeded (>120%)**\nPayload (~${totalEstimated.toLocaleString()} tokens, **${initialUsagePercent}%**) exceeds 120% of model capacity (**${maxTokens.toLocaleString()}** tokens).\n\n**To continue:** Enable Context Governor in Discussion Settings to auto-prune files, remove files from context, or start a new discussion.`
+                        content: `🛑 **Context Limit Exceeded (>100%)**\nActive context load (~${activeContextLoad.toLocaleString()} tokens, **${activeUsagePercent}%**) exceeds model capacity (**${maxTokens.toLocaleString()}** tokens).\n\n**To continue:** Mute more files in the Context Explorer, enable Context Governor in Discussion Settings to auto-prune files, remove files from context, or start a new discussion.`
                     });
                 }
                 return null;
             }
-            return this.buildPassingResult(contextData, baseInstructions, history, currentPromptMessage, totalEstimated, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities);
+
+            await this.updateDiscussionMetrics(currentDiscussion, discussionManager, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, unmutedFilesLoad, historyTokens);
+
+            return this.buildPassingResult(contextData, baseInstructions, history, currentPromptMessage, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities, briefingContent);
         }
 
-        // If context is comfortably within trigger threshold, pass through immediately
-        if (totalEstimated <= triggerThreshold) {
-            return this.buildPassingResult(contextData, baseInstructions, history, currentPromptMessage, totalEstimated, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities);
+        // Rule 2: If NO explicit governor directive was sent, only run the governor if the active context
+        // (unmuted files + history + tree + system prompt) exceeds the trigger threshold.
+        // Even if the total of all files exceeds the threshold, if activeContextLoad <= triggerThreshold,
+        // use the selection as is without calling the governor.
+        if (!hasGovernorDirective && activeContextLoad <= triggerThreshold) {
+            await this.updateDiscussionMetrics(currentDiscussion, discussionManager, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, unmutedFilesLoad, historyTokens);
+
+            return this.buildPassingResult(contextData, baseInstructions, history, currentPromptMessage, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities, briefingContent);
         }
 
-        // 4. Overload Detected (up to 1000%+): Engage Context Governor toward Objective Threshold
+        // 4. Overload Detected: Engage Context Governor toward Objective Threshold
         if (onStatusUpdate) {
-            onStatusUpdate(`⚖️ Governor: Context at ${initialUsagePercent}% (Trigger: ${triggerThresholdPercent}%, Objective: ${objectiveThresholdPercent}%). Optimizing...`);
+            onStatusUpdate(`⚖️ Governor: Context at ${activeUsagePercent}% (Trigger: ${triggerThresholdPercent}%, Objective: ${objectiveThresholdPercent}%). Optimizing...`);
         }
 
-        // The overflow to eliminate is based on the Objective Target Threshold
-        let overflow = Math.max(0, totalEstimated - objectiveThreshold);
+        // The overflow to eliminate is based on the active context load and the Objective Target Threshold
+        let overflow = Math.max(0, activeContextLoad - objectiveThreshold);
         const pruneMsgId = 'system_prune_' + Date.now();
 
         if (onAddMessage) {
@@ -197,7 +426,7 @@ export class ContextGovernor {
                 id: pruneMsgId,
                 role: 'system',
                 content: `⚖️ **Context Governor: Overload Optimization Engaged**
-Initial Load: **${initialUsagePercent}%** (${totalEstimated.toLocaleString()} / ${maxTokens.toLocaleString()} tokens).
+Initial Active Load: **${activeUsagePercent}%** (${activeContextLoad.toLocaleString()} / ${maxTokens.toLocaleString()} tokens).
 Trigger Threshold: **${triggerThresholdPercent}%** &middot; Objective Target: **${objectiveThresholdPercent}%** (~${objectiveThreshold.toLocaleString()} tokens) &middot; Max Verification Rounds: **${maxNegotiationRounds}**.
 *Analyzing candidate relevance, verifying reduction targets, and executing multi-round optimization...*`,
                 skipInPrompt: true
@@ -225,9 +454,9 @@ Trigger Threshold: **${triggerThresholdPercent}%** &middot; Objective Target: **
         }
 
         // Stage 2: Evaluate Protection and Available Tokens
-        // Shield files added during the current user prompt
-        const olderCandidates = fileCandidates.filter(b => !b.isCurrentPromptFile);
-        const tokensAvailableFromOlder = olderCandidates.reduce((sum, b) => sum + b.tokens, 0);
+        // Shield files added during the current user prompt among active (unmuted) files
+        const olderActiveCandidates = fileCandidates.filter(b => !b.isCurrentPromptFile && !isCandidateMuted(b.path));
+        const tokensAvailableFromOlder = olderActiveCandidates.reduce((sum, b) => sum + b.tokens, 0);
 
         const canAvoidEvictingCurrentPrompt = tokensAvailableFromOlder >= overflow;
 
@@ -235,31 +464,64 @@ Trigger Threshold: **${triggerThresholdPercent}%** &middot; Objective Target: **
         let governorDecision: any = null;
         let roundsUsed = 0;
         let chunkingNotice: string | undefined = undefined;
+        let workerAdvice: string = "";
 
-        if (overflow > 0 && fileCandidates.length > 0) {
-            governorDecision = await this.runGovernorNegotiation({
+        const combinedDirectiveText = allGovernorDirectives.join(' ').toLowerCase().trim();
+        const isActivateAll = /\b(activate\s+all|unmute\s+all|enable\s+all|show\s+all|all\s+on|reveal\s+all|keep\s+all)\b/i.test(combinedDirectiveText);
+        const isMuteAll = /\b(mute\s+all|deactivate\s+all|hide\s+all|all\s+off)\b/i.test(combinedDirectiveText);
+
+        if (isActivateAll) {
+            if (onStatusUpdate) onStatusUpdate("⚖️ Governor: Executing 'activate all' directive...");
+            fileCandidates.forEach(b => {
+                b.keep = true;
+                b.justification = "Activated by user directive.";
+            });
+            workerAdvice = `User directive executed: All ${fileCandidates.length} files in context have been activated with full content loaded.`;
+            governorDecision = {
+                rationale: workerAdvice,
+                keep: fileCandidates.map(b => ({ path: b.path, justification: b.justification })),
+                evict: []
+            };
+        } else if (isMuteAll) {
+            if (onStatusUpdate) onStatusUpdate("⚖️ Governor: Executing 'mute all' directive...");
+            fileCandidates.forEach(b => {
+                b.keep = false;
+                b.evictionReason = "Muted by user directive.";
+            });
+            workerAdvice = `User directive executed: All ${fileCandidates.length} files in context have been muted (0 tokens).`;
+            governorDecision = {
+                rationale: workerAdvice,
+                keep: [],
+                evict: fileCandidates.map(b => ({ path: b.path, reason: b.evictionReason }))
+            };
+        } else if (overflow > 0 || hasGovernorDirective) {
+            const negotiationResult = await this.runGovernorNegotiation({
                 lollmsAPI,
                 contextManager,
                 targetModel,
                 signal,
                 userPromptText,
                 fileCandidates,
-                totalEstimated,
+                currentMuted,
+                totalEstimated: activeContextLoad,
                 maxTokens,
                 triggerThresholdPercent,
                 objectiveThresholdPercent,
                 objectiveThreshold,
-                overflow,
+                overflow: Math.max(0, overflow),
                 canAvoidEvictingCurrentPrompt,
                 keywords,
                 maxRounds: maxNegotiationRounds,
+                governorDirectives: allGovernorDirectives,
                 onStatusUpdate,
                 onRoundUsed: (r) => { roundsUsed = r; }
             });
+            governorDecision = negotiationResult.decision;
+            workerAdvice = negotiationResult.workerAdvice || "";
         } else {
             fileCandidates.forEach(b => {
                 b.keep = true;
-                b.justification = "Preserved: Context already meets objective threshold.";
+                b.justification = "Preserved: Context meets objective threshold.";
             });
             governorDecision = {
                 rationale: "Token budget satisfied. All files preserved.",
@@ -272,9 +534,9 @@ Trigger Threshold: **${triggerThresholdPercent}%** &middot; Objective Target: **
         let candidateEvictList = Array.isArray(governorDecision?.evict) ? governorDecision.evict : [];
         let candidateKeepList = Array.isArray(governorDecision?.keep) ? governorDecision.keep : [];
 
-        // If Governor failed or produced insufficient reduction, engage deterministic ranking fallback to guarantee objective
+        // If Governor failed or produced insufficient reduction, engage deterministic ranking fallback
         if (!governorDecision || (candidateEvictList.length === 0 && candidateKeepList.length === 0 && overflow > 0)) {
-            governorDecision = this.buildDeterministicFallback(fileCandidates, overflow, canAvoidEvictingCurrentPrompt, objectiveThresholdPercent, objectiveThreshold);
+            governorDecision = this.buildDeterministicFallback(fileCandidates, overflow, canAvoidEvictingCurrentPrompt, objectiveThresholdPercent, objectiveThreshold, currentMuted);
             candidateEvictList = Array.isArray(governorDecision?.evict) ? governorDecision.evict : [];
             candidateKeepList = Array.isArray(governorDecision?.keep) ? governorDecision.keep : [];
         }
@@ -289,8 +551,13 @@ Trigger Threshold: **${triggerThresholdPercent}%** &middot; Objective Target: **
         for (const b of fileCandidates) {
             const evictMatch = candidateEvictList.find((e: any) => this.pathsMatch(e.path || e, b.path));
             const keepMatch = candidateKeepList.find((k: any) => this.pathsMatch(k.path || k, b.path));
+            const wasMuted = isCandidateMuted(b.path);
 
             let shouldEvict = Boolean(evictMatch);
+            // If the file was already muted and not explicitly restored to keep list:
+            if (!shouldEvict && wasMuted && !keepMatch) {
+                shouldEvict = true;
+            }
             if (!shouldEvict && candidateKeepList.length > 0 && !keepMatch && (liberatedTokens < overflow)) {
                 shouldEvict = true;
             }
@@ -303,15 +570,17 @@ Trigger Threshold: **${triggerThresholdPercent}%** &middot; Objective Target: **
 
             if (shouldEvict) {
                 b.keep = false;
-                liberatedTokens += b.tokens;
+                if (!wasMuted) {
+                    liberatedTokens += b.tokens;
+                }
                 evictedPaths.push(b.path);
                 const reason = (evictMatch && typeof evictMatch === 'object' && evictMatch.reason)
                     ? evictMatch.reason
                     : (b.isCurrentPromptFile
                         ? "Evicted out of strict capacity saturation to fit model window."
-                        : "Pruned to satisfy target context threshold.");
+                        : (wasMuted ? "Remained muted in tree." : "Pruned to satisfy target context threshold."));
                 b.evictionReason = reason;
-                evictedReport.push(`- ✂️ \`${b.path}\` (~${b.tokens.toLocaleString()} tok) — *${reason}*`);
+                evictedReport.push(`- \`${b.path}\` [M] (~${b.tokens.toLocaleString()} tok) — *${reason}*`);
             } else {
                 b.keep = true;
                 const just = (keepMatch && typeof keepMatch === 'object' && keepMatch.justification)
@@ -321,15 +590,15 @@ Trigger Threshold: **${triggerThresholdPercent}%** &middot; Objective Target: **
                         : "High-relevance dependency for current task.");
                 b.justification = just;
                 if (b.isCurrentPromptFile) {
-                    keptList.push(`- 🛡️ \`${b.path}\` (~${b.tokens.toLocaleString()} tok) [CURRENT PROMPT] — *${just}*`);
+                    keptList.push(`- \`${b.path}\` [C] (~${b.tokens.toLocaleString()} tok) [CURRENT PROMPT] — *${just}*`);
                 } else {
-                    keptList.push(`- ✅ \`${b.path}\` (~${b.tokens.toLocaleString()} tok) — *${just}*`);
+                    keptList.push(`- \`${b.path}\` [C] (~${b.tokens.toLocaleString()} tok) — *${just}*`);
                 }
             }
         }
 
         // Check if context is saturated (even after eviction, remaining kept files still exceed target or 120%)
-        let newTotal = Math.max(0, totalEstimated - liberatedTokens - liberatedHistoryTokens);
+        let newTotal = Math.max(0, activeContextLoad - liberatedTokens - liberatedHistoryTokens);
 
         // Emergency prune if remaining files still exceed objectiveThreshold (e.g. from 1000% load)
         if (newTotal > objectiveThreshold) {
@@ -375,10 +644,21 @@ The codebase context required for this request is extremely large. It is mathema
             return null;
         }
 
-        // Reconstruct selected files content and synchronize tree markers
+        // Synchronize muted files list with discussion state
+        currentDiscussion.mutedFiles = fileCandidates.filter(b => !b.keep).map(b => b.path);
+        if (!currentDiscussion.id.startsWith('temp-')) {
+            await discussionManager.saveDiscussion(currentDiscussion);
+        }
+
+        // Reconstruct selected files content and synchronize tree markers with [C] and [M]
         const keptBlocks = fileCandidates.filter(b => b.keep);
+        const mutedBlocks = fileCandidates.filter(b => !b.keep);
         const newSelectedFilesContent = keptBlocks.map(b => b.fullMatch).join('\n\n');
-        const updatedProjectTree = this.updateTreeWithKeptFiles(contextData.projectTree, keptBlocks.map(b => b.path));
+        const updatedProjectTree = this.updateTreeWithKeptFiles(
+            contextData.projectTree, 
+            keptBlocks.map(b => b.path),
+            mutedBlocks.map(b => b.path)
+        );
         contextData.projectTree = updatedProjectTree;
 
         // Permanent eviction to workspace state if enabled
@@ -396,90 +676,96 @@ The codebase context required for this request is extremely large. It is mathema
         const newUsagePercent = maxTokens > 0 ? Math.round((newTotal / maxTokens) * 100) : 0;
         const totalLiberated = liberatedTokens + liberatedHistoryTokens;
 
-        const addFilesTagStr = '<' + 'add_files_to_context>';
-        const reportMarkdown = `⚖️ **Context Governor: Context Optimization Complete**
-Optimization reduced payload from **${initialUsagePercent}%** to **${newUsagePercent}%** (${newTotal.toLocaleString()} / ${maxTokens.toLocaleString()} tokens, Trigger: ${triggerThresholdPercent}%, Objective: ${objectiveThresholdPercent}%). Total liberated: **${totalLiberated.toLocaleString()}** tokens.
-*(Negotiation & Verification: ${roundsUsed} round${roundsUsed === 1 ? '' : 's'} / max ${maxNegotiationRounds})*
+        // Emit dedicated Governor chat card with skipInPrompt: true (visible to user, never sent to worker LLM)
+        if (onAddMessage && (hasGovernorDirective || overflow > 0)) {
+            const directiveSummary = allGovernorDirectives.length > 0 ? `\n- **Directive**: \`${allGovernorDirectives.join('; ')}\`` : '';
+            const governorCardMarkdown = `### ⚖️ Context Governor Decision
+${directiveSummary}
+- **Rounds Taken**: ${roundsUsed} round${roundsUsed === 1 ? '' : 's'} (max ${maxNegotiationRounds})
+- **New Context Load**: ${newTotal.toLocaleString()} / ${maxTokens.toLocaleString()} tokens (**${newUsagePercent}%**)
+- **Tokens Liberated**: ${totalLiberated.toLocaleString()} tokens
 
-🧠 **ARCHITECTURAL STRATEGY & RATIONALE**:
+🧠 **Thoughts & Rationale**:
 ${rationale}
 
-${historyCropReport ? `📜 **CONVERSATION HISTORY OPTIMIZATION**:\n${historyCropReport}\n\n` : ''}📦 **PRESERVED FILES (Active for Mission)**:
-${keptList.join('\n') || '- (None)'}
+${workerAdvice ? `💬 **Advice Forwarded to Worker**:\n${workerAdvice}\n\n` : ''}📁 **File Decisions**:
+- **✅ Kept Active (${keptBlocks.length} files with content loaded [C])**:
+${keptList.join('\n') || '  - (None)'}
 
-🗑️ **EVICTED FILES (Pruned from Active Context)**:
-${evictedReport.join('\n') || '- (None)'}
-
-*Evicted files remain in the Project Tree. Use \`${addFilesTagStr}\` if needed in subsequent turns.*
+- **✂️ Muted in Tree (${mutedBlocks.length} files at 0 tokens [M])**:
+${evictedReport.join('\n') || '  - (None)'}
 ${chunkingNotice ? `\n---\n${chunkingNotice}\n` : ''}`;
 
-        if (onUpdateMessage) {
-            await onUpdateMessage(pruneMsgId, reportMarkdown);
+            await onAddMessage({
+                id: 'governor_run_' + Date.now(),
+                role: 'system',
+                personalityName: '⚖️ Context Governor',
+                content: governorCardMarkdown,
+                skipInPrompt: true
+            });
         }
 
         const updatedBriefing = contextManager.renderBriefing(currentDiscussion);
         const chunkingDirectiveText = chunkingNotice ? `\n\n${chunkingNotice}\n` : '';
+        const governorAdviceSection = workerAdvice ? `\n#### ⚖️ CONTEXT GOVERNOR ADVICE & FINDINGS\n${workerAdvice}\n` : '';
 
         const projectStateText = `
 ### 📂 ATTACHED PROJECT CONTEXT
 I am providing you with the current, ground-truth state of my project files and the technical briefing.
 
-${updatedBriefing && !updatedBriefing.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${updatedBriefing}\n` : ""}
+${updatedBriefing && !updatedBriefing.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${updatedBriefing}\n` : ""}${governorAdviceSection}
 ${updatedProjectTree ? `#### 🌳 PROJECT STRUCTURE\n${updatedProjectTree}\n` : ""}
 ${newSelectedFilesContent ? `#### 📄 FILE CONTENTS\n${newSelectedFilesContent}` : "*(No files currently selected)*"}
 --------------------------------------------------
 ${chunkingDirectiveText}`.trim();
 
-        let projectContextContent: any = projectStateText;
+        // Enforce strict alternating user/assistant structure:
+        // Combine project context and current user request into a single user message
+        const { ensureStrictAlternatingRoles, mergeMessageContents } = require('./utils');
+
+        let singleUserContent: any = projectStateText;
+        if (currentPromptMessage && currentPromptMessage.content) {
+            singleUserContent = mergeMessageContents(projectStateText, currentPromptMessage.content);
+        }
+
         if (capabilities.enableImages !== false && contextData.images && contextData.images.length > 0) {
-            projectContextContent = [
-                { type: 'text', text: projectStateText }
-            ];
-            contextData.images.forEach(img => {
-                projectContextContent.push({
-                    type: 'image_url',
-                    image_url: { url: img.data }
+            if (typeof singleUserContent === 'string') {
+                singleUserContent = [
+                    { type: 'text', text: singleUserContent },
+                    ...contextData.images.map(img => ({ type: 'image_url', image_url: { url: img.data } }))
+                ];
+            } else if (Array.isArray(singleUserContent)) {
+                contextData.images.forEach(img => {
+                    singleUserContent.push({ type: 'image_url', image_url: { url: img.data } });
                 });
-            });
-        }
-
-        const projectContextUserMessage: ChatMessage = {
-            role: 'user',
-            content: projectContextContent
-        };
-
-        const messagesToSend: ChatMessage[] = [
-            { role: 'system', content: baseInstructions },
-            ...history,
-            projectContextUserMessage
-        ];
-
-        if (currentPromptMessage) {
-            messagesToSend.push(currentPromptMessage);
-        }
-
-        const segments = {
-            system: systemTokens,
-            briefing: briefingTokens,
-            tree: treeTokens,
-            skills: skillsTokens,
-            memory: 0,
-            diagrams: 0,
-            files: Math.max(0, Math.ceil(newSelectedFilesContent.length / 3.5)),
-            history: historyTokens,
-            images: 0
-        };
-
-        if (currentDiscussion) {
-            currentDiscussion.lastTokenMetrics = {
-                total: newTotal,
-                contextSize: maxTokens,
-                segments
-            };
-            if (!currentDiscussion.id.startsWith('temp-')) {
-                await discussionManager.saveDiscussion(currentDiscussion);
             }
         }
+
+        const singleUserMessage: ChatMessage = {
+            role: 'user',
+            content: singleUserContent
+        };
+
+        const rawMessages: ChatMessage[] = [
+            { role: 'system', content: baseInstructions },
+            ...history.filter(m => !m.skipInPrompt),
+            singleUserMessage
+        ];
+
+        const messagesToSend = ensureStrictAlternatingRoles(rawMessages);
+
+        await this.updateDiscussionMetrics(
+            currentDiscussion,
+            discussionManager,
+            newTotal,
+            maxTokens,
+            systemTokens,
+            briefingTokens,
+            treeTokens,
+            skillsTokens,
+            Math.max(0, Math.ceil(newSelectedFilesContent.length / 3.5)),
+            historyTokens
+        );
 
         return {
             selectedFilesContent: newSelectedFilesContent,
@@ -502,6 +788,7 @@ ${chunkingDirectiveText}`.trim();
         signal: AbortSignal;
         userPromptText: string;
         fileCandidates: ParsedFileCandidate[];
+        currentMuted: string[];
         totalEstimated: number;
         maxTokens: number;
         triggerThresholdPercent: number;
@@ -511,9 +798,10 @@ ${chunkingDirectiveText}`.trim();
         canAvoidEvictingCurrentPrompt: boolean;
         keywords: string[];
         maxRounds: number;
+        governorDirectives?: string[];
         onStatusUpdate?: (status: string) => void;
         onRoundUsed?: (rounds: number) => void;
-    }): Promise<any> {
+    }): Promise<{ decision: any; workerAdvice?: string }> {
         const {
             lollmsAPI,
             contextManager,
@@ -529,40 +817,34 @@ ${chunkingDirectiveText}`.trim();
             overflow,
             canAvoidEvictingCurrentPrompt,
             maxRounds,
+            governorDirectives,
             onStatusUpdate,
             onRoundUsed
         } = options;
 
         let currentRound = 0;
         let lastCandidateDecision: any = null;
+        let extractedWorkerAdvice = "";
 
-        const compactCatalog = this.buildCompactCatalog(fileCandidates);
+        const compactCatalog = this.buildCompactCatalog(fileCandidates, options.currentMuted);
 
         const systemPrompt = `You are the **Sovereign Context Governor**.
-Your goal is to optimize the active prompt context to strictly meet the Objective Target Threshold (${objectiveThresholdPercent}%, max ${objectiveThreshold.toLocaleString()} tokens).
-Capacity limit: ${maxTokens.toLocaleString()} tokens. Initial estimated load: ${totalEstimated.toLocaleString()} tokens.
+Your goal is to optimize active prompt context to strictly satisfy the objective target (${objectiveThresholdPercent}%, max ${objectiveThreshold.toLocaleString()} tokens).
+Capacity limit: ${maxTokens.toLocaleString()} tokens. Current full load: ${totalEstimated.toLocaleString()} tokens.
 
-### GOVERNOR OBJECTIVE & VERIFICATION RULES:
-1. **OBJECTIVE REQUIREMENT**: You MUST evict enough file tokens so that total tokens fall below the objective threshold (~${objectiveThreshold.toLocaleString()} tokens). Required reduction: ~${overflow.toLocaleString()} tokens.
-2. **VERIFICATION LOOP**: Your decision will be mathematically audited. If your proposed eviction does not reach the objective threshold, you will be recalled for another round (up to ${maxRounds} rounds).
-3. **STRICT SHIELD**: Files marked [ADDED FOR CURRENT PROMPT] must be kept unless older files alone cannot satisfy the reduction.
-4. **DECISION FORMAT**:
-\`\`\`json
-{
-  "action": "decide",
-  "rationale": "Summary of decision and why evicted files can be safely removed or read sequentially",
-  "hydration_steps": [
-    "Step 1: Inspect File A for imports and interface definitions.",
-    "Step 2: Mute File A and load File B to execute the modification."
-  ],
-  "keep": [
-    { "path": "path/to/file.ts", "justification": "Why this file is necessary right now" }
-  ],
-  "evict": [
-    { "path": "path/to/file.py", "reason": "Why this file should be muted or evicted for this turn" }
-  ]
-}
-\`\`\``;
+### MANDATORY TAG PROTOCOL:
+You MUST specify which files to mute using the <mute> tag, and what guidance to forward to the worker model using the <worker> tag.
+1. Use <mute>...</mute> to list all files that should be MUTED (0 content tokens). Put one path per line:
+<mute>
+path/to/file1.ext
+path/to/file2.ext
+</mute>
+2. Any file from the catalog NOT listed inside <mute> will be KEPT ACTIVE with full content loaded ([C]).
+3. Use <worker>...</worker> to provide concise advice, key findings, or architectural guidance to forward to the worker model:
+<worker>
+Specific findings, guidelines, or advice to forward to the worker model.
+</worker>
+4. You may also output a JSON decision object: {"action": "decide", "evict": [{"path": "..."}], "keep": [{"path": "..."}], "worker_advice": "..."}`;
 
         const promptSummary = userPromptText.length > 500 ? userPromptText.substring(0, 500) + '...' : userPromptText;
 
@@ -577,7 +859,7 @@ Capacity limit: ${maxTokens.toLocaleString()} tokens. Initial estimated load: ${
 ### 🎯 USER OBJECTIVE
 "${promptSummary}"
 
-### 📄 LOADED FILES COMPACT CATALOG (${fileCandidates.length} files)
+${governorDirectives && governorDirectives.length > 0 ? `### ⚖️ DIRECT USER DIRECTIVES FOR GOVERNOR (MANDATORY PRIORITY):\n${governorDirectives.map(d => `- ${d}`).join('\n')}\n(Follow these user instructions above all else when selecting files to keep or evict!)\n\n` : ''}### 📄 LOADED FILES COMPACT CATALOG (${fileCandidates.length} files)
 ${compactCatalog}
 
 Make your decision to reach the objective threshold of ${objectiveThresholdPercent}% (${objectiveThreshold.toLocaleString()} tokens). Output JSON only.`;
@@ -619,7 +901,32 @@ Make your decision to reach the objective threshold of ${objectiveThresholdPerce
                     continue;
                 }
 
-                // Case: Candidate Decision proposed
+                // Case: Check for XML <mute> and <worker> tags in response
+                const muteTagMatch = cleanResponse.match(/<mute\b[^>]*>([\s\S]*?)<\/mute>/i);
+                const workerTagMatch = cleanResponse.match(/<worker\b[^>]*>([\s\S]*?)<\/worker>/i);
+
+                if (workerTagMatch) {
+                    extractedWorkerAdvice = workerTagMatch[1].trim();
+                } else if (parsed.worker || parsed.worker_advice) {
+                    extractedWorkerAdvice = String(parsed.worker || parsed.worker_advice).trim();
+                }
+
+                if (muteTagMatch) {
+                    const pathsToMute = muteTagMatch[1]
+                        .split(/[\r\n,]+/)
+                        .map(l => l.trim().replace(/^['"]|['"]$/g, ''))
+                        .filter(l => l.length > 0 && !l.startsWith('<'));
+
+                    lastCandidateDecision = {
+                        action: 'decide',
+                        rationale: extractedWorkerAdvice || "Governor optimized context using <mute> tag selection.",
+                        evict: pathsToMute.map(p => ({ path: p, reason: "Muted by Governor" })),
+                        keep: fileCandidates.filter(c => !pathsToMute.some(mp => this.pathsMatch(mp, c.path))).map(c => ({ path: c.path, justification: "Active in context" }))
+                    };
+                    return { decision: lastCandidateDecision, workerAdvice: extractedWorkerAdvice };
+                }
+
+                // Case: Candidate Decision proposed via JSON
                 if (parsed.action === 'decide' || (Array.isArray(parsed.keep) && Array.isArray(parsed.evict))) {
                     lastCandidateDecision = parsed;
 
@@ -629,7 +936,8 @@ Make your decision to reach the objective threshold of ${objectiveThresholdPerce
 
                     for (const candidate of fileCandidates) {
                         const isEvicted = proposedEvict.some((e: any) => this.pathsMatch(e.path || e, candidate.path));
-                        if (isEvicted) {
+                        const wasAlreadyMuted = options.currentMuted.some(m => this.pathsMatch(m, candidate.path));
+                        if (isEvicted && !wasAlreadyMuted) {
                             proposedLiberatedTokens += candidate.tokens;
                         }
                     }
@@ -639,30 +947,25 @@ Make your decision to reach the objective threshold of ${objectiveThresholdPerce
                     // VERIFICATION CHECK: Did the decision satisfy the objective threshold?
                     if (resultingLoad <= objectiveThreshold) {
                         Logger.info(`[Governor] Objective threshold verified in round ${currentRound}: ${resultingLoad.toLocaleString()} <= ${objectiveThreshold.toLocaleString()} tokens.`);
-                        return parsed;
+                        return { decision: parsed, workerAdvice: extractedWorkerAdvice };
                     }
 
-                    // Target NOT met: If more rounds available, challenge the Governor to reduce further
                     if (currentRound < maxRounds) {
                         const shortfall = resultingLoad - objectiveThreshold;
                         const remainingPercent = Math.round((resultingLoad / maxTokens) * 100);
-
-                        Logger.warn(`[Governor] Round ${currentRound}: Proposed eviction fell short by ${shortfall.toLocaleString()} tokens (${remainingPercent}% > ${objectiveThresholdPercent}%). Recalling...`);
 
                         conversation.push({ role: 'assistant', content: cleanResponse });
                         conversation.push({
                             role: 'user',
                             content: `⚠️ **OBJECTIVE THRESHOLD NOT REACHED (Round ${currentRound} of ${maxRounds})**
-Your proposed eviction only liberated ~${proposedLiberatedTokens.toLocaleString()} tokens, leaving the context at ~${resultingLoad.toLocaleString()} tokens (**${remainingPercent}%**).
+Your proposed eviction only liberated ~${proposedLiberatedTokens.toLocaleString()} tokens, leaving context at ~${resultingLoad.toLocaleString()} tokens (**${remainingPercent}%**).
 The Objective Threshold is **${objectiveThresholdPercent}%** (~${objectiveThreshold.toLocaleString()} tokens).
-You are still **${shortfall.toLocaleString()} tokens short** of the target.
-You MUST evict more files from the catalog to reach the ${objectiveThresholdPercent}% objective. Provide your updated decision.`
+You MUST evict more files via <mute>...</mute> to reach the objective.`
                         });
                         continue;
                     }
 
-                    // Max rounds reached: accept the best attempt (deterministic fallback will close remaining gap)
-                    return parsed;
+                    return { decision: parsed, workerAdvice: extractedWorkerAdvice };
                 }
 
                 break;
@@ -672,7 +975,7 @@ You MUST evict more files from the catalog to reach the ${objectiveThresholdPerc
             }
         }
 
-        return lastCandidateDecision;
+        return { decision: lastCandidateDecision, workerAdvice: extractedWorkerAdvice };
     }
 
     /**
@@ -683,36 +986,51 @@ You MUST evict more files from the catalog to reach the ${objectiveThresholdPerc
         overflow: number,
         canAvoidEvictingCurrentPrompt: boolean,
         targetThresholdPercent: number,
-        triggerThreshold: number
+        triggerThreshold: number,
+        currentMuted: string[] = []
     ): any {
         const evictList: any[] = [];
         let liberated = 0;
 
-        const olderCandidates = candidates.filter(b => !b.isCurrentPromptFile);
-        const currentPromptCandidates = candidates.filter(b => b.isCurrentPromptFile);
+        const isAlreadyMuted = (p: string) => currentMuted.some(m => this.pathsMatch(m, p));
 
-        // Phase 1: Evict older, lower-relevance candidates first
-        const sortedOlder = [...olderCandidates].sort((a, b) => a.relevanceScore - b.relevanceScore || b.tokens - a.tokens);
+        // Preserve already muted files in evict list so they remain muted
+        for (const candidate of candidates) {
+            if (isAlreadyMuted(candidate.path)) {
+                evictList.push({
+                    path: candidate.path,
+                    reason: "Remained muted from prior configuration."
+                });
+            }
+        }
+
+        // Only active (unmuted) files can liberate tokens
+        const activeCandidates = candidates.filter(b => !isAlreadyMuted(b.path));
+        const olderActive = activeCandidates.filter(b => !b.isCurrentPromptFile);
+        const currentPromptActive = activeCandidates.filter(b => b.isCurrentPromptFile);
+
+        // Phase 1: Evict older, lower-relevance active candidates first
+        const sortedOlder = [...olderActive].sort((a, b) => a.relevanceScore - b.relevanceScore || b.tokens - a.tokens);
 
         for (const candidate of sortedOlder) {
+            if (liberated >= overflow) break;
             evictList.push({
                 path: candidate.path,
                 reason: `Older module pruned to liberate ${candidate.tokens.toLocaleString()} tokens.`
             });
             liberated += candidate.tokens;
-            if (liberated >= overflow) break;
         }
 
-        // Phase 2: If and ONLY if budget cannot be met with older files alone, touch current prompt files
+        // Phase 2: If and ONLY if budget cannot be met with older active files alone, touch current prompt files
         if (liberated < overflow) {
-            const sortedCurrent = [...currentPromptCandidates].sort((a, b) => a.relevanceScore - b.relevanceScore || b.tokens - a.tokens);
+            const sortedCurrent = [...currentPromptActive].sort((a, b) => a.relevanceScore - b.relevanceScore || b.tokens - a.tokens);
             for (const candidate of sortedCurrent) {
+                if (liberated >= overflow) break;
                 evictList.push({
                     path: candidate.path,
                     reason: `Evicted out of strict necessity: Impossible to meet token budget (${targetThresholdPercent}%, ${triggerThreshold.toLocaleString()} tok) even after evicting all older files.`
                 });
                 liberated += candidate.tokens;
-                if (liberated >= overflow) break;
             }
         }
 
@@ -735,14 +1053,16 @@ You MUST evict more files from the catalog to reach the ${objectiveThresholdPerc
     /**
      * Builds a compact, high-density catalog of file candidates without code bodies.
      */
-    private static buildCompactCatalog(candidates: ParsedFileCandidate[]): string {
+    private static buildCompactCatalog(candidates: ParsedFileCandidate[], currentMuted: string[] = []): string {
         return candidates.map(c => {
-            const shieldTag = c.isCurrentPromptFile ? ' [ADDED FOR CURRENT PROMPT - SHIELDED]' : '';
+            const isMuted = currentMuted.some(m => this.pathsMatch(m, c.path));
+            const statusTag = isMuted ? ' [M]' : ' [C]';
+            const shieldTag = c.isCurrentPromptFile ? ' [ADDED FOR CURRENT PROMPT]' : '';
             const coreTag = c.isCoreOrInterface ? ' [INTERFACE/SCHEMA]' : '';
             const symbolsStr = c.extractedSymbols.length > 0 ? `\n  Symbols: ${c.extractedSymbols.slice(0, 4).join(', ')}` : '';
             const keywordsStr = c.matchedKeywords.length > 0 ? `\n  Matches: ${c.matchedKeywords.slice(0, 5).join(', ')}` : '';
 
-            return `- File: \`${c.path}\` (~${c.tokens.toLocaleString()} tok)${shieldTag}${coreTag}${symbolsStr}${keywordsStr}`;
+            return `- File: \`${c.path}\`${statusTag} (~${c.tokens.toLocaleString()} tok)${shieldTag}${coreTag}${symbolsStr}${keywordsStr}`;
         }).join('\n');
     }
 
@@ -930,13 +1250,21 @@ ${transcript}`;
     /**
      * Strips [C] from project tree for any file not in keptPaths.
      */
-    private static updateTreeWithKeptFiles(tree: string, keptPaths: string[]): string {
+    private static updateTreeWithKeptFiles(tree: string, keptPaths: string[], mutedPaths: string[] = []): string {
         if (!tree) return tree;
         const keptSet = new Set(keptPaths.map(p => path.basename(p.replace(/\\/g, '/')).toLowerCase()));
+        const mutedSet = new Set(mutedPaths.map(p => path.basename(p.replace(/\\/g, '/')).toLowerCase()));
 
-        return tree.replace(/([^\s,\[\]\(\)\/]+)\s*\[C\]/g, (match, fileName) => {
-            if (keptSet.has(fileName.toLowerCase())) {
-                return match;
+        // 1. Strip existing [C], [M], [D] tags
+        let updated = tree.replace(/([^\s,\[\]\(\)\/]+)\s*\[(?:C|M|D)\]/g, '$1');
+
+        // 2. Re-apply [C] for kept files and [M] for muted files
+        return updated.replace(/([a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+)(?=[,\s\]])/g, (match, fileName) => {
+            const lower = fileName.toLowerCase();
+            if (keptSet.has(lower)) {
+                return `${fileName} [C]`;
+            } else if (mutedSet.has(lower)) {
+                return `${fileName} [M]`;
             }
             return fileName;
         });
@@ -947,6 +1275,39 @@ ${transcript}`;
         const c1 = p1.replace(/\\/g, '/').toLowerCase().trim();
         const c2 = p2.replace(/\\/g, '/').toLowerCase().trim();
         return c1 === c2 || c1.endsWith('/' + c2) || c2.endsWith('/' + c1) || path.basename(c1) === path.basename(c2);
+    }
+
+    private static async updateDiscussionMetrics(
+        currentDiscussion: Discussion,
+        discussionManager: DiscussionManager,
+        totalTokens: number,
+        maxTokens: number,
+        systemTokens: number,
+        briefingTokens: number,
+        treeTokens: number,
+        skillsTokens: number,
+        filesTokens: number,
+        historyTokens: number
+    ): Promise<void> {
+        if (!currentDiscussion) return;
+        currentDiscussion.lastTokenMetrics = {
+            total: totalTokens,
+            contextSize: maxTokens,
+            segments: {
+                system: systemTokens,
+                briefing: briefingTokens,
+                tree: treeTokens,
+                skills: skillsTokens,
+                memory: 0,
+                diagrams: 0,
+                files: filesTokens,
+                history: historyTokens,
+                images: 0
+            }
+        };
+        if (!currentDiscussion.id.startsWith('temp-')) {
+            await discussionManager.saveDiscussion(currentDiscussion);
+        }
     }
 
     private static buildPassingResult(
@@ -960,43 +1321,50 @@ ${transcript}`;
         briefingTokens: number,
         treeTokens: number,
         skillsTokens: number,
-        capabilities: DiscussionCapabilities
+        capabilities: DiscussionCapabilities,
+        briefingContent?: string
     ): GovernorArbitrationResult {
+        const briefingText = briefingContent !== undefined ? briefingContent : "";
         const projectStateText = `
 ### 📂 ATTACHED PROJECT CONTEXT
 I am providing you with the current, ground-truth state of my project files and the technical briefing.
 
+${briefingText && !briefingText.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefingText}\n` : ""}
 ${contextData.projectTree ? `#### 🌳 PROJECT STRUCTURE\n${contextData.projectTree}\n` : ""}
 ${contextData.selectedFilesContent ? `#### 📄 FILE CONTENTS\n${contextData.selectedFilesContent}` : "*(No files currently selected)*"}
 --------------------------------------------------`.trim();
 
-        let projectContextContent: any = projectStateText;
-        if (capabilities.enableImages !== false && contextData.images && contextData.images.length > 0) {
-            projectContextContent = [
-                { type: 'text', text: projectStateText }
-            ];
-            contextData.images.forEach(img => {
-                projectContextContent.push({
-                    type: 'image_url',
-                    image_url: { url: img.data }
-                });
-            });
+        const { ensureStrictAlternatingRoles, mergeMessageContents } = require('./utils');
+        let singleUserContent: any = projectStateText;
+        if (currentPromptMessage && currentPromptMessage.content) {
+            singleUserContent = mergeMessageContents(projectStateText, currentPromptMessage.content);
         }
 
-        const projectContextUserMessage: ChatMessage = {
+        if (capabilities.enableImages !== false && contextData.images && contextData.images.length > 0) {
+            if (typeof singleUserContent === 'string') {
+                singleUserContent = [
+                    { type: 'text', text: singleUserContent },
+                    ...contextData.images.map(img => ({ type: 'image_url', image_url: { url: img.data } }))
+                ];
+            } else if (Array.isArray(singleUserContent)) {
+                contextData.images.forEach(img => {
+                    singleUserContent.push({ type: 'image_url', image_url: { url: img.data } });
+                });
+            }
+        }
+
+        const singleUserMessage: ChatMessage = {
             role: 'user',
-            content: projectContextContent
+            content: singleUserContent
         };
 
-        const messagesToSend: ChatMessage[] = [
+        const rawMessages: ChatMessage[] = [
             { role: 'system', content: baseInstructions },
-            ...history,
-            projectContextUserMessage
+            ...history.filter(m => !m.skipInPrompt),
+            singleUserMessage
         ];
 
-        if (currentPromptMessage) {
-            messagesToSend.push(currentPromptMessage);
-        }
+        const messagesToSend = ensureStrictAlternatingRoles(rawMessages);
 
         return {
             selectedFilesContent: contextData.selectedFilesContent,

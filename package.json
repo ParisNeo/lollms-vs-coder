@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.30",
+  "version": "1.0.31",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -182,6 +182,11 @@
         "command": "lollms-vs-coder.copyTreeAndContent",
         "title": "Lollms: Copy Tree and Content",
         "icon": "$(clippy)"
+      },
+      {
+        "command": "lollms-vs-coder.governorFilterFiles",
+        "title": "Lollms: Governor Filter Context Files",
+        "icon": "$(law)"
       },
       {
         "command": "lollms-vs-coder.autoSelectContextFiles",
@@ -1388,6 +1393,11 @@
           "default": 70,
           "description": "Target context percentage (10-90%) to reduce down to once the Governor is triggered."
         },
+        "lollmsVsCoder.doctrineScoutingRounds": {
+          "type": "number",
+          "default": 3,
+          "description": "Maximum number of investigative scouting rounds (grep, tree, and code graph inspection) when automatically building the project doctrine."
+        },
         "lollmsVsCoder.contextGovernorMaxRounds": {
           "type": "number",
           "default": 5,
@@ -1572,13 +1582,13 @@
         },
         "lollmsVsCoder.reasoningEffort": {
           "type": "string",
-          "default": "medium",
+          "default": "low",
           "enum": [
             "low",
             "medium",
             "high"
           ],
-          "description": "Computational depth for OpenAI o1/o3 models."
+          "description": "Computational depth for reasoning models (low, medium, high). Defaults to low."
         },
         "lollmsVsCoder.thinkingBudget": {
           "type": "number",

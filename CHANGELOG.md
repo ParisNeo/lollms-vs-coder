@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-09-23 01:01]
+
+- fix(doc:update version to 1.0.34)
+
 ## [2026-09-20 21:53]
 
 - BUILD(chat-panel): update minor version in package.json for v1.0.32

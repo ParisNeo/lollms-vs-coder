@@ -1191,9 +1191,13 @@ ${originalFileContent}
             let applyCount = 0;
             let firstChangeLine: number | undefined;
             const errors: string[] = [];
+            const succeededHunks: number[] = [];
+            const failedHunks: { index: number; error: string }[] = [];
+            const isSingleHunkRequested = options?.hunkIndex !== undefined && matches.length === 1;
 
             for (let i = 0; i < matches.length; i++) {
                 const match = matches[i];
+                const originalHunkIndex = isSingleHunkRequested ? options!.hunkIndex! : i;
                 // SWAP logic for Undo
                 const searchCode = (isUndo ? match[2] : match[1]) || "";
                 const replaceCode = (isUndo ? match[1] : match[2]) || "";
@@ -1205,28 +1209,31 @@ ${originalFileContent}
                         firstChangeLine = document.positionAt(range.start).line;
                     }
                 }
-                
+
                 // --- SPECIAL CASE: EMPTY SEARCH BLOCK ---
-                // If search is empty, ONLY treat as "Create File" if file is new or empty.
-                // Never blindly append to the end of an existing file (prevents misplaced code).
                 if (searchCode.trim() === "") {
                     if (!fileExists && applyCount === 0) {
                         currentContent = replaceCode;
                         applyCount++;
+                        succeededHunks.push(originalHunkIndex);
                         continue;
                     } else if (originalContent.trim() === "") {
                         currentContent = replaceCode;
                         applyCount++;
+                        succeededHunks.push(originalHunkIndex);
                         continue;
                     } else {
-                        errors.push(`Hunk ${i + 1} has an empty SEARCH block. A SEARCH block must specify the exact lines to replace in an existing file.`);
+                        const errMsg = `Hunk ${originalHunkIndex + 1} has an empty SEARCH block. A SEARCH block must specify the exact lines to replace in an existing file.`;
+                        errors.push(errMsg);
+                        failedHunks.push({ index: originalHunkIndex, error: errMsg });
                         continue;
                     }
                 }
 
-                // Idempotency check: If content is already present, count as success (only for non-empty replacements)
+                // Idempotency check: If content is already present, count as success
                 if (replaceCode.trim().length > 0 && currentContent.includes(replaceCode.trim())) {
                     applyCount++;
+                    succeededHunks.push(originalHunkIndex);
                     continue; 
                 }
 
@@ -1235,14 +1242,16 @@ ${originalFileContent}
                 if (result.success) {
                     currentContent = result.result;
                     applyCount++;
-                    Logger.info(`[AiderMatch] Strategy '${result.strategy}' matched block ${i} in ${sanitizedFilePath}`);
+                    succeededHunks.push(originalHunkIndex);
+                    Logger.info(`[AiderMatch] Strategy '${result.strategy}' matched block ${originalHunkIndex} in ${sanitizedFilePath}`);
                 } else {
-                    Logger.error(`[AiderMatch] Failed all strategies for block ${i} in ${sanitizedFilePath}. Error: ${result.error}`);
-                    errors.push(result.error || "Unknown match error");
+                    Logger.error(`[AiderMatch] Failed all strategies for block ${originalHunkIndex} in ${sanitizedFilePath}. Error: ${result.error}`);
+                    const hunkErrMsg = result.error || "Search block mismatch";
+                    errors.push(hunkErrMsg);
+                    failedHunks.push({ index: originalHunkIndex, error: hunkErrMsg });
 
                     // IF REPAIR IS REQUESTED (from the manual modal button)
                     if (content === "REPAIR_REQUESTED" && panel && messageId) {
-                        // --- ENHANCED SILENT REPAIR ---
                         return await vscode.window.withProgress({
                             location: vscode.ProgressLocation.Notification,
                             title: `Lollms: Repairing block for ${filePath}...`,
@@ -1273,7 +1282,7 @@ ${originalContent}
 3. Provide the CORRECTED block. Include 2-3 lines of unchanged context in the SEARCH section to ensure a unique match.
 4. Output **ONLY** the corrected \`<<<<<<< SEARCH ... >>>>>>> REPLACE\` block. Do not wrap it in other code blocks.
 `;
-                            
+
                             try {
                                 const response = await panel._lollmsAPI.sendChat([
                                     { role: 'system', content: "You are a surgical code repair engine. You only output valid Aider-style Search/Replace blocks." },
@@ -1282,11 +1291,10 @@ ${originalContent}
 
                                 if (token.isCancellationRequested) return { success: false, error: "Cancelled" };
 
-                                // Robust Block Extraction
                                 let fixedBlock = "";
                                 const startTag = "<<<<<<< SEARCH";
                                 const endTag = ">>>>>>> REPLACE";
-                                
+
                                 const startIdx = response.indexOf(startTag);
                                 const endIdx = response.indexOf(endTag);
 
@@ -1295,7 +1303,6 @@ ${originalContent}
                                 }
 
                                 if (fixedBlock) {
-                                    // 1. Update the message content in the UI
                                     const currentDiscussion = panel.getCurrentDiscussion();
                                     if (currentDiscussion) {
                                         const msg = currentDiscussion.messages.find((m: any) => m.id === messageId);
@@ -1305,12 +1312,11 @@ ${originalContent}
                                         }
                                     }
 
-                                    // 2. Automatically retry applying the NEW content
                                     if (token.isCancellationRequested) return { success: false, error: "Cancelled" };
-                                    
+
                                     vscode.window.showInformationMessage(vscode.l10n.t("Block repaired. Retrying apply..."));
                                     return await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', sanitizedFilePath, fixedBlock, panel, messageId, { silent: true });
-                                    } else {
+                                } else {
                                     vscode.window.showWarningMessage(
                                         vscode.l10n.t("Lollms: The AI suggested a fix but the response format was unrecognizable.")
                                     );
@@ -1322,7 +1328,7 @@ ${originalContent}
                             }
                         });
                     }
-                    return { success: false, error: result.error };
+                    // CONTINUATION: Do not return early. Proceed to evaluate subsequent hunks in the file.
                 }
             }
 
@@ -1342,7 +1348,7 @@ ${originalContent}
                             await document.save();
                             services.contextManager.refreshFileInCache(fileUri);
                             services.contextManager.getContextStateProvider()?.addFilesToContext([sanitizedFilePath]).catch(() => {});
-                            Logger.info(`replaceCode: Successfully persisted modifications to disk for ${sanitizedFilePath}`);
+                            Logger.info(`replaceCode: Successfully persisted modifications to disk for ${sanitizedFilePath} (${applyCount}/${matches.length} hunks applied)`);
                         }
                     } else {
                         const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
@@ -1357,10 +1363,13 @@ ${originalContent}
                 }
 
                 if (errors.length > 0) {
-                    // Send back the raw content that failed so the UI can populate the manual modal
                     return { 
                         success: false, 
-                        error: `Match failure in ${sanitizedFilePath}.`,
+                        partialSuccess: applyCount > 0,
+                        appliedCount: applyCount,
+                        succeededHunks,
+                        failedHunks,
+                        error: `Match failure in ${sanitizedFilePath}: ${failedHunks.map(f => `Hunk ${f.index + 1}: ${f.error}`).join('; ')}`,
                         repaired: false,
                         messageId: messageId,
                         blockIndex: options?.blockIndex,
@@ -1369,8 +1378,13 @@ ${originalContent}
                     };
                 }
 
-                return { success: true, alreadyApplied: !wasActuallyModified || !!options?.autoSave };
-                }
+                return { 
+                    success: true, 
+                    alreadyApplied: !wasActuallyModified || !!options?.autoSave,
+                    succeededHunks,
+                    failedHunks: []
+                };
+            }
                 return { 
                 success: false, 
                 error: "Failed to apply edits to document.",

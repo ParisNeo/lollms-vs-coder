@@ -3979,6 +3979,15 @@ export function openRawCodeModal(messageId: string, blockIndex: number, filePath
             ? `<span class="codicon codicon-check"></span> Hunk ${idx + 1} Applied (Click to Unmark)`
             : `<span class="codicon codicon-check"></span> Mark Hunk ${idx + 1} as Applied`;
 
+        const rawApplyBtn = document.getElementById('raw-apply-hunk-btn') as HTMLButtonElement;
+        if (rawApplyBtn) {
+            rawApplyBtn.disabled = false;
+            rawApplyBtn.classList.toggle('applied', isHunkApplied);
+            rawApplyBtn.innerHTML = isHunkApplied
+                ? `<span class="codicon codicon-check"></span> Hunk ${idx + 1} Applied (Re-apply)`
+                : `<span class="codicon codicon-arrow-swap"></span> Apply Hunk ${idx + 1}`;
+        }
+
         // --- AUTOMATED STITCH RESEARCH PROTOCOL ---
         const searchPart = match[1] || "";
         const cleanLines = searchPart.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);

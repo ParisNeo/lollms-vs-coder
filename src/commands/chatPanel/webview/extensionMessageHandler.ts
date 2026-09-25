@@ -2265,6 +2265,48 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
                     });
 
+                    // Synchronize Raw Code Modal if open
+                    const rawModal = dom.rawCodeModal;
+                    if (rawModal && rawModal.classList.contains('visible')) {
+                        const display = dom.rawCodeDisplay;
+                        if (display && display.dataset.messageId === message.messageId && display.dataset.blockIndex === String(message.blockIndex)) {
+                            const curHunkIdx = parseInt(display.dataset.hunkIndex || "0", 10);
+                            const matchesThisHunk = message.hunkIndex === undefined || message.hunkIndex === -1 || message.hunkIndex === curHunkIdx;
+
+                            if (matchesThisHunk) {
+                                const rawApplyBtn = document.getElementById('raw-apply-hunk-btn') as HTMLButtonElement;
+                                if (rawApplyBtn) {
+                                    rawApplyBtn.disabled = false;
+                                    if (message.success) {
+                                        rawApplyBtn.classList.add('applied');
+                                        rawApplyBtn.innerHTML = `<span class="codicon codicon-check"></span> Hunk ${curHunkIdx + 1} Applied`;
+                                    } else {
+                                        rawApplyBtn.classList.remove('applied');
+                                        rawApplyBtn.innerHTML = `<span class="codicon codicon-error"></span> Apply Failed (Retry)`;
+                                    }
+                                }
+                                if (message.success) {
+                                    dom.markAppliedBtn.classList.add('applied');
+                                    dom.markAppliedBtn.innerHTML = `<span class="codicon codicon-check"></span> Hunk ${curHunkIdx + 1} Applied (Click to Unmark)`;
+                                }
+                            }
+
+                            const tabBar = document.getElementById('modal-hunk-tabs');
+                            const targetTabIdx = message.hunkIndex !== undefined && message.hunkIndex !== -1 ? message.hunkIndex : curHunkIdx;
+                            if (tabBar && tabBar.children[targetTabIdx]) {
+                                const tab = tabBar.children[targetTabIdx] as HTMLElement;
+                                if (message.success) {
+                                    tab.classList.add('status-completed');
+                                    tab.classList.remove('status-failed');
+                                    tab.innerHTML = `<i class="codicon codicon-check"></i> HUNK ${targetTabIdx + 1}`;
+                                } else {
+                                    tab.classList.add('status-failed');
+                                    tab.innerHTML = `<i class="codicon codicon-error"></i> HUNK ${targetTabIdx + 1}`;
+                                }
+                            }
+                        }
+                    }
+
                     // 1. Resilient Card Lookup across XML file mutation cards and standard code blocks
                     let blockEl: HTMLDetailsElement | null = null;
                     if (message.blockId) {

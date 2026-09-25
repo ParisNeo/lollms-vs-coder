@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { URL } from 'url';
 import * as vscode from 'vscode';
 import { Logger } from './logger';
+import { stripThinkingTags } from './utils';
 
 export interface LollmsConfig {
   apiUrl: string;
@@ -811,6 +812,20 @@ export class LollmsAPI {
 
     const sanitizedMessages = normalizedMessages.map((m: any) => {
         let content = m.content;
+
+        // Strip thinking blocks from assistant messages so prior reasoning does not pollute prompt
+        if (m.role === 'assistant') {
+            if (typeof content === 'string') {
+                content = stripThinkingTags(content).trim();
+            } else if (Array.isArray(content)) {
+                content = content.map((part: any) => {
+                    if (part && part.type === 'text' && typeof part.text === 'string') {
+                        return { ...part, text: stripThinkingTags(part.text).trim() };
+                    }
+                    return part;
+                });
+            }
+        }
 
         // --- MULTIMODAL FORMATTING GUARD ---
         if (Array.isArray(content)) {

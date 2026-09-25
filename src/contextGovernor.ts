@@ -1202,11 +1202,11 @@ You MUST evict more files via <mute>...</mute> to reach the objective.`
 
         if (olderHistory.length === 0) return null;
 
-        const olderTokens = Math.ceil(olderHistory.map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n').length / 3.5);
+        const olderTokens = Math.ceil(olderHistory.map(m => typeof m.content === 'string' ? stripThinkingTags(m.content) : JSON.stringify(m.content)).join('\n').length / 3.5);
 
         const transcript = olderHistory.map(m => {
             const role = m.role.toUpperCase();
-            let txt = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+            let txt = typeof m.content === 'string' ? stripThinkingTags(m.content) : JSON.stringify(m.content);
             if (txt.length > 1500) {
                 txt = txt.substring(0, 750) + '\n... [truncated] ...\n' + txt.substring(txt.length - 750);
             }

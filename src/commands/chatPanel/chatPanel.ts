@@ -285,6 +285,16 @@ export class ChatPanel {
                         messageId: messageId,
                         blockIndex: currentBlockIndex
                     });
+                } else if (result?.succeededHunks && result.succeededHunks.length > 0) {
+                    for (const sIdx of result.succeededHunks) {
+                        await this.updateAppliedState(messageId, currentBlockIndex, sIdx);
+                    }
+                    this._panel.webview.postMessage({
+                        command: 'fileSavedOnDisk',
+                        filePath: filePath,
+                        messageId: messageId,
+                        blockIndex: currentBlockIndex
+                    });
                 }
             } else {
                 const targetPath = symbol ? `${filePath}:${symbol}` : filePath;
@@ -740,9 +750,7 @@ export class ChatPanel {
     if (partial.folderSettings !== undefined) {
         await this._discussionManager.context.workspaceState.update('lollms_global_folder_settings', partial.folderSettings);
     }
-    if (partial.disableProjectContext !== undefined) {
-        await this._discussionManager.context.workspaceState.update('lollms_global_context_muted', partial.disableProjectContext);
-    }
+    // Muting project context is discussion-specific to enable concurrent discussions with unique muting patterns
 
     // Persist and Notify
     await this.saveCapabilities();
@@ -984,7 +992,7 @@ export class ChatPanel {
             if (this._isDisposed || !this._panel || !this._panel.webview) return;
 
             if (this._contextManager) {
-                const cachedContext = this._contextManager.getLastContext();
+                const cachedContext = this._contextManager.getLastContext(this.discussionId);
                 let includedFiles: string[] = [];
                 try {
                     const provider = this._contextManager.getContextStateProvider();
@@ -1411,6 +1419,7 @@ export class ChatPanel {
 
                     const context = await self._contextManager.getContextContent({ 
                         signal, 
+                        discussionId: self.discussionId,
                         capabilities: self._discussionCapabilities,
                         importedSkillIds: importedIds,
                         activeDiagramIds: activeDiagramIds,
@@ -1482,8 +1491,8 @@ export class ChatPanel {
 
                     const historyText = self._currentDiscussion!.messages.map(msg => {
                         const content = msg.content;
-                        if (typeof content === 'string') return content;
-                        if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => item.text).join('\n');
+                        if (typeof content === 'string') return stripThinkingTags(content);
+                        if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => stripThinkingTags(item.text)).join('\n');
                         return '';
                     }).join('\n');
 
@@ -1907,7 +1916,7 @@ export class ChatPanel {
                         activeFolders.forEach(f => folderStats[f.uri.toString()] = { tree: 0, files: 0 });
 
                         self.log("updateContextAndTokens: Building context fallback...");
-                        const context = await self._contextManager.getContextContent({ signal }).catch(() => ({
+                        const context = await self._contextManager.getContextContent({ signal, discussionId: self.discussionId }).catch(() => ({
                             text: '', projectTree: '', selectedFilesContent: '', skillsContent: '', images: [], importedSkills: []
                         }));
 
@@ -1919,7 +1928,7 @@ export class ChatPanel {
                             return resolvePromise();
                         }
 
-                        const historyText = self._currentDiscussion!.messages.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
+                        const historyText = self._currentDiscussion!.messages.map(m => typeof m.content === 'string' ? stripThinkingTags(m.content) : '').join('\n');
                         const systemText = await getProcessedSystemPrompt('chat', self._discussionCapabilities, undefined, undefined, false, { ...context, tree: '', files: '' });
 
                         const wordCount = (context.text + '\n' + historyText + '\n' + (systemText || '')).trim().split(/\s+/).length;
@@ -2548,8 +2557,8 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
                       .filter(m => !m.skipInPrompt)
                       .forEach(m => {
                           let raw = Array.isArray(m.content) ? m.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n') : (m.content || '');
-                          // Clean internal tool artifacts from chat history for external export
-                          const cleaned = raw
+                          // Clean internal tool artifacts and thinking blocks from chat history for external export
+                          const cleaned = stripThinkingTags(raw)
                               .replace(/<lollms_tool\b[^>]*>[\s\S]*?<\/lollms_tool>/gi, '')
                               .replace(/<details\s+class=["']processing-block["']>[\s\S]*?<\/details>/gi, '')
                               .replace(/<details\s+class=["']lollms-form-block["']>[\s\S]*?<\/details>/gi, '')
@@ -3146,6 +3155,7 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
         const contextData = await this._contextManager.getContextContent({
             importedSkillIds: importedIds,
             includeTree: !isContextMuted,
+            discussionId: this.discussionId,
             mutedFiles: mutedFiles,
             mutedSkills: mutedSkills,
             mutedDiagrams: mutedDiagrams,
@@ -3272,13 +3282,24 @@ Could not connect to the AI server at \`${this._lollmsAPI.config.apiUrl}\`.
             currentPromptMessage.content = cleanWorkerPromptContent;
         }
 
-        // Sanitize history so the worker never sees earlier <governor> directives
+        // Sanitize history so the worker never sees earlier <governor> directives or thinking blocks
         history = history.map(hMsg => {
+            let content = hMsg.content;
+            if (typeof content === 'string') {
+                content = stripThinkingTags(content);
+            } else if (Array.isArray(content)) {
+                content = content.map((part: any) => {
+                    if (part && part.type === 'text' && typeof part.text === 'string') {
+                        return { ...part, text: stripThinkingTags(part.text) };
+                    }
+                    return part;
+                });
+            }
             if (hMsg.role === 'user') {
-                const { cleanText } = extractGovernorDirectives(hMsg.content);
+                const { cleanText } = extractGovernorDirectives(content);
                 return { ...hMsg, content: cleanText };
             }
-            return hMsg;
+            return { ...hMsg, content };
         });
 
         let messagesToSend: ChatMessage[] = [];
@@ -3764,7 +3785,7 @@ Could not connect to the AI server at \`${this._lollmsAPI.config.apiUrl}\`.
                     await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
 
                     // Add the assistant response and batch execution observations to context
-                    loopMessages.push({ role: 'assistant', content: turnResponse });
+                    loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
 
                     const batchResultsFormatted = executedResults.map((r, i) => {
                         const icon = r.success ? '✅' : '❌';
@@ -4127,7 +4148,7 @@ The API endpoint returned an empty response.
 
         // Update history segment in the cache
         const modelForTokenization = (this._currentDiscussion?.model || this._lollmsAPI.getModelName() || "default").trim();
-        const historyText = this._currentDiscussion!.messages.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
+        const historyText = this._currentDiscussion!.messages.map(m => typeof m.content === 'string' ? stripThinkingTags(m.content) : '').join('\n');
         const historyTokens = await this._lollmsAPI.tokenize(historyText, modelForTokenization);
         await this._contextManager.updateSegmentTokens('history', historyTokens.count);
 
@@ -4181,7 +4202,7 @@ DO NOT explain your code. Output ONLY the <file> tags.`;
             // Create a new array to prevent mutating the original history
             const testHistory: ChatMessage[] =[
                 ...messagesToSend,
-                { role: 'assistant', content: processedResponse },
+                { role: 'assistant', content: stripThinkingTags(processedResponse).trim() },
                 { role: 'system', content: testSystemPrompt },
                 { role: 'user', content: testPrompt }
             ];
@@ -4333,7 +4354,7 @@ If there are no meaningful docs to update, find the README.md and add a "Latest 
 
             const docsHistory: ChatMessage[] = [
                 ...messagesToSend,
-                { role: 'assistant', content: processedResponse },
+                { role: 'assistant', content: stripThinkingTags(processedResponse).trim() },
                 { role: 'system', content: docsSystemPrompt },
                 { role: 'user', content: docsPrompt }
             ];
@@ -5282,6 +5303,28 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                                             hunkIndex: change.hunkIndex,
                                             blockId: change.blockId
                                         });
+                                    } else if (result?.succeededHunks && result.succeededHunks.length > 0) {
+                                        for (const sIdx of result.succeededHunks) {
+                                            await this.updateAppliedState(messageId, change.blockIndex, sIdx, isUndoMode);
+                                            this._panel.webview.postMessage({
+                                                command: 'applyAllResult',
+                                                messageId: messageId,
+                                                filePath: change.path,
+                                                blockIndex: change.blockIndex,
+                                                hunkIndex: sIdx,
+                                                blockId: change.blockId,
+                                                success: true,
+                                                alreadyApplied: !isUndoMode,
+                                                undo: isUndoMode
+                                            });
+                                        }
+                                        this._panel.webview.postMessage({
+                                            command: 'fileSavedOnDisk',
+                                            filePath: change.path,
+                                            messageId: messageId,
+                                            blockIndex: change.blockIndex,
+                                            blockId: change.blockId
+                                        });
                                     }
                                 } catch (e: any) {
                                     result = { success: false, error: e.message };
@@ -5389,6 +5432,37 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                                 blockId: message.blockId || message.options?.blockId,
                                 success: true,
                                 reviewingDiff: true
+                            });
+                        }
+                    } else if (res && res.succeededHunks && res.succeededHunks.length > 0) {
+                        // Multi-hunk partial success: update and notify each succeeded and failed hunk
+                        for (const sIdx of res.succeededHunks) {
+                            if (message.blockIndex !== undefined && message.messageId) {
+                                await this.updateAppliedState(message.messageId, message.blockIndex, sIdx, isUndo);
+                            }
+                            webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: message.messageId,
+                                filePath: message.filePath,
+                                blockIndex: message.blockIndex,
+                                hunkIndex: sIdx,
+                                blockId: message.blockId || message.options?.blockId,
+                                success: true,
+                                alreadyApplied: !isUndo,
+                                undo: isUndo
+                            });
+                        }
+                        for (const f of (res.failedHunks || [])) {
+                            webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: message.messageId,
+                                filePath: message.filePath,
+                                blockIndex: message.blockIndex,
+                                hunkIndex: f.index,
+                                blockId: message.blockId || message.options?.blockId,
+                                success: false,
+                                error: f.error,
+                                undo: isUndo
                             });
                         }
                     } else {

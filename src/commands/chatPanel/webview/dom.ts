@@ -446,6 +446,7 @@ export const dom = {
     get copyReplaceBtn() { return document.getElementById('copy-replace-btn') as HTMLButtonElement; },
     get copyRawBtn() { return document.getElementById('copy-raw-btn') as HTMLButtonElement; },
     get rawFixAiBtn() { return document.getElementById('raw-fix-ai-btn') as HTMLButtonElement; },
+    get rawApplyHunkBtn() { return document.getElementById('raw-apply-hunk-btn') as HTMLButtonElement; },
     get markAppliedBtn() { return document.getElementById('mark-applied-btn') as HTMLButtonElement; },
     get searchSelectionBtn() { return document.getElementById('search-selection-btn') as HTMLButtonElement; },
     get rawSearchResultsMini() { return document.getElementById('raw-search-results') as HTMLDivElement; },

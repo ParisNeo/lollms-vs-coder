@@ -1556,7 +1556,7 @@ if (dom.sendButton) {
         dom.rawFixAiBtn.onclick = () => {
             const display = dom.rawCodeDisplay;
             if (!display) return;
-            
+
             const messageId = display.dataset.messageId;
             const blockIndex = parseInt(display.dataset.blockIndex || "0", 10);
             const hunkIndexRaw = display.dataset.hunkIndex;
@@ -1566,7 +1566,7 @@ if (dom.sendButton) {
             if (messageId && filePath) {
                 dom.rawFixAiBtn.disabled = true;
                 dom.rawFixAiBtn.innerHTML = '<div class="spinner"></div> Repairing...';
-                
+
                 vscode.postMessage({ 
                     command: 'replaceCode', 
                     filePath: filePath, 
@@ -1576,10 +1576,48 @@ if (dom.sendButton) {
                     hunkIndex: hunkIndex,
                     options: { silent: true }
                 });
-                
+
                 // Close modal so user can see progress in chat
                 dom.rawCodeModal.classList.remove('visible');
             }
+        };
+    }
+
+    const rawApplyHunkBtn = document.getElementById('raw-apply-hunk-btn') as HTMLButtonElement;
+    if (rawApplyHunkBtn) {
+        rawApplyHunkBtn.onclick = () => {
+            const display = dom.rawCodeDisplay;
+            if (!display) return;
+
+            const messageId = display.dataset.messageId;
+            const blockIndex = parseInt(display.dataset.blockIndex || "0", 10);
+            const hunkIndexRaw = display.dataset.hunkIndex;
+            const hunkIndex = hunkIndexRaw === "" ? 0 : parseInt(hunkIndexRaw || "0", 10);
+            const filePath = display.dataset.filePath || dom.rawCodeFilename.textContent || "";
+            const rawHunkText = display.dataset.rawText || display.textContent || "";
+            const blockId = display.dataset.blockId;
+
+            if (!filePath || !rawHunkText) return;
+
+            rawApplyHunkBtn.disabled = true;
+            rawApplyHunkBtn.innerHTML = '<div class="spinner"></div> Applying Hunk...';
+
+            vscode.postMessage({
+                command: 'replaceCode',
+                filePath,
+                content: rawHunkText,
+                messageId,
+                blockIndex,
+                hunkIndex,
+                blockId,
+                options: {
+                    silent: true,
+                    autoSave: true,
+                    blockIndex,
+                    hunkIndex,
+                    blockId
+                }
+            });
         };
     }
 

@@ -62,6 +62,7 @@ export class ContextManager {
   };
 
   private _lastContext: ContextResult | null = null;
+  private _lastContextByDiscussion: Map<string, ContextResult> = new Map();
   private static PROJECT_SKILLS_KEY = 'lollms_project_active_skills';
 
   // --- SOVEREIGN TOKEN CACHE ---
@@ -206,6 +207,7 @@ private _cachedTreeString: string | null = null;
     this._isTreeDirty = true;
     this._fileTreeObject = null;
     this._cachedVisibleFiles = null;
+    this._lastContextByDiscussion.clear();
     this._unpackedDirectories.clear();
     this._fileContentCache?.clear();
   }
@@ -479,7 +481,12 @@ private _cachedTreeString: string | null = null;
   public setSkillsManager(manager: SkillsManager) { this.skillsManager = manager; }
   public setCodeGraphManager(manager: CodeGraphManager) { this.codeGraphManager = manager; }
   public getContextStateProvider(): ContextStateProvider | undefined { return this.contextStateProvider; }
-  public getLastContext(): ContextResult | null { return this._lastContext; }
+  public getLastContext(discussionId?: string): ContextResult | null {
+    if (discussionId && this._lastContextByDiscussion.has(discussionId)) {
+      return this._lastContextByDiscussion.get(discussionId)!;
+    }
+    return this._lastContext;
+  }
 
   private normalize(p: string): string { return p.replace(/\\/g, '/'); }
 
@@ -775,7 +782,11 @@ private _cachedTreeString: string | null = null;
   ): Promise<string> {
       const includedFiles = this.contextStateProvider ? this.contextStateProvider.getIncludedFiles() : [];
       const includedHash = includedFiles.map(f => `${f.path}:${f.state}`).join('|');
-      const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}-${includedHash}`;
+      const normalizedMuted = (capabilities?.mutedFiles || [])
+          .map((m: string) => m.replace(/\\/g, '/').toLowerCase().trim())
+          .sort()
+          .join('|');
+      const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}-${includedHash}-${normalizedMuted}`;
 
       if (this._cachedIsolatedTrees.has(cacheKey) && !this._isTreeDirty) {
           return this._cachedIsolatedTrees.get(cacheKey)!;
@@ -925,7 +936,11 @@ private _cachedTreeString: string | null = null;
 
       const contextFiles = this.contextStateProvider.getIncludedFiles();
       const filesHash = contextFiles.map(f => `${f.path}:${f.state}`).join('|');
-      const projectTreeCacheKey = `${folders.map(f => f.uri.toString()).join(',')}-${JSON.stringify(folderSettings)}-${filesHash}`;
+      const normalizedMuted = (capabilities?.mutedFiles || [])
+          .map((m: string) => m.replace(/\\/g, '/').toLowerCase().trim())
+          .sort()
+          .join('|');
+      const projectTreeCacheKey = `${folders.map(f => f.uri.toString()).join(',')}-${JSON.stringify(folderSettings)}-${filesHash}-${normalizedMuted}`;
 
       if (this._cachedProjectTreeMap.has(projectTreeCacheKey) && !this._isTreeDirty) {
         return this._cachedProjectTreeMap.get(projectTreeCacheKey)!;
@@ -1034,6 +1049,7 @@ private _cachedTreeString: string | null = null;
   async getContextContent(options?: {
     includeTree?: boolean,
     signal?: AbortSignal,
+    discussionId?: string,
     importedSkillIds?: string[],
     activeDiagramIds?: string[],
     modelName?: string,
@@ -1058,11 +1074,14 @@ private _cachedTreeString: string | null = null;
   private async _executeGetContextContent(options?: {
     includeTree?: boolean,
     signal?: AbortSignal,
+    discussionId?: string,
     importedSkillIds?: string[],
     activeDiagramIds?: string[],
     modelName?: string,
     allowRLM?: boolean,
     mutedFiles?: string[],
+    mutedSkills?: string[],
+    mutedDiagrams?: string[],
     onProgress?: (pct: number) => void,
     onLoadProgress?: (progress: { current: number, total: number, percentage: number, fileName: string }) => void,
     onScanProgress?: (pct: number, status: string) => void,
@@ -1432,6 +1451,9 @@ private _cachedTreeString: string | null = null;
   }
 
   this._lastContext = result;
+  if (options?.discussionId) {
+    this._lastContextByDiscussion.set(options.discussionId, result);
+  }
   return result;
 }
   // ─────────────────────────────────────────────────────────────

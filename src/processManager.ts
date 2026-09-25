@@ -76,6 +76,18 @@ export class ProcessManager {
         return undefined;
     }
 
+    public getAllForDiscussion(discussionId: string): RunningProcess[] {
+        return Array.from(this.processes.values()).filter(p => p.discussionId === discussionId);
+    }
+
+    public isGenerating(discussionId: string): boolean {
+        return Array.from(this.processes.values()).some(p => {
+            if (p.discussionId !== discussionId) return false;
+            const desc = (p.description || "").toLowerCase();
+            return !desc.includes("title") && !desc.includes("counting");
+        });
+    }
+
     public getAll(): RunningProcess[] {
         return Array.from(this.processes.values());
     }

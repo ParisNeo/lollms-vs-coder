@@ -191,6 +191,7 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
         for (const msg of history) {
             if (msg.role === 'system') continue; 
             let contentStr = Array.isArray(msg.content) ? msg.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n') : String(msg.content);
+            contentStr = stripThinkingTags(contentStr);
             if (contentStr.length > 2000) contentStr = contentStr.substring(0, 2000) + "...";
             text += `**${msg.role.toUpperCase()}**: ${contentStr}\n\n`;
         }

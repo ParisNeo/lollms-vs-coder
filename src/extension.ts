@@ -303,8 +303,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
             return contextManager.isPathInActiveContext(fsPath);
         });
 
-        if (hasRelevantChange && ChatPanel.currentPanel && !ChatPanel.isBatchApplying) {
-            ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: true });
+        if (hasRelevantChange && !ChatPanel.isBatchApplying) {
+            ChatPanel.panels.forEach(panel => {
+                if (!panel.isDisposed) {
+                    panel.updateContextAndTokens({ isBackgroundSync: true });
+                }
+            });
         }
     };
 

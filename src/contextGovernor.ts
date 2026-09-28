@@ -291,9 +291,18 @@ Select which files to mute and which to keep active. Output <mute> and <worker> 
 
         const hardCap120 = Math.round(maxTokens * 1.2);
 
-        // 2. Calculate Base Non-File Fixed Loads
+        // 2. Calculate Base Non-File Fixed Loads (Excluding thinking/reasoning blocks)
+        const getCleanHistoryText = (msgs: ChatMessage[]) => msgs
+            .filter(m => !m.skipInPrompt)
+            .map(m => {
+                const c = m.content;
+                if (typeof c === 'string') return stripThinkingTags(c);
+                if (Array.isArray(c)) return c.filter((p: any) => p && p.type === 'text').map((p: any) => stripThinkingTags(p.text)).join('\n');
+                return '';
+            }).filter(t => t.trim().length > 0).join('\n');
+
         const systemTokens = Math.ceil((baseInstructions || '').length / 3.5);
-        let historyTokens = Math.ceil(history.map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n').length / 3.5);
+        let historyTokens = Math.ceil(getCleanHistoryText(history).length / 3.5);
         const treeTokens = Math.ceil((contextData.projectTree || '').length / 3.5);
         const skillsTokens = Math.ceil((contextData.skillsContent || '').length / 3.5);
         const briefingContent = contextManager.renderBriefing(currentDiscussion);
@@ -1202,11 +1211,21 @@ You MUST evict more files via <mute>...</mute> to reach the objective.`
 
         if (olderHistory.length === 0) return null;
 
-        const olderTokens = Math.ceil(olderHistory.map(m => typeof m.content === 'string' ? stripThinkingTags(m.content) : JSON.stringify(m.content)).join('\n').length / 3.5);
+        const getCleanHistoryText = (msgs: ChatMessage[]) => msgs
+            .filter(m => !m.skipInPrompt)
+            .map(m => {
+                const c = m.content;
+                if (typeof c === 'string') return stripThinkingTags(c);
+                if (Array.isArray(c)) return c.filter((p: any) => p && p.type === 'text').map((p: any) => stripThinkingTags(p.text)).join('\n');
+                return '';
+            }).filter(t => t.trim().length > 0).join('\n');
+
+        const olderTokens = Math.ceil(getCleanHistoryText(olderHistory).length / 3.5);
 
         const transcript = olderHistory.map(m => {
             const role = m.role.toUpperCase();
-            let txt = typeof m.content === 'string' ? stripThinkingTags(m.content) : JSON.stringify(m.content);
+            const c = m.content;
+            let txt = typeof c === 'string' ? stripThinkingTags(c) : (Array.isArray(c) ? c.filter((p: any) => p && p.type === 'text').map((p: any) => stripThinkingTags(p.text)).join('\n') : JSON.stringify(c));
             if (txt.length > 1500) {
                 txt = txt.substring(0, 750) + '\n... [truncated] ...\n' + txt.substring(txt.length - 750);
             }
@@ -1261,7 +1280,7 @@ ${transcript}`;
         });
 
         const newHistory = [summaryMessage, ...recentHistory];
-        const newHistoryTokens = Math.ceil(newHistory.map(m => typeof m.content === 'string' ? m.content : '').join('\n').length / 3.5);
+        const newHistoryTokens = Math.ceil(getCleanHistoryText(newHistory).length / 3.5);
         const liberatedTokens = Math.max(0, olderTokens - Math.ceil(summaryMessage.content.length / 3.5));
 
         if (!currentDiscussion.id.startsWith('temp-')) {

@@ -739,41 +739,42 @@ export class SettingsPanel {
               Logger.info("[ConfigView] Received model refresh request.");
 
               if (this._panel) {
-                try {
-                  const conn = (message as any).connection;
-                  if (conn) {
-                      if (conn.apiKey !== undefined) this._pendingConfig.apiKey = conn.apiKey;
-                      if (conn.apiUrl !== undefined) this._pendingConfig.apiUrl = conn.apiUrl;
-                      if (conn.backendType !== undefined) this._pendingConfig.backendType = conn.backendType;
-                      if (conn.disableSslVerification !== undefined) this._pendingConfig.disableSslVerification = conn.disableSslVerification;
-                      if (conn.sslCertPath !== undefined) this._pendingConfig.sslCertPath = conn.sslCertPath;
-                      if (conn.useLollmsExtensions !== undefined) this._pendingConfig.useLollmsExtensions = conn.useLollmsExtensions;
-                  }
+              try {
+                const conn = (message as any).connection;
+                if (conn) {
+                    if (conn.apiKey !== undefined) this._pendingConfig.apiKey = conn.apiKey;
+                    if (conn.apiUrl !== undefined) this._pendingConfig.apiUrl = conn.apiUrl;
+                    if (conn.backendType !== undefined) this._pendingConfig.backendType = conn.backendType;
+                    if (conn.disableSslVerification !== undefined) this._pendingConfig.disableSslVerification = conn.disableSslVerification;
+                    if (conn.sslCertPath !== undefined) this._pendingConfig.sslCertPath = conn.sslCertPath;
+                    if (conn.useLollmsExtensions !== undefined) this._pendingConfig.useLollmsExtensions = conn.useLollmsExtensions;
+                }
 
-                  const tempConfig: LollmsConfig = {
-                      apiKey: this._pendingConfig.apiKey,
-                      apiUrl: this._pendingConfig.apiUrl,
-                      modelName: this._pendingConfig.modelName,
-                      disableSslVerification: this._pendingConfig.disableSslVerification,
-                      sslCertPath: this._pendingConfig.sslCertPath ? this._pendingConfig.sslCertPath.replace(/^['"]|['"]$/g, '').trim() : '',
-                      backendType: this._pendingConfig.backendType as any,
-                      useLollmsExtensions: this._pendingConfig.useLollmsExtensions
-                  };
+                const tempConfig: LollmsConfig = {
+                    apiKey: this._pendingConfig.apiKey,
+                    apiUrl: this._pendingConfig.apiUrl,
+                    modelName: this._pendingConfig.modelName,
+                    disableSslVerification: this._pendingConfig.disableSslVerification,
+                    sslCertPath: this._pendingConfig.sslCertPath ? this._pendingConfig.sslCertPath.replace(/^['"]|['"]$/g, '').trim() : '',
+                    backendType: this._pendingConfig.backendType as any,
+                    useLollmsExtensions: this._pendingConfig.useLollmsExtensions,
+                    serverBindings: this._pendingConfig.connectionProfiles
+                };
 
-                  Logger.info(`[ConfigView] Fetching models for ${tempConfig.backendType} at ${tempConfig.apiUrl}`);
-                  const tempApi = new LollmsAPI(tempConfig); 
-                  const models = await tempApi.getModels(true); 
+                Logger.info(`[ConfigView] Querying cumulative models across all configured server bindings`);
+                const tempApi = new LollmsAPI(tempConfig); 
+                const models = await tempApi.getModels(true); 
 
-                  if (this._panel && !(this as any)._isDisposed) {
-                      this._panel.webview.postMessage({ command: 'modelsList', models: models || [] });
-                  }
-                } catch (e: any) {
-                  Logger.error(`[ConfigView] Model fetch failed: ${e.message}`);
-                  if (this._panel && !(this as any)._isDisposed) {
-                      this._panel.webview.postMessage({ command: 'modelsList', models: [], error: e.message });
-                  }
+                if (this._panel && !(this as any)._isDisposed) {
+                    this._panel.webview.postMessage({ command: 'modelsList', models: models || [] });
+                }
+              } catch (e: any) {
+                Logger.error(`[ConfigView] Cumulative model fetch failed: ${e.message}`);
+                if (this._panel && !(this as any)._isDisposed) {
+                    this._panel.webview.postMessage({ command: 'modelsList', models: [], error: e.message });
                 }
               }
+            }
               return;
             }
             case 'editPrompts':
@@ -1031,16 +1032,20 @@ export class SettingsPanel {
                 </div>
                 <p class="help-text">Configure your target AI backend and host connection. Once connection is established, proceed to the <strong>Models & Assignments</strong> tab.</p>
 
-                <div class="card" style="margin-top: 15px; padding: 12px; border-style: dashed; background: var(--vscode-editor-inactiveSelectionBackground);">
-                    <label style="margin-top:0; font-size: 11px;">🚀 Saved Connection Environments</label>
-                    <div class="input-group" style="margin-top:5px;">
-                        <select id="connectionProfileSelect" style="flex:1;">
-                            <option value="">-- Select a Saved Environment --</option>
-                        </select>
-                        <button id="saveCurrentAsProfile" class="icon-btn" title="Save current settings as new profile"><i class="codicon codicon-save"></i></button>
-                        <button id="deleteProfile" class="icon-btn remove-btn" title="Delete selected profile"><i class="codicon codicon-trash"></i></button>
+                <div class="card" style="margin-top: 15px; padding: 14px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: var(--vscode-editor-inactiveSelectionBackground);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <label style="margin:0; font-size: 12px; font-weight:bold; color:var(--vscode-charts-blue);"><i class="codicon codicon-server-process"></i> Active Server Bindings (Cumulative Multi-Server Pool)</label>
+                        <button id="addNewBindingBtn" type="button" class="secondary-button" style="font-size:11px; padding:3px 8px;"><i class="codicon codicon-add"></i> Add Server Binding</button>
                     </div>
-                    <p class="help-text">Quickly switch between local (Ollama/Lollms) and remote/cloud (OpenAI/Anthropic/Groq) setups.</p>
+                    <p class="help-text" style="margin-bottom:10px;">All enabled bindings below are queried together to create your aggregated model pool. Models from any active server are accessible simultaneously.</p>
+
+                    <div id="bindingsListContainer" style="display:flex; flex-direction:column; gap:6px; max-height:220px; overflow-y:auto; margin-bottom:10px;">
+                        <!-- Server binding rows injected here -->
+                    </div>
+
+                    <div style="display:flex; gap:8px;">
+                        <button id="saveCurrentAsProfile" type="button" class="secondary-button" style="flex:1;" title="Save current form values as an active server binding"><i class="codicon codicon-save"></i> Save Current Form as Binding</button>
+                    </div>
                 </div>
 
                 <label for="backendType">Backend Binding Type</label>
@@ -1918,7 +1923,7 @@ export class SettingsPanel {
                 if(config.remoteAllowedChannels) document.getElementById('remoteAllowedChannels').value = config.remoteAllowedChannels.join(String.fromCharCode(10));
 
                 renderProfiles();
-                renderConnectionProfiles();
+                renderBindingsList();
                 renderMcpServers();
                 updatePersonaSelects();
                 updateBindingUi();
@@ -1993,9 +1998,107 @@ export class SettingsPanel {
 
             setTimeout(bindTempUpdates, 50);
 
+            function renderBindingsList() {
+                const container = document.getElementById('bindingsListContainer');
+                if (!container) return;
+                container.innerHTML = '';
+
+                const profiles = config.connectionProfiles || [];
+                if (profiles.length === 0) {
+                    container.innerHTML = '<div style="opacity:0.6; font-size:11px; font-style:italic; padding:6px;">No additional bindings configured. The primary server above is currently active.</div>';
+                    return;
+                }
+
+                profiles.forEach((p, idx) => {
+                    const row = document.createElement('div');
+                    row.className = 'participant-row';
+                    row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:8px 10px; border-radius:6px; background:var(--vscode-editor-background); margin:0;';
+
+                    const isEnabled = p.enabled !== false;
+                    row.innerHTML = \`
+                        <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:0;">
+                            <input type="checkbox" class="binding-enable-toggle" data-idx="\${idx}" \${isEnabled ? 'checked' : ''} title="Toggle active status in cumulative pool" style="cursor:pointer; width:16px; height:16px;">
+                            <div style="min-width:0; flex:1;">
+                                <div style="font-weight:bold; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px;">
+                                    <span>\${p.name || 'Unnamed Binding'}</span>
+                                    <span class="ref-badge" style="background:var(--vscode-badge-background); font-size:9px;">\${(p.backendType || 'lollms').toUpperCase()}</span>
+                                </div>
+                                <div style="font-size:10px; opacity:0.65; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">\${p.apiUrl}</div>
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:4px; align-items:center;">
+                            <button type="button" class="icon-btn btn-test-binding" data-idx="\${idx}" title="Test Connection"><i class="codicon codicon-broadcast"></i></button>
+                            <button type="button" class="icon-btn btn-load-binding" data-idx="\${idx}" title="Edit in Form"><i class="codicon codicon-edit"></i></button>
+                            <button type="button" class="icon-btn remove-btn btn-delete-binding" data-idx="\${idx}" title="Delete Binding"><i class="codicon codicon-trash"></i></button>
+                        </div>
+                    \`;
+                    container.appendChild(row);
+                });
+
+                container.querySelectorAll('.binding-enable-toggle').forEach(el => {
+                    el.onchange = () => {
+                        const idx = parseInt(el.dataset.idx, 10);
+                        if (config.connectionProfiles[idx]) {
+                            config.connectionProfiles[idx].enabled = el.checked;
+                            postTempUpdate('connectionProfiles', config.connectionProfiles);
+                            refreshModelsList(true);
+                        }
+                    };
+                });
+
+                container.querySelectorAll('.btn-test-binding').forEach(btn => {
+                    btn.onclick = () => {
+                        const idx = parseInt(btn.dataset.idx, 10);
+                        const p = config.connectionProfiles[idx];
+                        if (p) {
+                            vscode.postMessage({
+                                command: 'testConnection',
+                                connection: {
+                                    apiUrl: p.apiUrl,
+                                    apiKey: p.apiKey,
+                                    backendType: p.backendType,
+                                    disableSslVerification: p.disableSslVerification,
+                                    sslCertPath: p.sslCertPath,
+                                    useLollmsExtensions: p.useLollmsExtensions
+                                }
+                            });
+                        }
+                    };
+                });
+
+                container.querySelectorAll('.btn-load-binding').forEach(btn => {
+                    btn.onclick = () => {
+                        const idx = parseInt(btn.dataset.idx, 10);
+                        const p = config.connectionProfiles[idx];
+                        if (p) {
+                            safeSet('apiUrl', p.apiUrl);
+                            safeSet('apiKey', p.apiKey);
+                            safeSet('backendType', p.backendType);
+                            safeSet('disableSsl', p.disableSslVerification, true);
+                            safeSet('sslCertPath', p.sslCertPath);
+                            safeSet('useLollmsExtensions', p.useLollmsExtensions, true);
+                            updateBindingUi();
+                            checkReactivity();
+                        }
+                    };
+                });
+
+                container.querySelectorAll('.btn-delete-binding').forEach(btn => {
+                    btn.onclick = () => {
+                        const idx = parseInt(btn.dataset.idx, 10);
+                        if (confirm(\`Delete server binding '\${config.connectionProfiles[idx]?.name}'?\`)) {
+                            config.connectionProfiles.splice(idx, 1);
+                            postTempUpdate('connectionProfiles', config.connectionProfiles);
+                            renderBindingsList();
+                            refreshModelsList(true);
+                        }
+                    };
+                });
+            }
+
             function populateModelDropdown(selectElement, selectedValue, error) {
                 if(!selectElement) return;
-                
+
                 const previousValue = selectedValue || selectElement.value;
                 selectElement.innerHTML = '';
 
@@ -2007,7 +2110,7 @@ export class SettingsPanel {
                 manualOpt.style.fontWeight = "bold";
                 manualOpt.style.color = "var(--vscode-textLink-foreground)";
                 selectElement.appendChild(manualOpt);
-                
+
                 if (error) { 
                     selectElement.appendChild(new Option("⚠️ Error: " + error, "")); 
                     return; 
@@ -2016,14 +2119,14 @@ export class SettingsPanel {
                 if (loadedModels.length > 0) {
                     const secondaryModels = [
                         'inspectorModelName', 'architectModelSelect', 'titlingModelSelect', 
-                        'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect'
+                        'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect', 'graphModelSelect'
                     ];
                     if (secondaryModels.includes(selectElement.id)) {
                         selectElement.appendChild(new Option("Same as Chat Model (Default)", ""));
                     }
 
                     loadedModels.forEach(model => {
-                        const opt = new Option(model.id, model.id);
+                        const opt = new Option(model.name || model.id, model.id);
                         selectElement.appendChild(opt);
                     });
 
@@ -2237,7 +2340,54 @@ export class SettingsPanel {
                 refreshModelsList(true);
             });
 
-            document.getElementById('saveCurrentAsProfile').onclick = () => vscode.postMessage({ command: 'requestProfileName' });
+            document.getElementById('saveCurrentAsProfile').onclick = () => {
+                const name = prompt("Enter a display name for this Server Binding:", "New Binding");
+                if (name && name.trim()) {
+                    if (!config.connectionProfiles) config.connectionProfiles = [];
+                    const currentConn = getCurrentConnectionSettings();
+                    config.connectionProfiles.push({
+                        id: 'binding_' + Date.now().toString(36),
+                        name: name.trim(),
+                        apiUrl: currentConn.apiUrl,
+                        apiKey: currentConn.apiKey,
+                        backendType: currentConn.backendType,
+                        disableSslVerification: currentConn.disableSslVerification,
+                        sslCertPath: currentConn.sslCertPath,
+                        useLollmsExtensions: currentConn.useLollmsExtensions,
+                        enabled: true
+                    });
+                    postTempUpdate('connectionProfiles', config.connectionProfiles);
+                    renderBindingsList();
+                    refreshModelsList(true);
+                }
+            };
+
+            const addBindingBtn = document.getElementById('addNewBindingBtn');
+            if (addBindingBtn) {
+                addBindingBtn.onclick = () => {
+                    const name = prompt("Enter Server Name (e.g. 'Ollama Local', 'Groq Cloud'):");
+                    if (!name) return;
+                    const url = prompt("Enter API Host URL:", "http://localhost:11434");
+                    if (!url) return;
+                    const key = prompt("Enter API Key (optional for local):", "");
+
+                    if (!config.connectionProfiles) config.connectionProfiles = [];
+                    config.connectionProfiles.push({
+                        id: 'binding_' + Date.now().toString(36),
+                        name: name.trim(),
+                        apiUrl: url.trim(),
+                        apiKey: key ? key.trim() : "",
+                        backendType: url.includes('11434') ? 'ollama' : (url.includes('groq') ? 'groq' : (url.includes('openai') ? 'openai' : 'lollms')),
+                        disableSslVerification: false,
+                        sslCertPath: '',
+                        useLollmsExtensions: false,
+                        enabled: true
+                    });
+                    postTempUpdate('connectionProfiles', config.connectionProfiles);
+                    renderBindingsList();
+                    refreshModelsList(true);
+                };
+            }
 
             document.getElementById('toggleApiKey').onclick = () => {
                 const input = document.getElementById('apiKey');

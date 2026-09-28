@@ -6,6 +6,18 @@ import * as vscode from 'vscode';
 import { Logger } from './logger';
 import { stripThinkingTags } from './utils';
 
+export interface ServerBinding {
+  id?: string;
+  name: string;
+  apiUrl: string;
+  apiKey?: string;
+  backendType: 'lollms' | 'openai' | 'ollama' | 'anthropic' | 'google' | 'groq' | 'grok' | 'novitai' | 'openwebui' | 'openrouter' | 'perplexity' | 'together';
+  disableSslVerification?: boolean;
+  sslCertPath?: string;
+  useLollmsExtensions?: boolean;
+  enabled?: boolean;
+}
+
 export interface LollmsConfig {
   apiUrl: string;
   apiKey: string;
@@ -15,6 +27,7 @@ export interface LollmsConfig {
   sslCertPath?: string;
   backendType: 'lollms' | 'openai' | 'ollama' | 'anthropic' | 'google' | 'groq' | 'grok' | 'novitai' | 'openwebui' | 'openrouter' | 'perplexity' | 'together';
   useLollmsExtensions: boolean;
+  serverBindings?: ServerBinding[];
 }
 
 export interface ChatMessage {
@@ -67,8 +80,11 @@ export class LollmsAPI {
   private config: LollmsConfig;
   private httpsAgent: https.Agent;
   private baseUrl: string;
-  private _cachedModels: Array<{ id: string }> | null = null;
+  private _cachedModels: Array<{ id: string; name?: string; server?: string }> | null = null;
   private _cachedContextSizes: Map<string, number> = new Map();
+  private _modelToBindingMap: Map<string, { binding: ServerBinding; targetModel: string; rawModel?: string }> = new Map();
+  private _rawModelToBindingMap: Map<string, { binding: ServerBinding; targetModel: string; rawModel?: string }> = new Map();
+  private _bindingAgents: Map<string, https.Agent> = new Map();
   private globalState?: vscode.Memento;
 
   constructor(config: LollmsConfig, globalState?: vscode.Memento) {
@@ -157,10 +173,13 @@ export class LollmsAPI {
   }
 
   public updateConfig(newConfig: LollmsConfig) {
-    Logger.info("Updating LollmsAPI Config");
+    Logger.info("Updating LollmsAPI Config with cumulative bindings support");
     const oldUrl = this.config.apiUrl;
     const oldBackend = this.config.backendType;
     const oldKey = this.config.apiKey;
+    const oldBindings = JSON.stringify(this.config.serverBindings || []);
+    const newBindings = JSON.stringify(newConfig.serverBindings || []);
+
     this.config = newConfig;
 
     if (!this.config.apiKey) {
@@ -169,15 +188,142 @@ export class LollmsAPI {
 
     this.httpsAgent = this.createHttpsAgent();
     this.baseUrl = this.normalizeBaseUrl(this.config.apiUrl);
+    this._bindingAgents.clear();
 
-    const isDifferent = oldUrl !== newConfig.apiUrl || oldBackend !== newConfig.backendType || oldKey !== newConfig.apiKey;
+    const isDifferent = oldUrl !== newConfig.apiUrl || oldBackend !== newConfig.backendType || oldKey !== newConfig.apiKey || oldBindings !== newBindings;
     if (isDifferent) {
         this._cachedModels = null;
         this._cachedContextSizes.clear();
+        this._modelToBindingMap.clear();
+        this._rawModelToBindingMap.clear();
         if (this.globalState) {
             this.globalState.update('lollms_models_cache', undefined);
         }
     }
+  }
+
+  public getAllActiveBindings(): ServerBinding[] {
+    const list: ServerBinding[] = [];
+
+    // 1. Primary configured binding
+    if (this.config.apiUrl && this.config.apiUrl.trim()) {
+        const primaryName = this.config.backendType === 'lollms' ? 'Lollms (Primary)' : `${this.config.backendType.toUpperCase()} (Primary)`;
+        list.push({
+            id: 'primary',
+            name: primaryName,
+            apiUrl: this.config.apiUrl,
+            apiKey: this.config.apiKey,
+            backendType: this.config.backendType,
+            disableSslVerification: this.config.disableSslVerification,
+            sslCertPath: this.config.sslCertPath,
+            useLollmsExtensions: this.config.useLollmsExtensions,
+            enabled: true
+        });
+    }
+
+    // 2. Extra configured bindings from connectionProfiles
+    const extra = this.config.serverBindings || [];
+    for (const b of extra) {
+        if (!b || !b.apiUrl || !b.apiUrl.trim() || b.enabled === false) continue;
+        const normUrl = this.normalizeBaseUrl(b.apiUrl);
+        // Avoid adding duplicate primary server with identical backend
+        const isDuplicatePrimary = list.length > 0 && 
+            this.normalizeBaseUrl(list[0].apiUrl).toLowerCase() === normUrl.toLowerCase() && 
+            list[0].backendType === b.backendType;
+
+        if (!isDuplicatePrimary) {
+            list.push({
+                ...b,
+                id: b.id || `binding_${b.name.replace(/[^a-zA-Z0-9_]/g, '_')}`,
+                name: b.name.trim() || `Server ${list.length + 1}`
+            });
+        }
+    }
+
+    return list;
+  }
+
+  public getAgentForBinding(binding: ServerBinding): https.Agent | undefined {
+    const isHttps = binding.apiUrl.startsWith('https');
+    if (!isHttps) return undefined;
+
+    const key = `${binding.apiUrl}_${binding.disableSslVerification}_${binding.sslCertPath || ''}`;
+    if (this._bindingAgents.has(key)) {
+        return this._bindingAgents.get(key);
+    }
+
+    const options: https.AgentOptions = {
+        keepAlive: true,
+        rejectUnauthorized: !binding.disableSslVerification
+    };
+
+    if (binding.disableSslVerification) {
+        options.checkServerIdentity = () => undefined;
+        options.ciphers = 'ALL';
+        (options as any).secureOptions = require('constants').SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION;
+    }
+
+    const certPath = binding.sslCertPath ? binding.sslCertPath.replace(/^['"]|['"]$/g, '') : '';
+    if (certPath && fs.existsSync(certPath)) {
+        try {
+            options.ca = fs.readFileSync(certPath);
+        } catch {}
+    }
+
+    const agent = new https.Agent(options);
+    this._bindingAgents.set(key, agent);
+    return agent;
+  }
+
+  public resolveBindingForModel(modelName?: string): { binding: ServerBinding; targetModel: string } {
+    const raw = (modelName || this.config.modelName || "").trim();
+    const bindings = this.getAllActiveBindings();
+    const fallbackBinding = bindings.length > 0 ? bindings[0] : {
+        id: 'default',
+        name: 'Default',
+        apiUrl: this.config.apiUrl,
+        apiKey: this.config.apiKey,
+        backendType: this.config.backendType,
+        disableSslVerification: this.config.disableSslVerification,
+        sslCertPath: this.config.sslCertPath,
+        useLollmsExtensions: this.config.useLollmsExtensions
+    };
+    const defaultModel = (raw || this.config.modelName || "default").trim();
+
+    if (!raw) {
+        return { binding: fallbackBinding, targetModel: defaultModel };
+    }
+
+    // 1. Explicit namespacing format: "ServerName::modelName"
+    if (raw.includes('::')) {
+        const delimiterIdx = raw.indexOf('::');
+        const bindingNameOrId = raw.substring(0, delimiterIdx).trim();
+        const targetModel = raw.substring(delimiterIdx + 2).trim();
+
+        const found = bindings.find(b => 
+            b.name.toLowerCase() === bindingNameOrId.toLowerCase() || 
+            (b.id && b.id.toLowerCase() === bindingNameOrId.toLowerCase())
+        );
+
+        if (found) {
+            return { binding: found, targetModel: targetModel || defaultModel };
+        }
+        return { binding: fallbackBinding, targetModel: targetModel || defaultModel };
+    }
+
+    // 2. Lookup in cached model-to-binding registry
+    if (this._modelToBindingMap.has(raw)) {
+        const entry = this._modelToBindingMap.get(raw)!;
+        const target = entry.targetModel || entry.rawModel || raw || defaultModel;
+        return { binding: entry.binding, targetModel: target };
+    }
+    if (this._rawModelToBindingMap.has(raw)) {
+        const entry = this._rawModelToBindingMap.get(raw)!;
+        const target = entry.targetModel || entry.rawModel || raw || defaultModel;
+        return { binding: entry.binding, targetModel: target };
+    }
+
+    return { binding: fallbackBinding, targetModel: raw || defaultModel };
   }
 
   public getModelName(): string {
@@ -185,35 +331,72 @@ export class LollmsAPI {
   }
 
   /**
-   * Fast connection probe (timeout within 2.5s) to detect offline server before initiating long generation passes.
+   * Fast connection probe to detect offline server before initiating long generation passes.
+   * Tolerates slow local model warm-ups and automatically falls back to 127.0.0.1 if localhost stalls.
    */
-  public async pingServer(timeoutMs: number = 2500): Promise<{ online: boolean; error?: string }> {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+  public async pingServer(timeoutMs: number = 5000, model?: string): Promise<{ online: boolean; error?: string }> {
+      const resolved = this.resolveBindingForModel(model);
+      const targetBinding = resolved.binding;
+      const baseUrl = this.normalizeBaseUrl(targetBinding.apiUrl);
 
-      try {
-          const testUrl = this.config.backendType === 'ollama' 
-              ? `${this.baseUrl}/api/tags`
-              : (this.config.backendType === 'lollms' ? `${this.baseUrl}/` : `${this.baseUrl}/v1/models`);
+      const tryProbe = async (urlStr: string, ms: number) => {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), ms);
+          try {
+              const testUrl = targetBinding.backendType === 'ollama' 
+                  ? `${urlStr}/api/tags`
+                  : `${urlStr}/v1/models`;
 
-          const isHttps = testUrl.startsWith('https');
-          const response = await fetch(testUrl, {
-              method: 'GET',
-              headers: this.config.apiKey ? { 'Authorization': `Bearer ${this.config.apiKey}` } : {},
-              signal: controller.signal,
-              agent: isHttps && testUrl.startsWith(this.baseUrl) ? this.httpsAgent : undefined
-          });
+              const agent = this.getAgentForBinding(targetBinding);
+              const headers: Record<string, string> = {};
+              if (targetBinding.apiKey) {
+                  headers['Authorization'] = `Bearer ${targetBinding.apiKey}`;
+              }
 
-          return { online: response.status < 500 };
-      } catch (err: any) {
-          const isTimeout = err.name === 'AbortError';
-          const msg = isTimeout 
-              ? `Server timed out after ${timeoutMs}ms` 
-              : (err.code === 'ECONNREFUSED' ? 'Connection refused (ECONNREFUSED)' : err.message);
-          return { online: false, error: msg };
-      } finally {
-          clearTimeout(timer);
+              const response = await fetch(testUrl, {
+                  method: 'GET',
+                  headers,
+                  signal: controller.signal,
+                  agent
+              });
+
+              // Any response from the HTTP listener (even 401/404) proves the server is online
+              return { online: true, status: response.status };
+          } catch (err: any) {
+              return { online: false, error: err };
+          } finally {
+              clearTimeout(timer);
+          }
+      };
+
+      // 1. Try with the primary configured URL
+      let probe = await tryProbe(baseUrl, timeoutMs);
+      if (probe.online) return { online: true };
+
+      // 2. IPv4 fallback: If baseUrl uses 'localhost', try '127.0.0.1' (bypasses Node 18+ Windows IPv6 ::1 stalls)
+      if (baseUrl.includes('localhost')) {
+          const ipv4Url = baseUrl.replace('localhost', '127.0.0.1');
+          const ipv4Probe = await tryProbe(ipv4Url, timeoutMs);
+          if (ipv4Probe.online) {
+              return { online: true };
+          }
       }
+
+      const err = probe.error;
+      const isTimeout = err?.name === 'AbortError' || err?.message?.includes('timeout');
+
+      // If it merely timed out, the server may be under local load or loading model weights.
+      // Do NOT block the user turn on a timeout; let sendChat proceed with the real connection stream.
+      if (isTimeout) {
+          Logger.warn(`[pingServer] Probe reached ${timeoutMs}ms limit without refusal. Allowing request to proceed directly to sendChat.`);
+          return { online: true };
+      }
+
+      const msg = err?.code === 'ECONNREFUSED' 
+          ? 'Connection refused (ECONNREFUSED)' 
+          : (err?.message || 'Server is not responding');
+
+      return { online: false, error: msg };
   }
 
   public async testConnection(): Promise<{ success: boolean; message: string; details?: string }> {
@@ -262,46 +445,22 @@ export class LollmsAPI {
     return null;
   }
 
-  public async getModels(forceRefresh: boolean = false): Promise<Array<{ id: string }>> {
-    Logger.info(`[getModels] Called. URL: ${this.baseUrl}, Force: ${forceRefresh}`);
+  private async fetchModelsForBinding(binding: ServerBinding): Promise<Array<{ id: string }>> {
+    const backend = binding.backendType;
 
-    if (forceRefresh) {
-        this._cachedModels = null;
-        if (this.globalState) {
-            this.globalState.update('lollms_models_cache', undefined);
-        }
-    } else {
-        if (this._cachedModels && this._cachedModels.length > 0) {
-            return this._cachedModels;
-        }
-
-        if (this.globalState) {
-            const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
-            if (storedModels && storedModels.length > 0) {
-                this._cachedModels = storedModels;
-                return storedModels;
-            }
-        }
-    }
-
-    const backend = this.config.backendType;
-
-    // Anthropic does not provide a models list API
     if (backend === 'anthropic') {
-        const models = [
+        return [
             { id: 'claude-3-7-sonnet-latest' },
             { id: 'claude-3-5-sonnet-latest' },
             { id: 'claude-3-opus-latest' },
             { id: 'claude-3-haiku-20240307' }
         ];
-        this._cachedModels = models;
-        return models;
     }
 
-    let url = this.baseUrl;
+    let url = this.normalizeBaseUrl(binding.apiUrl);
     let headers: any = {};
-    if (this.config.apiKey) {
-        headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+    if (binding.apiKey) {
+        headers['Authorization'] = `Bearer ${binding.apiKey}`;
     }
 
     if (backend === 'ollama') {
@@ -309,11 +468,9 @@ export class LollmsAPI {
     } else if (backend === 'openwebui') {
         url = url.endsWith('/models') ? url : `${url}/models`;
     } else if (backend === 'google') {
-        url = `https://generativelanguage.googleapis.com/v1beta/models?key=${this.config.apiKey}`;
+        url = `https://generativelanguage.googleapis.com/v1beta/models?key=${binding.apiKey || ''}`;
         headers = {};
     } else {
-        // Standard OpenAI-compatible path joining
-        // Prevents double-versioning (/v1/v1) while ensuring standard cloud paths work
         const pathLower = url.toLowerCase();
         if (pathLower.endsWith('/v1') || pathLower.endsWith('/v1/')) {
             url = url.replace(/\/+$/, '') + '/models';
@@ -323,19 +480,15 @@ export class LollmsAPI {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), 12000);
 
     try {
-        const isHttps = url.startsWith('https');
-        // Only use the custom agent if the URL belongs to the user-configured API host.
-        // This prevents using the self-signed CA cert for cloud APIs like Google or Anthropic.
-        const useAgent = isHttps && (url.startsWith(this.baseUrl) || backend === 'lollms' || backend === 'ollama' || backend === 'openwebui');
-
+        const agent = this.getAgentForBinding(binding);
         const response = await fetch(url, {
             method: 'GET',
             headers,
             signal: controller.signal,
-            agent: useAgent ? this.httpsAgent : undefined
+            agent
         });
 
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -351,84 +504,135 @@ export class LollmsAPI {
             rawList = this.findModelArray(data) || [];
         }
 
-        const models = rawList.map((m: any) => {
+        return rawList.map((m: any) => {
             if (typeof m === 'string') return { id: m };
             return { id: m.id || m.name || m.model || String(m) };
         }).filter(m => m.id);
 
-        this._cachedModels = models;
-        if (this.globalState) {
-            this.globalState.update('lollms_models_cache', models);
-        }
-        return models;
-
-    } catch (error: any) {
-        Logger.error(`[getModels] Error: ${error.message}`);
-        throw error;
     } finally {
         clearTimeout(timeout);
     }
   }
 
+  public async getModels(forceRefresh: boolean = false): Promise<Array<{ id: string; name?: string; server?: string }>> {
+    Logger.info(`[getModels] Cumulative query called across all active server bindings. Force: ${forceRefresh}`);
+
+    if (forceRefresh) {
+        this._cachedModels = null;
+        this._modelToBindingMap.clear();
+        this._rawModelToBindingMap.clear();
+        if (this.globalState) {
+            this.globalState.update('lollms_models_cache', undefined);
+        }
+    } else {
+        if (this._cachedModels && this._cachedModels.length > 0) {
+            return this._cachedModels;
+        }
+
+        if (this.globalState) {
+            const storedModels = this.globalState.get<Array<{ id: string; name?: string; server?: string }>>('lollms_models_cache');
+            if (storedModels && storedModels.length > 0) {
+                this._cachedModels = storedModels;
+                return storedModels;
+            }
+        }
+    }
+
+    const activeBindings = this.getAllActiveBindings();
+    if (activeBindings.length === 0) {
+        return [];
+    }
+
+    const results = await Promise.allSettled(
+        activeBindings.map(async (binding) => {
+            try {
+                const models = await this.fetchModelsForBinding(binding);
+                return { binding, models };
+            } catch (err: any) {
+                Logger.warn(`[getModels] Failed to query binding '${binding.name}' (${binding.apiUrl}): ${err.message}`);
+                return { binding, models: [] };
+            }
+        })
+    );
+
+    const aggregated: Array<{ id: string; name: string; server: string }> = [];
+    const isMultiServer = activeBindings.length > 1;
+
+    for (const res of results) {
+        if (res.status === 'fulfilled') {
+            const { binding, models } = res.value;
+            for (const m of models) {
+                const compositeId = isMultiServer ? `${binding.name}::${m.id}` : m.id;
+                const displayName = isMultiServer ? `[${binding.name}] ${m.id}` : m.id;
+
+                aggregated.push({
+                    id: compositeId,
+                    name: displayName,
+                    server: binding.name
+                });
+
+                const routeInfo = { binding, targetModel: m.id, rawModel: m.id };
+                this._modelToBindingMap.set(compositeId, routeInfo);
+
+                // Register unnamespaced fallback if not already claimed by an earlier binding
+                if (!this._rawModelToBindingMap.has(m.id)) {
+                    this._rawModelToBindingMap.set(m.id, routeInfo);
+                }
+            }
+        }
+    }
+
+    this._cachedModels = aggregated;
+    if (this.globalState) {
+        this.globalState.update('lollms_models_cache', aggregated);
+    }
+    return aggregated;
+  }
+
   public async tokenize(text: string, model?: string): Promise<TokenizeResponse> {
-    const backend = this.config.backendType;
-    const modelName = (model || this.config.modelName || "").trim();
+    const resolved = this.resolveBindingForModel(model);
+    const targetBinding = resolved.binding;
+    const modelName = resolved.targetModel;
+    const backend = targetBinding.backendType;
     const safeText = text || "";
 
-    // VALIDATION: Prevent 400 Bad Request by not sending invalid Pydantic models
-    if (!modelName || backend !== 'lollms' || !this.config.useLollmsExtensions) {
-        // Fallback to heuristic if model is unknown or not using Lollms extensions
+    if (!modelName || backend !== 'lollms' || targetBinding.useLollmsExtensions === false) {
         const hasCode = safeText.includes('{') || safeText.includes('def ') || safeText.includes('function ') || safeText.includes('import ');
         const multiplier = hasCode ? 0.35 : 0.28;
         return { count: Math.ceil(safeText.length * multiplier), tokens: [], isEstimation: true };
     }
 
-    // 1. High-Precision Lollms Tokenizer API
-    const tokenizeUrl = `${this.baseUrl}/lollms/v1/tokenize`;
-    const isHttps = tokenizeUrl.startsWith('https');
+    const tokenizeUrl = `${this.normalizeBaseUrl(targetBinding.apiUrl)}/lollms/v1/tokenize`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+    const timeout = setTimeout(() => controller.abort(), 3000);
 
     try {
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (this.config.apiKey) {
-            headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+        if (targetBinding.apiKey) {
+            headers['Authorization'] = `Bearer ${targetBinding.apiKey}`;
         }
 
-        // 🛡️ LOW LATENCY ENFORCEMENT: If server doesn't respond in 2s, move to local
-        const fastTimeout = setTimeout(() => controller.abort(), 2000);
-
+        const agent = this.getAgentForBinding(targetBinding);
         const response = await fetch(tokenizeUrl, {
             method: 'POST',
-            headers: headers,
-            body: JSON.stringify({ 
-                model: modelName, 
-                text: safeText 
-            }),
+            headers,
+            body: JSON.stringify({ model: modelName, text: safeText }),
             signal: controller.signal,
-            // Custom agent only for our own host
-            agent: isHttps && tokenizeUrl.startsWith(this.baseUrl) ? this.httpsAgent : undefined
+            agent
         });
-
-        clearTimeout(fastTimeout);
 
         if (response.ok) {
             const data = await response.json() as TokenizeResponse;
             return { ...data, isEstimation: false };
         }
-        } catch (e: any) { 
-        if (e.name === 'AbortError') {
-            Logger.warn(`Tokenize API timed out. Falling back to Local Tokenizer.`);
-        } else {
-            Logger.warn(`Tokenize API unreachable (${e.message}). Falling back to Local Tokenizer.`);
-        }
-        } finally { 
-        clearTimeout(timeout); 
-        }
-
-    // --- 🛡️ SOVEREIGN LOCAL FAILSAFE TOKENIZER ---
-    return this.tokenizeLocal(safeText);
+    } catch {
+        // Fallback to high-speed local tokenizer
+    } finally {
+        clearTimeout(timeout);
     }
+
+    return this.tokenizeLocal(safeText);
+  }
 
     /**
     * High-speed code-aware heuristic tokenizer.
@@ -471,92 +675,70 @@ export class LollmsAPI {
     }
 
   public async getContextSize(model?: string): Promise<ContextSizeResponse> {
-    const modelName = (model || this.config.modelName || "").trim();
-    
-    // 1. Check Local Session Cache first to prevent server hammering
+    const resolved = this.resolveBindingForModel(model);
+    const targetBinding = resolved.binding;
+    const modelName = resolved.targetModel || (model || "").trim();
+
     if (this._cachedContextSizes.has(modelName)) {
         const cachedSize = this._cachedContextSizes.get(modelName)!;
-        Logger.debug(`[API] Context Size Cache Hit for ${modelName}: ${cachedSize}`);
         return { context_size: cachedSize, isEstimation: false };
     }
 
-    const useExtensions = this.config.useLollmsExtensions && this.config.backendType === 'lollms';
+    const useExtensions = targetBinding.useLollmsExtensions !== false && targetBinding.backendType === 'lollms';
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const manualOverride = config.get<number>('failsafeContextSize') || 0;
 
     if (!useExtensions || !modelName) {
+        let heuristic = 128000;
+        try {
+            const { getContextLimitForModel } = require('./utils');
+            heuristic = getContextLimitForModel(modelName);
+        } catch {}
+
         return { 
-            context_size: manualOverride || 128000, 
+            context_size: manualOverride || heuristic || 128000, 
             isEstimation: manualOverride === 0, 
             isUserDefined: manualOverride > 0 
         };
     }
 
-    const contextSizeUrl = `${this.baseUrl}/lollms/v1/context_size`;
-    const isHttps = contextSizeUrl.startsWith('https');
-
+    const contextSizeUrl = `${this.normalizeBaseUrl(targetBinding.apiUrl)}/lollms/v1/context_size`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000); // Higher timeout as server loads LLM
+    const timeout = setTimeout(() => controller.abort(), 6000);
 
-    const options: RequestInit = {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.config.apiKey}`
-        },
-        // STRICT PAYLOAD: Matches ContextSizeRequest Pydantic model
-        body: JSON.stringify({ model: modelName }),
-        signal: controller.signal
-    };
-
-    if (isHttps && contextSizeUrl.startsWith(this.baseUrl)) {
-        options.agent = this.httpsAgent;
-    }
-
-    Logger.info(`[API] ---> POST /lollms/v1/context_size (Model: ${modelName})`);
     try {
-        const response = await fetch(contextSizeUrl, options);
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (targetBinding.apiKey) headers['Authorization'] = `Bearer ${targetBinding.apiKey}`;
+
+        const agent = this.getAgentForBinding(targetBinding);
+        const response = await fetch(contextSizeUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ model: modelName }),
+            signal: controller.signal,
+            agent
+        });
+
         if (response.ok) {
-            const rawBody = await response.text();
-            Logger.info(`[API] <--- /context_size Raw Response: ${rawBody}`);
-
-            const data = JSON.parse(rawBody) as ContextSizeResponse;
-
+            const data = await response.json() as ContextSizeResponse;
             if (data && typeof data.context_size === 'number' && data.context_size > 0) {
-                Logger.info(`[API] Found authoritative context size: ${data.context_size} tokens`);
                 this._cachedContextSizes.set(modelName, data.context_size);
                 return { ...data, isEstimation: false };
-            } else {
-                Logger.warn(`[API] Server returned 200 OK but context_size was ${data?.context_size}`);
             }
-        } else {
-            const errText = await response.text();
-            Logger.error(`[API] /context_size failed (Status: ${response.status}) Body: ${errText.substring(0, 200)}`);
-            throw new Error(`Server returned ${response.status}`);
         }
-    } catch (e: any) {
-        Logger.error(`[API] Network error fetching context size: ${e.message}`);
+    } catch {
+        // Recover with local heuristic
     } finally {
         clearTimeout(timeout);
     }
 
-    // FINAL FALLBACK: Robust Recovery
     let heuristicSize = 128000;
     try {
         const { getContextLimitForModel } = require('./utils');
         heuristicSize = getContextLimitForModel(modelName);
-    } catch (e) {}
+    } catch {}
 
-    // Ensure we don't stay at 16k if we can't detect the model
-    // 128k is the standard "modern" baseline.
-    const finalSize = Math.max(
-        manualOverride || 0, 
-        heuristicSize || 0, 
-        128000
-    );
-
-    Logger.warn(`[API] Using recovery context size: ${finalSize} for ${modelName}`);
-
+    const finalSize = Math.max(manualOverride || 0, heuristicSize || 0, 128000);
     return { 
         context_size: finalSize, 
         isEstimation: true, 
@@ -785,20 +967,21 @@ export class LollmsAPI {
     onChunk?: ((chunk: string) => void) | null,
     signal?: AbortSignal,
     modelOverride?: string,
-    options?: { thinking?: boolean, capabilities?: any, temperature?: number, maxTokens?: number, max_tokens?: number, reasoningEffort?: 'low' | 'medium' | 'high' }
+    options?: { thinking?: boolean, capabilities?: any, temperature?: number, maxTokens?: number, max_tokens?: number, reasoningEffort?: 'none' | 'low' | 'medium' | 'high' }
   ): Promise<string> {
-    // Tier 3: Universal Agent Enforcement
-    // We force the agent on EVERY call in sendChat, regardless of the URL, 
-    // but prioritize it for the baseUrl (local/configured server).
-    const backend = this.config.backendType;
-    const model = modelOverride || this.config.modelName;
+    const resolved = this.resolveBindingForModel(modelOverride);
+    const targetBinding = resolved.binding;
+    const model = resolved.targetModel || modelOverride || this.config.modelName || "default";
+    const backend = targetBinding.backendType;
     const stream = !!onChunk;
 
-    let url = this.baseUrl;
+    let url = this.normalizeBaseUrl(targetBinding.apiUrl);
     let headers: any = { 
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}` 
+        'Content-Type': 'application/json'
     };
+    if (targetBinding.apiKey) {
+        headers['Authorization'] = `Bearer ${targetBinding.apiKey}`;
+    }
     let body: any = {};
 
     const vsConfig = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -927,7 +1110,7 @@ export class LollmsAPI {
     const reqMaxTokens = options?.maxTokens ?? options?.max_tokens;
 
     if (backend === 'ollama') {
-        url += '/api/chat';
+        url = url.endsWith('/api/chat') ? url : `${url}/api/chat`;
         body = { 
             model, 
             messages: sanitizedMessages, 
@@ -944,7 +1127,9 @@ export class LollmsAPI {
             body.options = ollamaOpts;
         }
         // Only inject the 'think' key if explicitly requested to avoid 500 on standard models
-        if (isThinkingActive) {
+        if (reasoningEffort === 'none') {
+            body.think = false;
+        } else if (isThinkingActive) {
             body.think = true;
         }
     } else if (backend === 'anthropic') {
@@ -965,12 +1150,17 @@ export class LollmsAPI {
         if (options?.temperature !== undefined) {
             body.temperature = options.temperature;
         }
-        if (isThinkingActive) {
+        if (isThinkingActive && reasoningEffort !== 'none') {
             const dynamicBudget = reasoningEffort === 'low' ? 4096 : (reasoningEffort === 'high' ? 32000 : 16000);
             body.thinking = { type: "enabled", budget_tokens: dynamicBudget };
         }
     } else if (backend === 'openai' || backend === 'lollms') {
-        url += '/v1/chat/completions';
+        const pathLower = url.toLowerCase();
+        if (pathLower.endsWith('/v1') || pathLower.endsWith('/v1/')) {
+            url = url.replace(/\/+$/, '') + '/chat/completions';
+        } else {
+            url = url.replace(/\/+$/, '') + '/v1/chat/completions';
+        }
         body = { 
             model, 
             messages: sanitizedMessages, 
@@ -982,7 +1172,9 @@ export class LollmsAPI {
         if (reqMaxTokens !== undefined && reqMaxTokens > 0) {
             body.max_tokens = reqMaxTokens;
         }
-        if (isThinkingActive) {
+        if (reasoningEffort === 'none') {
+            body.reasoning_effort = 'none';
+        } else if (isThinkingActive) {
             body.reasoning_effort = reasoningEffort;
             if (reqMaxTokens !== undefined && reqMaxTokens > 0) {
                 body.max_completion_tokens = reqMaxTokens;
@@ -1040,28 +1232,35 @@ export class LollmsAPI {
 
 
     try {
-        // Only use custom agent for the targeted API host or local servers.
-        // Cloud providers should use the default system CA bundle.
-        const useAgent = url.startsWith('https') && (
-            url.startsWith(this.baseUrl) || 
-            (backend !== 'openai' && backend !== 'anthropic' && backend !== 'google' && backend !== 'perplexity' && backend !== 'together' && backend !== 'openrouter')
-        );
+        const agent = this.getAgentForBinding(targetBinding);
 
-        // --- DEFENSIVE CONNECTION GUARD ---
-        // If underlying vscode channels are crashing (like isort), fetch might throw 
-        // a "connection disposed" error before even starting.
-        const response = await fetch(url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(body),
-            signal: controller.signal,
-            agent: useAgent ? this.httpsAgent : undefined
-        }).catch(err => {
-            if (err.message?.includes('disposed')) {
-                throw new Error("Local VS Code extension host is unstable (see isort errors). Please reload window.");
+        let response;
+        try {
+            response = await fetch(url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(body),
+                signal: controller.signal,
+                agent
+            });
+        } catch (fetchErr: any) {
+            // IPv4 fallback for localhost when Node.js on Windows tries IPv6 ::1 first
+            if (url.includes('localhost') && (fetchErr.code === 'ECONNREFUSED' || fetchErr.name === 'AbortError' || fetchErr.code === 'ETIMEDOUT')) {
+                const ipv4Url = url.replace('localhost', '127.0.0.1');
+                Logger.info(`[sendChat] Connection to localhost failed (${fetchErr.message}). Retrying with 127.0.0.1: ${ipv4Url}`);
+                response = await fetch(ipv4Url, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(body),
+                    signal: controller.signal,
+                    agent
+                });
+            } else if (fetchErr.message?.includes('disposed')) {
+                throw new Error("Local VS Code extension host is unstable. Please reload window.");
+            } else {
+                throw fetchErr;
             }
-            throw err;
-        });
+        }
 
         if (!response.ok) {
             const err = await response.text();

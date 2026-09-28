@@ -161,7 +161,7 @@ export class DiscussionManager {
             temperature: config.get<number>('temperature') ?? 0.7,
             enableMaxTokens: false,
             maxTokens: config.get<number>('maxGenerationTokens') ?? 4096,
-            reasoningEffort: (config.get<string>('reasoningEffort') as ('low' | 'medium' | 'high')) || 'low',
+            reasoningEffort: (config.get<string>('reasoningEffort') as ('none' | 'low' | 'medium' | 'high')) || 'none',
             ttftTimeout: 0,
             interTokenTimeout: 0,
             contextGovernorThreshold: config.get<number>('contextGovernorThreshold') ?? 95,

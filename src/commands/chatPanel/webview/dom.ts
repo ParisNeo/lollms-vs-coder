@@ -101,7 +101,7 @@ export interface DiscussionCapabilities {
     temperature?: number;
     enableMaxTokens?: boolean; // Enabled state for max generation tokens override
     maxTokens?: number;
-    reasoningEffort?: 'low' | 'medium' | 'high';
+    reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
     mutedFiles?: string[];
     userPreferences?: string;
     userPreferenceProfileId?: string;

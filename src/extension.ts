@@ -73,6 +73,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
 
     // Config & API
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const connectionProfiles = config.get<any[]>('connectionProfiles') || [];
     const lollmsAPI = new LollmsAPI({
         apiUrl: config.get<string>('apiUrl') || 'http://localhost:9642',
         apiKey: config.get<string>('apiKey')?.trim() || '',
@@ -81,7 +82,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         disableSslVerification: config.get<boolean>('disableSslVerification') || false,
         sslCertPath: config.get<string>('sslCertPath') || '',
         backendType: config.get<any>('backendType') || 'lollms',
-        useLollmsExtensions: config.get<boolean>('useLollmsExtensions') ?? true
+        useLollmsExtensions: config.get<boolean>('useLollmsExtensions') ?? true,
+        serverBindings: connectionProfiles
     }, context.globalState);
 
     // Initialize Managers
@@ -343,6 +345,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         }
         if (e.affectsConfiguration('lollmsVsCoder')) {
             const newConfig = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const profiles = newConfig.get<any[]>('connectionProfiles') || [];
             lollmsAPI.updateConfig({
                 apiUrl: newConfig.get<string>('apiUrl') || 'http://localhost:9642',
                 apiKey: newConfig.get<string>('apiKey')?.trim() || '',
@@ -350,10 +353,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
                 ttiModelName: newConfig.get<string>('ttiModelName') || '',
                 disableSslVerification: newConfig.get<boolean>('disableSslVerification') || false,
                 sslCertPath: newConfig.get<string>('sslCertPath') || '',
-                backendType: newConfig.get<'lollms' | 'openai' | 'ollama'>('backendType') || 'lollms',
-                useLollmsExtensions: newConfig.get<boolean>('useLollmsExtensions') ?? true
+                backendType: newConfig.get<any>('backendType') || 'lollms',
+                useLollmsExtensions: newConfig.get<boolean>('useLollmsExtensions') ?? true,
+                serverBindings: profiles
             });
-            if (e.affectsConfiguration('lollmsVsCoder.apiUrl') || e.affectsConfiguration('lollmsVsCoder.apiKey')) {
+            if (e.affectsConfiguration('lollmsVsCoder.apiUrl') || e.affectsConfiguration('lollmsVsCoder.apiKey') || e.affectsConfiguration('lollmsVsCoder.connectionProfiles')) {
                 statusBar.checkConnection();
             }
         }

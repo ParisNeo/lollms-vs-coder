@@ -219,7 +219,7 @@ export interface DiscussionCapabilities {
     temperature?: number; // Optional temperature value
     enableMaxTokens?: boolean; // Added to enable/disable maximum generation tokens override
     maxTokens?: number; // Optional maximum tokens to generate
-    reasoningEffort?: 'low' | 'medium' | 'high'; // Added reasoning effort configuration (default low)
+    reasoningEffort?: 'none' | 'low' | 'medium' | 'high'; // Added reasoning effort configuration (default low)
     ttftTimeout: number;
     interTokenTimeout: number;
     contextGovernorThreshold: number; // Trigger threshold percentage (0-100)
@@ -1289,7 +1289,7 @@ export function stripThinkingTags(responseText: string): string {
     let working = responseText;
 
     // --- HEURISTIC: DANGLING CLOSURE STRIPPER ---
-    const closeTags = ['</think>', '</thinking>', '</analysis>', '</reasoning>'];
+    const closeTags = ['</think>', '</thinking>', '</thought>', '</analysis>', '</reasoning>'];
     for (const closeTag of closeTags) {
         const closeIdx = working.indexOf(closeTag);
         if (closeIdx !== -1) {
@@ -1306,10 +1306,8 @@ export function stripThinkingTags(responseText: string): string {
     }
 
     // --- 🛡️ UNCLOSED THINKING SAFEGUARD ---
-    // If a thinking tag is opened but NEVER closed, and there are backtick code blocks
-    // further down in the text, we must NOT let the regex eat the entire remaining response!
-    // Instead, we truncate the match right before the first code fence.
-    const openTags = ['<think>', '<thinking>', '<analysis>', '<reasoning>'];
+    // If a thinking tag is opened but NEVER closed, strip it to the next code fence or end of text.
+    const openTags = ['<think>', '<thinking>', '<thought>', '<analysis>', '<reasoning>'];
     for (const openTag of openTags) {
         const openIdx = working.indexOf(openTag);
         if (openIdx !== -1) {
@@ -1317,20 +1315,17 @@ export function stripThinkingTags(responseText: string): string {
             const closeIdx = working.indexOf(closeTag, openIdx);
             
             if (closeIdx === -1) {
-                // Unclosed thinking block detected. Check if there are code fences downstream.
                 const nextCodeFence = working.indexOf('```', openIdx);
                 if (nextCodeFence !== -1) {
-                    // Truncate the thinking block right before the code fence starts.
-                    const thinkingContent = working.substring(openIdx + openTag.length, nextCodeFence);
-                    const before = working.substring(0, openIdx);
-                    const after = working.substring(nextCodeFence);
-                    working = before + after;
+                    working = working.substring(0, openIdx) + working.substring(nextCodeFence);
+                } else {
+                    working = working.substring(0, openIdx);
                 }
             }
         }
     }
 
-    const thinkRegex = /<(think|thinking|analysis|reasoning)>([\s\S]*?)<\/\1>/gi;
+    const thinkRegex = /<(think|thinking|thought|analysis|reasoning)\b[^>]*>([\s\S]*?)<\/\1>/gi;
     return working.replace(thinkRegex, (match, tag, inner, offset) => {
         const isProtected = matches.some(range => offset >= range.start && offset < range.end);
         return isProtected ? match : "";

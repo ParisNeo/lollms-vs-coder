@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-09-28 09:15]
+
+- `fix(lollmsAPI): update version to 1.0.36 and correct minor bug in chatPanel component initialization`
+
 ## [2026-09-25 19:27]
 
 - fix(lollmsAPI): update version to v1.0.35

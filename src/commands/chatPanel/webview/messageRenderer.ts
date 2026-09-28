@@ -3426,10 +3426,15 @@ const renderDataBriefing = (briefing: string) => {
 // Structural layout generator decoupled from visual rendering nodes & interactive binders.
 export class ContextPresenter {
     public static renderModelSelectorBadge(currentModel: string, models: any[]): string {
+        let displayLabel = currentModel;
+        if (currentModel && currentModel.includes('::')) {
+            const parts = currentModel.split('::');
+            displayLabel = `${parts[1]} [${parts[0]}]`;
+        }
         return `
         <div class="badge-wrapper" style="position: relative;">
-            <span id="hud-model-badge" class="mode-badge model clickable" title="Current Model: ${currentModel}. Click to change model.">
-                <span class="codicon codicon-hubot"></span> <span class="badge-label">${currentModel}</span>
+            <span id="hud-model-badge" class="mode-badge model clickable" title="Active Model: ${currentModel}. Click to select across all server bindings.">
+                <span class="codicon codicon-hubot"></span> <span class="badge-label">${displayLabel}</span>
             </span>
             <div id="hud-model-menu" class="custom-menu hidden"></div>
         </div>`;
@@ -3702,6 +3707,7 @@ export class ContextPresenter {
                         <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
                         <button id="load-context-btn" class="icon-btn" title="Load Context (Replace Selection)" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
                         <button id="add-context-btn" class="icon-btn" title="Add Context (Append to Selection)" style="padding: 2px; color: var(--vscode-charts-green);"><i class="codicon codicon-folder-active"></i></button>
+                        <button id="new-discussion-context-header-btn" class="icon-btn" title="New Discussion with Same Files & Mute States" style="padding: 2px; color: var(--vscode-charts-purple);"><i class="codicon codicon-repo-forked"></i></button>
                         <button id="reset-context-bubble-btn" class="icon-btn" title="Full Context Reset" style="padding: 2px; color: var(--vscode-errorForeground);"><i class="codicon codicon-clear-all"></i></button>
                     </div>
                 </div>
@@ -3726,6 +3732,7 @@ export class ContextPresenter {
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
                                 <span class="files-count-label">Selected Files (${finalFilesCount})</span>
                                 <div style="display: flex; gap: 8px; align-items: center;">
+                                    <button id="new-chat-same-context-icon-btn" class="icon-btn" title="New Discussion with Same Files & Mute States" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-repo-forked"></i></button>
                                     <button id="view-usage-context-btn" class="icon-btn" title="Verify File Sizes / Token Usage"><i class="codicon codicon-dashboard"></i></button>
                                     <div style="width: 1px; height: 12px; background: var(--vscode-widget-border);"></div>
                                     <button id="add-file-context-btn" class="icon-btn" title="Add File"><i class="codicon codicon-add"></i></button>
@@ -3745,6 +3752,9 @@ export class ContextPresenter {
                                     <button id="sort-files-btn" class="section-bulk-btn" title="Toggle sorting order (Heavy to Light / A-Z)">
                                         <span class="codicon ${state.fileSortOrder === 'name' ? 'codicon-sort-alphabetically' : (state.fileSortOrder === 'light-to-heavy' ? 'codicon-sort-numeric-up' : 'codicon-sort-numeric-down')}"></span>
                                         <span id="sort-files-label">${state.fileSortOrder === 'name' ? 'A-Z' : (state.fileSortOrder === 'light-to-heavy' ? 'Light to Heavy' : 'Heavy to Light')}</span>
+                                    </button>
+                                    <button id="new-discussion-same-files-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-purple); color: var(--vscode-charts-purple);" title="Start a new discussion with the exact same files and muted states">
+                                        <span class="codicon codicon-repo-forked"></span> Fork Chat
                                     </button>
                                     ${finalFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn" title="Bulk manage visibility (mute/reveal) and removal"><span class="codicon codicon-checklist"></span> Bulk Operations</button>` : ''}
                                 </div>
@@ -3862,7 +3872,8 @@ export class ContextBinder {
             const isSel = m.id === currentModel;
             const icon = isSel ? 'codicon-check' : 'codicon-circle-outline';
             const extraStyle = isSel ? 'style="font-weight: bold; color: var(--vscode-textLink-foreground);"' : '';
-            return `<div class="custom-menu-item model-opt-item" data-id="${m.id}" ${extraStyle}><span class="codicon ${icon}"></span> ${m.id}</div>`;
+            const displayName = m.name || m.label || (m.id.includes('::') ? `${m.id.split('::')[1]} [${m.id.split('::')[0]}]` : m.id);
+            return `<div class="custom-menu-item model-opt-item" data-id="${m.id}" ${extraStyle}><span class="codicon ${icon}"></span> ${displayName}</div>`;
         }).join('');
 
         menu.innerHTML = menuHtml;
@@ -4287,6 +4298,26 @@ export class ContextBinder {
             const el = document.getElementById(id);
             if (el) el.onclick = (e) => { e.stopPropagation(); action(); };
         };
+
+        const forkBtn = dashboard.querySelector('#new-discussion-same-files-btn') as HTMLElement;
+        if (forkBtn) {
+            forkBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'newDiscussionWithSameContext' });
+            };
+        }
+
+        const iconForkBtn = dashboard.querySelector('#new-chat-same-context-icon-btn') as HTMLElement;
+        if (iconForkBtn) {
+            iconForkBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'newDiscussionWithSameContext' });
+            };
+        }
+
+        bindClick('new-discussion-context-header-btn', () => vscode.postMessage({ command: 'newDiscussionWithSameContext' }));
 
         bindClick('refresh-context-btn', () => vscode.postMessage({ command: 'calculateTokens' }));
         bindClick('save-context-btn', () => vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'saveContext', params: {} } }));

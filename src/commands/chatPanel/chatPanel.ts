@@ -968,7 +968,7 @@ export class ChatPanel {
             currentModel: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
             currentTemperature: this._discussionCapabilities.enableTemperature ? (this._discussionCapabilities.temperature ?? 0.7) : undefined,
             currentMaxTokens: this._discussionCapabilities.enableMaxTokens ? (this._discussionCapabilities.maxTokens ?? 4096) : undefined,
-            currentReasoningEffort: this._discussionCapabilities.reasoningEffort || 'low',
+            currentReasoningEffort: this._discussionCapabilities.reasoningEffort || 'none',
             workspaceFolders: workspaceFolders,
             agentProfiles: AGENT_MISSION_PROFILES,
             userPreferenceProfiles: userPrefProfiles,
@@ -1316,20 +1316,19 @@ export class ChatPanel {
     if (this._isDisposed) return;
     try {
         if (!this._panel.webview) return;
-        let models: Array<{ id: string }> = [];
+        let models: Array<{ id: string; name?: string; server?: string }> = [];
         try {
             models = await this._lollmsAPI.getModels(forceRefresh);
         } catch (error: any) {
             this.log(`Failed to fetch models: ${error.message}`, 'WARN');
         }
-        
-        if (this._currentDiscussion) {
-            this._panel.webview.postMessage({ 
-                command: 'updateModels',
-                models: models,
-                currentModel: this._currentDiscussion.model
-            });
-        }
+
+        const activeModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+        this._panel.webview.postMessage({ 
+            command: 'updateModels',
+            models: models,
+            currentModel: activeModel
+        });
     } catch (e: any) {
         this.log(`Unexpected error in _fetchAndSetModels: ${e.message}`, 'ERROR');
     }
@@ -1489,12 +1488,14 @@ export class ChatPanel {
 
                     const { estimateImageTokens } = require('../../utils');
 
-                    const historyText = self._currentDiscussion!.messages.map(msg => {
-                        const content = msg.content;
-                        if (typeof content === 'string') return stripThinkingTags(content);
-                        if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => stripThinkingTags(item.text)).join('\n');
-                        return '';
-                    }).join('\n');
+                    const historyText = self._currentDiscussion!.messages
+                        .filter(msg => !msg.skipInPrompt)
+                        .map(msg => {
+                            const content = msg.content;
+                            if (typeof content === 'string') return stripThinkingTags(content);
+                            if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => stripThinkingTags(item.text)).join('\n');
+                            return '';
+                        }).filter(text => text.trim().length > 0).join('\n');
 
                     // --- Extract Project Memory early for tokenization ---
                     const memManager = (self as any).projectMemoryManager || self.agentManager?.projectMemoryManager;
@@ -1928,7 +1929,14 @@ export class ChatPanel {
                             return resolvePromise();
                         }
 
-                        const historyText = self._currentDiscussion!.messages.map(m => typeof m.content === 'string' ? stripThinkingTags(m.content) : '').join('\n');
+                        const historyText = self._currentDiscussion!.messages
+                            .filter(m => !m.skipInPrompt)
+                            .map(m => {
+                                const content = m.content;
+                                if (typeof content === 'string') return stripThinkingTags(content);
+                                if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => stripThinkingTags(item.text)).join('\n');
+                                return '';
+                            }).filter(text => text.trim().length > 0).join('\n');
                         const systemText = await getProcessedSystemPrompt('chat', self._discussionCapabilities, undefined, undefined, false, { ...context, tree: '', files: '' });
 
                         const wordCount = (context.text + '\n' + historyText + '\n' + (systemText || '')).trim().split(/\s+/).length;
@@ -3211,33 +3219,6 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
 --------------------------------------------------
 `.trim();
 
-        // Phase 3: Fast Server Probe
-        this.processManager.updateDescription(processId, `Verifying connection to ${targetModel}...`);
-        this.updateGeneratingState();
-
-        // ⚡ FAST OFFLINE GUARD: Verify server connectivity before mounting empty assistant bubbles
-        const pingResult = await this._lollmsAPI.pingServer(2000);
-        if (!pingResult.online) {
-            const offlineErrorMsg = `### 🔌 Server Offline
-Could not connect to the AI server at \`${this._lollmsAPI.config.apiUrl}\`.
-
-**Reason:** ${pingResult.error || 'Server is not responding'}
-
-**Troubleshooting:**
-1. Ensure your backend server (**${this._lollmsAPI.config.backendType}**) is running locally or accessible on your network.
-2. Verify the **API URL** in **Discussion Settings** or **Global Settings**.
-3. If using a local model, verify the server port (e.g. \`9642\` for Lollms, \`11434\` for Ollama).`;
-
-            await this.addMessageToDiscussion({
-                id: 'error_' + Date.now(),
-                role: 'system',
-                content: offlineErrorMsg
-            });
-
-            if (processId) this.processManager.unregister(processId);
-            this.updateGeneratingState();
-            return;
-        }
 
         // --- MULTIMODAL INJECTION ---
         let projectContextContent: any = projectStateText;
@@ -3949,8 +3930,8 @@ Could not connect to the AI server at \`${this._lollmsAPI.config.apiUrl}\`.
         if (reqMaxTokens !== undefined && !isNaN(reqMaxTokens) && reqMaxTokens > 0) {
             cleanOptions.maxTokens = reqMaxTokens;
         }
-        cleanOptions.reasoningEffort = this._discussionCapabilities.reasoningEffort || config.get<string>('reasoningEffort') || 'low';
-        if (this._discussionCapabilities.thinkingMode) {
+        cleanOptions.reasoningEffort = this._discussionCapabilities.reasoningEffort || config.get<string>('reasoningEffort') || 'none';
+        if (this._discussionCapabilities.thinkingMode && cleanOptions.reasoningEffort !== 'none') {
             cleanOptions.thinking = true;
         }
 
@@ -4146,9 +4127,16 @@ The API endpoint returned an empty response.
         await this.addMessageToDiscussion(assistantMessage, false);
 
 
-        // Update history segment in the cache
+        // Update history segment in the cache (excluding thoughts and skipped messages)
         const modelForTokenization = (this._currentDiscussion?.model || this._lollmsAPI.getModelName() || "default").trim();
-        const historyText = this._currentDiscussion!.messages.map(m => typeof m.content === 'string' ? stripThinkingTags(m.content) : '').join('\n');
+        const historyText = this._currentDiscussion!.messages
+            .filter(m => !m.skipInPrompt)
+            .map(m => {
+                const content = m.content;
+                if (typeof content === 'string') return stripThinkingTags(content);
+                if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => stripThinkingTags(item.text)).join('\n');
+                return '';
+            }).filter(text => text.trim().length > 0).join('\n');
         const historyTokens = await this._lollmsAPI.tokenize(historyText, modelForTokenization);
         await this._contextManager.updateSegmentTokens('history', historyTokens.count);
 
@@ -4980,9 +4968,10 @@ ${targetContent}
 
                 generationSession.listeners.forEach(listener => listener(chunk));
             }, controller.signal, targetModel, { 
-                thinking: this._discussionCapabilities.thinkingMode,
+                thinking: this._discussionCapabilities.thinkingMode && this._discussionCapabilities.reasoningEffort !== 'none',
                 capabilities: this._discussionCapabilities,
-                temperature: reqTemperature
+                temperature: reqTemperature,
+                reasoningEffort: this._discussionCapabilities.reasoningEffort || config.get<string>('reasoningEffort') || 'none'
             });
 
             if (controller.signal.aborted) return;
@@ -6569,15 +6558,12 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
             case 'updateDiscussionModel':
                 if (this._currentDiscussion) {
                     this._currentDiscussion.model = message.model || undefined;
-                    // Clear the token cache since the tokenization logic will differ for the new model
                     ChatPanel._tokenCountCache.clear();
-                    // Provide immediate feedback to the webview header
                     const effectiveModel = message.model || this._lollmsAPI.getModelName();
                     this._panel.webview.postMessage({ command: 'updateModelNameOnly', modelName: effectiveModel });
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
-                    // Immediately recalculate context and tokens for the new model to update the ceiling
                     this.updateContextAndTokens({ isBackgroundSync: false });
                 }
                 return;
@@ -7689,6 +7675,9 @@ Task:
             case 'requestMissionBriefing':
             case 'requestMissionBriefingUI':
                 await this.openMissionBriefingUI();
+                break;
+            case 'newDiscussionWithSameContext':
+                await vscode.commands.executeCommand('lollms-vs-coder.newDiscussionWithSameContext', this);
                 break;
             case 'requestBriefingFileUpload':
             {

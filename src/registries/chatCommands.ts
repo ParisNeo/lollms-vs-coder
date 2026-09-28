@@ -301,6 +301,78 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         return panel;
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionWithSameContext', async (arg?: any) => {
+        let sourceDiscussion: any = null;
+        let activePanel: ChatPanel | undefined = undefined;
+
+        if (arg instanceof ChatPanel || (arg && typeof arg.getCurrentDiscussion === 'function')) {
+            activePanel = arg;
+            sourceDiscussion = arg.getCurrentDiscussion();
+        } else if (arg && arg.discussion) {
+            sourceDiscussion = arg.discussion;
+        } else if (ChatPanel.currentPanel) {
+            activePanel = ChatPanel.currentPanel;
+            sourceDiscussion = ChatPanel.currentPanel.getCurrentDiscussion();
+        }
+
+        if (!sourceDiscussion) {
+            vscode.window.showWarningMessage("No active discussion found to replicate context from.");
+            return;
+        }
+
+        const provider = services.contextManager.getContextStateProvider();
+        const includedFiles = provider ? provider.getIncludedFiles().map(f => f.path) : [];
+        const mutedFiles = [...(sourceDiscussion.mutedFiles || [])];
+        const allTargetFiles = Array.from(new Set([...includedFiles, ...mutedFiles]));
+
+        const newDiscussion = services.discussionManager.createNewDiscussion(sourceDiscussion.groupId || null);
+        newDiscussion.title = `Fork of ${sourceDiscussion.title || 'Discussion'}`;
+        newDiscussion.mutedFiles = mutedFiles;
+        newDiscussion.mutedTools = [...(sourceDiscussion.mutedTools || [])];
+        newDiscussion.mutedSkills = [...(sourceDiscussion.mutedSkills || [])];
+        newDiscussion.mutedDiagrams = [...(sourceDiscussion.mutedDiagrams || [])];
+        newDiscussion.importedSkills = [...(sourceDiscussion.importedSkills || [])];
+        newDiscussion.importedTools = [...(sourceDiscussion.importedTools || [])];
+        newDiscussion.activeDiagrams = [...(sourceDiscussion.activeDiagrams || [])];
+        newDiscussion.discussion_data_zone = sourceDiscussion.discussion_data_zone;
+        newDiscussion.model = sourceDiscussion.model;
+        newDiscussion.personalityId = sourceDiscussion.personalityId;
+
+        if (sourceDiscussion.capabilities) {
+            newDiscussion.capabilities = JSON.parse(JSON.stringify(sourceDiscussion.capabilities));
+        }
+
+        await services.discussionManager.saveDiscussion(newDiscussion);
+
+        if (provider && allTargetFiles.length > 0) {
+            await provider.addFilesToContext(allTargetFiles);
+        }
+
+        const panel = ChatPanel.createOrShow(services, newDiscussion.id);
+        panel._panel.reveal();
+
+        const agent = new AgentManager(
+            panel, services.lollmsAPI, services.contextManager, services.gitIntegration,
+            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+            services.toolManager,
+            services.rlmDb
+        );
+        agent.projectMemoryManager = services.projectMemoryManager;
+        agent.personalityManager = services.personalityManager;
+        agent.setProcessManager(services.processManager);
+        panel.setAgentManager(agent);
+
+        panel.setProcessManager(services.processManager);
+        panel.setContextManager(services.contextManager);
+        panel.setPersonalityManager(services.personalityManager);
+        panel.setHerdManager(services.herdManager);
+
+        await panel.loadDiscussion();
+        services.treeProviders.discussion?.refresh();
+
+        vscode.window.showInformationMessage(`Created new discussion "${newDiscussion.title}" with ${allTargetFiles.length} files (${mutedFiles.length} muted).`);
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionFromClipboard', async (textOverride?: any) => {
         // Only use textOverride if it is strictly a string. 
         // If triggered from UI menus, VS Code passes a context object which we should ignore.

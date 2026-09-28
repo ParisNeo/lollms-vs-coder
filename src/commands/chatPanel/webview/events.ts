@@ -363,6 +363,18 @@ if (dom.sendButton) {
         });
     }
     // Removed old attachButton bindClick as it's now handled with processing state
+    const newDiscSameCtxBtn = document.getElementById('newDiscussionSameContextBtn');
+    if (newDiscSameCtxBtn) {
+        newDiscSameCtxBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            vscode.postMessage({ command: 'newDiscussionWithSameContext' });
+            if (dom.moreActionsMenu) {
+                dom.moreActionsMenu.classList.remove('visible');
+            }
+        });
+    }
+
     if (dom.discussionToolsButton) {
         dom.discussionToolsButton.addEventListener('click', (e) => {
             e.preventDefault();
@@ -2329,6 +2341,8 @@ if (dom.sendButton) {
 
             if (id === 'save-context-btn') {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'saveContext', params: {} } });
+            } else if (id === 'new-discussion-context-header-btn' || id === 'new-chat-same-context-icon-btn' || id === 'new-discussion-same-files-btn') {
+                vscode.postMessage({ command: 'newDiscussionWithSameContext' });
             } else if (id === 'load-context-btn') {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'loadContext', params: {} } });
             } else if (id === 'add-context-btn') {

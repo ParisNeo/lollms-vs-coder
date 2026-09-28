@@ -232,6 +232,7 @@
                                 <span class="menu-arrow">›</span>
                             </div>
                             <div class="menu-separator"></div>
+                            <button class="menu-item" id="newDiscussionSameContextBtn"><i class="codicon codicon-repo-forked"></i><span>New Discussion (Same Files & Muted States)</span></button>
                             <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-settings"></i><span>Discussion Settings</span></button>
                             <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Settings</span></button>
                             <div class="menu-separator"></div>
@@ -344,9 +345,10 @@
                                         <button id="toggleTempSliderBtn" title="Toggle Custom Temperature" class="voice-btn"><i class="codicon codicon-thermometer"></i></button>
                                         <button id="toggleMaxTokensSliderBtn" title="Toggle Max Generation Tokens" class="voice-btn"><i class="codicon codicon-symbol-numeric"></i></button>
                                     </div>
-                                    <div class="temp-slider-container" id="inputReasoningEffortContainer" title="Reasoning Effort" style="display: none;">
-                                        <select id="reasoning-effort-select" class="menu-select" style="width: 75px; height: 26px; font-size: 11px; padding: 2px 4px; margin: 0; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; cursor: pointer;">
-                                            <option value="low" selected>🧠 Low</option>
+                                    <div class="reasoning-effort-container" id="inputReasoningEffortContainer" title="Reasoning Effort" style="display: none;">
+                                        <select id="reasoning-effort-select" class="menu-select">
+                                            <option value="none" selected>🧠 None</option>
+                                            <option value="low">🧠 Low</option>
                                             <option value="medium">🧠 Med</option>
                                             <option value="high">🧠 High</option>
                                         </select>
@@ -570,7 +572,8 @@
                     <div class="form-group" style="margin-bottom: 12px;">
                         <label for="cap-reasoningEffort" style="font-size: 11px; font-weight: bold; display: block; margin-bottom: 4px;">Reasoning Effort (Thinking / Reasoning Models)</label>
                         <select id="cap-reasoningEffort" class="menu-select" style="width: 100%; margin: 0;">
-                            <option value="low" selected>Low (Fastest, Cost-Efficient, Default)</option>
+                            <option value="none" selected>None (No Thinking / Off)</option>
+                            <option value="low">Low (Fastest, Cost-Efficient)</option>
                             <option value="medium">Medium (Standard Reasoning Depth)</option>
                             <option value="high">High (Deep Search & High Reasoning Budget)</option>
                         </select>

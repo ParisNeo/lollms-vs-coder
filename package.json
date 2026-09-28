@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.35",
+  "version": "1.0.36",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -280,6 +280,11 @@
         "command": "lollms-vs-coder.newDiscussionFromClipboard",
         "title": "%command.newDiscussionFromClipboard.title%",
         "icon": "$(clippy)"
+      },
+      {
+        "command": "lollms-vs-coder.newDiscussionWithSameContext",
+        "title": "Lollms: New Discussion with Same Context & Muted Files",
+        "icon": "$(repo-forked)"
       },
       {
         "command": "lollms-vs-coder.deleteDiscussion",
@@ -795,7 +800,22 @@
         "lollmsVsCoder.connectionProfiles": {
           "type": "array",
           "default": [],
-          "description": "Saved connection environments (URL, Key, Model, etc.) for quick switching."
+          "description": "Configured server bindings for cumulative multi-server model access. All enabled bindings are queried together to create a unified model pool.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string", "description": "Display name of the server binding (e.g. 'Ollama Local', 'Lollms GPU', 'Groq Cloud')" },
+              "apiUrl": { "type": "string", "description": "Host URL of the server" },
+              "apiKey": { "type": "string", "description": "API Key or authentication token" },
+              "backendType": { "type": "string", "enum": ["lollms", "openai", "ollama", "anthropic", "google", "groq", "grok", "novitai", "openwebui", "openrouter", "perplexity", "together"] },
+              "disableSslVerification": { "type": "boolean" },
+              "sslCertPath": { "type": "string" },
+              "useLollmsExtensions": { "type": "boolean" },
+              "enabled": { "type": "boolean", "default": true }
+            },
+            "required": ["name", "apiUrl", "backendType"]
+          }
         },
         "lollmsVsCoder.defaultResponseProfileId": {
           "type": "string",
@@ -1582,13 +1602,14 @@
         },
         "lollmsVsCoder.reasoningEffort": {
           "type": "string",
-          "default": "low",
+          "default": "none",
           "enum": [
+            "none",
             "low",
             "medium",
             "high"
           ],
-          "description": "Computational depth for reasoning models (low, medium, high). Defaults to low."
+          "description": "Computational depth for reasoning models (none, low, medium, high). Defaults to none."
         },
         "lollmsVsCoder.thinkingBudget": {
           "type": "number",
@@ -2071,9 +2092,14 @@
           "group": "inline@2"
         },
         {
-          "command": "lollms-vs-coder.deleteDiscussion",
+          "command": "lollms-vs-coder.newDiscussionWithSameContext",
           "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
           "group": "inline@3"
+        },
+        {
+          "command": "lollms-vs-coder.deleteDiscussion",
+          "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
+          "group": "inline@4"
         },
         {
           "command": "lollms-vs-coder.cancelProcess",

@@ -13,13 +13,10 @@ export class ContextItem extends vscode.TreeItem {
         public readonly isDirectory: boolean
     ) {
         // Force relative path display. If it's the root, show the folder name, not the path.
-        const label = vscode.workspace.asRelativePath(resourceUri, false);
-        const displayLabel = (label === resourceUri.fsPath || label === "") 
-            ? path.basename(resourceUri.fsPath) 
-            : label;
+        const basename = path.basename(resourceUri.fsPath) || resourceUri.fsPath;
 
         super(
-            displayLabel, 
+            basename, 
             state === 'collapsed' 
                 ? vscode.TreeItemCollapsibleState.None 
                 : (isDirectory ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
@@ -50,10 +47,31 @@ export const DANGEROUS_BLOCKED_FOLDERS = new Set([
     '.next', '.nuxt', '.turbo', '.svelte-kit', '.cache'
 ]);
 
-export function isDangerousOrBlocked(fsPathOrRel: string): boolean {
+export function isDangerousOrBlocked(fsPathOrRel: string, workspaceRoot?: string): boolean {
     if (!fsPathOrRel) return false;
-    const normalized = fsPathOrRel.replace(/\\/g, '/');
-    const segments = normalized.split('/').filter(Boolean);
+    let target = fsPathOrRel.replace(/\\/g, '/');
+
+    // If an absolute path is passed, only inspect segments relative to the workspace root
+    if (workspaceRoot) {
+        const root = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+        if (target.toLowerCase().startsWith(root.toLowerCase() + '/')) {
+            target = target.substring(root.length + 1);
+        }
+    } else if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+        for (const wf of vscode.workspace.workspaceFolders) {
+            const root = wf.uri.fsPath.replace(/\\/g, '/').replace(/\/+$/, '');
+            if (target.toLowerCase().startsWith(root.toLowerCase() + '/')) {
+                target = target.substring(root.length + 1);
+                break;
+            }
+        }
+    } else if (path.isAbsolute(target)) {
+        const allSegs = target.split('/').filter(Boolean);
+        target = allSegs.slice(Math.max(0, allSegs.length - 2)).join('/');
+    }
+
+    target = target.replace(/^\/+/, '');
+    const segments = target.split('/').filter(Boolean);
     for (const seg of segments) {
         const lower = seg.toLowerCase();
         if (DANGEROUS_BLOCKED_FOLDERS.has(lower)) {
@@ -120,14 +138,22 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         }
 
         let unified = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey);
-        if (!unified || Object.keys(unified).length === 0) {
-            if (this.workspaceFolder) {
-                const legacyKey = `context-state-${this.workspaceFolder.uri.fsPath}`;
+
+        // Only migrate from legacy workspace keys if this.stateKey has NEVER been set (unified === undefined).
+        // If unified is defined (even as an empty object {}), that is an intentional user state.
+        if (unified === undefined) {
+            const folders = vscode.workspace.workspaceFolders || (this.workspaceFolder ? [this.workspaceFolder] : []);
+            for (const folder of folders) {
+                const legacyKey = `context-state-${folder.uri.fsPath}`;
                 const legacy = this.context.workspaceState.get<{ [key: string]: ContextState }>(legacyKey);
                 if (legacy && Object.keys(legacy).length > 0) {
-                    this.context.workspaceState.update(this.stateKey, legacy);
-                    unified = legacy;
+                    unified = { ...(unified || {}), ...legacy };
                 }
+                // Purge legacy key so it never resurrects files on subsequent resets
+                this.context.workspaceState.update(legacyKey, undefined);
+            }
+            if (unified) {
+                this.context.workspaceState.update(this.stateKey, unified);
             }
         }
 
@@ -325,9 +351,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
     private isExcluded(uri: vscode.Uri): boolean {
         if (uri.scheme !== 'file') return true;
-        if (isDangerousOrBlocked(uri.fsPath)) return true;
 
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+        if (isDangerousOrBlocked(uri.fsPath, workspaceFolder?.uri.fsPath)) return true;
         if (!workspaceFolder) return false;
 
         const relativePath = this.normalize(path.relative(workspaceFolder.uri.fsPath, uri.fsPath));
@@ -556,8 +582,8 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         }
 
         this.activeScanPromise = (async () => {
-            const folder = this.workspaceFolder || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
-            if (!folder) return [];
+            const allFolders = vscode.workspace.workspaceFolders || (this.workspaceFolder ? [this.workspaceFolder] : []);
+            if (allFolders.length === 0) return [];
 
             this._isTreeDirty = true;
             this._cachedVisibleFiles = null;
@@ -567,60 +593,56 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
             const exceptions = config.get<string[]>('contextFileExceptions') || [];
 
-            const standardExcludes = [
-                '**/.*/**', '**/__pycache__/**', '**/*.pyc', '**/*.pyo', '**/*.pyd',
-                '**/*.obj', '**/*.bin', '**/.DS_Store', '**/node_modules/**', 
-                '**/venv/**', '**/.venv/**', '**/env/**', '**/.env/**', '**/virtualenv/**', '**/conda-env/**',
-                '**/.git/**', '**/.github/**', '**/.lollms/**',
-                '**/bin/**', '**/obj/**', '**/dist/**', '**/build/**', '**/out/**', '**/target/**',
-                '**/data/**', '**/data_workspace/**', '**/.idea/**', '**/.vscode/**',
-                '**/.pytest_cache/**', '**/.mypy_cache/**', '**/.ruff_cache/**', '**/.cache/**',
-                '**/.next/**', '**/.nuxt/**', '**/.turbo/**'
-            ];
-
-            const combinedExcludes = Array.from(new Set([...exceptions, ...standardExcludes]));
-            const excludePattern = `{${combinedExcludes.join(',')}}`;
+            // Clean, high-performance exclude pattern that never crashes ripgrep
+            const robustExcludePattern = '**/{.git,node_modules,venv,.venv,env,.env,out,dist,bin,build,.lollms,__pycache__}/**';
 
             if (onProgress) onProgress(30, "Librarian: Indexing files (ripgrep scan)...");
 
             let files: vscode.Uri[] = [];
-            try {
-                files = await vscode.workspace.findFiles(
-                    new vscode.RelativePattern(folder, '**/*'),
-                    excludePattern,
-                    8000
-                );
-            } catch (e: any) {
-                Logger.error(`Native findFiles failed: ${e}`);
+            for (const folder of allFolders) {
+                try {
+                    const matched = await vscode.workspace.findFiles(
+                        new vscode.RelativePattern(folder, '**/*'),
+                        robustExcludePattern,
+                        8000
+                    );
+                    files = [...files, ...matched];
+                } catch (e: any) {
+                    Logger.error(`Native findFiles failed for ${folder.name}: ${e}`);
+                }
             }
 
             if (files.length === 0) {
                 if (onProgress) onProgress(50, "Librarian: Scanning folders manually...");
                 const fallbackFiles: vscode.Uri[] = [];
-                const walk = async (uri: vscode.Uri, depth: number) => {
-                    if (depth > 4) return;
-                    if (this.isExcluded(uri) || isDangerousOrBlocked(uri.fsPath)) return;
+                const walk = async (uri: vscode.Uri, depth: number, folderRoot: vscode.Uri) => {
+                    if (depth > 6) return;
+                    if (depth > 0 && (this.isExcluded(uri) || isDangerousOrBlocked(uri.fsPath, folderRoot.fsPath))) return;
 
                     try {
                         const entries = await vscode.workspace.fs.readDirectory(uri);
                         for (const [name, type] of entries) {
+                            if (isDangerousOrBlocked(name)) continue;
                             const entryUri = vscode.Uri.joinPath(uri, name);
-                            if (isDangerousOrBlocked(name) || this.isExcluded(entryUri)) continue;
+                            if (this.isExcluded(entryUri)) continue;
                             if (type === vscode.FileType.File) {
                                 fallbackFiles.push(entryUri);
                             } else if (type === vscode.FileType.Directory) {
-                                await walk(entryUri, depth + 1);
+                                await walk(entryUri, depth + 1, folderRoot);
                             }
                         }
                     } catch (e) {}
                 };
-                await walk(folder.uri, 0);
+                for (const folder of allFolders) {
+                    await walk(folder.uri, 0, folder.uri);
+                }
                 files = fallbackFiles;
             }
 
             if (onProgress) onProgress(75, "Librarian: Constructing semantic model...");
 
             const visibleFiles: string[] = [];
+            const isMultiRoot = allFolders.length > 1;
             const BATCH_SIZE = 150;
 
             for (let i = 0; i < files.length; i++) {
@@ -629,16 +651,17 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 }
 
                 const file = files[i];
-                if (isDangerousOrBlocked(file.fsPath) || this.isExcluded(file)) continue;
+                const folder = vscode.workspace.getWorkspaceFolder(file);
+                if (isDangerousOrBlocked(file.fsPath, folder?.uri.fsPath) || this.isExcluded(file)) continue;
 
                 const state = this.getStateForUri(file);
                 if (state !== 'fully-excluded') {
-                    visibleFiles.push(this.normalize(vscode.workspace.asRelativePath(file, false)));
+                    visibleFiles.push(this.normalize(vscode.workspace.asRelativePath(file, isMultiRoot)));
                 }
             }
 
             this._cachedVisibleFiles = visibleFiles;
-            this._isTreeDirty = false;
+            this._isTreeDirty = visibleFiles.length === 0;
 
             if (onProgress) onProgress(100, "Librarian: Indexing complete.");
 
@@ -674,14 +697,14 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         this._onDidChangeTreeData.fire();
     }
     
-    public getIncludedFiles(): { path: string, state: ContextState, bytes?: number, tokens?: number }[] {
+    public getIncludedFiles(): { path: string, state: ContextState, bytes?: number, tokens?: number, mtime?: number }[] {
         const workspaceState = this.getUnifiedWorkspaceState();
         if (!workspaceState) return [];
 
         const folders = vscode.workspace.workspaceFolders || [];
         if (folders.length === 0) return [];
 
-        const resultsMap = new Map<string, { path: string, state: ContextState, bytes: number, tokens: number }>();
+        const resultsMap = new Map<string, { path: string, state: ContextState, bytes: number, tokens: number, mtime?: number }>();
 
         for (const [key, state] of Object.entries(workspaceState)) {
             if (!key || typeof key !== 'string') continue;
@@ -810,7 +833,13 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     public async fullReset(): Promise<void> {
-        this._cachedStateKeys = null;
+        const folders = vscode.workspace.workspaceFolders || (this.workspaceFolder ? [this.workspaceFolder] : []);
+        for (const folder of folders) {
+            const legacyKey = `context-state-${folder.uri.fsPath}`;
+            await this.context.workspaceState.update(legacyKey, undefined);
+        }
+
+        this._cachedStateKeys = {};
         this._activeParentPrefixes.clear();
         this._isTreeDirty = true;
         this._cachedVisibleFiles = null;
@@ -831,8 +860,14 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             }
         }
 
-        this._cachedStateKeys = null;
-        this._activeParentPrefixes.clear();
+        const folders = vscode.workspace.workspaceFolders || (this.workspaceFolder ? [this.workspaceFolder] : []);
+        for (const folder of folders) {
+            const legacyKey = `context-state-${folder.uri.fsPath}`;
+            await this.context.workspaceState.update(legacyKey, undefined);
+        }
+
+        this._cachedStateKeys = newState;
+        this.rebuildActivePrefixCache(newState);
         this._isTreeDirty = true;
         this._cachedVisibleFiles = null;
         await this.context.workspaceState.update(this.stateKey, newState);

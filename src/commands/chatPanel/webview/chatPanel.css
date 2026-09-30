@@ -2983,10 +2983,64 @@ mark.search-highlight.current-match {
     resize: vertical;
 }
 .edit-textarea:focus { border-color: var(--vscode-focusBorder); }
-.edit-buttons { display: flex; justify-content: flex-end; gap: 8px; }
-.edit-save-btn { background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); padding: 6px 12px; border-radius: 4px; border:none; cursor:pointer; }
-.edit-cancel-btn { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); padding: 6px 12px; border-radius: 4px; border:none; cursor:pointer; }
-
+.edit-buttons { 
+    display: flex; 
+    justify-content: flex-end; 
+    align-items: center; 
+    gap: 8px; 
+    margin-top: 4px;
+}
+.edit-save-btn { 
+    background-color: var(--vscode-button-secondaryBackground); 
+    color: var(--vscode-button-secondaryForeground); 
+    padding: 6px 12px; 
+    border-radius: 4px; 
+    border: 1px solid var(--vscode-widget-border); 
+    cursor: pointer; 
+    font-size: 11px;
+    font-weight: 600;
+}
+.edit-save-btn:hover {
+    background-color: var(--vscode-button-secondaryHoverBackground);
+}
+.edit-save-send-btn { 
+    background-color: var(--vscode-button-background) !important; 
+    color: var(--vscode-button-foreground) !important; 
+    padding: 6px 14px; 
+    border-radius: 4px; 
+    border: none; 
+    cursor: pointer; 
+    font-size: 11px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    transition: filter 0.15s, transform 0.1s;
+}
+.edit-save-send-btn:hover {
+    filter: brightness(1.15);
+    transform: scale(1.02);
+}
+.edit-save-send-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+.edit-cancel-btn { 
+    background-color: transparent; 
+    color: var(--vscode-foreground); 
+    padding: 6px 12px; 
+    border-radius: 4px; 
+    border: 1px solid var(--vscode-widget-border); 
+    cursor: pointer; 
+    font-size: 11px;
+    opacity: 0.8;
+}
+.edit-cancel-btn:hover {
+    background-color: var(--vscode-toolbar-hoverBackground);
+    opacity: 1;
+}
 
 
 
@@ -4345,6 +4399,38 @@ mark.search-highlight.current-match {
 .context-item.file-muted .path-text {
     text-decoration: line-through;
     opacity: 0.75;
+}
+
+/* 🌳 CONTEXT TREE FOLDER ACCORDION */
+.context-tree-folder {
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.05);
+    margin-bottom: 4px;
+    overflow: hidden;
+}
+
+.context-tree-folder summary::-webkit-details-marker {
+    display: none;
+}
+
+.context-tree-folder summary {
+    list-style: none;
+    outline: none;
+    transition: background 0.1s ease;
+}
+
+.context-tree-folder summary:hover {
+    background: var(--vscode-list-hoverBackground) !important;
+}
+
+.file-token-badge.file-mtime-badge {
+    background: rgba(0, 122, 204, 0.1);
+    border-color: rgba(0, 122, 204, 0.25);
+    color: var(--vscode-textLink-foreground);
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
 }
 
 .workspace-scope-selector {

@@ -125,6 +125,8 @@ export class SettingsPanel {
     remoteAllowedChannels: [] as string[],
 
     // Billing Settings
+    billingEnabled: true,
+    billingEnableCapping: false,
     billingBudgetCap: 10.00,
     billingRates: [] as any[]
   };
@@ -255,6 +257,8 @@ export class SettingsPanel {
     this._pendingConfig.developerDebugTools = config.get<boolean>('developer.debugTools') || false;
 
     // Billing Settings
+    this._pendingConfig.billingEnabled = config.get<boolean>('billing.enabled') ?? true;
+    this._pendingConfig.billingEnableCapping = config.get<boolean>('billing.enableCapping') ?? false;
     this._pendingConfig.billingBudgetCap = config.get<number>('billing.budgetCap') ?? 10.00;
     this._pendingConfig.billingRates = config.get<any[]>('billing.rates') || [];
 
@@ -749,6 +753,9 @@ export class SettingsPanel {
                     if (conn.sslCertPath !== undefined) this._pendingConfig.sslCertPath = conn.sslCertPath;
                     if (conn.useLollmsExtensions !== undefined) this._pendingConfig.useLollmsExtensions = conn.useLollmsExtensions;
                 }
+                if ((message as any).connectionProfiles) {
+                    this._pendingConfig.connectionProfiles = (message as any).connectionProfiles;
+                }
 
                 const tempConfig: LollmsConfig = {
                     apiKey: this._pendingConfig.apiKey,
@@ -1023,82 +1030,116 @@ export class SettingsPanel {
 
             <!-- TAB 1: SERVER & BINDING SELECTION -->
             <div id="TabServer" class="tab-content active">
-                <div style="display:flex; justify-content: space-between; align-items: center;">
-                    <h2 style="margin:0; border:none; padding:0;">🔌 Server & Binding Selection</h2>
+                <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <h2 style="margin:0; border:none; padding:0;">🔌 Server Bindings & AI Sources</h2>
                     <div style="display:flex; gap:8px;">
-                        <button id="importConfig" class="secondary-button" style="margin:0;" title="Import from .env/JSON"><i class="codicon codicon-cloud-upload"></i> Import</button>
-                        <button id="exportConfig" class="secondary-button" style="margin:0;" title="Export to .env/JSON"><i class="codicon codicon-cloud-download"></i> Export</button>
+                        <button id="importConfig" class="secondary-button" style="margin:0;" title="Import bindings"><i class="codicon codicon-cloud-upload"></i> Import</button>
+                        <button id="exportConfig" class="secondary-button" style="margin:0;" title="Export bindings"><i class="codicon codicon-cloud-download"></i> Export</button>
                     </div>
                 </div>
-                <p class="help-text">Configure your target AI backend and host connection. Once connection is established, proceed to the <strong>Models & Assignments</strong> tab.</p>
+                <p class="help-text">Manage all your AI server connections in one unified list. All enabled bindings form your multi-server model pool. Click <strong>Set as Default</strong> to designate the primary server.</p>
 
-                <div class="card" style="margin-top: 15px; padding: 14px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: var(--vscode-editor-inactiveSelectionBackground);">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                        <label style="margin:0; font-size: 12px; font-weight:bold; color:var(--vscode-charts-blue);"><i class="codicon codicon-server-process"></i> Active Server Bindings (Cumulative Multi-Server Pool)</label>
-                        <button id="addNewBindingBtn" type="button" class="secondary-button" style="font-size:11px; padding:3px 8px;"><i class="codicon codicon-add"></i> Add Server Binding</button>
+                <!-- Top Action Bar -->
+                <div style="display:flex; justify-content:space-between; align-items:center; margin: 16px 0 10px 0;">
+                    <span style="font-size:12px; font-weight:bold; color:var(--vscode-charts-blue); display:flex; align-items:center; gap:6px;">
+                        <i class="codicon codicon-server-process"></i> Configured Server Sources
+                    </span>
+                    <button id="openBindingEditorBtn" type="button" class="primary" style="font-size:11px; padding:4px 12px; font-weight:bold;">
+                        <i class="codicon codicon-add"></i> Add New Binding
+                    </button>
+                </div>
+
+                <!-- Unified Bindings List -->
+                <div id="bindingsListContainer" style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
+                    <!-- Binding cards populated by renderBindingsList() -->
+                </div>
+
+                <!-- Interactive In-Panel Binding Editor (Toggled via Add/Edit) -->
+                <div id="bindingEditorDrawer" style="display:none; margin: 12px 0; padding:16px; background:var(--vscode-editor-inactiveSelectionBackground); border:1.5px solid var(--vscode-focusBorder); border-radius:8px; animation:slideDown 0.2s ease-out; box-shadow: 0 4px 15px rgba(0,0,0,0.25);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--vscode-widget-border); padding-bottom:8px;">
+                        <span id="bindingEditorTitle" style="font-weight:bold; font-size:13px; color:var(--vscode-textLink-foreground); display:flex; align-items:center; gap:8px;">
+                            <i class="codicon codicon-edit"></i> Configure Server Binding Source
+                        </span>
+                        <span id="cancelBindingDrawerBtn" style="cursor:pointer; font-size:20px; line-height:1; opacity:0.7;">&times;</span>
                     </div>
-                    <p class="help-text" style="margin-bottom:10px;">All enabled bindings below are queried together to create your aggregated model pool. Models from any active server are accessible simultaneously.</p>
 
-                    <div id="bindingsListContainer" style="display:flex; flex-direction:column; gap:6px; max-height:220px; overflow-y:auto; margin-bottom:10px;">
-                        <!-- Server binding rows injected here -->
+                    <div class="grid-2" style="margin-bottom:8px;">
+                        <div>
+                            <label for="drawerBindingName" style="margin-top:0;">Binding Display Name</label>
+                            <input type="text" id="drawerBindingName" placeholder="e.g. Ollama Local, Groq Fast, LoLLMs GPU" style="margin-bottom:6px;" />
+                        </div>
+                        <div>
+                            <label for="drawerBindingBackend" style="margin-top:0;">Backend Provider</label>
+                            <select id="drawerBindingBackend" style="margin-bottom:6px;">
+                                <option value="lollms">LoLLMs Server (Full Suite)</option>
+                                <option value="ollama">Ollama (Local / Remote)</option>
+                                <option value="openai">OpenAI Compatible (Generic)</option>
+                                <option value="anthropic">Anthropic Claude API</option>
+                                <option value="google">Google Gemini API</option>
+                                <option value="groq">Groq Cloud (Ultra Fast)</option>
+                                <option value="grok">xAI Grok</option>
+                                <option value="novitai">Novita AI</option>
+                                <option value="openwebui">Open WebUI</option>
+                                <option value="openrouter">OpenRouter API</option>
+                                <option value="perplexity">Perplexity AI</option>
+                                <option value="together">Together AI</option>
+                            </select>
+                        </div>
                     </div>
 
-                    <div style="display:flex; gap:8px;">
-                        <button id="saveCurrentAsProfile" type="button" class="secondary-button" style="flex:1;" title="Save current form values as an active server binding"><i class="codicon codicon-save"></i> Save Current Form as Binding</button>
+                    <label for="drawerBindingUrl">API Host URL</label>
+                    <div class="input-group" style="margin-bottom:8px;">
+                        <input type="text" id="drawerBindingUrl" placeholder="http://localhost:11434" style="flex:1;" />
+                        <button id="drawerTestConnBtn" type="button" class="secondary-button" style="white-space:nowrap;"><i class="codicon codicon-broadcast"></i> Test Connection</button>
+                    </div>
+
+                    <label for="drawerBindingKey">API Key / Token (Optional for local servers)</label>
+                    <div class="input-group" style="margin-bottom:8px;">
+                        <input type="password" id="drawerBindingKey" placeholder="Optional for Ollama / Local LoLLMs" style="flex:1;" />
+                        <button id="drawerToggleKeyBtn" type="button" class="icon-btn" title="Show/Hide"><i class="codicon codicon-eye"></i></button>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:12px;">
+                        <div class="checkbox-container" style="margin:0;">
+                            <input type="checkbox" id="drawerIsDefault">
+                            <label for="drawerIsDefault"><strong>Set as Default Binding</strong></label>
+                        </div>
+                        <div class="checkbox-container" style="margin:0;">
+                            <input type="checkbox" id="drawerIsEnabled" checked>
+                            <label for="drawerIsEnabled"><strong>Active in Model Pool</strong></label>
+                        </div>
+                    </div>
+
+                    <details style="margin-bottom:14px; border:1px solid var(--vscode-widget-border); border-radius:4px; padding:6px 10px;">
+                        <summary style="font-size:11px; font-weight:bold; cursor:pointer; opacity:0.8;">SSL & Advanced Protocol Options</summary>
+                        <div style="padding-top:8px;">
+                            <div class="checkbox-container" style="margin-bottom:8px;">
+                                <input type="checkbox" id="drawerDisableSsl">
+                                <label for="drawerDisableSsl">Disable SSL Verification (Self-Signed Certificates)</label>
+                            </div>
+                            <label for="drawerSslCertPath" style="margin-top:4px;">Custom SSL Certificate Path</label>
+                            <div class="input-group" style="margin-bottom:8px;">
+                                <input type="text" id="drawerSslCertPath" placeholder="path/to/cert.pem" style="flex:1;" />
+                                <button id="drawerBrowseCertBtn" type="button" class="icon-btn"><i class="codicon codicon-folder-opened"></i></button>
+                            </div>
+                            <div class="checkbox-container" id="drawerLollmsExtContainer" style="margin-top:6px;">
+                                <input type="checkbox" id="drawerUseLollmsExt" checked>
+                                <label for="drawerUseLollmsExt">Use Native LoLLMs Extensions (BPE tokenizer, server context)</label>
+                            </div>
+                        </div>
+                    </details>
+
+                    <div style="display:flex; justify-content:flex-end; gap:8px;">
+                        <button id="cancelDrawerBtn" type="button" class="secondary-button">Cancel</button>
+                        <button id="saveDrawerBindingBtn" type="button" class="primary" style="padding:6px 16px;"><i class="codicon codicon-save"></i> Save Binding</button>
                     </div>
                 </div>
 
-                <label for="backendType">Backend Binding Type</label>
-                <select id="backendType">
-                    <option value="lollms" ${backendType === 'lollms' ? 'selected' : ''}>Lollms Server (Full Suite)</option>
-                    <option value="openai" ${backendType === 'openai' ? 'selected' : ''}>OpenAI Compatible</option>
-                    <option value="ollama" ${backendType === 'ollama' ? 'selected' : ''}>Ollama</option>
-                    <option value="anthropic" ${backendType === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
-                    <option value="google" ${backendType === 'google' ? 'selected' : ''}>Google Gemini</option>
-                    <option value="groq" ${backendType === 'groq' ? 'selected' : ''}>Groq Cloud</option>
-                    <option value="grok" ${backendType === 'grok' ? 'selected' : ''}>xAI Grok</option>
-                    <option value="novitai" ${backendType === 'novitai' ? 'selected' : ''}>Novita AI</option>
-                    <option value="openwebui" ${backendType === 'openwebui' ? 'selected' : ''}>Open WebUI</option>
-                    <option value="openrouter" ${backendType === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
-                </select>
-
-                <!-- LOLLMS EXCLUSIVE FEATURES ZONE -->
-                <div id="lollmsExtensionsZone" style="display: ${backendType === 'lollms' ? 'block' : 'none'}; margin: 12px 0; padding: 10px; border-left: 3px solid var(--vscode-charts-blue); background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 4px;">
-                    <div class="checkbox-container" style="display: flex; align-items: center; gap: 8px; margin: 0;">
-                        <input type="checkbox" id="useLollmsExtensions" ${useLollmsExtensions ? 'checked' : ''}>
-                        <label for="useLollmsExtensions" style="margin: 0; font-weight: bold;">Use Lollms Native Extensions</label>
-                        <button id="lollmsExtensionsHelp" class="toolbar-btn" style="width: 18px; height: 18px; border: none; opacity: 0.7;" title="What is this?">
-                            <i class="codicon codicon-question"></i>
-                        </button>
-                    </div>
-                    <p class="help-text" style="margin-top: 4px;">Enables LoLLMs server-side BPE tokenization, automated model context size lookup, and visual pipeline extensions.</p>
+                <div style="margin-top:20px; border-top:1px solid var(--vscode-widget-border); padding-top:14px;">
+                    <label for="requestTimeout">${t('config.requestTimeout.label', 'Global Request Timeout (ms)')}</label>
+                    <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
+                    <p class="help-text">Max time to wait for initial streaming tokens across any configured server binding.</p>
                 </div>
-
-                <label for="apiUrl">${t('config.apiUrl.label', 'API Host URL')}</label>
-                <div class="input-group">
-                    <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
-                    <button id="testConnection" type="button" class="icon-btn" title="Test Connection to this Host"><i class="codicon codicon-broadcast"></i> Test Connection</button>
-                </div>
-
-                <label for="apiKey">${t('config.apiKey.label', 'API Key / Secret')}</label>
-                <div class="input-group">
-                    <input type="password" id="apiKey" value="${apiKey}" placeholder="Optional for local servers (Ollama/Lollms)" autocomplete="off" style="flex:1;" />
-                    <button id="toggleApiKey" type="button" class="icon-btn" title="Show/Hide"><i class="codicon codicon-eye"></i></button>
-                    <button id="copyApiKey" type="button" class="icon-btn" title="Copy Key"><i class="codicon codicon-copy"></i></button>
-                </div>
-
-                <div class="checkbox-container">
-                    <input type="checkbox" id="disableSsl" ${disableSslVerification ? 'checked' : ''}>
-                    <label for="disableSsl">${t('config.disableSslVerification.label', 'Disable SSL Verification (Self-Signed Certificates)')}</label>
-                </div>
-                <label for="sslCertPath">${t('config.sslCertPath.label', 'Custom SSL Certificate Path (PEM/CRT)')}</label>
-                <div class="input-group">
-                    <input type="text" id="sslCertPath" value="${sslCertPath}" placeholder="path/to/certificate.pem" />
-                    <button id="browseCertPath" type="button" class="icon-btn" title="Browse"><i class="codicon codicon-folder-opened"></i></button>
-                </div>
-
-                <label for="requestTimeout">${t('config.requestTimeout.label', 'Request Timeout (ms)')}</label>
-                <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
             </div>
 
             <!-- TAB 2: MODELS & SPECIALIST ASSIGNMENTS -->
@@ -1578,7 +1619,17 @@ export class SettingsPanel {
         
           <script>
             const vscode = acquireVsCodeApi();
-            
+
+            function escapeHtml(text) {
+                if (!text) return '';
+                return String(text)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            }
+
             window.openTab = function(evt, tabName) {
                 const contents = document.getElementsByClassName("tab-content");
                 for (let i = 0; i < contents.length; i++) { 
@@ -1596,6 +1647,9 @@ export class SettingsPanel {
                 }
                 if(evt) evt.currentTarget.className += " active";
                 if (tabName === 'TabLog') vscode.postMessage({ command: 'requestLog' });
+                if (tabName === 'TabModels' && loadedModels.length === 0) {
+                    refreshModelsList(false);
+                }
             };
 
             let stateData = ${jsonState};
@@ -1628,6 +1682,7 @@ export class SettingsPanel {
 
             function checkReactivity() {
                 const warning = document.getElementById('connectionWarning');
+                if (!warning) return;
 
                 let isDirty = false;
                 for (const field of connectionFields) {
@@ -1773,12 +1828,15 @@ export class SettingsPanel {
                 });
             }
 
-            document.getElementById('addRateBtn').onclick = () => {
-                if (!config.billingRates) config.billingRates = [];
-                config.billingRates.push({ pattern: 'new-model', inputRate: 1.0, outputRate: 3.0 });
-                postTempUpdate('billingRates', config.billingRates);
-                renderRatesTable();
-            };
+            const addRateBtn = document.getElementById('addRateBtn');
+            if (addRateBtn) {
+                addRateBtn.onclick = () => {
+                    if (!config.billingRates) config.billingRates = [];
+                    config.billingRates.push({ pattern: 'new-model', inputRate: 1.0, outputRate: 3.0 });
+                    postTempUpdate('billingRates', config.billingRates);
+                    renderRatesTable();
+                };
+            }
 
             function renderMcpServers() {
                 const container = document.getElementById('mcp-servers-list');
@@ -1813,29 +1871,23 @@ export class SettingsPanel {
                 });
             }
 
-            document.getElementById('addMcpBtn').onclick = () => {
-                const name = prompt("Enter a unique name for the MCP server:");
-                if (!name) return;
-                const cmd = prompt("Enter the full execution command (e.g. 'npx -y @modelcontextprotocol/server-filesystem /path'):");
-                if (!cmd) return;
+            const addMcpBtn = document.getElementById('addMcpBtn');
+            if (addMcpBtn) {
+                addMcpBtn.onclick = () => {
+                    const name = prompt("Enter a unique name for the MCP server:");
+                    if (!name) return;
+                    const cmd = prompt("Enter the full execution command (e.g. 'npx -y @modelcontextprotocol/server-filesystem /path'):");
+                    if (!cmd) return;
 
-                const rawInput = document.getElementById('mcpServers');
-                let mcpData = {};
-                try { mcpData = JSON.parse(rawInput.value || '{}'); } catch(e) {}
-                mcpData[name] = cmd;
-                
-                rawInput.value = JSON.stringify(mcpData, null, 2);
-                postTempUpdate('mcpServers', rawInput.value);
-                renderMcpServers();
-            };
+                    const rawInput = document.getElementById('mcpServers');
+                    let mcpData = {};
+                    try { mcpData = JSON.parse(rawInput.value || '{}'); } catch(e) {}
+                    mcpData[name] = cmd;
 
-            function renderConnectionProfiles() {
-                const select = document.getElementById('connectionProfileSelect');
-                if (!select) return;
-                select.innerHTML = '<option value="">-- Select a Saved Environment --</option>';
-                connectionProfiles.forEach((p, idx) => {
-                    select.appendChild(new Option(p.name, idx));
-                });
+                    rawInput.value = JSON.stringify(mcpData, null, 2);
+                    postTempUpdate('mcpServers', rawInput.value);
+                    renderMcpServers();
+                };
             }
 
             function initializeForm() {
@@ -1914,13 +1966,17 @@ export class SettingsPanel {
                     updateCappingVisibility();
                 }
 
-                if(config.contextFileExceptions) document.getElementById('contextFileExceptions').value = config.contextFileExceptions.join(String.fromCharCode(10));
+                const exceptionsEl = document.getElementById('contextFileExceptions');
+                if (exceptionsEl && config.contextFileExceptions) exceptionsEl.value = config.contextFileExceptions.join(String.fromCharCode(10));
                 safeSet('contextMaxDepth', config.contextMaxDepth);
 
                 renderRatesTable();
-                if(config.remoteAllowedUsers) document.getElementById('remoteAllowedUsers').value = config.remoteAllowedUsers.join(String.fromCharCode(10));
-                if(config.remoteAdminUsers) document.getElementById('remoteAdminUsers').value = config.remoteAdminUsers.join(String.fromCharCode(10));
-                if(config.remoteAllowedChannels) document.getElementById('remoteAllowedChannels').value = config.remoteAllowedChannels.join(String.fromCharCode(10));
+                const remoteUsersEl = document.getElementById('remoteAllowedUsers');
+                if (remoteUsersEl && config.remoteAllowedUsers) remoteUsersEl.value = config.remoteAllowedUsers.join(String.fromCharCode(10));
+                const remoteAdminsEl = document.getElementById('remoteAdminUsers');
+                if (remoteAdminsEl && config.remoteAdminUsers) remoteAdminsEl.value = config.remoteAdminUsers.join(String.fromCharCode(10));
+                const remoteChannelsEl = document.getElementById('remoteAllowedChannels');
+                if (remoteChannelsEl && config.remoteAllowedChannels) remoteChannelsEl.value = config.remoteAllowedChannels.join(String.fromCharCode(10));
 
                 renderProfiles();
                 renderBindingsList();
@@ -1998,40 +2054,100 @@ export class SettingsPanel {
 
             setTimeout(bindTempUpdates, 50);
 
+            function migrateProfilesToBindings(rawProfiles) {
+                if (!Array.isArray(rawProfiles)) rawProfiles = [];
+
+                // Preserve all existing profiles from previous versions and augment them with binding attributes
+                const migrated = rawProfiles.map((p, idx) => {
+                    const name = (p.name || p.title || ('Server ' + (idx + 1))).trim();
+                    const id = p.id || ('binding_' + idx + '_' + name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase());
+                    return {
+                        id: id,
+                        name: name,
+                        apiUrl: (p.apiUrl || p.host || p.url || '').trim(),
+                        apiKey: (p.apiKey || p.key || '').trim(),
+                        backendType: p.backendType || p.backend || 'lollms',
+                        disableSslVerification: p.disableSslVerification !== undefined ? !!p.disableSslVerification : false,
+                        sslCertPath: (p.sslCertPath || p.cert_path || '').trim(),
+                        useLollmsExtensions: p.useLollmsExtensions !== undefined ? !!p.useLollmsExtensions : (p.backendType === 'lollms'),
+                        enabled: p.enabled !== false, // Preserve false if disabled, default to true for legacy profiles
+                        isDefault: p.isDefault === true
+                    };
+                }).filter(b => b.apiUrl.length > 0);
+
+                // If no profiles existed at all, create default from primary config
+                if (migrated.length === 0 && config.apiUrl) {
+                    const fallbackName = config.backendType === 'lollms' ? 'LoLLMs (Default)' : (((config.backendType || 'Server').toUpperCase()) + ' (Default)');
+                    migrated.push({
+                        id: 'binding_default_' + Date.now().toString(36),
+                        name: fallbackName,
+                        apiUrl: config.apiUrl.trim(),
+                        apiKey: (config.apiKey || '').trim(),
+                        backendType: config.backendType || 'lollms',
+                        disableSslVerification: !!config.disableSslVerification,
+                        sslCertPath: (config.sslCertPath || '').trim(),
+                        useLollmsExtensions: config.useLollmsExtensions !== false,
+                        enabled: true,
+                        isDefault: true
+                    });
+                }
+
+                // Ensure at least one enabled binding is marked as default
+                if (migrated.length > 0 && !migrated.some(p => p.isDefault && p.enabled !== false)) {
+                    const firstActive = migrated.find(p => p.enabled !== false) || migrated[0];
+                    firstActive.isDefault = true;
+                }
+
+                return migrated;
+            }
+
             function renderBindingsList() {
                 const container = document.getElementById('bindingsListContainer');
                 if (!container) return;
                 container.innerHTML = '';
 
-                const profiles = config.connectionProfiles || [];
-                if (profiles.length === 0) {
-                    container.innerHTML = '<div style="opacity:0.6; font-size:11px; font-style:italic; padding:6px;">No additional bindings configured. The primary server above is currently active.</div>';
-                    return;
-                }
+                // Run migration to guarantee all profiles are transformed into bindings
+                config.connectionProfiles = migrateProfilesToBindings(config.connectionProfiles);
+                postTempUpdate('connectionProfiles', config.connectionProfiles);
+
+                const profiles = config.connectionProfiles;
 
                 profiles.forEach((p, idx) => {
                     const row = document.createElement('div');
                     row.className = 'participant-row';
-                    row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:8px 10px; border-radius:6px; background:var(--vscode-editor-background); margin:0;';
-
+                    const isDef = p.isDefault === true;
                     const isEnabled = p.enabled !== false;
-                    row.innerHTML = \`
-                        <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:0;">
-                            <input type="checkbox" class="binding-enable-toggle" data-idx="\${idx}" \${isEnabled ? 'checked' : ''} title="Toggle active status in cumulative pool" style="cursor:pointer; width:16px; height:16px;">
-                            <div style="min-width:0; flex:1;">
-                                <div style="font-weight:bold; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px;">
-                                    <span>\${p.name || 'Unnamed Binding'}</span>
-                                    <span class="ref-badge" style="background:var(--vscode-badge-background); font-size:9px;">\${(p.backendType || 'lollms').toUpperCase()}</span>
-                                </div>
-                                <div style="font-size:10px; opacity:0.65; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">\${p.apiUrl}</div>
-                            </div>
-                        </div>
-                        <div style="display:flex; gap:4px; align-items:center;">
-                            <button type="button" class="icon-btn btn-test-binding" data-idx="\${idx}" title="Test Connection"><i class="codicon codicon-broadcast"></i></button>
-                            <button type="button" class="icon-btn btn-load-binding" data-idx="\${idx}" title="Edit in Form"><i class="codicon codicon-edit"></i></button>
-                            <button type="button" class="icon-btn remove-btn btn-delete-binding" data-idx="\${idx}" title="Delete Binding"><i class="codicon codicon-trash"></i></button>
-                        </div>
-                    \`;
+                    const borderStyle = isDef ? 'border-left: 4px solid var(--vscode-charts-green);' : (isEnabled ? 'border-left: 4px solid var(--vscode-charts-blue);' : 'opacity: 0.6;');
+
+                    row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:10px 14px; border-radius:6px; background:var(--vscode-editor-background); margin:0; border:1px solid var(--vscode-widget-border); ' + borderStyle;
+
+                    const defaultBadgeHtml = isDef
+                        ? '<span class="ref-badge" style="background:var(--vscode-charts-green); color:white; font-weight:900; font-size:9px;">★ DEFAULT</span>'
+                        : '<button type="button" class="secondary-button btn-set-default" data-idx="' + idx + '" style="font-size:10px; padding:2px 8px; height:22px;" title="Set as default binding source">Set Default</button>';
+
+                    const backendBadge = (p.backendType || 'lollms').toUpperCase();
+
+                    row.innerHTML = '' +
+                        '<div style="display:flex; align-items:center; gap:12px; flex:1; min-width:0;">' +
+                            '<input type="checkbox" class="binding-enable-toggle" data-idx="' + idx + '" ' + (isEnabled ? 'checked' : '') + ' title="Toggle active in model pool" style="cursor:pointer; width:16px; height:16px;">' +
+                            '<div style="min-width:0; flex:1;">' +
+                                '<div style="font-weight:bold; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:8px;">' +
+                                    '<span>' + escapeHtml(p.name || 'Unnamed Binding') + '</span>' +
+                                    '<span class="ref-badge" style="background:var(--vscode-badge-background); font-size:9px;">' + backendBadge + '</span>' +
+                                    defaultBadgeHtml +
+                                '</div>' +
+                                '<div style="font-size:11px; opacity:0.7; font-family:var(--vscode-editor-font-family); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' +
+                                    escapeHtml(p.apiUrl) +
+                                    (p.apiKey ? ' &middot; <span style="color:var(--vscode-charts-blue);">Key Configured</span>' : ' &middot; <span style="opacity:0.5;">No Key</span>') +
+                                '</div>' +
+                            '</div>' +
+                        '</div>' +
+                        '<div style="display:flex; gap:6px; align-items:center; flex-shrink:0;">' +
+                            '<button type="button" class="icon-btn btn-test-binding" data-idx="' + idx + '" title="Test Connection"><i class="codicon codicon-broadcast"></i></button>' +
+                            '<button type="button" class="icon-btn btn-load-binding" data-idx="' + idx + '" title="Edit Binding"><i class="codicon codicon-edit"></i></button>' +
+                            (profiles.length > 1 ? '<button type="button" class="icon-btn remove-btn btn-delete-binding" data-idx="' + idx + '" title="Delete Binding"><i class="codicon codicon-trash"></i></button>' : '') +
+                        '</div>';
+
                     container.appendChild(row);
                 });
 
@@ -2041,8 +2157,33 @@ export class SettingsPanel {
                         if (config.connectionProfiles[idx]) {
                             config.connectionProfiles[idx].enabled = el.checked;
                             postTempUpdate('connectionProfiles', config.connectionProfiles);
+                            renderBindingsList();
                             refreshModelsList(true);
                         }
+                    };
+                });
+
+                container.querySelectorAll('.btn-set-default').forEach(btn => {
+                    btn.onclick = () => {
+                        const idx = parseInt(btn.dataset.idx, 10);
+                        config.connectionProfiles.forEach((p, i) => {
+                            p.isDefault = (i === idx);
+                        });
+                        const def = config.connectionProfiles[idx];
+                        if (def) {
+                            config.apiUrl = def.apiUrl;
+                            config.apiKey = def.apiKey || '';
+                            config.backendType = def.backendType || 'lollms';
+                            config.disableSslVerification = !!def.disableSslVerification;
+                            config.sslCertPath = def.sslCertPath || '';
+                            config.useLollmsExtensions = def.useLollmsExtensions !== false;
+                            postTempUpdate('apiUrl', def.apiUrl);
+                            postTempUpdate('apiKey', def.apiKey || '');
+                            postTempUpdate('backendType', def.backendType);
+                        }
+                        postTempUpdate('connectionProfiles', config.connectionProfiles);
+                        renderBindingsList();
+                        refreshModelsList(true);
                     };
                 });
 
@@ -2051,6 +2192,8 @@ export class SettingsPanel {
                         const idx = parseInt(btn.dataset.idx, 10);
                         const p = config.connectionProfiles[idx];
                         if (p) {
+                            btn.innerHTML = '<i class="codicon codicon-sync spin"></i>';
+                            btn.disabled = true;
                             vscode.postMessage({
                                 command: 'testConnection',
                                 connection: {
@@ -2062,6 +2205,10 @@ export class SettingsPanel {
                                     useLollmsExtensions: p.useLollmsExtensions
                                 }
                             });
+                            setTimeout(() => {
+                                btn.innerHTML = '<i class="codicon codicon-broadcast"></i>';
+                                btn.disabled = false;
+                            }, 3000);
                         }
                     };
                 });
@@ -2069,25 +2216,21 @@ export class SettingsPanel {
                 container.querySelectorAll('.btn-load-binding').forEach(btn => {
                     btn.onclick = () => {
                         const idx = parseInt(btn.dataset.idx, 10);
-                        const p = config.connectionProfiles[idx];
-                        if (p) {
-                            safeSet('apiUrl', p.apiUrl);
-                            safeSet('apiKey', p.apiKey);
-                            safeSet('backendType', p.backendType);
-                            safeSet('disableSsl', p.disableSslVerification, true);
-                            safeSet('sslCertPath', p.sslCertPath);
-                            safeSet('useLollmsExtensions', p.useLollmsExtensions, true);
-                            updateBindingUi();
-                            checkReactivity();
-                        }
+                        openDrawer(idx);
                     };
                 });
 
                 container.querySelectorAll('.btn-delete-binding').forEach(btn => {
                     btn.onclick = () => {
                         const idx = parseInt(btn.dataset.idx, 10);
-                        if (confirm(\`Delete server binding '\${config.connectionProfiles[idx]?.name}'?\`)) {
+                        const target = config.connectionProfiles[idx];
+                        if (!target) return;
+                        if (confirm('Delete server binding "' + (target.name || 'Server') + '"?')) {
+                            const wasDef = target.isDefault;
                             config.connectionProfiles.splice(idx, 1);
+                            if (wasDef && config.connectionProfiles.length > 0) {
+                                config.connectionProfiles[0].isDefault = true;
+                            }
                             postTempUpdate('connectionProfiles', config.connectionProfiles);
                             renderBindingsList();
                             refreshModelsList(true);
@@ -2099,47 +2242,91 @@ export class SettingsPanel {
             function populateModelDropdown(selectElement, selectedValue, error) {
                 if(!selectElement) return;
 
-                const previousValue = selectedValue || selectElement.value;
+                const targetId = selectElement.id;
+                let previousValue = selectedValue || selectElement.value;
+                if (previousValue === '__manual__') previousValue = '';
+
                 selectElement.innerHTML = '';
 
-                if (selectElement.id === 'ttiModelSelect') {
-                    selectElement.appendChild(new Option("✨ Automatic (Let Server Decide)", ""));
+                const isPrimaryChat = targetId === 'modelSelect';
+                const isTti = targetId === 'ttiModelSelect';
+                const isSecondary = !isPrimaryChat && !isTti;
+
+                // 1. Add Default Initial Option (Always has value="")
+                if (isPrimaryChat) {
+                    const defaultChatOpt = new Option("-- Select Primary Chat Model --", "");
+                    selectElement.appendChild(defaultChatOpt);
+                } else if (isTti) {
+                    const ttiOpt = new Option("✨ Automatic (Let Server Decide)", "");
+                    selectElement.appendChild(ttiOpt);
+                } else if (isSecondary) {
+                    const secOpt = new Option("⚡ Same as Chat Model (Default)", "");
+                    selectElement.appendChild(secOpt);
                 }
 
+                // 2. Add Manual Input Option (At index 1, never default)
                 const manualOpt = new Option("✍️ Enter model name manually...", "__manual__");
                 manualOpt.style.fontWeight = "bold";
                 manualOpt.style.color = "var(--vscode-textLink-foreground)";
                 selectElement.appendChild(manualOpt);
 
-                if (error) { 
-                    selectElement.appendChild(new Option("⚠️ Error: " + error, "")); 
-                    return; 
+                if (error) {
+                    selectElement.appendChild(new Option("⚠️ Error: " + error, ""));
+                    return;
                 }
 
                 if (loadedModels.length > 0) {
-                    const secondaryModels = [
-                        'inspectorModelName', 'architectModelSelect', 'titlingModelSelect', 
-                        'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect', 'graphModelSelect'
-                    ];
-                    if (secondaryModels.includes(selectElement.id)) {
-                        selectElement.appendChild(new Option("Same as Chat Model (Default)", ""));
-                    }
-
-                    loadedModels.forEach(model => {
-                        const opt = new Option(model.name || model.id, model.id);
-                        selectElement.appendChild(opt);
+                    // 3. Group models by active server binding
+                    const serverGroups = new Map();
+                    loadedModels.forEach(m => {
+                        const sName = m.server || 'Server';
+                        if (!serverGroups.has(sName)) {
+                            serverGroups.set(sName, []);
+                        }
+                        serverGroups.get(sName).push(m);
                     });
 
-                    if (previousValue && loadedModels.some(m => m.id === previousValue)) {
-                        selectElement.value = previousValue;
-                    } else if (selectElement.id === 'modelSelect') {
+                    serverGroups.forEach((modelsInServer, serverName) => {
+                        const optGroup = document.createElement('optgroup');
+                        optGroup.label = '🖥️ ' + serverName + ' (' + modelsInServer.length + ' models)';
+
+                        modelsInServer.forEach(m => {
+                            const rawName = m.name || (m.id.includes('::') ? m.id.split('::')[1] : m.id);
+                            const opt = new Option(rawName, m.id);
+                            optGroup.appendChild(opt);
+                        });
+
+                        selectElement.appendChild(optGroup);
+                    });
+
+                    // 4. Intelligently match and restore selected value
+                    const matchFn = (optVal, target) => {
+                        if (!target || !optVal) return false;
+                        if (optVal === target) return true;
+                        if (optVal.includes('::') && optVal.split('::')[1] === target) return true;
+                        if (target.includes('::') && target.split('::')[1] === optVal) return true;
+                        return false;
+                    };
+
+                    const matchedOption = loadedModels.find(m => matchFn(m.id, previousValue));
+
+                    if (matchedOption) {
+                        selectElement.value = matchedOption.id;
+                    } else if (isPrimaryChat) {
+                        // For primary chat model, default to the first available model
                         selectElement.value = loadedModels[0].id;
                         postTempUpdate('modelName', loadedModels[0].id);
                     } else {
+                        // For secondary models and TTI, default to "" (Same as Chat Model / Auto)
                         selectElement.value = "";
                     }
                 } else {
-                    selectElement.appendChild(new Option(previousValue ? previousValue + " (offline)" : "No models found", previousValue || ""));
+                    if (previousValue && previousValue !== '__manual__') {
+                        selectElement.appendChild(new Option(previousValue + " (offline)", previousValue));
+                        selectElement.value = previousValue;
+                    } else {
+                        selectElement.value = "";
+                    }
                 }
             }
 
@@ -2153,7 +2340,12 @@ export class SettingsPanel {
                         if (btn) btn.classList.add('disabled');
                     });
                     const conn = getCurrentConnectionSettings();
-                    vscode.postMessage({ command: 'fetchModels', value: force, connection: conn });
+                    vscode.postMessage({ 
+                        command: 'fetchModels', 
+                        value: force, 
+                        connection: conn,
+                        connectionProfiles: config.connectionProfiles 
+                    });
                 } catch (err) {
                     console.error("[Lollms Config] Critical error in refreshModelsList:", err);
                 }
@@ -2232,6 +2424,30 @@ export class SettingsPanel {
 
             function getFormValues() {
                 const values = {};
+                values['connectionProfiles'] = config.connectionProfiles || [];
+
+                // Collect all 9 model assignment values
+                const dropdownFields = [
+                    ['modelSelect', 'modelName'],
+                    ['architectModelSelect', 'architectModelName'],
+                    ['ttiModelSelect', 'ttiModelName'],
+                    ['dreamModelSelect', 'dreamModelName'],
+                    ['titlingModelSelect', 'titlingModelName'],
+                    ['gitCommitModelSelect', 'gitCommitModelName'],
+                    ['surgicalModelSelect', 'surgicalModelName'],
+                    ['summarizationModelSelect', 'summarizationModelName'],
+                    ['graphModelSelect', 'graphModelName'],
+                    ['inspectorModelName', 'inspectorModelName']
+                ];
+                dropdownFields.forEach(([id, key]) => {
+                    const el = document.getElementById(id);
+                    if (el) {
+                        let val = el.value;
+                        if (val === '__manual__') val = '';
+                        values[key] = val;
+                    }
+                });
+
                 const textFields = ['apiKey', 'apiUrl', 'backendType', 'sslCertPath', 'language', 'codeInspectorPersona', 'chatPersona', 'agentPersona', 'commitMessagePersona', 'searchProvider', 'searchApiKey', 'searchCx', 'clipboardInsertRole', 'userInfoName', 'userInfoEmail', 'userInfoLicense', 'userInfoCodingStyle', 'mcpServers', 'unstagedChangesBehavior', 'systemCustomInfo', 'moltbookApiKey', 'moltbookBotName', 'moltbookBotPurpose', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret'];
                 textFields.forEach(id => {
                     const el = document.getElementById(id);
@@ -2340,78 +2556,207 @@ export class SettingsPanel {
                 refreshModelsList(true);
             });
 
-            document.getElementById('saveCurrentAsProfile').onclick = () => {
-                const name = prompt("Enter a display name for this Server Binding:", "New Binding");
-                if (name && name.trim()) {
-                    if (!config.connectionProfiles) config.connectionProfiles = [];
-                    const currentConn = getCurrentConnectionSettings();
-                    config.connectionProfiles.push({
-                        id: 'binding_' + Date.now().toString(36),
-                        name: name.trim(),
-                        apiUrl: currentConn.apiUrl,
-                        apiKey: currentConn.apiKey,
-                        backendType: currentConn.backendType,
-                        disableSslVerification: currentConn.disableSslVerification,
-                        sslCertPath: currentConn.sslCertPath,
-                        useLollmsExtensions: currentConn.useLollmsExtensions,
-                        enabled: true
-                    });
-                    postTempUpdate('connectionProfiles', config.connectionProfiles);
-                    renderBindingsList();
-                    refreshModelsList(true);
+            let editingBindingIndex = -1;
+
+            const openDrawer = (idx = -1) => {
+                editingBindingIndex = idx;
+                const drawer = document.getElementById('bindingEditorDrawer');
+                const title = document.getElementById('bindingEditorTitle');
+                if (!drawer) return;
+
+                const nameInp = document.getElementById('drawerBindingName');
+                const backendSel = document.getElementById('drawerBindingBackend');
+                const urlInp = document.getElementById('drawerBindingUrl');
+                const keyInp = document.getElementById('drawerBindingKey');
+                const isDefaultCheck = document.getElementById('drawerIsDefault');
+                const isEnabledCheck = document.getElementById('drawerIsEnabled');
+                const sslCheck = document.getElementById('drawerDisableSsl');
+                const sslPathInp = document.getElementById('drawerSslCertPath');
+                const lollmsCheck = document.getElementById('drawerUseLollmsExt');
+                const lollmsContainer = document.getElementById('drawerLollmsExtContainer');
+
+                if (idx >= 0 && config.connectionProfiles && config.connectionProfiles[idx]) {
+                    const p = config.connectionProfiles[idx];
+                    if (title) title.innerHTML = '<i class="codicon codicon-edit"></i> Edit Binding: ' + escapeHtml(p.name);
+                    if (nameInp) nameInp.value = p.name || '';
+                    if (backendSel) backendSel.value = p.backendType || 'lollms';
+                    if (urlInp) urlInp.value = p.apiUrl || '';
+                    if (keyInp) keyInp.value = p.apiKey || '';
+                    if (isDefaultCheck) isDefaultCheck.checked = p.isDefault === true;
+                    if (isEnabledCheck) isEnabledCheck.checked = p.enabled !== false;
+                    if (sslCheck) sslCheck.checked = !!p.disableSslVerification;
+                    if (sslPathInp) sslPathInp.value = p.sslCertPath || '';
+                    if (lollmsCheck) lollmsCheck.checked = p.useLollmsExtensions !== false;
+                    if (lollmsContainer) lollmsContainer.style.display = (p.backendType === 'lollms') ? 'flex' : 'none';
+                } else {
+                    if (title) title.innerHTML = '<i class="codicon codicon-add"></i> New Server Binding Source';
+                    if (nameInp) nameInp.value = '';
+                    if (backendSel) backendSel.value = 'ollama';
+                    if (urlInp) urlInp.value = 'http://localhost:11434';
+                    if (keyInp) keyInp.value = '';
+                    if (isDefaultCheck) isDefaultCheck.checked = (!config.connectionProfiles || config.connectionProfiles.length === 0);
+                    if (isEnabledCheck) isEnabledCheck.checked = true;
+                    if (sslCheck) sslCheck.checked = false;
+                    if (sslPathInp) sslPathInp.value = '';
+                    if (lollmsCheck) lollmsCheck.checked = false;
+                    if (lollmsContainer) lollmsContainer.style.display = 'none';
                 }
+
+                drawer.style.display = 'block';
+                drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             };
 
-            const addBindingBtn = document.getElementById('addNewBindingBtn');
-            if (addBindingBtn) {
-                addBindingBtn.onclick = () => {
-                    const name = prompt("Enter Server Name (e.g. 'Ollama Local', 'Groq Cloud'):");
-                    if (!name) return;
-                    const url = prompt("Enter API Host URL:", "http://localhost:11434");
-                    if (!url) return;
-                    const key = prompt("Enter API Key (optional for local):", "");
+            const closeDrawer = () => {
+                const drawer = document.getElementById('bindingEditorDrawer');
+                if (drawer) drawer.style.display = 'none';
+                editingBindingIndex = -1;
+            };
 
-                    if (!config.connectionProfiles) config.connectionProfiles = [];
-                    config.connectionProfiles.push({
-                        id: 'binding_' + Date.now().toString(36),
-                        name: name.trim(),
-                        apiUrl: url.trim(),
-                        apiKey: key ? key.trim() : "",
-                        backendType: url.includes('11434') ? 'ollama' : (url.includes('groq') ? 'groq' : (url.includes('openai') ? 'openai' : 'lollms')),
-                        disableSslVerification: false,
-                        sslCertPath: '',
-                        useLollmsExtensions: false,
-                        enabled: true
-                    });
-                    postTempUpdate('connectionProfiles', config.connectionProfiles);
-                    renderBindingsList();
-                    refreshModelsList(true);
+            document.getElementById('openBindingEditorBtn')?.addEventListener('click', () => openDrawer(-1));
+            document.getElementById('cancelBindingDrawerBtn')?.addEventListener('click', closeDrawer);
+            document.getElementById('cancelDrawerBtn')?.addEventListener('click', closeDrawer);
+
+            document.getElementById('drawerToggleKeyBtn')?.addEventListener('click', () => {
+                const keyInp = document.getElementById('drawerBindingKey');
+                const icon = document.querySelector('#drawerToggleKeyBtn i');
+                if (keyInp.type === 'password') {
+                    keyInp.type = 'text';
+                    icon.classList.replace('codicon-eye', 'codicon-eye-closed');
+                } else {
+                    keyInp.type = 'password';
+                    icon.classList.replace('codicon-eye-closed', 'codicon-eye');
+                }
+            });
+
+            document.getElementById('drawerBrowseCertBtn')?.addEventListener('click', () => {
+                vscode.postMessage({ command: 'browseCertPath' });
+            });
+
+            document.getElementById('drawerBindingBackend')?.addEventListener('change', (e) => {
+                const b = e.target.value;
+                const urlInp = document.getElementById('drawerBindingUrl');
+                const extBox = document.getElementById('drawerLollmsExtContainer');
+                if (extBox) extBox.style.display = (b === 'lollms') ? 'flex' : 'none';
+
+                if (urlInp && (!urlInp.value || urlInp.value.includes('localhost') || urlInp.value.includes('127.0.0.1') || urlInp.value.includes('api.'))) {
+                    if (b === 'ollama') urlInp.value = 'http://localhost:11434';
+                    else if (b === 'lollms') urlInp.value = 'http://localhost:9642';
+                    else if (b === 'groq') urlInp.value = 'https://api.groq.com/openai';
+                    else if (b === 'openrouter') urlInp.value = 'https://openrouter.ai/api';
+                    else if (b === 'openai') urlInp.value = 'https://api.openai.com';
+                    else if (b === 'anthropic') urlInp.value = 'https://api.anthropic.com';
+                    else if (b === 'google') urlInp.value = 'https://generativelanguage.googleapis.com';
+                    else if (b === 'perplexity') urlInp.value = 'https://api.perplexity.ai';
+                    else if (b === 'together') urlInp.value = 'https://api.together.xyz';
+                    else if (b === 'openwebui') urlInp.value = 'http://localhost:3000/api';
+                }
+            });
+
+            document.getElementById('drawerTestConnBtn')?.addEventListener('click', () => {
+                const urlInp = document.getElementById('drawerBindingUrl');
+                const keyInp = document.getElementById('drawerBindingKey');
+                const backendSel = document.getElementById('drawerBindingBackend');
+                const sslCheck = document.getElementById('drawerDisableSsl');
+                const sslPathInp = document.getElementById('drawerSslCertPath');
+                const lollmsCheck = document.getElementById('drawerUseLollmsExt');
+
+                vscode.postMessage({
+                    command: 'testConnection',
+                    connection: {
+                        apiUrl: urlInp ? urlInp.value.trim() : '',
+                        apiKey: keyInp ? keyInp.value.trim() : '',
+                        backendType: backendSel ? backendSel.value : 'lollms',
+                        disableSslVerification: sslCheck ? sslCheck.checked : false,
+                        sslCertPath: sslPathInp ? sslPathInp.value.trim() : '',
+                        useLollmsExtensions: lollmsCheck ? lollmsCheck.checked : false
+                    }
+                });
+            });
+
+            document.getElementById('saveDrawerBindingBtn')?.addEventListener('click', () => {
+                const nameInp = document.getElementById('drawerBindingName');
+                const backendSel = document.getElementById('drawerBindingBackend');
+                const urlInp = document.getElementById('drawerBindingUrl');
+                const keyInp = document.getElementById('drawerBindingKey');
+                const isDefaultCheck = document.getElementById('drawerIsDefault');
+                const isEnabledCheck = document.getElementById('drawerIsEnabled');
+                const sslCheck = document.getElementById('drawerDisableSsl');
+                const sslPathInp = document.getElementById('drawerSslCertPath');
+                const lollmsCheck = document.getElementById('drawerUseLollmsExt');
+
+                const name = nameInp ? nameInp.value.trim() : '';
+                const url = urlInp ? urlInp.value.trim() : '';
+                if (!name || !url) {
+                    alert("Please provide both a Name and an API Host URL.");
+                    return;
+                }
+
+                if (!config.connectionProfiles) config.connectionProfiles = [];
+
+                const isMakeDefault = isDefaultCheck ? isDefaultCheck.checked : false;
+
+                if (isMakeDefault) {
+                    config.connectionProfiles.forEach(p => p.isDefault = false);
+                }
+
+                const payload = {
+                    id: editingBindingIndex >= 0 ? config.connectionProfiles[editingBindingIndex].id : ('binding_' + Date.now().toString(36)),
+                    name,
+                    apiUrl: url,
+                    apiKey: keyInp ? keyInp.value.trim() : '',
+                    backendType: backendSel ? backendSel.value : 'lollms',
+                    disableSslVerification: sslCheck ? sslCheck.checked : false,
+                    sslCertPath: sslPathInp ? sslPathInp.value.trim() : '',
+                    useLollmsExtensions: lollmsCheck ? lollmsCheck.checked : false,
+                    enabled: isEnabledCheck ? isEnabledCheck.checked : true,
+                    isDefault: isMakeDefault || (config.connectionProfiles.length === 0)
+                };
+
+                if (editingBindingIndex >= 0) {
+                    config.connectionProfiles[editingBindingIndex] = payload;
+                } else {
+                    config.connectionProfiles.push(payload);
+                }
+
+                if (payload.isDefault) {
+                    config.apiUrl = payload.apiUrl;
+                    config.apiKey = payload.apiKey || '';
+                    config.backendType = payload.backendType || 'lollms';
+                    config.disableSslVerification = !!payload.disableSslVerification;
+                    config.sslCertPath = payload.sslCertPath || '';
+                    config.useLollmsExtensions = payload.useLollmsExtensions !== false;
+                    postTempUpdate('apiUrl', payload.apiUrl);
+                    postTempUpdate('apiKey', payload.apiKey || '');
+                    postTempUpdate('backendType', payload.backendType);
+                }
+
+                postTempUpdate('connectionProfiles', config.connectionProfiles);
+                renderBindingsList();
+                closeDrawer();
+                refreshModelsList(true);
+            });
+
+            const copyModelBtn = document.getElementById('copyModelName');
+            if (copyModelBtn) {
+                copyModelBtn.onclick = () => {
+                    const modelSelect = document.getElementById('modelSelect');
+                    const val = modelSelect ? modelSelect.value : '';
+                    const rawVal = val.includes('::') ? val.split('::')[1] : val;
+                    if (rawVal && rawVal !== '__manual__') {
+                        vscode.postMessage({ command: 'copyToClipboard', value: rawVal });
+                    }
                 };
             }
 
-            document.getElementById('toggleApiKey').onclick = () => {
-                const input = document.getElementById('apiKey');
-                const icon = document.querySelector('#toggleApiKey i');
-                if (input.type === 'password') {
-                    input.type = 'text';
-                    icon.classList.replace('codicon-eye', 'codicon-eye-closed');
-                } else {
-                    input.type = 'password';
-                    icon.classList.replace('codicon-eye-closed', 'codicon-eye');
-                }
-            };
+            const importConfigBtn = document.getElementById('importConfig');
+            if (importConfigBtn) {
+                importConfigBtn.onclick = () => vscode.postMessage({ command: 'importConnectionConfig' });
+            }
 
-            document.getElementById('copyApiKey').onclick = () => {
-                const val = document.getElementById('apiKey').value;
-                vscode.postMessage({ command: 'copyToClipboard', value: val });
-            };
-
-            document.getElementById('copyModelName').onclick = () => {
-                const val = document.getElementById('modelSelect').value;
-                vscode.postMessage({ command: 'copyToClipboard', value: val });
-            };
-            document.getElementById('importConfig').onclick = () => vscode.postMessage({ command: 'importConnectionConfig' });
-            document.getElementById('exportConfig').onclick = () => vscode.postMessage({ command: 'exportConnectionConfig' });
+            const exportConfigBtn = document.getElementById('exportConfig');
+            if (exportConfigBtn) {
+                exportConfigBtn.onclick = () => vscode.postMessage({ command: 'exportConnectionConfig' });
+            }
 
             const browseBtn = document.getElementById('browseCertPath');
             if (browseBtn) {
@@ -2419,40 +2764,6 @@ export class SettingsPanel {
                     vscode.postMessage({ command: 'browseCertPath' });
                 };
             }
-
-            document.getElementById('connectionProfileSelect').onchange = (e) => {
-                const p = connectionProfiles[e.target.value];
-                if (!p) return;
-                safeSet('apiUrl', p.apiUrl);
-                safeSet('apiKey', p.apiKey);
-                safeSet('backendType', p.backendType);
-                safeSet('modelSelect', p.modelName);
-                safeSet('ttiModelSelect', p.ttiModelName || '');
-                safeSet('architectModelSelect', p.architectModelName || '');
-                safeSet('titlingModelSelect', p.titlingModelName || '');
-                safeSet('gitCommitModelSelect', p.gitCommitModelName || '');
-                safeSet('surgicalModelSelect', p.surgicalModelName || '');
-                safeSet('summarizationModelSelect', p.summarizationModelName || '');
-                safeSet('disableSsl', p.disableSslVerification, true);
-                safeSet('sslCertPath', p.sslCertPath);
-                updateBindingUi();
-                
-                checkReactivity();
-                
-                connectionFields.forEach(f => {
-                    const el = document.getElementById(f);
-                    postTempUpdate(f === 'disableSsl' ? 'disableSslVerification' : f, el.type === 'checkbox' ? el.checked : el.value);
-                });
-            };
-
-            document.getElementById('deleteProfile').onclick = () => {
-                const idx = document.getElementById('connectionProfileSelect').value;
-                if (idx !== "" && confirm("Delete this profile?")) {
-                    connectionProfiles.splice(idx, 1);
-                    postTempUpdate('connectionProfiles', connectionProfiles);
-                    renderConnectionProfiles();
-                }
-            };
 
             function handleModelDropdownChange(e) {
                 const select = e.target;
@@ -2583,6 +2894,7 @@ export class SettingsPanel {
 
             initializeForm();
             bind('billingBudgetCap', 'billingBudgetCap');
+            vscode.postMessage({ command: 'webviewReady' });
           </script>
         </body>
         </html>`;

@@ -16,6 +16,7 @@ export interface ServerBinding {
   sslCertPath?: string;
   useLollmsExtensions?: boolean;
   enabled?: boolean;
+  isDefault?: boolean;
 }
 
 export interface LollmsConfig {
@@ -87,7 +88,59 @@ export class LollmsAPI {
   private _bindingAgents: Map<string, https.Agent> = new Map();
   private globalState?: vscode.Memento;
 
+  /**
+   * Transforms and normalizes connection profiles from previous versions into typed ServerBindings.
+   */
+  public static migrateProfilesToBindings(rawProfiles: any[], currentConfig?: Partial<LollmsConfig>): ServerBinding[] {
+    if (!Array.isArray(rawProfiles)) rawProfiles = [];
+
+    const migrated: ServerBinding[] = rawProfiles.map((p, idx) => {
+        const name = (p.name || p.title || `Server ${idx + 1}`).trim();
+        const id = p.id || `binding_${idx}_${name.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()}`;
+        return {
+            id,
+            name,
+            apiUrl: (p.apiUrl || p.host || p.url || '').trim(),
+            apiKey: (p.apiKey || p.key || '').trim(),
+            backendType: p.backendType || p.backend || 'lollms',
+            disableSslVerification: p.disableSslVerification !== undefined ? !!p.disableSslVerification : false,
+            sslCertPath: (p.sslCertPath || p.cert_path || '').trim(),
+            useLollmsExtensions: p.useLollmsExtensions !== undefined ? !!p.useLollmsExtensions : (p.backendType === 'lollms'),
+            enabled: p.enabled !== false, // Preserve false if explicitly deactivated, default to true for legacy profiles
+            isDefault: p.isDefault === true
+        };
+    }).filter(b => b.apiUrl.length > 0);
+
+    // If list is completely empty, create an initial default binding from the base config
+    if (migrated.length === 0 && currentConfig?.apiUrl && currentConfig.apiUrl.trim()) {
+        const defaultName = currentConfig.backendType === 'lollms' ? 'LoLLMs (Default)' : `${(currentConfig.backendType || 'Server').toUpperCase()} (Default)`;
+        migrated.push({
+            id: 'binding_default_' + Date.now().toString(36),
+            name: defaultName,
+            apiUrl: currentConfig.apiUrl.trim(),
+            apiKey: (currentConfig.apiKey || '').trim(),
+            backendType: currentConfig.backendType || 'lollms',
+            disableSslVerification: !!currentConfig.disableSslVerification,
+            sslCertPath: (currentConfig.sslCertPath || '').trim(),
+            useLollmsExtensions: currentConfig.useLollmsExtensions !== false,
+            enabled: true,
+            isDefault: true
+        });
+    }
+
+    // Ensure at least one enabled binding is marked as default
+    if (migrated.length > 0 && !migrated.some(b => b.isDefault && b.enabled !== false)) {
+        const firstActive = migrated.find(b => b.enabled !== false) || migrated[0];
+        firstActive.isDefault = true;
+    }
+
+    return migrated;
+  }
+
   constructor(config: LollmsConfig, globalState?: vscode.Memento) {
+    if (config.serverBindings && config.serverBindings.length > 0) {
+        config.serverBindings = LollmsAPI.migrateProfilesToBindings(config.serverBindings, config);
+    }
     this.config = config;
     this.globalState = globalState;
 
@@ -174,6 +227,10 @@ export class LollmsAPI {
 
   public updateConfig(newConfig: LollmsConfig) {
     Logger.info("Updating LollmsAPI Config with cumulative bindings support");
+    if (newConfig.serverBindings && newConfig.serverBindings.length > 0) {
+        newConfig.serverBindings = LollmsAPI.migrateProfilesToBindings(newConfig.serverBindings, newConfig);
+    }
+
     const oldUrl = this.config.apiUrl;
     const oldBackend = this.config.backendType;
     const oldKey = this.config.apiKey;
@@ -204,40 +261,51 @@ export class LollmsAPI {
 
   public getAllActiveBindings(): ServerBinding[] {
     const list: ServerBinding[] = [];
+    const profiles = this.config.serverBindings;
 
-    // 1. Primary configured binding
-    if (this.config.apiUrl && this.config.apiUrl.trim()) {
-        const primaryName = this.config.backendType === 'lollms' ? 'Lollms (Primary)' : `${this.config.backendType.toUpperCase()} (Primary)`;
-        list.push({
-            id: 'primary',
-            name: primaryName,
-            apiUrl: this.config.apiUrl,
-            apiKey: this.config.apiKey,
-            backendType: this.config.backendType,
-            disableSslVerification: this.config.disableSslVerification,
-            sslCertPath: this.config.sslCertPath,
-            useLollmsExtensions: this.config.useLollmsExtensions,
-            enabled: true
-        });
-    }
+    // If serverBindings are configured, strictly honor enabled flags.
+    // Deactivated bindings (enabled: false) are filtered out completely.
+    if (profiles && profiles.length > 0) {
+        for (const p of profiles) {
+            if (p.enabled === false) {
+                continue; // Skip deactivated bindings completely
+            }
+            if (!p.apiUrl || !p.apiUrl.trim()) {
+                continue;
+            }
 
-    // 2. Extra configured bindings from connectionProfiles
-    const extra = this.config.serverBindings || [];
-    for (const b of extra) {
-        if (!b || !b.apiUrl || !b.apiUrl.trim() || b.enabled === false) continue;
-        const normUrl = this.normalizeBaseUrl(b.apiUrl);
-        // Avoid adding duplicate primary server with identical backend
-        const isDuplicatePrimary = list.length > 0 && 
-            this.normalizeBaseUrl(list[0].apiUrl).toLowerCase() === normUrl.toLowerCase() && 
-            list[0].backendType === b.backendType;
-
-        if (!isDuplicatePrimary) {
             list.push({
-                ...b,
-                id: b.id || `binding_${b.name.replace(/[^a-zA-Z0-9_]/g, '_')}`,
-                name: b.name.trim() || `Server ${list.length + 1}`
+                ...p,
+                id: p.id || `binding_${(p.name || 'server').replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()}`,
+                name: (p.name || 'Server').trim(),
+                isDefault: p.isDefault === true
             });
         }
+
+        // If at least one active binding exists and none is default, designate the first active one
+        if (list.length > 0 && !list.some(b => b.isDefault)) {
+            list[0].isDefault = true;
+        }
+
+        // Return strictly the active bindings (or empty array if all were deactivated)
+        return list;
+    }
+
+    // Only if serverBindings array was never defined / empty, use the legacy standalone settings
+    if (this.config.apiUrl && this.config.apiUrl.trim()) {
+        const defaultName = this.config.backendType === 'lollms' ? 'Lollms (Default)' : `${this.config.backendType.toUpperCase()} (Default)`;
+        list.push({
+            id: 'primary',
+            name: defaultName,
+            apiUrl: this.config.apiUrl.trim(),
+            apiKey: (this.config.apiKey || '').trim(),
+            backendType: this.config.backendType,
+            disableSslVerification: !!this.config.disableSslVerification,
+            sslCertPath: this.config.sslCertPath,
+            useLollmsExtensions: this.config.useLollmsExtensions,
+            enabled: true,
+            isDefault: true
+        });
     }
 
     return list;
@@ -405,16 +473,17 @@ export class LollmsAPI {
           const models = await this.getModels(true);
           Logger.info(`Connection test success. Models found: ${models.length}`);
           if (models.length > 0) {
+            const sample = models.slice(0, 5).map(m => m.id.includes('::') ? m.id.split('::')[1] : m.id).join(', ');
             return { 
                 success: true, 
-                message: `✅ Success! Found ${models.length} models.`,
-                details: `URL: ${this.baseUrl}\nBackend: ${this.config.backendType}`
+                message: `✅ Success! Connected and found ${models.length} model(s).`,
+                details: `URL: ${this.baseUrl}\nBackend: ${this.config.backendType}\nModels: ${sample}${models.length > 5 ? '...' : ''}`
             };
           } else {
             return {
                 success: true,
-                message: `⚠️ Connected, but 0 models returned.`,
-                details: `Server reachable at ${this.baseUrl} but returned empty list.`
+                message: `⚠️ Connected to server, but 0 models were returned.`,
+                details: `Server reachable at ${this.baseUrl} (${this.config.backendType}), but no models were detected from endpoints (/v1/models, /models, /list_models).`
             };
           }
       } catch (error: any) {
@@ -430,14 +499,24 @@ export class LollmsAPI {
   private findModelArray(obj: any): any[] | null {
     if (!obj) return null;
     if (Array.isArray(obj)) return obj;
-    
+
     if (obj.data && Array.isArray(obj.data)) return obj.data;
     if (obj.models && Array.isArray(obj.models)) return obj.models;
-    
+    if (obj.list && Array.isArray(obj.list)) return obj.list;
+    if (obj.result && Array.isArray(obj.result)) return obj.result;
+
+    // Handle dictionary formats where models are keys e.g. { "models": { "modelA": {...} } }
+    if (obj.models && typeof obj.models === 'object' && !Array.isArray(obj.models)) {
+        return Object.entries(obj.models).map(([k, v]) => (typeof v === 'object' && v ? { id: k, ...(v as any) } : { id: k }));
+    }
+    if (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data)) {
+        return Object.entries(obj.data).map(([k, v]) => (typeof v === 'object' && v ? { id: k, ...(v as any) } : { id: k }));
+    }
+
     for (const key of Object.keys(obj)) {
         if (Array.isArray(obj[key]) && obj[key].length > 0) {
             const item = obj[key][0];
-            if (typeof item === 'string' || (typeof item === 'object' && (item.id || item.name || item.model))) {
+            if (typeof item === 'string' || (typeof item === 'object' && item && (item.id || item.name || item.model || item.title))) {
                 return obj[key];
             }
         }
@@ -484,30 +563,88 @@ export class LollmsAPI {
 
     try {
         const agent = this.getAgentForBinding(binding);
-        const response = await fetch(url, {
-            method: 'GET',
-            headers,
-            signal: controller.signal,
-            agent
-        });
+        let response: any;
 
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-        const data = await response.json();
-        let rawList: any[] = [];
-
-        if (backend === 'ollama') {
-            rawList = data.models || [];
-        } else if (backend === 'google') {
-            rawList = data.models || [];
-        } else {
-            rawList = this.findModelArray(data) || [];
+        try {
+            response = await fetch(url, {
+                method: 'GET',
+                headers,
+                signal: controller.signal,
+                agent
+            });
+        } catch (fetchErr: any) {
+            // IPv4 fallback for localhost on Windows (Node 18+ ::1 issue)
+            if (url.includes('localhost')) {
+                const ipv4Url = url.replace('localhost', '127.0.0.1');
+                Logger.info(`[fetchModelsForBinding] Retrying with IPv4: ${ipv4Url}`);
+                response = await fetch(ipv4Url, {
+                    method: 'GET',
+                    headers,
+                    signal: controller.signal,
+                    agent
+                });
+            } else {
+                throw fetchErr;
+            }
         }
 
-        return rawList.map((m: any) => {
-            if (typeof m === 'string') return { id: m };
-            return { id: m.id || m.name || m.model || String(m) };
-        }).filter(m => m.id);
+        let rawList: any[] = [];
+        if (response && response.ok) {
+            const data = await response.json();
+            if (backend === 'ollama') {
+                rawList = data.models || [];
+            } else if (backend === 'google') {
+                rawList = data.models || [];
+            } else {
+                rawList = this.findModelArray(data) || [];
+            }
+        }
+
+        let formatted = rawList.map((m: any) => {
+            if (typeof m === 'string') return { id: m, name: m };
+            const id = m.id || m.name || m.model || m.title || String(m);
+            return { id, name: id };
+        }).filter(m => m.id && m.id !== '[object Object]');
+
+        // If primary endpoint returned 0 models on LoLLMs / OpenAI, probe standard fallback routes
+        if (formatted.length === 0 && (backend === 'lollms' || backend === 'openai')) {
+            const baseUrl = this.normalizeBaseUrl(binding.apiUrl);
+            const fallbackUrls = [
+                baseUrl.replace(/\/+$/, '') + '/models',
+                baseUrl.replace(/\/+$/, '') + '/list_models',
+                baseUrl.replace(/\/+$/, '') + '/api/tags',
+                baseUrl.replace(/\/+$/, '') + '/api/models',
+                baseUrl.replace(/\/+$/, '') + '/endpoints'
+            ].filter(u => u !== url);
+
+            for (const fbUrl of fallbackUrls) {
+                try {
+                    let fbRes: any;
+                    try {
+                        fbRes = await fetch(fbUrl, { method: 'GET', headers, signal: controller.signal, agent });
+                    } catch (e: any) {
+                        if (fbUrl.includes('localhost')) {
+                            fbRes = await fetch(fbUrl.replace('localhost', '127.0.0.1'), { method: 'GET', headers, signal: controller.signal, agent });
+                        }
+                    }
+                    if (fbRes && fbRes.ok) {
+                        const fbData = await fbRes.json();
+                        const fbList = this.findModelArray(fbData);
+                        if (fbList && fbList.length > 0) {
+                            formatted = fbList.map((m: any) => {
+                                if (typeof m === 'string') return { id: m, name: m };
+                                const id = m.id || m.name || m.model || m.title || String(m);
+                                return { id, name: id };
+                            }).filter(m => m.id && m.id !== '[object Object]');
+                            Logger.info(`[fetchModelsForBinding] Resolved ${formatted.length} models using fallback endpoint: ${fbUrl}`);
+                            break;
+                        }
+                    }
+                } catch {}
+            }
+        }
+
+        return formatted;
 
     } finally {
         clearTimeout(timeout);
@@ -517,6 +654,9 @@ export class LollmsAPI {
   public async getModels(forceRefresh: boolean = false): Promise<Array<{ id: string; name?: string; server?: string }>> {
     Logger.info(`[getModels] Cumulative query called across all active server bindings. Force: ${forceRefresh}`);
 
+    const activeBindings = this.getAllActiveBindings();
+    const activeServerNames = new Set(activeBindings.map(b => b.name));
+
     if (forceRefresh) {
         this._cachedModels = null;
         this._modelToBindingMap.clear();
@@ -525,21 +665,35 @@ export class LollmsAPI {
             this.globalState.update('lollms_models_cache', undefined);
         }
     } else {
+        // Validate in-memory cache against currently active servers
         if (this._cachedModels && this._cachedModels.length > 0) {
-            return this._cachedModels;
+            const isValid = this._cachedModels.every(m => !m.server || activeServerNames.has(m.server));
+            if (isValid && activeBindings.length > 0) {
+                return this._cachedModels;
+            }
+            this._cachedModels = null;
         }
 
         if (this.globalState) {
             const storedModels = this.globalState.get<Array<{ id: string; name?: string; server?: string }>>('lollms_models_cache');
             if (storedModels && storedModels.length > 0) {
-                this._cachedModels = storedModels;
-                return storedModels;
+                const isValid = storedModels.every(m => !m.server || activeServerNames.has(m.server));
+                if (isValid && activeBindings.length > 0) {
+                    this._cachedModels = storedModels;
+                    return storedModels;
+                }
+                this.globalState.update('lollms_models_cache', undefined);
             }
         }
     }
 
-    const activeBindings = this.getAllActiveBindings();
     if (activeBindings.length === 0) {
+        this._cachedModels = [];
+        this._modelToBindingMap.clear();
+        this._rawModelToBindingMap.clear();
+        if (this.globalState) {
+            this.globalState.update('lollms_models_cache', []);
+        }
         return [];
     }
 

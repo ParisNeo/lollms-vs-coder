@@ -1001,8 +1001,11 @@ ${originalFileContent}
 **INSTRUCTIONS FOR REPAIR:**
 1. Your SEARCH block was NOT an exact match of the lines currently in the file.
 2. Check for exact indentation, whitespace, quotes, and punctuation.
-3. Provide the CORRECTED patch block. Include 2-3 lines of unchanged context in the SEARCH block to guarantee a unique match.
-4. Output **ONLY** the corrected \`<<<<<<< SEARCH ... >>>>>>> REPLACE\` block. Do not wrap in markdown or conversation.
+3. **NEVER WRITE VERY LONG PATCHES**: Keep SEARCH/REPLACE blocks very short and focused (1 to 5 lines of modification with minimal 1-2 line context).
+4. **USE SYMBOL REPLACEMENT FOR EXTENSIVE CHANGES**: If many changes are required across a function, class, or method, output a targeted symbol replacement instead of a long patch:
+   \`<file path="${sanitizedFilePath}" action="update_symbol" symbol="SymbolName">\` (or \`\`\`language:${sanitizedFilePath}:SymbolName\`).
+5. Provide the CORRECTED block. Include 1-2 lines of unchanged context in the SEARCH block to guarantee a unique match.
+6. Output **ONLY** the corrected block. Do not wrap in markdown or conversation.
 `;
 
                 try {
@@ -1335,8 +1338,10 @@ ${originalContent}
             if (applyCount > 0 || errors.length > 0) {
                 const wasActuallyModified = currentContent !== originalContent;
 
+                // PERSISTENCE MANDATE: Always apply and save any succeeded hunks so valid edits are never lost
                 if (wasActuallyModified) {
-                    if (options?.silent) {
+                    const shouldPersistDirectly = options?.silent || options?.autoSave;
+                    if (shouldPersistDirectly) {
                         const edit = new vscode.WorkspaceEdit();
                         const fullRange = new vscode.Range(
                             new vscode.Position(0, 0),
@@ -1348,7 +1353,7 @@ ${originalContent}
                             await document.save();
                             services.contextManager.refreshFileInCache(fileUri);
                             services.contextManager.getContextStateProvider()?.addFilesToContext([sanitizedFilePath]).catch(() => {});
-                            Logger.info(`replaceCode: Successfully persisted modifications to disk for ${sanitizedFilePath} (${applyCount}/${matches.length} hunks applied)`);
+                            Logger.info(`replaceCode: Persisted ${applyCount}/${matches.length} succeeded hunks to disk for ${sanitizedFilePath}`);
                         }
                     } else {
                         const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
@@ -1616,7 +1621,7 @@ ${originalContent}
                         `**Error:** ${diffErr.message}\n\n` +
                         `**Original File Content:**\n\`\`\`\n${originalContent}\n\`\`\`\n\n` +
                         `**Your failing patch:**\n\`\`\`diff\n${patchContent}\n\`\`\`\n\n` +
-                        `Please fix your code. Verify that the context lines in your diff exactly match the original file.`;
+                        `Please fix your code. Keep patches very short and focused (1-5 lines). If making many changes in a function/class, use symbol replacement.`;
                     
                     await ChatPanel.currentPanel.sendMessage({ role: 'user', content: repairPrompt });
                     return { success: false, error: "AI repair requested" };

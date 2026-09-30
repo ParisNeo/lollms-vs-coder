@@ -1379,12 +1379,18 @@ ${transcript}`;
         fallbackPromptText?: string
     ): GovernorArbitrationResult {
         const briefingText = briefingContent !== undefined ? briefingContent : "";
+        const finalTree = (contextData.projectTree && contextData.projectTree.trim()) 
+            ? contextData.projectTree 
+            : "```text\n./: [Workspace root]\n```";
+
         const projectStateText = `
 ### 📂 ATTACHED PROJECT CONTEXT
 I am providing you with the current, ground-truth state of my project files and the technical briefing.
 
 ${briefingText && !briefingText.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefingText}\n` : ""}
-${contextData.projectTree ? `#### 🌳 PROJECT STRUCTURE\n${contextData.projectTree}\n` : ""}
+#### 🌳 PROJECT STRUCTURE
+${finalTree}
+
 ${contextData.selectedFilesContent ? `#### 📄 FILE CONTENTS\n${contextData.selectedFilesContent}` : "*(No files currently selected)*"}
 --------------------------------------------------`.trim();
 

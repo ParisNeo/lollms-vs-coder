@@ -132,6 +132,7 @@ export class ChatPanel {
     this._extensionUri = services.extensionUri;
     this._lollmsAPI = services.lollmsAPI;
     this._discussionManager = services.discussionManager;
+    this._contextManager = services.contextManager;
     this.discussionId = discussionId;
     this._gitIntegration = services.gitIntegration;
     this._skillsManager = services.skillsManager;
@@ -211,7 +212,28 @@ export class ChatPanel {
         const modifiedFiles = new Set<string>();
         let blockIndex = 0; // Initialize precise index tracker
 
-        // 0. Process Mission Briefing Doctrine Tags (Autonomous in Agent Mode or when Auto-Apply is active)
+        // 0. Process Mute & Unmute Files Tags
+        const muteRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<mute_files\b[^>]*?>([\s\S]*?)<\/mute_files>/gim;
+        let muteMatch;
+        while ((muteMatch = muteRegex.exec(content)) !== null) {
+            if (signal.aborted) break;
+            const paths = muteMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+            if (paths.length > 0) {
+                await this.muteFiles(paths);
+            }
+        }
+
+        const unmuteRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<unmute_files\b[^>]*?>([\s\S]*?)<\/unmute_files>/gim;
+        let unmuteMatch;
+        while ((unmuteMatch = unmuteRegex.exec(content)) !== null) {
+            if (signal.aborted) break;
+            const paths = unmuteMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+            if (paths.length > 0) {
+                await this.unmuteFiles(paths);
+            }
+        }
+
+        // 0.5. Process Mission Briefing Doctrine Tags (Autonomous in Agent Mode or when Auto-Apply is active)
         const isAgent = this._discussionCapabilities.agentMode === true;
         const isAutoApply = this._discussionCapabilities.autoApply === true;
         const briefingRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<mission_briefing\b([^>]*?)>([\s\S]*?)<\/mission_briefing>/gim;
@@ -286,6 +308,7 @@ export class ChatPanel {
                         blockIndex: currentBlockIndex
                     });
                 } else if (result?.succeededHunks && result.succeededHunks.length > 0) {
+                    // Record and mark succeeded hunks immediately
                     for (const sIdx of result.succeededHunks) {
                         await this.updateAppliedState(messageId, currentBlockIndex, sIdx);
                     }
@@ -450,20 +473,21 @@ export class ChatPanel {
         this.log(`Guardian: Starting structural audit for ${filePaths.length} files.`);
 
         const auditPrompt = `### 🛡️ GUARDIAN AUDIT MISSION
-        I have just applied changes to the following files: [${filePaths.join(', ')}].
+I have just applied changes to the following files: [${filePaths.join(', ')}].
 
-        **TASK:**
-        Perform a cold, critical audit of the current state of these files on disk. Look specifically for:
-        1. **Bad Indentation**: Are there mixed tabs/spaces or broken nesting levels?
-        2. **Missing Imports**: Did the last edit use a library or local module without importing it?
-        3. **Missing Definitions**: Are there calls to functions/classes that don't exist in the context?
-        4. **Structural Malformations**: Are there unclosed braces or leaked Aider markers?
+**TASK:**
+Perform a cold, critical audit of the current state of these files on disk. Look specifically for:
+1. **Bad Indentation**: Are there mixed tabs/spaces or broken nesting levels?
+2. **Missing Imports**: Did the last edit use a library or local module without importing it?
+3. **Missing Definitions**: Are there calls to functions/classes that don't exist in the context?
+4. **Structural Malformations**: Are there unclosed braces or leaked Aider markers?
 
-        **INSTRUCTIONS:**
-        - Provide surgical fixes using **AIDER SEARCH/REPLACE** blocks.
-        - If a file is perfect, do not include it.
-        - If everything is perfect, respond with "VERIFICATION PASSED".
-        - Output ONLY the code blocks. No conversational chatter.`;
+**INSTRUCTIONS:**
+- **NEVER WRITE VERY LONG PATCHES**: Provide surgical, very short and focused **AIDER SEARCH/REPLACE** blocks (1-5 lines of change).
+- **SYMBOL REPLACEMENT FOR EXTENSIVE CHANGES**: If extensive changes are required for a function or class, use targeted symbol replacement (\`<file path="..." action="update_symbol" symbol="SymbolName">\`) instead of long patching.
+- If a file is perfect, do not include it.
+- If everything is perfect, respond with "VERIFICATION PASSED".
+- Output ONLY the code blocks. No conversational chatter.`;
 
         try {
             const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
@@ -562,27 +586,29 @@ export class ChatPanel {
 
           const systemPrompt = "You are a surgical code repair expert. You analyze original files and failing Aider patches, then output a corrected version.";
           const userPrompt = `### 🛑 SEARCH/REPLACE FAILURE REPORT (ATTEMPT ${currentAttempt} of ${maxAttempts})
-  The following patch failed to apply to \`${filePath}\`.
+The following patch failed to apply to \`${filePath}\`.
 
-  **CRITICAL ERROR:** 
-  "${errorMsg}"
+**CRITICAL ERROR:** 
+"${errorMsg}"
 
-  **YOUR PREVIOUS ATTEMPT:**
-  \`\`\`diff
-  ${failingPatch}
-  \`\`\`
+**YOUR PREVIOUS ATTEMPT:**
+\`\`\`diff
+${failingPatch}
+\`\`\`
 
-  **ACTUAL FILE CONTENT (REFERENCE):**
-  \`\`\`
-  ${originalFileContent}
-  \`\`\`
+**ACTUAL FILE CONTENT (REFERENCE):**
+\`\`\`
+${originalFileContent}
+\`\`\`
 
-  **INSTRUCTIONS FOR REPAIR:**
-  1. Your SEARCH block was NOT a literal, character-for-character match of the file content.
-  2. Check for **indentation differences** (spaces vs tabs) and **trailing whitespace**.
-  3. **DO NOT REPEAT YOUR PREVIOUS ATTEMPT**. It failed because it didn't match. You must write a different search block.
-  4. Provide the CORRECTED block. Include 2-3 lines of unchanged context in the SEARCH section to ensure a unique match.
-  5. Output **ONLY** the corrected \`<<<<<<< SEARCH ... >>>>>>> REPLACE\` block. Do not wrap it in other code blocks.`;
+**INSTRUCTIONS FOR REPAIR:**
+1. Your SEARCH block was NOT a literal, character-for-character match of the file content.
+2. Check for **indentation differences** (spaces vs tabs) and **trailing whitespace**.
+3. **DO NOT REPEAT YOUR PREVIOUS ATTEMPT**. It failed because it didn't match. You must write a different search block.
+4. **NEVER WRITE VERY LONG PATCHES**: Keep SEARCH/REPLACE blocks very short and focused (1-5 lines of modification).
+5. **USE SYMBOL REPLACEMENT FOR EXTENSIVE CHANGES**: If you need to make many changes to a function or class, do NOT output a long patch. Instead, output a targeted symbol replacement: \`<file path="${filePath}" action="update_symbol" symbol="SymbolName">\` (or \`\`\`language:${filePath}:SymbolName\`).
+6. Provide the CORRECTED block. Include 1-2 lines of unchanged context in the SEARCH section to ensure a unique match.
+7. Output **ONLY** the corrected block. Do not wrap it in other code blocks.`;
 
           try {
               const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
@@ -1000,24 +1026,27 @@ export class ChatPanel {
                     const filesWithWeights = await Promise.all(rawFiles.filter(f => f && f.path).map(async f => {
                         let bytes = f.bytes || 0;
                         let tokens = f.tokens || 0;
+                        let mtime = f.mtime || 0;
                         const cached = (this._contextManager as any)._fileContentCache?.get(f.path);
                         if (cached?.content) {
                             bytes = cached.size || cached.content.length;
                             tokens = Math.ceil(cached.content.length / 3.5);
-                        } else if (bytes === 0) {
+                            mtime = cached.mtime || mtime;
+                        } else if (bytes === 0 || mtime === 0) {
                             const res = await this._contextManager.resolveWorkspaceFromPath(f.path);
                             if (res) {
                                 try {
                                     const st = await vscode.workspace.fs.stat(res.uri);
                                     bytes = st.size;
                                     tokens = Math.ceil(st.size / 3.5);
+                                    mtime = st.mtime;
                                 } catch {}
                             }
                         }
                         if (tokens === 0 && bytes > 0) {
                             tokens = Math.max(1, Math.ceil(bytes / 3.5));
                         }
-                        return { path: f.path, bytes, tokens, state: f.state };
+                        return { path: f.path, bytes, tokens, mtime, state: f.state };
                     }));
                     includedFiles = filesWithWeights as any;
                 } catch (e) {
@@ -1058,6 +1087,7 @@ export class ChatPanel {
                         command: 'updateContext', 
                         context: contextTextToSend,
                         files: includedFiles,
+                        projectTree: cachedContext.projectTree || '',
                         skills: cachedContext.importedSkills || [],
                         tools: equippedTools || [],
                         diagrams: cachedContext.diagrams || [],
@@ -1540,17 +1570,20 @@ export class ChatPanel {
                         const includedFiles = await Promise.all(rawIncluded.filter(f => f && f.path).map(async f => {
                             let bytes = f.bytes || 0;
                             let tokens = f.tokens || 0;
+                            let mtime = f.mtime || 0;
                             const cached = (self._contextManager as any)._fileContentCache?.get(f.path);
                             if (cached?.content) {
                                 bytes = cached.size || cached.content.length;
                                 tokens = Math.ceil(cached.content.length / 3.5);
-                            } else if (bytes === 0) {
+                                mtime = cached.mtime || mtime;
+                            } else if (bytes === 0 || mtime === 0) {
                                 const res = await self._contextManager.resolveWorkspaceFromPath(f.path);
                                 if (res) {
                                     try {
                                         const st = await vscode.workspace.fs.stat(res.uri);
                                         bytes = st.size;
                                         tokens = Math.ceil(st.size / 3.5);
+                                        mtime = st.mtime;
                                     } catch {}
                                 }
                             }
@@ -1561,6 +1594,7 @@ export class ChatPanel {
                                 path: f.path,
                                 bytes,
                                 tokens,
+                                mtime,
                                 state: f.state,
                                 hasContent: false
                             };
@@ -1579,6 +1613,7 @@ export class ChatPanel {
                             command: 'updateContextDelta', 
                             action: 'sync_all',
                             files: includedFiles,
+                            projectTree: context.projectTree || '',
                             skills: (currentSkills || []).map(s => ({ id: s.id, name: s.name, description: s.description })), // Lightweight descriptors
                             tools: equippedTools || [],
                             mutedFiles: self._currentDiscussion?.mutedFiles || [],
@@ -1809,7 +1844,10 @@ export class ChatPanel {
                     const skillTokens = Number((skillsRes as any)?.count) || 0;
                     const systemTokens = Number((systemRes as any)?.count) || 0;
                     const historyTokens = Number((historyRes as any)?.count) || 0;
-                    const treeTokens = Number((treeRes as any)?.count) || 0;
+                    const treeTokens = Math.max(
+                        Number((treeRes as any)?.count) || 0,
+                        Math.ceil((context.projectTree || '').length / 3.5)
+                    );
                     const memoryTokens = Number((memoryRes as any)?.count) || 0;
                     const briefingTokens = Number((briefingRes as any)?.count) || 0;
                     const diagramTokens = Number((diagramRes as any)?.count) || 0;
@@ -1945,7 +1983,10 @@ export class ChatPanel {
 
                         const systemTokens = Math.ceil((systemText?.length || 0) / 3.5);
                         const historyTokens = Math.ceil((historyText?.length || 0) / 3.5);
-                        const treeTokens = Math.ceil((context.projectTree?.length || 0) / 3.5);
+                        const treeTokens = Math.max(
+                            1,
+                            Math.ceil((context.projectTree?.length || '').length / 3.5)
+                        );
                         const filesTokens = Math.ceil((context.selectedFilesContent?.length || 0) / 3.5);
                         const skillsTokens = Math.ceil((context.skillsContent?.length || 0) / 3.5);
                         const briefingTokens = Math.ceil((briefingText?.length || 0) / 3.5);
@@ -2503,8 +2544,24 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                   safeFilesContent = safeFilesContent.trim() + '\n```';
               }
 
+              let treeContent = contextData?.projectTree?.trim() || '';
+              if (!treeContent || treeContent.length < 25) {
+                  try {
+                      treeContent = await this._contextManager.generateProjectTree(undefined, undefined, this._discussionCapabilities);
+                  } catch {}
+              }
+              if (!treeContent || treeContent.length < 25) {
+                  const allF = vscode.workspace.workspaceFolders || [];
+                  for (const f of allF) {
+                      const iso = await this._contextManager.generateIsolatedProjectTree(f, undefined, this._discussionCapabilities);
+                      if (iso && iso.trim().length > 10) {
+                          treeContent += `### 🌳 ${f.name.toUpperCase()} — FILE STRUCTURE\n${iso}\n`;
+                      }
+                  }
+              }
+
               const context = {
-                  tree: contextData?.projectTree || '',
+                  tree: treeContent || contextData?.projectTree || '',
                   files: safeFilesContent || contextData?.selectedFilesContent || '',
                   skills: contextData?.skillsContent || '',
                   toolManager: this.agentManager?.['toolManager']
@@ -2549,6 +2606,7 @@ The following project state was exported from VS Code.
 ## 📜 CORE INSTRUCTIONS & PERSONA
 ${systemPrompt}
 
+## 🌳 PROJECT STRUCTURE
 ${context.tree || 'No tree provided.'}
 
 ${filesSection}
@@ -2718,6 +2776,71 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
           if (!this._currentDiscussion.id.startsWith('temp-')) {
               await this._discussionManager.saveDiscussion(this._currentDiscussion);
           }
+      }
+  }
+
+  private async handleSaveAndSendMessage(messageId: string, newContent: any, role: string) {
+      if (!this._currentDiscussion) return;
+
+      const index = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
+      if (index === -1) {
+          // If message was not found in array, add as new user turn
+          await this.sendMessage({
+              id: 'user_' + Date.now(),
+              role: 'user',
+              content: newContent,
+              timestamp: Date.now()
+          });
+          return;
+      }
+
+      // Stop any existing background execution or generation
+      this.processManager.cancelForDiscussion(this.discussionId);
+      ChatPanel.activeGenerations.delete(this.discussionId);
+
+      if ((this as any)._tokenDebounceTimeout) {
+          clearTimeout((this as any)._tokenDebounceTimeout);
+          (this as any)._tokenDebounceTimeout = undefined;
+      }
+      if (this._tokenAbortController) {
+          this._tokenAbortController.abort();
+          this._tokenAbortController = null;
+      }
+
+      if (role === 'user') {
+          // Truncate conversation history to this user message and regenerate from here
+          this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index);
+
+          if (!this._currentDiscussion.id.startsWith('temp-')) {
+              await this._discussionManager.saveDiscussion(this._currentDiscussion);
+          }
+
+          await this.loadDiscussion();
+
+          const messageToSend: ChatMessage = {
+              id: 'user_' + Date.now() + Math.random().toString(36).substring(2),
+              role: 'user',
+              content: newContent,
+              timestamp: Date.now()
+          };
+
+          await this.sendMessage(messageToSend);
+      } else {
+          // For assistant messages: update the content in-place and prompt the AI to continue from it
+          this._currentDiscussion.messages[index].content = newContent;
+
+          if (!this._currentDiscussion.id.startsWith('temp-')) {
+              await this._discussionManager.saveDiscussion(this._currentDiscussion);
+          }
+
+          await this.loadDiscussion();
+
+          // Trigger next turn to let AI continue from the corrected assistant response
+          await this.sendMessage({
+              id: 'user_continue_' + Date.now(),
+              role: 'user',
+              content: "Please proceed with the next step based on the response above."
+          });
       }
   }
   
@@ -3160,15 +3283,17 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
         const mutedDiagrams = this._currentDiscussion.mutedDiagrams || [];
 
         // Fetch contextData lexically before utilizing it in sendMessage
+        // Always provide the tree to ground the AI in the project structure
         const contextData = await this._contextManager.getContextContent({
             importedSkillIds: importedIds,
-            includeTree: !isContextMuted,
+            includeTree: true,
             discussionId: this.discussionId,
             mutedFiles: mutedFiles,
             mutedSkills: mutedSkills,
             mutedDiagrams: mutedDiagrams,
             modelName: targetModel,
-            signal: controller.signal
+            signal: controller.signal,
+            capabilities: this._discussionCapabilities
         });
 
         // Phase 2: Neural Memory & Prompt Assembly
@@ -3208,13 +3333,23 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
         // 2. Prepare the Bundled Project Context Message (User role)
         const briefing = this._contextManager.renderBriefing(this._currentDiscussion);
 
+        // Guarantee that the tree is non-empty before assembling project context
+        if (!localContext.tree || !localContext.tree.trim()) {
+            try {
+                localContext.tree = await this._contextManager.generateProjectTree(controller.signal, undefined, this._discussionCapabilities);
+                contextData.projectTree = localContext.tree;
+            } catch {}
+        }
+
         const projectStateText = `
 ### 📂 ATTACHED PROJECT CONTEXT
 I am providing you with the current, ground-truth state of my project files and the Librarian's technical briefing. 
 Use this information as your current "vision" of the workspace.
 
 ${briefing && !briefing.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefing}\n` : ""}
-${localContext.tree ? `#### 🌳 PROJECT STRUCTURE\n${localContext.tree}\n` : ""}
+#### 🌳 PROJECT STRUCTURE
+${localContext.tree || "```text\n./: [Workspace root]\n```"}
+
 ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No files currently selected)*"}
 --------------------------------------------------
 `.trim();
@@ -3398,7 +3533,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                 // Recalculate on-demand context weights to keep track of dynamic folder/file selections
                 const currentData = await this._contextManager.getContextContent({ 
                     importedSkillIds: importedIds,
-                    includeTree: !isContextMuted,
+                    includeTree: true,
                     mutedFiles: this._currentDiscussion?.mutedFiles || [],
                     modelName: targetModel 
                 });
@@ -3496,6 +3631,8 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                 const patterns = [
                     { tag: 'add_files_to_context', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<add_files_to_context\b([^>]*?)>([\s\S]*?)<\/add_files_to_context>/gim },
                     { tag: 'remove_files_from_context', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<remove_files_from_context\b([^>]*?)>([\s\S]*?)<\/remove_files_from_context>/gim },
+                    { tag: 'mute_files', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<mute_files\b([^>]*?)>([\s\S]*?)<\/mute_files>/gim },
+                    { tag: 'unmute_files', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<unmute_files\b([^>]*?)>([\s\S]*?)<\/unmute_files>/gim },
                     { tag: 'unpack_directory', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<unpack_directory\b([^>]*?)>([\s\S]*?)<\/unpack_directory>/gim },
                     { tag: 'peek_files', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/gim },
                     { tag: 'query_architecture', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<query_architecture\b([^>]*?)>([\s\S]*?)<\/query_architecture>/gim },
@@ -3621,6 +3758,16 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                                 await this._contextManager.getContextStateProvider()?.setStateForUris(uris, 'tree-only');
                                 toolResult = `Success: Removed ${filesToRemove.join(', ')} from context.`;
                                 completedDynamicActions.push(`Removed ${filesToRemove.length} files from context.`);
+                            } else if (action.tag === 'mute_files') {
+                                const filesToMute = action.params.split(/[\s\r\n,]+/).map(f => f.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+                                await this.muteFiles(filesToMute);
+                                toolResult = `Success: Muted content for [${filesToMute.join(', ')}]. Files remain tracked in tree tagged [M] with 0 content tokens.`;
+                                completedDynamicActions.push(`Muted ${filesToMute.length} files to save tokens.`);
+                            } else if (action.tag === 'unmute_files') {
+                                const filesToUnmute = action.params.split(/[\s\r\n,]+/).map(f => f.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+                                await this.unmuteFiles(filesToUnmute);
+                                toolResult = `Success: Unmuted content for [${filesToUnmute.join(', ')}]. Full content is now active and tagged [C].`;
+                                completedDynamicActions.push(`Unmuted ${filesToUnmute.length} files.`);
                             } else if (action.tag === 'unpack_directory') {
                                 const rawDirs = action.params.split(/[\s\r\n,]+/).map((d: string) => d.trim().replace(/^['"]|['"]$/g, '')).filter((d: string) => d && !d.startsWith('<'));
                                 if (rawDirs.length === 0) {
@@ -3730,6 +3877,12 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                         if (action.tag === 'add_files_to_context') {
                             const filesToAdd = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
                             blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-cloud-download' : 'codicon-error'}"></i> ${isSuccess ? 'Loaded Files Context' : 'File Loading Notice'}: ${filesToAdd.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        } else if (action.tag === 'mute_files') {
+                            const files = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(Boolean);
+                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-eye-closed"></i> Muted Files: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        } else if (action.tag === 'unmute_files') {
+                            const files = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(Boolean);
+                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-eye"></i> Unmuted Files: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
                         } else if (action.tag === 'remove_files_from_context') {
                             const filesToRemove = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
                             blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-trash' : 'codicon-error'}"></i> ${isSuccess ? 'Pruned Files Context' : 'Pruning Failed'}: ${filesToRemove.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
@@ -4782,6 +4935,212 @@ ${targetContent}
       }
   }
 
+  /**
+   * Discovers the project test runner and folders (e.g. pytest, npm test, cargo test).
+   */
+  private async detectTestCommand(folder: vscode.WorkspaceFolder): Promise<{ command: string; framework: string }> {
+      // 1. Python detection: inspect test directories
+      const testDirs = ['tests', 'test', 'src/tests', 'testing'];
+      let foundTestDir: string | undefined;
+
+      for (const d of testDirs) {
+          try {
+              const stat = await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, d));
+              if (stat.type === vscode.FileType.Directory) {
+                  foundTestDir = d;
+                  break;
+              }
+          } catch {}
+      }
+
+      const hasPyFiles = (await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '**/*.py'), '**/node_modules/**', 1)).length > 0;
+      const hasPyConfig = (await vscode.workspace.findFiles(new vscode.RelativePattern(folder, '{pyproject.toml,setup.py,pytest.ini,setup.cfg,requirements.txt}'), '**/node_modules/**', 1)).length > 0;
+
+      if (hasPyFiles || hasPyConfig || foundTestDir) {
+          const target = foundTestDir ? foundTestDir : "";
+          return {
+              command: target ? `python -m pytest ${target} -v` : `python -m pytest -v`,
+              framework: 'pytest'
+          };
+      }
+
+      // 2. Node.js detection
+      try {
+          const pkgUri = vscode.Uri.joinPath(folder.uri, 'package.json');
+          const pkgBytes = await vscode.workspace.fs.readFile(pkgUri);
+          const pkg = JSON.parse(Buffer.from(pkgBytes).toString('utf8'));
+          if (pkg.scripts && pkg.scripts.test && !pkg.scripts.test.includes('no test specified')) {
+              return { command: 'npm test', framework: 'npm' };
+          }
+      } catch {}
+
+      // 3. Rust detection
+      try {
+          await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, 'Cargo.toml'));
+          return { command: 'cargo test', framework: 'cargo' };
+      } catch {}
+
+      // 4. Go detection
+      try {
+          await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, 'go.mod'));
+          return { command: 'go test -v ./...', framework: 'go' };
+      } catch {}
+
+      // Default fallback
+      return {
+          command: foundTestDir ? `pytest ${foundTestDir}` : 'pytest',
+          framework: 'pytest'
+      };
+  }
+
+  /**
+   * Executes project tests, captures output to test_run.log, adds the log to context,
+   * and dispatches a prompt to the LLM to inspect results and fix failures.
+   */
+  public async handleRunTestsAndReport() {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) {
+          vscode.window.showErrorMessage("Active workspace required to run tests.");
+          return;
+      }
+
+      const detected = await this.detectTestCommand(workspaceFolder);
+      const commandInput = await vscode.window.showInputBox({
+          prompt: `Confirm or customize the test command for ${workspaceFolder.name}:`,
+          value: detected.command,
+          placeHolder: "e.g. python -m pytest tests -v, npm test, cargo test"
+      });
+
+      if (!commandInput || !commandInput.trim()) return;
+
+      const finalCmd = commandInput.trim();
+      const { id: procId, controller } = this.processManager.register(this.discussionId, `Running tests: ${finalCmd}...`);
+      this.updateGeneratingState();
+
+      await this.addMessageToDiscussion({
+          id: 'test_run_launch_' + Date.now(),
+          role: 'system',
+          content: `🧪 **Executing Project Tests**\nCommand: \`${finalCmd}\`\n*Running tests in background, capturing output to \`test_run.log\`...*`,
+          skipInPrompt: true
+      });
+
+      try {
+          const { runCommandInTerminal } = require('../../extensionState');
+          let res: { success: boolean; output: string };
+
+          if (this.agentManager) {
+              res = await this.agentManager.runCommand(finalCmd, controller.signal, { timeoutMs: 180000 });
+          } else {
+              res = await runCommandInTerminal(finalCmd, workspaceFolder.uri.fsPath, "Test Runner", controller.signal, { stealth: true, timeoutMs: 180000 });
+          }
+
+          const timestamp = new Date().toISOString();
+          const isPassed = res.success && !res.output.toLowerCase().includes('failed,') && !res.output.toLowerCase().includes('errors=');
+          const statusText = isPassed ? 'PASSED (Exit Code: 0)' : 'FAILED (Exit Code: 1)';
+
+          const logContent = `======================================================================
+TEST RUN EXECUTION REPORT
+Timestamp: ${timestamp}
+Project: ${workspaceFolder.name}
+Command: ${finalCmd}
+Status: ${statusText}
+OUTPUT:
+${res.output || '(No output recorded)'}
+`;
+
+          const logFileName = 'test_run.log';
+          const logUri = vscode.Uri.joinPath(workspaceFolder.uri, logFileName);
+          await vscode.workspace.fs.writeFile(logUri, Buffer.from(logContent, 'utf8'));
+
+          // Add test_run.log to active context
+          await this._contextManager.getContextStateProvider()?.addFilesToContext([logFileName]);
+          this._contextManager.recordRecentlyAddedFiles([logFileName]);
+          this.recordCurrentPromptFiles([logFileName]);
+          await this.updateContextAndTokens({ isBackgroundSync: false });
+
+          vscode.window.showInformationMessage(`Tests ${isPassed ? 'passed' : 'failed'}. Output saved to ${logFileName} and added to context.`);
+
+          let userPrompt = "";
+          if (isPassed) {
+              userPrompt = `I executed the project tests using \`${finalCmd}\`. The output has been saved to \`${logFileName}\` and added to your context.\n\nAll tests passed successfully! Please review the test results in \`${logFileName}\` and provide a brief confirmation.`;
+          } else {
+              userPrompt = `I executed the project tests using \`${finalCmd}\` and tests failed. The execution output has been saved to \`${logFileName}\` and added to your context.\n\nPlease inspect the failures in \`${logFileName}\`, locate the source files responsible, and provide surgical search/replace patches to fix the issues.`;
+          }
+
+          this.processManager.unregister(procId);
+          this.updateGeneratingState();
+
+          await this.sendMessage({
+              id: 'user_test_run_' + Date.now(),
+              role: 'user',
+              content: userPrompt
+          });
+
+      } catch (err: any) {
+          this.processManager.unregister(procId);
+          this.updateGeneratingState();
+          if (err.name !== 'AbortError') {
+              vscode.window.showErrorMessage(`Test run failed: ${err.message}`);
+              await this.addMessageToDiscussion({
+                  role: 'system',
+                  content: `❌ **Test Execution Error:** ${err.message}`,
+                  skipInPrompt: true
+              });
+          }
+      }
+  }
+
+  public async muteFiles(paths: string[]): Promise<number> {
+      if (!this._currentDiscussion || !Array.isArray(paths) || paths.length === 0) return 0;
+      if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
+
+      let addedCount = 0;
+      for (const rawP of paths) {
+          const targetPath = String(rawP).replace(/\\/g, '/').trim();
+          if (!targetPath) continue;
+          const alreadyMuted = this._currentDiscussion.mutedFiles.some(p => {
+              const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+              const cleanT = targetPath.toLowerCase();
+              return cleanP === cleanT || cleanP.endsWith('/' + cleanT) || cleanT.endsWith('/' + cleanP);
+          });
+          if (!alreadyMuted) {
+              this._currentDiscussion.mutedFiles.push(targetPath);
+              addedCount++;
+          }
+      }
+
+      this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
+
+      if (!this._currentDiscussion.id.startsWith('temp-')) {
+          await this._discussionManager.saveDiscussion(this._currentDiscussion);
+      }
+      await this.updateContextAndTokens({ isBackgroundSync: false });
+      return addedCount;
+  }
+
+  public async unmuteFiles(paths: string[]): Promise<number> {
+      if (!this._currentDiscussion || !Array.isArray(paths) || paths.length === 0) return 0;
+      if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
+
+      const targetPaths = paths.map((rawP: string) => String(rawP).replace(/\\/g, '/').toLowerCase().trim());
+      const initialCount = this._currentDiscussion.mutedFiles.length;
+
+      this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(p => {
+          const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+          return !targetPaths.some((t: string) => cleanP === t || cleanP.endsWith('/' + t) || t.endsWith('/' + cleanP));
+      });
+
+      this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
+
+      const removedCount = initialCount - this._currentDiscussion.mutedFiles.length;
+
+      if (!this._currentDiscussion.id.startsWith('temp-')) {
+          await this._discussionManager.saveDiscussion(this._currentDiscussion);
+      }
+      await this.updateContextAndTokens({ isBackgroundSync: false });
+      return removedCount;
+  }
+
   public handleProjectExecutionResult(output: string, success: boolean) {
       const message: ChatMessage = {
           id: 'execution_result_' + Date.now() + Math.random().toString(36).substring(2),
@@ -5424,7 +5783,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             });
                         }
                     } else if (res && res.succeededHunks && res.succeededHunks.length > 0) {
-                        // Multi-hunk partial success: update and notify each succeeded and failed hunk
+                        // Apply and persist succeeded hunks immediately to discussion state and disk
                         for (const sIdx of res.succeededHunks) {
                             if (message.blockIndex !== undefined && message.messageId) {
                                 await this.updateAppliedState(message.messageId, message.blockIndex, sIdx, isUndo);
@@ -5523,25 +5882,24 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             const cleanPath = filePath.trim();
                             if (!cleanPath) continue;
 
-                            const res = await this._contextManager.resolveWorkspaceFromPath(cleanPath);
-                            if (res) {
-                                try {
-                                    const stat = await vscode.workspace.fs.stat(res.uri).catch(() => null);
-                                    if (stat && (stat.type === vscode.FileType.File || stat.type === vscode.FileType.Directory)) {
-                                        const normRel = res.relativePath.replace(/\\/g, '/').toLowerCase();
-                                        const normPath = cleanPath.replace(/\\/g, '/').toLowerCase();
-                                        const isIncluded = includedSet.has(normRel) || 
-                                                           includedSet.has(normPath) ||
-                                                           Array.from(includedSet).some(inc => inc === normRel || inc.endsWith('/' + normRel) || normRel.endsWith('/' + inc));
-                                        statuses[cleanPath] = isIncluded ? 'in_context' : 'not_in_context';
-                                    } else {
+                            const normPath = cleanPath.replace(/\\/g, '/').toLowerCase();
+                            const isIncluded = includedSet.has(normPath) || 
+                                               Array.from(includedSet).some(inc => inc === normPath || inc.endsWith('/' + normPath) || normPath.endsWith('/' + inc));
+
+                            if (isIncluded) {
+                                statuses[cleanPath] = 'in_context';
+                            } else {
+                                const res = await this._contextManager.resolveWorkspaceFromPath(cleanPath);
+                                if (res) {
+                                    try {
+                                        const stat = await vscode.workspace.fs.stat(res.uri).catch(() => null);
+                                        statuses[cleanPath] = stat ? 'not_in_context' : 'not_found';
+                                    } catch {
                                         statuses[cleanPath] = 'not_found';
                                     }
-                                } catch {
+                                } else {
                                     statuses[cleanPath] = 'not_found';
                                 }
-                            } else {
-                                statuses[cleanPath] = 'not_found';
                             }
                         }
                     }
@@ -6398,43 +6756,14 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 }
                 break;
             case 'bulkMuteFiles':
-                if (this._currentDiscussion && Array.isArray(message.paths)) {
-                    if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
-                    let addedCount = 0;
-                    for (const rawP of message.paths) {
-                        const targetPath = String(rawP).replace(/\\/g, '/').trim();
-                        if (!targetPath) continue;
-                        const alreadyMuted = this._currentDiscussion.mutedFiles.some(p => {
-                            const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
-                            const cleanT = targetPath.toLowerCase();
-                            return cleanP === cleanT || cleanP.endsWith('/' + cleanT) || cleanT.endsWith('/' + cleanP);
-                        });
-                        if (!alreadyMuted) {
-                            this._currentDiscussion.mutedFiles.push(targetPath);
-                            addedCount++;
-                        }
-                    }
-
-                    if (!this._currentDiscussion.id.startsWith('temp-')) {
-                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
-                    }
-                    this.updateContextAndTokens({ isBackgroundSync: false });
-                    vscode.window.showInformationMessage(`Deactivated content for ${addedCount} file(s) for this discussion (Muted).`);
+                if (Array.isArray(message.paths)) {
+                    const count = await this.muteFiles(message.paths);
+                    vscode.window.showInformationMessage(`Deactivated content for ${count} file(s) for this discussion (Muted).`);
                 }
                 break;
             case 'bulkUnmuteFiles':
-                if (this._currentDiscussion && Array.isArray(message.paths)) {
-                    if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
-                    const targetPaths = message.paths.map((rawP: string) => String(rawP).replace(/\\/g, '/').toLowerCase().trim());
-                    this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(p => {
-                        const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
-                        return !targetPaths.some((t: string) => cleanP === t || cleanP.endsWith('/' + t) || t.endsWith('/' + cleanP));
-                    });
-
-                    if (!this._currentDiscussion.id.startsWith('temp-')) {
-                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
-                    }
-                    this.updateContextAndTokens({ isBackgroundSync: false });
+                if (Array.isArray(message.paths)) {
+                    await this.unmuteFiles(message.paths);
                     vscode.window.showInformationMessage(`Reactivated content for selected file(s) for this discussion.`);
                 }
                 break;
@@ -6674,6 +7003,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         this._currentDiscussion.mutedFiles = [];
                         this._currentDiscussion.importedTools = [];
                         this._currentDiscussion.activeDiagrams = [];
+                        this._currentDiscussion.lastTokenMetrics = undefined;
                         if (!this._currentDiscussion.id.startsWith('temp-')) {
                             await this._discussionManager.saveDiscussion(this._currentDiscussion);
                         }
@@ -6921,6 +7251,9 @@ Task:
             case 'updateMessage':
                 await this.updateMessage(message.messageId, message.newContent);
                 break;
+            case 'saveAndSendMessage':
+                await this.handleSaveAndSendMessage(message.messageId, message.newContent, message.role);
+                break;
             case 'applyFileContent':
                 try {
                     const isManual = !message.options?.silent;
@@ -7009,6 +7342,9 @@ Task:
                 break;
             case 'runInActiveTerminal':
                 vscode.commands.executeCommand('lollms-vs-coder.runInActiveTerminal', message.code);
+                break;
+            case 'runTestsAndReport':
+                await this.handleRunTestsAndReport();
                 break;
             case 'executeProject':
                 await vscode.commands.executeCommand('lollms-vs-coder.executeProject', this);
@@ -8324,9 +8660,10 @@ ${doc.getText()}
 **STRICT INSTRUCTIONS:**
 1. Fix the specific lines reported above.
 ${langGuidance}
-3. **NO TRAILING COMMENTS**: Do not add placeholders or comments like "// ... existing code" or "# ... rest of code".
-4. Use **AIDER SEARCH/REPLACE** format.
-5. Output ONLY the code blocks. No chatter.`;
+3. **NEVER WRITE VERY LONG PATCHES**: Generate focused, very short SEARCH/REPLACE blocks (1 to 5 lines of change with minimal context).
+4. **SYMBOL REPLACEMENT FOR EXTENSIVE CHANGES**: If you need to make many changes across a function, method, or class, use targeted symbol replacement (\`<file path="${relativePath}" action="update_symbol" symbol="SymbolName">\`) instead of long patching.
+5. **NO TRAILING COMMENTS**: Do not add placeholders or comments like "// ... existing code" or "# ... rest of code".
+6. Output ONLY the code blocks. No chatter.`;
 
                 const systemPrompt = "You are a surgical code repair expert. Output only valid Aider SEARCH/REPLACE blocks to fix the requested errors.";
 
@@ -8424,8 +8761,8 @@ ${langGuidance}
                     // Construct surgical prompt with mutualized cache
                     const cacheText = Array.from(sharedCache.entries()).map(([p,c]) => `--- ${p} ---\n${c}`).join('\n');
                     const systemPrompt = await getProcessedSystemPrompt('surgical_agent');
-                    const userPrompt = `### REPAIR TASK\nFile: ${relPath}\n\nErrors:\n${errorLog}\n\nContent:\n${doc.getText()}\n\nShared Knowledge:\n${cacheText || 'No extra context cached yet.'}`;
-
+                    const userPrompt = `### REPAIR TASK\nFile: ${relPath}\n\nErrors:\n${errorLog}\n\nContent:\n${doc.getText()}\n\nShared Knowledge:\n${cacheText || 'No extra context cached yet.'}\n\nINSTRUCTION: Never write long patches. Output very short, focused AIDER SEARCH/REPLACE blocks (1-5 lines). If extensive changes are needed in a function/class, use symbol replacement.`;
+                    
                     autoUI.updateFileProgress(relPath, 'fixing', `Agent Decision (Attempt ${retries}/${max})...`);
                     const response = await this._lollmsAPI.sendChat([
                         { role: 'system', content: systemPrompt },

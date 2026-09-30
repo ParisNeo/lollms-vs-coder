@@ -728,8 +728,8 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
                     const cacheText = Array.from(sharedCache.entries()).map(([p,c]) => `--- ${p} ---\n${c}`).join('\n');
 
                     const systemPrompt = await getProcessedSystemPrompt('surgical_agent');
-                    const userPrompt = `### REPAIR TASK\nFile: ${relPath}\n\nErrors:\n${errorLog}\n\nContent:\n${doc.getText()}\n\nShared Knowledge:\n${cacheText}`;
-
+                    const userPrompt = `### REPAIR TASK\nFile: ${relPath}\n\nErrors:\n${errorLog}\n\nContent:\n${doc.getText()}\n\nShared Knowledge:\n${cacheText || 'No extra context cached yet.'}\n\nINSTRUCTION: Never write long patches. Output very short, focused AIDER SEARCH/REPLACE blocks (1-5 lines). If extensive changes are needed in a function/class, use symbol replacement.`;
+                    
                     autoUI.updateFileProgress(relPath, 'fixing', `Analyzing errors & dependencies (Attempt ${retries}/${max})...`, {
                         scratchpad: "Preparing prompt and context..."
                     });

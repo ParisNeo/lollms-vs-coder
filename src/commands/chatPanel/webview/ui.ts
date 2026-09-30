@@ -1570,11 +1570,13 @@ export function syncExpansionBlocks() {
     });
 
     // 2. Query extension host to check both on-disk existence and context inclusion (only when not streaming)
+    // Only query unverified blocks to eliminate redundant IPC message bursts across conversation history
     if (!state.isGenerating) {
-        document.querySelectorAll('.context-expansion-block').forEach((block: any) => {
+        document.querySelectorAll('.context-expansion-block:not([data-checked="true"])').forEach((block: any) => {
             try {
                 const files = JSON.parse(block.dataset.files || '[]');
                 if (files.length > 0 && block.id) {
+                    block.setAttribute('data-checked', 'true');
                     vscode.postMessage({
                         command: 'checkFilesStatus',
                         files,

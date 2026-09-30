@@ -241,6 +241,9 @@
                             <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
                             <button class="menu-item" id="copySystemPromptButton"><i class="codicon codicon-shield"></i><span>Copy System Prompt Only</span></button>
                             <button class="menu-item" id="copyTreeAndContentButton"><i class="codicon codicon-clippy"></i><span>Copy Tree & Content</span></button>
+                            <button class="menu-item" id="runTestsMenuBtn"><i class="codicon codicon-beaker"></i><span>Run Tests & Report to AI</span></button>
+                            <button class="menu-item" id="runTestsMenuBtn"><i class="codicon codicon-beaker"></i><span>Run Tests & Report to AI</span></button>
+                            <button class="menu-item" id="runTestsMenuBtn"><i class="codicon codicon-beaker"></i><span>Run Tests & Report to AI</span></button>
                             <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
                             <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project Entry Point</span></button>
                             <button class="menu-item" id="debugProjectButton" title="Run entry point in background and feed stdout/stderr back to LLM"><i class="codicon codicon-debug"></i><span>Debug Project Entry Point (Auto-Audit)</span></button>
@@ -1122,7 +1125,7 @@
 
     <!-- 🚀 UNIFIED BULK OPERATIONS MODAL (VISIBILITY & CONTEXT MANAGEMENT) -->
     <div id="bulk-delete-modal" class="modal">
-        <div class="modal-content" style="max-width: 720px; width: 94%; max-height: 90vh;">
+        <div class="modal-content" style="max-width: 760px; width: 94%; max-height: 90vh;">
             <div class="modal-header">
                 <h2 style="margin: 0; font-size: 14px; display: flex; align-items: center; gap: 8px;">
                     <i class="codicon codicon-layers" style="color: var(--vscode-charts-blue);"></i> Bulk Context & Visibility Operations
@@ -1133,6 +1136,13 @@
                 <p style="font-size: 11px; opacity: 0.8; margin: 0;">
                     Select files to adjust visibility (mute/reveal content) or remove them from AI context. Muted files keep their path in the tree with zero content token weight.
                 </p>
+
+                <!-- Search and Filter Bar -->
+                <div style="display: flex; align-items: center; gap: 8px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; padding: 4px 10px;">
+                    <i class="codicon codicon-search" style="opacity: 0.7; font-size: 13px;"></i>
+                    <input type="text" id="bulk-search-input" placeholder="Search files by name or directory path..." style="background: transparent; border: none; outline: none; font-size: 12px; color: var(--vscode-input-foreground); flex: 1;">
+                    <button id="bulk-search-clear-btn" class="icon-btn" style="padding: 0; width: 18px; height: 18px; display: none;" title="Clear Search"><i class="codicon codicon-close"></i></button>
+                </div>
 
                 <!-- Saved Hiding Patterns Bar -->
                 <div style="display: flex; justify-content: space-between; align-items: center; background: var(--vscode-editor-inactiveSelectionBackground); padding: 8px 12px; border-radius: 6px; border: 1px solid var(--vscode-widget-border); gap: 10px; flex-wrap: wrap;">
@@ -1159,39 +1169,31 @@
                         <label for="bulk-delete-select-all" id="bulk-delete-select-all-label" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select All</label>
                     </div>
 
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        <span style="font-size: 10px; opacity: 0.6; font-weight: 700; text-transform: uppercase; margin-right: 2px;">Sort:</span>
-                        <div class="usage-sort-controls" id="bulk-delete-sort-controls">
-                            <button class="sort-btn" id="bulk-sort-name-btn" data-col="name" title="Sort by Name (Alphabetical)">
-                                <i class="codicon codicon-sort-alphabetically"></i> Name
-                            </button>
-                            <button class="sort-btn active" id="bulk-sort-size-btn" data-col="size" title="Sort by File Size / Tokens">
-                                <i class="codicon codicon-graph-line"></i> Size
-                            </button>
-                            <div class="sort-divider"></div>
-                            <button class="sort-btn direction-btn" id="bulk-sort-dir-btn" title="Toggle Sort Direction (Ascending / Descending)">
-                                <i class="codicon codicon-arrow-down" id="bulk-sort-dir-icon"></i>
-                            </button>
-                        </div>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <select id="bulk-organize-select" style="font-size: 11px; padding: 2px 6px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; height: 24px; cursor: pointer;">
+                            <option value="tree">🌳 Folder Tree</option>
+                            <option value="heavy-to-light">📊 Size (Heavy → Light)</option>
+                            <option value="light-to-heavy">📊 Size (Light → Heavy)</option>
+                            <option value="name">🔤 Name (A-Z)</option>
+                            <option value="modified">🕒 Last Modified</option>
+                        </select>
+                        <button id="bulk-sort-tree-btn" class="icon-btn" title="Tree View"><i class="codicon codicon-folder-opened"></i></button>
+                        <button id="bulk-sort-size-btn" class="icon-btn" title="Sort by Size"><i class="codicon codicon-graph-line"></i></button>
+                        <button id="bulk-sort-name-btn" class="icon-btn" title="Sort by Name"><i class="codicon codicon-sort-alphabetically"></i></button>
+                        <button id="bulk-sort-modified-btn" class="icon-btn" title="Sort by Modified Time"><i class="codicon codicon-history"></i></button>
+                        <button id="bulk-sort-dir-btn" class="icon-btn" title="Toggle Sort Direction"><i id="bulk-sort-dir-icon" class="codicon codicon-arrow-down"></i></button>
                     </div>
                 </div>
 
-                <div id="bulk-delete-files-list" style="max-height: 320px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; display: flex; flex-direction: column; gap: 4px;"></div>
+                <!-- Files List Container -->
+                <div id="bulk-delete-files-list" style="max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px;"></div>
             </div>
-
-            <!-- Multi-Action Footer -->
-            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background);">
+            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); gap: 10px; flex-wrap: wrap;">
                 <span id="bulk-delete-summary" style="font-size: 11px; opacity: 0.8; font-family: var(--vscode-editor-font-family);">0 selected</span>
-                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                    <button id="bulk-mute-run-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 12px; font-weight: bold; border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);" title="Hide/Mute content for selected files (keep in tree at 0 tokens)">
-                        <i class="codicon codicon-eye-closed"></i> Mute Content
-                    </button>
-                    <button id="bulk-unmute-run-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 12px; font-weight: bold; border-color: var(--vscode-charts-green); color: var(--vscode-charts-green);" title="Reveal/Unmute content for selected files">
-                        <i class="codicon codicon-eye"></i> Reveal Content
-                    </button>
-                    <button id="bulk-delete-run-btn" class="code-action-btn delete-btn" style="height: 30px; padding: 0 12px; font-weight: bold;" title="Remove selected files completely from AI context">
-                        <i class="codicon codicon-trash"></i> Remove from Context
-                    </button>
+                <div style="display: flex; gap: 8px;">
+                    <button id="bulk-mute-run-btn" class="code-action-btn secondary-btn" style="height: 28px; padding: 0 10px;" title="Mute selected files (reduce content token weight to 0 while keeping files in tree)"><i class="codicon codicon-eye-closed"></i> Mute Selected</button>
+                    <button id="bulk-unmute-run-btn" class="code-action-btn secondary-btn" style="height: 28px; padding: 0 10px;" title="Reveal / Unmute selected files (reload full content into context)"><i class="codicon codicon-eye"></i> Reveal Selected</button>
+                    <button id="bulk-delete-run-btn" class="code-action-btn delete-btn" style="height: 28px; padding: 0 10px;" title="Remove selected files from AI context"><i class="codicon codicon-trash"></i> Remove from Context</button>
                 </div>
             </div>
         </div>
@@ -1804,7 +1806,9 @@
                 } else if (data.command === 'displayPlan') {
                     const plan = data.plan;
                     const hasActive = !!(plan && (plan.objective || (plan.tasks && plan.tasks.length > 0)));
-                    document.body.classList.toggle('has-active-plan', hasActive);
+                    if (document.body) {
+                        document.body.classList.toggle('has-active-plan', hasActive);
+                    }
                 }
             });
 

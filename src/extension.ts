@@ -92,6 +92,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
 
     const memoryManager = new MemoryManager(context.globalStorageUri);
     const contextManager = new ContextManager(context, lollmsAPI);
+    const contextStateProvider = new ContextStateProvider(context);
+    contextManager.setContextStateProvider(contextStateProvider);
+    const fileDecorationProvider = new FileDecorationProvider(contextStateProvider);
+    context.subscriptions.push(vscode.window.registerFileDecorationProvider(fileDecorationProvider));
+    vscode.window.registerTreeDataProvider('lollmsFileTreeView', contextStateProvider);
+
     const skillsManager = new SkillsManager(context.globalStorageUri, context); 
     const scriptRunner = new ScriptRunner(pythonExtApi);
     const promptManager = new PromptManager(context.globalStorageUri);
@@ -153,6 +159,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         console.log('[INFO] Recreating Lollms API Client...');
         try {
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const profiles = config.get<any[]>('connectionProfiles') || [];
             lollmsAPI.updateConfig({
                 apiUrl: config.get<string>('apiUrl') || 'http://localhost:9642',
                 apiKey: config.get<string>('apiKey')?.trim() || '',
@@ -161,7 +168,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
                 disableSslVerification: config.get<boolean>('disableSslVerification') || false,
                 sslCertPath: config.get<string>('sslCertPath') || '',
                 backendType: config.get<any>('backendType') || 'lollms',
-                useLollmsExtensions: config.get<boolean>('useLollmsExtensions') ?? true
+                useLollmsExtensions: config.get<boolean>('useLollmsExtensions') ?? true,
+                serverBindings: profiles
             });
             vscode.window.showInformationMessage('Lollms client successfully re-initialized.');
         } catch (error) {
@@ -363,13 +371,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         }
     }));
 
-    // Context
-    const contextStateProvider = new ContextStateProvider(context);
-    contextManager.setContextStateProvider(contextStateProvider);
-    
-    const fileDecorationProvider = new FileDecorationProvider(contextStateProvider);
-    context.subscriptions.push(vscode.window.registerFileDecorationProvider(fileDecorationProvider));
-    vscode.window.registerTreeDataProvider('lollmsFileTreeView', contextStateProvider);
+    // Context provider already initialized early at activation startup
 
     // Workspace Switching Logic (Now only handles UI updates, not state resets)
     async function switchActiveWorkspace(folder: vscode.WorkspaceFolder) {

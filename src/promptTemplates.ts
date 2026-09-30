@@ -94,13 +94,16 @@ To guarantee that neither you nor subsequent turns deviate from agreed standards
         You MUST strictly follow this decision tree to minimize token consumption and eliminate parsing errors:
 
         1. **NEW FILES**: You MUST use **FORMAT 1 (FULL FILE)**: \`<file path="..." action="write">\`.
-        2. **TOKEN-EFFICIENT SYMBOL UPDATE (PRIORITY FOR FUNCTIONS/CLASSES)**: When replacing or refactoring an entire function, method, or class, Aider Search/Replace requires printing both the full old code in SEARCH AND the full new code in REPLACE (2x token cost). In contrast, targeted symbol replacement (\`<file path="..." action="update_symbol" symbol="SymbolName">\` or \`update_function\`) ONLY outputs the new code once (1x token cost).
-           - **MANDATE**: Whenever replacing an entire function/class/method, or whenever symbol update consumes fewer tokens than duplicating code in an Aider Search block, you **MUST use targeted symbol update** (\`action="update_symbol"\` or \`update_function\`).
-        3. **MINIMAL SURGICAL PATCH (< 5 lines inside a function)**: Use **FORMAT 2 (SEARCH/REPLACE)**: \`<file path="..." action="patch">\` ONLY when altering a small snippet (1-5 lines) inside a large function where the search snippet is substantially smaller than re-outputting the entire function body.
+        2. **TOKEN-EFFICIENT SYMBOL UPDATE (PRIORITY FOR EXTENSIVE CHANGES & FUNCTIONS/CLASSES)**: 
+           - When replacing, rewriting, or making extensive changes across an entire function, method, or class, Aider Search/Replace requires printing both the full old code in SEARCH AND the full new code in REPLACE (2x token cost) and easily fails due to whitespace drifts.
+           - In contrast, targeted symbol replacement (\`<file path="..." action="update_symbol" symbol="SymbolName">\` or \`update_function\`) ONLY outputs the new code once (1x token cost).
+           - **MANDATE**: Whenever replacing an entire function/class/method, or whenever you need to make many changes across a block, you **MUST use targeted symbol update** (\`action="update_symbol"\` or \`update_function\`) instead of writing long patches.
+        3. **MINIMAL SURGICAL PATCH (1-7 lines only)**: Use **FORMAT 2 (SEARCH/REPLACE)**: \`<file path="..." action="patch">\` ONLY when altering a very small snippet (1-5 lines) inside a function. **NEVER write very long patches.** Keep SEARCH blocks focused and tightly anchored (1-2 context lines).
         4. **MAJOR REFACTOR (> 50% of the entire file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
         5. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize symbol updates (FORMAT 3) or surgical patches (FORMAT 2) based on token efficiency."}
 
         **CRITICAL MANDATES**:
+        - **NEVER WRITE VERY LONG PATCHES**: Search/Replace blocks MUST be very short and focused (1 to 5 lines of modification). If you need to make many changes across a function or class, use targeted symbol replacement instead.
         - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
         - Do NOT output conversational chatter or a "summary of changes" followed by the full file after an Aider patch. This is a severe violation of turn economy and will cause the file system patch to fail.
         - **THINKING & OBSERVATION SNIPPETS**: When writing non-updatable snippets, thoughts, illustrations, or explanations, always use standard markdown code fences (without file paths, e.g. \`\`\`typescript). The \`<file path="..." ...>\` and namespaced headers are EXCLUSIVELY reserved for actual code updates that the system should apply to disk.
@@ -162,10 +165,11 @@ To guarantee that neither you nor subsequent turns deviate from agreed standards
 
 **STRICT RULES FOR SEARCH/REPLACE:**
 1. **LITERAL MATCH**: The SEARCH block must be a character-for-character, whitespace-perfect match of the code currently on the user's disk.
-2. **MINIMALIST SEARCH BLOCKS**: Keep your SEARCH blocks as small and focused as possible (ideally 1 to 5 lines of context). Large SEARCH blocks have an exponentially higher probability of failing to match due to minor whitespace, carriage return, or formatting discrepancies.
-3. **NO SKIPPING**: Do not use \`...\` inside a SEARCH block. Include every line in the middle of your match.
-4. **ANCHORING**: Include only 2-3 lines of unchanged context code before and after the modified line(s) to ensure a unique, safe match.
-5. **ATOMICITY**: Divide complex, multi-line refactors into multiple smaller, highly focused SEARCH/REPLACE blocks within the same response.
+2. **NEVER WRITE VERY LONG PATCHES**: Keep your SEARCH blocks as small and focused as possible (1 to 5 lines of modification). Large SEARCH blocks have an exponentially higher probability of failing to match due to minor whitespace or formatting discrepancies.
+3. **USE SYMBOL REPLACEMENT FOR EXTENSIVE CHANGES**: If you need to make many changes across a function or class, do NOT output a long patch. Use targeted symbol replacement (\`<file path="..." action="update_symbol" symbol="SymbolName">\`) instead.
+4. **NO SKIPPING**: Do not use \`...\` inside a SEARCH block. Include every line in the middle of your match.
+5. **ANCHORING**: Include only 1-2 lines of unchanged context code before and after the modified line(s) to ensure a unique, safe match.
+6. **ATOMICITY**: Divide multi-site modifications into multiple smaller, highly focused SEARCH/REPLACE blocks within the same response.
 `);
         }
 
@@ -503,12 +507,17 @@ You are a vision-capable engineer. You can use XML tags to manifest visual chang
         const authorizedTagsList = isExport ? [
             `<add_files_to_context>\npath\n</add_files_to_context>`,
             `<remove_files_from_context>\npath\n</remove_files_from_context>`,
+            `<mute_files>\npath\n</mute_files>`,
+            `<unmute_files>\npath\n</unmute_files>`,
             `<delete_files>\npath\n</delete_files>`
         ].map(t => `  - \`${t}\``).join('\n') : [
             capabilities?.fileRename !== false ? `<move_files>\nsource->destination\n</move_files>` : null,
             `<copy_files>\nsource->destination\n</copy_files>`,
             capabilities?.fileDelete !== false ? `<delete_files>\npath\n</delete_files>` : null,
             `<add_files_to_context>\npath\n</add_files_to_context>`,
+            `<remove_files_from_context>\npath\n</remove_files_from_context>`,
+            `<mute_files>\npath\n</mute_files>`,
+            `<unmute_files>\npath\n</unmute_files>`,
             `<mission_briefing action="write|patch" scope="global|local">\n[Content or Aider Search/Replace block]\n</mission_briefing>`,
             `<remove_files_from_context>\npath\n</remove_files_from_context>`,
             `<unpack_directory>\npath/to/folder\n</unpack_directory>`,
@@ -543,13 +552,21 @@ ${memorySection}
 
 ### 👁️ CONTEXT COMPREHENSION & FILE DISCOVERY PROTOCOL
 - **MARKER [C] (POSSESSED CODE - DO NOT RE-REQUEST)**: Files marked **\`[C]\`** in the manifest are already fully loaded under 'LOADED FILE CONTENTS' / 'ACCESSIBLE FILE CONTENTS'. You possess their complete source code. You are **STRICTLY FORBIDDEN** from calling \`<add_files_to_context>\` for files marked \`[C]\`. Re-requesting possessed files is a critical waste of context tokens.
+- **MARKER [M] (MUTED IN CONTEXT - USE <unmute_files>)**: Files marked **\`[M]\`** are already tracked in context, but their content is temporarily suppressed (0 tokens) to save context budget. If you need to inspect or edit a muted file, **DO NOT call \`<add_files_to_context>\`**! Instead, output:
+  <unmute_files>
+  path/to/file.ext
+  </unmute_files>
+  Conversely, to mute an active file \`[C]\` and liberate context tokens, output:
+  <mute_files>
+  path/to/file.ext
+  </mute_files>
 - **INDENTED SCOPE HIERARCHY (ZERO-HALLUCINATION PATHS)**: The project structure is organized as an indented hierarchy of directory scopes using standard 4-space indentation (PEP 8 compliant):
   \`\`\`text
   ./: [.gitignore, package.json]
   src/:
       agent/: [failureHandling.ts [C]]
       commands/:
-          ./: [actionsTreeProvider.ts [C]]
+          ./: [actionsTreeProvider.ts [M]]
           chatPanel/webview/: [chatPanel.html [C], dom.ts [C]]
   \`\`\`
   * **Scope Resolution**: 4-space indentation represents parent-child directory scope.
@@ -653,23 +670,13 @@ ${isExport ? `- **File Operations**:
   path/to/file_or_folder2
   </delete_files>
 
-### 🗑️ AUTO-DELETE & FILE HYGIENE MANDATE (CRITICAL)
-- You are STRICTLY FORBIDDEN from writing text instructions telling the user to manually move, copy, or delete files (e.g., "To clean up, you should delete...").
-- You MUST execute these operations autonomously in your response using the corresponding XML tags (e.g., <delete_files>).
-- This ensures the workspace remains clean, compilable, and free of duplicate or redundant module definitions.
-
-- **Context & Memory Management (CRITICAL - ALWAYS use these flat tags, NEVER wrap them in \`<lollms_tool>\`):**
-  - **STRICT RULE**: Do NOT use attributes like 'paths=' or JSON arrays. You MUST put paths inside the tag, exactly one per line, with no quotes or commas.
-  
-  **Correct Example:**
-  <add_files_to_context>
-  src/main.py
-  src/utils.py
-  </add_files_to_context>
-
-  <remove_files_from_context>
+  <mute_files>
   path/to/file1
-  </remove_files_from_context>
+  </mute_files>
+
+  <unmute_files>
+  path/to/file1
+  </unmute_files>
 
   <project_memory action="add|update|delete" id="unique_id" title="Short Title" predicates='[{"verb": "has_tag", "targetId": "tag_name"}]'>
   Detailed content to remember

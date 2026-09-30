@@ -502,17 +502,28 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'updateContext':
                 if (Array.isArray(message.files)) {
                     if (!state.fileTokensMap) state.fileTokensMap = {};
-                    message.files.forEach((f: any) => {
-                        if (f && typeof f === 'object' && f.path) {
-                            if (f.tokens) state.fileTokensMap[f.path] = f.tokens;
-                            else if (f.bytes) state.fileTokensMap[f.path] = Math.ceil(f.bytes / 3.5);
-                        }
-                    });
+                    if (!state.fileMtimeMap) state.fileMtimeMap = {};
+                    if (message.files.length === 0) {
+                        state.fileTokensMap = {};
+                        state.fileMtimeMap = {};
+                        (window as any).lazyFilesRegistry = new Map();
+                    } else {
+                        message.files.forEach((f: any) => {
+                            if (f && typeof f === 'object' && f.path) {
+                                if (f.tokens) state.fileTokensMap[f.path] = f.tokens;
+                                else if (f.bytes) state.fileTokensMap[f.path] = Math.ceil(f.bytes / 3.5);
+                                if (f.mtime) state.fileMtimeMap[f.path] = f.mtime;
+                            }
+                        });
+                    }
                 }
                 if (message.mutedFiles) state.mutedFiles = message.mutedFiles;
                 if (message.mutedTools) state.mutedTools = message.mutedTools;
                 if (message.mutedSkills) state.mutedSkills = message.mutedSkills;
                 if (message.mutedDiagrams) state.mutedDiagrams = message.mutedDiagrams;
+                if (message.projectTree && state.lastContextData) {
+                    (state.lastContextData as any).projectTree = message.projectTree;
+                }
 
                 updateContext(
                     message.context, 
@@ -525,7 +536,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     message.mutedFiles,
                     message.mutedTools,
                     message.mutedSkills,
-                    message.mutedDiagrams
+                    message.mutedDiagrams,
+                    message.projectTree
                 );
                 updateBadges();
                 // Only schedule background sync if generation is not actively streaming
@@ -536,7 +548,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateContextDelta':
                 {
-                    const { action, files, skills, tools, briefing, selections, mutedFiles, mutedTools, mutedSkills, mutedDiagrams, filePath, content } = message;
+                    const { action, files, skills, tools, briefing, selections, mutedFiles, mutedTools, mutedSkills, mutedDiagrams, projectTree, filePath, content } = message;
 
                     if (action === 'sync_all') {
                         if (mutedFiles) state.mutedFiles = mutedFiles;
@@ -555,16 +567,19 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             mutedTools: mutedTools || state.mutedTools || [],
                             mutedSkills: mutedSkills || state.mutedSkills || [],
                             mutedDiagrams: mutedDiagrams || state.mutedDiagrams || [],
+                            projectTree: projectTree || (state.lastContextData as any)?.projectTree || "",
                             briefing: briefing,
                             selections: selections
                         };
 
                         if (!state.fileTokensMap) state.fileTokensMap = {};
+                        if (!state.fileMtimeMap) state.fileMtimeMap = {};
                         if (Array.isArray(files)) {
                             files.forEach((f: any) => {
                                 if (f && typeof f === 'object' && f.path) {
                                     if (f.tokens) state.fileTokensMap[f.path] = f.tokens;
                                     else if (f.bytes) state.fileTokensMap[f.path] = Math.ceil(f.bytes / 3.5);
+                                    if (f.mtime) state.fileMtimeMap[f.path] = f.mtime;
                                 }
                             });
                         }
@@ -1240,11 +1255,23 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if(dom.modelSelector) {
                     dom.modelSelector.innerHTML = '<option value="">Default Model</option>';
                     const models = message.models || [];
-                    models.forEach((model: {id: string}) => {
-                        const option = document.createElement('option');
-                        option.value = model.id;
-                        option.textContent = model.id;
-                        dom.modelSelector.appendChild(option);
+                    const serverGroups = new Map<string, any[]>();
+                    models.forEach((m: any) => {
+                        const sName = m.server || 'Primary Server';
+                        if (!serverGroups.has(sName)) serverGroups.set(sName, []);
+                        serverGroups.get(sName)!.push(m);
+                    });
+
+                    serverGroups.forEach((modelsInServer, serverName) => {
+                        const optGroup = document.createElement('optgroup');
+                        optGroup.label = `🖥️ ${serverName} (${modelsInServer.length})`;
+                        modelsInServer.forEach((m: any) => {
+                            const option = document.createElement('option');
+                            option.value = m.id;
+                            option.textContent = m.id.includes('::') ? m.id.split('::')[1] : m.id;
+                            optGroup.appendChild(option);
+                        });
+                        dom.modelSelector.appendChild(optGroup);
                     });
                     dom.modelSelector.value = message.currentModel || '';
                     
@@ -1377,10 +1404,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (files && state.lastContextData) {
                         state.lastContextData.files = files;
                         if (!state.fileTokensMap) state.fileTokensMap = {};
+                        if (!state.fileMtimeMap) state.fileMtimeMap = {};
                         files.forEach((f: any) => {
                             if (f && typeof f === 'object' && f.path) {
                                 if (f.tokens) state.fileTokensMap[f.path] = f.tokens;
                                 else if (f.bytes) state.fileTokensMap[f.path] = Math.ceil(f.bytes / 3.5);
+                                if (f.mtime) state.fileMtimeMap[f.path] = f.mtime;
                             }
                         });
                         if (!state.isGenerating) {

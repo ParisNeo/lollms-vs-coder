@@ -207,6 +207,7 @@ private _cachedTreeString: string | null = null;
     this._isTreeDirty = true;
     this._fileTreeObject = null;
     this._cachedVisibleFiles = null;
+    this._lastContext = null;
     this._lastContextByDiscussion.clear();
     this._unpackedDirectories.clear();
     this._fileContentCache?.clear();
@@ -788,8 +789,9 @@ private _cachedTreeString: string | null = null;
           .join('|');
       const cacheKey = `${folder.uri.toString()}-${JSON.stringify(capabilities?.folderSettings || {})}-${includedHash}-${normalizedMuted}`;
 
-      if (this._cachedIsolatedTrees.has(cacheKey) && !this._isTreeDirty) {
-          return this._cachedIsolatedTrees.get(cacheKey)!;
+      const cachedIsolated = this._cachedIsolatedTrees.get(cacheKey);
+      if (cachedIsolated && cachedIsolated.trim().length > 30 && !this._isTreeDirty) {
+          return cachedIsolated;
       }
 
       const projectTreeObj: any = {};
@@ -870,6 +872,8 @@ private _cachedTreeString: string | null = null;
                           relativePath = file.substring(firstSlash + 1);
                           fileBelongsToFolder = true;
                       }
+                  } else {
+                      fileBelongsToFolder = true;
                   }
               } else {
                   fileBelongsToFolder = true;
@@ -881,13 +885,37 @@ private _cachedTreeString: string | null = null;
           }
       }
 
+      // Direct filesystem walk fallback: Guarantees files are discovered regardless of ripgrep or glob limits
+      if (Object.keys(projectTreeObj).length === 0) {
+          const walkDir = (dirFsPath: string, relPrefix: string = ''): void => {
+              try {
+                  const entries = fs.readdirSync(dirFsPath, { withFileTypes: true });
+                  for (const entry of entries) {
+                      const name = entry.name;
+                      if (name.startsWith('.') && name !== '.gitignore' && name !== '.env.example') continue;
+                      if (['node_modules', 'venv', '.venv', 'env', '.env', 'dist', 'build', 'out', 'target', 'bin', 'obj', '__pycache__', '.lollms', '.git', '.idea', '.vscode'].includes(name.toLowerCase())) continue;
+                      const relChild = relPrefix ? `${relPrefix}/${name}` : name;
+                      if (entry.isFile()) {
+                          injectPathIntoTree(relChild);
+                      } else if (entry.isDirectory()) {
+                          walkDir(path.join(dirFsPath, name), relChild);
+                      }
+                  }
+              } catch {}
+          };
+          try {
+              walkDir(folder.uri.fsPath);
+          } catch (e) {}
+      }
+
       const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
       const mutedFilesList = capabilities?.mutedFiles || [];
       let treeString = '```text\n';
-      treeString += this.renderIndentedScopeHierarchy(projectTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList);
+      const renderedHierarchy = this.renderIndentedScopeHierarchy(projectTreeObj, folder, isMultiRoot ? folder.name : '', 30, mutedFilesList);
+      treeString += (renderedHierarchy && renderedHierarchy.trim()) ? renderedHierarchy : `./: [workspace root]\n`;
       treeString += '\n```\n';
 
-      if (!signal?.aborted) {
+      if (!signal?.aborted && Object.keys(projectTreeObj).length > 0) {
           this._cachedIsolatedTrees.set(cacheKey, treeString);
       }
       return treeString;
@@ -898,11 +926,6 @@ private _cachedTreeString: string | null = null;
       onProgress?: (percentage: number) => void,
       capabilities?: DiscussionCapabilities
   ): Promise<string> {
-      // --- GREP/TREE ACCESS CONTROL GATE ---
-      if (capabilities && capabilities.grepEnabled === false) {
-          return '## 🌳 PROJECT STRUCTURE\n*(Grep/File indexing is currently deactivated by the user to save CPU. Toggle the GREP badge in the HUD to activate.)*\n';
-      }
-
       if (!this.contextStateProvider || !vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
         return '## 🌳 PROJECT STRUCTURE\n\n*No project structure available - no workspace folder found.*\n';
       }
@@ -925,14 +948,8 @@ private _cachedTreeString: string | null = null;
         return { tree: true, content: true };
       };
 
-      const folders = vscode.workspace.workspaceFolders.filter(f => {
-        const settings = getFolderSetting(f);
-        return settings.tree !== false;
-      });
-
-      if (folders.length === 0) {
-        return '## 🌳 PROJECT STRUCTURE\n(All project structures hidden by user settings)\n';
-      }
+      // Ensure the project structure is always available as the AI's foundation
+      const folders = vscode.workspace.workspaceFolders;
 
       const contextFiles = this.contextStateProvider.getIncludedFiles();
       const filesHash = contextFiles.map(f => `${f.path}:${f.state}`).join('|');
@@ -942,8 +959,9 @@ private _cachedTreeString: string | null = null;
           .join('|');
       const projectTreeCacheKey = `${folders.map(f => f.uri.toString()).join(',')}-${JSON.stringify(folderSettings)}-${filesHash}-${normalizedMuted}`;
 
-      if (this._cachedProjectTreeMap.has(projectTreeCacheKey) && !this._isTreeDirty) {
-        return this._cachedProjectTreeMap.get(projectTreeCacheKey)!;
+      const cachedTree = this._cachedProjectTreeMap.get(projectTreeCacheKey);
+      if (cachedTree && cachedTree.trim().length > 30 && !this._isTreeDirty && !cachedTree.includes('(All project structures hidden)')) {
+        return cachedTree;
       }
 
       if (this._isTreeDirty || !this._fileTreeObject) {
@@ -1013,6 +1031,31 @@ private _cachedTreeString: string | null = null;
             }
             injectPath(filePath, rootFolderName);
           }
+
+        // Direct filesystem crawl fallback for whole project tree
+        if (Object.keys(this._fileTreeObject).length === 0) {
+            for (const folder of folders) {
+                const walkDir = (dirFsPath: string, relPrefix: string = ''): void => {
+                    try {
+                        const entries = fs.readdirSync(dirFsPath, { withFileTypes: true });
+                        for (const entry of entries) {
+                            const name = entry.name;
+                            if (name.startsWith('.') && name !== '.gitignore' && name !== '.env.example') continue;
+                            if (['node_modules', 'venv', '.venv', 'env', '.env', 'dist', 'build', 'out', 'target', 'bin', 'obj', '__pycache__', '.lollms', '.git', '.idea', '.vscode'].includes(name.toLowerCase())) continue;
+                            const relChild = relPrefix ? `${relPrefix}/${name}` : name;
+                            if (entry.isFile()) {
+                                injectPath(relChild, isMultiRoot ? folder.name : undefined);
+                            } else if (entry.isDirectory()) {
+                                walkDir(path.join(dirFsPath, name), relChild);
+                            }
+                        }
+                    } catch {}
+                };
+                try {
+                    walkDir(folder.uri.fsPath);
+                } catch (e) {}
+            }
+        }
 
         this._isTreeDirty = false;
       }
@@ -1145,7 +1188,7 @@ private _cachedTreeString: string | null = null;
 
     result.text += `### 🏷️ CONTEXT MARKERS (LEGEND)\n`;
     result.text += `- **\`[C]\` (Content Loaded)**: Full source code is ALREADY in memory under 'LOADED FILE CONTENTS'. DO NOT request with <add_files_to_context>.\n`;
-    result.text += `- **\`[M]\` (Muted by Governor)**: Content deactivated (0 tokens) to save context budget, but file is tracked in context.\n`;
+    result.text += `- **\`[M]\` (Muted in Context)**: The file is already tracked in your context, but its content is currently muted (0 tokens) to preserve context budget. DO NOT call <add_files_to_context>! Output \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to restore its content. Output \`<mute_files>\\npath/to/file.ext\\n</mute_files>\` to mute active files.\n`;
     result.text += `- **\`[D]\` (Definitions Only)**: Signatures are loaded.\n`;
     result.text += `- **(No Marker)**: File content is HIDDEN. Use <add_files_to_context> with the exact tree path to load it.\n\n`;
     
@@ -1241,11 +1284,11 @@ private _cachedTreeString: string | null = null;
       if (signal?.aborted) throw new Error("Operation cancelled");
 
       let settings = getFolderSetting(folder);
-      // Failsafe: If the user explicitly has included files in this workspace, do not mute everything
-      if (settings.tree === false && settings.content === false && contextFiles.length > 0) {
-        settings = { tree: true, content: true };
+      // Failsafe: Always guarantee the tree structure is available so the AI can scout and request files
+      if (settings.tree === false && settings.content === false) {
+        // If the user has files or wants to interact, tree must remain visible as eyes for discovery
+        settings = { tree: true, content: false };
       }
-      if (settings.tree === false && settings.content === false) continue;
 
       const projectName = folder.name;
 
@@ -1253,20 +1296,27 @@ private _cachedTreeString: string | null = null;
       result.text += `## 🏗️ PROJECT: ${projectName.toUpperCase()}\n`;
       result.text += `${'#'.repeat(50)}\n\n`;
 
-      if (includeTree && settings.tree !== false) {
-        const isolatedTree = await this.generateIsolatedProjectTree(folder, signal, options?.capabilities, options?.onScanProgress);
-        result.text += `### 🌳 ${projectName.toUpperCase()} — FILE STRUCTURE\n`;
-        result.text += isolatedTree + '\n';
-        result.projectTree += `### ${projectName}\n${isolatedTree}\n`;
-        if (!result.isolatedTrees) result.isolatedTrees = {};
-        result.isolatedTrees[folder.uri.toString()] = isolatedTree;
-      } else if (settings.tree === false) {
-        result.text += `*(Tree hidden for ${projectName} by Workspace Access Matrix)*\n\n`;
-      }
+      const isolatedTree = await this.generateIsolatedProjectTree(folder, signal, options?.capabilities, options?.onScanProgress);
+      const header = `### 🌳 ${projectName.toUpperCase()} — FILE STRUCTURE\n`;
+      result.text += header + isolatedTree + '\n';
+      result.projectTree += header + isolatedTree + '\n';
+      if (!result.isolatedTrees) result.isolatedTrees = {};
+      result.isolatedTrees[folder.uri.toString()] = isolatedTree;
 
       if (settings.content === false) {
         result.text += `*(File contents hidden for ${projectName} by Workspace Access Matrix)*\n\n`;
         continue;
+      }
+
+      // Safety check: ensure projectTree is populated
+      if (!result.projectTree.trim()) {
+        try {
+          const fallbackTree = await this.generateProjectTree(signal, undefined, options?.capabilities);
+          if (fallbackTree.trim()) {
+            result.projectTree = fallbackTree;
+            result.text += fallbackTree + '\n';
+          }
+        } catch {}
       }
 
       result.text += `### 📄 ${projectName.toUpperCase()} — LOADED FILE CONTENTS\n\n`;
@@ -1332,7 +1382,7 @@ private _cachedTreeString: string | null = null;
           });
 
           if (isMuted) {
-            projectContentBuffer += `### 📄 \`${headerPath}\` [MUTED FOR THIS DISCUSSION]\n> Content deactivated for this discussion by manual governor. Reactivate from HUD when needed.\n\n`;
+            projectContentBuffer += `### 📄 \`${headerPath}\` [M] [MUTED IN CONTEXT]\n> Content is currently muted to save context tokens (0 tokens). If you need to inspect or edit this file's code, output:\n> <unmute_files>\n> ${headerPath}\n> </unmute_files>\n\n`;
             filesInThisFolderCount++;
             continue;
           }

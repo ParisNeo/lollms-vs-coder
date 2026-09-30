@@ -725,6 +725,16 @@ if (dom.sendButton) {
         });
     }
 
+    const runTestsMenuBtn = document.getElementById('runTestsMenuBtn');
+    if (runTestsMenuBtn) {
+        runTestsMenuBtn.onclick = () => {
+            vscode.postMessage({ command: 'runTestsAndReport' });
+            if (dom.moreActionsMenu) {
+                dom.moreActionsMenu.classList.remove('visible');
+            }
+        };
+    }
+
     bindClick(dom.setEntryPointButton, 'setEntryPoint');
     bindClick(dom.executeButton, 'executeProject');
 
@@ -1811,6 +1821,36 @@ if (dom.sendButton) {
                 m.syncResultsListRows(messageId);
                 m.checkAndSyncMessageAppliedState(messageId);
             });
+
+            // 7. Automatically advance to the next unapplied hunk
+            if (!isUndo && totalHunks > 1 && tabBar) {
+                const currentApplied = state.appliedState[messageId]?.[blockIndex] || [];
+                let nextHunkIdx = -1;
+
+                // Look ahead from current hunk + 1 to end
+                for (let next = hunkIndex + 1; next < totalHunks; next++) {
+                    if (!currentApplied.includes(next)) {
+                        nextHunkIdx = next;
+                        break;
+                    }
+                }
+
+                // If not found ahead, check earlier unapplied hunks (wrap around)
+                if (nextHunkIdx === -1) {
+                    for (let prev = 0; prev < hunkIndex; prev++) {
+                        if (!currentApplied.includes(prev)) {
+                            nextHunkIdx = prev;
+                            break;
+                        }
+                    }
+                }
+
+                if (nextHunkIdx !== -1 && tabBar.children[nextHunkIdx]) {
+                    setTimeout(() => {
+                        (tabBar.children[nextHunkIdx] as HTMLElement).click();
+                    }, 180);
+                }
+            }
         });
     }
 

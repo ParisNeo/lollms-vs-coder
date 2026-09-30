@@ -440,7 +440,7 @@ export const fileMutationPlugin: TagPlugin = {
 
 export const fileOpPlugin: TagPlugin = {
     id: 'file_operations',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(move_files|copy_files|delete_files|remove_files_from_context)\b([^>]*?)>([\s\S]*?)<\/\1>/gim,
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(move_files|copy_files|delete_files|remove_files_from_context|mute_files|unmute_files)\b([^>]*?)>([\s\S]*?)<\/\1>/gim,
     render: (match) => {
         const type = match[1];
         const attrPart = match[2] || "";
@@ -473,6 +473,30 @@ export const fileOpPlugin: TagPlugin = {
             detailsHtml = lines.map(p => `
                 <div class="expansion-file-item" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
                     <span class="codicon codicon-trash" style="color: var(--vscode-charts-red, #f44336);"></span>
+                    <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p}</span>
+                </div>
+            `).join('');
+            payload = { paths: lines };
+        } else if (type === 'mute_files') {
+            title = "File Content Muting Proposed (0 Tokens)";
+            icon = "codicon-eye-closed";
+            command = "bulkMuteFiles";
+            btnText = `Mute Files (${lines.length})`;
+            detailsHtml = lines.map(p => `
+                <div class="expansion-file-item" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
+                    <span class="codicon codicon-eye-closed" style="color: var(--vscode-charts-orange, #ff9800);"></span>
+                    <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p}</span>
+                </div>
+            `).join('');
+            payload = { paths: lines };
+        } else if (type === 'unmute_files') {
+            title = "File Content Activation (Unmute) Proposed";
+            icon = "codicon-eye";
+            command = "bulkUnmuteFiles";
+            btnText = `Unmute Files (${lines.length})`;
+            detailsHtml = lines.map(p => `
+                <div class="expansion-file-item" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
+                    <span class="codicon codicon-eye" style="color: var(--vscode-charts-green, #4caf50);"></span>
                     <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p}</span>
                 </div>
             `).join('');

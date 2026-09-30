@@ -321,12 +321,13 @@ export function parseAiderHunks(rawBlock: string): AiderHunk[] {
     return hunks;
 }
 
-export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string } {
+export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string, strategy?: string } {
     const isCrlf = content.includes('\r\n');
-    const normalizedContent = content.replace(/\r\n/g, '\n');
+    const cleanUnicode = (str: string) => str.replace(/[\u00A0\u2000-\u200B\u202F\uFEFF]/g, ' ');
 
-    let normalizedSearch = sanitizeAiderMarkers((searchBlock || "").replace(/\r\n/g, '\n'));
-    let normalizedReplace = sanitizeAiderMarkers((replaceBlock || "").replace(/\r\n/g, '\n'));
+    const normalizedContent = cleanUnicode(content.replace(/\r\n/g, '\n'));
+    let normalizedSearch = cleanUnicode(sanitizeAiderMarkers((searchBlock || "").replace(/\r\n/g, '\n')));
+    let normalizedReplace = cleanUnicode(sanitizeAiderMarkers((replaceBlock || "").replace(/\r\n/g, '\n')));
 
     // Strip any residual marker lines from replaceBlock to prevent leaks
     normalizedReplace = normalizedReplace
@@ -334,10 +335,10 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         .filter(l => !/^<{5,}\s*search\b|^={5,}(?:\s*.*)?$|^>{5,}\s*replace\b/i.test(l.trim()))
         .join('\n');
 
-    // 1. Reject Empty Search on Existing Non-Empty Files (Prevents misplacing code at the end)
+    // 1. Reject Empty Search on Existing Non-Empty Files
     if (normalizedSearch.trim() === "") {
         if (normalizedContent.trim() === "") {
-            return { success: true, result: isCrlf ? normalizedReplace.replace(/\n/g, '\r\n') : normalizedReplace };
+            return { success: true, result: isCrlf ? normalizedReplace.replace(/\n/g, '\r\n') : normalizedReplace, strategy: 'empty_file_init' };
         }
         return {
             success: false,
@@ -346,18 +347,38 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         };
     }
 
-    const contentLines = normalizedContent.split('\n');
-    const searchLines = normalizedSearch.split('\n');
-    const replaceLines = normalizedReplace === "" ? [] : normalizedReplace.split('\n');
-
     // 2. Safe Repetition Guard
     const trimS = normalizedSearch.trim();
     const trimR = normalizedReplace.trim();
     if (trimS.length > 0 && trimR.length > 20 && !normalizedContent.includes(trimS) && normalizedContent.includes(trimR)) {
-        return { success: true, result: content };
+        return { success: true, result: content, strategy: 'already_applied' };
     }
 
-    // 3. Find Matches: Collect all candidate locations
+    // --- TIER 1: EXACT MATCH ---
+    const exactIdx = normalizedContent.indexOf(normalizedSearch);
+    if (exactIdx !== -1) {
+        const before = normalizedContent.substring(0, exactIdx);
+        const after = normalizedContent.substring(exactIdx + normalizedSearch.length);
+        const finalResult = before + normalizedReplace + after;
+        return {
+            success: true,
+            result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult,
+            strategy: 'exact'
+        };
+    }
+
+    // --- TIER 2 & TIER 3: LINE-BY-LINE NORMALIZED MATCHING WITH INDENTATION DELTA ---
+    const contentLines = normalizedContent.split('\n');
+    let searchLines = normalizedSearch.split('\n');
+
+    // Strip leading/trailing blank lines in search block if they don't match document bounds
+    while (searchLines.length > 1 && searchLines[0].trim() === '') searchLines.shift();
+    while (searchLines.length > 1 && searchLines[searchLines.length - 1].trim() === '') searchLines.pop();
+
+    const replaceLines = normalizedReplace === "" ? [] : normalizedReplace.split('\n');
+
+    const cleanLine = (l: string) => l.replace(/\s+$/, ''); // Strip trailing whitespace only
+
     const candidateMatches: { index: number; isExactIndent: boolean }[] = [];
 
     for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
@@ -373,14 +394,14 @@ export function applySearchReplace(content: string, searchBlock: string, replace
                 break;
             }
 
-            if (cLine !== sLine) {
+            if (cleanLine(cLine) !== cleanLine(sLine)) {
                 isExact = false;
             }
 
             const cTrim = cLine.trim();
             const sTrim = sLine.trim();
 
-            if (cTrim !== sTrim && !(cTrim === "" && sTrim === "")) {
+            if (cTrim !== sTrim) {
                 match = false;
                 break;
             }
@@ -391,7 +412,7 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         }
     }
 
-    // 4. Ambiguity Guard: Prevent replacing the wrong place on short search blocks
+    // Ambiguity Guard
     if (candidateMatches.length > 1 && searchLines.length <= 2) {
         const exactMatches = candidateMatches.filter(m => m.isExactIndent);
         if (exactMatches.length !== 1) {
@@ -433,20 +454,88 @@ export function applySearchReplace(content: string, searchBlock: string, replace
             ? [...before, ...after].join('\n')
             : [...before, ...adjustedReplace, ...after].join('\n');
 
-        // Post-application integrity check: verify no leaked conflict markers
         const leaked = finalResult.split('\n').find(l => /^<{5,}\s*search\b|^={5,}(?:\s*.*)?$|^>{5,}\s*replace\b/i.test(l.trim()));
         if (leaked) {
             return {
                 success: false,
                 result: content,
-                error: `Integrity check failed: Leaked Aider marker detected in replacement (${leaked.trim()}). Modification rejected to protect file integrity.`
+                error: `Integrity check failed: Leaked Aider marker detected in replacement (${leaked.trim()}).`
             };
         }
 
         return { 
             success: true, 
-            result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult 
+            result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult,
+            strategy: bestMatch.isExactIndent ? 'line_by_line_exact' : 'line_by_line_indent_adjusted'
         };
+    }
+
+    // --- TIER 4: ANCHOR-BASED FLEXIBLE MATCHING (TOLERATES INTERIOR BLANK LINES / WHITESPACE DRIFT) ---
+    // If search block has 3+ lines, match non-empty first and last lines, checking interior similarity
+    if (searchLines.length >= 3) {
+        const firstSearchTrim = searchLines[0].trim();
+        const lastSearchTrim = searchLines[searchLines.length - 1].trim();
+
+        if (firstSearchTrim.length > 0 && lastSearchTrim.length > 0) {
+            const anchorCandidates: { startIdx: number; endIdx: number }[] = [];
+
+            for (let i = 0; i < contentLines.length; i++) {
+                if (contentLines[i].trim() === firstSearchTrim) {
+                    // Look ahead for matching last line within reasonable window (length ± 4 lines)
+                    const minSpan = Math.max(2, searchLines.length - 3);
+                    const maxSpan = searchLines.length + 3;
+
+                    for (let span = minSpan; span <= maxSpan && (i + span - 1) < contentLines.length; span++) {
+                        if (contentLines[i + span - 1].trim() === lastSearchTrim) {
+                            // Check similarity of interior lines
+                            const subContent = contentLines.slice(i, i + span);
+                            let matchedInteriorCount = 0;
+                            let nonBlankSearchCount = 0;
+
+                            for (const sL of searchLines) {
+                                const st = sL.trim();
+                                if (st.length > 0) {
+                                    nonBlankSearchCount++;
+                                    if (subContent.some(cL => cL.trim() === st)) {
+                                        matchedInteriorCount++;
+                                    }
+                                }
+                            }
+
+                            if (nonBlankSearchCount > 0 && (matchedInteriorCount / nonBlankSearchCount) >= 0.75) {
+                                anchorCandidates.push({ startIdx: i, endIdx: i + span });
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (anchorCandidates.length === 1) {
+                const { startIdx, endIdx } = anchorCandidates[0];
+                const matchedFileIndent = contentLines[startIdx].match(/^\s*/)?.[0] || "";
+                const matchedAiIndent = searchLines[0].match(/^\s*/)?.[0] || "";
+                const indentDelta = matchedFileIndent.length - matchedAiIndent.length;
+
+                const adjustedReplace = replaceLines.map(line => {
+                    if (line.trim().length === 0) return "";
+                    const curIndent = line.match(/^\s*/)?.[0] || "";
+                    const newLen = Math.max(0, curIndent.length + indentDelta);
+                    return " ".repeat(newLen) + line.trimStart();
+                });
+
+                const before = contentLines.slice(0, startIdx);
+                const after = contentLines.slice(endIdx);
+                const finalResult = normalizedReplace === ""
+                    ? [...before, ...after].join('\n')
+                    : [...before, ...adjustedReplace, ...after].join('\n');
+
+                return {
+                    success: true,
+                    result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult,
+                    strategy: 'anchor_similarity'
+                };
+            }
+        }
     }
 
     return { 

@@ -4,6 +4,38 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-09-30 16:22]
+
+- feat(ch:webui): fix ChatPanel webview CSS/HTML refactoring for dynamic event handling & DOM updates
+
+## [2026-09-30 14:25]
+
+- `fix(webview): repair truncated HTML markup in bulk-delete-modal that corrupted the DOM and prevented all subsequent modals from opening`
+
+## [2026-09-29 23:45]
+
+- `fix(context): resolve reset context files not clearing selection by eliminating legacy key resurrection in ContextStateProvider, purging stale caches, and clearing webview file registries`
+
+## [2026-09-29 23:15]
+
+- `fix(prompt): replace fragile ripgrep mega-glob with robust scanner, add direct-crawl failsafe in generateIsolatedProjectTree, and guarantee non-empty PROJECT STRUCTURE injection into prompt`
+
+## [2026-09-29 23:35]
+
+- `fix(activation): eliminate duplicate runTestsAndReport command registration preventing extension activation, initialize ContextStateProvider before command registration, and deduplicate menu elements`
+
+## [2026-09-29 23:25]
+
+- `fix(clipboard): initialize _contextManager in ChatPanel constructor and add direct readdirSync fallback to ensure project tree is never omitted in exported prompts`
+
+## [2026-09-29 23:05]
+
+- `fix(tree): remove grep-gate suppressing project tree, guarantee tree tokens in HUD token bar, and ensure persistent project structure visibility`
+
+## [2026-09-29 22:55]
+
+- `fix(tree): resolve tree scanning blocking on absolute workspace paths, add dedicated Project Structure viewer to Chat HUD, and enable Active Workspace Explorer in chat sidebar tab`
+
 #
 - fix(config): sanitize SSL cert path input and clean up config# [Unreleased]
 
@@ -28,6 +60,18 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 - feat(chatPanel): enhance chat panel functionality and styling# [Unreleased]
 
 - chore(release): bump version to 0.5.56 and update changelog
+
+## [2026-09-28 16:00]
+
+- `feat(bindings): migrate legacy connection profiles to ServerBindings with full deactivation support to hide models from inactive servers`
+
+## [2026-09-28 15:30]
+
+- `fix(configView): resolve Uncaught TypeError: Cannot set properties of null (setting 'onclick') on webview initialization and bump version to 1.0.38`
+
+## [2026-09-28 15:30]
+
+- `fix(configView): resolve Uncaught TypeError: Cannot set properties of null (setting 'onclick') on webview initialization and bump version to 1.0.38`
 
 ## [2026-09-28 09:15]
 

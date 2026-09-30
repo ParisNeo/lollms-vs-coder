@@ -126,7 +126,25 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         return [];
     }));
 
-    // Auto Select Context Files Command
+    // Run Tests and Report Command (Single Safe Registration)
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runTestsAndReport', async () => {
+        let panel = ChatPanel.currentPanel;
+        if (!panel) {
+            const discussion = services.discussionManager.createNewDiscussion(null);
+            discussion.title = "Test Run & Report";
+            await services.discussionManager.saveDiscussion(discussion);
+            panel = ChatPanel.createOrShow(services, discussion.id);
+            panel.setProcessManager(services.processManager);
+            panel.setContextManager(services.contextManager);
+            panel.setPersonalityManager(services.personalityManager);
+            panel.setHerdManager(services.herdManager);
+            await panel.loadDiscussion();
+            services.treeProviders.discussion?.refresh();
+        }
+        panel._panel.reveal();
+        await panel.handleRunTestsAndReport();
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.governorFilterFiles', async () => {
         const panel = ChatPanel.currentPanel;
         if (!panel) {
@@ -215,17 +233,18 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         await services.contextManager.getContextStateProvider()?.softReset();
         services.contextManager.clearAllCaches();
 
-        if (ChatPanel.currentPanel) {
-            const disc = ChatPanel.currentPanel.getCurrentDiscussion();
+        ChatPanel.panels.forEach(panel => {
+            const disc = panel.getCurrentDiscussion();
             if (disc) {
                 disc.mutedFiles = [];
                 disc.importedTools = [];
                 disc.activeDiagrams = [];
+                disc.lastTokenMetrics = undefined;
                 if (!disc.id.startsWith('temp-')) {
-                    await services.discussionManager.saveDiscussion(disc);
+                    services.discussionManager.saveDiscussion(disc);
                 }
             }
-            ChatPanel.currentPanel._panel.webview.postMessage({
+            panel._panel.webview.postMessage({
                 command: 'updateContext',
                 files: [],
                 tools: [],
@@ -234,8 +253,8 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                 mutedTools: [],
                 mutedDiagrams: []
             });
-            ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: false });
-        }
+            panel.updateContextAndTokens({ isBackgroundSync: false });
+        });
         vscode.window.showInformationMessage("Reset included files and discussion context.");
     }));
 
@@ -245,17 +264,18 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
             await services.contextManager.getContextStateProvider()?.fullReset();
             services.contextManager.clearAllCaches();
 
-            if (ChatPanel.currentPanel) {
-                const disc = ChatPanel.currentPanel.getCurrentDiscussion();
+            ChatPanel.panels.forEach(panel => {
+                const disc = panel.getCurrentDiscussion();
                 if (disc) {
                     disc.mutedFiles = [];
                     disc.importedTools = [];
                     disc.activeDiagrams = [];
+                    disc.lastTokenMetrics = undefined;
                     if (!disc.id.startsWith('temp-')) {
-                        await services.discussionManager.saveDiscussion(disc);
+                        services.discussionManager.saveDiscussion(disc);
                     }
                 }
-                ChatPanel.currentPanel._panel.webview.postMessage({
+                panel._panel.webview.postMessage({
                     command: 'updateContext',
                     files: [],
                     tools: [],
@@ -264,8 +284,8 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                     mutedTools: [],
                     mutedDiagrams: []
                 });
-                ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: false });
-            }
+                panel.updateContextAndTokens({ isBackgroundSync: false });
+            });
             vscode.window.showInformationMessage(vscode.l10n.t('info.contextReset'));
         }
     }));

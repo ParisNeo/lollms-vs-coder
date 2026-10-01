@@ -425,6 +425,11 @@ export class SettingsPanel {
               this.dispose();
               return;
 
+            case 'openTestAndOptimize':
+              Logger.info(`[ConfigView] Opening Test & Optimize for model: ${message.value || this._pendingConfig.modelName}`);
+              vscode.commands.executeCommand('lollms-vs-coder.testAndOptimizeModel', message.value || this._pendingConfig.modelName);
+              return;
+
             case 'updateTempValue':
               if (message.key && message.key in this._pendingConfig) {
                 if (['contextFileExceptions', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].includes(message.key as string)) {
@@ -1188,7 +1193,7 @@ export class SettingsPanel {
                         </strong>
                         <p class="help-text" style="margin: 4px 0 0 0;">Run benchmark tests (patching, prompt following, anti-hallucination) across temperature ranges to find and bind optimal settings for your models.</p>
                     </div>
-                    <button type="button" id="btnTestAndOptimize" class="primary" style="white-space: nowrap; height: 32px; font-weight: bold; display: flex; align-items: center; gap: 6px;">
+                    <button type="button" id="btnTestAndOptimize" onclick="triggerTestAndOptimize()" class="primary" style="white-space: nowrap; height: 32px; font-weight: bold; display: flex; align-items: center; gap: 6px;">
                         <i class="codicon codicon-beaker"></i> Test and Optimize
                     </button>
                 </div>
@@ -2574,10 +2579,13 @@ export class SettingsPanel {
                 const conn = getCurrentConnectionSettings();
                 vscode.postMessage({ command: 'testConnection', connection: conn });
             });
-            attach('btnTestAndOptimize', () => {
+            window.triggerTestAndOptimize = function() {
                 const modelSel = document.getElementById('modelSelect');
                 const val = modelSel ? modelSel.value : '';
                 vscode.postMessage({ command: 'openTestAndOptimize', value: val });
+            };
+            attach('btnTestAndOptimize', () => {
+                window.triggerTestAndOptimize();
             });
             attach('refreshModels', () => {
                 refreshModelsList(true);

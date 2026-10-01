@@ -4,9 +4,29 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-10-01 23:34]
+
+- feat(chat): update chat panel implementation and context management
+
 ## [2026-10-01 22:57]
 
 - feat(chat): update chat panel implementation and context management
+
+## [2026-10-02 00:55]
+
+- `feat(hud-explorer): collapse Project Structure (File Manifest) by default on startup, add recursive collapse/expand subfolders button for all folders with children, and add live file search bar in HUD context files view`
+
+## [2026-10-02 01:25]
+
+- `fix(build): resolve unexpected closing parenthesis syntax error in webview events.ts from dangling legacy prompt code`
+
+## [2026-10-02 01:15]
+
+- `fix(governor): replace blocked window.prompt in Context Governor Studio and Bulk Operations modal with accessible inline preset naming inputs and native VS Code input box integration`
+
+## [2026-10-02 01:05]
+
+- `fix(model-optimizer): wire openTestAndOptimize message handler in configView, add Test & Optimize button to Discussion Settings modal in chatPanel, and implement webviewReady handshake in ModelOptimizerPanel`
 
 ## [2026-10-01 22:15]
 

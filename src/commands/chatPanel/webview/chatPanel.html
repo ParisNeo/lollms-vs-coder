@@ -609,6 +609,18 @@
                         <p style="font-size: 10px; opacity: 0.7; margin:0;">Specifies upper output limit (e.g. 2048, 4096, 8192).</p>
                     </div>
 
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin: 14px 0 10px 0; padding: 10px 14px; background: rgba(0, 122, 204, 0.08); border: 1px solid var(--vscode-charts-blue); border-radius: 6px; gap: 10px; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 200px;">
+                            <strong style="color: var(--vscode-foreground); display: flex; align-items: center; gap: 6px; font-size: 11px;">
+                                <i class="codicon codicon-beaker" style="color: var(--vscode-charts-blue);"></i> Test and Optimize Model Settings
+                            </strong>
+                            <span style="opacity: 0.7; font-size: 10px; display: block; margin-top: 2px;">Benchmark patching, prompt following & anti-hallucination to find and bind optimal temperature.</span>
+                        </div>
+                        <button type="button" id="btn-discussion-test-optimize" class="code-action-btn primary" style="height: 26px; font-size: 11px; padding: 0 10px; font-weight: bold; white-space: nowrap;">
+                            <i class="codicon codicon-beaker"></i> Test & Optimize
+                        </button>
+                    </div>
+
                     <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Timeouts (ms). Set to 0 for Infinity.</p>
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
                         <div class="form-group">
@@ -1104,6 +1116,14 @@
                             </div>
                         </div>
 
+                        <!-- Inline Preset Save Form (Replaces blocked window.prompt) -->
+                        <div id="gov-save-preset-inline" style="display: none; align-items: center; gap: 6px; padding: 4px 8px; background: var(--vscode-input-background); border: 1px solid var(--vscode-focusBorder); border-radius: 4px;">
+                            <i class="codicon codicon-bookmark" style="color: var(--vscode-charts-orange); font-size: 12px; flex-shrink: 0;"></i>
+                            <input type="text" id="gov-preset-name-input" placeholder="Preset name (e.g. Focus Auth)..." style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); flex: 1; height: 22px; padding: 0;">
+                            <button id="gov-preset-save-confirm-btn" class="code-action-btn apply-btn" style="height: 20px; font-size: 10px; padding: 0 8px; font-weight: bold; flex-shrink: 0;"><i class="codicon codicon-check"></i> Save</button>
+                            <button id="gov-preset-save-cancel-btn" class="icon-btn" style="height: 20px; width: 20px; padding: 0; flex-shrink: 0;" title="Cancel"><i class="codicon codicon-close"></i></button>
+                        </div>
+
                         <div style="display: flex; gap: 6px; align-items: center;">
                             <div style="display: flex; align-items: center; gap: 6px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 2px 8px; flex: 1;">
                                 <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.6;"></i>
@@ -1200,6 +1220,14 @@
                             <i class="codicon codicon-trash"></i>
                         </button>
                     </div>
+                </div>
+
+                <!-- Inline Bulk Pattern Save Form -->
+                <div id="bulk-save-pattern-inline" style="display: none; align-items: center; gap: 6px; padding: 4px 8px; background: var(--vscode-input-background); border: 1px solid var(--vscode-focusBorder); border-radius: 4px; margin-top: -6px;">
+                    <i class="codicon codicon-bookmark" style="color: var(--vscode-charts-orange); font-size: 12px; flex-shrink: 0;"></i>
+                    <input type="text" id="bulk-pattern-name-input" placeholder="Pattern name (e.g. Debug Focus)..." style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); flex: 1; height: 22px; padding: 0;">
+                    <button id="bulk-pattern-save-confirm-btn" class="code-action-btn apply-btn" style="height: 20px; font-size: 10px; padding: 0 8px; font-weight: bold; flex-shrink: 0;"><i class="codicon codicon-check"></i> Save</button>
+                    <button id="bulk-pattern-save-cancel-btn" class="icon-btn" style="height: 20px; width: 20px; padding: 0; flex-shrink: 0;" title="Cancel"><i class="codicon codicon-close"></i></button>
                 </div>
 
                 <!-- Sorting and Selection Header -->

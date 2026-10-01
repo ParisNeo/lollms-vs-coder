@@ -7653,6 +7653,43 @@ Task:
             case 'openSettings':
                 vscode.commands.executeCommand('lollms-vs-coder.showConfigView');
                 break;
+            case 'requestSavePreferenceProfile':
+                {
+                    const text = message.preferences;
+                    if (!text || !text.trim()) {
+                        vscode.window.showErrorMessage('Preferences text is empty.');
+                        break;
+                    }
+                    const profileName = await vscode.window.showInputBox({
+                        prompt: "Enter a name for this developer preference profile:",
+                        value: "My Custom Profile",
+                        placeHolder: "e.g. Python Strict PEP8, Clean Craftsman"
+                    });
+                    if (profileName && profileName.trim()) {
+                        const { saveUserPreferenceProfile, getUserPreferenceProfiles } = require('../../registries/profiles');
+                        await saveUserPreferenceProfile({
+                            id: 'custom_' + Date.now(),
+                            name: profileName.trim(),
+                            description: 'Custom user preference profile',
+                            preferences: text.trim()
+                        });
+                        vscode.window.showInformationMessage(`User preference profile '${profileName}' saved.`);
+                        const allPrefProfiles = getUserPreferenceProfiles(vscode.workspace.getConfiguration('lollmsVsCoder'));
+                        ChatPanel.panels.forEach(p => {
+                            p._panel.webview.postMessage({
+                                command: 'updateUserPreferenceProfiles',
+                                userPreferenceProfiles: allPrefProfiles
+                            });
+                        });
+                    }
+                }
+                break;
+            case 'openTestAndOptimize':
+                {
+                    const targetModel = message.model || this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+                    vscode.commands.executeCommand('lollms-vs-coder.testAndOptimizeModel', targetModel);
+                }
+                break;
             case 'resetDiscussionCapabilities':
                 if (this._currentDiscussion) {
                     const defaultCaps = this._discussionManager.getDefaultCapabilities();

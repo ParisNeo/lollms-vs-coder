@@ -132,6 +132,10 @@ export class ModelOptimizerPanel {
     private _setWebviewMessageListener() {
         this._panel.webview.onDidReceiveMessage(async (message) => {
             switch (message.command) {
+                case 'webviewReady':
+                    this._isWebviewReady = true;
+                    await this._initializeWebviewData();
+                    break;
                 case 'startBenchmark':
                     await this.runBenchmark(message.options);
                     break;
@@ -1104,6 +1108,12 @@ Did the model resist hallucination?
                 boundStatusBadge.style.color = 'var(--vscode-descriptionForeground)';
             }
         }
+
+        // Send handshake immediately and on DOMContentLoaded
+        vscode.postMessage({ command: 'webviewReady' });
+        window.addEventListener('DOMContentLoaded', () => {
+            vscode.postMessage({ command: 'webviewReady' });
+        });
 
         window.addEventListener('message', (event) => {
             const msg = event.data;

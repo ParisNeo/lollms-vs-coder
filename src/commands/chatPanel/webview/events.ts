@@ -97,6 +97,7 @@ if (dom.sendButton) {
             renderPendingImages();
         }
     });
+}
 
     const wrapText = (type: string, target?: HTMLTextAreaElement | any) => {
         // 1. Detect if target is CodeMirror (EditorView) or standard Textarea
@@ -911,6 +912,16 @@ if (dom.sendButton) {
         });
     }
 
+    const discTestOptimizeBtn = document.getElementById('btn-discussion-test-optimize');
+    if (discTestOptimizeBtn) {
+        discTestOptimizeBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const currentModel = state.currentModelName || (dom.modelSelector ? dom.modelSelector.value : undefined);
+            vscode.postMessage({ command: 'openTestAndOptimize', model: currentModel });
+        };
+    }
+
     if (dom.toggleMaxTokensSliderBtn) {
         dom.toggleMaxTokensSliderBtn.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -1137,29 +1148,10 @@ if (dom.sendButton) {
                 vscode.postMessage({ command: 'showError', message: 'Preferences text is empty.' });
                 return;
             }
-            const name = prompt("Enter a name for this preference profile:", "My Custom Profile");
-            if (name) {
-                vscode.postMessage({
-                    command: 'saveUserPreferenceProfile',
-                    profile: {
-                        id: 'custom_' + Date.now(),
-                        name: name.trim(),
-                        description: 'Custom user preference profile',
-                        preferences: text
-                    }
-                });
-            }
-        });
-    }
-
-    if (dom.wizardPreferencesProfile) {
-        dom.wizardPreferencesProfile.addEventListener('change', () => {
-            const selectedId = dom.wizardPreferencesProfile.value;
-            const profiles = (state as any).userPreferenceProfiles || [];
-            const matched = profiles.find((p: any) => p.id === selectedId);
-            if (matched && dom.wizardUserPreferences) {
-                dom.wizardUserPreferences.value = matched.preferences;
-            }
+            vscode.postMessage({
+                command: 'requestSavePreferenceProfile',
+                preferences: text
+            });
         });
     }
 
@@ -1172,18 +1164,10 @@ if (dom.sendButton) {
                 vscode.postMessage({ command: 'showError', message: 'Preferences text is empty.' });
                 return;
             }
-            const name = prompt("Enter a name for this preference profile:", "My Custom Profile");
-            if (name) {
-                vscode.postMessage({
-                    command: 'saveUserPreferenceProfile',
-                    profile: {
-                        id: 'custom_' + Date.now(),
-                        name: name.trim(),
-                        description: 'Custom user preference profile',
-                        preferences: text
-                    }
-                });
-            }
+            vscode.postMessage({
+                command: 'requestSavePreferenceProfile',
+                preferences: text
+            });
         });
     }
 
@@ -2109,27 +2093,84 @@ if (dom.sendButton) {
         };
     }
 
-    // Save current muting setup as a preset from inside the Studio
+    // Save current muting setup as a preset from inside the Studio (Inline input replacing blocked window.prompt)
     const govSavePreset = document.getElementById('gov-save-current-preset-btn');
-    if (govSavePreset) {
-        govSavePreset.onclick = () => {
-            const name = prompt("Name for this visibility preset profile:", "Task Focus");
-            if (!name || !name.trim()) return;
-            const studioState = (window as any).governorStudioState;
-            const cleanName = name.trim();
-            const currentPresets = (state as any).visibilityPresets || JSON.parse(localStorage.getItem('lollms_saved_mute_patterns') || '{}');
-            const targetList = Array.from(studioState?.mutedSet || []);
-            currentPresets[cleanName] = targetList;
-            (state as any).visibilityPresets = currentPresets;
-            try { localStorage.setItem('lollms_saved_mute_patterns', JSON.stringify(currentPresets)); } catch {}
+    const govSaveInline = document.getElementById('gov-save-preset-inline');
+    const govPresetNameInput = document.getElementById('gov-preset-name-input') as HTMLInputElement;
+    const govSaveConfirmBtn = document.getElementById('gov-preset-save-confirm-btn');
+    const govSaveCancelBtn = document.getElementById('gov-preset-save-cancel-btn');
 
-            vscode.postMessage({
-                command: 'saveVisibilityPreset',
-                name: cleanName,
-                mutedFiles: targetList
-            });
+    const executeSaveGovernorPreset = () => {
+        const cleanName = govPresetNameInput ? govPresetNameInput.value.trim() : '';
+        if (!cleanName) {
+            if (govPresetNameInput) govPresetNameInput.focus();
+            return;
+        }
 
-            import('./ui.js').then(ui => ui.refreshVisibilityPresetsDropdowns(currentPresets));
+        const studioState = (window as any).governorStudioState;
+        const currentPresets = (state as any).visibilityPresets || JSON.parse(localStorage.getItem('lollms_saved_mute_patterns') || '{}');
+        const targetList = Array.from(studioState?.mutedSet || []);
+        currentPresets[cleanName] = targetList;
+        (state as any).visibilityPresets = currentPresets;
+        try { localStorage.setItem('lollms_saved_mute_patterns', JSON.stringify(currentPresets)); } catch {}
+
+        vscode.postMessage({
+            command: 'saveVisibilityPreset',
+            name: cleanName,
+            mutedFiles: targetList
+        });
+
+        import('./ui.js').then(ui => {
+            ui.refreshVisibilityPresetsDropdowns(currentPresets);
+            const sel = document.getElementById('modal-visibility-preset-select') as HTMLSelectElement;
+            if (sel) sel.value = cleanName;
+        });
+
+        if (govSaveInline) govSaveInline.style.display = 'none';
+    };
+
+    if (govSavePreset && govSaveInline) {
+        govSavePreset.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const sel = document.getElementById('modal-visibility-preset-select') as HTMLSelectElement;
+            const currentSelected = sel && sel.value ? sel.value : "Task Focus";
+            if (govPresetNameInput) {
+                govPresetNameInput.value = currentSelected;
+            }
+            govSaveInline.style.display = 'flex';
+            setTimeout(() => {
+                govPresetNameInput?.focus();
+                govPresetNameInput?.select();
+            }, 50);
+        };
+    }
+
+    if (govSaveConfirmBtn) {
+        govSaveConfirmBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            executeSaveGovernorPreset();
+        };
+    }
+
+    if (govSaveCancelBtn && govSaveInline) {
+        govSaveCancelBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            govSaveInline.style.display = 'none';
+        };
+    }
+
+    if (govPresetNameInput) {
+        govPresetNameInput.onkeydown = (e: KeyboardEvent) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                executeSaveGovernorPreset();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                if (govSaveInline) govSaveInline.style.display = 'none';
+            }
         };
     }
 
@@ -3343,5 +3384,4 @@ if (dom.sendButton) {
             }
         }
     }
-}
 }

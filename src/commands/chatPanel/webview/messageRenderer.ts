@@ -3701,6 +3701,7 @@ export class ContextPresenter {
                         : `Mute all ${allSubFiles.length} file(s) in "${sub.name}" (0 content tokens)`;
 
                     const encodedSubPaths = encodeURIComponent(JSON.stringify(allSubFiles.map(f => f.path)));
+                    const hasSubfolders = sub.subDirs.size > 0;
 
                     html += `
                     <details class="context-tree-folder ${isAllMuted ? 'folder-muted' : ''}" open style="margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; background: rgba(0,0,0,0.06);" data-folder="${sub.fullPath}">
@@ -3708,6 +3709,10 @@ export class ContextPresenter {
                             <button class="toggle-mute-folder-btn ${folderMuteClass}" data-folder="${sub.fullPath}" data-paths="${encodedSubPaths}" data-action="${isAllMuted ? 'unmute' : 'mute'}" title="${folderMuteTitle}" style="cursor: pointer;">
                                 <span class="codicon ${folderMuteIcon}"></span>
                             </button>
+                            ${hasSubfolders ? `
+                            <button type="button" class="collapse-folder-children-btn" data-folder="${sub.fullPath}" title="Collapse/Expand child folders in ${sub.name}" style="background: transparent; border: none; color: var(--vscode-icon-foreground); padding: 1px 3px; border-radius: 3px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; opacity: 0.75; flex-shrink: 0;">
+                                <span class="codicon codicon-collapse-all" style="font-size: 12px;"></span>
+                            </button>` : ''}
                             <span class="codicon codicon-folder"></span>
                             <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; ${isAllMuted ? 'text-decoration: line-through; opacity: 0.75;' : ''}">${sub.name}</span>
                             <span style="font-size: 9px; opacity: 0.6; font-weight: normal;">${totalCount} file${totalCount === 1 ? '' : 's'}${isSomeMuted ? ` (${mutedSubCount} muted)` : ''}</span>
@@ -3901,7 +3906,7 @@ export class ContextPresenter {
                 </div>
 
                 <div class="hud-scroll-container">
-                    <details class="info-collapsible tree-details" open style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-yellow);">
+                    <details class="info-collapsible tree-details" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-yellow);">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
                                 <span style="font-weight: 700; display: flex; align-items: center; gap: 6px;">
@@ -3972,6 +3977,11 @@ export class ContextPresenter {
                                     ${finalFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn" title="Bulk manage visibility (mute/reveal) and removal"><span class="codicon codicon-checklist"></span> Bulk Operations</button>` : ''}
                                 </div>
                             </h4>
+                            <div class="hud-files-search-bar" style="display: flex; align-items: center; gap: 6px; margin: 0 0 8px 0; padding: 2px 8px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px;">
+                                <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.6;"></i>
+                                <input type="text" id="hud-files-search-input" placeholder="Filter context files by name or path..." value="${(state as any).hudFileFilterQuery || ''}" style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); flex: 1; height: 22px; padding: 0;">
+                                <button id="hud-files-search-clear" class="icon-btn" title="Clear filter" style="padding: 0; width: 18px; height: 18px; display: ${(state as any).hudFileFilterQuery ? 'inline-flex' : 'none'};"><i class="codicon codicon-close" style="font-size: 11px;"></i></button>
+                            </div>
                             <div class="hud-project-files-list">${projectFilesHtml}</div>
                             <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
                                 <span>External & Research</span>
@@ -4280,6 +4290,100 @@ export class ContextBinder {
                 vscode.postMessage({ command: 'calculateTokens' });
                 setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1200);
             };
+        }
+
+        // Bind collapse/expand children buttons for folders with subfolders
+        dashboard.querySelectorAll('.collapse-folder-children-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const folderDetails = btn.closest('.context-tree-folder');
+                if (!folderDetails) return;
+                const childFolderDetails = folderDetails.querySelectorAll('.context-tree-folder-body .context-tree-folder');
+                if (childFolderDetails.length === 0) return;
+
+                const anyOpen = Array.from(childFolderDetails).some((d: any) => d.open);
+                childFolderDetails.forEach((d: any) => {
+                    d.open = !anyOpen;
+                });
+
+                const icon = btn.querySelector('.codicon');
+                if (icon) {
+                    icon.className = `codicon ${anyOpen ? 'codicon-expand-all' : 'codicon-collapse-all'}`;
+                }
+                btn.title = anyOpen
+                    ? `Expand all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`
+                    : `Collapse all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`;
+            });
+        });
+
+        // Bind HUD Files List Search & Real-Time Filter
+        const hudFilesSearchInp = dashboard.querySelector('#hud-files-search-input') as HTMLInputElement;
+        const hudFilesSearchClear = dashboard.querySelector('#hud-files-search-clear') as HTMLElement;
+
+        const applyFilesFilter = (query: string) => {
+            (state as any).hudFileFilterQuery = query;
+            const cleanQ = query.toLowerCase().trim();
+            if (hudFilesSearchClear) {
+                hudFilesSearchClear.style.display = cleanQ ? 'inline-flex' : 'none';
+            }
+
+            const projectList = dashboard.querySelector('.hud-project-files-list');
+            if (!projectList) return;
+
+            // 1. Filter flat items
+            const fileItems = projectList.querySelectorAll('.context-item[data-path]');
+            fileItems.forEach((item: any) => {
+                const p = (item.dataset.path || '').toLowerCase();
+                const name = (item.querySelector('.path-text')?.textContent || '').toLowerCase();
+                const matches = !cleanQ || p.includes(cleanQ) || name.includes(cleanQ);
+                item.style.display = matches ? '' : 'none';
+            });
+
+            // 2. Filter tree folders (bottom-up from deepest to shallowest)
+            const folders = projectList.querySelectorAll('.context-tree-folder');
+            Array.from(folders).reverse().forEach((folder: any) => {
+                const folderName = (folder.getAttribute('data-folder') || '').toLowerCase();
+                const visibleFiles = folder.querySelectorAll('.context-item[data-path]:not([style*="display: none"])');
+                const hasVisibleFiles = visibleFiles.length > 0;
+                const matchesFolder = folderName.includes(cleanQ);
+
+                if (!cleanQ) {
+                    folder.style.display = '';
+                } else if (hasVisibleFiles || matchesFolder) {
+                    folder.style.display = '';
+                    folder.open = true; // Automatically expand so matching files are visible
+                } else {
+                    folder.style.display = 'none';
+                }
+            });
+        };
+
+        if (hudFilesSearchInp) {
+            hudFilesSearchInp.oninput = () => {
+                applyFilesFilter(hudFilesSearchInp.value);
+            };
+
+            hudFilesSearchInp.onkeydown = (e) => {
+                if (e.key === 'Escape') {
+                    hudFilesSearchInp.value = '';
+                    applyFilesFilter('');
+                    hudFilesSearchInp.blur();
+                }
+            };
+        }
+
+        if (hudFilesSearchClear) {
+            hudFilesSearchClear.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (hudFilesSearchInp) hudFilesSearchInp.value = '';
+                applyFilesFilter('');
+            };
+        }
+
+        if ((state as any).hudFileFilterQuery) {
+            applyFilesFilter((state as any).hudFileFilterQuery);
         }
 
         // Bind accordion toggles dynamically
@@ -5287,6 +5391,7 @@ export function showBulkOperationsModal(files: any[]) {
                     const checkedInSub = subPaths.filter(p => selectedPaths.has(p)).length;
                     const isAllChecked = allSubFiles.length > 0 && checkedInSub === allSubFiles.length;
                     const isSomeChecked = checkedInSub > 0 && !isAllChecked;
+                    const hasSubfolders = sub.subDirs.size > 0;
 
                     const mutedInSub = allSubFiles.filter(f => f.isMuted).length;
                     const isAllMuted = allSubFiles.length > 0 && mutedInSub === allSubFiles.length;
@@ -5303,6 +5408,10 @@ export function showBulkOperationsModal(files: any[]) {
                             <button class="toggle-mute-folder-btn bulk-modal-mute-folder-btn ${folderMuteClass}" data-paths="${encodedSubPaths}" data-action="${isAllMuted ? 'unmute' : 'mute'}" title="${folderMuteTitle}" style="cursor: pointer;">
                                 <span class="codicon ${folderMuteIcon}"></span>
                             </button>
+                            ${hasSubfolders ? `
+                            <button type="button" class="collapse-folder-children-btn bulk-modal-collapse-folder-btn" data-folder="${sub.fullPath}" title="Collapse/Expand child folders in ${sub.name}" style="background: transparent; border: none; color: var(--vscode-icon-foreground); padding: 1px 3px; border-radius: 3px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; opacity: 0.75; flex-shrink: 0;">
+                                <span class="codicon codicon-collapse-all" style="font-size: 12px;"></span>
+                            </button>` : ''}
                             <span class="codicon codicon-folder"></span>
                             <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; ${isAllMuted ? 'text-decoration: line-through; opacity: 0.75;' : ''}">${sub.name}</span>
                             <span style="font-size: 9px; opacity: 0.6; font-weight: normal;">${allSubFiles.length} file${allSubFiles.length === 1 ? '' : 's'}${mutedInSub > 0 ? ` (${mutedInSub} muted)` : ''}</span>
@@ -5345,6 +5454,26 @@ export function showBulkOperationsModal(files: any[]) {
                             renderList();
                         } catch {}
                     }
+                };
+            });
+
+            // Handle collapse children buttons inside modal tree
+            list.querySelectorAll('.bulk-modal-collapse-folder-btn').forEach((btn: any) => {
+                btn.onclick = (e: MouseEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const folderDetails = btn.closest('.context-tree-folder');
+                    if (!folderDetails) return;
+                    const childFolders = folderDetails.querySelectorAll('.context-tree-folder-body .context-tree-folder');
+                    if (childFolders.length === 0) return;
+
+                    const anyOpen = Array.from(childFolders).some((d: any) => d.open);
+                    childFolders.forEach((d: any) => { d.open = !anyOpen; });
+                    const icon = btn.querySelector('.codicon');
+                    if (icon) icon.className = `codicon ${anyOpen ? 'codicon-expand-all' : 'codicon-collapse-all'}`;
+                    btn.title = anyOpen
+                        ? `Expand all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`
+                        : `Collapse all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`;
                 };
             });
 
@@ -5629,16 +5758,72 @@ export function showBulkOperationsModal(files: any[]) {
         };
     }
 
-    if (savePatternBtn) {
-        savePatternBtn.onclick = () => {
-            const name = prompt("Enter a name for this hiding/muting pattern:", "Debug Focus");
-            if (!name) return;
-            const cleanName = name.trim();
-            const saved = JSON.parse(localStorage.getItem('lollms_saved_mute_patterns') || '{}');
-            saved[cleanName] = state.mutedFiles || [];
-            localStorage.setItem('lollms_saved_mute_patterns', JSON.stringify(saved));
-            refreshPatterns();
-            vscode.postMessage({ command: 'showError', message: `Hiding pattern '${cleanName}' saved successfully.` });
+    const bulkSaveInline = document.getElementById('bulk-save-pattern-inline');
+    const bulkPatternNameInput = document.getElementById('bulk-pattern-name-input') as HTMLInputElement;
+    const bulkPatternConfirmBtn = document.getElementById('bulk-pattern-save-confirm-btn');
+    const bulkPatternCancelBtn = document.getElementById('bulk-pattern-save-cancel-btn');
+
+    const executeSaveBulkPattern = () => {
+        const cleanName = bulkPatternNameInput ? bulkPatternNameInput.value.trim() : '';
+        if (!cleanName) {
+            if (bulkPatternNameInput) bulkPatternNameInput.focus();
+            return;
+        }
+        const saved = JSON.parse(localStorage.getItem('lollms_saved_mute_patterns') || '{}');
+        saved[cleanName] = state.mutedFiles || [];
+        localStorage.setItem('lollms_saved_mute_patterns', JSON.stringify(saved));
+        refreshPatterns();
+
+        vscode.postMessage({
+            command: 'saveVisibilityPreset',
+            name: cleanName,
+            mutedFiles: state.mutedFiles || []
+        });
+
+        if (bulkSaveInline) bulkSaveInline.style.display = 'none';
+    };
+
+    if (savePatternBtn && bulkSaveInline) {
+        savePatternBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (bulkPatternNameInput) {
+                const currentPattern = patternSelect ? patternSelect.value : '';
+                bulkPatternNameInput.value = currentPattern || "Debug Focus";
+            }
+            bulkSaveInline.style.display = 'flex';
+            setTimeout(() => {
+                bulkPatternNameInput?.focus();
+                bulkPatternNameInput?.select();
+            }, 50);
+        };
+    }
+
+    if (bulkPatternConfirmBtn) {
+        bulkPatternConfirmBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            executeSaveBulkPattern();
+        };
+    }
+
+    if (bulkPatternCancelBtn && bulkSaveInline) {
+        bulkPatternCancelBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            bulkSaveInline.style.display = 'none';
+        };
+    }
+
+    if (bulkPatternNameInput) {
+        bulkPatternNameInput.onkeydown = (e: KeyboardEvent) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                executeSaveBulkPattern();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                if (bulkSaveInline) bulkSaveInline.style.display = 'none';
+            }
         };
     }
 

@@ -4523,6 +4523,24 @@ mark.search-highlight.current-match {
     background: var(--vscode-list-hoverBackground) !important;
 }
 
+.collapse-folder-children-btn {
+    transition: opacity 0.15s, transform 0.15s;
+}
+
+.collapse-folder-children-btn:hover {
+    opacity: 1 !important;
+    transform: scale(1.15);
+}
+
+.hud-files-search-bar {
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.hud-files-search-bar:focus-within {
+    border-color: var(--vscode-focusBorder) !important;
+    box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
 .file-token-badge.file-mtime-badge {
     background: rgba(0, 122, 204, 0.1);
     border-color: rgba(0, 122, 204, 0.25);

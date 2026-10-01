@@ -236,6 +236,19 @@ export class DiscussionManager {
         // Project-wide personality persistence lookup
         const activePersonality = this.context.workspaceState.get<string>('lollms_project_active_personality_id', 'default_coder');
 
+        // Check if the model has a bound optimal temperature setting
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const defaultModel = config.get<string>('modelName') || '';
+        const optimalSettings = config.get<Record<string, { enableTemperature: boolean, temperature?: number }>>('modelOptimalSettings') || {};
+        const rawModelName = defaultModel.includes('::') ? defaultModel.split('::')[1] : defaultModel;
+        const bound = optimalSettings[defaultModel] || optimalSettings[rawModelName];
+        if (bound && caps) {
+            caps.enableTemperature = bound.enableTemperature;
+            if (bound.enableTemperature && bound.temperature !== undefined) {
+                caps.temperature = bound.temperature;
+            }
+        }
+
         return {
             id,
             title: 'New Discussion',

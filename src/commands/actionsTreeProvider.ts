@@ -44,6 +44,7 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
             actions.push(new ActionItem('Filter Context with Governor', 'lollms-vs-coder.governorFilterFiles', 'law', 'Select relevant files to keep in context using AI based on a prompt'));
             actions.push(new ActionItem('New Discussion with Same Context', 'lollms-vs-coder.newDiscussionWithSameContext', 'repo-forked', 'Start a new discussion with the exact same files and muted files'));
             actions.push(new ActionItem('Run Tests & Report to AI', 'lollms-vs-coder.runTestsAndReport', 'beaker', 'Run project tests, save output to test_run.log, and prompt AI to fix errors'));
+            actions.push(new ActionItem('Test and Optimize Model', 'lollms-vs-coder.testAndOptimizeModel', 'beaker', 'Run benchmark tests to find and save optimal model temperature settings'));
             actions.push(new ActionItem(vscode.l10n.t('Lollms Studio (Skills/Personas)'), 'lollms-vs-coder.openStudio', 'beaker', 'Open the building studio'));
             actions.push(new ActionItem('Reset Skills to Default', 'lollms-vs-coder.resetSkillsToDefault', 'discard', 'Reset all skills and Git repositories to defaults'));
             actions.push(new ActionItem(vscode.l10n.t('Validate CVE Legitimacy'), 'lollms-vs-coder.analyzeCveLegitimacy', 'shield-check', 'Analyze code against a specific CVE'));

@@ -658,24 +658,40 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const runBtn = document.getElementById('governor-filter-run-btn') as HTMLButtonElement;
                     if (runBtn) {
                         runBtn.disabled = false;
-                        runBtn.innerHTML = '<i class="codicon codicon-law"></i> Filter with Governor';
+                        runBtn.innerHTML = '<i class="codicon codicon-send" style="font-size:16px;"></i><span style="font-size:9px;">Filter</span>';
                     }
 
+                    const stepInd = document.getElementById('gov-step-indicator');
+                    if (stepInd) stepInd.style.display = 'none';
+
                     if (message.error) {
+                        import('./ui.js').then(ui => {
+                            ui.appendGovernorMessage('assistant', `❌ Error during governor exploration: ${message.error}`);
+                        });
                         break;
                     }
 
-                    const modal = document.getElementById('governor-filter-modal');
-                    if (modal) {
-                        modal.style.display = 'none';
-                        modal.classList.remove('visible');
-                    }
+                    const studioState = (window as any).governorStudioState;
+                    if (studioState) {
+                        const newMuted = Array.isArray(message.mutedFiles) ? message.mutedFiles : [];
+                        studioState.mutedSet = new Set(newMuted.map((m: string) => m.replace(/\\/g, '/').toLowerCase().trim()));
 
-                    if (Array.isArray(message.mutedFiles)) {
-                        state.mutedFiles = [...message.mutedFiles];
-                        if (state.lastContextData) {
-                            state.lastContextData.mutedFiles = [...message.mutedFiles];
-                        }
+                        import('./ui.js').then(ui => {
+                            ui.appendGovernorMessage('assistant', message.rationale || 'Context evaluation complete.', {
+                                discoverySteps: message.discoverySteps,
+                                advice: message.advice,
+                                signatures: message.signatures,
+                                rationale: message.rationale
+                            });
+                            ui.governorStudioState.history.push({
+                                role: 'assistant',
+                                text: message.rationale || 'Decision rendered.',
+                                advice: message.advice,
+                                signatures: message.signatures,
+                                discoverySteps: message.discoverySteps
+                            });
+                            ui.renderGovernorFileList();
+                        });
                     }
 
                     if (message.presets) {
@@ -690,8 +706,18 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             (ui as any).refreshVisibilityPresetsDropdowns(message.presets);
                         }
                     });
+                }
+                break;
 
-                    updateContext();
+            case 'governorWizardSelectionApplied':
+                {
+                    state.wizardMutedFiles = Array.isArray(message.mutedFiles) ? [...message.mutedFiles] : [];
+                    const statusEl = document.getElementById('wizard-governor-status');
+                    const statusText = document.getElementById('wizard-governor-status-text');
+                    if (statusEl && statusText) {
+                        statusEl.style.display = 'flex';
+                        statusText.textContent = `Governor applied: ${message.mutedFiles.length} files muted for new session.`;
+                    }
                 }
                 break;
             case 'updateVisibilityPresets':
@@ -711,6 +737,18 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'visibilityPresetApplied':
                 {
+                    if (message.caller === 'wizard') {
+                        state.wizardMutedFiles = Array.isArray(message.mutedFiles) ? [...message.mutedFiles] : [];
+                        const statusEl = document.getElementById('wizard-governor-status');
+                        const statusText = document.getElementById('wizard-governor-status-text');
+                        if (statusEl && statusText) {
+                            statusEl.style.display = 'flex';
+                            statusText.textContent = `Preset "${message.name}" applied: ${message.mutedFiles?.length || 0} muted.`;
+                        }
+                        state.governorCaller = 'chat';
+                        break;
+                    }
+
                     if (Array.isArray(message.mutedFiles)) {
                         state.mutedFiles = [...message.mutedFiles];
                         if (state.lastContextData) {

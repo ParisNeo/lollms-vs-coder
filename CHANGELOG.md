@@ -4,6 +4,46 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-10-01 22:57]
+
+- feat(chat): update chat panel implementation and context management
+
+## [2026-10-01 22:15]
+
+- `fix(build): resolve missing ModelOptimizerPanel export and bundle compilation error in commandRegistry`
+
+## [2026-10-01 21:50]
+
+- `feat(model-optimizer): add 'Test and Optimize' benchmark suite to evaluate patching precision (automated via applySearchReplace), prompt adherence, and anti-hallucination across temperature ranges (including model-native automatic defaults); support AI Judge Agent and Human Review; bind and persist optimal settings per model`
+
+## [2026-10-01 20:30]
+
+- `feat(governor): empower Context Governor with multi-round tool execution (<grep>, <sparql>, <peek_files>), iterative learning, preselection budget verification with file size breakdown reprompting, <reveal_only> and <mute_only> functions, and <signatures> architectural/mermaid explainers for muted files`
+
+## [2026-09-30 23:35]
+
+- `feat(context-files): add visibility status sorting (Visible First & Muted First) to project files list and bulk operations modal`
+
+## [2026-09-30 23:10]
+
+- `feat(file-activation): add Unmute & Reprompt button to File Content Activation card and include unmute operations in Execute All Actions bulk pipeline`
+
+## [2026-09-30 22:30]
+
+- `fix(context-tree): eliminate unwanted scrolling when toggling file/folder mute status via in-place DOM updates, anchor scroll containers, and display file sizes even when muted`
+
+## [2026-09-30 22:15]
+
+- `feat(governor): overhaul Context Governor into an interactive two-column studio with continuous prompt/reprompt negotiation on the left and live muting scheme management with discovery steps on the right`
+
+## [2026-09-30 18:45]
+
+- `fix(webview): elevate Context Governor modal z-index to 110000 so it displays above the New Discussion wizard dialog`
+
+## [2026-09-30 18:35]
+
+- `feat(wizard): add Context Governor button to New Discussion initialization wizard to adapt initial file selection via intelligent muting`
+
 ## [2026-09-30 16:22]
 
 - feat(ch:webui): fix ChatPanel webview CSS/HTML refactoring for dynamic event handling & DOM updates

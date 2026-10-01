@@ -1034,67 +1034,107 @@
         </div>
     </div>
 
-    <!-- ⚖️ GOVERNOR FILTER & VISIBILITY PROFILES MODAL -->
-    <div id="governor-filter-modal" class="modal">
-        <div class="modal-content" style="max-width: 620px; width: 92%; max-height: 85vh;">
-            <div class="modal-header">
-                <h2 style="margin:0; font-size: 14px; display: flex; align-items: center; gap: 8px;">
-                    <i class="codicon codicon-law" style="color: var(--vscode-charts-orange);"></i>
-                    <span>Context Governor &middot; Intelligent Visibility Filter</span>
-                </h2>
-                <span class="close-btn" id="governor-filter-close-btn">&times;</span>
+    <!-- ⚖️ GOVERNOR FILTER & VISIBILITY PROFILES MODAL (TWO-COLUMN INTERACTIVE STUDIO) -->
+    <div id="governor-filter-modal" class="modal" style="z-index: 110000 !important;">
+        <div class="modal-content" style="max-width: 1150px; width: 95%; height: 85vh; max-height: 850px; display: flex; flex-direction: column;">
+            <div class="modal-header" style="padding: 10px 18px; border-bottom: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center; background: var(--vscode-editorWidget-background);">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 28px; height: 28px; border-radius: 6px; background: rgba(214, 122, 13, 0.15); color: var(--vscode-charts-orange); display: flex; align-items: center; justify-content: center; font-size: 16px;">
+                        <i class="codicon codicon-law"></i>
+                    </div>
+                    <div>
+                        <h2 style="margin: 0; font-size: 13px; font-weight: 800; letter-spacing: 0.5px;">Context Governor Studio</h2>
+                        <div style="font-size: 10px; opacity: 0.7;">Interactive Discovery, Pruning & Muting Assistant</div>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span id="gov-top-stats" class="file-token-badge weight-light" style="font-size: 10px; padding: 2px 8px;">0 Active &middot; 0 Muted</span>
+                    <span class="close-btn" id="governor-filter-close-btn">&times;</span>
+                </div>
             </div>
-            <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px; padding: 16px; overflow-y: auto;">
-                <p style="font-size: 11px; opacity: 0.8; margin: 0;">
-                    Input what task or topic you are working on. The Context Governor will analyze all files in context, keep the essential ones active (content loaded), and mute the rest to protect your token budget.
-                </p>
 
-                <!-- Quick Presets Bar -->
-                <div style="background: var(--vscode-editor-inactiveSelectionBackground); padding: 10px 12px; border-radius: 6px; border: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;">
-                    <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 200px;">
-                        <span style="font-size: 10px; font-weight: 800; text-transform: uppercase; opacity: 0.7;">
-                            <i class="codicon codicon-bookmark"></i> Preset Profile:
+            <div class="modal-body" style="padding: 0; flex: 1; min-height: 0; display: flex; overflow: hidden;">
+                <!-- LEFT COLUMN: Chat & Negotiation Stream (Discovery, Thoughts, Reprompts) -->
+                <div id="gov-chat-column" style="flex: 1.15; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--vscode-widget-border); background: var(--vscode-editor-background);">
+                    <div style="padding: 8px 14px; background: var(--vscode-sideBarSectionHeader-background); border-bottom: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.8; display: flex; align-items: center; gap: 6px;">
+                            <i class="codicon codicon-comment-discussion"></i> Governor Negotiation Stream
                         </span>
-                        <select id="modal-visibility-preset-select" style="font-size: 11px; padding: 3px 6px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; flex: 1; min-width: 120px;">
-                            <option value="">-- Select Saved Preset --</option>
-                        </select>
-                    </div>
-                    <div style="display: flex; gap: 6px;">
-                        <button id="modal-apply-preset-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 8px;" title="Apply selected preset">
-                            <i class="codicon codicon-check"></i> Apply
-                        </button>
-                        <button id="modal-delete-preset-btn" class="code-action-btn delete-btn" style="height: 24px; font-size: 10px; padding: 0 6px;" title="Delete selected preset">
-                            <i class="codicon codicon-trash"></i>
+                        <button id="gov-clear-chat-btn" class="icon-btn" title="Reset Governor Conversation" style="padding: 2px 6px; font-size: 10px; opacity: 0.7;">
+                            <i class="codicon codicon-clear-all"></i> Reset
                         </button>
                     </div>
+
+                    <div id="gov-chat-messages" style="flex: 1; min-height: 0; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px;"></div>
+
+                    <div id="gov-step-indicator" style="display: none; padding: 8px 14px; background: rgba(214, 122, 13, 0.08); border-top: 1px solid var(--vscode-widget-border); font-size: 11px; color: var(--vscode-charts-orange); align-items: center; gap: 8px;">
+                        <div class="spinner" style="width: 12px; height: 12px; border-width: 2px;"></div>
+                        <span id="gov-step-text">Governor is exploring codebase...</span>
+                    </div>
+
+                    <div style="padding: 10px 14px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-sideBar-background); display: flex; flex-direction: column; gap: 6px;">
+                        <div style="display: flex; gap: 8px; align-items: flex-end;">
+                            <textarea id="governor-filter-prompt" class="commit-textarea" style="margin: 0; flex: 1; height: 50px; min-height: 50px; max-height: 120px; font-size: 12px; resize: none; border-radius: 6px; padding: 8px 10px;" placeholder="Prompt the Governor (e.g. 'Focus on JWT auth, mute database migrations and docs')..."></textarea>
+                            <button id="governor-filter-run-btn" class="code-action-btn apply-btn" style="height: 50px; width: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 6px; background: var(--vscode-charts-orange) !important; color: white !important; font-weight: bold; flex-shrink: 0;" title="Send prompt to Governor (Enter)">
+                                <i class="codicon codicon-send" style="font-size: 16px;"></i>
+                                <span style="font-size: 9px;">Filter</span>
+                            </button>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 10px; opacity: 0.65;">
+                            <span>Press <kbd>Enter</kbd> to filter &middot; <kbd>Shift+Enter</kbd> for newline</span>
+                            <span id="gov-round-count">Ready</span>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="form-group" style="margin: 0;">
-                    <label for="governor-filter-prompt" style="font-size: 11px; font-weight: bold; display: block; margin-bottom: 6px;">
-                        Task Objective / Focus Query
-                    </label>
-                    <textarea id="governor-filter-prompt" class="commit-textarea" style="height: 80px; width: 100%; box-sizing: border-box; font-family: var(--vscode-font-family); font-size: 12px; resize: vertical;" placeholder="e.g. 'Fixing JWT authentication token refresh and session middleware', 'Refactoring chatPanel UI webview events'"></textarea>
-                </div>
+                <!-- RIGHT COLUMN: Muting Scheme & Selection Manager -->
+                <div id="gov-scheme-column" style="flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--vscode-sideBar-background);">
+                    <div style="padding: 8px 12px; border-bottom: 1px solid var(--vscode-widget-border); background: var(--vscode-editor-inactiveSelectionBackground); display: flex; flex-direction: column; gap: 8px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 170px;">
+                                <span style="font-size: 10px; font-weight: 800; text-transform: uppercase; opacity: 0.7;"><i class="codicon codicon-bookmark"></i> Preset:</span>
+                                <select id="modal-visibility-preset-select" style="font-size: 11px; padding: 2px 6px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; flex: 1; min-width: 110px;">
+                                    <option value="">-- Saved Presets --</option>
+                                </select>
+                            </div>
+                            <div style="display: flex; gap: 4px;">
+                                <button id="modal-apply-preset-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 6px;" title="Apply selected preset"><i class="codicon codicon-check"></i> Apply</button>
+                                <button id="gov-save-current-preset-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 6px;" title="Save current muting setup as a preset"><i class="codicon codicon-save"></i> Save</button>
+                                <button id="modal-delete-preset-btn" class="code-action-btn delete-btn" style="height: 22px; font-size: 10px; padding: 0 4px;" title="Delete selected preset"><i class="codicon codicon-trash"></i></button>
+                            </div>
+                        </div>
 
-                <div class="checkbox-container" style="margin: 0; background: transparent; border: none; padding: 0;">
-                    <input type="checkbox" id="governor-save-preset-check" style="cursor: pointer; margin-right: 6px;">
-                    <label for="governor-save-preset-check" style="font-size: 11px; cursor: pointer; font-weight: 600;">
-                        Save this selection as a new Visibility Preset
-                    </label>
-                </div>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <div style="display: flex; align-items: center; gap: 6px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 2px 8px; flex: 1;">
+                                <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.6;"></i>
+                                <input type="text" id="gov-file-filter-input" placeholder="Filter files in list..." style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); width: 100%;">
+                            </div>
+                            <button id="gov-unmute-all-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 6px;" title="Unmute all files (set all active [C])">
+                                <i class="codicon codicon-eye"></i> Unmute All
+                            </button>
+                            <button id="gov-mute-all-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 6px;" title="Mute all files (0 tokens [M])">
+                                <i class="codicon codicon-eye-closed"></i> Mute All
+                            </button>
+                        </div>
+                    </div>
 
-                <div id="governor-preset-name-container" style="display: none; margin-top: -6px;">
-                    <input type="text" id="governor-preset-name-input" class="search-modal-input" placeholder="Preset name (e.g. 'Auth & Security', 'Frontend UI', 'Database Models')" style="width: 100%; box-sizing: border-box; font-size: 12px; height: 28px;">
+                    <div style="padding: 6px 14px; background: var(--vscode-sideBarSectionHeader-background); border-bottom: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.85;">
+                        <span id="gov-scheme-title">Muting Scheme (<span id="gov-active-count">0</span> Active &middot; <span id="gov-muted-count">0</span> Muted)</span>
+                        <span id="gov-token-load-label">~0 tokens</span>
+                    </div>
+
+                    <div id="gov-files-list" style="flex: 1; min-height: 0; overflow-y: auto; padding: 6px 8px; display: flex; flex-direction: column; gap: 3px;"></div>
                 </div>
             </div>
-            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background);">
-                <button id="governor-unmute-all-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 10px;" title="Reveal all files in context (clear all muting)">
-                    <i class="codicon codicon-eye"></i> Unmute All
-                </button>
+
+            <div class="modal-footer" style="padding: 10px 18px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span id="gov-footer-summary" style="font-size: 11px; font-weight: 600; opacity: 0.9;">Ready to validate selection.</span>
+                </div>
                 <div style="display: flex; gap: 8px;">
-                    <button id="governor-filter-cancel-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 12px;">Cancel</button>
-                    <button id="governor-filter-run-btn" class="code-action-btn apply-btn" style="height: 30px; padding: 0 14px; font-weight: bold; background: var(--vscode-charts-orange) !important; color: white !important;">
-                        <i class="codicon codicon-law"></i> Filter with Governor
+                    <button id="governor-filter-cancel-btn" class="code-action-btn secondary-btn" style="height: 30px; padding: 0 14px;">Cancel</button>
+                    <button id="governor-validate-btn" class="code-action-btn apply-btn" style="height: 30px; padding: 0 16px; font-weight: bold; background: var(--vscode-charts-green) !important; color: white !important;">
+                        <i class="codicon codicon-check"></i> Validate Selection
                     </button>
                 </div>
             </div>
@@ -1172,12 +1212,15 @@
                     <div style="display: flex; align-items: center; gap: 4px;">
                         <select id="bulk-organize-select" style="font-size: 11px; padding: 2px 6px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; height: 24px; cursor: pointer;">
                             <option value="tree">🌳 Folder Tree</option>
+                            <option value="visible-first">👁️ Visible First</option>
+                            <option value="muted-first">🙈 Muted First</option>
                             <option value="heavy-to-light">📊 Size (Heavy → Light)</option>
                             <option value="light-to-heavy">📊 Size (Light → Heavy)</option>
                             <option value="name">🔤 Name (A-Z)</option>
                             <option value="modified">🕒 Last Modified</option>
                         </select>
                         <button id="bulk-sort-tree-btn" class="icon-btn" title="Tree View"><i class="codicon codicon-folder-opened"></i></button>
+                        <button id="bulk-sort-visibility-btn" class="icon-btn" title="Sort by Visibility (Visible / Muted)"><i class="codicon codicon-eye"></i></button>
                         <button id="bulk-sort-size-btn" class="icon-btn" title="Sort by Size"><i class="codicon codicon-graph-line"></i></button>
                         <button id="bulk-sort-name-btn" class="icon-btn" title="Sort by Name"><i class="codicon codicon-sort-alphabetically"></i></button>
                         <button id="bulk-sort-modified-btn" class="icon-btn" title="Sort by Modified Time"><i class="codicon codicon-history"></i></button>
@@ -1524,10 +1567,22 @@
                 </div>
 
                 <div class="form-group">
-                    <label for="wizard-context-selection" style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8;">Initial Context Selection</label>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                        <label for="wizard-context-selection" style="font-weight:bold; font-size:11px; text-transform:uppercase; opacity:0.8; margin:0;">Initial Context Selection</label>
+                        <button id="wizard-governor-btn" class="code-action-btn secondary-btn" type="button" style="height:22px; font-size:10px; padding:0 8px; font-weight:600; border-color:var(--vscode-charts-orange); color:var(--vscode-charts-orange); display:inline-flex; align-items:center; gap:4px;" title="Adapt context selection to your prompt using Context Governor (mutes unneeded files)">
+                            <i class="codicon codicon-law"></i> Governor
+                        </button>
+                    </div>
                     <select id="wizard-context-selection" style="width:100%; margin-top:4px;">
                         <option value="current" selected>Current Active Selection (Default)</option>
                     </select>
+                    <div id="wizard-governor-status" style="display:none; font-size:10px; margin-top:6px; color:var(--vscode-charts-orange); align-items:center; justify-content:space-between; background:rgba(214, 122, 13, 0.08); padding:4px 8px; border-radius:4px; border:1px solid rgba(214, 122, 13, 0.25);">
+                        <div style="display:flex; align-items:center; gap:4px;">
+                            <i class="codicon codicon-law"></i>
+                            <span id="wizard-governor-status-text"></span>
+                        </div>
+                        <button id="wizard-governor-clear-btn" type="button" style="background:none; border:none; color:var(--vscode-errorForeground); cursor:pointer; font-size:10px; text-decoration:underline; padding:0 4px;">Clear</button>
+                    </div>
                 </div>
 
                 <div class="form-group">

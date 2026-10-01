@@ -1920,7 +1920,30 @@ if (dom.sendButton) {
         dom.governorFilterBtn.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
+            state.governorCaller = 'chat';
             import('./ui.js').then(ui => ui.openGovernorFilterModal());
+        };
+    }
+
+    const wizardGovBtn = document.getElementById('wizard-governor-btn');
+    if (wizardGovBtn) {
+        wizardGovBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            state.governorCaller = 'wizard';
+            const promptVal = dom.wizardPrompt?.value?.trim();
+            import('./ui.js').then(ui => ui.openGovernorFilterModal(promptVal));
+        };
+    }
+
+    const wizardGovClearBtn = document.getElementById('wizard-governor-clear-btn');
+    if (wizardGovClearBtn) {
+        wizardGovClearBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            state.wizardMutedFiles = undefined;
+            const statusEl = document.getElementById('wizard-governor-status');
+            if (statusEl) statusEl.style.display = 'none';
         };
     }
 
@@ -1928,6 +1951,9 @@ if (dom.sendButton) {
         dom.governorFilterCloseBtn.onclick = () => {
             dom.governorFilterModal.style.display = 'none';
             dom.governorFilterModal.classList.remove('visible');
+            if (state.governorCaller === 'wizard') {
+                state.governorCaller = 'chat';
+            }
         };
     }
 
@@ -1935,7 +1961,22 @@ if (dom.sendButton) {
         dom.governorFilterCancelBtn.onclick = () => {
             dom.governorFilterModal.style.display = 'none';
             dom.governorFilterModal.classList.remove('visible');
+            if (state.governorCaller === 'wizard') {
+                state.governorCaller = 'chat';
+            }
         };
+    }
+
+    if (dom.governorFilterModal) {
+        dom.governorFilterModal.addEventListener('click', (e) => {
+            if (e.target === dom.governorFilterModal) {
+                dom.governorFilterModal.style.display = 'none';
+                dom.governorFilterModal.classList.remove('visible');
+                if (state.governorCaller === 'wizard') {
+                    state.governorCaller = 'chat';
+                }
+            }
+        });
     }
 
     if (dom.governorSavePresetCheck) {
@@ -1949,31 +1990,201 @@ if (dom.sendButton) {
         };
     }
 
+    const triggerGovernorTurn = () => {
+        const promptInput = document.getElementById('governor-filter-prompt') as HTMLTextAreaElement;
+        const promptVal = promptInput?.value?.trim();
+        if (!promptVal) {
+            vscode.postMessage({ command: 'showError', message: 'Please enter a task or question for the Governor.' });
+            promptInput?.focus();
+            return;
+        }
+
+        const runBtn = document.getElementById('governor-filter-run-btn') as HTMLButtonElement;
+        if (runBtn) {
+            runBtn.disabled = true;
+            runBtn.innerHTML = '<div class="spinner"></div>';
+        }
+
+        const stepInd = document.getElementById('gov-step-indicator');
+        const stepTxt = document.getElementById('gov-step-text');
+        if (stepInd && stepTxt) {
+            stepInd.style.display = 'flex';
+            stepTxt.textContent = `Analyzing codebase & dependencies for "${promptVal.substring(0, 35)}..."`;
+        }
+
+        import('./ui.js').then(ui => {
+            ui.appendGovernorMessage('user', promptVal);
+            ui.governorStudioState.history.push({ role: 'user', text: promptVal });
+        });
+
+        promptInput.value = '';
+
+        const studioState = (window as any).governorStudioState;
+        const contextSelectionEl = document.getElementById('wizard-context-selection') as HTMLSelectElement;
+        const contextSelectionVal = (studioState?.caller === 'wizard' && contextSelectionEl) ? contextSelectionEl.value : undefined;
+
+        vscode.postMessage({
+            command: 'runGovernorFilter',
+            prompt: promptVal,
+            caller: studioState?.caller || state.governorCaller || 'chat',
+            contextSelection: contextSelectionVal,
+            currentMutedFiles: Array.from(studioState?.mutedSet || []),
+            history: (studioState?.history || []).map((h: any) => ({ role: h.role, content: h.text }))
+        });
+    };
+
     if (dom.governorFilterRunBtn) {
-        dom.governorFilterRunBtn.onclick = () => {
-            const promptVal = dom.governorFilterPrompt?.value?.trim();
-            if (!promptVal) {
-                vscode.postMessage({ command: 'showError', message: 'Please enter a task objective or query for the Governor.' });
-                dom.governorFilterPrompt?.focus();
-                return;
-            }
+        dom.governorFilterRunBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            triggerGovernorTurn();
+        };
+    }
 
-            const savePreset = dom.governorSavePresetCheck?.checked;
-            const presetName = dom.governorPresetNameInput?.value?.trim();
-            if (savePreset && !presetName) {
-                vscode.postMessage({ command: 'showError', message: 'Please enter a name for the new preset profile.' });
-                dom.governorPresetNameInput?.focus();
-                return;
+    if (dom.governorFilterPrompt) {
+        dom.governorFilterPrompt.addEventListener('keydown', (e: KeyboardEvent) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                triggerGovernorTurn();
             }
+        });
+    }
 
-            dom.governorFilterRunBtn.disabled = true;
-            dom.governorFilterRunBtn.innerHTML = '<span class="spinner"></span> Filtering with Governor...';
+    // Interactive File Filter Input on Right Column
+    const govFileFilterInp = document.getElementById('gov-file-filter-input') as HTMLInputElement;
+    if (govFileFilterInp) {
+        govFileFilterInp.oninput = () => {
+            const studioState = (window as any).governorStudioState;
+            if (studioState) {
+                studioState.searchFilter = govFileFilterInp.value;
+                import('./ui.js').then(ui => ui.renderGovernorFileList());
+            }
+        };
+    }
+
+    // Delegated click handler on Right Column File Rows to toggle mute state
+    const govFilesList = document.getElementById('gov-files-list');
+    if (govFilesList) {
+        govFilesList.addEventListener('click', (e: MouseEvent) => {
+            const target = e.target as HTMLElement;
+            const row = target.closest('.gov-file-row') as HTMLElement;
+            if (!row) return;
+
+            const filePath = row.dataset.path;
+            if (!filePath) return;
+
+            const studioState = (window as any).governorStudioState;
+            if (studioState && studioState.mutedSet) {
+                const clean = filePath.toLowerCase().trim();
+                if (studioState.mutedSet.has(clean)) {
+                    studioState.mutedSet.delete(clean);
+                } else {
+                    studioState.mutedSet.add(clean);
+                }
+                import('./ui.js').then(ui => ui.renderGovernorFileList());
+            }
+        });
+    }
+
+    // Governor Unmute All / Mute All in Studio
+    const govUnmuteAll = document.getElementById('gov-unmute-all-btn');
+    if (govUnmuteAll) {
+        govUnmuteAll.onclick = () => {
+            const studioState = (window as any).governorStudioState;
+            if (studioState && studioState.mutedSet) {
+                studioState.mutedSet.clear();
+                import('./ui.js').then(ui => ui.renderGovernorFileList());
+            }
+        };
+    }
+
+    const govMuteAll = document.getElementById('gov-mute-all-btn');
+    if (govMuteAll) {
+        govMuteAll.onclick = () => {
+            const studioState = (window as any).governorStudioState;
+            if (studioState && studioState.candidateFiles) {
+                studioState.candidateFiles.forEach((f: any) => studioState.mutedSet.add(f.path.toLowerCase().trim()));
+                import('./ui.js').then(ui => ui.renderGovernorFileList());
+            }
+        };
+    }
+
+    // Save current muting setup as a preset from inside the Studio
+    const govSavePreset = document.getElementById('gov-save-current-preset-btn');
+    if (govSavePreset) {
+        govSavePreset.onclick = () => {
+            const name = prompt("Name for this visibility preset profile:", "Task Focus");
+            if (!name || !name.trim()) return;
+            const studioState = (window as any).governorStudioState;
+            const cleanName = name.trim();
+            const currentPresets = (state as any).visibilityPresets || JSON.parse(localStorage.getItem('lollms_saved_mute_patterns') || '{}');
+            const targetList = Array.from(studioState?.mutedSet || []);
+            currentPresets[cleanName] = targetList;
+            (state as any).visibilityPresets = currentPresets;
+            try { localStorage.setItem('lollms_saved_mute_patterns', JSON.stringify(currentPresets)); } catch {}
 
             vscode.postMessage({
-                command: 'runGovernorFilter',
-                prompt: promptVal,
-                presetName: savePreset ? presetName : undefined
+                command: 'saveVisibilityPreset',
+                name: cleanName,
+                mutedFiles: targetList
             });
+
+            import('./ui.js').then(ui => ui.refreshVisibilityPresetsDropdowns(currentPresets));
+        };
+    }
+
+    // Validate and Apply Governor Selection
+    const govValidateBtn = document.getElementById('governor-validate-btn');
+    if (govValidateBtn) {
+        govValidateBtn.onclick = () => {
+            const studioState = (window as any).governorStudioState;
+            const caller = studioState?.caller || state.governorCaller || 'chat';
+            const finalMuted = Array.from(studioState?.mutedSet || []);
+
+            govValidateBtn.innerHTML = '<div class="spinner"></div> Applying...';
+
+            vscode.postMessage({
+                command: 'applyGovernorSelection',
+                mutedFiles: finalMuted,
+                caller: caller
+            });
+
+            if (caller === 'wizard') {
+                state.wizardMutedFiles = finalMuted;
+                const statusEl = document.getElementById('wizard-governor-status');
+                const statusText = document.getElementById('wizard-governor-status-text');
+                if (statusEl && statusText) {
+                    statusEl.style.display = 'flex';
+                    statusText.textContent = `Governor applied: ${studioState.candidateFiles.length - finalMuted.length} active, ${finalMuted.length} muted.`;
+                }
+            }
+
+            const modal = document.getElementById('governor-filter-modal');
+            if (modal) {
+                modal.style.display = 'none';
+                modal.classList.remove('visible');
+            }
+            govValidateBtn.innerHTML = '<i class="codicon codicon-check"></i> Validate Selection';
+        };
+    }
+
+    // Reset Chat in Studio
+    const govClearChat = document.getElementById('gov-clear-chat-btn');
+    if (govClearChat) {
+        govClearChat.onclick = () => {
+            const studioState = (window as any).governorStudioState;
+            if (studioState) {
+                studioState.history = [];
+                const chatContainer = document.getElementById('gov-chat-messages');
+                if (chatContainer) {
+                    chatContainer.innerHTML = '';
+                    import('./ui.js').then(ui => {
+                        ui.appendGovernorMessage('assistant', "Conversation reset. What technical objective should I evaluate?", {
+                            rationale: "Ready for your prompt."
+                        });
+                    });
+                }
+            }
         };
     }
 
@@ -1988,6 +2199,19 @@ if (dom.sendButton) {
 
     if (dom.governorUnmuteAllBtn) {
         dom.governorUnmuteAllBtn.onclick = () => {
+            if (state.governorCaller === 'wizard') {
+                state.wizardMutedFiles = [];
+                const statusEl = document.getElementById('wizard-governor-status');
+                const statusText = document.getElementById('wizard-governor-status-text');
+                if (statusEl && statusText) {
+                    statusEl.style.display = 'flex';
+                    statusText.textContent = 'All files unmuted (0 muted).';
+                }
+                dom.governorFilterModal.style.display = 'none';
+                dom.governorFilterModal.classList.remove('visible');
+                state.governorCaller = 'chat';
+                return;
+            }
             const currentMuted = state.mutedFiles || [];
             if (currentMuted.length === 0) {
                 vscode.postMessage({ command: 'showError', message: 'All files are already visible (no files currently muted).' });
@@ -2006,7 +2230,7 @@ if (dom.sendButton) {
                 vscode.postMessage({ command: 'showError', message: 'Please select a preset to apply.' });
                 return;
             }
-            vscode.postMessage({ command: 'applyVisibilityPreset', name: sel });
+            vscode.postMessage({ command: 'applyVisibilityPreset', name: sel, caller: state.governorCaller || 'chat' });
             dom.governorFilterModal.style.display = 'none';
             dom.governorFilterModal.classList.remove('visible');
         };
@@ -2098,11 +2322,14 @@ if (dom.sendButton) {
                     contextSelection,
                     userPreferenceProfileId: prefProfileId,
                     userPreferences,
+                    mutedFiles: state.wizardMutedFiles,
                     sendToAi
                 }
             }
         });
 
+        state.wizardMutedFiles = undefined;
+        state.governorCaller = 'chat';
         dom.wizardTitle.value = '';
         dom.wizardPrompt.value = '';
         dom.wizardModal.style.display = 'none';

@@ -82,6 +82,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         contextSelection?: string,
         userPreferenceProfileId?: string,
         userPreferences?: string,
+        mutedFiles?: string[],
         sendToAi: boolean
     }) => {
         const workspaceFolder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
@@ -93,6 +94,14 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         const discussion = services.discussionManager.createNewDiscussion(null);
         discussion.title = params.title || "New Discussion";
         discussion.personalityId = params.personalityId;
+
+        // Apply muted files if passed (e.g. from Governor)
+        if (params.mutedFiles && Array.isArray(params.mutedFiles)) {
+            discussion.mutedFiles = [...params.mutedFiles];
+            if (discussion.capabilities) {
+                discussion.capabilities.mutedFiles = [...params.mutedFiles];
+            }
+        }
 
         // Sync custom capabilities chosen in the wizard
         if (discussion.capabilities) {

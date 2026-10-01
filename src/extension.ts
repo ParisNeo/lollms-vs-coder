@@ -107,7 +107,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
     const processManager = new ProcessManager();
     const codeGraphManager = new CodeGraphManager();
     const toolManager = new ToolManager(); // Clean instantiation
-    contextManager['toolManager'] = toolManager; // Inject into contextManager for Librarian/Builder use
     const notebookManager = new NotebookManager(lollmsAPI);
     const inlineDiffProvider = new InlineDiffProvider(lollmsAPI);
     const quickEditManager = new QuickEditManager(lollmsAPI, inlineDiffProvider, contextManager, memoryManager);
@@ -117,6 +116,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
     // Initialize RLM Database Manager
     const rlmDb = new RLMDatabaseManager(context);
     const rlmProvider = new RLMDatabaseTreeProvider(rlmDb);
+
+
+    contextManager.toolManager = toolManager; // Inject into contextManager for Librarian/Builder use
     vscode.window.registerTreeDataProvider('lollmsRLMView', rlmProvider);
 
     // Initialize Project Memory

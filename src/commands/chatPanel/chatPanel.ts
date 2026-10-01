@@ -5114,7 +5114,7 @@ ${res.output || '(No output recorded)'}
       if (!this._currentDiscussion.id.startsWith('temp-')) {
           await this._discussionManager.saveDiscussion(this._currentDiscussion);
       }
-      await this.updateContextAndTokens({ isBackgroundSync: false });
+      await this.updateContextAndTokens({ isBackgroundSync: true });
       return addedCount;
   }
 
@@ -5137,7 +5137,7 @@ ${res.output || '(No output recorded)'}
       if (!this._currentDiscussion.id.startsWith('temp-')) {
           await this._discussionManager.saveDiscussion(this._currentDiscussion);
       }
-      await this.updateContextAndTokens({ isBackgroundSync: false });
+      await this.updateContextAndTokens({ isBackgroundSync: true });
       return removedCount;
   }
 
@@ -5966,6 +5966,9 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             } else if (action.type === 'add_context') {
                                 const added = await provider?.addFilesToContext(action.payload) || [];
                                 resultsLog.push(`#### ✅ Added to Context: [${added.join(', ')}]`);
+                            } else if (action.type === 'unmute') {
+                                const count = await this.unmuteFiles(action.payload);
+                                resultsLog.push(`#### ✅ Unmuted Files: [${action.payload.join(', ')}] (${count} files reactivated with full content)`);
                             } else if (action.type === 'tool') {
                                 const toolDef = this.agentManager.getTools().find(t => t.name === action.payload.name);
                                 if (toolDef) {
@@ -6550,7 +6553,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 break;
             case 'runGovernorFilter':
                 {
-                    const { prompt: filterPrompt, presetName } = message;
+                    const { prompt: filterPrompt, presetName, caller, contextSelection, history, currentMutedFiles } = message;
                     if (!filterPrompt || !this._currentDiscussion) break;
 
                     const { id: govProcId, controller: govCtrl } = this.processManager.register(
@@ -6561,6 +6564,28 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
 
                     try {
                         const targetModel = this._currentDiscussion.model || this._lollmsAPI.getModelName();
+                        let candidateFiles: string[] | undefined = undefined;
+
+                        if (caller === 'wizard' && contextSelection) {
+                            if (contextSelection === 'empty') {
+                                candidateFiles = [];
+                            } else if (contextSelection !== 'current') {
+                                const targetFileName = contextSelection.endsWith('.lollms-ctx') ? contextSelection : `${contextSelection}.lollms-ctx`;
+                                const allFolders = vscode.workspace.workspaceFolders || [];
+                                for (const folder of allFolders) {
+                                    try {
+                                        const fileUri = vscode.Uri.joinPath(folder.uri, '.lollms', 'selection', targetFileName);
+                                        const bytes = await vscode.workspace.fs.readFile(fileUri);
+                                        const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
+                                        if (Array.isArray(parsed)) {
+                                            candidateFiles = parsed;
+                                            break;
+                                        }
+                                    } catch {}
+                                }
+                            }
+                        }
+
                         const result = await ContextGovernor.filterFilesByPrompt({
                             lollmsAPI: this._lollmsAPI,
                             contextManager: this._contextManager,
@@ -6569,13 +6594,14 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             targetModel,
                             prompt: filterPrompt,
                             signal: govCtrl.signal,
+                            candidateFiles,
+                            currentMutedFiles,
+                            history,
                             onStatusUpdate: (status) => {
                                 this.processManager.updateDescription(govProcId, status);
                                 this.updateGeneratingState();
                             }
                         });
-
-                        this._currentDiscussion.mutedFiles = result.mutedFiles;
 
                         let updatedPresets: Record<string, string[]> | undefined;
                         if (presetName && presetName.trim()) {
@@ -6588,32 +6614,58 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             updatedPresets = this._discussionManager.context.workspaceState.get<Record<string, string[]>>('lollms_saved_mute_patterns') || {};
                         }
 
-                        if (!this._currentDiscussion.id.startsWith('temp-')) {
-                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
-                        }
-
-                        // Silently apply the filter without polluting chat history with system messages
                         webview.postMessage({
                             command: 'governorFilterResult',
                             keptFiles: result.keptFiles,
                             mutedFiles: result.mutedFiles,
                             rationale: result.rationale,
+                            advice: result.advice,
+                            signatures: result.signatures,
+                            discoverySteps: result.discoverySteps,
+                            totalTokens: result.totalTokens,
+                            liberatedTokens: result.liberatedTokens,
                             presets: updatedPresets,
-                            presetName
+                            presetName,
+                            caller: caller || 'chat',
+                            prompt: filterPrompt
                         });
-
-                        this.updateContextAndTokens({ isBackgroundSync: false });
-                        vscode.window.showInformationMessage(`⚖️ Governor: Filtered context (${result.keptFiles.length} active, ${result.mutedFiles.length} muted).`);
                     } catch (err: any) {
                         Logger.error(`Governor filter error: ${err.message}`);
                         vscode.window.showErrorMessage(`Governor filter failed: ${err.message}`);
                         webview.postMessage({
                             command: 'governorFilterResult',
-                            error: err.message
+                            error: err.message,
+                            caller: caller || 'chat'
                         });
                     } finally {
                         this.processManager.unregister(govProcId);
                         this.updateGeneratingState();
+                    }
+                }
+                break;
+
+            case 'applyGovernorSelection':
+                {
+                    const { mutedFiles, caller, presetName } = message;
+                    if (presetName && presetName.trim()) {
+                        const cleanName = presetName.trim();
+                        const currentPresets = this._discussionManager.context.workspaceState.get<Record<string, string[]>>('lollms_saved_mute_patterns') || {};
+                        currentPresets[cleanName] = mutedFiles || [];
+                        await this._discussionManager.context.workspaceState.update('lollms_saved_mute_patterns', currentPresets);
+                    }
+
+                    if (caller === 'wizard') {
+                        webview.postMessage({
+                            command: 'governorWizardSelectionApplied',
+                            mutedFiles: mutedFiles || []
+                        });
+                    } else if (this._currentDiscussion) {
+                        this._currentDiscussion.mutedFiles = Array.isArray(mutedFiles) ? [...mutedFiles] : [];
+                        if (!this._currentDiscussion.id.startsWith('temp-')) {
+                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                        }
+                        this.updateContextAndTokens({ isBackgroundSync: false });
+                        vscode.window.showInformationMessage(`⚖️ Context Governor: Selection applied (${this._currentDiscussion.mutedFiles.length} files muted).`);
                     }
                 }
                 break;
@@ -6649,20 +6701,23 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 break;
             case 'applyVisibilityPreset':
                 {
-                    const { name: pName } = message;
+                    const { name: pName, caller } = message;
                     const currentPresets = this._discussionManager.context.workspaceState.get<Record<string, string[]>>('lollms_saved_mute_patterns') || {};
                     const targetMuted = currentPresets[pName];
-                    if (Array.isArray(targetMuted) && this._currentDiscussion) {
-                        this._currentDiscussion.mutedFiles = [...targetMuted];
-                        if (!this._currentDiscussion.id.startsWith('temp-')) {
-                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    if (Array.isArray(targetMuted)) {
+                        if (caller !== 'wizard' && this._currentDiscussion) {
+                            this._currentDiscussion.mutedFiles = [...targetMuted];
+                            if (!this._currentDiscussion.id.startsWith('temp-')) {
+                                await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                            }
+                            this.updateContextAndTokens({ isBackgroundSync: false });
                         }
                         webview.postMessage({
                             command: 'visibilityPresetApplied',
                             name: pName,
-                            mutedFiles: targetMuted
+                            mutedFiles: targetMuted,
+                            caller: caller || 'chat'
                         });
-                        this.updateContextAndTokens({ isBackgroundSync: false });
                         vscode.window.showInformationMessage(`Applied visibility profile '${pName}' (${targetMuted.length} muted).`);
                     }
                 }
@@ -6692,7 +6747,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
-                    this.updateContextAndTokens({ isBackgroundSync: false });
+                    this.updateContextAndTokens({ isBackgroundSync: true });
                 }
                 break;
 
@@ -6765,6 +6820,12 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 if (Array.isArray(message.paths)) {
                     await this.unmuteFiles(message.paths);
                     vscode.window.showInformationMessage(`Reactivated content for selected file(s) for this discussion.`);
+                    if (message.reprompt) {
+                        await this.sendMessage({
+                            role: 'user',
+                            content: `I have unmuted the requested file(s): [${message.paths.join(', ')}]. Their full contents are now active in your context. Please proceed with your analysis or code implementation.`
+                        });
+                    }
                 }
                 break;
             case 'removeFileFromContext':
@@ -6890,6 +6951,29 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     ChatPanel._tokenCountCache.clear();
                     const effectiveModel = message.model || this._lollmsAPI.getModelName();
                     this._panel.webview.postMessage({ command: 'updateModelNameOnly', modelName: effectiveModel });
+
+                    // Auto-bind optimal temperature setting if configured for this model
+                    const optConfig = vscode.workspace.getConfiguration('lollmsVsCoder');
+                    const optimalSettings = optConfig.get<Record<string, { enableTemperature: boolean, temperature?: number }>>('modelOptimalSettings') || {};
+                    const rawModelName = effectiveModel.includes('::') ? effectiveModel.split('::')[1] : effectiveModel;
+                    const bound = optimalSettings[effectiveModel] || optimalSettings[rawModelName];
+                    if (bound) {
+                        this._discussionCapabilities.enableTemperature = bound.enableTemperature;
+                        if (bound.enableTemperature && bound.temperature !== undefined) {
+                            this._discussionCapabilities.temperature = bound.temperature;
+                        }
+                        if (this._currentDiscussion.capabilities) {
+                            this._currentDiscussion.capabilities.enableTemperature = bound.enableTemperature;
+                            this._currentDiscussion.capabilities.temperature = bound.temperature;
+                        }
+                        this._panel.webview.postMessage({
+                            command: 'updateDiscussionCapabilities',
+                            capabilities: this._discussionCapabilities
+                        });
+                        const tempDesc = bound.enableTemperature ? `Temp: ${bound.temperature}` : 'Auto (No Temperature)';
+                        vscode.window.setStatusBarMessage(`Applied optimal setting for ${effectiveModel} (${tempDesc})`, 3000);
+                    }
+
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }

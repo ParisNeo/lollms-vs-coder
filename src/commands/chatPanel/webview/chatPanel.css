@@ -1694,6 +1694,105 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     display: flex !important; 
 }
 
+/* Elevate sub-modals opened from other modals (e.g. Governor opened from New Discussion Wizard) */
+#governor-filter-modal {
+    z-index: 110000 !important;
+}
+
+/* --- GOVERNOR STUDIO INTERACTIVE TWO-COLUMN STYLING --- */
+.gov-chat-bubble {
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    animation: fadeIn 0.2s ease-out;
+}
+
+.gov-chat-bubble.user {
+    background: var(--vscode-editor-inactiveSelectionBackground);
+    border: 1px solid var(--vscode-widget-border);
+    border-left: 3px solid var(--vscode-charts-blue);
+    align-self: flex-end;
+    width: 90%;
+}
+
+.gov-chat-bubble.governor {
+    background: var(--vscode-editorWidget-background);
+    border: 1px solid var(--vscode-widget-border);
+    border-left: 3px solid var(--vscode-charts-orange);
+    align-self: flex-start;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.gov-bubble-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    opacity: 0.75;
+}
+
+.gov-discovery-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--vscode-widget-border);
+}
+
+.gov-discovery-chip.grep {
+    border-color: rgba(155, 89, 182, 0.4);
+    color: var(--vscode-charts-purple);
+}
+
+.gov-discovery-chip.sparql {
+    border-color: rgba(0, 122, 204, 0.4);
+    color: var(--vscode-charts-blue);
+}
+
+.gov-file-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 10px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.12);
+    border: 1px solid var(--vscode-widget-border);
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+    user-select: none;
+}
+
+.gov-file-row:hover {
+    background: var(--vscode-list-hoverBackground);
+    border-color: var(--vscode-focusBorder);
+}
+
+.gov-file-row.is-active {
+    border-left: 3px solid var(--vscode-charts-green);
+}
+
+.gov-file-row.is-muted {
+    border-left: 3px solid var(--vscode-charts-orange);
+    opacity: 0.65;
+}
+
+.gov-file-row.is-muted .gov-file-title {
+    text-decoration: line-through;
+    opacity: 0.8;
+}
+
 .modal-content {
     background-color: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-widget-border);

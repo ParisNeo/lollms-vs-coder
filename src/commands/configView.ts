@@ -24,6 +24,7 @@ export class SettingsPanel {
     ttiModelName: '',
     dreamModelName: '',
     architectModelName: '',
+    judgeModelName: '',
     titlingModelName: '',
     gitCommitModelName: '',
     surgicalModelName: '',
@@ -168,6 +169,7 @@ export class SettingsPanel {
     this._pendingConfig.ttiModelName = config.get<string>('ttiModelName') || '';
     this._pendingConfig.dreamModelName = config.get<string>('dreamModelName') || '';
     this._pendingConfig.architectModelName = config.get<string>('architectModelName') || '';
+    this._pendingConfig.judgeModelName = config.get<string>('judgeModelName') || '';
     this._pendingConfig.titlingModelName = config.get<string>('titlingModelName') || '';
     this._pendingConfig.gitCommitModelName = config.get<string>('gitCommitModelName') || '';
     this._pendingConfig.surgicalModelName = config.get<string>('surgicalModelName') || '';
@@ -577,6 +579,7 @@ export class SettingsPanel {
                   ['ttiModelName', this._pendingConfig.ttiModelName],
                   ['dreamModelName', this._pendingConfig.dreamModelName],
                   ['architectModelName', this._pendingConfig.architectModelName],
+                  ['judgeModelName', this._pendingConfig.judgeModelName],
                   ['titlingModelName', this._pendingConfig.titlingModelName],
                   ['gitCommitModelName', this._pendingConfig.gitCommitModelName],
                   ['surgicalModelName', this._pendingConfig.surgicalModelName],
@@ -1169,6 +1172,26 @@ export class SettingsPanel {
                     </select>
                 </div>
                 <span class="help-text">Used for deep multi-step planning and ReAct loop orchestrations.</span>
+
+                <label for="judgeModelSelect">Prompt Evaluation Judge Model (Judge Agent)</label>
+                <div class="input-group">
+                    <select id="judgeModelSelect" class="model-dropdown">
+                        <option value="">Same as Chat Model (Default)</option>
+                    </select>
+                </div>
+                <span class="help-text">Used by the Judge Agent to evaluate prompt adherence and reasoning in Test & Optimize benchmarks.</span>
+
+                <div style="margin-top: 16px; padding: 14px 16px; background: rgba(0, 122, 204, 0.08); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 15px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 220px;">
+                        <strong style="font-size: 13px; color: var(--vscode-foreground); display: flex; align-items: center; gap: 8px;">
+                            <i class="codicon codicon-beaker" style="color: var(--vscode-charts-blue);"></i> Test and Optimize Model Settings
+                        </strong>
+                        <p class="help-text" style="margin: 4px 0 0 0;">Run benchmark tests (patching, prompt following, anti-hallucination) across temperature ranges to find and bind optimal settings for your models.</p>
+                    </div>
+                    <button type="button" id="btnTestAndOptimize" class="primary" style="white-space: nowrap; height: 32px; font-weight: bold; display: flex; align-items: center; gap: 6px;">
+                        <i class="codicon codicon-beaker"></i> Test and Optimize
+                    </button>
+                </div>
 
                 <label for="ttiModelSelect">Image Generation (TTI) Model</label>
                 <div class="input-group">
@@ -1991,6 +2014,7 @@ export class SettingsPanel {
                 bind('ttiModelSelect', 'ttiModelName');
                 bind('dreamModelSelect', 'dreamModelName');
                 bind('architectModelSelect', 'architectModelName');
+                bind('judgeModelSelect', 'judgeModelName');
                 bind('inspectorModelName', 'inspectorModelName');
                 bind('titlingModelSelect', 'titlingModelName');
                 bind('gitCommitModelSelect', 'gitCommitModelName');
@@ -2430,6 +2454,7 @@ export class SettingsPanel {
                 const dropdownFields = [
                     ['modelSelect', 'modelName'],
                     ['architectModelSelect', 'architectModelName'],
+                    ['judgeModelSelect', 'judgeModelName'],
                     ['ttiModelSelect', 'ttiModelName'],
                     ['dreamModelSelect', 'dreamModelName'],
                     ['titlingModelSelect', 'titlingModelName'],
@@ -2548,6 +2573,11 @@ export class SettingsPanel {
             attach('testConnection', () => {
                 const conn = getCurrentConnectionSettings();
                 vscode.postMessage({ command: 'testConnection', connection: conn });
+            });
+            attach('btnTestAndOptimize', () => {
+                const modelSel = document.getElementById('modelSelect');
+                const val = modelSel ? modelSel.value : '';
+                vscode.postMessage({ command: 'openTestAndOptimize', value: val });
             });
             attach('refreshModels', () => {
                 refreshModelsList(true);
@@ -2837,7 +2867,7 @@ export class SettingsPanel {
                     const currentInspModel = document.getElementById('inspectorModelName').value || config.inspectorModelName;
 
                     const targets = [
-                        'modelSelect', 'ttiModelSelect', 'dreamModelSelect', 'architectModelSelect', 'inspectorModelName', 
+                        'modelSelect', 'ttiModelSelect', 'dreamModelSelect', 'architectModelSelect', 'judgeModelSelect', 'inspectorModelName', 
                         'titlingModelSelect', 'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect', 'graphModelSelect'
                     ];
                     targets.forEach(id => {
@@ -2847,6 +2877,7 @@ export class SettingsPanel {
                             if (id === 'ttiModelSelect') valToRestore = config.ttiModelName;
                             if (id === 'dreamModelSelect') valToRestore = config.dreamModelName;
                             if (id === 'architectModelSelect') valToRestore = currentArchModel;
+                            if (id === 'judgeModelSelect') valToRestore = config.judgeModelName;
                             if (id === 'inspectorModelName') valToRestore = currentInspModel;
                             if (id === 'titlingModelSelect') valToRestore = config.titlingModelName;
                             if (id === 'gitCommitModelSelect') valToRestore = config.gitCommitModelName;

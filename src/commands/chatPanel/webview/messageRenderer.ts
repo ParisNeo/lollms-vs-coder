@@ -2684,11 +2684,12 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     const totalActionableCount = xmlActionableCount + legacyActionableCount;
 
-    // Detect actionable interactive items (Peek, Context Add, Tools)
+    // Detect actionable interactive items (Peek, Context Add, Unmute Files, Tools)
     const peekCount = (mainProcessedContent.match(/<peek_files\b/gi) || []).length;
     const addContextCount = (mainProcessedContent.match(/<add_files_to_context\b/gi) || []).length;
+    const unmuteCount = (mainProcessedContent.match(/<unmute_files\b/gi) || []).length;
     const toolCallCount = (mainProcessedContent.match(/<lollms_tool\b/gi) || []).length;
-    const totalExecutableActionsCount = peekCount + addContextCount + toolCallCount;
+    const totalExecutableActionsCount = peekCount + addContextCount + unmuteCount + toolCallCount;
 
     // Collect all unique files requested to be added to context across the entire turn
     const turnContextFiles: string[] = [];
@@ -2715,7 +2716,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             <div class="execute-all-actions-wrapper" style="margin-top: 14px; padding: 0 12px; display: flex; gap: 10px; flex-wrap: wrap;">
                 ${hasActions ? `
                 <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="flex: 1; min-width: 220px; height: 34px; font-weight: bold; justify-content: center; background: var(--vscode-charts-purple, #9b59b6) !important; color: white !important;">
-                    <i class="codicon codicon-play"></i> Execute All Actions (${totalExecutableActionsCount} operations: Peeks/Context/Tools)
+                    <i class="codicon codicon-play"></i> Execute All Actions (${totalExecutableActionsCount} operations: Peeks/Context/Unmutes/Tools)
                 </button>` : ''}
                 ${hasTurnFiles ? `
                 <button class="code-action-btn secondary-btn copy-all-turn-context-btn" id="copy-all-turn-context-${messageId}" data-files="${encodedTurnFiles}" style="height: 34px; font-weight: bold; justify-content: center; padding: 0 16px; border: 1px solid var(--vscode-charts-blue); color: var(--vscode-textLink-foreground); display: inline-flex; align-items: center; gap: 6px;" title="Copy the content of all files requested in this turn to clipboard">
@@ -2870,6 +2871,23 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         actions.push({ type: 'add_context', payload: files });
                     }
                 } catch {}
+            });
+
+            // 2.5. Gather unmute_files actions for bulk application
+            contentDiv.querySelectorAll('.unmute-files-block, [data-action-type="unmute"]').forEach((block: any) => {
+                try {
+                    const rawPaths = block.dataset.paths || block.dataset.payload;
+                    const paths = JSON.parse(decodeURIComponent(rawPaths || '[]'));
+                    if (Array.isArray(paths) && paths.length > 0) {
+                        actions.push({ type: 'unmute', payload: paths });
+                    }
+                } catch {}
+                const unmuteBtn = block.querySelector('.unmute-btn') as HTMLButtonElement;
+                if (unmuteBtn) {
+                    unmuteBtn.disabled = true;
+                    unmuteBtn.classList.add('applied');
+                    unmuteBtn.innerHTML = '<i class="codicon codicon-check"></i> Files Unmuted';
+                }
             });
 
             // 3. Gather lollms_tool calls
@@ -3489,7 +3507,7 @@ export class ContextPresenter {
         emptyMsg: string, 
         allowSummarize: boolean = false,
         fileTokensMap: Record<string, number> = {},
-        sortOrder: 'heavy-to-light' | 'light-to-heavy' | 'name' | 'modified' | 'tree' = 'heavy-to-light',
+        sortOrder: 'heavy-to-light' | 'light-to-heavy' | 'name' | 'modified' | 'tree' | 'visible-first' | 'muted-first' = 'heavy-to-light',
         mutedFiles: string[] = []
     ): string {
         if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
@@ -3570,7 +3588,7 @@ export class ContextPresenter {
             const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
             const weightClass = isMuted ? 'weight-muted' : (bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light'));
             const tokenBadge = isMuted
-                ? `<span class="file-token-badge weight-muted" title="File is deactivated for this discussion only">[MUTED]</span>`
+                ? `<span class="file-token-badge weight-muted" title="Muted: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens liberated / 0 active tokens)">${formattedBytes} [MUTED]</span>`
                 : `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`;
 
             const timeStr = formatTimeAgo(mtime);
@@ -3585,7 +3603,7 @@ export class ContextPresenter {
                 : 'Deactivate file content for this discussion (Mute / Manual Governor)';
 
             return `
-            <li class="context-item ${isMuted ? 'file-muted' : ''}" style="flex-direction: column; align-items: stretch; gap: 4px;">
+            <li class="context-item ${isMuted ? 'file-muted' : ''}" style="flex-direction: column; align-items: stretch; gap: 4px;" data-path="${f}">
                 <div style="display:flex; align-items:center; width:100%; gap: 4px;">
                     <button class="toggle-mute-file-btn ${muteClass}" data-path="${f}" title="${muteTitle}">
                         <span class="codicon ${muteIcon}"></span>
@@ -3685,7 +3703,7 @@ export class ContextPresenter {
                     const encodedSubPaths = encodeURIComponent(JSON.stringify(allSubFiles.map(f => f.path)));
 
                     html += `
-                    <details class="context-tree-folder ${isAllMuted ? 'folder-muted' : ''}" open style="margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; background: rgba(0,0,0,0.06);">
+                    <details class="context-tree-folder ${isAllMuted ? 'folder-muted' : ''}" open style="margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; background: rgba(0,0,0,0.06);" data-folder="${sub.fullPath}">
                         <summary style="padding: 3px 6px; cursor: pointer; font-size: 11px; font-weight: 700; display: flex; align-items: center; gap: 6px; user-select: none; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 3px;">
                             <button class="toggle-mute-folder-btn ${folderMuteClass}" data-folder="${sub.fullPath}" data-paths="${encodedSubPaths}" data-action="${isAllMuted ? 'unmute' : 'mute'}" title="${folderMuteTitle}" style="cursor: pointer;">
                                 <span class="codicon ${folderMuteIcon}"></span>
@@ -3693,7 +3711,7 @@ export class ContextPresenter {
                             <span class="codicon codicon-folder"></span>
                             <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; ${isAllMuted ? 'text-decoration: line-through; opacity: 0.75;' : ''}">${sub.name}</span>
                             <span style="font-size: 9px; opacity: 0.6; font-weight: normal;">${totalCount} file${totalCount === 1 ? '' : 's'}${isSomeMuted ? ` (${mutedSubCount} muted)` : ''}</span>
-                            <span class="file-token-badge ${isAllMuted ? 'weight-muted' : 'weight-light'}">${isAllMuted ? '[MUTED / 0 tok]' : `~${tokDisplay} tok`}</span>
+                            <span class="file-token-badge ${isAllMuted ? 'weight-muted' : 'weight-light'}" title="${isAllMuted ? `Muted: ~${tokDisplay} tokens deactivated` : `Active: ~${tokDisplay} tokens`}">${isAllMuted ? `~${tokDisplay} tok [MUTED]` : `~${tokDisplay} tok`}</span>
                         </summary>
                         <div class="context-tree-folder-body" style="padding: 4px 2px 4px 8px; border-left: 1px dashed var(--vscode-tree-indentGuidesStroke, rgba(255,255,255,0.15)); margin-left: 6px;">
                             ${renderTreeDir(sub)}
@@ -3725,6 +3743,10 @@ export class ContextPresenter {
             normalized.sort((a, b) => (a.bytes - b.bytes) || (a.tokens - b.tokens) || a.path.localeCompare(b.path));
         } else if (sortOrder === 'name') {
             normalized.sort((a, b) => a.fileName.localeCompare(b.fileName));
+        } else if (sortOrder === 'visible-first') {
+            normalized.sort((a, b) => (Number(a.isMuted) - Number(b.isMuted)) || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName));
+        } else if (sortOrder === 'muted-first') {
+            normalized.sort((a, b) => (Number(b.isMuted) - Number(a.isMuted)) || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName));
         }
 
         return `<ul class="context-file-list">
@@ -3934,13 +3956,15 @@ export class ContextPresenter {
                                     ${finalFilesCount > 0 ? `<button id="governor-filter-btn" class="section-bulk-btn" title="Context Governor: Select files to keep with AI based on prompt"><span class="codicon codicon-law"></span> Governor</button>` : ''}
                                     <select id="sort-files-select" class="section-bulk-btn" style="height:20px; font-size:10px; padding: 0 4px; cursor: pointer; max-width: 140px;" title="Organize & Sort Files">
                                         <option value="tree" ${state.fileSortOrder === 'tree' ? 'selected' : ''}>🌳 Folder (Tree)</option>
-                                        <option value="modified" ${state.fileSortOrder === 'modified' ? 'selected' : ''}>🕒 Last Modified</option>
+                                        <option value="visible-first" ${state.fileSortOrder === 'visible-first' ? 'selected' : ''}>👁️ Visible First</option>
+                                        <option value="muted-first" ${state.fileSortOrder === 'muted-first' ? 'selected' : ''}>🙈 Muted First</option>
                                         <option value="heavy-to-light" ${state.fileSortOrder === 'heavy-to-light' ? 'selected' : ''}>📊 Size (Heavy → Light)</option>
                                         <option value="light-to-heavy" ${state.fileSortOrder === 'light-to-heavy' ? 'selected' : ''}>📊 Size (Light → Heavy)</option>
                                         <option value="name" ${state.fileSortOrder === 'name' ? 'selected' : ''}>🔤 Name (A-Z)</option>
+                                        <option value="modified" ${state.fileSortOrder === 'modified' ? 'selected' : ''}>🕒 Last Modified</option>
                                     </select>
                                     <button id="sort-files-btn" class="section-bulk-btn" title="Cycle Organization Mode" style="padding: 2px 5px;">
-                                        <span class="codicon ${state.fileSortOrder === 'tree' ? 'codicon-folder-opened' : (state.fileSortOrder === 'modified' ? 'codicon-history' : (state.fileSortOrder === 'name' ? 'codicon-sort-alphabetically' : 'codicon-graph-line'))}"></span>
+                                        <span class="codicon ${state.fileSortOrder === 'tree' ? 'codicon-folder-opened' : (state.fileSortOrder === 'visible-first' ? 'codicon-eye' : (state.fileSortOrder === 'muted-first' ? 'codicon-eye-closed' : (state.fileSortOrder === 'modified' ? 'codicon-history' : (state.fileSortOrder === 'name' ? 'codicon-sort-alphabetically' : 'codicon-graph-line'))))}"></span>
                                     </button>
                                     <button id="new-discussion-same-files-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-purple); color: var(--vscode-charts-purple);" title="Start a new discussion with the exact same files and muted states">
                                         <span class="codicon codicon-repo-forked"></span> Fork Chat
@@ -4277,7 +4301,110 @@ export class ContextBinder {
             });
         });
 
-        // Bind mute / deactivate toggle buttons for files, folders, tools, skills, and diagrams
+        // Helper function for surgical, in-place DOM updates when toggling file mute status
+        const updateFileMuteDom = (filePath: string, isMuted: boolean) => {
+            const normPath = filePath.replace(/\\/g, '/').trim().toLowerCase();
+            const rows = dashboard.querySelectorAll(`.context-item[data-path]`);
+
+            rows.forEach((row: any) => {
+                const rowPath = (row.dataset.path || '').replace(/\\/g, '/').trim().toLowerCase();
+                if (rowPath === normPath || rowPath.endsWith('/' + normPath) || normPath.endsWith('/' + rowPath)) {
+                    row.classList.toggle('file-muted', isMuted);
+
+                    const btn = row.querySelector('.toggle-mute-file-btn') as HTMLElement;
+                    if (btn) {
+                        btn.className = `toggle-mute-file-btn ${isMuted ? 'is-muted' : 'is-active'}`;
+                        btn.title = isMuted 
+                            ? 'Reactivate file content for this discussion (Unmute)' 
+                            : 'Deactivate file content for this discussion (Mute / Manual Governor)';
+                        const icon = btn.querySelector('.codicon');
+                        if (icon) {
+                            icon.className = `codicon ${isMuted ? 'codicon-eye-closed' : 'codicon-eye'}`;
+                        }
+                    }
+
+                    const badge = row.querySelector('.file-token-badge:not(.file-mtime-badge)') as HTMLElement;
+                    if (badge) {
+                        const itemData = state.lastContextData?.files?.find((fi: any) => {
+                            const p = (typeof fi === 'string' ? fi : fi.path || '').replace(/\\/g, '/').toLowerCase();
+                            return p === normPath || p.endsWith('/' + normPath) || normPath.endsWith('/' + p);
+                        });
+                        let bytes = 0;
+                        let tokens = 0;
+                        if (typeof itemData === 'object' && itemData) {
+                            bytes = itemData.bytes || 0;
+                            tokens = itemData.tokens || 0;
+                        }
+                        if (tokens === 0 && state.fileTokensMap?.[filePath]) {
+                            tokens = state.fileTokensMap[filePath];
+                        }
+                        if (bytes === 0 && tokens > 0) bytes = Math.round(tokens * 3.5);
+                        else if (tokens === 0 && bytes > 0) tokens = Math.max(1, Math.ceil(bytes / 3.5));
+
+                        let formattedBytes = `${bytes} B`;
+                        if (bytes >= 1024 * 1024) formattedBytes = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+                        else if (bytes >= 1024) formattedBytes = `${(bytes / 1024).toFixed(1)} KB`;
+                        const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
+
+                        if (isMuted) {
+                            badge.className = 'file-token-badge weight-muted';
+                            badge.title = `Muted: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens liberated / 0 active tokens)`;
+                            badge.textContent = `${formattedBytes} [MUTED]`;
+                        } else {
+                            const weightClass = bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light');
+                            badge.className = `file-token-badge ${weightClass}`;
+                            badge.title = `Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)`;
+                            badge.textContent = `${formattedBytes} (~${displayTok} tok)`;
+                        }
+                    }
+
+                    // Update parent folder in tree view if applicable
+                    const folderDetails = row.closest('.context-tree-folder');
+                    if (folderDetails) {
+                        updateFolderMuteDom(folderDetails as HTMLElement);
+                    }
+                }
+            });
+        };
+
+        const updateFolderMuteDom = (folderDetails: HTMLElement) => {
+            const allFileRows = Array.from(folderDetails.querySelectorAll('.context-item[data-path]'));
+            if (allFileRows.length === 0) return;
+            const mutedCount = allFileRows.filter(r => r.classList.contains('file-muted')).length;
+            const isAllMuted = mutedCount === allFileRows.length;
+            const isSomeMuted = mutedCount > 0 && !isAllMuted;
+
+            folderDetails.classList.toggle('folder-muted', isAllMuted);
+            const summary = folderDetails.querySelector('summary');
+            if (summary) {
+                const folderBtn = summary.querySelector('.toggle-mute-folder-btn') as HTMLElement;
+                if (folderBtn) {
+                    folderBtn.className = `toggle-mute-folder-btn ${isAllMuted ? 'is-muted' : (isSomeMuted ? 'is-partially-muted' : 'is-active')}`;
+                    folderBtn.dataset.action = isAllMuted ? 'unmute' : 'mute';
+                    const icon = folderBtn.querySelector('.codicon');
+                    if (icon) icon.className = `codicon ${isAllMuted ? 'codicon-eye-closed' : 'codicon-eye'}`;
+                }
+                const nameSpan = summary.querySelector('span:nth-of-type(2)') as HTMLElement;
+                if (nameSpan) {
+                    nameSpan.style.textDecoration = isAllMuted ? 'line-through' : '';
+                    nameSpan.style.opacity = isAllMuted ? '0.75' : '';
+                }
+                const countSpan = summary.querySelector('span:nth-of-type(3)') as HTMLElement;
+                if (countSpan) {
+                    countSpan.textContent = `${allFileRows.length} file${allFileRows.length === 1 ? '' : 's'}${isSomeMuted ? ` (${mutedCount} muted)` : ''}`;
+                }
+                const badge = summary.querySelector('.file-token-badge') as HTMLElement;
+                if (badge) {
+                    badge.className = `file-token-badge ${isAllMuted ? 'weight-muted' : 'weight-light'}`;
+                    const curText = badge.textContent || '';
+                    const tokMatch = curText.match(/~[\d.]+k?\s*tok/);
+                    const tokStr = tokMatch ? tokMatch[0] : '';
+                    badge.textContent = isAllMuted ? `${tokStr} [MUTED]` : tokStr;
+                }
+            }
+        };
+
+        // Bind mute / deactivate toggle buttons for files with surgical in-place DOM updates
         dashboard.querySelectorAll('.toggle-mute-file-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -4299,6 +4426,9 @@ export class ContextBinder {
                     if (state.lastContextData) {
                         state.lastContextData.mutedFiles = [...state.mutedFiles];
                     }
+
+                    // Surgical in-place DOM update (zero rerenders, zero scroll jumping)
+                    updateFileMuteDom(pathVal, isMutingNow);
 
                     // Optimistic token metrics update
                     const fileTok = state.fileTokensMap?.[pathVal] || 0;
@@ -4325,12 +4455,11 @@ export class ContextBinder {
 
                     setCalculatingTokens(true, "Updating tokens...");
                     vscode.postMessage({ command: 'toggleMuteFile', path: pathVal });
-                    import('./messageRenderer.js').then(m => m.updateContext());
                 }
             });
         });
 
-        // Folder-level mute / unmute button in tree view
+        // Folder-level mute / unmute button in tree view with surgical in-place updates
         dashboard.querySelectorAll('.toggle-mute-folder-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -4342,7 +4471,8 @@ export class ContextBinder {
                     try {
                         const paths: string[] = JSON.parse(decodeURIComponent(rawPaths));
                         if (paths.length > 0) {
-                            if (action === 'unmute') {
+                            const isUnmuting = action === 'unmute';
+                            if (isUnmuting) {
                                 const targetSet = new Set(paths.map(p => p.replace(/\\/g, '/').toLowerCase().trim()));
                                 state.mutedFiles = (state.mutedFiles || []).filter(m => !targetSet.has(m.replace(/\\/g, '/').toLowerCase().trim()));
                                 vscode.postMessage({ command: 'bulkUnmuteFiles', paths });
@@ -4365,8 +4495,36 @@ export class ContextBinder {
                                 command: 'updateDiscussionCapabilitiesPartial',
                                 partial: { mutedFiles: state.mutedFiles }
                             });
+
+                            // Surgical DOM update for each file in the folder (no full rerender, no scroll jump)
+                            paths.forEach(p => updateFileMuteDom(p, !isUnmuting));
+
+                            // Update token bar metrics optimistically
+                            let totalDelta = 0;
+                            paths.forEach(p => {
+                                totalDelta += (state.fileTokensMap?.[p] || 0);
+                            });
+                            if (state.lastTokenMetrics && totalDelta > 0) {
+                                if (!isUnmuting) {
+                                    state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - totalDelta);
+                                    if (state.lastTokenMetrics.segments?.files !== undefined) {
+                                        state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - totalDelta);
+                                    }
+                                } else {
+                                    state.lastTokenMetrics.totalTokens += totalDelta;
+                                    if (state.lastTokenMetrics.segments?.files !== undefined) {
+                                        state.lastTokenMetrics.segments.files += totalDelta;
+                                    }
+                                }
+                                const barContainer = document.getElementById('token-progress-container');
+                                const labelEl = document.getElementById('token-count-label');
+                                if (labelEl) {
+                                    labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()}`;
+                                }
+                                updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
+                            }
+
                             setCalculatingTokens(true, "Updating tokens...");
-                            import('./messageRenderer.js').then(m => m.updateContext());
                         }
                     } catch (err) {
                         console.error("Failed to parse folder mute paths", err);
@@ -4491,7 +4649,7 @@ export class ContextBinder {
             sortBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const orders: any[] = ['tree', 'modified', 'heavy-to-light', 'light-to-heavy', 'name'];
+                const orders: any[] = ['tree', 'visible-first', 'muted-first', 'heavy-to-light', 'light-to-heavy', 'name', 'modified'];
                 const curIdx = orders.indexOf(state.fileSortOrder);
                 const nextOrder = orders[(curIdx + 1) % orders.length];
                 state.fileSortOrder = nextOrder;
@@ -4664,11 +4822,30 @@ export function updateContext(
 ) {
     if(!dom.contextContainer) return;
 
-    // 0. CAPTURE CURRENT EXPANSION STATE
+    // 0. CAPTURE CURRENT EXPANSION STATE & SCROLL POSITIONS (STATIONARY ANCHORING)
     const openStates: Record<string, boolean> = {};
     dom.contextContainer.querySelectorAll('details').forEach((d, i) => {
-        const summary = d.querySelector('summary')?.innerText || i.toString();
-        openStates[summary] = d.open;
+        const key = d.getAttribute('data-folder') || d.getAttribute('data-path') || d.id || d.querySelector('summary')?.innerText || i.toString();
+        openStates[key] = d.open;
+    });
+
+    const scrollMap = new Map<string, { top: number, left: number }>();
+    const scrollSelectors = [
+        '#hud-body-panel',
+        '.hud-scroll-container',
+        '.hud-files-container',
+        '.hud-project-files-list',
+        '.context-tree-root-container',
+        '.context-file-list',
+        '.hud-external-files-list',
+        '.hud-tools-list',
+        '.hud-skills-list'
+    ];
+    scrollSelectors.forEach(sel => {
+        const el = dom.contextContainer?.querySelector(sel) as HTMLElement;
+        if (el && (el.scrollTop > 0 || el.scrollLeft > 0)) {
+            scrollMap.set(sel, { top: el.scrollTop, left: el.scrollLeft });
+        }
     });
 
     // 1. MERGE WITH EXISTING STATE (Partial updates)
@@ -4826,11 +5003,24 @@ export function updateContext(
 
     // 2. RESTORE EXPANSION STATE
     dom.contextContainer.querySelectorAll('details').forEach((d, i) => {
-        const summary = d.querySelector('summary')?.innerText || i.toString();
-        if (openStates[summary] !== undefined) {
-            d.open = openStates[summary];
+        const key = d.getAttribute('data-folder') || d.getAttribute('data-path') || d.id || d.querySelector('summary')?.innerText || i.toString();
+        if (openStates[key] !== undefined) {
+            d.open = openStates[key];
         }
     });
+
+    // 3. RESTORE SCROLL POSITIONS (SYNCHRONOUS & NEXT FRAME)
+    const restoreScrolls = () => {
+        scrollMap.forEach((pos, selector) => {
+            const el = dom.contextContainer?.querySelector(selector) as HTMLElement;
+            if (el) {
+                el.scrollTop = pos.top;
+                el.scrollLeft = pos.left;
+            }
+        });
+    };
+    restoreScrolls();
+    requestAnimationFrame(restoreScrolls);
 
     // Run badge layout UI updates
     import('./ui.js').then(ui => ui.updateBadges());
@@ -4856,6 +5046,7 @@ export function showBulkOperationsModal(files: any[]) {
     const organizeSelect = document.getElementById('bulk-organize-select') as HTMLSelectElement;
 
     const sortTreeBtn = document.getElementById('bulk-sort-tree-btn');
+    const sortVisibilityBtn = document.getElementById('bulk-sort-visibility-btn');
     const sortSizeBtn = document.getElementById('bulk-sort-size-btn');
     const sortNameBtn = document.getElementById('bulk-sort-name-btn');
     const sortModifiedBtn = document.getElementById('bulk-sort-modified-btn');
@@ -4928,7 +5119,7 @@ export function showBulkOperationsModal(files: any[]) {
 
     const selectedPaths = new Set<string>(normalizedFiles.map(f => f.path));
 
-    let currentOrganizeMode: 'tree' | 'heavy-to-light' | 'light-to-heavy' | 'name' | 'modified' = 
+    let currentOrganizeMode: 'tree' | 'heavy-to-light' | 'light-to-heavy' | 'name' | 'modified' | 'visible-first' | 'muted-first' = 
         (state.fileSortOrder as any) || 'heavy-to-light';
     let currentSortDir: 'asc' | 'desc' = 'desc';
     let searchQuery = '';
@@ -4993,8 +5184,8 @@ export function showBulkOperationsModal(files: any[]) {
         const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
         const weightClass = item.isMuted ? 'weight-muted' : (bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light'));
         const tokenBadge = item.isMuted
-            ? `<span class="file-token-badge weight-muted">[MUTED / 0 tok]</span>`
-            : `<span class="file-token-badge ${weightClass}">${formattedBytes} (~${displayTok} tok)</span>`;
+            ? `<span class="file-token-badge weight-muted" title="Muted: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens off / 0 active tokens)">${formattedBytes} [MUTED]</span>`
+            : `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`;
 
         const visibilityBadge = item.isMuted
             ? `<span style="font-size: 10px; color: var(--vscode-charts-orange); font-weight: bold; margin-right: 6px;"><i class="codicon codicon-eye-closed"></i> Muted</span>`
@@ -5178,7 +5369,13 @@ export function showBulkOperationsModal(files: any[]) {
             // ── 2. FLAT SORTED MODES IN MODAL ─────────────────────────────────
             const sorted = [...filtered].sort((a, b) => {
                 const dir = currentSortDir === 'asc' ? 1 : -1;
-                if (currentOrganizeMode === 'name') {
+                if (currentOrganizeMode === 'visible-first') {
+                    const diff = Number(a.isMuted) - Number(b.isMuted);
+                    return (dir * diff) || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName, undefined, { sensitivity: 'base' });
+                } else if (currentOrganizeMode === 'muted-first') {
+                    const diff = Number(b.isMuted) - Number(a.isMuted);
+                    return (dir * diff) || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName, undefined, { sensitivity: 'base' });
+                } else if (currentOrganizeMode === 'name') {
                     return dir * a.fileName.localeCompare(b.fileName, undefined, { sensitivity: 'base' }) || dir * a.path.localeCompare(b.path);
                 } else if (currentOrganizeMode === 'modified') {
                     return dir * ((a.mtime - b.mtime) || (a.bytes - b.bytes) || a.fileName.localeCompare(b.fileName));
@@ -5231,6 +5428,7 @@ export function showBulkOperationsModal(files: any[]) {
 
         // Sync toolbar buttons state
         if (sortTreeBtn) sortTreeBtn.classList.toggle('active', currentOrganizeMode === 'tree');
+        if (sortVisibilityBtn) sortVisibilityBtn.classList.toggle('active', currentOrganizeMode === 'visible-first' || currentOrganizeMode === 'muted-first');
         if (sortNameBtn) sortNameBtn.classList.toggle('active', currentOrganizeMode === 'name');
         if (sortSizeBtn) sortSizeBtn.classList.toggle('active', currentOrganizeMode === 'heavy-to-light' || currentOrganizeMode === 'light-to-heavy');
         if (sortModifiedBtn) sortModifiedBtn.classList.toggle('active', currentOrganizeMode === 'modified');
@@ -5317,6 +5515,20 @@ export function showBulkOperationsModal(files: any[]) {
             e.stopPropagation();
             currentOrganizeMode = 'tree';
             if (organizeSelect) organizeSelect.value = 'tree';
+            renderList();
+        };
+    }
+
+    if (sortVisibilityBtn) {
+        sortVisibilityBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (currentOrganizeMode === 'visible-first') {
+                currentOrganizeMode = 'muted-first';
+            } else {
+                currentOrganizeMode = 'visible-first';
+            }
+            if (organizeSelect) organizeSelect.value = currentOrganizeMode;
             renderList();
         };
     }

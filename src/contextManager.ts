@@ -36,6 +36,7 @@ export class ContextManager {
   private codeGraphManager?: CodeGraphManager;
   private context: vscode.ExtensionContext;
   private lollmsAPI: LollmsAPI;
+  private toolManager?: any;
   public agentManager?: any; // Set dynamically from chatPanel
   private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg']);
   private docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.csv', '.tsv']);

@@ -31,4 +31,9 @@ export async function registerCommands(
     registerTitleAllDiscussions(context, services.discussionManager);
     registerPersonalityCommands(context, services);
     registerSkillsCommands(context, services);
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.testAndOptimizeModel', async (targetModel?: string) => {
+        const { ModelOptimizerPanel } = await import('../commands/modelOptimizerPanel');
+        ModelOptimizerPanel.createOrShow(services.extensionUri, services.lollmsAPI, services, targetModel);
+    }));
 }

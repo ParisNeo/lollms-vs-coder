@@ -493,13 +493,30 @@ export const fileOpPlugin: TagPlugin = {
             title = "File Content Activation (Unmute) Proposed";
             icon = "codicon-eye";
             command = "bulkUnmuteFiles";
-            btnText = `Unmute Files (${lines.length})`;
-            detailsHtml = lines.map(p => `
-                <div class="expansion-file-item" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
-                    <span class="codicon codicon-eye" style="color: var(--vscode-charts-green, #4caf50);"></span>
-                    <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p}</span>
-                </div>
-            `).join('');
+
+            const currentMuted = (state as any)?.mutedFiles || (window as any).state?.mutedFiles || [];
+            const isPathMuted = (p: string) => {
+                const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+                return currentMuted.some((m: string) => {
+                    const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                    return cleanM === cleanP || cleanP.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanP);
+                });
+            };
+            const stillMutedCount = lines.filter(isPathMuted).length;
+            const allUnmuted = stillMutedCount === 0;
+
+            btnText = allUnmuted ? 'Files Unmuted' : `Unmute Files (${lines.length})`;
+            detailsHtml = lines.map(p => {
+                const muted = isPathMuted(p);
+                return `
+                <div class="expansion-file-item ${muted ? 'status-not-in-context' : 'status-in-context'}" data-path="${p}" style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
+                    <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                        <span class="codicon ${muted ? 'codicon-eye-closed' : 'codicon-check'}" style="color: ${muted ? 'var(--vscode-charts-orange, #ff9800)' : 'var(--vscode-charts-green, #4caf50)'};"></span>
+                        <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p}</span>
+                    </div>
+                    <span class="file-token-badge ${muted ? 'weight-muted' : 'weight-light'}" style="margin-left: 8px;">${muted ? '[MUTED]' : '[ACTIVE]'}</span>
+                </div>`;
+            }).join('');
             payload = { paths: lines };
         } else if (type === 'delete_files') {
             title = "File Deletion Proposed";
@@ -535,20 +552,38 @@ export const fileOpPlugin: TagPlugin = {
             payload = { operations: ops };
         }
 
+        const isUnmuteType = type === 'unmute_files';
+        const blockId = `file-op-${type}-${Date.now().toString(36)}-${Math.random().toString(36).substring(7)}`;
+        const encodedPaths = encodeURIComponent(JSON.stringify(lines));
+
+        const actionButtonsHtml = isUnmuteType ? `
+            <button class="code-action-btn ${btnText.includes('Unmuted') ? 'applied' : 'apply-btn'} file-op-btn unmute-btn" ${btnText.includes('Unmuted') ? 'disabled' : ''} data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: lines, reprompt: false })}' data-block-id="${blockId}">
+                <span class="codicon ${btnText.includes('Unmuted') ? 'codicon-check' : 'codicon-eye'}"></span> ${btnText}
+            </button>
+            <button class="code-action-btn apply-btn unmute-reprompt-btn" data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: lines, reprompt: true })}' data-block-id="${blockId}" style="background: var(--vscode-charts-green) !important; color: white !important; font-weight: bold;" title="Unmute these files and immediately ask AI to proceed">
+                <span class="codicon codicon-play"></span> ${btnText.includes('Unmuted') ? 'Reprompt AI' : 'Unmute & Reprompt'}
+            </button>
+        ` : `
+            <button class="code-action-btn apply-btn file-op-btn" data-command="${command}" data-payload='${JSON.stringify(payload)}'>
+                <span class="codicon codicon-check"></span> ${btnText}
+            </button>
+        `;
+
+        const cardExtraClass = isUnmuteType ? 'unmute-files-block assistant-executable-card' : '';
+        const borderAccent = isUnmuteType ? 'border-left: 4px solid var(--vscode-charts-green);' : 'border-left: 4px solid var(--vscode-charts-orange);';
+
         return `
-        <div class="file-operation-block" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-left: 4px solid var(--vscode-charts-orange); border-radius: 8px; margin: 12px 0; overflow: hidden;">
+        <div class="file-operation-block ${cardExtraClass}" id="${blockId}" data-action-type="${isUnmuteType ? 'unmute' : 'file_op'}" data-paths="${encodedPaths}" data-payload="${encodedPaths}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); ${borderAccent} border-radius: 8px; margin: 12px 0; overflow: hidden;">
             <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 12px;">
-                <span class="codicon ${icon}"></span> 
+                <span class="codicon ${icon}" style="${isUnmuteType ? 'color: var(--vscode-charts-green);' : ''}"></span> 
                 <span>${title}</span>
             </div>
             <div class="expansion-body" style="padding: 12px;">
                 <div class="expansion-file-list" style="margin-bottom: 12px; max-height: 240px; overflow-y: auto;">
                     ${detailsHtml}
                 </div>
-                <div class="file-operation-actions" style="display: flex; justify-content: flex-end; gap: 8px;">
-                    <button class="code-action-btn apply-btn file-op-btn" data-command="${command}" data-payload='${JSON.stringify(payload)}'>
-                        <span class="codicon codicon-check"></span> ${btnText}
-                    </button>
+                <div class="file-operation-actions" style="display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap;">
+                    ${actionButtonsHtml}
                 </div>
             </div>
         </div>`;
@@ -563,6 +598,19 @@ export const fileOpPlugin: TagPlugin = {
                 context.vscode.postMessage({ command: d.command, ...parsedPayload });
                 (btn as HTMLButtonElement).disabled = true;
                 btn.innerHTML = '<i class="codicon codicon-check"></i> Applied';
+                btn.classList.add('applied');
+            };
+        });
+
+        container.querySelectorAll('.unmute-reprompt-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const d = (btn as HTMLElement).dataset;
+                if (!d.command || !d.payload) return;
+                const parsedPayload = JSON.parse(d.payload);
+                (btn as HTMLButtonElement).disabled = true;
+                btn.innerHTML = '<div class="spinner"></div> Unmuting & Answering...';
+                context.vscode.postMessage({ command: d.command, ...parsedPayload });
             };
         });
     }

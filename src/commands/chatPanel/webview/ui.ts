@@ -1569,7 +1569,44 @@ export function syncExpansionBlocks() {
         }
     });
 
-    // 2. Query extension host to check both on-disk existence and context inclusion (only when not streaming)
+    // 2. Synchronize .unmute-files-block status
+    const currentMuted = (state as any)?.mutedFiles || (window as any).state?.mutedFiles || [];
+    document.querySelectorAll('.unmute-files-block').forEach((block: any) => {
+        let allUnmuted = true;
+        block.querySelectorAll('.expansion-file-item').forEach((item: any) => {
+            const p = item.dataset.path;
+            if (!p) return;
+            const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+            const isMuted = currentMuted.some((m: string) => {
+                const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                return cleanM === cleanP || cleanP.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanP);
+            });
+            if (isMuted) allUnmuted = false;
+
+            item.classList.toggle('status-in-context', !isMuted);
+            item.classList.toggle('status-not-in-context', isMuted);
+            const icon = item.querySelector('.codicon');
+            if (icon) {
+                icon.className = `codicon ${isMuted ? 'codicon-eye-closed' : 'codicon-check'}`;
+                icon.style.color = isMuted ? 'var(--vscode-charts-orange, #ff9800)' : 'var(--vscode-charts-green, #4caf50)';
+            }
+            const badge = item.querySelector('.file-token-badge');
+            if (badge) {
+                badge.className = `file-token-badge ${isMuted ? 'weight-muted' : 'weight-light'}`;
+                badge.textContent = isMuted ? '[MUTED]' : '[ACTIVE]';
+            }
+        });
+
+        const unmuteBtn = block.querySelector('.unmute-btn') as HTMLButtonElement;
+        if (unmuteBtn) {
+            unmuteBtn.disabled = allUnmuted;
+            unmuteBtn.classList.toggle('applied', allUnmuted);
+            unmuteBtn.classList.toggle('apply-btn', !allUnmuted);
+            unmuteBtn.innerHTML = `<span class="codicon ${allUnmuted ? 'codicon-check' : 'codicon-eye'}"></span> ${allUnmuted ? 'Files Unmuted' : 'Unmute Files'}`;
+        }
+    });
+
+    // 3. Query extension host to check both on-disk existence and context inclusion (only when not streaming)
     // Only query unverified blocks to eliminate redundant IPC message bursts across conversation history
     if (!state.isGenerating) {
         document.querySelectorAll('.context-expansion-block:not([data-checked="true"])').forEach((block: any) => {
@@ -3486,20 +3523,237 @@ export function refreshVisibilityPresetsDropdowns(presets?: Record<string, strin
 }
 (window as any).refreshVisibilityPresetsDropdowns = refreshVisibilityPresetsDropdowns;
 
-export function openGovernorFilterModal() {
+export interface GovernorCandidateFile {
+    path: string;
+    fileName: string;
+    dirName: string;
+    tokens: number;
+    bytes: number;
+}
+
+export const governorStudioState = {
+    caller: 'chat' as 'chat' | 'wizard',
+    candidateFiles: [] as GovernorCandidateFile[],
+    mutedSet: new Set<string>(),
+    history: [] as { role: 'user' | 'assistant'; text: string; discoverySteps?: any[]; advice?: string; rationale?: string }[],
+    searchFilter: '',
+    initialPrompt: ''
+};
+(window as any).governorStudioState = governorStudioState;
+
+export function renderGovernorFileList() {
+    const listEl = document.getElementById('gov-files-list');
+    if (!listEl) return;
+
+    const files = governorStudioState.candidateFiles;
+    const filter = (governorStudioState.searchFilter || '').toLowerCase().trim();
+    const mutedSet = governorStudioState.mutedSet;
+
+    const filtered = filter
+        ? files.filter(f => f.path.toLowerCase().includes(filter) || f.fileName.toLowerCase().includes(filter))
+        : files;
+
+    if (filtered.length === 0) {
+        listEl.innerHTML = '<div style="padding: 20px; opacity: 0.6; text-align: center; font-size: 11px;">No matching candidate files in context.</div>';
+        return;
+    }
+
+    listEl.innerHTML = filtered.map(f => {
+        const isMuted = mutedSet.has(f.path.toLowerCase().trim());
+        const tokStr = f.tokens >= 1000 ? `${(f.tokens / 1000).toFixed(1)}k` : `${f.tokens}`;
+        const icon = isMuted ? 'codicon-eye-closed' : 'codicon-check';
+        const color = isMuted ? 'var(--vscode-charts-orange)' : 'var(--vscode-charts-green)';
+
+        const bytes = f.bytes || Math.round(f.tokens * 3.5);
+        let formattedBytes = `${bytes} B`;
+        if (bytes >= 1024 * 1024) formattedBytes = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        else if (bytes >= 1024) formattedBytes = `${(bytes / 1024).toFixed(1)} KB`;
+
+        return `
+        <div class="gov-file-row ${isMuted ? 'is-muted' : 'is-active'}" data-path="${f.path}">
+            <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;">
+                <i class="codicon ${icon}" style="color: ${color}; flex-shrink: 0; font-size: 13px;"></i>
+                <div style="min-width: 0; flex: 1;">
+                    <div class="gov-file-title" style="font-weight: 600; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f.path}">${f.fileName}</div>
+                    ${f.dirName ? `<div style="font-size: 9px; opacity: 0.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${f.dirName}</div>` : ''}
+                </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+                <span class="file-token-badge ${isMuted ? 'weight-muted' : 'weight-light'}" title="Size: ${bytes.toLocaleString()} bytes">${isMuted ? `${formattedBytes} [MUTED]` : `${formattedBytes} (~${tokStr} tok)`}</span>
+                <button type="button" class="code-action-btn secondary-btn gov-row-toggle-btn" data-path="${f.path}" style="height: 20px; font-size: 9px; padding: 0 6px;">
+                    ${isMuted ? 'Reveal' : 'Mute'}
+                </button>
+            </div>
+        </div>`;
+    }).join('');
+
+    // Update numbers and metrics
+    const totalFiles = files.length;
+    const mutedCount = files.filter(f => mutedSet.has(f.path.toLowerCase().trim())).length;
+    const activeCount = totalFiles - mutedCount;
+
+    let activeTokens = 0;
+    files.forEach(f => {
+        if (!mutedSet.has(f.path.toLowerCase().trim())) {
+            activeTokens += f.tokens;
+        }
+    });
+
+    const activeTokStr = activeTokens >= 1000 ? `${(activeTokens / 1000).toFixed(1)}k` : `${activeTokens}`;
+
+    const activeCountEl = document.getElementById('gov-active-count');
+    if (activeCountEl) activeCountEl.textContent = String(activeCount);
+    const mutedCountEl = document.getElementById('gov-muted-count');
+    if (mutedCountEl) mutedCountEl.textContent = String(mutedCount);
+
+    const tokenLoadLabel = document.getElementById('gov-token-load-label');
+    if (tokenLoadLabel) tokenLoadLabel.textContent = `~${activeTokStr} tok active`;
+
+    const topStats = document.getElementById('gov-top-stats');
+    if (topStats) topStats.textContent = `${activeCount} Active (~${activeTokStr} tok) \u00B7 ${mutedCount} Muted`;
+
+    const footerSummary = document.getElementById('gov-footer-summary');
+    if (footerSummary) {
+        footerSummary.textContent = `${activeCount} files will be loaded with content [C], ${mutedCount} kept in tree at 0 tokens [M].`;
+    }
+}
+(window as any).renderGovernorFileList = renderGovernorFileList;
+
+export function appendGovernorMessage(role: 'user' | 'assistant', text: string, data?: { discoverySteps?: any[]; advice?: string; signatures?: string; rationale?: string }) {
+    const container = document.getElementById('gov-chat-messages');
+    if (!container) return;
+
+    const bubble = document.createElement('div');
+    bubble.className = `gov-chat-bubble ${role === 'user' ? 'user' : 'governor'}`;
+
+    if (role === 'user') {
+        bubble.innerHTML = `
+            <div class="gov-bubble-header">
+                <span>You</span>
+                <span>${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            </div>
+            <div style="font-weight: 600; white-space: pre-wrap;">${sanitizer.sanitize(text)}</div>
+        `;
+    } else {
+        const steps = data?.discoverySteps || [];
+        let stepsHtml = '';
+        if (steps.length > 0) {
+            const items = steps.map((s: any) => `
+                <div class="gov-discovery-chip ${s.type || 'thought'}">
+                    <i class="codicon ${s.type === 'grep' ? 'codicon-search' : (s.type === 'sparql' ? 'codicon-graph' : (s.type === 'peek' ? 'codicon-eye' : 'codicon-symbol-misc'))}"></i>
+                    <span>${sanitizer.sanitize(s.label || s.query || 'Step')}</span>
+                    ${s.detail ? `<span style="opacity:0.6;">(${sanitizer.sanitize(s.detail)})</span>` : ''}
+                </div>
+            `).join('');
+
+            stepsHtml = `
+            <div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; padding: 6px 8px; background: rgba(0,0,0,0.15); border-radius: 6px; border: 1px dashed var(--vscode-widget-border);">
+                <div style="font-size: 9px; font-weight: 800; text-transform: uppercase; color: var(--vscode-charts-orange); opacity: 0.85;">
+                    <i class="codicon codicon-sparkle"></i> Autonomous Discovery Steps Taken
+                </div>
+                <div style="display: flex; flex-wrap: wrap; gap: 4px;">${items}</div>
+            </div>`;
+        }
+
+        const signaturesHtml = data?.signatures ? `
+            <div style="padding: 8px 12px; background: rgba(155, 89, 182, 0.08); border-left: 3px solid var(--vscode-charts-purple); border-radius: 4px; margin-top: 6px;">
+                <strong style="color: var(--vscode-charts-purple); font-size: 11px; display: flex; align-items: center; gap: 6px;">
+                    <i class="codicon codicon-graph"></i> Muted Files Architecture & Signatures
+                </strong>
+                <div class="markdown-body" style="font-size: 11px; opacity: 0.9; margin-top: 4px; max-height: 250px; overflow-y: auto; line-height: 1.45;">
+                    ${(window as any).DOMPurify.sanitize((window as any).marked.parse(data.signatures))}
+                </div>
+            </div>
+        ` : '';
+
+        const adviceHtml = data?.advice ? `
+            <div style="padding: 6px 10px; background: rgba(0, 122, 204, 0.08); border-left: 3px solid var(--vscode-charts-blue); border-radius: 4px; margin-top: 4px;">
+                <strong style="color: var(--vscode-charts-blue); font-size: 11px;">Advice for Worker:</strong>
+                <div style="font-size: 11px; opacity: 0.9; margin-top: 2px;">${sanitizer.sanitize(data.advice)}</div>
+            </div>
+        ` : '';
+
+        const rationaleHtml = data?.rationale ? `
+            <div style="font-size: 11px; opacity: 0.9; line-height: 1.4; margin-top: 2px;">${sanitizer.sanitize(data.rationale)}</div>
+        ` : '';
+
+        bubble.innerHTML = `
+            <div class="gov-bubble-header">
+                <span style="color: var(--vscode-charts-orange); display: flex; align-items: center; gap: 4px;">
+                    <i class="codicon codicon-law"></i> Context Governor
+                </span>
+                <span>${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            </div>
+            ${stepsHtml}
+            ${rationaleHtml}
+            ${signaturesHtml}
+            ${adviceHtml}
+        `;
+    }
+
+    container.appendChild(bubble);
+    container.scrollTop = container.scrollHeight;
+}
+(window as any).appendGovernorMessage = appendGovernorMessage;
+
+export function openGovernorFilterModal(initialPrompt?: string) {
     const modal = document.getElementById('governor-filter-modal');
     if (!modal) return;
     refreshVisibilityPresetsDropdowns();
+
+    const isWizard = state.governorCaller === 'wizard';
+    governorStudioState.caller = isWizard ? 'wizard' : 'chat';
+    governorStudioState.searchFilter = '';
+    governorStudioState.history = [];
+    governorStudioState.initialPrompt = initialPrompt || '';
+
+    // Collect candidate files
+    const allFiles: (string | { path: string, bytes?: number, tokens?: number })[] = state.lastContextData?.files || [];
+    governorStudioState.candidateFiles = allFiles.map((f: any) => {
+        const rawPath = typeof f === 'string' ? f : (f.path || '');
+        const normPath = rawPath.replace(/\\/g, '/');
+        const fileName = normPath.split('/').pop() || normPath;
+        const dirName = normPath.includes('/') ? normPath.substring(0, normPath.lastIndexOf('/')) : '';
+        const tokens = (typeof f === 'object' && f.tokens) ? f.tokens : (state.fileTokensMap?.[rawPath] || Math.ceil((f.bytes || 1000) / 3.5));
+        const bytes = (typeof f === 'object' && f.bytes) ? f.bytes : Math.round(tokens * 3.5);
+        return { path: rawPath, fileName, dirName, tokens, bytes };
+    });
+
+    // Populate initial mutedSet
+    const initialMuted = isWizard
+        ? (state.wizardMutedFiles || [])
+        : (state.mutedFiles || state.lastContextData?.mutedFiles || []);
+
+    governorStudioState.mutedSet = new Set(initialMuted.map(m => m.replace(/\\/g, '/').toLowerCase().trim()));
+
+    // Clear chat stream and render welcome
+    const chatContainer = document.getElementById('gov-chat-messages');
+    if (chatContainer) {
+        chatContainer.innerHTML = '';
+        const initialText = initialPrompt ? `Working on task: "${initialPrompt}". Analyzing files...` : `Hello! I am the **Context Governor**. Describe your technical objective, and I will scout the project, evaluate dependencies, and isolate essential files while muting the rest.
+
+**My Autonomous Tools & Capabilities:**
+- 🔍 \`Grep Search\`: \`<grep pattern="..." path="..." />\` — searches symbols and code on disk
+- 📊 \`SPARQL Query\`: \`<sparql query="..." />\` — queries class hierarchy, calls, and imports
+- 📄 \`Peek Files\`: \`<peek_files path="..." lines="30" />\` — inspects function signatures and declarations
+- 👁️ \`Selection\`: \`<reveal_only>\` (reveal only essential files) or \`<mute_only>\` (mute specific files)
+- 📝 \`Signatures\`: \`<signatures>\` — summarizes function signatures and architecture of muted files`;
+        appendGovernorMessage('assistant', initialText, {
+            rationale: "Candidate files are loaded on the right. You can prompt or reprompt anytime, or manually toggle files directly."
+        });
+    }
+
     const promptInput = document.getElementById('governor-filter-prompt') as HTMLTextAreaElement;
-    const nameInput = document.getElementById('governor-preset-name-input') as HTMLInputElement;
-    const saveCheck = document.getElementById('governor-save-preset-check') as HTMLInputElement;
-    const nameContainer = document.getElementById('governor-preset-name-container');
+    if (promptInput) {
+        promptInput.value = initialPrompt || '';
+    }
 
-    if (promptInput) promptInput.value = '';
-    if (nameInput) nameInput.value = '';
-    if (saveCheck) saveCheck.checked = false;
-    if (nameContainer) nameContainer.style.display = 'none';
+    const stepIndicator = document.getElementById('gov-step-indicator');
+    if (stepIndicator) stepIndicator.style.display = 'none';
 
+    renderGovernorFileList();
+
+    modal.style.setProperty('z-index', '110000', 'important');
     modal.style.display = 'flex';
     modal.classList.add('visible');
     setTimeout(() => { promptInput?.focus(); }, 100);
@@ -3582,7 +3836,13 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
         wizardUserPref.value = state.capabilities?.userPreferences || matched?.preferences || '';
     }
 
-    // 6. Reveal Modal and focus the input field
+    // 6. Clear prior governor states for wizard
+    state.wizardMutedFiles = undefined;
+    state.governorCaller = 'chat';
+    const govStatus = document.getElementById('wizard-governor-status');
+    if (govStatus) govStatus.style.display = 'none';
+
+    // 7. Reveal Modal and focus the input field
     dom.wizardModal.style.display = 'flex';
     dom.wizardModal.classList.add('visible');
 

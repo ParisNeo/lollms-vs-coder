@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.44",
+  "version": "1.0.46",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -148,6 +148,11 @@
       {
         "command": "lollms-vs-coder.commitWithAIMessage",
         "title": "%command.commitWithAIMessage.title%"
+      },
+      {
+        "command": "lollms-vs-coder.testAndOptimizeModel",
+        "title": "Lollms: Test and Optimize Model Settings",
+        "icon": "$(beaker)"
       },
       {
         "command": "lollms-vs-coder.inspectCommit",
@@ -1253,6 +1258,16 @@
           "type": "string",
           "default": "",
           "description": "Model used for generating discussion titles. Leave empty to use the Chat Model."
+        },
+        "lollmsVsCoder.judgeModelName": {
+          "type": "string",
+          "default": "",
+          "description": "Model used by the Judge Agent to evaluate prompt adherence, reasoning, and anti-hallucination in model benchmarks. Leave empty to use the Primary Chat Model."
+        },
+        "lollmsVsCoder.modelOptimalSettings": {
+          "type": "object",
+          "default": {},
+          "description": "Optimal temperature settings bound to specific models as determined by the Test & Optimize benchmark suite."
         },
         "lollmsVsCoder.gitCommitModelName": {
           "type": "string",

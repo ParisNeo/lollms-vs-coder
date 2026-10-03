@@ -166,7 +166,7 @@ export class DiscussionManager {
             interTokenTimeout: 0,
             contextGovernorThreshold: config.get<number>('contextGovernorThreshold') ?? 95,
             contextGovernorTargetThreshold: config.get<number>('contextGovernorTargetThreshold') ?? 70,
-            contextGovernorMaxRounds: config.get<number>('contextGovernorMaxRounds') ?? 5,
+            contextGovernorMaxRounds: Math.max(15, config.get<number>('contextGovernorMaxRounds') ?? 20),
             contextGovernorCropHistory: config.get<boolean>('contextGovernorCropHistory') ?? true,
             contextAggression: 'respect',
             tokenEconomyMode: false,

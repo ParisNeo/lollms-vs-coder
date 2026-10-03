@@ -128,7 +128,7 @@ export const state: {
     matrixStats: Record<string, { tree: number, files: number }>, // Per-folder token stats
     usageData: { project: any[], extra: any[] },
     currentUsageSort: { column: 'name' | 'tokens', direction: 'asc' | 'desc' },
-    lastContextData: { context: string, files: (string | { path: string, tokens?: number, state?: string })[], skills: any[], tools: any[], diagrams: any[], briefing: string, skillIds?: string[], mutedFiles?: string[] } | null,
+    lastContextData: { context: string, files: (string | { path: string, tokens?: number, state?: string })[], skills: any[], tools: any[], diagrams: any[], briefing: string, skillIds?: string[], mutedFiles?: string[], governorReport?: string } | null,
     fileTokensMap: Record<string, number>,
     fileMtimeMap: Record<string, number>,
     fileSortOrder: 'heavy-to-light' | 'light-to-heavy' | 'name' | 'modified' | 'tree' | 'visible-first' | 'muted-first',

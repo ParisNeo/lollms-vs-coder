@@ -4,6 +4,38 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-10-03 13:12]
+
+- ref(chats-ui): delete ArtefactSplitView, DataZone, and CodeMirrorComponent
+
+## [2026-10-03 15:00]
+
+- `feat(governor): unify automatic context governor arbitration with Governor Studio structure, adding discovery step chips, real-time stream updates with live reasoning, <add_files_to_context> workspace discovery, and dual-tier reference extraction`
+
+## [2026-10-03 14:45]
+
+- `feat(governor): empower Context Governor with exact token budget awareness, 100% transparent file size breakdowns, dual-tier strategy (active context for files to edit vs .lollms/structure.md for reference-only files), and ability to discover and add files from the workspace tree`
+
+## [2026-10-03 14:30]
+
+- `feat(hud): replace Project Structure (File Manifest) in the Intelligence Context Explorer HUD with Governor's Report & Findings (.lollms/structure.md), rendering rich markdown analysis of code workings with edit, copy, and auto-generate actions`
+
+## [2026-10-03 12:40]
+
+- `feat(governor): stream LLM thinking and output in real time into Governor Studio stream with live reasoning blocks, expose contextGovernorMaxRounds in Settings panel with minimum 15 (default 20), and render live discovery actions in real time`
+
+## [2026-10-03 12:25]
+
+- `fix(governor): prevent silent swallow of LLM connection failures, halt immediately when LLM server is offline with clear diagnostic errors instead of generating instantaneous fake selections, and enforce multi-round exploration when server is active`
+
+## [2026-10-03 12:10]
+
+- `fix(governor): mandate multi-round exploration before finalizing context selection, intelligently preserve core code files during structural/overview queries, wire real-time round progress to Governor Studio HUD, and persist .lollms/structure.md`
+
+## [2026-10-03 11:15]
+
+- `feat(governor): implement persistent Codebase Structure Guide (.lollms/structure.md) for both Discussion and Manual Context Governor with multi-round exploration (up to 20 rounds), SPARQL/grep access, <structure> write/patch updates, and cumulative architectural learning`
+
 ## [2026-10-01 23:34]
 
 - feat(chat): update chat panel implementation and context management

@@ -41,12 +41,14 @@ interface ParsedFileCandidate {
     path: string;
     tokens: number;
     bytes: number;
+    linesCount: number;
     isCurrentPromptFile: boolean;
     isCoreOrInterface: boolean;
     relevanceScore: number;
     matchedKeywords: string[];
     extractedSymbols: string[];
     keep: boolean;
+    isNewlyAdded?: boolean;
     justification?: string;
     evictionReason?: string;
 }
@@ -59,9 +61,60 @@ export class ContextGovernor {
         'null', 'undefined', 'async', 'await', 'type', 'interface', 'please', 'help', 'need', 'want', 'like'
     ]);
 
+    public static isBroadOrStructuralQuery(prompt: string): boolean {
+        const lower = prompt.toLowerCase();
+        const structuralPatterns = [
+            'structure', 'overview', 'explain the project', 'explain this project',
+            'explain the code', 'explain this code', 'explain the app', 'explain this app',
+            'architecture', 'how does this work', 'how does the app work', 'how does the project work',
+            'walk me through', 'understand the project', 'understand the codebase',
+            'summarize the project', 'codebase summary', 'audit project', 'code review',
+            'what does this project do', 'what does this app do', 'system design',
+            'map of the project', 'explore the project', 'project layout', 'analyze the structure'
+        ];
+        return structuralPatterns.some(p => lower.includes(p));
+    }
+
+    public static isClutterOrCosmeticFile(filePath: string): boolean {
+        const lower = filePath.toLowerCase();
+        return lower.endsWith('.min.css') ||
+               lower.endsWith('.min.js') ||
+               lower.endsWith('.map') ||
+               lower.endsWith('.bundle.js') ||
+               lower.includes('/vendor/') ||
+               (lower.endsWith('.css') && !lower.includes('custom') && !lower.includes('main'));
+    }
+
+    private static async getStructureGuide(): Promise<string> {
+        const folders = vscode.workspace.workspaceFolders || [];
+        if (folders.length === 0) return "";
+        try {
+            const structUri = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'structure.md');
+            const bytes = await vscode.workspace.fs.readFile(structUri);
+            return Buffer.from(bytes).toString('utf8');
+        } catch {
+            return "";
+        }
+    }
+
+    private static async saveStructureGuide(content: string): Promise<boolean> {
+        const folders = vscode.workspace.workspaceFolders || [];
+        if (folders.length === 0 || !content.trim()) return false;
+        try {
+            const lollmsDir = vscode.Uri.joinPath(folders[0].uri, '.lollms');
+            await vscode.workspace.fs.createDirectory(lollmsDir);
+            const structUri = vscode.Uri.joinPath(lollmsDir, 'structure.md');
+            await vscode.workspace.fs.writeFile(structUri, Buffer.from(content.trim(), 'utf8'));
+            return true;
+        } catch (err: any) {
+            Logger.warn("Failed to write .lollms/structure.md", err);
+            return false;
+        }
+    }
+
     /**
      * Automatically filters files in context based on a user focus prompt.
-     * Selects files to keep active (content loaded) and files to mute (0 tokens, kept in tree).
+     * Full token budget transparency, file adding, and reference vs edit segregation.
      */
     public static async filterFilesByPrompt(options: {
         lollmsAPI: LollmsAPI;
@@ -75,17 +128,23 @@ export class ContextGovernor {
         currentMutedFiles?: string[];
         history?: any[];
         onStatusUpdate?: (status: string) => void;
+        onRoundProgress?: (progress: { round: number; maxRounds: number; status: string; discoverySteps?: any[] }) => void;
+        onStreamChunk?: (data: { round: number; maxRounds: number; chunk: string; fullText: string; messageId: string }) => void;
+        onDiscoveryAction?: (data: { type: string; label: string; detail?: string; output?: string }) => void;
     }): Promise<{
         keptFiles: string[];
         mutedFiles: string[];
+        addedFiles: string[];
         rationale: string;
         advice?: string;
         signatures?: string;
         discoverySteps?: { type: string; label: string; detail?: string }[];
         totalTokens: number;
         liberatedTokens: number;
+        roundsUsed: number;
+        maxRounds: number;
     }> {
-        const { lollmsAPI, contextManager, targetModel, prompt, signal, candidateFiles, onStatusUpdate } = options;
+        const { lollmsAPI, contextManager, targetModel, prompt, signal, candidateFiles, onStatusUpdate, onRoundProgress, onStreamChunk, onDiscoveryAction } = options;
 
         const provider = contextManager.getContextStateProvider();
         let rawIncluded: { path: string; state?: any; bytes?: number; tokens?: number }[] = [];
@@ -95,20 +154,12 @@ export class ContextGovernor {
             rawIncluded = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
         }
 
-        if (rawIncluded.length === 0) {
-            return {
-                keptFiles: [],
-                mutedFiles: [],
-                rationale: "No files are currently included in the context explorer.",
-                totalTokens: 0,
-                liberatedTokens: 0
-            };
-        }
+        if (onStatusUpdate) onStatusUpdate("Governor: Initializing token budget & reading files...");
 
-        if (onStatusUpdate) onStatusUpdate("Governor: Reading candidate files & metadata...");
-
+        const isStructural = this.isBroadOrStructuralQuery(prompt);
         const keywords = this.extractQueryKeywords(prompt, []);
         const fileCandidates: ParsedFileCandidate[] = [];
+        const newlyAddedFiles: string[] = [];
 
         for (const f of rawIncluded) {
             if (signal.aborted) throw new Error("Operation cancelled");
@@ -132,6 +183,19 @@ export class ContextGovernor {
             const tokens = f.tokens || Math.max(1, Math.ceil(bytesCount > 0 ? bytesCount / 3.5 : text.length / 3.5));
             const candidate = this.buildCandidate("", f.path, text, tokens, new Set(), keywords, contextManager);
             candidate.bytes = bytesCount || Math.round(tokens * 3.5);
+            candidate.linesCount = text.split('\n').length;
+
+            if (isStructural) {
+                const lowerPath = f.path.toLowerCase();
+                const isCoreSourceCode = lowerPath.endsWith('.js') || lowerPath.endsWith('.ts') ||
+                                         lowerPath.endsWith('.py') || lowerPath.endsWith('.html') ||
+                                         lowerPath.endsWith('.json') || lowerPath.endsWith('.md');
+                if (isCoreSourceCode && !this.isClutterOrCosmeticFile(f.path)) {
+                    candidate.relevanceScore += 1000;
+                    candidate.isCoreOrInterface = true;
+                }
+            }
+
             fileCandidates.push(candidate);
         }
 
@@ -143,61 +207,68 @@ export class ContextGovernor {
         const targetPercent = options.currentDiscussion?.capabilities?.contextGovernorTargetThreshold || 70;
         const targetBudget = Math.round(maxTokens * (targetPercent / 100));
 
-        if (onStatusUpdate) onStatusUpdate(`Governor: Evaluating ${fileCandidates.length} files against ${targetPercent}% budget...`);
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const configuredRounds = options.currentDiscussion?.capabilities?.contextGovernorMaxRounds;
+        const fallbackConfigRounds = config.get<number>('contextGovernorMaxRounds');
+        const effectiveRounds = (configuredRounds && configuredRounds >= 10) ? configuredRounds : (fallbackConfigRounds || 20);
+        const maxRounds = Math.max(15, effectiveRounds);
+
+        let totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
+        let totalCandidateBytes = fileCandidates.reduce((sum, c) => sum + c.bytes, 0);
 
         let projectTreePreview = "";
         try {
             projectTreePreview = await contextManager.generateProjectTree(signal);
         } catch {}
 
+        const existingStructure = await this.getStructureGuide();
+
+        const formatSize = (b: number) => {
+            if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+            if (b >= 1024) return `${(b / 1024).toFixed(1)} KB`;
+            return `${b} B`;
+        };
+
         const systemPrompt = `You are the **Sovereign Context Governor**.
-Your mission is to explore project files, discover dependencies, and select which candidate files to keep in active context ([C] full content loaded) vs mute ([M] 0 content tokens, kept in tree).
-Target Budget: ~${targetBudget.toLocaleString()} tokens (${targetPercent}% of ${maxTokens.toLocaleString()}).
+Your mission is to maintain context hygiene, discover dependencies across the workspace, and enforce the **Dual-Tier Context Strategy** to keep active token usage strictly within the target budget.
 
-### 🛠️ AVAILABLE EXPLORATION TOOLS (MULTI-ROUND DISCOVERY):
-Before finalizing your selection, you may inspect the codebase in intermediate rounds:
-1. **Grep Search**: \`<grep pattern="searchTerm" path="optional/subdir" />\`
-2. **SPARQL Architecture Query**: \`<sparql query="SELECT ?x WHERE { ?x s:type s:Class }" />\`
-3. **Peek File Slice**: \`<peek_files path="path/to/file.ext" lines="30" from="top" />\` (or \`<peek_files>path</peek_files>
+### 📊 100% TRANSPARENT TOKEN BUDGET:
+- **Maximum Model Window Capacity**: ${maxTokens.toLocaleString()} tokens
+- **Target Budget Threshold (${targetPercent}%)**: ~${targetBudget.toLocaleString()} tokens
+- **Current Total of Candidate Files**: ~${totalCandidateTokens.toLocaleString()} tokens (${formatSize(totalCandidateBytes)})
+- **Governor Exploration Rounds**: Up to ${maxRounds} rounds
 
-\`)
-When you output any of these tools, it will be executed on disk and the results provided to you in the next round so you can learn and make an informed decision.
+### ⚖️ CRITICAL DUAL-TIER CONTEXT STRATEGY (EDIT VS REFERENCE):
+You must divide all relevant files into two distinct categories:
 
-### 📋 SELECTION FUNCTIONS (CHOOSE ONE APPROACH):
-1. **Reveal Only (Keep essential files active)**:
-<reveal_only>
-path/to/file_to_keep1.ext
-path/to/file_to_keep2.ext
-</reveal_only>
-*(Keeps ONLY the listed files active with full content [C]. ALL other files will be muted in tree at 0 tokens [M]. Use this to keep clear only the files that should inevitably be modified!)*
+1. **FILES TO MODIFY (ACTIVE CONTEXT [C])**:
+   - Files where code, bugfixes, or features will be actively edited or created.
+   - Put ONLY these files in \`<reveal_only>\`.
+   - Full file content will be loaded into active context for exact search/replace matching.
 
-2. **Mute Only (Mute specific files)**:
-<mute_only>
-path/to/file_to_mute1.ext
-path/to/file_to_mute2.ext
-</mute_only>
-*(Mutes ONLY the listed files at 0 tokens [M]. ALL other files remain active [C].)*
+2. **REFERENCE-ONLY FILES (STRUCTURE REPORT [.lollms/structure.md] + MUTED [M])**:
+   - Files needed ONLY as references to understand the architecture, data models, interfaces, utility functions, or callers (files that will NOT be modified).
+   - **DO NOT load these files with full content into active context!** That wastes context tokens.
+   - Instead, inspect their structure (using \`<peek_files>\` or AST inspection) and write their architecture, types, and function signatures into the **Governor's Codebase Report** using \`<structure>...</structure>\`.
+   - Put these files in \`<mute_only>\` (or omit from \`<reveal_only>\`). They remain tracked in tree at 0 tokens [M].
+   - The worker LLM will read the Governor's Report from \`.lollms/structure.md\` in the HUD/briefing and will have 100% of the type contracts without burning active tokens on full code!
 
-### 📝 ARCHITECTURE & MUTED SIGNATURES EXPLAINER:
-To give the worker model enough context about muted files without bloating the context window, you can write an architectural summary or Mermaid diagram:
-<signatures>
-### 🔍 MUTED FILES FUNCTION SIGNATURES & ARCHITECTURE
-\`\`\`mermaid
-classDiagram
-  ...
-\`\`\`
-- \`file_a.ext\`: \`def method_name(arg: type) -> ret\`: summary of function
-- \`file_b.ext\`: \`class ServiceName\`: summary of responsibilities
-</signatures>
+### 🛠️ AVAILABLE TOOLS & COMMANDS:
+1. **Add Workspace Files to Context**:
+   If a file exists in the Project Structure Tree that is not currently in your candidate list, output:
+   \`<add_files_to_context>\\npath/to/workspace_file.ext\\n</add_files_to_context>
 
-### 💬 ADVICE & RATIONALE:
-<rationale>
-Why these files were kept active or muted...
-</rationale>
-
-<worker>
-Specific findings, guidelines, or advice to forward to the developer and AI worker.
-</worker>`;
+\`
+   This loads the file into candidate memory and gives you its size and tokens!
+2. **Peek File Slice**: \`<peek_files path="path/to/file.ext" lines="30" from="top" />\`
+3. **Grep Search**: \`<grep pattern="searchTerm" path="optional/subdir" />\`
+4. **SPARQL Architecture Query**: \`<sparql query="SELECT ?x WHERE { ?x s:type s:Class }" />\`
+5. **Update Codebase Structure Guide**: Output \`<structure># Architecture & Reference Guide\\n...</structure>\` to document module responsibilities into persistent \`.lollms/structure.md\`.
+6. **Selection Output**:
+   - \`<reveal_only>\\npath/to/file_to_edit.ext\\n</reveal_only>\`
+   - \`<mute_only>\\npath/to/reference_file.ext\\n</mute_only>\`
+   - \`<signatures>\\n- file.ext: def func(): ...\\n</signatures>\`
+   - \`<rationale>...</rationale>\` and \`<worker>...</worker>\``;
 
         const discoverySteps: { type: string; label: string; detail?: string }[] = [];
         let workerAdvice = "";
@@ -205,18 +276,25 @@ Specific findings, guidelines, or advice to forward to the developer and AI work
         let signaturesText = "";
         let finalKeptPaths: string[] | null = null;
 
-        const candidateCatalog = this.buildCompactCatalog(fileCandidates, options.currentDiscussion?.mutedFiles || []);
+        const candidateCatalog = this.buildCompactCatalog(fileCandidates, options.currentMutedFiles || []);
 
         const initialUserPrompt = `### 🎯 USER FOCUS OBJECTIVE:
 "${prompt}"
 
+### 📊 CAPACITY & BUDGET AUDIT:
+- Target Budget: ${targetBudget.toLocaleString()} tokens (${targetPercent}% limit)
+- Current Files Weight: ~${totalCandidateTokens.toLocaleString()} tokens (${formatSize(totalCandidateBytes)})
+- Status: ${totalCandidateTokens <= targetBudget ? '✅ All current candidates fit comfortably within budget!' : '⚠️ Candidates exceed budget — prune non-edit files to structure report.'}
+
+${isStructural ? `💡 NOTICE: The user is asking for an architectural or structural overview. Keep primary application source code files active, extract reference architectures into <structure>, and mute only cosmetic stylesheets (*.css) and minified files.\n` : ''}
+${existingStructure ? `### 🏛️ CURRENT CODEBASE STRUCTURE GUIDE (.lollms/structure.md):\n${existingStructure.substring(0, 2500)}\n` : ''}
 ### 🌳 PROJECT WORLD STATE (FILE TREE):
 ${projectTreePreview ? projectTreePreview.substring(0, 3500) : '(No tree available)'}
 
 ### 📄 CANDIDATE FILES CATALOG (${fileCandidates.length} files):
 ${candidateCatalog}
 
-Begin by running discovery queries (<grep>, <sparql>, or <peek_files>) to inspect code, or output your selection (<reveal_only> or <mute_only>), <signatures>, <rationale>, and <worker>.`;
+Investigate the codebase using discovery queries (<peek_files>, <grep>, <add_files_to_context>, <sparql>), update the structure guide with <structure>, or output your selection.`;
 
         const chatMessages: ChatMessage[] = [
             { role: 'system', content: systemPrompt },
@@ -225,24 +303,121 @@ Begin by running discovery queries (<grep>, <sparql>, or <peek_files>) to inspec
         ];
 
         let rounds = 0;
-        const maxRounds = 6;
+        const isTrivialDirective = /^(mute\s+all|unmute\s+all|activate\s+all|all\s+on|all\s+off)$/i.test(prompt.trim());
+        const minExplorationRounds = (!isTrivialDirective && fileCandidates.length > 3) ? 2 : 1;
 
         while (rounds < maxRounds) {
             if (signal.aborted) break;
             rounds++;
 
-            if (onStatusUpdate) onStatusUpdate(`Governor: Reasoning & scouting (step ${rounds}/${maxRounds})...`);
-
-            let cleanResponse = "";
-            try {
-                const response = await lollmsAPI.sendChat(chatMessages, null, signal, targetModel, { thinking: false });
-                cleanResponse = stripThinkingTags(response).trim();
-            } catch (err: any) {
-                Logger.warn(`[Governor] LLM query failed in round ${rounds}: ${err.message}`);
-                break;
+            const roundMessageId = `gov_round_${rounds}_${Date.now()}`;
+            const statusText = `Governor: Round ${rounds}/${maxRounds} (Budget: ~${totalCandidateTokens.toLocaleString()}/${targetBudget.toLocaleString()} tok)...`;
+            if (onStatusUpdate) onStatusUpdate(statusText);
+            if (onRoundProgress) {
+                onRoundProgress({
+                    round: rounds,
+                    maxRounds,
+                    status: statusText,
+                    discoverySteps: [...discoverySteps]
+                });
             }
 
-            // 1. Check for Grep tool call
+            let turnStreamBuffer = "";
+            let cleanResponse = "";
+
+            try {
+                const response = await lollmsAPI.sendChat(
+                    chatMessages,
+                    (chunk) => {
+                        if (signal.aborted) return;
+                        turnStreamBuffer += chunk;
+                        if (onStreamChunk) {
+                            onStreamChunk({
+                                round: rounds,
+                                maxRounds,
+                                chunk,
+                                fullText: turnStreamBuffer,
+                                messageId: roundMessageId
+                            });
+                        }
+                    },
+                    signal,
+                    targetModel,
+                    { thinking: true }
+                );
+
+                cleanResponse = stripThinkingTags(response).trim();
+                if (!cleanResponse) {
+                    throw new Error("LLM server returned an empty response.");
+                }
+            } catch (err: any) {
+                Logger.error(`[Governor] LLM query failed in round ${rounds}: ${err.message}`);
+                throw new Error(`Governor could not communicate with LLM model '${targetModel}': ${err.message || 'Connection failed'}. Ensure your LLM server is running.`);
+            }
+
+            // Save structure guide update immediately
+            const structMatch = cleanResponse.match(/<structure\b[^>]*>([\s\S]*?)<\/structure>/i);
+            if (structMatch && structMatch[1].trim()) {
+                const structContent = structMatch[1].trim();
+                await this.saveStructureGuide(structContent);
+                const step = { type: 'structure', label: 'Updated Structure Guide', detail: '.lollms/structure.md saved' };
+                discoverySteps.push(step);
+                if (onDiscoveryAction) onDiscoveryAction(step);
+            }
+
+            // Check if Governor is adding new files from the workspace tree to context
+            const addFilesMatch = cleanResponse.match(/<add_files_to_context\b[^>]*>([\s\S]*?)<\/add_files_to_context>/i);
+            if (addFilesMatch) {
+                const requestedPaths = addFilesMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+                const addedReports: string[] = [];
+
+                for (const reqPath of requestedPaths) {
+                    const resolution = await contextManager.resolveWorkspaceFromPath(reqPath);
+                    if (resolution) {
+                        try {
+                            const fileBytes = await vscode.workspace.fs.readFile(resolution.uri);
+                            const text = Buffer.from(fileBytes).toString('utf8');
+                            const bytesCount = fileBytes.length;
+                            const tokens = Math.max(1, Math.ceil(bytesCount / 3.5));
+
+                            const existingIdx = fileCandidates.findIndex(c => this.pathsMatch(c.path, reqPath));
+                            if (existingIdx === -1) {
+                                const formatted = text.endsWith('\n') ? text : text + '\n';
+                                const candidate = this.buildCandidate(`<file path="${reqPath}">\n${formatted}</file>
+
+\n\n`, reqPath, text, tokens, new Set([reqPath.toLowerCase()]), keywords, contextManager);
+                                candidate.bytes = bytesCount;
+                                candidate.linesCount = text.split('\n').length;
+                                candidate.isNewlyAdded = true;
+                                fileCandidates.push(candidate);
+                                newlyAddedFiles.push(reqPath);
+                            }
+
+                            addedReports.push(`- \`${reqPath}\`: ~${tokens.toLocaleString()} tokens (${formatSize(bytesCount)})`);
+                            const step = { type: 'add_file', label: `Added to Context: ${path.basename(reqPath)}`, detail: `~${tokens} tok` };
+                            discoverySteps.push(step);
+                            if (onDiscoveryAction) onDiscoveryAction(step);
+                        } catch {}
+                    }
+                }
+
+                totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
+                totalCandidateBytes = fileCandidates.reduce((sum, c) => sum + c.bytes, 0);
+
+                chatMessages.push({ role: 'assistant', content: cleanResponse });
+                chatMessages.push({
+                    role: 'user',
+                    content: `### ✅ ADDED FILES TO CONTEXT CANDIDATES:
+${addedReports.join('\n') || '(Could not resolve requested paths on disk)'}
+
+Updated Candidate Total: ${fileCandidates.length} files (~${totalCandidateTokens.toLocaleString()} tokens / ${formatSize(totalCandidateBytes)}).
+Target Budget: ~${targetBudget.toLocaleString()} tokens.
+Continue scouting or finalize your selection.`
+                });
+                continue;
+            }
+
+            // Grep search tool call
             const grepMatch = cleanResponse.match(/<grep\b[^>]*pattern=["']([^"']+)["'][^>]*\/>/i) ||
                               cleanResponse.match(/<grep\b[^>]*query=["']([^"']+)["'][^>]*\/>/i) ||
                               cleanResponse.match(/<grep\b[^>]*>([\s\S]*?)<\/grep>/i);
@@ -252,18 +427,20 @@ Begin by running discovery queries (<grep>, <sparql>, or <peek_files>) to inspec
                     if (onStatusUpdate) onStatusUpdate(`Governor: Searching disk for "${pattern}"...`);
                     const searchRes = await contextManager.searchWorkspaceContent(pattern, { matchCase: false, wholeWord: false });
                     const snippet = searchRes.slice(0, 8).map(r => `${r.path}:${r.line} - ${r.snippet}`).join('\n') || 'No matches found.';
-                    discoverySteps.push({ type: 'grep', label: `Grep: "${pattern}"`, detail: `Found ${searchRes.length} hits across files` });
+                    const step = { type: 'grep', label: `Grep: "${pattern}"`, detail: `Found ${searchRes.length} hits` };
+                    discoverySteps.push(step);
+                    if (onDiscoveryAction) onDiscoveryAction(step);
 
                     chatMessages.push({ role: 'assistant', content: cleanResponse });
                     chatMessages.push({
                         role: 'user',
-                        content: `### 🔍 GREP RESULTS FOR "${pattern}":\n${snippet}\n\nReview this result. You may make another tool call (<grep>, <sparql>, <peek_files>) to explore further, or finalize your selection (<reveal_only> or <mute_only>).`
+                        content: `### 🔍 GREP RESULTS FOR "${pattern}":\n${snippet}\n\nReview this result. You may make another discovery call or finalize your selection.`
                     });
                     continue;
                 }
             }
 
-            // 2. Check for SPARQL query tool call
+            // SPARQL query tool call
             const sparqlMatch = cleanResponse.match(/<sparql\b[^>]*query=["']([\s\S]*?)["'][^>]*\/>/i) ||
                                 cleanResponse.match(/<sparql\b[^>]*>([\s\S]*?)<\/sparql>/i);
             if (sparqlMatch) {
@@ -271,20 +448,23 @@ Begin by running discovery queries (<grep>, <sparql>, or <peek_files>) to inspec
                 if (sparqlQuery && (contextManager as any).codeGraphManager) {
                     if (onStatusUpdate) onStatusUpdate(`Governor: Querying architecture graph...`);
                     const sparqlRes = await (contextManager as any).codeGraphManager.executeSparql(sparqlQuery);
-                    discoverySteps.push({ type: 'sparql', label: `SPARQL Query`, detail: `Graph pattern evaluated` });
+                    const step = { type: 'sparql', label: `SPARQL Query`, detail: `Graph evaluated` };
+                    discoverySteps.push(step);
+                    if (onDiscoveryAction) onDiscoveryAction(step);
 
                     chatMessages.push({ role: 'assistant', content: cleanResponse });
                     chatMessages.push({
                         role: 'user',
-                        content: `### 📊 SPARQL RESULTS:\n${sparqlRes}\n\nReview this result. You may make another tool call or output your selection.`
+                        content: `### 📊 SPARQL RESULTS:\n${sparqlRes}\n\nReview this result. You may continue scouting or output your selection.`
                     });
                     continue;
                 }
             }
 
-            // 3. Check for Peek Files tool call
+            // Peek Files tool call
             const peekMatch = cleanResponse.match(/<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/i) ||
-                              cleanResponse.match(/<peek\b([^>]*?)\/>/i);
+                              cleanResponse.match(/<peek\b([^>]*?)\/>/i) ||
+                              cleanResponse.match(/<peek_files\s+([^>]*?)\/>/i);
             if (peekMatch) {
                 const attrPart = peekMatch[1] || "";
                 const inner = (peekMatch[2] || "").trim();
@@ -297,18 +477,20 @@ Begin by running discovery queries (<grep>, <sparql>, or <peek_files>) to inspec
                     if (onStatusUpdate) onStatusUpdate(`Governor: Peeking at ${path.basename(targetPath)}...`);
                     const peekRes = await contextManager.peekFiles([{ path: targetPath, lines: linesFromAttr, from: fromDir }]);
                     const snippet = peekRes.map(r => r.error ? `Error: ${r.error}` : r.content).join('\n') || 'File empty or unavailable.';
-                    discoverySteps.push({ type: 'peek', label: `Peek: "${path.basename(targetPath)}"`, detail: `${linesFromAttr} lines (${fromDir})` });
+                    const step = { type: 'peek', label: `Peek: "${path.basename(targetPath)}"`, detail: `${linesFromAttr} lines` };
+                    discoverySteps.push(step);
+                    if (onDiscoveryAction) onDiscoveryAction(step);
 
                     chatMessages.push({ role: 'assistant', content: cleanResponse });
                     chatMessages.push({
                         role: 'user',
-                        content: `### 📄 PEEK SLICE FOR "${targetPath}":\n\`\`\`\n${snippet}\n\`\`\`\n\nReview this file content. You may continue scouting or output your selection.`
+                        content: `### 📄 PEEK SLICE FOR "${targetPath}":\n\`\`\`\n${snippet}\n\`\`\`\n\nRemember: If this file is only needed for reference/structure, document its signatures in <structure> and leave it muted. If it must be modified, add it to <reveal_only>.`
                     });
                     continue;
                 }
             }
 
-            // 4. Check for tags: <reveal_only>, <mute_only>, <mute>, <signatures>, <rationale>, <worker>
+            // Check for selection tags
             const revealOnlyMatch = cleanResponse.match(/<reveal_only\b[^>]*>([\s\S]*?)<\/reveal_only>/i);
             const muteOnlyMatch = cleanResponse.match(/<mute_only\b[^>]*>([\s\S]*?)<\/mute_only>/i) || cleanResponse.match(/<mute\b[^>]*>([\s\S]*?)<\/mute>/i);
             const sigMatch = cleanResponse.match(/<signatures\b[^>]*>([\s\S]*?)<\/signatures>/i);
@@ -339,7 +521,26 @@ Begin by running discovery queries (<grep>, <sparql>, or <peek_files>) to inspec
                     .map(c => c.path);
             }
 
-            // 5. Preselection Budget Verification: Check if proposed active files fit into target budget
+            // Anti-lazy-exit guard: Mandate discovery before locking in decision on non-trivial prompts
+            if (proposedKept !== null && rounds < minExplorationRounds && discoverySteps.length === 0) {
+                if (onStatusUpdate) onStatusUpdate(`Governor: Mandating discovery round ${rounds + 1}...`);
+                const keyCandidates = fileCandidates.filter(c => !this.isClutterOrCosmeticFile(c.path)).slice(0, 3).map(c => c.path);
+
+                chatMessages.push({ role: 'assistant', content: cleanResponse });
+                chatMessages.push({
+                    role: 'user',
+                    content: `⚠️ MULTI-ROUND EXPLORATION MANDATE (Round ${rounds} of ${maxRounds}):
+You made an initial guess without inspecting candidate files on disk.
+To ensure you do not mute files that need edits or load unneeded reference files:
+1. Use \`<peek_files path="..." lines="30" />\` on key files: ${keyCandidates.map(p => `\`${p}\``).join(', ')}.
+2. If files are only needed for reference, extract their signatures into \`<structure>\` and mute them.
+3. If new files from the workspace tree need to be added, use \`<add_files_to_context>\`.
+Perform at least one discovery step now before finalizing.`
+                });
+                continue;
+            }
+
+            // Preselection Budget Verification & Sanity Check
             if (proposedKept !== null) {
                 let candidateTokens = 0;
                 fileCandidates.forEach(c => {
@@ -354,46 +555,44 @@ Begin by running discovery queries (<grep>, <sparql>, or <peek_files>) to inspec
                     const keptListDetailed = fileCandidates
                         .filter(c => proposedKept!.includes(c.path))
                         .sort((a, b) => b.tokens - a.tokens)
-                        .map(c => `- \`${c.path}\`: ~${c.tokens.toLocaleString()} tokens (${c.bytes ? (c.bytes > 1024 ? Math.round(c.bytes / 1024) + ' KB' : c.bytes + ' B') : 'unknown size'})`)
+                        .map(c => `- \`${c.path}\`: ~${c.tokens.toLocaleString()} tokens (${formatSize(c.bytes)})`)
                         .join('\n');
 
                     chatMessages.push({ role: 'assistant', content: cleanResponse });
                     chatMessages.push({
                         role: 'user',
                         content: `⚠️ PRESELECTION EXCEEDS TOKEN BUDGET (Round ${rounds} of ${maxRounds}):
-Your proposed active selection totals ~${candidateTokens.toLocaleString()} tokens (${Math.round((candidateTokens / maxTokens) * 100)}%), which exceeds the target budget of ~${targetBudget.toLocaleString()} tokens (${targetPercent}%).
+Proposed selection: ~${candidateTokens.toLocaleString()} tokens (${Math.round((candidateTokens / maxTokens) * 100)}%), exceeding target budget of ~${targetBudget.toLocaleString()} tokens (${targetPercent}%).
 Excess to eliminate: ~${(candidateTokens - targetBudget).toLocaleString()} tokens.
 
-Here are the files currently kept active and their sizes:
+Active files in your selection:
 ${keptListDetailed}
 
-Please tighten your selection:
-- Use <reveal_only> to keep ONLY the essential files that must inevitably be modified.
-- Or use <mute_only> to mute more files.
-- Put function and method signatures for newly muted files inside <signatures>...</signatures> so the worker still understands their API contracts without loading full code.`
+Apply the Dual-Tier Strategy:
+- Are any of these files needed ONLY for reference/types? Extract their signatures into <structure> and mute them!
+- Keep ONLY files that must be modified in <reveal_only>.`
                     });
                     continue;
                 }
 
+                // Sanity check for structural queries
+                if (isStructural && fitsComfortablyInBudget) {
+                    const mutedCode = fileCandidates.filter(c => !proposedKept!.includes(c.path) && !this.isClutterOrCosmeticFile(c.path));
+                    if (mutedCode.length > 0 && rounds < 3) {
+                        chatMessages.push({ role: 'assistant', content: cleanResponse });
+                        chatMessages.push({
+                            role: 'user',
+                            content: `⚠️ STRUCTURAL QUERY CORRECTION (Round ${rounds} of ${maxRounds}):
+The user asked to explain the project structure, but your selection muted primary source code files: [${mutedCode.map(c => c.path).join(', ')}].
+All candidate files total ~${totalCandidateTokens.toLocaleString()} tokens, which fits within the budget (~${targetBudget.toLocaleString()} tokens).
+Keep all primary code files active in <reveal_only> and mute only cosmetic stylesheets (*.css) and minified files.`
+                        });
+                        continue;
+                    }
+                }
+
                 finalKeptPaths = proposedKept;
                 break;
-            }
-
-            // Fallback for JSON decisions
-            const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-                try {
-                    const parsed = JSON.parse(jsonMatch[0]);
-                    if (Array.isArray(parsed.reveal_only)) {
-                        finalKeptPaths = fileCandidates.filter(c => parsed.reveal_only.some((rp: string) => this.pathsMatch(rp, c.path))).map(c => c.path);
-                    } else if (Array.isArray(parsed.mute) || Array.isArray(parsed.mute_only)) {
-                        const mList = parsed.mute_only || parsed.mute;
-                        finalKeptPaths = fileCandidates.filter(c => !mList.some((mp: string) => this.pathsMatch(mp, c.path))).map(c => c.path);
-                    }
-                    if (parsed.signatures) signaturesText = String(parsed.signatures).trim();
-                    if (parsed.rationale) rationaleText = String(parsed.rationale).trim();
-                    if (parsed.worker || parsed.advice) workerAdvice = String(parsed.worker || parsed.advice).trim();
-                } catch {}
             }
 
             break;
@@ -408,6 +607,8 @@ Please tighten your selection:
             let keep = true;
             if (finalKeptPaths !== null) {
                 keep = finalKeptPaths.includes(candidate.path);
+            } else if (isStructural && fitsComfortablyInBudget) {
+                keep = !this.isClutterOrCosmeticFile(candidate.path);
             } else {
                 keep = candidate.relevanceScore > 0;
             }
@@ -436,18 +637,20 @@ Please tighten your selection:
         return {
             keptFiles,
             mutedFiles,
+            addedFiles: newlyAddedFiles,
             rationale,
             advice: workerAdvice,
             signatures: signaturesText,
             discoverySteps,
             totalTokens,
-            liberatedTokens
+            liberatedTokens,
+            roundsUsed: rounds,
+            maxRounds
         };
     }
 
     /**
      * Executes the Context Governor arbitration algorithm.
-     * Can reduce contexts loaded up to 1000%+ down to the target model threshold safely.
      */
     public static async arbitrate(options: ArbitrateOptions): Promise<GovernorArbitrationResult | null> {
         const {
@@ -469,7 +672,6 @@ Please tighten your selection:
 
         let history = [...options.history];
 
-        // 1. Resolve Context Size Capacity and Thresholds
         const ctxSizeRes = await lollmsAPI.getContextSize(targetModel).catch(() => null);
         const authoritativeMaxTokens = (ctxSizeRes && ctxSizeRes.context_size > 0)
             ? ctxSizeRes.context_size
@@ -487,13 +689,14 @@ Please tighten your selection:
             : Math.min(triggerThresholdPercent, 70);
         const objectiveThreshold = Math.round(maxTokens * (objectiveThresholdPercent / 100));
 
-        const maxNegotiationRounds = capabilities.contextGovernorMaxRounds !== undefined
-            ? capabilities.contextGovernorMaxRounds
-            : 5;
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const configuredRounds = capabilities.contextGovernorMaxRounds;
+        const fallbackConfigRounds = config.get<number>('contextGovernorMaxRounds');
+        const effectiveRounds = (configuredRounds && configuredRounds >= 10) ? configuredRounds : (fallbackConfigRounds || 20);
+        const maxNegotiationRounds = Math.max(15, effectiveRounds);
 
         const hardCap120 = Math.round(maxTokens * 1.2);
 
-        // 2. Calculate Base Non-File Fixed Loads
         const getCleanHistoryText = (msgs: ChatMessage[]) => msgs
             .filter(m => !m.skipInPrompt)
             .map(m => {
@@ -513,7 +716,6 @@ Please tighten your selection:
 
         let fixedLoad = systemTokens + historyTokens + treeTokens + skillsTokens + briefingTokens + promptTokens;
 
-        // 3. Extract and Parse File Blocks across ALL candidate files in context
         const extractedBlocks = extractFileBlocks(contextData.selectedFilesContent);
         const fileCandidates: ParsedFileCandidate[] = [];
 
@@ -562,6 +764,8 @@ Please tighten your selection:
             return false;
         };
 
+        const isStructural = this.isBroadOrStructuralQuery(userPromptText);
+
         for (const f of candidateSourceList) {
             let fullMatch = "";
             let fileBody = "";
@@ -604,6 +808,18 @@ Please tighten your selection:
 
             const candidate = this.buildCandidate(fullMatch, f.path, fileBody, tokens, currentPromptAddedFiles, keywords, contextManager);
             candidate.bytes = bytesCount || Math.round(tokens * 3.5);
+            candidate.linesCount = fileBody.split('\n').length;
+
+            if (isStructural) {
+                const lowerPath = f.path.toLowerCase();
+                const isCoreSourceCode = lowerPath.endsWith('.js') || lowerPath.endsWith('.ts') ||
+                                         lowerPath.endsWith('.py') || lowerPath.endsWith('.html') ||
+                                         lowerPath.endsWith('.json') || lowerPath.endsWith('.md');
+                if (isCoreSourceCode && !this.isClutterOrCosmeticFile(f.path)) {
+                    candidate.relevanceScore += 1000;
+                    candidate.isCoreOrInterface = true;
+                }
+            }
 
             if (hasGovernorDirective) {
                 const normP = f.path.toLowerCase().replace(/\\/g, '/');
@@ -642,7 +858,6 @@ Please tighten your selection:
             return this.buildPassingResult(contextData, baseInstructions, history, currentPromptMessage, activeContextLoad, maxTokens, systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities, briefingContent, userPromptText);
         }
 
-        // 4. Overload Detected: Engage Context Governor
         if (onStatusUpdate) {
             onStatusUpdate(`⚖️ Governor: Context at ${activeUsagePercent}% (Trigger: ${triggerThresholdPercent}%, Objective: ${objectiveThresholdPercent}%). Optimizing...`);
         }
@@ -665,7 +880,6 @@ Trigger Threshold: **${triggerThresholdPercent}%** &middot; Objective Target: **
         let historyCropReport = "";
         let liberatedHistoryTokens = 0;
 
-        // Stage 1: Crop and Summarize Bloated History
         const isCropHistoryEnabled = capabilities.contextGovernorCropHistory !== false;
         if (isCropHistoryEnabled && history.length > 2 && historyTokens > 1000) {
             const isHistoryBloated = historyTokens > (maxTokens * 0.15) || (historyTokens > 2000 && overflow > 0) || fileCandidates.length === 0;
@@ -682,12 +896,10 @@ Trigger Threshold: **${triggerThresholdPercent}%** &middot; Objective Target: **
             }
         }
 
-        // Stage 2: Evaluate Protection and Available Tokens
         const olderActiveCandidates = fileCandidates.filter(b => !b.isCurrentPromptFile && !isCandidateMuted(b.path));
         const tokensAvailableFromOlder = olderActiveCandidates.reduce((sum, b) => sum + b.tokens, 0);
         const canAvoidEvictingCurrentPrompt = tokensAvailableFromOlder >= overflow;
 
-        // Stage 3: Multi-Round Governor Negotiation
         let governorDecision: any = null;
         let roundsUsed = 0;
         let chunkingNotice: string | undefined = undefined;
@@ -741,12 +953,20 @@ Trigger Threshold: **${triggerThresholdPercent}%** &middot; Objective Target: **
                 keywords,
                 maxRounds: maxNegotiationRounds,
                 governorDirectives: allGovernorDirectives,
+                pruneMsgId,
                 onStatusUpdate,
+                onAddMessage,
+                optionsUpdateMessage: options.onUpdateMessage,
                 onRoundUsed: (r) => { roundsUsed = r; }
             });
             governorDecision = negotiationResult.decision;
             workerAdvice = negotiationResult.workerAdvice || "";
             mutedSignatures = negotiationResult.signatures || "";
+            if (negotiationResult.addedFiles && negotiationResult.addedFiles.length > 0) {
+                try {
+                    await contextManager.getContextStateProvider()?.addFilesToContext(negotiationResult.addedFiles);
+                } catch {}
+            }
         } else {
             fileCandidates.forEach(b => {
                 b.keep = true;
@@ -895,31 +1115,55 @@ The codebase context required for this request is extremely large. It is mathema
         const totalLiberated = liberatedTokens + liberatedHistoryTokens;
 
         if (onAddMessage && (hasGovernorDirective || overflow > 0)) {
-            const directiveSummary = allGovernorDirectives.length > 0 ? `\n- **Directive**: \`${allGovernorDirectives.join('; ')}\`` : '';
-            const governorCardMarkdown = `### ⚖️ Context Governor Decision
-${directiveSummary}
-- **Rounds Taken**: ${roundsUsed} round${roundsUsed === 1 ? '' : 's'} (max ${maxNegotiationRounds})
-- **New Context Load**: ${newTotal.toLocaleString()} / ${maxTokens.toLocaleString()} tokens (**${newUsagePercent}%**)
-- **Tokens Liberated**: ${totalLiberated.toLocaleString()} tokens
+            const steps = (governorDecision as any)?.discoverySteps || [];
+            let stepsHtml = '';
+            if (steps.length > 0) {
+                const chips = steps.map((s: any) => `
+                    <div class="gov-discovery-chip ${s.type || 'thought'}">
+                        <i class="codicon ${s.type === 'grep' ? 'codicon-search' : (s.type === 'sparql' ? 'codicon-graph' : (s.type === 'peek' ? 'codicon-eye' : (s.type === 'add_file' ? 'codicon-diff-added' : (s.type === 'structure' ? 'codicon-book' : 'codicon-symbol-misc'))))}"></i>
+                        <span>${s.label || 'Step'}</span>
+                        ${s.detail ? `<span style="opacity:0.6;">(${s.detail})</span>` : ''}
+                    </div>
+                `).join('');
 
-🧠 **Thoughts & Rationale**:
-${rationale}
+                stepsHtml = `
+<div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; padding: 6px 10px; background: rgba(0,0,0,0.18); border-radius: 6px; border: 1px dashed var(--vscode-widget-border);">
+    <div style="font-size: 9px; font-weight: 800; text-transform: uppercase; color: var(--vscode-charts-orange); opacity: 0.9; display: flex; align-items: center; gap: 4px;">
+        <i class="codicon codicon-sparkle"></i> Autonomous Discovery Steps Taken
+    </div>
+    <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">${chips}</div>
+</div>\n\n`;
+            }
 
-${workerAdvice ? `💬 **Advice Forwarded to Worker**:\n${workerAdvice}\n\n` : ''}${mutedSignatures ? `🔍 **Muted Files Architecture & Signatures**:\n${mutedSignatures}\n\n` : ''}📁 **File Decisions**:
-- **✅ Kept Active (${keptBlocks.length} files with content loaded [C])**:
-${keptList.join('\n') || '  - (None)'}
+            const signaturesHtml = mutedSignatures ? `
+<div style="padding: 8px 12px; background: rgba(155, 89, 182, 0.08); border-left: 3px solid var(--vscode-charts-purple); border-radius: 4px; margin: 8px 0;">
+    <strong style="color: var(--vscode-charts-purple); font-size: 11px; display: flex; align-items: center; gap: 6px;">
+        <i class="codicon codicon-graph"></i> Muted Files Architecture & Signatures
+    </strong>
+    <div class="markdown-body" style="font-size: 11px; opacity: 0.9; margin-top: 4px; max-height: 250px; overflow-y: auto; line-height: 1.45;">
+        ${mutedSignatures}
+    </div>
+</div>\n\n` : '';
 
-- **✂️ Muted in Tree (${mutedBlocks.length} files at 0 tokens [M])**:
-${evictedReport.join('\n') || '  - (None)'}
-${chunkingNotice ? `\n---\n${chunkingNotice}\n` : ''}`;
+            const adviceHtml = workerAdvice ? `
+<div style="padding: 6px 10px; background: rgba(0, 122, 204, 0.08); border-left: 3px solid var(--vscode-charts-blue); border-radius: 4px; margin: 6px 0;">
+    <strong style="color: var(--vscode-charts-blue); font-size: 11px;">Advice for Worker:</strong>
+    <div style="font-size: 11px; opacity: 0.9; margin-top: 2px;">${workerAdvice}</div>
+</div>\n\n` : '';
 
-            await onAddMessage({
-                id: 'governor_run_' + Date.now(),
-                role: 'system',
-                personalityName: '⚖️ Context Governor',
-                content: governorCardMarkdown,
-                skipInPrompt: true
-            });
+            const governorCardMarkdown = `${stepsHtml}${rationale}\n\n${signaturesHtml}${adviceHtml}*${keptBlocks.length} file(s) will be loaded with content [C], ${mutedBlocks.length} kept in tree at 0 tokens [M].*\n*(Completed in ${roundsUsed} round${roundsUsed === 1 ? '' : 's'} &middot; Context Load: ${newUsagePercent}% &middot; Liberated: ~${totalLiberated.toLocaleString()} tok)*${chunkingNotice ? `\n\n---\n${chunkingNotice}` : ''}`;
+
+            if (options.onUpdateMessage) {
+                await options.onUpdateMessage(pruneMsgId, governorCardMarkdown);
+            } else {
+                await onAddMessage({
+                    id: 'governor_run_' + Date.now(),
+                    role: 'system',
+                    personalityName: '⚖️ Context Governor',
+                    content: governorCardMarkdown,
+                    skipInPrompt: true
+                });
+            }
         }
 
         const updatedBriefing = contextManager.renderBriefing(currentDiscussion);
@@ -994,11 +1238,6 @@ ${chunkingDirectiveText}`.trim();
         };
     }
 
-    /**
-     * Executes up to `maxRounds` rounds of negotiation and verification with the LLM Governor.
-     * Supports intermediate exploration tools (grep, sparql, peek_files), multiple selection
-     * approaches (<reveal_only>, <mute_only>), and signature extraction.
-     */
     private static async runGovernorNegotiation(options: {
         lollmsAPI: LollmsAPI;
         contextManager: ContextManager;
@@ -1017,9 +1256,12 @@ ${chunkingDirectiveText}`.trim();
         keywords: string[];
         maxRounds: number;
         governorDirectives?: string[];
+        pruneMsgId?: string;
         onStatusUpdate?: (status: string) => void;
+        onAddMessage?: (message: ChatMessage) => Promise<void>;
+        optionsUpdateMessage?: (messageId: string, content: string) => Promise<void>;
         onRoundUsed?: (rounds: number) => void;
-    }): Promise<{ decision: any; workerAdvice?: string; signatures?: string }> {
+    }): Promise<{ decision: any; workerAdvice?: string; signatures?: string; discoverySteps?: any[]; addedFiles?: string[] }> {
         const {
             lollmsAPI,
             contextManager,
@@ -1044,57 +1286,48 @@ ${chunkingDirectiveText}`.trim();
         let lastCandidateDecision: any = null;
         let extractedWorkerAdvice = "";
         let extractedSignatures = "";
+        const newlyAddedFiles: string[] = [];
+        const discoverySteps: { type: string; label: string; detail?: string }[] = [];
+        const isStructural = this.isBroadOrStructuralQuery(userPromptText);
+        let totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
+        let totalCandidateBytes = fileCandidates.reduce((sum, c) => sum + c.bytes, 0);
+        const fitsComfortablyInBudget = totalCandidateTokens <= objectiveThreshold;
 
         const compactCatalog = this.buildCompactCatalog(fileCandidates, options.currentMuted);
+        const existingStructure = await this.getStructureGuide();
+
+        const formatSize = (b: number) => {
+            if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+            if (b >= 1024) return `${(b / 1024).toFixed(1)} KB`;
+            return `${b} B`;
+        };
 
         const systemPrompt = `You are the **Sovereign Context Governor**.
 Your goal is to optimize active prompt context to strictly satisfy the objective target (${objectiveThresholdPercent}%, max ${objectiveThreshold.toLocaleString()} tokens).
 Capacity limit: ${maxTokens.toLocaleString()} tokens. Current full load: ${totalEstimated.toLocaleString()} tokens. Required reduction: ~${overflow.toLocaleString()} tokens.
+Allowed Negotiation Rounds: Up to ${maxRounds}.
+
+### 📊 100% TRANSPARENT TOKEN BUDGET:
+- **Maximum Model Window Capacity**: ${maxTokens.toLocaleString()} tokens
+- **Target Budget Threshold (${objectiveThresholdPercent}%)**: ~${objectiveThreshold.toLocaleString()} tokens
+- **Total Weight of All Candidate Files**: ~${totalCandidateTokens.toLocaleString()} tokens (${formatSize(totalCandidateBytes)})
+
+### ⚖️ CRITICAL DUAL-TIER CONTEXT STRATEGY (EDIT VS REFERENCE):
+1. **FILES TO MODIFY (ACTIVE CONTEXT [C])**:
+   - Files where code, bugfixes, or features will be actively edited or created.
+   - Put ONLY these files in \`<reveal_only>\`.
+2. **REFERENCE-ONLY FILES (STRUCTURE REPORT [.lollms/structure.md] + MUTED [M])**:
+   - Files needed ONLY as references to understand the architecture, data models, interfaces, utility functions, or callers (files that will NOT be modified).
+   - **DO NOT load these files with full content into active context!**
+   - Instead, inspect their structure (using \`<peek_files>\`) and write their architecture, types, and function signatures into the **Governor's Codebase Report** using \`<structure>...</structure>\`.
+   - Put these files in \`<mute_only>\` (or omit from \`<reveal_only>\`). They remain tracked in tree at 0 tokens [M].
 
 ### 🛠️ AVAILABLE EXPLORATION TOOLS (MULTI-ROUND DISCOVERY):
-Before finalizing your decision, you may inspect the codebase across multiple rounds:
 1. **Grep Search**: \`<grep pattern="searchTerm" path="optional/subdir" />\`
 2. **SPARQL Architecture Query**: \`<sparql query="SELECT ?x WHERE { ?x s:type s:Class }" />\`
-3. **Peek File Slice**: \`<peek_files path="path/to/file.ext" lines="30" from="top" />\` (or \`<peek_files>path</peek_files>
-
-\`)
-Outputting any tool executes it immediately on disk and provides the observation in the next round so you can learn and make an informed decision.
-
-### 📋 SELECTION FUNCTIONS (CHOOSE ONE APPROACH):
-1. **Reveal Only (Keep essential files active)**:
-<reveal_only>
-path/to/file_to_keep1.ext
-path/to/file_to_keep2.ext
-</reveal_only>
-*(Keeps ONLY the listed files active with full content [C]. ALL other files will be muted in tree at 0 tokens [M]. Use this to keep clear only the files that should inevitably be modified!)*
-
-2. **Mute Only (Mute specific files)**:
-<mute_only>
-path/to/file_to_mute1.ext
-path/to/file_to_mute2.ext
-</mute_only>
-*(Mutes ONLY the listed files at 0 tokens [M]. ALL other files remain active [C]. Also accepts <mute>.)*
-
-### 📝 ARCHITECTURE & MUTED SIGNATURES EXPLAINER:
-To give the worker model enough context about muted files without bloating the context window, you can write an architectural summary or Mermaid diagram:
-<signatures>
-### 🔍 MUTED FILES FUNCTION SIGNATURES & ARCHITECTURE
-\`\`\`mermaid
-classDiagram
-  ...
-\`\`\`
-- \`file_a.ext\`: \`def method_name(arg: type) -> ret\`: summary of function
-- \`file_b.ext\`: \`class ServiceName\`: summary of responsibilities
-</signatures>
-
-### 💬 ADVICE & RATIONALE:
-<rationale>
-Why these choices were made...
-</rationale>
-
-<worker>
-Specific findings, guidelines, or advice to forward to the worker model.
-</worker>`;
+3. **Peek File Slice**: \`<peek_files path="path/to/file.ext" lines="30" from="top" />\`
+4. **Codebase Structure Guide**: Output \`<structure># Architecture Guide\\n...</structure>\` to document module responsibilities into persistent \`.lollms/structure.md\`.
+5. **Selection Output**: \`<reveal_only>\` or \`<mute_only>\``;
 
         const promptSummary = userPromptText.length > 500 ? userPromptText.substring(0, 500) + '...' : userPromptText;
 
@@ -1109,15 +1342,21 @@ Specific findings, guidelines, or advice to forward to the worker model.
 ### 🎯 USER OBJECTIVE
 "${promptSummary}"
 
+${isStructural ? `⚠️ NOTICE: The user is asking for an architectural or structural overview of the project. Do NOT mute primary source code files like api.js, app.js, or controllers! Only mute cosmetic stylesheets (*.css), minified files (*.min.*), and static assets.\n` : ''}
+${fitsComfortablyInBudget ? `💡 BUDGET NOTE: All candidate files total ~${totalCandidateTokens.toLocaleString()} tokens, which fits comfortably within the target budget (~${objectiveThreshold.toLocaleString()} tokens). Do not gut the codebase.\n` : ''}
+${existingStructure ? `### 🏛️ PERSISTENT CODEBASE STRUCTURE GUIDE (.lollms/structure.md):\n${existingStructure.substring(0, 2000)}\n` : ''}
 ${governorDirectives && governorDirectives.length > 0 ? `### ⚖️ DIRECT USER DIRECTIVES FOR GOVERNOR (MANDATORY PRIORITY):\n${governorDirectives.map(d => `- ${d}`).join('\n')}\n(Follow these user instructions above all else when selecting files to keep or evict!)\n\n` : ''}### 📄 LOADED FILES COMPACT CATALOG (${fileCandidates.length} files)
 ${compactCatalog}
 
-Make your decision to reach the objective threshold of ${objectiveThresholdPercent}% (${objectiveThreshold.toLocaleString()} tokens). Output your discovery queries (<grep>, <sparql>, <peek_files>) or your selection decision (<reveal_only> or <mute_only>), <signatures>, and <worker>.`;
+Make your decision to reach the objective threshold of ${objectiveThresholdPercent}% (${objectiveThreshold.toLocaleString()} tokens). Output your discovery queries (<peek_files>, <grep>, <sparql>, <structure>) or your selection decision.`;
 
         const conversation: ChatMessage[] = [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: initialUserPrompt }
         ];
+
+        let discoveryCount = 0;
+        const minExplorationRounds = (!isStructural && fileCandidates.length > 3) ? 2 : 1;
 
         while (currentRound < maxRounds) {
             if (signal.aborted) break;
@@ -1125,12 +1364,82 @@ Make your decision to reach the objective threshold of ${objectiveThresholdPerce
             if (onRoundUsed) onRoundUsed(currentRound);
 
             if (onStatusUpdate) {
-                onStatusUpdate(`⚖️ Governor: Verifying Objective (${currentRound}/${maxRounds})...`);
+                onStatusUpdate(`⚖️ Governor: Round ${currentRound}/${maxRounds} (Evaluating & verifying)...`);
             }
 
+            let streamBuffer = "";
             try {
-                const response = await lollmsAPI.sendChat(conversation, null, signal, targetModel, { thinking: false });
-                const cleanResponse = stripThinkingTags(response);
+                const response = await lollmsAPI.sendChat(conversation, (chunk) => {
+                    if (signal.aborted) return;
+                    streamBuffer += chunk;
+                    if (options.optionsUpdateMessage && options.pruneMsgId) {
+                        const statusBadge = `⚖️ **Context Governor: Round ${currentRound}/${maxRounds} (Scouting & Evaluating)**\n\n`;
+                        options.optionsUpdateMessage(options.pruneMsgId, statusBadge + streamBuffer).catch(() => {});
+                    }
+                }, signal, targetModel, { thinking: true });
+                const cleanResponse = stripThinkingTags(response).trim();
+                if (!cleanResponse) {
+                    throw new Error("LLM server returned an empty response.");
+                }
+
+                // Structure guide update check
+                const structMatch = cleanResponse.match(/<structure\b[^>]*>([\s\S]*?)<\/structure>/i);
+                if (structMatch && structMatch[1].trim()) {
+                    await this.saveStructureGuide(structMatch[1].trim());
+                    discoverySteps.push({ type: 'structure', label: 'Updated Structure Guide', detail: '.lollms/structure.md' });
+                    discoveryCount++;
+                }
+
+                // Check for <add_files_to_context> to add files from tree
+                const addFilesMatch = cleanResponse.match(/<add_files_to_context\b[^>]*>([\s\S]*?)<\/add_files_to_context>/i);
+                if (addFilesMatch) {
+                    const requestedPaths = addFilesMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+                    const addedReports: string[] = [];
+
+                    for (const reqPath of requestedPaths) {
+                        const resolution = await contextManager.resolveWorkspaceFromPath(reqPath);
+                        if (resolution) {
+                            try {
+                                const fileBytes = await vscode.workspace.fs.readFile(resolution.uri);
+                                const text = Buffer.from(fileBytes).toString('utf8');
+                                const bytesCount = fileBytes.length;
+                                const tokens = Math.max(1, Math.ceil(bytesCount / 3.5));
+
+                                const existingIdx = fileCandidates.findIndex(c => this.pathsMatch(c.path, reqPath));
+                                if (existingIdx === -1) {
+                                    const formatted = text.endsWith('\n') ? text : text + '\n';
+                                    const candidate = this.buildCandidate(`<file path="${reqPath}">\n${formatted}</file>
+
+\n\n`, reqPath, text, tokens, new Set([reqPath.toLowerCase()]), keywords, contextManager);
+                                    candidate.bytes = bytesCount;
+                                    candidate.linesCount = text.split('\n').length;
+                                    candidate.isNewlyAdded = true;
+                                    fileCandidates.push(candidate);
+                                    newlyAddedFiles.push(reqPath);
+                                }
+
+                                addedReports.push(`- \`${reqPath}\`: ~${tokens.toLocaleString()} tokens (${formatSize(bytesCount)})`);
+                                discoverySteps.push({ type: 'add_file', label: `Added to Context: ${path.basename(reqPath)}`, detail: `~${tokens} tok` });
+                                discoveryCount++;
+                            } catch {}
+                        }
+                    }
+
+                    totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
+                    totalCandidateBytes = fileCandidates.reduce((sum, c) => sum + c.bytes, 0);
+
+                    conversation.push({ role: 'assistant', content: cleanResponse });
+                    conversation.push({
+                        role: 'user',
+                        content: `### ✅ ADDED FILES TO CONTEXT CANDIDATES:
+${addedReports.join('\n') || '(Could not resolve requested paths on disk)'}
+
+Updated Candidate Total: ${fileCandidates.length} files (~${totalCandidateTokens.toLocaleString()} tokens / ${formatSize(totalCandidateBytes)}).
+Target Budget: ~${objectiveThreshold.toLocaleString()} tokens.
+Continue scouting or finalize your selection.`
+                    });
+                    continue;
+                }
 
                 // Check for Grep tool call
                 const grepMatch = cleanResponse.match(/<grep\b[^>]*pattern=["']([^"']+)["'][^>]*\/>/i) ||
@@ -1139,9 +1448,11 @@ Make your decision to reach the objective threshold of ${objectiveThresholdPerce
                 if (grepMatch) {
                     const pattern = (grepMatch[1] || "").trim();
                     if (pattern) {
+                        discoveryCount++;
                         if (onStatusUpdate) onStatusUpdate(`⚖️ Governor: Grep exploration for "${pattern}"...`);
                         const searchResults = await contextManager.searchWorkspaceContent(pattern, { matchCase: false, wholeWord: false });
                         const searchSnippet = searchResults.slice(0, 8).map(r => `${r.path}:${r.line} - ${r.snippet}`).join('\n') || 'No matches found.';
+                        discoverySteps.push({ type: 'grep', label: `Grep: "${pattern}"`, detail: `Found ${searchResults.length} hits` });
 
                         conversation.push({ role: 'assistant', content: cleanResponse });
                         conversation.push({
@@ -1158,8 +1469,10 @@ Make your decision to reach the objective threshold of ${objectiveThresholdPerce
                 if (sparqlMatch) {
                     const sparqlQuery = (sparqlMatch[1] || "").trim();
                     if (sparqlQuery && (contextManager as any).codeGraphManager) {
+                        discoveryCount++;
                         if (onStatusUpdate) onStatusUpdate(`⚖️ Governor: Querying architecture graph...`);
                         const sparqlRes = await (contextManager as any).codeGraphManager.executeSparql(sparqlQuery);
+                        discoverySteps.push({ type: 'sparql', label: `SPARQL Query`, detail: `Graph evaluated` });
 
                         conversation.push({ role: 'assistant', content: cleanResponse });
                         conversation.push({
@@ -1172,7 +1485,8 @@ Make your decision to reach the objective threshold of ${objectiveThresholdPerce
 
                 // Check for Peek Files tool call
                 const peekMatch = cleanResponse.match(/<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/i) ||
-                                  cleanResponse.match(/<peek\b([^>]*?)\/>/i);
+                              cleanResponse.match(/<peek\b([^>]*?)\/>/i) ||
+                              cleanResponse.match(/<peek_files\s+([^>]*?)\/>/i);
                 if (peekMatch) {
                     const attrPart = peekMatch[1] || "";
                     const inner = (peekMatch[2] || "").trim();
@@ -1182,9 +1496,11 @@ Make your decision to reach the objective threshold of ${objectiveThresholdPerce
                     const targetPath = pathFromAttr || inner.split(/\s+/)[0] || "";
 
                     if (targetPath) {
+                        discoveryCount++;
                         if (onStatusUpdate) onStatusUpdate(`⚖️ Governor: Peeking at ${path.basename(targetPath)}...`);
                         const peekRes = await contextManager.peekFiles([{ path: targetPath, lines: linesFromAttr, from: fromDir }]);
                         const snippet = peekRes.map(r => r.error ? `Error: ${r.error}` : r.content).join('\n') || 'File empty.';
+                        discoverySteps.push({ type: 'peek', label: `Peek: "${path.basename(targetPath)}"`, detail: `${linesFromAttr} lines` });
 
                         conversation.push({ role: 'assistant', content: cleanResponse });
                         conversation.push({
@@ -1228,29 +1544,18 @@ Make your decision to reach the objective threshold of ${objectiveThresholdPerce
                     proposedEvict = fileCandidates.filter(c => pathsToMute.some(mp => this.pathsMatch(mp, c.path))).map(c => ({ path: c.path, reason: "Muted in <mute_only>" }));
                     proposedKeep = fileCandidates.filter(c => !pathsToMute.some(mp => this.pathsMatch(mp, c.path))).map(c => ({ path: c.path, justification: "Active (not in mute list)" }));
                     proposedKept = proposedKeep.map(k => k.path);
-                } else {
-                    const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
-                    if (jsonMatch) {
-                        try {
-                            const parsed = JSON.parse(jsonMatch[0]);
-                            if (parsed.signatures) extractedSignatures = String(parsed.signatures).trim();
-                            if (parsed.worker || parsed.worker_advice) extractedWorkerAdvice = String(parsed.worker || parsed.worker_advice).trim();
-                            if (Array.isArray(parsed.reveal_only)) {
-                                proposedKeep = fileCandidates.filter(c => parsed.reveal_only.some((rp: string) => this.pathsMatch(rp, c.path))).map(c => ({ path: c.path, justification: "Selected in reveal_only" }));
-                                proposedEvict = fileCandidates.filter(c => !parsed.reveal_only.some((rp: string) => this.pathsMatch(rp, c.path))).map(c => ({ path: c.path, reason: "Muted by reveal_only" }));
-                                proposedKept = proposedKeep.map(k => k.path);
-                            } else if (Array.isArray(parsed.mute_only) || Array.isArray(parsed.mute)) {
-                                const mList = parsed.mute_only || parsed.mute;
-                                proposedEvict = fileCandidates.filter(c => mList.some((mp: string) => this.pathsMatch(mp, c.path))).map(c => ({ path: c.path, reason: "Muted in mute list" }));
-                                proposedKeep = fileCandidates.filter(c => !mList.some((mp: string) => this.pathsMatch(mp, c.path))).map(c => ({ path: c.path, justification: "Active" }));
-                                proposedKept = proposedKeep.map(k => k.path);
-                            } else if (Array.isArray(parsed.evict) || Array.isArray(parsed.keep)) {
-                                proposedEvict = parsed.evict || [];
-                                proposedKeep = parsed.keep || [];
-                                proposedKept = fileCandidates.filter(c => !proposedEvict.some((e: any) => this.pathsMatch(e.path || e, c.path))).map(c => c.path);
-                            }
-                        } catch {}
-                    }
+                }
+
+                // Exploration enforcement: do not let it make a blind guess on Round 1 without discovery
+                if (proposedKept !== null && currentRound < minExplorationRounds && discoveryCount === 0) {
+                    conversation.push({ role: 'assistant', content: cleanResponse });
+                    conversation.push({
+                        role: 'user',
+                        content: `⚠️ DISCOVERY ROUND MANDATORY (Round ${currentRound} of ${maxRounds}):
+You made a preliminary selection without peeking at any file content or running discovery.
+Take an exploration round now using \`<peek_files path="..." lines="30" />\` or \`<grep pattern="..." />\` to verify file roles before finalizing.`
+                    });
+                    continue;
                 }
 
                 if (proposedKept !== null) {
@@ -1264,20 +1569,21 @@ Make your decision to reach the objective threshold of ${objectiveThresholdPerce
                     lastCandidateDecision = {
                         action: 'decide',
                         rationale: extractedWorkerAdvice || "Governor optimized context selection.",
+                        discoverySteps,
                         keep: proposedKeep,
                         evict: proposedEvict
                     };
 
                     if (proposedActiveTokens <= objectiveThreshold) {
                         Logger.info(`[Governor] Objective threshold verified in round ${currentRound}: ${proposedActiveTokens.toLocaleString()} <= ${objectiveThreshold.toLocaleString()} tokens.`);
-                        return { decision: lastCandidateDecision, workerAdvice: extractedWorkerAdvice, signatures: extractedSignatures };
+                        return { decision: lastCandidateDecision, workerAdvice: extractedWorkerAdvice, signatures: extractedSignatures, discoverySteps, addedFiles: newlyAddedFiles };
                     }
 
                     if (currentRound < maxRounds) {
                         const keptListDetailed = fileCandidates
                             .filter(c => proposedKept!.includes(c.path))
                             .sort((a, b) => b.tokens - a.tokens)
-                            .map(c => `- \`${c.path}\`: ~${c.tokens.toLocaleString()} tokens (${c.bytes ? (c.bytes > 1024 ? Math.round(c.bytes / 1024) + ' KB' : c.bytes + ' B') : 'unknown size'})`)
+                            .map(c => `- \`${c.path}\`: ~${c.tokens.toLocaleString()} tokens (${formatSize(c.bytes)})`)
                             .join('\n');
 
                         conversation.push({ role: 'assistant', content: cleanResponse });
@@ -1290,8 +1596,7 @@ Excess to eliminate: ~${(proposedActiveTokens - objectiveThreshold).toLocaleStri
 Here are the files currently kept active and their sizes:
 ${keptListDetailed}
 
-Please tighten your selection using <reveal_only> (keeping only files that should inevitably be modified) or <mute_only>.
-Remember you can summarize the muted files' function signatures and architecture in <signatures> so the worker still has enough context.`
+Please tighten your selection using <reveal_only> or <mute_only>.`
                         });
                         continue;
                     }
@@ -1301,8 +1606,8 @@ Remember you can summarize the muted files' function signatures and architecture
 
                 break;
             } catch (err: any) {
-                Logger.warn(`[Governor] LLM negotiation round ${currentRound} error: ${err.message}`);
-                break;
+                Logger.error(`[Governor] LLM negotiation round ${currentRound} error: ${err.message}`);
+                throw new Error(`Governor could not communicate with LLM model '${targetModel}': ${err.message || 'Connection failed'}. Ensure your LLM server is running.`);
             }
         }
 
@@ -1375,15 +1680,23 @@ Remember you can summarize the muted files' function signatures and architecture
     }
 
     private static buildCompactCatalog(candidates: ParsedFileCandidate[], currentMuted: string[] = []): string {
+        const formatSize = (b: number) => {
+            if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+            if (b >= 1024) return `${(b / 1024).toFixed(1)} KB`;
+            return `${b} B`;
+        };
+
         return candidates.map(c => {
             const isMuted = currentMuted.some(m => this.pathsMatch(m, c.path));
-            const statusTag = isMuted ? ' [M]' : ' [C]';
-            const shieldTag = c.isCurrentPromptFile ? ' [ADDED FOR CURRENT PROMPT]' : '';
-            const coreTag = c.isCoreOrInterface ? ' [INTERFACE/SCHEMA]' : '';
-            const symbolsStr = c.extractedSymbols.length > 0 ? `\n  Symbols: ${c.extractedSymbols.slice(0, 4).join(', ')}` : '';
+            const statusTag = isMuted ? ' [MUTED]' : ' [ACTIVE]';
+            const shieldTag = c.isCurrentPromptFile ? ' [CURRENT PROMPT]' : '';
+            const coreTag = c.isCoreOrInterface ? ' [CORE / INTERFACE]' : '';
+            const newTag = c.isNewlyAdded ? ' [NEWLY ADDED FROM DISK]' : '';
+            const sizeStr = `${formatSize(c.bytes)} (~${c.tokens.toLocaleString()} tok${c.linesCount > 0 ? `, ${c.linesCount} lines` : ''})`;
+            const symbolsStr = c.extractedSymbols.length > 0 ? `\n  Symbols: ${c.extractedSymbols.slice(0, 5).join(', ')}` : '';
             const keywordsStr = c.matchedKeywords.length > 0 ? `\n  Matches: ${c.matchedKeywords.slice(0, 5).join(', ')}` : '';
 
-            return `- File: \`${c.path}\`${statusTag} (~${c.tokens.toLocaleString()} tok)${shieldTag}${coreTag}${symbolsStr}${keywordsStr}`;
+            return `- File: \`${c.path}\`${statusTag}${newTag} (${sizeStr})${shieldTag}${coreTag}${symbolsStr}${keywordsStr}`;
         }).join('\n');
     }
 
@@ -1411,7 +1724,10 @@ Remember you can summarize the muted files' function signatures and architecture
             isCurrentPromptFile = true;
         }
 
-        const isCoreOrInterface = cleanPath.includes('core') || cleanPath.includes('types') || cleanPath.includes('interface') || cleanPath.includes('schema');
+        const isCoreOrInterface = cleanPath.includes('core') || cleanPath.includes('types') ||
+                                  cleanPath.includes('interface') || cleanPath.includes('schema') ||
+                                  cleanPath.includes('api') || cleanPath.includes('app.') ||
+                                  cleanPath.includes('main.') || cleanPath.includes('index.');
 
         const extractedSymbols: string[] = [];
         const symbolRegex = /(?:class|interface|type|function|def)\s+([a-zA-Z0-9_]+)/g;
@@ -1442,6 +1758,7 @@ Remember you can summarize the muted files' function signatures and architecture
             path: filePath,
             tokens,
             bytes: body.length,
+            linesCount: body.split('\n').length,
             isCurrentPromptFile,
             isCoreOrInterface,
             relevanceScore: score,

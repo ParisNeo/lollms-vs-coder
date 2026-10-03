@@ -28,6 +28,7 @@ export interface ContextResult {
   importedSkills: Skill[];
   diagrams?: { type: string; mermaid: string }[];
   isolatedTrees?: Record<string, string>;
+  governorReport?: string;
 }
 
 export class ContextManager {
@@ -387,6 +388,20 @@ private _cachedTreeString: string | null = null;
   }
   public async setGlobalBriefing(content: string) {
     await this.context.workspaceState.update('lollms_global_briefing', content);
+  }
+
+  public async getStructureGuide(): Promise<string> {
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (folders.length === 0) return "";
+    for (const folder of folders) {
+      try {
+        const fileUri = vscode.Uri.joinPath(folder.uri, '.lollms', 'structure.md');
+        const bytes = await vscode.workspace.fs.readFile(fileUri);
+        const text = Buffer.from(bytes).toString('utf8');
+        if (text.trim()) return text;
+      } catch {}
+    }
+    return "";
   }
 
   public async updateMissionBriefing(
@@ -1134,7 +1149,8 @@ private _cachedTreeString: string | null = null;
 
     const result: ContextResult = {
       text: '', projectName: '', images: [],
-      projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills: []
+      projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills: [],
+      governorReport: ''
     };
 
     const signal = options?.signal;
@@ -1501,6 +1517,7 @@ private _cachedTreeString: string | null = null;
     }
   }
 
+  result.governorReport = await this.getStructureGuide();
   this._lastContext = result;
   if (options?.discussionId) {
     this._lastContextByDiscussion.set(options.discussionId, result);

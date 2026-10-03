@@ -524,6 +524,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (message.projectTree && state.lastContextData) {
                     (state.lastContextData as any).projectTree = message.projectTree;
                 }
+                if (message.governorReport !== undefined && state.lastContextData) {
+                    state.lastContextData.governorReport = message.governorReport;
+                }
 
                 updateContext(
                     message.context, 
@@ -537,7 +540,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     message.mutedTools,
                     message.mutedSkills,
                     message.mutedDiagrams,
-                    message.projectTree
+                    message.projectTree,
+                    message.governorReport
                 );
                 updateBadges();
                 // Only schedule background sync if generation is not actively streaming
@@ -548,7 +552,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateContextDelta':
                 {
-                    const { action, files, skills, tools, briefing, selections, mutedFiles, mutedTools, mutedSkills, mutedDiagrams, projectTree, filePath, content } = message;
+                    const { action, files, skills, tools, briefing, selections, mutedFiles, mutedTools, mutedSkills, mutedDiagrams, projectTree, filePath, content, governorReport } = message;
 
                     if (action === 'sync_all') {
                         if (mutedFiles) state.mutedFiles = mutedFiles;
@@ -556,7 +560,6 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         if (mutedSkills) state.mutedSkills = mutedSkills;
                         if (mutedDiagrams) state.mutedDiagrams = mutedDiagrams;
 
-                        // Fast local sync preserving file descriptors with weights
                         state.lastContextData = {
                             context: "",
                             files: files || [],
@@ -569,7 +572,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             mutedDiagrams: mutedDiagrams || state.mutedDiagrams || [],
                             projectTree: projectTree || (state.lastContextData as any)?.projectTree || "",
                             briefing: briefing,
-                            selections: selections
+                            selections: selections,
+                            governorReport: governorReport !== undefined ? governorReport : state.lastContextData?.governorReport
                         };
 
                         if (!state.fileTokensMap) state.fileTokensMap = {};
@@ -653,6 +657,36 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'openGovernorFilterModal':
                 import('./ui.js').then(ui => ui.openGovernorFilterModal());
                 break;
+            case 'governorRoundProgress':
+                {
+                    const roundCountEl = document.getElementById('gov-round-count');
+                    if (roundCountEl) {
+                        roundCountEl.textContent = `Round ${message.round} / ${message.maxRounds}`;
+                        roundCountEl.style.color = 'var(--vscode-charts-orange)';
+                        roundCountEl.style.fontWeight = 'bold';
+                    }
+                    const stepInd = document.getElementById('gov-step-indicator');
+                    const stepTxt = document.getElementById('gov-step-text');
+                    if (stepInd && stepTxt) {
+                        stepInd.style.display = 'flex';
+                        stepTxt.textContent = message.status || `Round ${message.round}/${message.maxRounds}: Exploring codebase...`;
+                    }
+                }
+                break;
+            case 'governorStreamChunk':
+                {
+                    import('./ui.js').then(ui => {
+                        (ui as any).streamGovernorChunk(message.round, message.maxRounds, message.chunk, message.fullText, message.messageId);
+                    });
+                }
+                break;
+            case 'governorDiscoveryAction':
+                {
+                    import('./ui.js').then(ui => {
+                        (ui as any).appendGovernorDiscoveryStep(message.action);
+                    });
+                }
+                break;
             case 'governorFilterResult':
                 {
                     const runBtn = document.getElementById('governor-filter-run-btn') as HTMLButtonElement;
@@ -664,10 +698,25 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const stepInd = document.getElementById('gov-step-indicator');
                     if (stepInd) stepInd.style.display = 'none';
 
+                    const roundCountEl = document.getElementById('gov-round-count');
+                    if (roundCountEl) {
+                        const rUsed = message.roundsUsed || 1;
+                        const rMax = message.maxRounds || 20;
+                        roundCountEl.textContent = `Completed (${rUsed} round${rUsed === 1 ? '' : 's'})`;
+                        roundCountEl.style.color = 'var(--vscode-charts-green)';
+                        roundCountEl.style.fontWeight = 'normal';
+                    }
+
                     if (message.error) {
                         import('./ui.js').then(ui => {
-                            ui.appendGovernorMessage('assistant', `❌ Error during governor exploration: ${message.error}`);
+                            ui.appendGovernorMessage('assistant', `❌ **Connection Error**: ${message.error}\n\nPlease verify that your LLM server (Ollama, LoLLMs, etc.) is running and the selected model is loaded.`);
                         });
+                        const roundCountEl = document.getElementById('gov-round-count');
+                        if (roundCountEl) {
+                            roundCountEl.textContent = 'Server Offline';
+                            roundCountEl.style.color = 'var(--vscode-charts-red)';
+                            roundCountEl.style.fontWeight = 'bold';
+                        }
                         break;
                     }
 
@@ -675,6 +724,26 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (studioState) {
                         const newMuted = Array.isArray(message.mutedFiles) ? message.mutedFiles : [];
                         studioState.mutedSet = new Set(newMuted.map((m: string) => m.replace(/\\/g, '/').toLowerCase().trim()));
+
+                        // Register any newly added files into the studio candidate list
+                        if (Array.isArray(message.addedFiles)) {
+                            message.addedFiles.forEach((p: string) => {
+                                const norm = p.replace(/\\/g, '/');
+                                studioState.newAddedFiles?.add(norm.toLowerCase().trim());
+                                const exists = studioState.candidateFiles.some((cf: any) => cf.path.toLowerCase() === norm.toLowerCase());
+                                if (!exists) {
+                                    const fileName = norm.split('/').pop() || norm;
+                                    const dirName = norm.includes('/') ? norm.substring(0, norm.lastIndexOf('/')) : '';
+                                    studioState.candidateFiles.push({
+                                        path: norm,
+                                        fileName,
+                                        dirName,
+                                        tokens: 500,
+                                        bytes: 1800
+                                    });
+                                }
+                            });
+                        }
 
                         import('./ui.js').then(ui => {
                             ui.appendGovernorMessage('assistant', message.rationale || 'Context evaluation complete.', {

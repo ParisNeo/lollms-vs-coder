@@ -45,6 +45,7 @@ export class SettingsPanel {
     contextFileExceptions: [] as string[],
     language: 'auto',
     contextMaxDepth: 8,
+    contextGovernorMaxRounds: 20,
 
     connectionProfiles: [] as any[],
 
@@ -190,6 +191,7 @@ export class SettingsPanel {
     this._pendingConfig.contextFileExceptions = config.get<string[]>('contextFileExceptions') || [];
     this._pendingConfig.language = config.get<string>('language') || 'auto';
     this._pendingConfig.contextMaxDepth = config.get<number>('contextMaxDepth') || config.get<number>('context.maxDepth') || 8;
+    this._pendingConfig.contextGovernorMaxRounds = config.get<number>('contextGovernorMaxRounds') || 20;
     
     this._pendingConfig.connectionProfiles = config.get<any[]>('connectionProfiles') || [];
 
@@ -604,6 +606,7 @@ export class SettingsPanel {
                   ['commitMessagePersona', this._pendingConfig.commitMessagePersona],
                   ['contextFileExceptions', this._pendingConfig.contextFileExceptions],
                   ['language', this._pendingConfig.language],
+                  ['contextGovernorMaxRounds', this._pendingConfig.contextGovernorMaxRounds],
                   ['connectionProfiles', this._pendingConfig.connectionProfiles],
                   
                   // NEW PROFILES
@@ -1309,6 +1312,10 @@ export class SettingsPanel {
 
               <label for="maxImageSize">${t('config.maxImageSize.label', 'Max Image Size (px)')}</label>
               <input type="number" id="maxImageSize" value="${maxImageSize}" min="0" step="128" />
+              <label for="contextGovernorMaxRounds">Context Governor Maximum Negotiation & Scouting Rounds</label>
+              <input type="number" id="contextGovernorMaxRounds" value="${config.contextGovernorMaxRounds || 20}" min="15" max="50" />
+              <p class="help-text">Maximum exploratory and negotiation rounds (default 20, minimum 15) allowed for the Context Governor to explore code, peek at files, and optimize context.</p>
+
               <label for="contextMaxDepth">Maximum File Tree Depth before Truncation</label>
               <input type="number" id="contextMaxDepth" value="${contextMaxDepth}" min="1" max="100" />
               <label for="contextFileExceptions">${t('config.contextFileExceptions.label', 'Context File Exceptions')}</label>
@@ -1937,6 +1944,7 @@ export class SettingsPanel {
                 safeSet('explainCode', config.explainCode, true);
                 safeSet('failsafeContextSize', config.failsafeContextSize);
                 safeSet('preciseTokenization', config.preciseTokenization, true);
+                safeSet('contextGovernorMaxRounds', config.contextGovernorMaxRounds || 20);
                 safeSet('showOs', config.showOs, true);
                 safeSet('showIp', config.showIp, true);
                 safeSet('showShells', config.showShells, true);
@@ -2028,7 +2036,7 @@ export class SettingsPanel {
             }
             
             const bindTempUpdates = () => {
-                const numericKeys = ['requestTimeout', 'agentMaxRetries', 'maxImageSize', 'failsafeContextSize', 'contextMaxDepth', 'remoteServerPort', 'billingBudgetCap'];
+                const numericKeys = ['requestTimeout', 'agentMaxRetries', 'maxImageSize', 'failsafeContextSize', 'contextMaxDepth', 'contextGovernorMaxRounds', 'remoteServerPort', 'billingBudgetCap'];
                 const checkboxKeys = ['useLollmsExtensions', 'disableSsl', 'verifyAndCorrectCodeBlocks', 'autoUpdateChangelog', 'autoGenerateTitle', 'addPedagogicalInstruction', 'explainCode', 'showOs', 'showIp', 'showShells', 'agentShellExecution', 'agentFilesystemWrite', 'agentFilesystemRead', 'agentInternetAccess', 'agentScreenCapture', 'agentWebTesting', 'agentUseRLM', 'enableCodeInspector', 'moltbookEnable', 'remoteDiscordEnabled', 'remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions', 'billingEnabled', 'billingEnableCapping', 'preciseTokenization'];
                 const textKeys = ['apiKey', 'apiUrl', 'backendType', 'sslCertPath', 'language', 'codeInspectorPersona', 'chatPersona', 'agentPersona', 'commitMessagePersona', 'contextFileExceptions', 'searchProvider', 'searchApiKey', 'searchCx', 'clipboardInsertRole', 'companionEnableWebSearch', 'companionEnableArxivSearch', 'userInfoName', 'userInfoEmail', 'userInfoLicense', 'userInfoCodingStyle', 'mcpServers', 'deleteBranchAfterMerge', 'unstagedChangesBehavior', 'includeGitInfo', 'systemCustomInfo', 'moltbookApiKey', 'moltbookBotName', 'moltbookBotPurpose', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'];
 

@@ -1761,6 +1761,22 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     color: var(--vscode-charts-blue);
 }
 
+.gov-discovery-chip.structure {
+    border-color: rgba(46, 204, 113, 0.4);
+    color: var(--vscode-charts-green);
+}
+
+.gov-discovery-chip.add_file,
+.gov-discovery-chip.add_context {
+    border-color: rgba(0, 122, 204, 0.4);
+    color: var(--vscode-charts-blue);
+}
+
+.gov-discovery-chip.peek {
+    border-color: rgba(214, 122, 13, 0.4);
+    color: var(--vscode-charts-orange);
+}
+
 .gov-file-row {
     display: flex;
     align-items: center;

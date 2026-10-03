@@ -1213,7 +1213,7 @@ if (dom.sendButton) {
                 contextGovernorEnabled: (document.getElementById('cap-contextGovernorEnabled') as HTMLInputElement)?.checked ?? true,
                 contextGovernorThreshold: parseInt((document.getElementById('modal-governor-threshold') as HTMLInputElement)?.value || '95', 10),
                 contextGovernorTargetThreshold: parseInt((document.getElementById('modal-governor-target-threshold') as HTMLInputElement)?.value || '70', 10),
-                contextGovernorMaxRounds: parseInt((document.getElementById('modal-governor-max-rounds') as HTMLInputElement)?.value || '5', 10),
+                contextGovernorMaxRounds: parseInt((document.getElementById('modal-governor-max-rounds') as HTMLInputElement)?.value || '20', 10),
                 contextGovernorPermanentPruning: (document.getElementById('cap-contextGovernorPermanentPruning') as HTMLInputElement)?.checked ?? false,
                 contextGovernorCropHistory: (document.getElementById('cap-contextGovernorCropHistory') as HTMLInputElement)?.checked ?? true,
                 contextAggression: dom.contextAggressionSelect?.value || 'respect',
@@ -1989,6 +1989,13 @@ if (dom.sendButton) {
             runBtn.innerHTML = '<div class="spinner"></div>';
         }
 
+        const roundCountEl = document.getElementById('gov-round-count');
+        if (roundCountEl) {
+            roundCountEl.textContent = 'Connecting...';
+            roundCountEl.style.color = 'var(--vscode-charts-orange)';
+            roundCountEl.style.fontWeight = 'bold';
+        }
+
         const stepInd = document.getElementById('gov-step-indicator');
         const stepTxt = document.getElementById('gov-step-text');
         if (stepInd && stepTxt) {
@@ -2181,12 +2188,14 @@ if (dom.sendButton) {
             const studioState = (window as any).governorStudioState;
             const caller = studioState?.caller || state.governorCaller || 'chat';
             const finalMuted = Array.from(studioState?.mutedSet || []);
+            const finalAdded = Array.from(studioState?.newAddedFiles || []);
 
             govValidateBtn.innerHTML = '<div class="spinner"></div> Applying...';
 
             vscode.postMessage({
                 command: 'applyGovernorSelection',
                 mutedFiles: finalMuted,
+                addedFiles: finalAdded,
                 caller: caller
             });
 

@@ -1096,7 +1096,8 @@ ${originalFileContent}
                         mutedSkills: this._currentDiscussion?.mutedSkills || [],
                         mutedDiagrams: this._currentDiscussion?.mutedDiagrams || [],
                         briefing: this._currentDiscussion?.discussion_data_zone || "",
-                        selections: savedSelections
+                        selections: savedSelections,
+                        governorReport: cachedContext.governorReport || await this._contextManager.getStructureGuide()
                     });
                     this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
                 } else {
@@ -1609,19 +1610,21 @@ ${originalFileContent}
                             .filter(t => allEquippedNames.includes(t.name))
                             .map(t => ({ name: t.name, description: t.description }));
 
+                        const govReport = context.governorReport || await self._contextManager.getStructureGuide();
                         self._panel.webview.postMessage({ 
                             command: 'updateContextDelta', 
                             action: 'sync_all',
                             files: includedFiles,
                             projectTree: context.projectTree || '',
-                            skills: (currentSkills || []).map(s => ({ id: s.id, name: s.name, description: s.description })), // Lightweight descriptors
+                            skills: (currentSkills || []).map(s => ({ id: s.id, name: s.name, description: s.description })),
                             tools: equippedTools || [],
                             mutedFiles: self._currentDiscussion?.mutedFiles || [],
                             mutedTools: self._currentDiscussion?.mutedTools || [],
                             mutedSkills: self._currentDiscussion?.mutedSkills || [],
                             mutedDiagrams: self._currentDiscussion?.mutedDiagrams || [],
-                            briefing: self._currentDiscussion?.discussion_data_zone || "" ,
-                            selections: savedSelections || []
+                            briefing: self._currentDiscussion?.discussion_data_zone || "",
+                            selections: savedSelections || [],
+                            governorReport: govReport
                         });
                     }
                     self._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
@@ -3445,7 +3448,8 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                         this.updateGeneratingState();
                     }
                 },
-                onAddMessage: (msg) => this.addMessageToDiscussion(msg)
+                onAddMessage: (msg) => this.addMessageToDiscussion(msg),
+                onUpdateMessage: (messageId, newContent) => this.updateMessageContent(messageId, newContent)
             });
 
             if (!arbitrationResult) {
@@ -6600,6 +6604,33 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             onStatusUpdate: (status) => {
                                 this.processManager.updateDescription(govProcId, status);
                                 this.updateGeneratingState();
+                            },
+                            onRoundProgress: (progress) => {
+                                this.processManager.updateDescription(govProcId, progress.status);
+                                this.updateGeneratingState();
+                                webview.postMessage({
+                                    command: 'governorRoundProgress',
+                                    round: progress.round,
+                                    maxRounds: progress.maxRounds,
+                                    status: progress.status,
+                                    discoverySteps: progress.discoverySteps
+                                });
+                            },
+                            onStreamChunk: (data) => {
+                                webview.postMessage({
+                                    command: 'governorStreamChunk',
+                                    round: data.round,
+                                    maxRounds: data.maxRounds,
+                                    chunk: data.chunk,
+                                    fullText: data.fullText,
+                                    messageId: data.messageId
+                                });
+                            },
+                            onDiscoveryAction: (action) => {
+                                webview.postMessage({
+                                    command: 'governorDiscoveryAction',
+                                    action
+                                });
                             }
                         });
 
@@ -6618,12 +6649,15 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             command: 'governorFilterResult',
                             keptFiles: result.keptFiles,
                             mutedFiles: result.mutedFiles,
+                            addedFiles: result.addedFiles || [],
                             rationale: result.rationale,
                             advice: result.advice,
                             signatures: result.signatures,
                             discoverySteps: result.discoverySteps,
                             totalTokens: result.totalTokens,
                             liberatedTokens: result.liberatedTokens,
+                            roundsUsed: result.roundsUsed,
+                            maxRounds: result.maxRounds,
                             presets: updatedPresets,
                             presetName,
                             caller: caller || 'chat',
@@ -6635,7 +6669,8 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         webview.postMessage({
                             command: 'governorFilterResult',
                             error: err.message,
-                            caller: caller || 'chat'
+                            caller: caller || 'chat',
+                            prompt: filterPrompt
                         });
                     } finally {
                         this.processManager.unregister(govProcId);
@@ -6646,12 +6681,21 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
 
             case 'applyGovernorSelection':
                 {
-                    const { mutedFiles, caller, presetName } = message;
+                    const { mutedFiles, addedFiles, caller, presetName } = message;
                     if (presetName && presetName.trim()) {
                         const cleanName = presetName.trim();
                         const currentPresets = this._discussionManager.context.workspaceState.get<Record<string, string[]>>('lollms_saved_mute_patterns') || {};
                         currentPresets[cleanName] = mutedFiles || [];
                         await this._discussionManager.context.workspaceState.update('lollms_saved_mute_patterns', currentPresets);
+                    }
+
+                    // If Governor added unincluded files from workspace, include them into context provider now
+                    if (Array.isArray(addedFiles) && addedFiles.length > 0 && this._contextManager) {
+                        try {
+                            await this._contextManager.getContextStateProvider()?.addFilesToContext(addedFiles);
+                        } catch (addErr) {
+                            Logger.warn(`Governor failed to add files to provider: ${addErr}`);
+                        }
                     }
 
                     if (caller === 'wizard') {
@@ -6665,7 +6709,9 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             await this._discussionManager.saveDiscussion(this._currentDiscussion);
                         }
                         this.updateContextAndTokens({ isBackgroundSync: false });
-                        vscode.window.showInformationMessage(`⚖️ Context Governor: Selection applied (${this._currentDiscussion.mutedFiles.length} files muted).`);
+                        const addedCount = Array.isArray(addedFiles) ? addedFiles.length : 0;
+                        const addedInfo = addedCount > 0 ? ` (+${addedCount} files added to context)` : '';
+                        vscode.window.showInformationMessage(`⚖️ Context Governor: Selection applied (${this._currentDiscussion.mutedFiles.length} files muted)${addedInfo}.`);
                     }
                 }
                 break;

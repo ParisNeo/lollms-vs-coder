@@ -2177,7 +2177,7 @@ export function updateBadges() {
             interTokenTimeout: 10000,
             contextGovernorThreshold: 95,
             contextGovernorTargetThreshold: 70,
-            contextGovernorMaxRounds: 5
+            contextGovernorMaxRounds: 20
         };
     }
 
@@ -3535,6 +3535,7 @@ export const governorStudioState = {
     caller: 'chat' as 'chat' | 'wizard',
     candidateFiles: [] as GovernorCandidateFile[],
     mutedSet: new Set<string>(),
+    newAddedFiles: new Set<string>(),
     history: [] as { role: 'user' | 'assistant'; text: string; discoverySteps?: any[]; advice?: string; rationale?: string }[],
     searchFilter: '',
     initialPrompt: ''
@@ -3569,19 +3570,22 @@ export function renderGovernorFileList() {
         if (bytes >= 1024 * 1024) formattedBytes = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
         else if (bytes >= 1024) formattedBytes = `${(bytes / 1024).toFixed(1)} KB`;
 
+        const isAdded = governorStudioState.newAddedFiles?.has(f.path.toLowerCase().trim());
+        const addedTag = isAdded ? '<span style="font-size: 9px; background: rgba(0, 122, 204, 0.25); color: var(--vscode-charts-blue); font-weight: bold; padding: 1px 4px; border-radius: 3px; margin-right: 4px;">ADDED</span>' : '';
+
         return `
         <div class="gov-file-row ${isMuted ? 'is-muted' : 'is-active'}" data-path="${f.path}">
             <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;">
                 <i class="codicon ${icon}" style="color: ${color}; flex-shrink: 0; font-size: 13px;"></i>
                 <div style="min-width: 0; flex: 1;">
-                    <div class="gov-file-title" style="font-weight: 600; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f.path}">${f.fileName}</div>
+                    <div class="gov-file-title" style="font-weight: 600; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f.path}">${addedTag}${f.fileName}</div>
                     ${f.dirName ? `<div style="font-size: 9px; opacity: 0.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${f.dirName}</div>` : ''}
                 </div>
             </div>
             <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
                 <span class="file-token-badge ${isMuted ? 'weight-muted' : 'weight-light'}" title="Size: ${bytes.toLocaleString()} bytes">${isMuted ? `${formattedBytes} [MUTED]` : `${formattedBytes} (~${tokStr} tok)`}</span>
                 <button type="button" class="code-action-btn secondary-btn gov-row-toggle-btn" data-path="${f.path}" style="height: 20px; font-size: 9px; padding: 0 6px;">
-                    ${isMuted ? 'Reveal' : 'Mute'}
+                    ${isMuted ? 'Reveal (Edit)' : 'Mute (Reference)'}
                 </button>
             </div>
         </div>`;
@@ -3619,6 +3623,101 @@ export function renderGovernorFileList() {
 }
 (window as any).renderGovernorFileList = renderGovernorFileList;
 
+export function streamGovernorChunk(round: number, maxRounds: number, chunk: string, fullText: string, messageId: string) {
+    const container = document.getElementById('gov-chat-messages');
+    if (!container) return;
+
+    const roundCountEl = document.getElementById('gov-round-count');
+    if (roundCountEl) {
+        roundCountEl.textContent = `Round ${round} / ${maxRounds}`;
+        roundCountEl.style.color = 'var(--vscode-charts-orange)';
+        roundCountEl.style.fontWeight = 'bold';
+    }
+
+    let bubble = document.getElementById(`gov-bubble-${messageId}`) as HTMLElement;
+    if (!bubble) {
+        bubble = document.createElement('div');
+        bubble.id = `gov-bubble-${messageId}`;
+        bubble.className = 'gov-chat-bubble governor';
+        bubble.innerHTML = `
+            <div class="gov-bubble-header">
+                <span style="color: var(--vscode-charts-orange); display: flex; align-items: center; gap: 4px;">
+                    <i class="codicon codicon-law"></i> Context Governor (Round ${round}/${maxRounds})
+                </span>
+                <span class="gov-live-spinner"><span class="spinner" style="width:10px; height:10px; border-width:1.5px; margin-right:4px;"></span> streaming...</span>
+            </div>
+            <div class="gov-bubble-stream-content markdown-body" style="font-size: 11px; line-height: 1.45;"></div>
+        `;
+        container.appendChild(bubble);
+    }
+
+    const contentArea = bubble.querySelector('.gov-bubble-stream-content') as HTMLElement;
+    if (contentArea) {
+        const { processThinkTags } = require('./messageRenderer.js');
+        const thinkResult = processThinkTags(fullText);
+        let htmlOut = "";
+
+        if (thinkResult.thoughts.length > 0) {
+            htmlOut += thinkResult.thoughts.map((t: any) => `
+                <div class="plan-scratchpad" style="margin: 4px 0 8px 0; border-left: 3px solid var(--thinking-color);">
+                    <details open>
+                        <summary class="scratchpad-header" style="color: var(--thinking-color); font-size: 10px; font-weight: bold;">
+                            <span class="spinner" style="width:9px; height:9px; border-width:1.5px; margin-right:4px;"></span> Thinking...
+                        </summary>
+                        <div class="scratchpad-content markdown-body" style="padding: 6px 10px; font-size: 10.5px; opacity: 0.9; max-height: 180px; overflow-y: auto;">
+                            ${DOMPurify.sanitize((window as any).marked.parse(t.content || 'Thinking...'))}
+                        </div>
+                    </details>
+                </div>
+            `).join('');
+        }
+
+        const remainingText = thinkResult.processedContent;
+        if (remainingText.trim()) {
+            htmlOut += DOMPurify.sanitize((window as any).marked.parse(remainingText));
+        }
+
+        contentArea.innerHTML = htmlOut || '<div class="spinner" style="width:10px; height:10px; border-width:1.5px;"></div>';
+    }
+
+    container.scrollTop = container.scrollHeight;
+}
+(window as any).streamGovernorChunk = streamGovernorChunk;
+
+export function appendGovernorDiscoveryStep(action: { type: string; label: string; detail?: string }) {
+    const container = document.getElementById('gov-chat-messages');
+    if (!container) return;
+
+    let stepsContainer = container.querySelector('.gov-live-discovery-group') as HTMLElement;
+    if (!stepsContainer) {
+        stepsContainer = document.createElement('div');
+        stepsContainer.className = 'gov-live-discovery-group';
+        stepsContainer.style.cssText = "display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; padding: 6px 10px; background: rgba(0,0,0,0.18); border-radius: 6px; border: 1px dashed var(--vscode-widget-border);";
+        stepsContainer.innerHTML = `
+            <div style="font-size: 9px; font-weight: 800; text-transform: uppercase; color: var(--vscode-charts-orange); opacity: 0.9; display: flex; align-items: center; gap: 4px;">
+                <i class="codicon codicon-sparkle"></i> Autonomous Discovery Steps
+            </div>
+            <div class="gov-discovery-chips-container" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;"></div>
+        `;
+        container.appendChild(stepsContainer);
+    }
+
+    const chipsArea = stepsContainer.querySelector('.gov-discovery-chips-container');
+    if (chipsArea) {
+        const chip = document.createElement('div');
+        chip.className = `gov-discovery-chip ${action.type || 'thought'}`;
+        chip.innerHTML = `
+            <i class="codicon ${action.type === 'grep' ? 'codicon-search' : (action.type === 'sparql' ? 'codicon-graph' : (action.type === 'peek' ? 'codicon-eye' : (action.type === 'structure' ? 'codicon-book' : 'codicon-symbol-misc')))}"></i>
+            <span>${sanitizer.sanitize(action.label || 'Step')}</span>
+            ${action.detail ? `<span style="opacity:0.6;">(${sanitizer.sanitize(action.detail)})</span>` : ''}
+        `;
+        chipsArea.appendChild(chip);
+    }
+
+    container.scrollTop = container.scrollHeight;
+}
+(window as any).appendGovernorDiscoveryStep = appendGovernorDiscoveryStep;
+
 export function appendGovernorMessage(role: 'user' | 'assistant', text: string, data?: { discoverySteps?: any[]; advice?: string; signatures?: string; rationale?: string }) {
     const container = document.getElementById('gov-chat-messages');
     if (!container) return;
@@ -3640,7 +3739,7 @@ export function appendGovernorMessage(role: 'user' | 'assistant', text: string, 
         if (steps.length > 0) {
             const items = steps.map((s: any) => `
                 <div class="gov-discovery-chip ${s.type || 'thought'}">
-                    <i class="codicon ${s.type === 'grep' ? 'codicon-search' : (s.type === 'sparql' ? 'codicon-graph' : (s.type === 'peek' ? 'codicon-eye' : 'codicon-symbol-misc'))}"></i>
+                    <i class="codicon ${s.type === 'grep' ? 'codicon-search' : (s.type === 'sparql' ? 'codicon-graph' : (s.type === 'peek' ? 'codicon-eye' : (s.type === 'structure' ? 'codicon-book' : 'codicon-symbol-misc')))}"></i>
                     <span>${sanitizer.sanitize(s.label || s.query || 'Step')}</span>
                     ${s.detail ? `<span style="opacity:0.6;">(${sanitizer.sanitize(s.detail)})</span>` : ''}
                 </div>
@@ -3725,19 +3824,28 @@ export function openGovernorFilterModal(initialPrompt?: string) {
         : (state.mutedFiles || state.lastContextData?.mutedFiles || []);
 
     governorStudioState.mutedSet = new Set(initialMuted.map(m => m.replace(/\\/g, '/').toLowerCase().trim()));
+    governorStudioState.newAddedFiles = new Set();
 
     // Clear chat stream and render welcome
     const chatContainer = document.getElementById('gov-chat-messages');
     if (chatContainer) {
         chatContainer.innerHTML = '';
-        const initialText = initialPrompt ? `Working on task: "${initialPrompt}". Analyzing files...` : `Hello! I am the **Context Governor**. Describe your technical objective, and I will scout the project, evaluate dependencies, and isolate essential files while muting the rest.
+        const initialText = initialPrompt ? `Working on task: "${initialPrompt}". Analyzing files and token budget...` : `Hello! I am the **Context Governor**. Describe your technical objective, and I will scout the project, evaluate dependencies, and enforce the **Dual-Tier Context Strategy**:
 
-**My Autonomous Tools & Capabilities:**
-- 🔍 \`Grep Search\`: \`<grep pattern="..." path="..." />\` — searches symbols and code on disk
-- 📊 \`SPARQL Query\`: \`<sparql query="..." />\` — queries class hierarchy, calls, and imports
-- 📄 \`Peek Files\`: \`<peek_files path="..." lines="30" />\` — inspects function signatures and declarations
-- 👁️ \`Selection\`: \`<reveal_only>\` (reveal only essential files) or \`<mute_only>\` (mute specific files)
-- 📝 \`Signatures\`: \`<signatures>\` — summarizes function signatures and architecture of muted files`;
+**Dual-Tier Strategy:**
+- 🛠️ **Files to Edit**: Kept active with full content loaded ([C])
+- 📖 **Reference-Only Files**: Summarized into the Structure Report (\`.lollms/structure.md\`) and muted ([M], 0 tokens)
+
+**My Autonomous Tools:**
+- ➕ \`Add Files\`: \`<add_files_to_context>\\npath/to/file.ext\\n</add_files_to_context>
+
+\`
+- 🔍 \`Grep Search\`: \`<grep pattern="..." />\`
+- 📊 \`SPARQL Query\`: \`<sparql query="..." />\`
+- 📄 \`Peek Files\`: \`<peek_files path="..." lines="30" />\`
+- 🏛️ \`Structure Guide\`: \`<structure>...</structure>\`
+- 👁️ \`Selection\`: \`<reveal_only>\` or \`<mute_only>\``;
+
         appendGovernorMessage('assistant', initialText, {
             rationale: "Candidate files are loaded on the right. You can prompt or reprompt anytime, or manually toggle files directly."
         });
@@ -3750,6 +3858,13 @@ export function openGovernorFilterModal(initialPrompt?: string) {
 
     const stepIndicator = document.getElementById('gov-step-indicator');
     if (stepIndicator) stepIndicator.style.display = 'none';
+
+    const roundCountEl = document.getElementById('gov-round-count');
+    if (roundCountEl) {
+        roundCountEl.textContent = 'Ready';
+        roundCountEl.style.color = '';
+        roundCountEl.style.fontWeight = '';
+    }
 
     renderGovernorFileList();
 

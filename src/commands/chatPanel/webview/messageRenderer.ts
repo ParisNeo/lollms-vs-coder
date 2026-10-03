@@ -3807,14 +3807,44 @@ export class ContextPresenter {
         isExpanded: boolean = false,
         mutedTools: string[] = [],
         mutedDiagrams: string[] = [],
-        projectTreeText: string = ""
+        projectTreeText: string = "",
+        governorReportText: string = ""
     ): string {
         const expandIcon = isExpanded ? 'codicon-chevron-up' : 'codicon-chevron-down';
         const expandText = isExpanded ? 'Collapse' : 'Expand';
         const cleanTree = (projectTreeText || "").trim();
-        const treeDisplayHtml = cleanTree
-            ? `<pre style="margin: 0; padding: 10px 12px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; max-height: 280px; overflow: auto; line-height: 1.45; white-space: pre;">${DOMPurify.sanitize(cleanTree.replace(/^```text\r?\n|^```\r?\n|```$/g, ''))}</pre>`
-            : '<div class="empty-context-msg">Project tree manifest is synchronizing with workspace... Click ↻ on the token bar to force recalculate.</div>';
+        const cleanReport = (governorReportText || "").trim();
+
+        const rawTreeHtml = cleanTree
+            ? `<details style="margin-top: 8px; border-top: 1px dashed var(--vscode-widget-border); padding-top: 6px;">
+                 <summary style="font-size: 10px; opacity: 0.75; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+                     <i class="codicon codicon-list-tree"></i> <span>View File Manifest Tree</span>
+                 </summary>
+                 <pre style="margin: 6px 0 0 0; padding: 8px 10px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-family: var(--vscode-editor-font-family, monospace); font-size: 10px; max-height: 180px; overflow: auto; line-height: 1.4; white-space: pre;">${DOMPurify.sanitize(cleanTree.replace(/^```text\r?\n|^```\r?\n|```$/g, ''))}</pre>
+               </details>`
+            : '';
+
+        let governorReportDisplayHtml = "";
+        if (cleanReport) {
+            governorReportDisplayHtml = `
+                <div class="governor-report-content markdown-body" style="padding: 10px 14px; font-size: 12px; line-height: 1.5; max-height: 320px; overflow-y: auto; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px;">
+                    ${DOMPurify.sanitize((marked as any).parse(cleanReport))}
+                </div>
+                ${rawTreeHtml}
+            `;
+        } else {
+            governorReportDisplayHtml = `
+                <div class="empty-context-msg" style="padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+                    <span>No Governor findings report recorded yet (<code>.lollms/structure.md</code>).</span>
+                    <div style="display: flex; gap: 8px;">
+                        <button id="hud-launch-governor-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; width: auto; border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);">
+                            <i class="codicon codicon-law"></i> Generate Findings with Context Governor
+                        </button>
+                    </div>
+                </div>
+                ${rawTreeHtml}
+            `;
+        }
 
         return `
         <div class="context-message ${themeClass}" id="fused-context-dashboard" data-expanded="${isExpanded ? 'true' : 'false'}">
@@ -3906,20 +3936,21 @@ export class ContextPresenter {
                 </div>
 
                 <div class="hud-scroll-container">
-                    <details class="info-collapsible tree-details" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-yellow);">
+                    <details class="info-collapsible tree-details" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-orange);">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
                                 <span style="font-weight: 700; display: flex; align-items: center; gap: 6px;">
-                                    <i class="codicon codicon-list-tree" style="color: var(--vscode-charts-yellow);"></i>
-                                    <span>Project Structure (File Manifest)</span>
+                                    <i class="codicon codicon-law" style="color: var(--vscode-charts-orange);"></i>
+                                    <span>Governor's Report & Findings (.lollms/structure.md)</span>
                                 </span>
                                 <div style="display: flex; gap: 6px; align-items: center;">
-                                    <button id="hud-copy-tree-btn" class="icon-btn" title="Copy File Structure Tree to Clipboard" style="color: var(--vscode-charts-yellow);"><i class="codicon codicon-copy"></i></button>
+                                    <button id="hud-edit-gov-report-btn" class="icon-btn" title="Open .lollms/structure.md in Editor" style="color: var(--vscode-charts-orange);"><i class="codicon codicon-edit"></i></button>
+                                    <button id="hud-copy-gov-report-btn" class="icon-btn" title="Copy Governor Report to Clipboard"><i class="codicon codicon-copy"></i></button>
                                 </div>
                             </div>
                         </summary>
                         <div class="collapsible-content hud-tree-view-wrapper" style="padding-top: 6px;">
-                            ${treeDisplayHtml}
+                            ${governorReportDisplayHtml}
                         </div>
                     </details>
 
@@ -4891,6 +4922,41 @@ export class ContextBinder {
             };
         }
 
+        // Bind Governor Report Actions
+        const copyGovReportBtn = dashboard.querySelector('#hud-copy-gov-report-btn') as HTMLElement;
+        if (copyGovReportBtn) {
+            copyGovReportBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const reportText = (state.lastContextData as any)?.governorReport || "";
+                if (reportText) {
+                    vscode.postMessage({ command: 'copyToClipboard', text: reportText });
+                    copyGovReportBtn.innerHTML = '<i class="codicon codicon-check"></i>';
+                    setTimeout(() => { copyGovReportBtn.innerHTML = '<i class="codicon codicon-copy"></i>'; }, 2000);
+                } else {
+                    vscode.postMessage({ command: 'showWarning', message: 'No Governor report exists yet (.lollms/structure.md).' });
+                }
+            };
+        }
+
+        const editGovReportBtn = dashboard.querySelector('#hud-edit-gov-report-btn') as HTMLElement;
+        if (editGovReportBtn) {
+            editGovReportBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'openFile', path: '.lollms/structure.md' });
+            };
+        }
+
+        const launchGovBtn = dashboard.querySelector('#hud-launch-governor-btn') as HTMLElement;
+        if (launchGovBtn) {
+            launchGovBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                import('./ui.js').then(ui => ui.openGovernorFilterModal('Analyze the architecture and working of the project'));
+            };
+        }
+
         // Bind matrix details
         const matrixBtn = dashboard.querySelector('#hud-matrix-btn');
         if (matrixBtn) {
@@ -4922,7 +4988,8 @@ export function updateContext(
     mutedTools?: string[],
     mutedSkills?: string[],
     mutedDiagrams?: string[],
-    projectTree?: string
+    projectTree?: string,
+    governorReport?: string
 ) {
     if(!dom.contextContainer) return;
 
@@ -4982,7 +5049,8 @@ export function updateContext(
         mutedDiagrams: mutedDiagrams !== undefined ? mutedDiagrams : (state.mutedDiagrams || []),
         projectTree: projectTree !== undefined ? projectTree : ((prev as any).projectTree || ""),
         briefing: briefing !== undefined ? briefing : (prev.briefing || ""),
-        selections: selections !== undefined ? selections : ((prev as any).selections || [])
+        selections: selections !== undefined ? selections : ((prev as any).selections || []),
+        governorReport: governorReport !== undefined ? governorReport : (prev.governorReport || "")
     };
 
     const finalFiles = state.lastContextData.files || [];
@@ -5027,6 +5095,7 @@ export function updateContext(
         const themeClass = isAgentActive ? 'agent-mode-bubble' : 'standard-mode-bubble';
 
         const rawTree = (state.lastContextData as any)?.projectTree || "";
+        const rawGovReport = (state.lastContextData as any)?.governorReport || "";
 
         // Update outer HUD presentation content decoupled from binds
         dom.contextContainer.innerHTML = ContextPresenter.getDashboardHtml(
@@ -5045,7 +5114,8 @@ export function updateContext(
             state.isHudExpanded,
             currentMutedTools,
             currentMutedDiagrams,
-            rawTree
+            rawTree,
+            rawGovReport
         );
 
         const dashboard = document.getElementById('fused-context-dashboard');

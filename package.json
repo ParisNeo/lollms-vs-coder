@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.47",
+  "version": "1.0.51",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -295,6 +295,11 @@
         "command": "lollms-vs-coder.newDiscussionWithSameContext",
         "title": "Lollms: New Discussion with Same Context & Muted Files",
         "icon": "$(repo-forked)"
+      },
+      {
+        "command": "lollms-vs-coder.forkAndCompressDiscussion",
+        "title": "Lollms: Fork and Compress Discussion",
+        "icon": "$(git-pull-request)"
       },
       {
         "command": "lollms-vs-coder.deleteDiscussion",
@@ -1339,6 +1344,11 @@
           "default": "You are an expert AI assistant that writes conventional git commit messages.",
           "description": "%config.commitMessagePersona.description%"
         },
+        "lollmsVsCoder.modelVisionOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Manual overrides to configure whether models support vision and multimodal image inputs (true = Vision enabled, false = Text-only). Useful for models or server bindings that do not report vision capabilities."
+        },
         "lollmsVsCoder.nonVisionModels": {
           "type": "array",
           "default": [
@@ -2118,9 +2128,14 @@
           "group": "inline@3"
         },
         {
-          "command": "lollms-vs-coder.deleteDiscussion",
+          "command": "lollms-vs-coder.forkAndCompressDiscussion",
           "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
           "group": "inline@4"
+        },
+        {
+          "command": "lollms-vs-coder.deleteDiscussion",
+          "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
+          "group": "inline@5"
         },
         {
           "command": "lollms-vs-coder.cancelProcess",

@@ -130,7 +130,11 @@ export class SettingsPanel {
     billingEnabled: true,
     billingEnableCapping: false,
     billingBudgetCap: 10.00,
-    billingRates: [] as any[]
+    billingRates: [] as any[],
+
+    // Model Vision Overrides
+    modelVisionOverrides: {} as Record<string, boolean>,
+    autoSuppressImagesForNonVisionModels: true
   };
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, processManager: ProcessManager, personalityManager: PersonalityManager) {
@@ -265,6 +269,10 @@ export class SettingsPanel {
     this._pendingConfig.billingEnableCapping = config.get<boolean>('billing.enableCapping') ?? false;
     this._pendingConfig.billingBudgetCap = config.get<number>('billing.budgetCap') ?? 10.00;
     this._pendingConfig.billingRates = config.get<any[]>('billing.rates') || [];
+
+    // Vision Support Settings
+    this._pendingConfig.modelVisionOverrides = config.get<Record<string, boolean>>('modelVisionOverrides') || {};
+    this._pendingConfig.autoSuppressImagesForNonVisionModels = config.get<boolean>('autoSuppressImagesForNonVisionModels') ?? true;
 
     // Load Remote Configuration
     this._pendingConfig.remoteServerPort = config.get<number>('remote.server.port') || 3000;
@@ -668,7 +676,9 @@ export class SettingsPanel {
                   ['billing.enableCapping', this._pendingConfig.billingEnableCapping],
                   ['billing.budgetCap', this._pendingConfig.billingBudgetCap],
                   ['billing.rates', this._pendingConfig.billingRates],
-                  ['developer.debugTools', this._pendingConfig.developerDebugTools]
+                  ['developer.debugTools', this._pendingConfig.developerDebugTools],
+                  ['modelVisionOverrides', this._pendingConfig.modelVisionOverrides],
+                  ['autoSuppressImagesForNonVisionModels', this._pendingConfig.autoSuppressImagesForNonVisionModels]
                 ];
 
                 for (const [key, value] of updates) {
@@ -730,7 +740,8 @@ export class SettingsPanel {
                         'remote.server.port', 'remote.discord.enabled', 'remote.discord.token',
                         'remote.slack.enabled', 'remote.slack.token', 'remote.slack.signingSecret',
                         'remote.allowedUsers', 'remote.adminUsers', 'remote.allowedChannels',
-                        'responseProfiles', 'defaultResponseProfileId'
+                        'responseProfiles', 'defaultResponseProfileId',
+                        'modelVisionOverrides', 'autoSuppressImagesForNonVisionModels'
                     ];
                     
                     try {
@@ -1022,6 +1033,7 @@ export class SettingsPanel {
             <div class="tabs">
               <button class="tab-link active" onclick="openTab(event, 'TabServer')">🔌 Server & Binding</button>
               <button class="tab-link" onclick="openTab(event, 'TabModels')">🤖 Models & Assignments</button>
+              <button class="tab-link" onclick="openTab(event, 'TabVision')">👁️ Vision Support</button>
               <button class="tab-link" onclick="openTab(event, 'TabGeneral')">⚡ General</button>
               <button class="tab-link" onclick="openTab(event, 'TabContext')">🧠 Context</button>
               <button class="tab-link" onclick="openTab(event, 'TabAgent')">🛠️ Agent & Tools</button>
@@ -1234,6 +1246,71 @@ export class SettingsPanel {
 
                     <label>Architecture Graph & SPARQL Model</label>
                     <select id="graphModelSelect" class="model-dropdown"></select>
+                </div>
+            </div>
+
+            <!-- TAB: MODEL VISION CAPABILITIES & OVERRIDES -->
+            <div id="TabVision" class="tab-content">
+                <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <h2 style="margin:0; border:none; padding:0;">👁️ Model Vision & Multimodal Capabilities</h2>
+                    <button id="addCustomVisionOverrideBtn" type="button" class="secondary-button" style="margin:0;">
+                        <i class="codicon codicon-add"></i> Add Custom Model Rule
+                    </button>
+                </div>
+                <p class="help-text">Some server bindings (Ollama, local proxies, custom OpenAI-compatible endpoints) do not report whether a model supports vision/images. Configure manual overrides below to explicitly mark models as Vision-capable (👁️) or Text-only (🚫). Overrides immediately reflect in the HUD and prevent 400/422 API errors.</p>
+
+                <div class="checkbox-container" style="margin: 14px 0 16px 0; padding: 10px 14px; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 6px; border: 1px solid var(--vscode-widget-border);">
+                    <input type="checkbox" id="autoSuppressImagesForNonVisionModels">
+                    <label for="autoSuppressImagesForNonVisionModels"><strong>Auto-Suppress Images for Non-Vision Models:</strong> Automatically omit image payloads when sending prompts to models marked as non-vision, avoiding 400/422 API errors.</label>
+                </div>
+
+                <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 12px;">
+                    <div style="display: flex; align-items: center; gap: 6px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 3px 8px; flex: 1;">
+                        <i class="codicon codicon-search" style="opacity: 0.6; font-size: 12px;"></i>
+                        <input type="text" id="visionSearchInput" placeholder="Filter models by ID or server..." style="border: none; background: transparent; outline: none; padding: 2px 4px; font-size: 12px; width: 100%;">
+                    </div>
+                    <button type="button" id="refreshVisionModelsBtn" class="secondary-button" title="Refresh list from active server bindings">
+                        <i class="codicon codicon-refresh"></i> Refresh
+                    </button>
+                </div>
+
+                <div style="max-height: 480px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); border-radius: 6px;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                        <thead>
+                            <tr style="background: var(--vscode-sideBarSectionHeader-background); border-bottom: 2px solid var(--vscode-widget-border); text-align: left;">
+                                <th style="padding: 8px 12px;">Model ID</th>
+                                <th style="padding: 8px 12px; width: 130px;">Server</th>
+                                <th style="padding: 8px 12px; width: 150px;">Auto-Detection</th>
+                                <th style="padding: 8px 12px; width: 190px;">Manual Vision Setting</th>
+                                <th style="padding: 8px 12px; width: 50px; text-align: center;">Reset</th>
+                            </tr>
+                        </thead>
+                        <tbody id="visionOverridesTableBody">
+                            <!-- Populated dynamically by JS -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Custom Override Inline Modal / Prompt -->
+                <div id="customVisionModal" style="display:none; margin-top: 14px; padding: 14px; background: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-focusBorder); border-radius: 6px;">
+                    <div style="font-weight: bold; margin-bottom: 8px; color: var(--vscode-textLink-foreground);">Add Custom Model Vision Rule</div>
+                    <div class="grid-2" style="margin-bottom: 8px;">
+                        <div>
+                            <label for="customVisionModelInput" style="margin: 0 0 4px 0;">Model Name / Pattern (e.g. 'my-custom-llava')</label>
+                            <input type="text" id="customVisionModelInput" placeholder="Model ID or name pattern">
+                        </div>
+                        <div>
+                            <label for="customVisionSettingSelect" style="margin: 0 0 4px 0;">Vision Capability</label>
+                            <select id="customVisionSettingSelect">
+                                <option value="true">👁️ Vision Supported (Enabled)</option>
+                                <option value="false">🚫 Text Only (No Vision)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: flex-end; gap: 8px;">
+                        <button type="button" id="cancelCustomVisionBtn" class="secondary-button">Cancel</button>
+                        <button type="button" id="saveCustomVisionBtn" class="primary">Add Rule</button>
+                    </div>
                 </div>
             </div>
 
@@ -1682,6 +1759,7 @@ export class SettingsPanel {
                 }
                 if(evt) evt.currentTarget.className += " active";
                 if (tabName === 'TabLog') vscode.postMessage({ command: 'requestLog' });
+                if (tabName === 'TabVision') renderVisionTable();
                 if (tabName === 'TabModels' && loadedModels.length === 0) {
                     refreshModelsList(false);
                 }
@@ -1986,6 +2064,7 @@ export class SettingsPanel {
                 safeSet('remoteSlackToken', config.remoteSlackToken);
                 safeSet('remoteSlackSigningSecret', config.remoteSlackSigningSecret);
                 safeSet('developerDebugTools', config.developerDebugTools, true);
+                safeSet('autoSuppressImagesForNonVisionModels', config.autoSuppressImagesForNonVisionModels, true);
 
                 // Billing Initializers
                 safeSet('billingEnabled', config.billingEnabled, true);
@@ -2017,6 +2096,7 @@ export class SettingsPanel {
                 renderProfiles();
                 renderBindingsList();
                 renderMcpServers();
+                renderVisionTable();
                 updatePersonaSelects();
                 updateBindingUi();
                 refreshModelsList(false);
@@ -2035,9 +2115,132 @@ export class SettingsPanel {
                 bind('summarizationModelSelect', 'summarizationModelName');
             }
             
+            function detectVisionSupport(modelId) {
+                if (!modelId) return false;
+                const lower = modelId.toLowerCase();
+                const raw = lower.includes('::') ? lower.split('::')[1] : lower;
+                const overrides = config.modelVisionOverrides || {};
+
+                if (overrides[modelId] !== undefined) return overrides[modelId];
+                if (overrides[raw] !== undefined) return overrides[raw];
+
+                const visionKeywords = [
+                    'vision', '-vl', '_vl', '-v', '_v', '4v', '5v', 'visual', 'multimodal', 
+                    'llava', 'bakllava', 'minicpm', 'mplug', 'internvl', 'cogvlm', 'pixtral',
+                    'gpt-4o', 'gpt-4-turbo', 'gpt-4-vision', 'claude-3', 'gemini', 'omni'
+                ];
+                return visionKeywords.some(k => lower.includes(k) || raw.includes(k));
+            }
+
+            function renderVisionTable() {
+                const tbody = document.getElementById('visionOverridesTableBody');
+                if (!tbody) return;
+                tbody.innerHTML = '';
+
+                const searchInp = document.getElementById('visionSearchInput');
+                const query = (searchInp ? searchInp.value : '').toLowerCase().trim();
+                const overrides = config.modelVisionOverrides || {};
+
+                const allModelIds = new Set();
+                const modelItems = [];
+
+                loadedModels.forEach(m => {
+                    allModelIds.add(m.id);
+                    modelItems.push(m);
+                });
+
+                Object.keys(overrides).forEach(customId => {
+                    if (!allModelIds.has(customId)) {
+                        allModelIds.add(customId);
+                        modelItems.push({ id: customId, server: 'Custom Rule' });
+                    }
+                });
+
+                if (modelItems.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="padding: 20px; text-align: center; opacity: 0.6;">No models available yet. Query server models in Tab 2 or add a custom model rule above.</td></tr>';
+                    return;
+                }
+
+                const filtered = modelItems.filter(m => {
+                    if (!query) return true;
+                    return m.id.toLowerCase().includes(query) || (m.server && m.server.toLowerCase().includes(query));
+                });
+
+                filtered.forEach(m => {
+                    const tr = document.createElement('tr');
+                    tr.style.borderBottom = '1px solid var(--vscode-widget-border)';
+
+                    const rawName = m.id.includes('::') ? m.id.split('::')[1] : m.id;
+                    const currentOverride = overrides[m.id] !== undefined ? overrides[m.id] : (overrides[rawName] !== undefined ? overrides[rawName] : undefined);
+
+                    const autoSupportsVision = detectVisionSupport(m.id);
+                    const autoStatusBadge = autoSupportsVision
+                        ? '<span style="color:var(--vscode-charts-green); font-weight:bold; display:inline-flex; align-items:center; gap:4px;"><i class="codicon codicon-eye"></i> Vision (Auto)</span>'
+                        : '<span style="opacity:0.6; display:inline-flex; align-items:center; gap:4px;"><i class="codicon codicon-circle-slash"></i> Text Only</span>';
+
+                    const selectVal = currentOverride === true ? 'true' : (currentOverride === false ? 'false' : 'auto');
+
+                    tr.innerHTML = \`
+                        <td style="padding: 8px 12px; font-weight: 600;">
+                            <span style="font-family: var(--vscode-editor-font-family);">\${escapeHtml(m.id)}</span>
+                        </td>
+                        <td style="padding: 8px 12px; opacity: 0.75;">\${escapeHtml(m.server || 'Primary')}</td>
+                        <td style="padding: 8px 12px;">\${autoStatusBadge}</td>
+                        <td style="padding: 8px 12px;">
+                            <select class="vision-override-select" data-model="\${escapeHtml(m.id)}" style="padding: 3px 6px; font-size: 11px;">
+                                <option value="auto" \${selectVal === 'auto' ? 'selected' : ''}>⚙️ Auto-Detect</option>
+                                <option value="true" \${selectVal === 'true' ? 'selected' : ''}>👁️ Vision Supported</option>
+                                <option value="false" \${selectVal === 'false' ? 'selected' : ''}>🚫 Text Only (No Vision)</option>
+                            </select>
+                        </td>
+                        <td style="padding: 8px 12px; text-align: center;">
+                            \${currentOverride !== undefined ? \`<button type="button" class="icon-btn btn-reset-vision-override" data-model="\${escapeHtml(m.id)}" title="Reset to Auto"><i class="codicon codicon-discard"></i></button>\` : '<span style="opacity:0.2;">-</span>'}
+                        </td>
+                    \`;
+
+                    tbody.appendChild(tr);
+                });
+
+                tbody.querySelectorAll('.vision-override-select').forEach(sel => {
+                    sel.onchange = () => {
+                        const modelId = sel.dataset.model;
+                        const val = sel.value;
+                        if (!config.modelVisionOverrides) config.modelVisionOverrides = {};
+
+                        if (val === 'auto') {
+                            delete config.modelVisionOverrides[modelId];
+                            const raw = modelId.includes('::') ? modelId.split('::')[1] : null;
+                            if (raw) delete config.modelVisionOverrides[raw];
+                        } else {
+                            config.modelVisionOverrides[modelId] = (val === 'true');
+                        }
+
+                        postTempUpdate('modelVisionOverrides', config.modelVisionOverrides);
+                        const saveBtn = document.getElementById('saveToolbar');
+                        if (saveBtn) saveBtn.classList.add('dirty-highlight');
+                        renderVisionTable();
+                    };
+                });
+
+                tbody.querySelectorAll('.btn-reset-vision-override').forEach(btn => {
+                    btn.onclick = () => {
+                        const modelId = btn.dataset.model;
+                        if (config.modelVisionOverrides) {
+                            delete config.modelVisionOverrides[modelId];
+                            const raw = modelId.includes('::') ? modelId.split('::')[1] : null;
+                            if (raw) delete config.modelVisionOverrides[raw];
+                            postTempUpdate('modelVisionOverrides', config.modelVisionOverrides);
+                            const saveBtn = document.getElementById('saveToolbar');
+                            if (saveBtn) saveBtn.classList.add('dirty-highlight');
+                            renderVisionTable();
+                        }
+                    };
+                });
+            }
+
             const bindTempUpdates = () => {
                 const numericKeys = ['requestTimeout', 'agentMaxRetries', 'maxImageSize', 'failsafeContextSize', 'contextMaxDepth', 'contextGovernorMaxRounds', 'remoteServerPort', 'billingBudgetCap'];
-                const checkboxKeys = ['useLollmsExtensions', 'disableSsl', 'verifyAndCorrectCodeBlocks', 'autoUpdateChangelog', 'autoGenerateTitle', 'addPedagogicalInstruction', 'explainCode', 'showOs', 'showIp', 'showShells', 'agentShellExecution', 'agentFilesystemWrite', 'agentFilesystemRead', 'agentInternetAccess', 'agentScreenCapture', 'agentWebTesting', 'agentUseRLM', 'enableCodeInspector', 'moltbookEnable', 'remoteDiscordEnabled', 'remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions', 'billingEnabled', 'billingEnableCapping', 'preciseTokenization'];
+                const checkboxKeys = ['useLollmsExtensions', 'disableSsl', 'verifyAndCorrectCodeBlocks', 'autoUpdateChangelog', 'autoGenerateTitle', 'addPedagogicalInstruction', 'explainCode', 'showOs', 'showIp', 'showShells', 'agentShellExecution', 'agentFilesystemWrite', 'agentFilesystemRead', 'agentInternetAccess', 'agentScreenCapture', 'agentWebTesting', 'agentUseRLM', 'enableCodeInspector', 'moltbookEnable', 'remoteDiscordEnabled', 'remoteSlackEnabled', 'developerDebugTools', 'deactivateConflictingExtensions', 'billingEnabled', 'billingEnableCapping', 'preciseTokenization', 'autoSuppressImagesForNonVisionModels'];
                 const textKeys = ['apiKey', 'apiUrl', 'backendType', 'sslCertPath', 'language', 'codeInspectorPersona', 'chatPersona', 'agentPersona', 'commitMessagePersona', 'contextFileExceptions', 'searchProvider', 'searchApiKey', 'searchCx', 'clipboardInsertRole', 'companionEnableWebSearch', 'companionEnableArxivSearch', 'userInfoName', 'userInfoEmail', 'userInfoLicense', 'userInfoCodingStyle', 'mcpServers', 'deleteBranchAfterMerge', 'unstagedChangesBehavior', 'includeGitInfo', 'systemCustomInfo', 'moltbookApiKey', 'moltbookBotName', 'moltbookBotPurpose', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'];
 
                 const highlightSaveBtn = () => {
@@ -2462,6 +2665,7 @@ export class SettingsPanel {
             function getFormValues() {
                 const values = {};
                 values['connectionProfiles'] = config.connectionProfiles || [];
+                values['modelVisionOverrides'] = config.modelVisionOverrides || {};
 
                 // Collect all 9 model assignment values
                 const dropdownFields = [
@@ -2518,6 +2722,7 @@ export class SettingsPanel {
                     ['remoteDiscordEnabled', 'remoteDiscordEnabled'],
                     ['remoteSlackEnabled', 'remoteSlackEnabled'],
                     ['developerDebugTools', 'developerDebugTools'],
+                    ['autoSuppressImagesForNonVisionModels', 'autoSuppressImagesForNonVisionModels'],
                     ['billingEnabled', 'billingEnabled'],
                     ['billingEnableCapping', 'billingEnableCapping'],
                     ['preciseTokenization', 'preciseTokenization']
@@ -2601,6 +2806,51 @@ export class SettingsPanel {
             attach('refreshInspectorModels', () => {
                 refreshModelsList(true);
             });
+            attach('refreshVisionModelsBtn', () => {
+                refreshModelsList(true);
+            });
+
+            const addCustomVisionBtn = document.getElementById('addCustomVisionOverrideBtn');
+            const customVisionModal = document.getElementById('customVisionModal');
+            const customVisionModelInput = document.getElementById('customVisionModelInput');
+            const customVisionSettingSelect = document.getElementById('customVisionSettingSelect');
+            const cancelCustomVisionBtn = document.getElementById('cancelCustomVisionBtn');
+            const saveCustomVisionBtn = document.getElementById('saveCustomVisionBtn');
+
+            if (addCustomVisionBtn && customVisionModal) {
+                addCustomVisionBtn.onclick = () => {
+                    customVisionModal.style.display = 'block';
+                    if (customVisionModelInput) {
+                        customVisionModelInput.value = '';
+                        customVisionModelInput.focus();
+                    }
+                };
+            }
+
+            if (cancelCustomVisionBtn && customVisionModal) {
+                cancelCustomVisionBtn.onclick = () => {
+                    customVisionModal.style.display = 'none';
+                };
+            }
+
+            if (saveCustomVisionBtn && customVisionModal && customVisionModelInput && customVisionSettingSelect) {
+                saveCustomVisionBtn.onclick = () => {
+                    const pattern = customVisionModelInput.value.trim();
+                    if (!pattern) return;
+                    if (!config.modelVisionOverrides) config.modelVisionOverrides = {};
+                    config.modelVisionOverrides[pattern] = (customVisionSettingSelect.value === 'true');
+                    postTempUpdate('modelVisionOverrides', config.modelVisionOverrides);
+                    const saveBtn = document.getElementById('saveToolbar');
+                    if (saveBtn) saveBtn.classList.add('dirty-highlight');
+                    customVisionModal.style.display = 'none';
+                    renderVisionTable();
+                };
+            }
+
+            const visionSearchInp = document.getElementById('visionSearchInput');
+            if (visionSearchInp) {
+                visionSearchInp.oninput = () => renderVisionTable();
+            }
 
             let editingBindingIndex = -1;
 
@@ -2877,6 +3127,7 @@ export class SettingsPanel {
                     });
                     
                     loadedModels = m.models || [];
+                    renderVisionTable();
 
                     const currentChatModel = document.getElementById('modelSelect').value || config.modelName;
                     const currentArchModel = document.getElementById('architectModelSelect').value || config.architectModelName;

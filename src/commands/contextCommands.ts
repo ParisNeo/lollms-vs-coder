@@ -111,6 +111,10 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFilesToContext', async (files: string[]) => {
         const provider = services.contextManager.getContextStateProvider();
         if (provider) {
+            if (ChatPanel.currentPanel) {
+                await ChatPanel.currentPanel.unmuteFiles(files);
+            }
+
             const added = await provider.addFilesToContext(files);
 
             if (added.length > 0) {
@@ -118,7 +122,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
             }
 
             // Immediately refresh the current chat bubble if open
-            if (ChatPanel.currentPanel && added.length > 0) {
+            if (ChatPanel.currentPanel && (added.length > 0 || files.length > 0)) {
                 ChatPanel.currentPanel.updateContextAndTokens();
             }
             return added;

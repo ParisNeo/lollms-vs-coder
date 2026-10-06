@@ -97,6 +97,20 @@ export class DiscussionManager {
         await this.context.globalState.update('lollms_last_capabilities', caps);
     }
 
+    public getLastMutedFiles(): string[] {
+        const last = this.context.workspaceState.get<string[]>('lollms_last_muted_files');
+        if (Array.isArray(last)) {
+            return [...last];
+        }
+        return [];
+    }
+
+    public async saveLastMutedFiles(mutedFiles: string[]): Promise<void> {
+        if (Array.isArray(mutedFiles)) {
+            await this.context.workspaceState.update('lollms_last_muted_files', [...mutedFiles]);
+        }
+    }
+
     public getDefaultCapabilities(): DiscussionCapabilities {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const defaultProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
@@ -249,6 +263,11 @@ export class DiscussionManager {
             }
         }
 
+        const inheritedMutedFiles = this.getLastMutedFiles();
+        if (caps) {
+            caps.mutedFiles = [...inheritedMutedFiles];
+        }
+
         return {
             id,
             title: 'New Discussion',
@@ -259,7 +278,7 @@ export class DiscussionManager {
             capabilities: caps,
             personalityId: activePersonality,
             importedSkills: [],
-            mutedFiles: [],
+            mutedFiles: [...inheritedMutedFiles],
             mutedTools: [],
             mutedSkills: [],
             mutedDiagrams: []
@@ -270,6 +289,10 @@ export class DiscussionManager {
 
     async saveDiscussion(discussion: Discussion): Promise<void> {
         if (discussion.id.startsWith('temp-') || discussion.id.startsWith('remote-')) return;
+
+        if (Array.isArray(discussion.mutedFiles)) {
+            this.saveLastMutedFiles(discussion.mutedFiles).catch(() => {});
+        }
 
         this._onDidChangeDiscussions.fire();
 

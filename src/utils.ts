@@ -1101,7 +1101,49 @@ ${sparqlDynamicRule}
     `;
     }
 
-    return finalizedBasePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness;
+    // --- GOVERNOR'S CODEBASE ARCHITECTURE & WORKINGS REPORT ---
+    let governorReport = (context as any)?.governorReport || '';
+    if (!governorReport && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+        try {
+            const structUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, '.lollms', 'structure.md');
+            const bytes = await vscode.workspace.fs.readFile(structUri);
+            governorReport = Buffer.from(bytes).toString('utf8');
+        } catch {}
+    }
+
+    let governorReportSection = "";
+    if (governorReport && governorReport.trim().length > 0) {
+        const lines = governorReport.split('\n');
+        const cleanedLines: string[] = [];
+        let skippingMuteSection = false;
+
+        for (const line of lines) {
+            const lower = line.toLowerCase().trim();
+            if (lower.match(/^#+\s*(?:muted\s+files|active\s+files|files\s+kept|files\s+to\s+edit|priority\s+edit\s+files|evicted\s+files|token\s+budget|governor\s+selection|session\s+events)/i)) {
+                skippingMuteSection = true;
+                continue;
+            }
+            if (skippingMuteSection && lower.startsWith('#')) {
+                skippingMuteSection = false;
+            }
+            if (skippingMuteSection) continue;
+
+            if (lower.match(/^(?:-\s*)?(?:i(?:'ll| will)\s+keep\s+.*(?:muted|active)|priority\s+edit\s+files|files?\s+kept\s+active|muted\s+files?|total\s+budget:|budget\s+remaining:)/i)) {
+                continue;
+            }
+            if (lower.includes('kept with structure') || lower.includes('muted with structure') || lower.includes('keep active or reference')) {
+                continue;
+            }
+            cleanedLines.push(line);
+        }
+        const cleanReport = cleanedLines.join('\n').trim();
+
+        if (cleanReport) {
+            governorReportSection = `\n\n## 🏛️ CODEBASE ARCHITECTURE & WORKINGS GUIDE (GOVERNOR'S REPORT)\nThe following architectural reference guide was compiled by the Context Governor (.lollms/structure.md) to explain the internal workings, component relationships, and logic flow of the codebase:\n\n${cleanReport}\n`;
+        }
+    }
+
+    return finalizedBasePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness + governorReportSection;
 }
 
 /**
@@ -1271,13 +1313,27 @@ export function isModelVisionCapable(modelName: string, config?: vscode.Workspac
     const model = modelName.toLowerCase().trim();
     const cfg = config || vscode.workspace.getConfiguration('lollmsVsCoder');
 
+    // 0. Explicit User Overrides (Highest Priority)
+    const overrides: Record<string, boolean> = cfg.get<Record<string, boolean>>('modelVisionOverrides') || {};
+    const rawModel = modelName.includes('::') ? modelName.split('::')[1].toLowerCase().trim() : model;
+
+    for (const [k, v] of Object.entries(overrides)) {
+        if (typeof v === 'boolean') {
+            const cleanK = k.toLowerCase().trim();
+            const rawK = cleanK.includes('::') ? cleanK.split('::')[1].trim() : cleanK;
+            if (cleanK === model || cleanK === rawModel || rawK === model || rawK === rawModel) {
+                return v;
+            }
+        }
+    }
+
     // 1. Explicit Vision keywords & architectures - always allow
     const visionKeywords = [
         'vision', '-vl', '_vl', '-v', '_v', '4v', '5v', 'visual', 'multimodal', 
         'llava', 'bakllava', 'minicpm', 'mplug', 'internvl', 'cogvlm', 'pixtral',
         'gpt-4o', 'gpt-4-turbo', 'gpt-4-vision', 'claude-3', 'gemini', 'omni'
     ];
-    if (visionKeywords.some(k => model.includes(k))) {
+    if (visionKeywords.some(k => model.includes(k) || rawModel.includes(k))) {
         return true;
     }
 
@@ -1286,7 +1342,7 @@ export function isModelVisionCapable(modelName: string, config?: vscode.Workspac
         'deepseek-chat', 'deepseek-v', 'codellama', 'mistral-nemo', 'qwen-coder', 'command-r', 'llama-3-8b', 'llama-3-70b'
     ];
     for (const pattern of nonVisionPatterns) {
-        if (pattern && model.includes(pattern.toLowerCase().trim())) {
+        if (pattern && (model.includes(pattern.toLowerCase().trim()) || rawModel.includes(pattern.toLowerCase().trim()))) {
             return false;
         }
     }

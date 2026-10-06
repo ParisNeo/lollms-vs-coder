@@ -147,7 +147,7 @@ export const state: {
     governorCaller?: 'chat' | 'wizard',
     profiles: any[],
     userPreferenceProfiles: any[],
-    pendingImages: [],
+    pendingImages: { name: string; data: string }[],
     lastTokenMetrics?: {
         totalTokens: number;
         contextSize: number;

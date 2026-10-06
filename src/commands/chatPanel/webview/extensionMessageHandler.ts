@@ -443,6 +443,40 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
+            case 'fileDiagnosticsReport':
+                {
+                    const { filePath, messageId, blockIndex, blockId, errorsCount, errors } = message;
+                    import('./ui.js').then(ui => {
+                        ui.updateFileDiagnosticsUI(filePath, messageId, blockIndex, blockId, errorsCount, errors);
+                    });
+                }
+                break;
+            case 'repairStreamChunk':
+                {
+                    import('./ui.js').then(ui => {
+                        ui.streamRepairChunk(message.round, message.maxRounds, message.chunk, message.fullText, message.messageId);
+                    });
+                }
+                break;
+            case 'fileRepairPassResult':
+                {
+                    import('./ui.js').then(ui => {
+                        ui.setRepairRunningState(false);
+                        ui.fileRepairStudioState.errors = message.errors || [];
+                        if (message.patchedContent) {
+                            ui.fileRepairStudioState.currentCode = message.patchedContent;
+                            ui.renderRepairCodePreview(message.patchedContent);
+                        }
+                        ui.renderRepairErrorsList();
+
+                        const statusText = message.errorsRemaining === 0 
+                            ? `🎉 **Verification Passed**: All errors resolved on disk!`
+                            : `Applied surgical patch to disk. **${message.errorsRemaining} error(s) remaining** (${message.resolvedCount || 0} resolved).`;
+
+                        ui.appendRepairStreamMessage('assistant', `${statusText}\n\n${message.llmExplanation || ''}`);
+                    });
+                }
+                break;
             case 'updateMessage':
                 {
                     if (typeof message.newContent === 'string' && message.newContent.startsWith('LOG_UPDATE:')) {
@@ -689,16 +723,27 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'governorFilterResult':
                 {
-                    const runBtn = document.getElementById('governor-filter-run-btn') as HTMLButtonElement;
-                    if (runBtn) {
-                        runBtn.disabled = false;
-                        runBtn.innerHTML = '<i class="codicon codicon-send" style="font-size:16px;"></i><span style="font-size:9px;">Filter</span>';
-                    }
+                    import('./ui.js').then(ui => {
+                        (ui as any).setGovernorRunningState(false);
+                    });
 
                     const stepInd = document.getElementById('gov-step-indicator');
                     if (stepInd) stepInd.style.display = 'none';
 
                     const roundCountEl = document.getElementById('gov-round-count');
+
+                    if (message.cancelled) {
+                        if (roundCountEl) {
+                            roundCountEl.textContent = 'Cancelled by user';
+                            roundCountEl.style.color = 'var(--vscode-charts-orange)';
+                            roundCountEl.style.fontWeight = 'normal';
+                        }
+                        import('./ui.js').then(ui => {
+                            ui.appendGovernorMessage('assistant', `✋ **Governor Exploration Halted**\nGeneration stopped by user.`);
+                        });
+                        break;
+                    }
+
                     if (roundCountEl) {
                         const rUsed = message.roundsUsed || 1;
                         const rMax = message.maxRounds || 20;
@@ -711,7 +756,6 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         import('./ui.js').then(ui => {
                             ui.appendGovernorMessage('assistant', `❌ **Connection Error**: ${message.error}\n\nPlease verify that your LLM server (Ollama, LoLLMs, etc.) is running and the selected model is loaded.`);
                         });
-                        const roundCountEl = document.getElementById('gov-round-count');
                         if (roundCountEl) {
                             roundCountEl.textContent = 'Server Offline';
                             roundCountEl.style.color = 'var(--vscode-charts-red)';
@@ -781,11 +825,16 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'governorWizardSelectionApplied':
                 {
                     state.wizardMutedFiles = Array.isArray(message.mutedFiles) ? [...message.mutedFiles] : [];
+                    import('./ui.js').then(ui => {
+                        ui.wizardMutedSet.clear();
+                        (message.mutedFiles || []).forEach((m: string) => ui.wizardMutedSet.add(m.replace(/\\/g, '/').toLowerCase().trim()));
+                        ui.renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+                    });
                     const statusEl = document.getElementById('wizard-governor-status');
                     const statusText = document.getElementById('wizard-governor-status-text');
                     if (statusEl && statusText) {
                         statusEl.style.display = 'flex';
-                        statusText.textContent = `Governor applied: ${message.mutedFiles.length} files muted for new session.`;
+                        statusText.textContent = `Governor applied: ${message.mutedFiles.length} files muted.`;
                     }
                 }
                 break;
@@ -906,6 +955,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             dom.messageInput.dispatchEvent(new Event('input'));
                             dom.messageInput.focus();
                         }
+                    }
+                    if (message.initialImages && Array.isArray(message.initialImages) && message.initialImages.length > 0) {
+                        state.pendingImages = [...message.initialImages];
+                        import('./ui.js').then(ui => ui.renderPendingImages());
                     }
 
                     if (dom.attachmentsContainer) {
@@ -1375,12 +1428,16 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         modelsInServer.forEach((m: any) => {
                             const option = document.createElement('option');
                             option.value = m.id;
-                            option.textContent = m.id.includes('::') ? m.id.split('::')[1] : m.id;
+                            option.dataset.hasVision = m.hasVision ? 'true' : 'false';
+                            const eyePrefix = m.hasVision ? '👁️ ' : '';
+                            const rawName = m.id.includes('::') ? m.id.split('::')[1] : m.id;
+                            option.textContent = eyePrefix + rawName;
                             optGroup.appendChild(option);
                         });
                         dom.modelSelector.appendChild(optGroup);
                     });
                     dom.modelSelector.value = message.currentModel || '';
+                    (state as any).models = models;
                     
                     updateBadges();
                     // Force refresh context header to sync model name
@@ -1598,9 +1655,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'setInputText':
                 if (dom.messageInput) {
-                    dom.messageInput.value = message.text;
+                    dom.messageInput.value = message.text || '';
                     dom.messageInput.dispatchEvent(new Event('input'));
                     dom.messageInput.focus();
+                }
+                if (Array.isArray(message.images) && message.images.length > 0) {
+                    state.pendingImages = [...message.images];
+                    import('./ui.js').then(ui => ui.renderPendingImages());
                 }
                 break;
             case 'forceScrollToBottom':
@@ -1830,6 +1891,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (listContainer) {
                     const items = listContainer.querySelectorAll('.expansion-file-item');
                     let allInContext = true;
+                    let hasMuted = false;
 
                     items.forEach((item: any) => {
                         const pathSpan = item.querySelector('.file-label') || item.querySelector('span:last-child') || item;
@@ -1837,11 +1899,32 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         if (!filePath) return;
 
                         const status = statuses[filePath];
-                        item.classList.remove('status-in-context', 'status-not-in-context', 'status-not-exist');
+                        item.classList.remove('status-in-context', 'status-not-in-context', 'status-not-exist', 'status-muted');
 
                         const icon = item.querySelector('.codicon');
+                        let badge = item.querySelector('.muted-badge');
 
-                        if (status === 'in_context') {
+                        if (status === 'muted') {
+                            allInContext = false;
+                            hasMuted = true;
+                            item.classList.add('status-muted');
+                            item.style.color = 'var(--vscode-charts-orange, #ff9800)';
+                            item.style.borderColor = 'var(--vscode-charts-orange, #ff9800)';
+                            item.style.borderLeft = '4px solid var(--vscode-charts-orange, #ff9800)';
+                            item.style.background = 'rgba(255, 152, 0, 0.1)';
+                            if (icon) {
+                                icon.className = 'codicon codicon-eye-closed';
+                                icon.style.color = 'var(--vscode-charts-orange, #ff9800)';
+                            }
+                            if (!badge) {
+                                badge = document.createElement('span');
+                                badge.className = 'file-token-badge weight-muted muted-badge';
+                                badge.style.cssText = 'margin-left: auto; font-size: 10px; color: var(--vscode-charts-orange); border-color: rgba(214, 122, 13, 0.4); background: rgba(214, 122, 13, 0.1); font-style: italic;';
+                                badge.textContent = '[MUTED]';
+                                item.appendChild(badge);
+                            }
+                        } else if (status === 'in_context') {
+                            if (badge) badge.remove();
                             item.classList.add('status-in-context');
                             item.style.color = 'var(--vscode-charts-green, #388e3c)';
                             item.style.borderColor = 'var(--vscode-charts-green, #388e3c)';
@@ -1852,6 +1935,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 icon.style.color = 'var(--vscode-charts-green, #388e3c)';
                             }
                         } else if (status === 'not_found') {
+                            if (badge) badge.remove();
                             allInContext = false;
                             item.classList.add('status-not-exist');
                             item.style.color = 'var(--vscode-charts-red, #e53935)';
@@ -1863,6 +1947,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 icon.style.color = 'var(--vscode-charts-red, #e53935)';
                             }
                         } else {
+                            if (badge) badge.remove();
                             allInContext = false;
                             item.classList.add('status-not-in-context');
                             item.style.color = 'var(--vscode-editor-foreground, #000000)';
@@ -1884,7 +1969,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 addBtn.className = 'code-action-btn applied add-btn';
                                 addBtn.disabled = true;
                             } else {
-                                addBtn.innerHTML = '<span class="codicon codicon-add"></span> Add all to Context';
+                                const btnText = hasMuted ? 'Unmute & Add to Context' : 'Add all to Context';
+                                const btnIcon = hasMuted ? 'codicon-eye' : 'codicon-add';
+                                addBtn.innerHTML = `<span class="codicon ${btnIcon}"></span> ${btnText}`;
                                 addBtn.className = 'code-action-btn apply-btn add-btn';
                                 addBtn.disabled = false;
                             }
@@ -1953,10 +2040,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         const pathSpan = item.querySelector('span:last-child');
                         const path = pathSpan?.textContent?.trim();
                         if (path && results[path] === true) {
-                            item.classList.remove('status-not-in-context', 'status-not-exist');
+                            item.classList.remove('status-not-in-context', 'status-not-exist', 'status-muted');
+                            const badge = item.querySelector('.muted-badge');
+                            if (badge) badge.remove();
                             item.classList.add('status-in-context');
                             item.style.color = 'var(--vscode-charts-green, #388e3c)';
                             item.style.borderColor = 'var(--vscode-charts-green, #388e3c)';
+                            item.style.borderLeft = '4px solid var(--vscode-charts-green, #388e3c)';
                             item.style.background = 'rgba(15, 157, 88, 0.1)';
                             const icon = item.querySelector('.codicon');
                             if (icon) {
@@ -1964,10 +2054,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 icon.style.color = 'var(--vscode-charts-green, #388e3c)';
                             }
                         } else if (path && results[path] === false) {
-                            item.classList.remove('status-in-context', 'status-not-in-context');
+                            item.classList.remove('status-in-context', 'status-not-in-context', 'status-muted');
                             item.classList.add('status-not-exist');
                             item.style.color = 'var(--vscode-charts-red, #e53935)';
                             item.style.borderColor = 'var(--vscode-charts-red, #e53935)';
+                            item.style.borderLeft = '4px solid var(--vscode-charts-red, #e53935)';
                             item.style.background = 'rgba(244, 71, 71, 0.08)';
                             const icon = item.querySelector('.codicon');
                             if (icon) {
@@ -2857,6 +2948,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'provideFileContentForDiff':
                 {
                     const { currentContent, changeIndex } = message;
+                    if (changeIndex === 9999) {
+                        // Special routing for File Repair Studio code preview
+                        import('./ui.js').then(ui => {
+                            ui.fileRepairStudioState.currentCode = currentContent || '';
+                            ui.renderRepairCodePreview(currentContent || '');
+                        });
+                        break;
+                    }
                     const changes = (window as any).currentStagingChanges || [];
                     const change = changes[changeIndex];
                     if (change && typeof (window as any).renderSplitDiff === 'function') {

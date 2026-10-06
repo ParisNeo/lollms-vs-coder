@@ -51,6 +51,11 @@ export function isDangerousOrBlocked(fsPathOrRel: string, workspaceRoot?: string
     if (!fsPathOrRel) return false;
     let target = fsPathOrRel.replace(/\\/g, '/');
 
+    // Allow .lollms/external_files and .lollms/skills to be tracked in context
+    if (target.includes('.lollms/external_files') || target.includes('.lollms/skills')) {
+        return false;
+    }
+
     // If an absolute path is passed, only inspect segments relative to the workspace root
     if (workspaceRoot) {
         const root = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -352,6 +357,11 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private isExcluded(uri: vscode.Uri): boolean {
         if (uri.scheme !== 'file') return true;
 
+        const normalizedFsPath = uri.fsPath.replace(/\\/g, '/');
+        if (normalizedFsPath.includes('.lollms/external_files') || normalizedFsPath.includes('.lollms/skills')) {
+            return false;
+        }
+
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
         if (isDangerousOrBlocked(uri.fsPath, workspaceFolder?.uri.fsPath)) return true;
         if (!workspaceFolder) return false;
@@ -366,6 +376,10 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
     public isStrictlyIgnored(uri: vscode.Uri): boolean {
         if (uri.scheme !== 'file') return true;
+        const normalizedFsPath = uri.fsPath.replace(/\\/g, '/');
+        if (normalizedFsPath.includes('.lollms/external_files') || normalizedFsPath.includes('.lollms/skills')) {
+            return false;
+        }
         if (isDangerousOrBlocked(uri.fsPath)) return true;
 
         const folder = vscode.workspace.getWorkspaceFolder(uri);

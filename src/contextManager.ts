@@ -1819,102 +1819,254 @@ ${text.substring(0, 10000)}`;
   // SEARCH UTILITIES
   // ─────────────────────────────────────────────────────────────
 
+  public isBlockedPath(filePath: string): boolean {
+    if (!filePath) return true;
+    const norm = filePath.replace(/\\/g, '/').toLowerCase().trim();
+
+    const blockedDirs = [
+      'node_modules', '.git', '.github', '.lollms',
+      'venv', '.venv', 'env', '.env', 'virtualenv', 'conda-env',
+      '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
+      'dist', 'build', 'out', 'bin', 'obj', 'target',
+      'data', 'data_workspace', '.idea', '.vscode',
+      '.next', '.nuxt', '.turbo', '.svelte-kit', '.cache'
+    ];
+
+    for (const d of blockedDirs) {
+      if (norm === d || norm.startsWith(d + '/') || norm.includes('/' + d + '/') || norm.endsWith('/' + d)) {
+        return true;
+      }
+    }
+
+    const blockedExts = [
+      '.min.js', '.min.css', '.map', '.pyc', '.pyo', '.pyd',
+      '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg',
+      '.pdf', '.zip', '.tar', '.gz', '.7z', '.exe', '.dll', '.bin',
+      '.lock'
+    ];
+
+    for (const ext of blockedExts) {
+      if (norm.endsWith(ext)) {
+        return true;
+      }
+    }
+
+    if (norm.endsWith('package-lock.json') || norm.endsWith('yarn.lock') || norm.endsWith('pnpm-lock.yaml')) {
+      return true;
+    }
+
+    return false;
+  }
+
   public async searchWorkspaceContent(
     query: string,
-    options: { matchCase: boolean, wholeWord: boolean, include?: string, exclude?: string, literal?: boolean } = { matchCase: false, wholeWord: false },
+    options: { matchCase?: boolean, wholeWord?: boolean, include?: string, exclude?: string, literal?: boolean; bypassGate?: boolean } = { matchCase: false, wholeWord: false },
     signal?: AbortSignal
   ): Promise<{ path: string, snippet: string, line?: string }[]> {
-    // --- GREP ACCESS CONTROL GATE ---
+    // --- GREP ACCESS CONTROL GATE (Bypassed for Governor & Diagnostic Agents) ---
     const capabilities = this.contextStateProvider?.context.globalState.get<any>('lollms_last_capabilities');
-    if (capabilities && capabilities.grepEnabled === false) {
+    if (!options.bypassGate && capabilities && capabilities.grepEnabled === false) {
         Logger.info("[Grep Gate] Aborting workspace content search: GREP engine is deactivated by user settings.");
         return [{ path: "Security Notice", snippet: "*(Grep indexer is currently deactivated by the user to save resources. Toggle the GREP badge in the HUD to activate.)*" }];
     }
 
+    const cleanQuery = (query || "").trim();
+    if (!cleanQuery) return [];
+
     const results: { path: string, snippet: string, line?: string }[] = [];
     const maxResults = 100;
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) return [];
+    const workspaceFolders = vscode.workspace.workspaceFolders || [];
+    if (workspaceFolders.length === 0) return [];
 
-    const cwd = workspaceFolder.uri.fsPath;
-    try {
-      let stdout = "";
-      try {
-        let gitGrepArgs = `-n -I --max-count=3 --context=0`;
-        if (!options.matchCase) gitGrepArgs += ` -i`;
-        if (options.wholeWord) gitGrepArgs += ` -w`;
-        if (options.literal) gitGrepArgs += ` -F`;
+    const gitExcludeArgs = [
+      ':!node_modules', ':!**/node_modules/**',
+      ':!.git', ':!**/.git/**',
+      ':!venv', ':!**/venv/**',
+      ':!.venv', ':!**/.venv/**',
+      ':!env', ':!**/env/**',
+      ':!.env', ':!**/.env/**',
+      ':!dist', ':!**/dist/**',
+      ':!build', ':!**/build/**',
+      ':!out', ':!**/out/**',
+      ':!bin', ':!**/bin/**',
+      ':!obj', ':!**/obj/**',
+      ':!target', ':!**/target/**',
+      ':!__pycache__', ':!**/__pycache__/**',
+      ':!.pytest_cache', ':!**/.pytest_cache/**',
+      ':!.mypy_cache', ':!**/.mypy_cache/**',
+      ':!.ruff_cache', ':!**/.ruff_cache/**',
+      ':!.lollms', ':!**/.lollms/**',
+      ':!.vscode', ':!**/.vscode/**',
+      ':!.idea', ':!**/.idea/**',
+      ':!*.min.js', ':!*.min.css', ':!*.map',
+      ':!package-lock.json', ':!yarn.lock', ':!pnpm-lock.yaml'
+    ];
 
-        let patternArgs = "";
-        if (options.literal) {
-          patternArgs = `-e "${query.replace(/"/g, '\\"')}"`;
-        } else {
-          const orParts = query.split('|').map(p => p.trim()).filter(p => p);
-          orParts.forEach((part, idx) => {
-            if (idx > 0) patternArgs += " --or ";
-            const andTerms = part.split(/\s+/).filter(p => p);
-            if (andTerms.length > 1) patternArgs += " ( ";
-            andTerms.forEach((term, tIdx) => {
-              const isNot = term.startsWith('-');
-              const actualTerm = isNot ? term.substring(1) : term;
-              if (tIdx > 0) patternArgs += " --and ";
-              if (isNot) patternArgs += " --not ";
-              patternArgs += ` -e "${actualTerm.replace(/"/g, '\\"')}" `;
-            });
-            if (andTerms.length > 1) patternArgs += " ) ";
-          });
+    for (const folder of workspaceFolders) {
+      if (signal?.aborted || results.length >= maxResults) break;
+
+      let gitGrepArgs = `-n -I --max-count=3 --context=0`;
+      if (!options.matchCase) gitGrepArgs += ` -i`;
+      if (options.wholeWord) gitGrepArgs += ` -w`;
+
+      let isRegexValid = true;
+      if (!options.literal) {
+        try {
+          new RegExp(cleanQuery);
+        } catch {
+          isRegexValid = false;
         }
-
-        let pathspec = "";
-        if (options.include) pathspec += options.include.split(',').map(p => `"${p.trim()}"`).join(' ');
-        if (options.exclude) pathspec += " " + options.exclude.split(',').map(p => `":!${p.trim()}"`).join(' ');
-        const res = await execAsync(`git grep ${gitGrepArgs} ${patternArgs} -- ${pathspec}`, { cwd, maxBuffer: 1024 * 1024 });
-        stdout = res.stdout;
-      } catch (e) {
-        const isWin = process.platform === 'win32';
-        const pattern = query.replace(/"/g, '\\"');
-        let command = isWin
-          ? `findstr /S /N /L${!options.matchCase ? ' /I' : ''} /C:"${pattern}" *`
-          : `grep -r -n -I -m 1 -F${!options.matchCase ? ' -i' : ''}${options.wholeWord ? ' -w' : ''} "${pattern}" .`;
-        try { const res = await execAsync(command, { cwd, maxBuffer: 1024 * 1024 }); stdout = res.stdout; } catch {}
       }
 
-      if (stdout.trim()) {
-        for (const line of stdout.split('\n')) {
-          if (results.length >= maxResults) break;
-          const parts = line.split(':');
-          if (parts.length >= 3) {
-            const snippet = parts.slice(2).join(':').trim();
-            results.push({
-              path: parts[0].trim(), line: parts[1].trim(),
-              snippet: snippet.length > 200 ? snippet.substring(0, 200) + "..." : snippet
-            });
+      const escapedPattern = cleanQuery.replace(/"/g, '\\"');
+      if (options.literal || !isRegexValid) {
+        gitGrepArgs += ` -F -e "${escapedPattern}"`;
+      } else {
+        gitGrepArgs += ` -E -e "${escapedPattern}"`;
+      }
+
+      const pathspecs: string[] = [];
+      if (options.include) {
+        const cleanInc = options.include.split(',').map(p => `"${p.trim().replace(/^['"]|['"]$/g, '')}"`).filter(Boolean);
+        pathspecs.push(...cleanInc);
+      }
+      if (options.exclude) {
+        const cleanExc = options.exclude.split(',').map(p => `":!${p.trim().replace(/^['"]|['"]$/g, '')}"`).filter(Boolean);
+        pathspecs.push(...cleanExc);
+      }
+      pathspecs.push(...gitExcludeArgs);
+
+      const gitCmd = `git grep ${gitGrepArgs} -- ${pathspecs.join(' ')}`;
+
+      try {
+        const res = await execAsync(gitCmd, { cwd: folder.uri.fsPath, signal, maxBuffer: 2 * 1024 * 1024 });
+        const stdout = res.stdout;
+        if (stdout && stdout.trim()) {
+          for (const line of stdout.split('\n')) {
+            if (results.length >= maxResults) break;
+            const parts = line.split(':');
+            if (parts.length >= 3) {
+              const fileRel = parts[0].trim().replace(/\\/g, '/');
+              if (this.isBlockedPath(fileRel)) continue;
+              const fullRel = workspaceFolders.length > 1 ? `${folder.name}/${fileRel}` : fileRel;
+              const snippet = parts.slice(2).join(':').trim();
+              results.push({
+                path: fullRel,
+                line: parts[1].trim(),
+                snippet: snippet.length > 200 ? snippet.substring(0, 200) + '...' : snippet
+              });
+            }
           }
         }
+      } catch (err: any) {
+        if (signal?.aborted) return results;
+
+        // Git grep exit code 1 means: NO MATCHES FOUND. Return clean empty result without falling into slow fallback!
+        if (err && (err.code === 1 || err.code === '1' || err.exitCode === 1)) {
+          continue;
+        }
+
+        // Real failure (e.g. non-git repo or git missing): execute safe bounded file search
+        await this.searchFolderFallback(folder, cleanQuery, options, results, maxResults, signal);
       }
-    } catch (e) { console.error("Content search failed", e); }
+    }
+
     return results;
   }
 
-  private async searchWorkspaceKeywords(keywords: string[], cwd: string): Promise<string> {
+  private async searchFolderFallback(
+    folder: vscode.WorkspaceFolder,
+    query: string,
+    options: { matchCase?: boolean; wholeWord?: boolean; include?: string; exclude?: string; literal?: boolean },
+    results: { path: string; snippet: string; line?: string }[],
+    maxResults: number,
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (signal?.aborted || results.length >= maxResults) return;
+
+    let searchRegex: RegExp;
+    const flags = options.matchCase ? 'g' : 'gi';
+    try {
+      if (options.literal) {
+        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        searchRegex = new RegExp(options.wholeWord ? `\\b${escaped}\\b` : escaped, flags);
+      } else {
+        searchRegex = new RegExp(options.wholeWord ? `\\b(${query})\\b` : query, flags);
+      }
+    } catch {
+      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      searchRegex = new RegExp(escaped, flags);
+    }
+
+    const excludePattern = '**/{.git,node_modules,venv,.venv,env,.env,out,dist,bin,build,.lollms,__pycache__,.pytest_cache,.mypy_cache,.ruff_cache,.tox,data,data_workspace,.idea,.vscode,.next,.nuxt,.turbo,.cache}/**';
+
+    let includePattern = '**/*';
+    if (options.include) {
+      includePattern = options.include.includes('*') ? options.include : `**/${options.include}/**`;
+    }
+
+    let candidateUris: vscode.Uri[] = [];
+    try {
+      candidateUris = await vscode.workspace.findFiles(
+        new vscode.RelativePattern(folder, includePattern),
+        excludePattern,
+        500
+      );
+    } catch {
+      return;
+    }
+
+    const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
+
+    for (const fileUri of candidateUris) {
+      if (signal?.aborted || results.length >= maxResults) break;
+
+      const relPath = path.relative(folder.uri.fsPath, fileUri.fsPath).replace(/\\/g, '/');
+      if (this.isBlockedPath(relPath)) continue;
+
+      const ext = path.extname(relPath).toLowerCase();
+      if (this.binaryExtensions.has(ext) || this.imageExtensions.has(ext)) continue;
+
+      try {
+        const bytes = await vscode.workspace.fs.readFile(fileUri);
+        if (this.isBinary(Buffer.from(bytes))) continue;
+
+        const text = Buffer.from(bytes).toString('utf8');
+        const lines = text.split('\n');
+
+        for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+          if (results.length >= maxResults) break;
+          const line = lines[lineIdx];
+          searchRegex.lastIndex = 0;
+
+          if (searchRegex.test(line)) {
+            const displayPath = isMultiRoot ? `${folder.name}/${relPath}` : relPath;
+            results.push({
+              path: displayPath,
+              line: String(lineIdx + 1),
+              snippet: line.trim().substring(0, 200)
+            });
+            const hitsForFile = results.filter(r => r.path === displayPath).length;
+            if (hitsForFile >= 3) break;
+          }
+        }
+      } catch {}
+    }
+  }
+
+  private async searchWorkspaceKeywords(keywords: string[], cwd: string, signal?: AbortSignal): Promise<string> {
     if (keywords.length === 0) return "No keywords provided.";
     let combinedResults = `Keyword Search Results:\n`;
     for (const keyword of keywords) {
-      const pattern = keyword.replace(/"/g, '\\"');
-      try {
-        try {
-          const { stdout } = await execAsync(`git grep -n -I -c "${pattern}"`, { cwd });
-          if (stdout.trim()) { combinedResults += `\nMatches for "${keyword}" (count per file):\n${stdout.trim()}\n`; continue; }
-        } catch (e) {}
-        const command = os.platform() === 'win32'
-          ? `findstr /S /N /I /P "${pattern}" *`
-          : `grep -r -n -I -l "${pattern}" .`;
-        const { stdout } = await execAsync(command, { cwd });
-        combinedResults += stdout.trim()
-          ? `\nMatches for "${keyword}":\n${stdout.trim().substring(0, 2000)}\n`
-          : `\nMatches for "${keyword}": No matches found.\n`;
-      } catch (e) {
-        combinedResults += `\nMatches for "${keyword}": Search operation failed.\n`;
+      if (signal?.aborted) break;
+      const hits = await this.searchWorkspaceContent(keyword, { matchCase: false, wholeWord: false, bypassGate: true }, signal);
+      if (hits.length > 0) {
+        combinedResults += `\nMatches for "${keyword}" (${hits.length} file(s)):\n`;
+        hits.slice(0, 8).forEach(h => {
+          combinedResults += `- ${h.path}:${h.line} ${h.snippet}\n`;
+        });
+      } else {
+        combinedResults += `\nMatches for "${keyword}": No matches found.\n`;
       }
     }
     return combinedResults;
@@ -2029,12 +2181,32 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) throw new Error("No workspace folder open.");
 
-    const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, 'external');
+    const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'external_files');
     try { await vscode.workspace.fs.createDirectory(cacheDir); } catch (e) {}
 
     let rawContent = "";
 
-    if (url.includes('arxiv.org')) {
+    if (url.includes('youtube.com') || url.includes('youtu.be')) {
+      try {
+        let videoId = "";
+        const parsedUrl = new URL(url);
+        if (url.includes('youtu.be')) {
+          videoId = parsedUrl.pathname.replace(/^\/+/, '');
+        } else {
+          videoId = parsedUrl.searchParams.get('v') || "";
+        }
+        if (videoId) {
+          const ytRes = await this.fetchYoutubeTranscript(videoId, languageCode);
+          if (ytRes.success) {
+            rawContent = `[YouTube Video Transcript] ${url}\nVideo ID: ${videoId}\n\n### Transcript:\n${ytRes.output}`;
+          } else {
+            rawContent = `[YouTube Video] ${url}\nCould not extract transcript: ${ytRes.output}`;
+          }
+        }
+      } catch (e: any) {
+        rawContent = `YouTube transcript fetch error: ${e.message}`;
+      }
+    } else if (url.includes('arxiv.org')) {
       try {
         const idMatch = url.match(/abs\/([0-9.]+)/) || url.match(/pdf\/([0-9.]+)/);
         if (idMatch) {
@@ -2089,7 +2261,7 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
     const fileUri = vscode.Uri.joinPath(cacheDir, filename);
     await vscode.workspace.fs.writeFile(fileUri, Buffer.from(`# Source: ${url}\n# Date: ${new Date().toISOString()}\n\n${processedContent}`, 'utf8'));
 
-    const relativePath = path.join('external', filename).replace(/\\/g, '/');
+    const relativePath = path.join('.lollms', 'external_files', filename).replace(/\\/g, '/');
     await this.contextStateProvider?.addFilesToContext([relativePath]);
 
     // --- AUTOMATIC GRAPH INGESTION ---

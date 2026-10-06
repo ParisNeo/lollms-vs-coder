@@ -90,39 +90,40 @@ To guarantee that neither you nor subsequent turns deviate from agreed standards
         // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
         if (isSymbolModeEnabled) {
             sections.push(`
-        ### 🚦 CODE OUTPUT DECISION TREE & TOKEN ECONOMY ARBITRATION (SYMBOL MODE ACTIVE)
-        You MUST strictly follow this decision tree to minimize token consumption and eliminate parsing errors:
+### 🚦 CODE OUTPUT DECISION TREE & TOKEN ECONOMY ARBITRATION (SYMBOL MODE ACTIVE)
+You MUST strictly follow this decision tree to minimize token consumption and eliminate parsing errors:
 
-        1. **NEW FILES**: You MUST use **FORMAT 1 (FULL FILE)**: \`<file path="..." action="write">\`.
-        2. **TOKEN-EFFICIENT SYMBOL UPDATE (PRIORITY FOR EXTENSIVE CHANGES & FUNCTIONS/CLASSES)**: 
-           - When replacing, rewriting, or making extensive changes across an entire function, method, or class, Aider Search/Replace requires printing both the full old code in SEARCH AND the full new code in REPLACE (2x token cost) and easily fails due to whitespace drifts.
-           - In contrast, targeted symbol replacement (\`<file path="..." action="update_symbol" symbol="SymbolName">\` or \`update_function\`) ONLY outputs the new code once (1x token cost).
-           - **MANDATE**: Whenever replacing an entire function/class/method, or whenever you need to make many changes across a block, you **MUST use targeted symbol update** (\`action="update_symbol"\` or \`update_function\`) instead of writing long patches.
-        3. **MINIMAL SURGICAL PATCH (1-7 lines only)**: Use **FORMAT 2 (SEARCH/REPLACE)**: \`<file path="..." action="patch">\` ONLY when altering a very small snippet (1-5 lines) inside a function. **NEVER write very long patches.** Keep SEARCH blocks focused and tightly anchored (1-2 context lines).
-        4. **MAJOR REFACTOR (> 50% of the entire file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
-        5. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize symbol updates (FORMAT 3) or surgical patches (FORMAT 2) based on token efficiency."}
+1. **NEW FILES**: You MUST use **FORMAT 1 (FULL FILE)**: \`<file path="..." action="write">\`.
+2. **TOKEN-EFFICIENT SYMBOL UPDATE (PRIORITY FOR EXTENSIVE CHANGES & FUNCTIONS/CLASSES)**: 
+    - When replacing, rewriting, or making extensive changes across an entire function, method, or class, Aider Search/Replace requires printing both the full old code in SEARCH AND the full new code in REPLACE (2x token cost) and easily fails due to whitespace drifts.
+    - In contrast, targeted symbol replacement (\`<file path="..." action="update_symbol" symbol="SymbolName">\` or \`update_function\`) ONLY outputs the new code once (1x token cost).
+    - **MANDATE**: Whenever replacing an entire function/class/method, or whenever you need to make many changes across a block, you **MUST use targeted symbol update** (\`action="update_symbol"\` or \`update_function\`) instead of writing long patches.
+3. **MINIMAL SURGICAL PATCH (1-7 lines only)**: Use **FORMAT 2 (SEARCH/REPLACE)**: \`<file path="..." action="patch">\` ONLY when altering a very small snippet (1-5 lines) inside a function. **NEVER write very long patches.** Keep SEARCH blocks focused and tightly anchored (1-2 context lines).
+4. **MAJOR REFACTOR (> 50% of the entire file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
+5. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize symbol updates (FORMAT 3) or surgical patches (FORMAT 2) based on token efficiency."}
 
-        **CRITICAL MANDATES**:
-        - **NEVER WRITE VERY LONG PATCHES**: Search/Replace blocks MUST be very short and focused (1 to 5 lines of modification). If you need to make many changes across a function or class, use targeted symbol replacement instead.
-        - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
-        - Do NOT output conversational chatter or a "summary of changes" followed by the full file after an Aider patch. This is a severe violation of turn economy and will cause the file system patch to fail.
-        - **THINKING & OBSERVATION SNIPPETS**: When writing non-updatable snippets, thoughts, illustrations, or explanations, always use standard markdown code fences (without file paths, e.g. \`\`\`typescript). The \`<file path="..." ...>\` and namespaced headers are EXCLUSIVELY reserved for actual code updates that the system should apply to disk.
+**CRITICAL MANDATES**:
+- **NEVER WRITE VERY LONG PATCHES**: Search/Replace blocks MUST be very short and focused (1 to 5 lines of modification). If you need to make many changes across a function or class, use targeted symbol replacement instead.
+- Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
+- Do NOT duplicate code blocks or emit trial code after the verified implementation. Provide your concise summary of changes strictly as text/markdown without repeating \`<file>\` tags.
+- **THINKING & OBSERVATION SNIPPETS**: When writing non-updatable snippets, thoughts, illustrations, or explanations, always use standard markdown code fences (without file paths, e.g. \`\`\`typescript). The \`<file path="..." ...>\` and namespaced headers are EXCLUSIVELY reserved for actual code updates that the system should apply to disk.
         `);
         } else {
             sections.push(`
-        ### 🚦 CODE OUTPUT DECISION TREE (STRICT EXCLUSIVITY & COMPLIANCE MANDATE)
-        You MUST strictly follow this decision tree to choose the correct format for code output. Non-compliance results in parsing errors and redundant token usage. 
+### 🚦 CODE OUTPUT DECISION TREE (STRICT EXCLUSIVITY & COMPLIANCE MANDATE)
+You MUST strictly follow this decision tree to choose the correct format for code output. Non-compliance results in parsing errors and redundant token usage. 
 
-        1. **NEW FILES**: You MUST use **FORMAT 1 (FULL FILE)**.
-        2. **SURGICAL MODIFICATIONS / PARTIAL UPDATES (< 50% of the file)**: You MUST use **FORMAT 2 (SEARCH/REPLACE)**.
-        3. **EXISTING FILES (Major Refactor affecting > 50% of the file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
-        4. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize surgical patches (FORMAT 2) or full files (FORMAT 1)."}
-        5. **SYMBOL REPLACEMENT (FORMAT 3)**: **DISABLED**. Symbol replacement mode is deactivated in discussion settings. You are **STRICTLY FORBIDDEN** from appending \`:SymbolName\` or class/function names to code block headers (e.g., do NOT write \`\`\`language:path/to/file.ext:SymbolName\`\`\`). Always specify only the file path (e.g., \`\`\`language:path/to/file.ext\`\`\`).
+1. **NEW FILES**: You MUST use **FORMAT 1 (FULL FILE)**.
+2. **SURGICAL MODIFICATIONS / PARTIAL UPDATES (< 50% of the file)**: You MUST use **FORMAT 2 (SEARCH/REPLACE)**.
+3. **EXISTING FILES (Major Refactor affecting > 50% of the file)**: You MUST use **FORMAT 1 (FULL FILE)** to write the complete content of the file from line 1 to the end.
+4. **FORCED FULL MODE**: ${isForcedFull ? "ACTIVE. You MUST use FORMAT 1 for ALL modifications." : "INACTIVE. Prioritize surgical patches (FORMAT 2) or full files (FORMAT 1)."}
+5. **SYMBOL REPLACEMENT (FORMAT 3)**: **DISABLED**. Symbol replacement mode is deactivated in discussion settings. You are **STRICTLY FORBIDDEN** from appending \`:SymbolName\` or class/function names to code block headers (e.g., do NOT write \`\`\`language:path/to/file.ext:SymbolName\`\`\`). Always specify only the file path (e.g., \`\`\`language:path/to/file.ext\`\`\`).
 
-        **CRITICAL MANDATES**:
-        - Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
-        - Do NOT output conversational chatter or a "summary of changes" followed by the full file after an Aider patch. This is a severe violation of turn economy and will cause the file system patch to fail.
-        - **THINKING & OBSERVATION SNIPPETS**: When writing non-updatable snippets, thoughts, illustrations, or explanations, always use standard markdown code fences (without file paths, e.g. \`\`\`typescript). The \`<file path="..." ...>\` and namespaced headers are EXCLUSIVELY reserved for actual code updates that the system should apply to disk.
+**CRITICAL MANDATES**:
+- **NEVER WRITE VERY LONG PATCHES**: Search/Replace blocks MUST be very short and focused (1 to 5 lines of modification). If you need to make many changes across a function or class, use targeted symbol replacement instead.
+- Do NOT provide a SEARCH/REPLACE patch and then a full file rewrite for the same file in a single turn. You must choose EXACTLY ONE format.
+- Do NOT duplicate code blocks or emit trial code after the verified implementation. Provide your concise summary of changes strictly as text/markdown without repeating \`<file>\` tags.
+- **THINKING & OBSERVATION SNIPPETS**: When writing non-updatable snippets, thoughts, illustrations, or explanations, always use standard markdown code fences (without file paths, e.g. \`\`\`typescript). The \`<file path="..." ...>\` and namespaced headers are EXCLUSIVELY reserved for actual code updates that the system should apply to disk.        
         `);
         }
 
@@ -236,24 +237,24 @@ public static buildProjectStateMessage(context: {
             : "No files are currently loaded in your context.";
 
         return `
-    # 🛠️ ACTUAL PROJECT STATE (LIVING CONTEXT)
+# 🛠️ ACTUAL PROJECT STATE (LIVING CONTEXT)
 
-    ### 🛑 CRITICAL SPATIAL AWARENESS RULE
-    1. **CHECK THE TREE**: Look at the 'PROJECT STRUCTURE' below. 
-    2. **MARKER [C]**: If a file is marked with **[C]**, its full source code is ALREADY provided in the 'ACCESSIBLE FILE CONTENTS' section below.
-    3. **PROHIBITION (ZERO CONTEXT WASTE)**: You are STRICTLY FORBIDDEN from calling \`<add_files_to_context>\`, \`read_file\`, or \`read_files\` for any file marked with [C] or listed in the 'ACTIVE CONTEXT INVENTORY'. Re-requesting files you already possess is an active waste of context tokens.
-    4. **ACTION**: If [C] is present, find the code under 'ACCESSIBLE FILE CONTENTS' and proceed directly to analysis or implementation.
-    5. **NO PATH HALLUCINATIONS**: When using \`<add_files_to_context>\`, only use paths that appear verbatim in the tree below. Never invent paths.
+### 🛑 CRITICAL SPATIAL AWARENESS RULE
+1. **CHECK THE TREE**: Look at the 'PROJECT STRUCTURE' below. 
+2. **MARKER [C]**: If a file is marked with **[C]**, its full source code is ALREADY provided in the 'ACCESSIBLE FILE CONTENTS' section below.
+3. **PROHIBITION (ZERO CONTEXT WASTE)**: You are STRICTLY FORBIDDEN from calling \`<add_files_to_context>\`, \`read_file\`, or \`read_files\` for any file marked with [C] or listed in the 'ACTIVE CONTEXT INVENTORY'. Re-requesting files you already possess is an active waste of context tokens.
+4. **ACTION**: If [C] is present, find the code under 'ACCESSIBLE FILE CONTENTS' and proceed directly to analysis or implementation.
+5. **NO PATH HALLUCINATIONS**: When using \`<add_files_to_context>\`, only use paths that appear verbatim in the tree below. Never invent paths.
 
-    ### 👁️ ACTIVE CONTEXT INVENTORY (POSSESSED FILES)
-    The following files are ALREADY loaded into your active memory with full content. You must read them from 'ACCESSIBLE FILE CONTENTS' below and are FORBIDDEN from asking to load or add them again:
-    ${filesInventory}
+### 👁️ ACTIVE CONTEXT INVENTORY (POSSESSED FILES)
+The following files are ALREADY loaded into your active memory with full content. You must read them from 'ACCESSIBLE FILE CONTENTS' below and are FORBIDDEN from asking to load or add them again:
+${filesInventory}
 
-    ### 📈 STATE EVOLUTION PROTOCOL (FOR EXTERNAL UI USE)
-    If you are processing this request in an external browser (ChatGPT, Gemini, Claude, etc.):
-    1. **SEQUENTIAL DELTAS**: Assume that every code block you output is immediately applied to the files below.
-    2. **CUMULATIVE CONTEXT**: If you modified 'file_A' in Turn 1, then in Turn 2, the 'Original Code' for 'file_A' is now your modified version.
-    3. **NO REVERSIONS**: Never generate a patch based on the starting state if you have already evolved that file in a previous turn of this conversation.
+### 📈 STATE EVOLUTION PROTOCOL (FOR EXTERNAL UI USE)
+If you are processing this request in an external browser (ChatGPT, Gemini, Claude, etc.):
+1. **SEQUENTIAL DELTAS**: Assume that every code block you output is immediately applied to the files below.
+2. **CUMULATIVE CONTEXT**: If you modified 'file_A' in Turn 1, then in Turn 2, the 'Original Code' for 'file_A' is now your modified version.
+3. **NO REVERSIONS**: Never generate a patch based on the starting state if you have already evolved that file in a previous turn of this conversation.
 
 ## 🎯 MISSION BRIEFING (Current Task Instructions)
 ${context.briefing || 'No specific task-level briefing provided.'}
@@ -472,7 +473,6 @@ You are a vision-capable engineer. You can generate, look at, and edit images.
     * Failure to do so will result in a square 1024x1024 image which violates the user's intent.
 - <generate_image path="..." width="..." height="...">prompt</generate_image>
 - <create_svg_asset path="..." svg_code="..." />
->>>>>>> REPLACE
 `;
         }
 
@@ -519,9 +519,8 @@ You are a vision-capable engineer. You can use XML tags to manifest visual chang
             `<mute_files>\npath\n</mute_files>`,
             `<unmute_files>\npath\n</unmute_files>`,
             `<mission_briefing action="write|patch" scope="global|local">\n[Content or Aider Search/Replace block]\n</mission_briefing>`,
-            `<remove_files_from_context>\npath\n</remove_files_from_context>`,
-            `<unpack_directory>\npath/to/folder\n</unpack_directory>`,
-            `<peek_files>\npath/to/file.ext\n</peek_files>`,
+            isCoEngineerOrAgent ? `<unpack_directory>\npath/to/folder\n</unpack_directory>` : null,
+            isCoEngineerOrAgent ? `<peek_files>\npath/to/file.ext\n</peek_files>` : null,
             isMemoryActive ? `<project_memory action="add" id="...">content</project_memory>` : null,
             isSparqlActive ? `<query_architecture>\nSELECT ?class WHERE { ?class s:type s:Class }\n</query_architecture>` : null,
             isVisionActive ? `<generate_image path="..." width="..." height="...">[LONG_IMAGE_PROMPT]</generate_image>` : null,
@@ -534,6 +533,49 @@ You are a vision-capable engineer. You can use XML tags to manifest visual chang
 You MUST strictly adhere to the following user preferences, coding style guidelines, and operational constraints in all reasoning, explanations, and code generation:
 ${userPreferences}
 ` : '';
+
+        let fileDiscoveryGuidance = "";
+        if (isExport) {
+            fileDiscoveryGuidance = `- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Output \`<add_files_to_context>\` on line 1 with the exact path from the tree to load it into the next turn.`;
+        } else if (isCoEngineerOrAgent) {
+            fileDiscoveryGuidance = `- **\`<add_files_to_context>\` vs \`read_file\` (MUTUALLY EXCLUSIVE)**:
+- **\`add_files_to_context\` vs \`peek_files\` vs \`read_file\`**:
+  * Use **\`add_files_to_context\`** ONLY when you need an unpossessed file persistently added to your active context across turns.
+  * Use **\`peek_files\`** to temporarily inspect a surgical slice of an unpossessed file without bloating your context window.
+  * **ENHANCED PEEKING ATTRIBUTES**:
+    - Lines: \`<peek_files lines="30" from="top|bottom" offset="10">path/to/file.ext</peek_files>\`
+    - Words: \`<peek_files words="150" from="bottom">path/to/file.ext</peek_files>\`
+    - Regex: \`<peek_files regex="function\\s+parse">path/to/file.ext</peek_files>\`
+  * Use **\`unpack_directory\`** ONLY if a directory in the tree ends with \`... +N more\` and you need to unroll its complete file list.
+- **TOOL PARAMETER HYGIENE**:
+  * For \`read_file\`, the parameter is \`"path"\` (e.g. \`{"name": "read_file", "arguments": {"path": "src/utils.ts"}}\`).
+  * For \`read_files\`, the parameter is \`"paths"\` (array of strings).
+- **COLLABORATE WITH THE GOVERNOR (`<ask_governor>`)**:
+  * If you encounter an unfamiliar project architecture, missing contracts, or complex cross-file pipelines, do NOT guess.
+  * You can summon the Context Governor mid-turn using:
+    <ask_governor>
+    Describe the architectural question, target pipeline, or missing contracts to inspect...
+    </ask_governor>
+  * The Governor will explore on-disk files, balance the token budget, update file muting, and return a verified <governor_report> with exact signatures and interfaces.
+- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Choose \`add_files_to_context\` to load it permanently, or \`peek_files\` to inspect it temporarily.`;
+        } else {
+            fileDiscoveryGuidance = `- **ACCESSING FILE CONTENT (ASSISTANT MODE MANDATE)**:
+  * In Assistant mode, \`peek_files\` and tool calls are disabled. You cannot peek at files.
+  * To inspect or read the full content of any file currently hidden (no marker) in the tree, you MUST output:
+    <add_files_to_context>
+    path/to/file.ext
+    </add_files_to_context>
+  * To inspect or read the full content of any file currently muted (marked [M]), you MUST output:
+    <unmute_files>
+    path/to/file.ext
+    </unmute_files>
+- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Output \`<add_files_to_context>\` on line 1 with the exact path from the tree to load it.`;
+        }
+
+        const peekTagNote = isCoEngineerOrAgent ? '`<peek_files>`, ' : '';
+        const singleLineExample = isCoEngineerOrAgent
+            ? '`<peek_files lines="30" from="top">path/to/file.ext</peek_files>`'
+            : '`<add_files_to_context>path/to/file.ext</add_files_to_context>`';
 
         // Default prompt
         return `${projectHeader}${activeProfile.prefix || ''}
@@ -572,21 +614,7 @@ ${memorySection}
   * **Scope Resolution**: 4-space indentation represents parent-child directory scope.
   * **Direct Files**: Files directly inside a directory that also has subdirectories appear under \`./: [...]\`. Leaf directories list their files directly.
   * **Targeting Any File**: Concatenate the nested directory scopes and the file name (e.g. \`src/\` + \`commands/\` + \`chatPanel/webview/\` + \`dom.ts\` = \`src/commands/chatPanel/webview/dom.ts\`). Every path passed to \`<add_files_to_context>\` MUST exist in this manifest.
-${isExport ? `- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Output \`<add_files_to_context>\` on line 1 with the exact path from the tree to load it into the next turn.` : `- **\`<add_files_to_context>\` vs \`read_file\` (MUTUALLY EXCLUSIVE)**:
-
-
-- **\`add_files_to_context\` vs \`peek_files\` vs \`read_file\`**:
-  * Use **\`add_files_to_context\`** ONLY when you need an unpossessed file persistently added to your active context across turns.
-  * Use **\`peek_files\`** (available in both Assistant & Co-Engineer modes) to temporarily inspect a surgical slice of an unpossessed file without bloating your context window.
-  * **ENHANCED PEEKING ATTRIBUTES**:
-    - Lines: \`<peek_files lines="30" from="top|bottom" offset="10">path/to/file.ext</peek_files>\`
-    - Words: \`<peek_files words="150" from="bottom">path/to/file.ext</peek_files>\`
-    - Regex: \`<peek_files regex="function\s+parse">path/to/file.ext</peek_files>\`
-  * Use **\`unpack_directory\`** ONLY if a directory in the tree ends with \`... +N more\` and you need to unroll its complete file list. Do NOT invent or call this on directories that do not exist in the tree.
-- **TOOL PARAMETER HYGIENE**:
-  * For \`read_file\`, the parameter is \`"path"\` (e.g. \`{"name": "read_file", "arguments": {"path": "src/utils.ts"}}\`).
-  * For \`read_files\`, the parameter is \`"paths"\` (array of strings).
-- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Choose \`add_files_to_context\` to load it permanently, or \`peek_files\` to inspect it temporarily.`}
+${fileDiscoveryGuidance}
 
 ### 🛡️ GUARDIAN PROTOCOL (AUTONOMOUS INTEGRITY)
 1. **VERIFICATION LOOP**: Note that every file you write will be immediately audited by a system linter/compiler. 
@@ -606,6 +634,18 @@ ${visionSection}
 ### 🔍 KNOWLEDGE ACQUISITION PROTOCOL (INSTANT ACQUISITION)
 If you see a file in the tree structure that is mandatory to the task at hand or the user did explicitely ask to add it but its content is missing from your context, you MUST emit <add_files_to_context> immediately to load it.
 
+### 🛑 ZERO CONVERSATIONAL PROCRASTINATION (ABSOLUTE MANDATE)
+You are **STRICTLY FORBIDDEN** from stating conversational promises like:
+- "Let me first read the X file..."
+- "I need to check Y to understand..."
+- "Let me inspect Z before making changes..."
+WITHOUT emitting the active XML tag in the exact same response!
+If you need to read or inspect ANY file from the tree that is not loaded, you MUST output:
+<add_files_to_context>
+path/to/file.ext
+</add_files_to_context>
+Conversational text alone cannot read files. If you state an intention to read a file without the tag, execution halts and the user receives a useless promise.
+
 **MANDATORY TAG FORMAT**: 
 <add_files_to_context>
 path/to/file.ext
@@ -621,13 +661,13 @@ Consistent parameter usage for file operations:
 - **Sovereign XML Tags** (STRICTLY FORBIDDEN from being wrapped inside markdown code blocks, backticks, or \`\`\`xml blocks. Write them as raw, naked XML in your response):
 ${authorizedTagsList}`}
 
-
-- **STRICT TAG HYGIENE & EXECUTION PROTOCOL**: Active orchestration tags (\`<peek_files>\`, \`<add_files_to_context>\`, \`<file>\`, etc.) **MUST NEVER** reside inside backticks or markdown code fences (e.g. \`\`\`xml or \`\`\`python).
-- **NO INLINE EMBEDDING IN PROSE**: Never embed an operational tag mid-sentence (e.g., do NOT write "I will inspect using \`<peek_files>file.py</peek_files>\`"). Inline occurrences inside explanatory paragraphs are treated as conversational text and will NOT execute.
+- **STRICT TAG HYGIENE & EXECUTION PROTOCOL**: Active orchestration tags (${peekTagNote}\`<add_files_to_context>\`, \`<file>\`, etc.) **MUST NEVER** reside inside backticks or markdown code fences (e.g. \`\`\`xml or \`\`\`python).
+- **NO INLINE EMBEDDING IN PROSE**: Never embed an operational tag mid-sentence. Inline occurrences inside explanatory paragraphs are treated as conversational text and will NOT execute.
 - **CLEAN LINE EXECUTION MANDATE**:
   * An executable tag **MUST** be placed on its own clean line (spaces or tabs before are allowed).
   * **Single-line format** (entire tag with parameters and closing on one clean line):
-    \`<peek_files lines="30" from="top">path/to/file.ext</peek_files>\`
+    ${singleLineExample}
+    
   * **Multi-line format** (each tag alone on its line):
     <peek_files lines="30" from="top">
     path/to/file.ext

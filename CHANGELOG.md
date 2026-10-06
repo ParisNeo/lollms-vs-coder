@@ -4,6 +4,119 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-10-06 23:01]
+
+- feat(registries): update chat command registry to 0.3.7
+
+## [2026-10-07 00:15]
+
+- `fix(vision-tokens): prevent base64 image data URIs from being counted as text tokens, isolating prompt text and charging fixed multimodal vision cost (~600 tokens) instead of millions of text characters`
+- `fix(governor): scrub base64 image data URIs from userPromptText before calculating Governor token budget and passing prompt to Governor LLM`
+
+## [2026-10-06 23:35]
+
+- `fix(governor): preserve complete chain of thoughts and investigation rounds in Governor chat message, rendering all previous rounds above the live stream without overwriting earlier text`
+- `feat(governor): format completed rounds with thoughts, tool invocations (<read_full_file>, <peek_files>, <grep>, <sparql>), and observations in real time`
+
+## [2026-10-06 23:05]
+
+- `feat(governor): implement Worker-Governor Collaboration Protocol enabling the worker to summon the Governor mid-turn via <ask_governor>...</ask_governor> in Co-Engineer mode`
+- `feat(governor): allow user to trigger the Governor at any time via <governor> directives or UI triggers to realign context`
+- `feat(governor): enshrine the Worker-Governor Collaboration Protocol into the Global Mission Briefing Doctrine`
+
+## [2026-10-06 22:45]
+
+- `fix(raw-modal): automatically close the Raw Aider Block modal when validating a single hunk or the last remaining hunk as manually applied`
+
+## [2026-10-06 22:20]
+
+- `feat(governor): reinstate trigger threshold gating in ContextGovernor.arbitrate to bypass Governor on turns where active load is safely within threshold, preventing unnecessary latency`
+- `feat(governor): provide dual-token accounting to Governor audit: total candidate pool tokens (muted + unmuted) vs. current unmuted tokens, with mandate to fit active unmuted tokens below threshold`
+- `feat(governor): stream real-time Governor reasoning, tool invocations (<read_full_file>, <peek_files>, <grep>, <sparql>), decisions, and prepared worker report directly into chat message`
+- `feat(governor): update permanent Sovereign Context Governor Doctrine with smart threshold gating, dual-token accounting, and real-time user visibility`
+
+## [2026-10-06 20:10]
+
+- `feat(governor): enshrine Sovereign Context Governor Doctrine into permanent global project mission briefing`
+- `fix(governor): eliminate premature 95% bypass so Governor actively arbitrates on every coding task, categorizing mandatory edit files vs. context reference files and unmuting only needed files`
+- `feat(governor): inject <governor_report> directly into the user's prompt turn containing reference contracts, function signatures, and multi-phase partitioning instructions`
+- `fix(governor): ensure multi-phase execution stepper in ChatPanel mutes completed phase files, unmutes next phase files, and automatically triggers continuation prompts across all phases`
+
+## [2026-10-06 19:35]
+
+- `fix(governor): deactivate thinking mode ({ thinking: false, reasoningEffort: 'none' }) across all Context Governor API calls, eliminating reasoning monologues and token waste during multi-round arbitration`
+
+## [2026-10-06 18:30]
+
+- `feat(governor): comprehensive Context Governor overhaul with fixed budget awareness, dual-source structure inference (informed by .lollms/structure.md or project tree), and active multi-round scouting`
+- `feat(governor): add <read_full_file> tool enabling Governor to load and inspect full file contents for a single round to extract interfaces and contracts into scratchpad without permanent context pollution`
+- `feat(governor): implement tri-tier file categorization (edit_files, context_files, unneeded_files) and 3-case arbitration (fit_all, fit_edits_only, split_multi_part)`
+- `feat(governor): generate high-density <governor_report> containing extracted signatures, schemas, and contracts from muted reference files, injected directly into prompt context`
+- `feat(governor): implement multi-part task partitioning when edit files exceed context budget, automatically staging changes, muting completed files, unmuting next files, and triggering continuation prompts`
+
+## [2026-10-05 10:46]
+
+- `feat(discussions): inherit muting pattern from previous discussion when creating a new discussion while preserving independent muting states for each discussion on disk`
+
+## [2026-10-05 10:40]
+
+- `fix(clipboard-image): resolve image pasting in discussion input panel by inspecting both clipboard items and files, supporting multi-image pastes, and adding container-level paste interception`
+- `fix(clipboard-image): render staged image cards using explicit <img> elements to guarantee visual preview without CSS background-image data URI parsing failures`
+
+## [2026-10-05 10:35]
+
+- `feat(context-expansion): automatically unmute files when requested via <add_files_to_context> across chat, Co-Engineer mode, and automation pipelines`
+- `feat(context-expansion): highlight muted files in orange with [MUTED] badge and eye-closed icon inside <add_files_to_context> cards, dynamically updating button to 'Unmute & Add to Context'`
+
+## [2026-10-04 21:30]
+
+- `feat(governor): inject Governor's Codebase Architecture & Workings Guide (.lollms/structure.md) at the bottom of the system prompt across chat executions, snapshots, and clipboard exports`
+- `fix(governor): enforce strict architectural purity mandate on .lollms/structure.md, preventing Governor from recording muting/keeping decisions, token budgets, or temporary session events in the structure guide, and adding automated sanitizer cleanStructureContent to purge event noise`
+
+## [2026-10-04 21:10]
+
+- `fix(grep): eliminate catastrophic slowdowns during Governor grep searches by treating git grep exit code 1 (zero matches) as clean empty results instead of falling into full-disk findstr, strictly excluding build/dist/out, venv/.venv, py compilation folders (__pycache__), node_modules, and .git, and replacing uncontrolled findstr with bounded VS Code file searches`
+
+## [2026-10-04 20:45]
+
+- `feat(wizard): revamp New Discussion Wizard into a two-column studio with live context load bar, target budget and capacity exceed warning banner, interactive candidate files list with active/muted toggles, one-click Context Governor integration, and full support for pasting text/images and attaching images to the opening prompt`
+
+## [2026-10-04 20:10]
+
+- `fix(hud): resolve External Research globe button click event swallowing, ensuring the Grounding and Research modal opens reliably`
+- `fix(search-ui): repair web search result rendering container lookup for DuckDuckGo, Google, Wikipedia, and StackOverflow`
+- `feat(grounding): add dedicated YouTube Transcript tab to Grounding Center with direct ingestion into .lollms/external_files/, and add Wikipedia search engine support`
+
+## [2026-10-04 19:45]
+
+- `feat(linter-repair): add automatic post-patch error detection auditing language server diagnostics after code is applied, displaying an interactive alert button (⚠️ X Errors · Fix in Studio) on file mutation cards and batch rows`
+- `feat(linter-repair): introduce Governor-style two-column File Repair Studio displaying line-by-line spotted diagnostics and live disk preview on the right, with multi-round surgical Aider patching, real-time error clearance, and user acceptance at any time`
+
+## [2026-10-04 19:25]
+
+- `refactor(hud): remove redundant fork icon button from Selected Files header summary, keeping Fork Chat and Fork & Compress consolidated inside the section toolbar`
+- `feat(hud): separate External & Research into its own dedicated collapsible section backed by .lollms/external_files, supporting document imports (PDF, DOCX, TXT, MD, etc.) with individual muting and removal`
+
+## [2026-10-04 19:00]
+
+- `feat(hud): display an eye icon (👁️) in front of vision-capable models in the HUD model selector badge and dropdown menu for immediate multimodal awareness`
+- `feat(settings): add dedicated 'Vision Support' settings tab with per-model manual overrides (Auto-Detect, Vision Supported, Text Only) and custom model pattern rules to easily configure bindings that do not report vision capabilities`
+
+## [2026-10-04 18:25]
+
+- `feat(hud): add 'Fork & Compress' button near 'Fork Chat' in the Context Explorer HUD and Actions menu, replicating all active files and mute states while compressing previous session history into two alternating messages (developer recap + assistant confirmation) to preserve strict user/assistant alternation`
+
+## [2026-10-04 17:50]
+
+- `feat(governor-ui): allow setting custom token budgets (Target LLM Presets for 8k, 16k, 32k, 64k, 128k, 200k, 1M, and custom inputs) in Context Governor Studio to prepare tailored prompts for any external LLM`
+- `feat(governor-ui): add interactive Effort Level selector (None, Low, Medium, High) to Context Governor Studio, dynamically controlling model reasoning depth and thinking budget during context arbitration`
+
+## [2026-10-04 12:20]
+
+- `feat(governor-ui): add interactive Stop Generation button to Context Governor Studio, wire AbortController cancellation to preserve partial discoveries, guarantee grep and SPARQL tools are always enabled for Governor, and support autonomous workspace file discovery via <add_files_to_context>`
+- `feat(governor-ui): embed live context progress bar into Context Governor Studio displaying exact context capacity, active content load, target threshold marker, and color-coded budget status`
+- `fix(governor): prevent single-round exit when LLM outputs conversational intent, enforce multi-round deep reasoning with high reasoning effort, and mandate pipeline tracing with aggressive pruning of large unrelated files`
+
 ## [2026-10-03 13:12]
 
 - ref(chats-ui): delete ArtefactSplitView, DataZone, and CodeMirrorComponent

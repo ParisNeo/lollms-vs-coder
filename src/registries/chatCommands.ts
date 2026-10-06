@@ -75,7 +75,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
     // --- WIZARD COMPILATION HANDLER ---
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.initializeNewDiscussionWithWizard', async (params: {
         title?: string,
-        prompt: string,
+        prompt: any,
         personalityId: string,
         profileId: string,
         selectedFolders: string[],
@@ -183,6 +183,11 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         // Apply chosen context selection state
         if (params.contextSelection === 'empty') {
             await services.contextManager.getContextStateProvider()?.softReset();
+            discussion.mutedFiles = [];
+            if (discussion.capabilities) {
+                discussion.capabilities.mutedFiles = [];
+            }
+            await services.discussionManager.saveDiscussion(discussion);
         } else if (params.contextSelection && params.contextSelection !== 'current') {
             await vscode.commands.executeCommand('lollms-vs-coder.loadContextSelectionDirect', params.contextSelection);
         }
@@ -226,15 +231,26 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             });
         } else {
             // PATH 2: "CREATE ONLY"
-            // Set input field content and generate title asynchronously in background [4]
-            panel.setInputText(params.prompt);
+            let textToSet = "";
+            let imagesToSet: any[] = [];
+            if (typeof params.prompt === 'string') {
+                textToSet = params.prompt;
+            } else if (Array.isArray(params.prompt)) {
+                textToSet = params.prompt.filter(p => p.type === 'text').map(p => p.text).join('\n');
+                imagesToSet = params.prompt.filter(p => p.type === 'image_url').map((p, idx) => ({
+                    name: `attached_${idx+1}.png`,
+                    data: p.image_url?.url || p.url
+                }));
+            }
 
-            if (!params.title && params.prompt) {
+            panel.setInputText(textToSet, imagesToSet);
+
+            if (!params.title && (textToSet || imagesToSet.length > 0)) {
                 setImmediate(async () => {
                     try {
                         const generatedTitle = await services.discussionManager.generateDiscussionTitle({
                             ...discussion,
-                            messages: [{ role: 'user', content: params.prompt } as ChatMessage]
+                            messages: [{ role: 'user', content: textToSet || "New Vision Session" } as ChatMessage]
                         });
                         if (generatedTitle) {
                             discussion.title = generatedTitle.trim();
@@ -380,6 +396,163 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         services.treeProviders.discussion?.refresh();
 
         vscode.window.showInformationMessage(`Created new discussion "${newDiscussion.title}" with ${allTargetFiles.length} files (${mutedFiles.length} muted).`);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.forkAndCompressDiscussion', async (arg?: any) => {
+        let sourceDiscussion: any = null;
+        let activePanel: ChatPanel | undefined = undefined;
+
+        if (arg instanceof ChatPanel || (arg && typeof arg.getCurrentDiscussion === 'function')) {
+            activePanel = arg;
+            sourceDiscussion = arg.getCurrentDiscussion();
+        } else if (arg && arg.discussion) {
+            sourceDiscussion = arg.discussion;
+        } else if (ChatPanel.currentPanel) {
+            activePanel = ChatPanel.currentPanel;
+            sourceDiscussion = ChatPanel.currentPanel.getCurrentDiscussion();
+        }
+
+        if (!sourceDiscussion) {
+            vscode.window.showWarningMessage("No active discussion found to fork and compress.");
+            return;
+        }
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Forking and compressing discussion history...",
+            cancellable: false
+        }, async (progress) => {
+            progress.report({ message: "Synthesizing session recap..." });
+
+            const provider = services.contextManager.getContextStateProvider();
+            const includedFiles = provider ? provider.getIncludedFiles().map(f => f.path) : [];
+            const mutedFiles = [...(sourceDiscussion.mutedFiles || [])];
+            const allTargetFiles = Array.from(new Set([...includedFiles, ...mutedFiles]));
+
+            const meaningfulMessages = (sourceDiscussion.messages || []).filter((m: any) => 
+                !m.skipInPrompt && 
+                m.role !== 'system' && 
+                (typeof m.content === 'string' ? !m.content.startsWith('FORM_SUBMISSION:') && !m.content.startsWith('STOP_REQUESTED') : true)
+            );
+
+            let summaryContent = "";
+
+            if (meaningfulMessages.length > 0) {
+                const transcript = meaningfulMessages.map((m: any) => {
+                    const role = m.role === 'user' ? 'Developer' : 'AI Assistant';
+                    let text = typeof m.content === 'string' 
+                        ? m.content 
+                        : (Array.isArray(m.content) ? m.content.filter((p: any) => p && p.type === 'text').map((p: any) => p.text).join('\n') : JSON.stringify(m.content));
+                    text = stripThinkingTags(text).replace(/<[^>]+>/g, '').trim();
+                    if (text.length > 1800) {
+                        text = text.substring(0, 900) + '\n... [truncated] ...\n' + text.substring(text.length - 900);
+                    }
+                    return `### [${role}]\n${text}`;
+                }).join('\n\n');
+
+                const compressionPrompt = `You are a Senior Lead Architect and technical historian.
+Analyze the following development session transcript between a developer and an AI coding assistant.
+Synthesize a comprehensive, high-density recap written from the developer's perspective explaining everything accomplished and established in this previous session.
+
+STRUCTURE YOUR RECAP:
+1. **Previous Session Objective**: What the task was.
+2. **Work Accomplished & Code Changes**: Files modified or created, bug fixes implemented, and architectural logic added.
+3. **Key Decisions & Technical Standards**: Architectural decisions and constraints confirmed.
+4. **Current Status & Pending Next Steps**: What state the project is in and what should be tackled next.
+
+INSTRUCTIONS:
+- Write in a natural developer voice suitable for a user prompt initiating the next phase (e.g., 'In our previous session, we completed...').
+- Be concrete and cite specific files, classes, and functions discussed.
+- Output ONLY the recap text. Do NOT add conversational meta-chatter like 'Here is the summary'.
+
+TRANSCRIPT:
+${transcript}`;
+
+                try {
+                    const model = sourceDiscussion.model || services.lollmsAPI.getModelName();
+                    const rawSummary = await services.lollmsAPI.sendChat([
+                        { role: 'system', content: "You are a concise technical architect synthesizing development progress. Output only the structured recap." },
+                        { role: 'user', content: compressionPrompt }
+                    ], null, undefined, model, { thinking: false });
+
+                    summaryContent = stripThinkingTags(rawSummary).trim();
+                } catch (err: any) {
+                    Logger.warn("Failed to generate AI summary for Fork & Compress, using fallback", err);
+                }
+            }
+
+            if (!summaryContent) {
+                summaryContent = `### 📋 PREVIOUS SESSION RECAP\nWe previously discussed: "${sourceDiscussion.title || 'Development Task'}". All active and muted context files have been preserved. We are ready to continue with the next development steps.`;
+            }
+
+            const newDiscussion = services.discussionManager.createNewDiscussion(sourceDiscussion.groupId || null);
+            newDiscussion.title = `Compressed Fork of ${sourceDiscussion.title || 'Discussion'}`;
+            newDiscussion.mutedFiles = mutedFiles;
+            newDiscussion.mutedTools = [...(sourceDiscussion.mutedTools || [])];
+            newDiscussion.mutedSkills = [...(sourceDiscussion.mutedSkills || [])];
+            newDiscussion.mutedDiagrams = [...(sourceDiscussion.mutedDiagrams || [])];
+            newDiscussion.importedSkills = [...(sourceDiscussion.importedSkills || [])];
+            newDiscussion.importedTools = [...(sourceDiscussion.importedTools || [])];
+            newDiscussion.activeDiagrams = [...(sourceDiscussion.activeDiagrams || [])];
+            newDiscussion.discussion_data_zone = sourceDiscussion.discussion_data_zone;
+            newDiscussion.model = sourceDiscussion.model;
+            newDiscussion.personalityId = sourceDiscussion.personalityId;
+
+            if (sourceDiscussion.capabilities) {
+                newDiscussion.capabilities = JSON.parse(JSON.stringify(sourceDiscussion.capabilities));
+            }
+
+            // Create the two alternating messages to preserve user/assistant alternation:
+            // 1. User message explaining everything that was done
+            // 2. Assistant message acknowledging (roger that)
+            const userMsg: ChatMessage = {
+                id: 'user_recap_' + Date.now(),
+                role: 'user',
+                content: summaryContent,
+                timestamp: Date.now()
+            };
+
+            const assistantMsg: ChatMessage = {
+                id: 'assistant_roger_' + (Date.now() + 1),
+                role: 'assistant',
+                content: "Roger that! I have reviewed and internalized everything accomplished in our previous session, including the modified files, architectural decisions, and current progress. All context and files are synchronized. What would you like us to tackle next?",
+                model: newDiscussion.model || services.lollmsAPI.getModelName(),
+                personalityName: 'Lollms',
+                timestamp: Date.now() + 1
+            };
+
+            newDiscussion.messages = [userMsg, assistantMsg];
+
+            await services.discussionManager.saveDiscussion(newDiscussion);
+
+            if (provider && allTargetFiles.length > 0) {
+                await provider.addFilesToContext(allTargetFiles);
+            }
+
+            const panel = ChatPanel.createOrShow(services, newDiscussion.id);
+            panel._panel.reveal();
+
+            const agent = new AgentManager(
+                panel, services.lollmsAPI, services.contextManager, services.gitIntegration,
+                services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+                services.toolManager,
+                services.rlmDb
+            );
+            agent.projectMemoryManager = services.projectMemoryManager;
+            agent.personalityManager = services.personalityManager;
+            agent.setProcessManager(services.processManager);
+            panel.setAgentManager(agent);
+
+            panel.setProcessManager(services.processManager);
+            panel.setContextManager(services.contextManager);
+            panel.setPersonalityManager(services.personalityManager);
+            panel.setHerdManager(services.herdManager);
+
+            await panel.loadDiscussion();
+            services.treeProviders.discussion?.refresh();
+
+            vscode.window.showInformationMessage(`Forked & compressed into "${newDiscussion.title}" (2 alternating messages initialized).`);
+        });
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionFromClipboard', async (textOverride?: any) => {

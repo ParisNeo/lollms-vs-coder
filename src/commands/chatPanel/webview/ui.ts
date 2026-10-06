@@ -1,5 +1,6 @@
 import { dom, state, vscode } from "./dom.js";
 import { isScrolledToBottom, applySearchReplace, normalizeAiderContent, parseAiderHunks } from "./utils.js";
+import { processThinkTags } from "./messageRenderer.js";
 import DOMPurify from 'dompurify';
 
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
@@ -51,11 +52,23 @@ export function renderPendingImages() {
     if (!dom.attachmentPreviewArea) return;
     dom.attachmentPreviewArea.innerHTML = '';
 
-    state.pendingImages.forEach((img, idx) => {
+    if (!state.pendingImages || state.pendingImages.length === 0) {
+        dom.attachmentPreviewArea.style.display = 'none';
+        return;
+    }
+
+    dom.attachmentPreviewArea.style.display = 'flex';
+
+    state.pendingImages.forEach((img: { name: string; data: string }, idx: number) => {
         if (!img.data) return; // Skip invalid entries
         const card = document.createElement('div');
         card.className = 'staged-image-card';
-        card.style.backgroundImage = `url(${img.data})`;
+
+        const imageEl = document.createElement('img');
+        imageEl.src = img.data;
+        imageEl.alt = img.name || 'Attached image';
+        imageEl.style.cssText = 'width: 100%; height: 100%; object-fit: cover; border-radius: 4px; display: block;';
+        card.appendChild(imageEl);
 
         const edit = document.createElement('div');
         edit.className = 'edit-btn';
@@ -1536,6 +1549,7 @@ function openProfileEditor(idx: number = -1) {
 export function syncExpansionBlocks() {
     const globalState = (window as any).state;
     const globalFiles = globalState?.lastContextData?.files || [];
+    const currentMuted = (state as any)?.mutedFiles || (window as any).state?.mutedFiles || globalState?.lastContextData?.mutedFiles || [];
 
     // Helper for robust path matching supporting strings and object descriptors
     const isPathMatch = (pathA: any, pathB: any): boolean => {
@@ -1547,15 +1561,47 @@ export function syncExpansionBlocks() {
         return cleanA === cleanB || cleanA.endsWith('/' + cleanB) || cleanB.endsWith('/' + cleanA);
     };
 
-    // 1. Synchronize local items against active context files
+    const isMuted = (p: string): boolean => {
+        return currentMuted.some((m: string) => isPathMatch(m, p));
+    };
+
+    // 1. Synchronize local items against active context files and muted files
     const items = document.querySelectorAll('.expansion-file-item');
     items.forEach((item: any) => {
         const pathAttr = item.getAttribute('data-path');
         if (!pathAttr) return;
 
+        let badge = item.querySelector('.muted-badge');
+
+        if (isMuted(pathAttr)) {
+            item.classList.remove('status-in-context', 'status-not-in-context', 'status-not-exist');
+            item.classList.add('status-muted');
+            item.style.color = 'var(--vscode-charts-orange, #ff9800)';
+            item.style.borderColor = 'var(--vscode-charts-orange, #ff9800)';
+            item.style.borderLeft = '4px solid var(--vscode-charts-orange, #ff9800)';
+            item.style.background = 'rgba(255, 152, 0, 0.1)';
+            const icon = item.querySelector('.codicon');
+            if (icon) {
+                icon.className = 'codicon codicon-eye-closed';
+                icon.style.color = 'var(--vscode-charts-orange, #ff9800)';
+            }
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'file-token-badge weight-muted muted-badge';
+                badge.style.cssText = 'margin-left: auto; font-size: 10px; color: var(--vscode-charts-orange); border-color: rgba(214, 122, 13, 0.4); background: rgba(214, 122, 13, 0.1); font-style: italic;';
+                badge.textContent = '[MUTED]';
+                item.appendChild(badge);
+            }
+            return;
+        }
+
+        if (badge) {
+            badge.remove();
+        }
+
         const isIncluded = globalFiles.some((cf: any) => isPathMatch(cf, pathAttr));
         if (isIncluded) {
-            item.classList.remove('status-not-in-context', 'status-not-exist');
+            item.classList.remove('status-not-in-context', 'status-not-exist', 'status-muted');
             item.classList.add('status-in-context');
             item.style.color = 'var(--vscode-charts-green, #388e3c)';
             item.style.borderColor = 'var(--vscode-charts-green, #388e3c)';
@@ -1569,8 +1615,32 @@ export function syncExpansionBlocks() {
         }
     });
 
+    // 1.5. Synchronize master button labels and states in expansion blocks
+    document.querySelectorAll('.context-expansion-block').forEach((block: any) => {
+        try {
+            const files: string[] = JSON.parse(block.dataset.files || '[]');
+            if (files.length > 0) {
+                const anyMuted = files.some(f => isMuted(f));
+                const allIncludedAndNotMuted = files.every(f => globalFiles.some((cf: any) => isPathMatch(cf, f)) && !isMuted(f));
+                const addBtn = block.querySelector('.add-btn') as HTMLButtonElement;
+                if (addBtn) {
+                    if (allIncludedAndNotMuted) {
+                        addBtn.innerHTML = '<span class="codicon codicon-check"></span> Added to Context';
+                        addBtn.className = 'code-action-btn applied add-btn';
+                        addBtn.disabled = true;
+                    } else {
+                        const btnText = anyMuted ? 'Unmute & Add to Context' : 'Add all to Context';
+                        const btnIcon = anyMuted ? 'codicon-eye' : 'codicon-add';
+                        addBtn.innerHTML = `<span class="codicon ${btnIcon}"></span> ${btnText}`;
+                        addBtn.className = 'code-action-btn apply-btn add-btn';
+                        addBtn.disabled = false;
+                    }
+                }
+            }
+        } catch (e) {}
+    });
+
     // 2. Synchronize .unmute-files-block status
-    const currentMuted = (state as any)?.mutedFiles || (window as any).state?.mutedFiles || [];
     document.querySelectorAll('.unmute-files-block').forEach((block: any) => {
         let allUnmuted = true;
         block.querySelectorAll('.expansion-file-item').forEach((item: any) => {
@@ -2199,10 +2269,14 @@ export function updateBadges() {
 
     // Render & Bind Model Selector Badge (Directly in HUD)
     const currentModelName = state.currentModelName || (dom.modelSelector ? dom.modelSelector.value : '') || 'Default Model';
-    const modelsList = Array.from(dom.modelSelector ? dom.modelSelector.options : []).map((opt: any) => ({ id: opt.value })).filter(m => m.id);
+    const modelsList = ((state as any).models && (state as any).models.length > 0)
+        ? (state as any).models
+        : Array.from(dom.modelSelector ? dom.modelSelector.options : []).map((opt: any) => ({
+            id: opt.value,
+            hasVision: opt.dataset?.hasVision === 'true' || opt.textContent?.includes('👁️')
+        })).filter(m => m.id);
 
     const modelDiv = document.createElement('div');
-    // Use dynamic import pathing safe reference or native call
     import('./messageRenderer.js').then(module => {
         modelDiv.innerHTML = module.ContextPresenter.renderModelSelectorBadge(currentModelName, modelsList);
         const badgeWrapper = modelDiv.firstElementChild as HTMLElement;
@@ -2929,8 +3003,14 @@ export function renderDiscussionSearchResults(results: any[], query: string) {
  * Renders web search results inside the active tab of the Web Discovery modal.
  */
 export function renderWebSearchResults(action: string, results: any[]) {
-    const tabId = `tab-${action}`;
-    const container = document.getElementById(tabId);
+    let container = document.getElementById(`tab-${action}`);
+    if (!container) {
+        if (['ddg', 'google', 'so', 'wiki', 'search_provider'].includes(action)) {
+            container = document.getElementById('tab-search');
+        } else if (['arxiv', 'hal', 'academic_provider'].includes(action)) {
+            container = document.getElementById('tab-arxiv');
+        }
+    }
     if (!container) return;
 
     // Reset button state immediately
@@ -3531,6 +3611,377 @@ export interface GovernorCandidateFile {
     bytes: number;
 }
 
+export interface FileDiagnosticError {
+    line: number;
+    character: number;
+    message: string;
+    source?: string;
+    code?: string;
+    snippet?: string;
+}
+
+export const fileRepairStudioState = {
+    filePath: '',
+    messageId: '',
+    blockIndex: undefined as number | undefined,
+    blockId: undefined as string | undefined,
+    errors: [] as FileDiagnosticError[],
+    currentCode: '',
+    history: [] as { role: 'user' | 'assistant'; text: string; patchApplied?: boolean }[],
+    round: 0,
+    maxRounds: 5,
+    isRunning: false
+};
+(window as any).fileRepairStudioState = fileRepairStudioState;
+
+export function updateFileDiagnosticsUI(
+    filePath: string,
+    messageId?: string,
+    blockIndex?: number,
+    blockId?: string,
+    errorsCount: number = 0,
+    errors: FileDiagnosticError[] = []
+) {
+    const normTarget = filePath.replace(/\\/g, '/').toLowerCase().trim();
+
+    // 1. Locate relevant card or row element
+    const cards = Array.from(document.querySelectorAll('.file-mutation-card, details.code-collapsible')) as HTMLElement[];
+    cards.forEach(card => {
+        const cardPath = (card.dataset.path || '').replace(/\\/g, '/').toLowerCase().trim();
+        const matches = card.id === blockId || cardPath === normTarget || cardPath.endsWith('/' + normTarget) || normTarget.endsWith('/' + cardPath);
+
+        if (matches) {
+            const actions = card.querySelector('.code-actions');
+            let errorBtn = card.querySelector('.file-repair-alert-btn') as HTMLElement;
+
+            if (errorsCount > 0) {
+                if (!errorBtn && actions) {
+                    errorBtn = document.createElement('button');
+                    errorBtn.className = 'code-action-btn file-repair-alert-btn';
+                    errorBtn.setAttribute('data-filepath', filePath);
+                    if (messageId) errorBtn.setAttribute('data-message-id', messageId);
+                    if (blockIndex !== undefined) errorBtn.setAttribute('data-block-index', String(blockIndex));
+                    if (blockId) errorBtn.setAttribute('data-block-id', blockId);
+                    actions.insertBefore(errorBtn, actions.firstChild);
+                }
+                if (errorBtn) {
+                    errorBtn.innerHTML = `<i class="codicon codicon-warning" style="color:var(--vscode-charts-red)"></i> <span>${errorsCount} Error${errorsCount > 1 ? 's' : ''} &middot; Fix in Studio</span>`;
+                    errorBtn.title = `${errorsCount} error(s) detected on disk after applying. Click to open Repair Studio.`;
+                    (errorBtn as any)._errors = errors;
+                    errorBtn.onclick = (e: MouseEvent) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openFileRepairStudio(filePath, errors, messageId, blockIndex, blockId);
+                    };
+                }
+            } else if (errorBtn) {
+                errorBtn.remove();
+            }
+        }
+    });
+
+    // 2. Locate apply-all rows if present
+    const rows = Array.from(document.querySelectorAll('.apply-row')) as HTMLElement[];
+    rows.forEach(row => {
+        const rowPath = (row.querySelector('.row-path')?.textContent || '').split('(')[0].trim().replace(/\\/g, '/').toLowerCase();
+        if (rowPath === normTarget || rowPath.endsWith('/' + normTarget) || normTarget.endsWith('/' + rowPath)) {
+            let rowAlertBtn = row.querySelector('.file-repair-alert-btn') as HTMLElement;
+            if (errorsCount > 0) {
+                if (!rowAlertBtn) {
+                    rowAlertBtn = document.createElement('button');
+                    rowAlertBtn.className = 'code-action-btn file-repair-alert-btn';
+                    rowAlertBtn.setAttribute('data-filepath', filePath);
+                    if (messageId) rowAlertBtn.setAttribute('data-message-id', messageId);
+                    if (blockIndex !== undefined) rowAlertBtn.setAttribute('data-block-index', String(blockIndex));
+                    row.appendChild(rowAlertBtn);
+                }
+                rowAlertBtn.innerHTML = `<i class="codicon codicon-warning"></i> <span>${errorsCount} Err</span>`;
+                (rowAlertBtn as any)._errors = errors;
+            } else if (rowAlertBtn) {
+                rowAlertBtn.remove();
+            }
+        }
+    });
+
+    // 3. If the Repair Studio modal is currently open for this file, update its live view
+    if (fileRepairStudioState.filePath.replace(/\\/g, '/').toLowerCase().trim() === normTarget) {
+        fileRepairStudioState.errors = errors;
+        renderRepairErrorsList();
+    }
+}
+(window as any).updateFileDiagnosticsUI = updateFileDiagnosticsUI;
+
+export function renderRepairErrorsList() {
+    const listEl = document.getElementById('repair-errors-list');
+    const spottedCountEl = document.getElementById('repair-spotted-count');
+    const topStats = document.getElementById('repair-top-stats');
+    const counterBadge = document.getElementById('repair-error-counter-badge');
+    const footerSummary = document.getElementById('repair-footer-summary');
+
+    if (!listEl) return;
+
+    const errors = fileRepairStudioState.errors || [];
+    const count = errors.length;
+
+    if (spottedCountEl) spottedCountEl.textContent = String(count);
+    if (topStats) {
+        const fileName = (fileRepairStudioState.filePath || 'File').split(/[\\/]/).pop() || 'File';
+        topStats.textContent = `${fileName} · ${count} Error${count === 1 ? '' : 's'}`;
+        topStats.className = count === 0 ? 'file-token-badge weight-light' : 'file-token-badge weight-heavy';
+    }
+    if (counterBadge) {
+        counterBadge.textContent = count === 0 ? 'Clean (0 Errors)' : `${count} Error${count === 1 ? '' : 's'}`;
+        counterBadge.className = count === 0 ? 'token-mini-badge weight-light' : 'token-mini-badge weight-heavy';
+    }
+    if (footerSummary) {
+        footerSummary.textContent = count === 0 
+            ? '🎉 All errors have been resolved! Click Accept & Keep File to close.' 
+            : `${count} error(s) remaining. You can accept and keep the file at any time.`;
+    }
+
+    if (count === 0) {
+        listEl.innerHTML = `
+            <div style="padding: 24px; text-align: center; color: var(--vscode-charts-green); display: flex; flex-direction: column; align-items: center; gap: 8px;">
+                <i class="codicon codicon-pass-filled" style="font-size: 28px;"></i>
+                <div style="font-weight: 700; font-size: 13px;">No Errors Detected on Disk</div>
+                <div style="font-size: 11px; opacity: 0.8; color: var(--vscode-foreground);">The file passes language server diagnostics with 0 errors.</div>
+            </div>
+        `;
+        return;
+    }
+
+    listEl.innerHTML = errors.map((e, idx) => `
+        <div class="repair-error-card" data-idx="${idx}" data-line="${e.line}">
+            <div class="repair-error-header">
+                <span class="error-line-badge">Line ${e.line}:${e.character}</span>
+                <span class="error-source">${sanitizer.sanitize(e.source || e.code || 'Diagnostics')}</span>
+            </div>
+            <div class="repair-error-msg">${sanitizer.sanitize(e.message)}</div>
+            ${e.snippet ? `<div class="repair-error-snippet"><code>${sanitizer.sanitize(e.snippet)}</code></div>` : ''}
+        </div>
+    `).join('');
+}
+(window as any).renderRepairErrorsList = renderRepairErrorsList;
+
+export function renderRepairCodePreview(codeText?: string) {
+    const previewEl = document.getElementById('repair-code-preview');
+    if (!previewEl) return;
+    const text = codeText !== undefined ? codeText : fileRepairStudioState.currentCode;
+    previewEl.textContent = text || '(File content empty or loading...)';
+}
+(window as any).renderRepairCodePreview = renderRepairCodePreview;
+
+export function setRepairRunningState(isRunning: boolean) {
+    fileRepairStudioState.isRunning = isRunning;
+    const runBtn = document.getElementById('repair-run-btn') as HTMLButtonElement;
+    const runIcon = document.getElementById('repair-run-icon');
+    const stepInd = document.getElementById('repair-step-indicator');
+    const statusText = document.getElementById('repair-round-status');
+
+    if (runBtn) {
+        if (isRunning) {
+            runBtn.disabled = false;
+            runBtn.classList.remove('apply-btn');
+            runBtn.classList.add('delete-btn');
+            runBtn.style.setProperty('background', 'var(--vscode-charts-red)', 'important');
+            runBtn.title = 'Stop Repair generation immediately';
+            runBtn.innerHTML = '<i class="codicon codicon-primitive-square" style="font-size: 16px;"></i><span style="font-size: 9px;">Stop</span>';
+        } else {
+            runBtn.disabled = false;
+            runBtn.classList.remove('delete-btn');
+            runBtn.classList.add('apply-btn');
+            runBtn.style.setProperty('background', 'var(--vscode-charts-purple)', 'important');
+            runBtn.title = 'Run Repair Pass (Enter)';
+            runBtn.innerHTML = '<i class="codicon codicon-sparkle" style="font-size: 16px;"></i><span style="font-size: 9px;">Fix</span>';
+        }
+    }
+
+    if (stepInd) {
+        stepInd.style.display = isRunning ? 'flex' : 'none';
+    }
+
+    if (statusText && !isRunning) {
+        statusText.textContent = 'Ready';
+    }
+}
+(window as any).setRepairRunningState = setRepairRunningState;
+
+export function appendRepairStreamMessage(role: 'user' | 'assistant' | 'system', text: string) {
+    const container = document.getElementById('repair-chat-messages');
+    if (!container) return;
+
+    const bubble = document.createElement('div');
+    bubble.className = `gov-chat-bubble ${role === 'user' ? 'user' : (role === 'assistant' ? 'governor' : 'system')}`;
+
+    const title = role === 'user' ? 'You' : (role === 'assistant' ? 'Repair Agent' : 'Guardian Status');
+    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    bubble.innerHTML = `
+        <div class="gov-bubble-header">
+            <span style="color: ${role === 'assistant' ? 'var(--vscode-charts-purple)' : (role === 'user' ? 'var(--vscode-charts-blue)' : 'var(--vscode-charts-orange)')}; display: flex; align-items: center; gap: 4px;">
+                <i class="codicon ${role === 'assistant' ? 'codicon-sparkle' : (role === 'user' ? 'codicon-account' : 'codicon-shield')}"></i> ${title}
+            </span>
+            <span>${time}</span>
+        </div>
+        <div class="markdown-body" style="font-size: 11px; line-height: 1.45;">
+            ${(window as any).DOMPurify.sanitize((window as any).marked.parse(text))}
+        </div>
+    `;
+
+    container.appendChild(bubble);
+    container.scrollTop = container.scrollHeight;
+}
+(window as any).appendRepairStreamMessage = appendRepairStreamMessage;
+
+export function streamRepairChunk(round: number, maxRounds: number, chunk: string, fullText: string, messageId: string) {
+    const container = document.getElementById('repair-chat-messages');
+    if (!container) return;
+
+    let bubble = document.getElementById(`repair-bubble-${messageId}`) as HTMLElement;
+    if (!bubble) {
+        bubble = document.createElement('div');
+        bubble.id = `repair-bubble-${messageId}`;
+        bubble.className = 'gov-chat-bubble governor';
+        bubble.innerHTML = `
+            <div class="gov-bubble-header">
+                <span style="color: var(--vscode-charts-purple); display: flex; align-items: center; gap: 4px;">
+                    <i class="codicon codicon-sparkle"></i> Repair Agent (Round ${round}/${maxRounds})
+                </span>
+                <span class="gov-live-spinner"><span class="spinner" style="width:10px; height:10px; border-width:1.5px; margin-right:4px;"></span> repairing...</span>
+            </div>
+            <div class="repair-bubble-stream-content markdown-body" style="font-size: 11px; line-height: 1.45;"></div>
+        `;
+        container.appendChild(bubble);
+    }
+
+    const contentArea = bubble.querySelector('.repair-bubble-stream-content') as HTMLElement;
+    if (contentArea) {
+        const thinkResult = processThinkTags(fullText);
+        let htmlOut = "";
+
+        if (thinkResult.thoughts.length > 0) {
+            htmlOut += thinkResult.thoughts.map((t: any) => `
+                <div class="plan-scratchpad" style="margin: 4px 0 8px 0; border-left: 3px solid var(--thinking-color);">
+                    <details open>
+                        <summary class="scratchpad-header" style="color: var(--thinking-color); font-size: 10px; font-weight: bold;">
+                            <span class="spinner" style="width:9px; height:9px; border-width:1.5px; margin-right:4px;"></span> Reasoning...
+                        </summary>
+                        <div class="scratchpad-content markdown-body" style="padding: 6px 10px; font-size: 10.5px; opacity: 0.9; max-height: 160px; overflow-y: auto;">
+                            ${DOMPurify.sanitize((window as any).marked.parse(t.content || 'Reasoning...'))}
+                        </div>
+                    </details>
+                </div>
+            `).join('');
+        }
+
+        const remainingText = thinkResult.processedContent;
+        if (remainingText.trim()) {
+            htmlOut += DOMPurify.sanitize((window as any).marked.parse(remainingText));
+        }
+
+        contentArea.innerHTML = htmlOut || '<div class="spinner" style="width:10px; height:10px; border-width:1.5px;"></div>';
+    }
+
+    container.scrollTop = container.scrollHeight;
+}
+(window as any).streamRepairChunk = streamRepairChunk;
+
+export function openFileRepairStudio(
+    filePath: string,
+    errors: FileDiagnosticError[] = [],
+    messageId?: string,
+    blockIndex?: number,
+    blockId?: string
+) {
+    const modal = document.getElementById('file-repair-modal');
+    if (!modal) return;
+
+    fileRepairStudioState.filePath = filePath;
+    fileRepairStudioState.messageId = messageId || '';
+    fileRepairStudioState.blockIndex = blockIndex;
+    fileRepairStudioState.blockId = blockId;
+    fileRepairStudioState.errors = errors;
+    fileRepairStudioState.history = [];
+    fileRepairStudioState.round = 0;
+    fileRepairStudioState.maxRounds = 5;
+    fileRepairStudioState.isRunning = false;
+
+    const pathLabel = document.getElementById('repair-file-path-label');
+    if (pathLabel) pathLabel.textContent = filePath;
+
+    const roundBadge = document.getElementById('repair-round-badge');
+    if (roundBadge) roundBadge.textContent = `Round 0 / 5`;
+
+    renderRepairErrorsList();
+
+    // Clear chat stream and show welcome card
+    const chatContainer = document.getElementById('repair-chat-messages');
+    if (chatContainer) {
+        chatContainer.innerHTML = '';
+        appendRepairStreamMessage('system', `Spotted **${errors.length} error(s)** in \`${filePath}\` after applying changes.\n\nI will inspect the file on disk and language server diagnostics, then generate surgical patches to fix missing imports, type mismatches, or syntax errors.\n\n*You can prompt the agent anytime with hints or click **Accept & Keep File** at any time.*`);
+    }
+
+    // Default to Errors tab
+    const errorsTabBtn = document.getElementById('repair-tab-errors-btn');
+    const codeTabBtn = document.getElementById('repair-tab-code-btn');
+    const errorsContainer = document.getElementById('repair-errors-container');
+    const codeContainer = document.getElementById('repair-code-container');
+    if (errorsTabBtn && codeTabBtn && errorsContainer && codeContainer) {
+        errorsTabBtn.classList.add('apply-btn');
+        codeTabBtn.classList.remove('apply-btn');
+        errorsContainer.style.display = 'flex';
+        codeContainer.style.display = 'none';
+    }
+
+    // Request fresh file content from extension host for the code viewer
+    vscode.postMessage({
+        command: 'requestFileContentForDiff',
+        path: filePath,
+        changeIndex: 9999
+    });
+
+    modal.style.setProperty('z-index', '115000', 'important');
+    modal.style.display = 'flex';
+    modal.classList.add('visible');
+
+    // Automatically initiate Round 1 repair pass
+    setTimeout(() => {
+        triggerRepairPass();
+    }, 200);
+}
+(window as any).openFileRepairStudio = openFileRepairStudio;
+
+export function triggerRepairPass(promptText?: string) {
+    if (fileRepairStudioState.isRunning) return;
+
+    fileRepairStudioState.round++;
+    setRepairRunningState(true);
+
+    const roundBadge = document.getElementById('repair-round-badge');
+    if (roundBadge) roundBadge.textContent = `Round ${fileRepairStudioState.round} / ${fileRepairStudioState.maxRounds}`;
+
+    const stepText = document.getElementById('repair-step-text');
+    if (stepText) stepText.textContent = `Analyzing diagnostics & drafting repair (Round ${fileRepairStudioState.round})...`;
+
+    if (promptText) {
+        appendRepairStreamMessage('user', promptText);
+        fileRepairStudioState.history.push({ role: 'user', text: promptText });
+    }
+
+    vscode.postMessage({
+        command: 'runFileRepairPass',
+        filePath: fileRepairStudioState.filePath,
+        messageId: fileRepairStudioState.messageId,
+        blockIndex: fileRepairStudioState.blockIndex,
+        blockId: fileRepairStudioState.blockId,
+        prompt: promptText,
+        round: fileRepairStudioState.round,
+        maxRounds: fileRepairStudioState.maxRounds,
+        errors: fileRepairStudioState.errors
+    });
+}
+(window as any).triggerRepairPass = triggerRepairPass;
+
 export const governorStudioState = {
     caller: 'chat' as 'chat' | 'wizard',
     candidateFiles: [] as GovernorCandidateFile[],
@@ -3538,7 +3989,10 @@ export const governorStudioState = {
     newAddedFiles: new Set<string>(),
     history: [] as { role: 'user' | 'assistant'; text: string; discoverySteps?: any[]; advice?: string; rationale?: string }[],
     searchFilter: '',
-    initialPrompt: ''
+    initialPrompt: '',
+    customCapacity: undefined as number | undefined,
+    targetPercent: 70,
+    reasoningEffort: 'none' as 'none' | 'low' | 'medium' | 'high'
 };
 (window as any).governorStudioState = governorStudioState;
 
@@ -3597,9 +4051,11 @@ export function renderGovernorFileList() {
     const activeCount = totalFiles - mutedCount;
 
     let activeTokens = 0;
+    let activeBytes = 0;
     files.forEach(f => {
         if (!mutedSet.has(f.path.toLowerCase().trim())) {
             activeTokens += f.tokens;
+            activeBytes += (f.bytes || Math.round(f.tokens * 3.5));
         }
     });
 
@@ -3613,8 +4069,66 @@ export function renderGovernorFileList() {
     const tokenLoadLabel = document.getElementById('gov-token-load-label');
     if (tokenLoadLabel) tokenLoadLabel.textContent = `~${activeTokStr} tok active`;
 
+    // ── 📊 CONTEXT PROGRESS BAR & CAPACITY HUD INTEGRATION ──────────────────
+    const defaultCapacity = getContextCapacity();
+    const capacity = (typeof governorStudioState.customCapacity === 'number' && governorStudioState.customCapacity > 0)
+        ? governorStudioState.customCapacity
+        : defaultCapacity;
+    const targetPct = (typeof governorStudioState.targetPercent === 'number' && governorStudioState.targetPercent > 0)
+        ? governorStudioState.targetPercent
+        : (state.capabilities?.contextGovernorTargetThreshold ?? 70);
+    const targetBudget = Math.round(capacity * (targetPct / 100));
+    const targetBudgetStr = targetBudget >= 1000 ? `${(targetBudget / 1000).toFixed(1)}k` : `${targetBudget}`;
+    const capacityStr = capacity >= 1000 ? `${(capacity / 1000).toFixed(0)}k` : `${capacity}`;
+
+    const pct = capacity > 0 ? (activeTokens / capacity) * 100 : 0;
+    const clampedPct = Math.min(100, Math.max(0, pct));
+
+    const loadDetailEl = document.getElementById('gov-context-load-detail');
+    if (loadDetailEl) {
+        let sizeFormatted = `${activeBytes} B`;
+        if (activeBytes >= 1024 * 1024) sizeFormatted = `${(activeBytes / (1024 * 1024)).toFixed(1)} MB`;
+        else if (activeBytes >= 1024) sizeFormatted = `${(activeBytes / 1024).toFixed(1)} KB`;
+        loadDetailEl.textContent = `${activeTokens.toLocaleString()} / ${capacity.toLocaleString()} tokens (${pct.toFixed(1)}% · ${sizeFormatted})`;
+    }
+
+    const budgetBadge = document.getElementById('gov-context-budget-badge');
+    if (budgetBadge) {
+        if (pct > 95) {
+            budgetBadge.textContent = 'Overflow (>95%)';
+            budgetBadge.className = 'token-mini-badge weight-heavy';
+        } else if (pct > targetPct) {
+            budgetBadge.textContent = `Over Target (>${targetPct}%)`;
+            budgetBadge.className = 'token-mini-badge weight-medium';
+        } else {
+            budgetBadge.textContent = `Optimal (<${targetPct}%)`;
+            budgetBadge.className = 'token-mini-badge weight-light';
+        }
+    }
+
+    const targetLabel = document.getElementById('gov-target-budget-label');
+    if (targetLabel) {
+        targetLabel.textContent = `Target Budget: ${targetPct}% (~${targetBudgetStr} tok)`;
+    }
+
+    const capLabel = document.getElementById('gov-context-capacity-label');
+    if (capLabel) {
+        capLabel.textContent = `Capacity: ${capacityStr} tok`;
+    }
+
+    const progressBar = document.getElementById('gov-context-progress-bar');
+    if (progressBar) {
+        progressBar.style.width = `${clampedPct}%`;
+        progressBar.className = `token-progress-bar ${pct > 95 ? 'range-danger' : (pct > targetPct ? 'range-warning' : 'range-safe')}`;
+    }
+
+    const marker = document.getElementById('gov-target-threshold-marker');
+    if (marker) {
+        marker.style.left = `${Math.min(100, Math.max(0, targetPct))}%`;
+    }
+
     const topStats = document.getElementById('gov-top-stats');
-    if (topStats) topStats.textContent = `${activeCount} Active (~${activeTokStr} tok) \u00B7 ${mutedCount} Muted`;
+    if (topStats) topStats.textContent = `${activeCount} Active (~${activeTokStr} tok / ${pct.toFixed(0)}%) \u00B7 ${mutedCount} Muted`;
 
     const footerSummary = document.getElementById('gov-footer-summary');
     if (footerSummary) {
@@ -3684,7 +4198,37 @@ export function streamGovernorChunk(round: number, maxRounds: number, chunk: str
 }
 (window as any).streamGovernorChunk = streamGovernorChunk;
 
-export function appendGovernorDiscoveryStep(action: { type: string; label: string; detail?: string }) {
+export function setGovernorRunningState(isRunning: boolean) {
+    (state as any).isGovernorRunning = isRunning;
+    const runBtn = document.getElementById('governor-filter-run-btn') as HTMLButtonElement;
+    const runIcon = document.getElementById('gov-run-icon');
+    const stepInd = document.getElementById('gov-step-indicator');
+
+    if (runBtn) {
+        if (isRunning) {
+            runBtn.disabled = false;
+            runBtn.classList.remove('apply-btn');
+            runBtn.classList.add('delete-btn');
+            runBtn.style.setProperty('background', 'var(--vscode-charts-red)', 'important');
+            runBtn.title = 'Stop Governor generation immediately (Esc)';
+            runBtn.innerHTML = '<i class="codicon codicon-primitive-square" style="font-size: 16px;"></i><span style="font-size: 9px;">Stop</span>';
+        } else {
+            runBtn.disabled = false;
+            runBtn.classList.remove('delete-btn');
+            runBtn.classList.add('apply-btn');
+            runBtn.style.setProperty('background', 'var(--vscode-charts-orange)', 'important');
+            runBtn.title = 'Send prompt to Governor (Enter)';
+            runBtn.innerHTML = '<i class="codicon codicon-send" style="font-size: 16px;"></i><span style="font-size: 9px;">Filter</span>';
+        }
+    }
+
+    if (stepInd) {
+        stepInd.style.display = isRunning ? 'flex' : 'none';
+    }
+}
+(window as any).setGovernorRunningState = setGovernorRunningState;
+
+export function appendGovernorDiscoveryStep(action: { type: string; label: string; detail?: string; path?: string; tokens?: number; bytes?: number }) {
     const container = document.getElementById('gov-chat-messages');
     if (!container) return;
 
@@ -3707,11 +4251,37 @@ export function appendGovernorDiscoveryStep(action: { type: string; label: strin
         const chip = document.createElement('div');
         chip.className = `gov-discovery-chip ${action.type || 'thought'}`;
         chip.innerHTML = `
-            <i class="codicon ${action.type === 'grep' ? 'codicon-search' : (action.type === 'sparql' ? 'codicon-graph' : (action.type === 'peek' ? 'codicon-eye' : (action.type === 'structure' ? 'codicon-book' : 'codicon-symbol-misc')))}"></i>
+            <i class="codicon ${action.type === 'grep' ? 'codicon-search' : (action.type === 'sparql' ? 'codicon-graph' : (action.type === 'peek' ? 'codicon-eye' : (action.type === 'add_file' ? 'codicon-diff-added' : (action.type === 'structure' ? 'codicon-book' : 'codicon-symbol-misc'))))}"></i>
             <span>${sanitizer.sanitize(action.label || 'Step')}</span>
             ${action.detail ? `<span style="opacity:0.6;">(${sanitizer.sanitize(action.detail)})</span>` : ''}
         `;
         chipsArea.appendChild(chip);
+    }
+
+    // If a new file was added from the workspace, integrate it into candidateFiles dynamically
+    if (action.type === 'add_file' && action.path) {
+        const studioState = (window as any).governorStudioState;
+        if (studioState) {
+            const rawPath = action.path.replace(/\\/g, '/');
+            const cleanPath = rawPath.toLowerCase().trim();
+            studioState.newAddedFiles?.add(cleanPath);
+
+            const exists = studioState.candidateFiles.some((cf: any) => cf.path.toLowerCase() === cleanPath);
+            if (!exists) {
+                const fileName = rawPath.split('/').pop() || rawPath;
+                const dirName = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                const tokens = action.tokens || 500;
+                const bytes = action.bytes || Math.round(tokens * 3.5);
+                studioState.candidateFiles.push({
+                    path: rawPath,
+                    fileName,
+                    dirName,
+                    tokens,
+                    bytes
+                });
+                renderGovernorFileList();
+            }
+        }
     }
 
     container.scrollTop = container.scrollHeight;
@@ -3866,6 +4436,38 @@ export function openGovernorFilterModal(initialPrompt?: string) {
         roundCountEl.style.fontWeight = '';
     }
 
+    // Initialize Governor Budget and Effort Controls
+    const budgetSelect = document.getElementById('gov-budget-preset-select') as HTMLSelectElement;
+    const customCapInput = document.getElementById('gov-custom-capacity-input') as HTMLInputElement;
+    const targetPctInput = document.getElementById('gov-target-percent-input') as HTMLInputElement;
+    const effortSelect = document.getElementById('gov-effort-select') as HTMLSelectElement;
+
+    if (budgetSelect && customCapInput) {
+        if (governorStudioState.customCapacity) {
+            const matchedOption = Array.from(budgetSelect.options).find(o => o.value === String(governorStudioState.customCapacity));
+            if (matchedOption) {
+                budgetSelect.value = String(governorStudioState.customCapacity);
+                customCapInput.style.display = 'none';
+            } else {
+                budgetSelect.value = 'custom';
+                customCapInput.style.display = 'inline-block';
+                customCapInput.value = String(governorStudioState.customCapacity);
+            }
+        } else {
+            budgetSelect.value = 'model';
+            customCapInput.style.display = 'none';
+            customCapInput.value = String(getContextCapacity());
+        }
+    }
+
+    if (targetPctInput) {
+        targetPctInput.value = String(governorStudioState.targetPercent || state.capabilities?.contextGovernorTargetThreshold || 70);
+    }
+
+    if (effortSelect) {
+        effortSelect.value = governorStudioState.reasoningEffort || 'high';
+    }
+
     renderGovernorFileList();
 
     modal.style.setProperty('z-index', '110000', 'important');
@@ -3875,8 +4477,275 @@ export function openGovernorFilterModal(initialPrompt?: string) {
 }
 (window as any).openGovernorFilterModal = openGovernorFilterModal;
 
+export interface WizardCandidateFile {
+    path: string;
+    fileName: string;
+    dirName: string;
+    tokens: number;
+    bytes: number;
+}
+
+export let wizardCandidateFiles: WizardCandidateFile[] = [];
+export let wizardMutedSet: Set<string> = new Set<string>();
+export let wizardStagedImages: { name: string; data: string }[] = [];
+(window as any).wizardStagedImages = wizardStagedImages;
+
+export function renderWizardStagedImages() {
+    const previewArea = document.getElementById('wizard-image-preview-area');
+    if (!previewArea) return;
+
+    if (wizardStagedImages.length === 0) {
+        previewArea.style.display = 'none';
+        previewArea.innerHTML = '';
+        updateWizardContextBar();
+        return;
+    }
+
+    previewArea.style.display = 'flex';
+    previewArea.innerHTML = wizardStagedImages.map((img, idx) => `
+        <div class="staged-image-card" style="background-image: url(${img.data}); width: 55px; height: 55px;">
+            <div class="remove-btn wizard-remove-img-btn" data-idx="${idx}" title="Remove image">&times;</div>
+        </div>
+    `).join('');
+
+    previewArea.querySelectorAll('.wizard-remove-img-btn').forEach((btn: any) => {
+        btn.onclick = (e: MouseEvent) => {
+            e.stopPropagation();
+            const idx = parseInt(btn.dataset.idx, 10);
+            if (!isNaN(idx)) {
+                wizardStagedImages.splice(idx, 1);
+                renderWizardStagedImages();
+            }
+        };
+    });
+
+    updateWizardContextBar();
+}
+(window as any).renderWizardStagedImages = renderWizardStagedImages;
+
+export function updateWizardContextBar() {
+    const capacity = getContextCapacity();
+    const targetPct = state.capabilities?.contextGovernorTargetThreshold ?? 70;
+    const targetBudget = Math.round(capacity * (targetPct / 100));
+
+    let activeFilesTokens = 0;
+    let activeFilesBytes = 0;
+    let activeCount = 0;
+    let mutedCount = 0;
+
+    wizardCandidateFiles.forEach(f => {
+        const isMuted = wizardMutedSet.has(f.path.toLowerCase().trim());
+        if (isMuted) {
+            mutedCount++;
+        } else {
+            activeCount++;
+            activeFilesTokens += f.tokens;
+            activeFilesBytes += f.bytes;
+        }
+    });
+
+    const promptText = dom.wizardPrompt ? dom.wizardPrompt.value : '';
+    const promptTokens = Math.ceil(promptText.length / 3.5);
+    const imagesTokens = wizardStagedImages.length * 600;
+
+    const totalLoad = activeFilesTokens + promptTokens + imagesTokens;
+    const pct = capacity > 0 ? (totalLoad / capacity) * 100 : 0;
+    const clampedPct = Math.min(100, Math.max(0, pct));
+
+    const isExceeded = totalLoad > capacity;
+    const isOverTarget = totalLoad > targetBudget;
+
+    const promptTokEl = document.getElementById('wizard-prompt-tok-estimate');
+    if (promptTokEl) {
+        promptTokEl.textContent = `~${promptTokens + imagesTokens} tok (prompt + ${wizardStagedImages.length} img)`;
+    }
+
+    const loadDetailEl = document.getElementById('wizard-context-load-detail');
+    if (loadDetailEl) {
+        let sizeFormatted = `${activeFilesBytes} B`;
+        if (activeFilesBytes >= 1024 * 1024) sizeFormatted = `${(activeFilesBytes / (1024 * 1024)).toFixed(1)} MB`;
+        else if (activeFilesBytes >= 1024) sizeFormatted = `${(activeFilesBytes / 1024).toFixed(1)} KB`;
+        loadDetailEl.textContent = `${totalLoad.toLocaleString()} / ${capacity.toLocaleString()} tokens (${pct.toFixed(1)}% · ${sizeFormatted})`;
+    }
+
+    const budgetBadge = document.getElementById('wizard-context-budget-badge');
+    if (budgetBadge) {
+        if (isExceeded) {
+            budgetBadge.textContent = 'Exceeded (>100%)';
+            budgetBadge.className = 'token-mini-badge weight-heavy';
+        } else if (isOverTarget) {
+            budgetBadge.textContent = `Over Target (>${targetPct}%)`;
+            budgetBadge.className = 'token-mini-badge weight-medium';
+        } else {
+            budgetBadge.textContent = 'Optimal (<70%)';
+            budgetBadge.className = 'token-mini-badge weight-light';
+        }
+    }
+
+    const progressBar = document.getElementById('wizard-context-progress-bar');
+    if (progressBar) {
+        progressBar.style.width = `${clampedPct}%`;
+        progressBar.className = `token-progress-bar ${isExceeded ? 'range-danger' : (isOverTarget ? 'range-warning' : 'range-safe')}`;
+    }
+
+    const targetMarker = document.getElementById('wizard-target-threshold-marker');
+    if (targetMarker) {
+        targetMarker.style.left = `${Math.min(100, Math.max(0, targetPct))}%`;
+    }
+
+    const targetLabel = document.getElementById('wizard-target-budget-label');
+    if (targetLabel) {
+        const targetBudgetStr = targetBudget >= 1000 ? `${(targetBudget / 1000).toFixed(1)}k` : `${targetBudget}`;
+        targetLabel.textContent = `Target Budget: ${targetPct}% (~${targetBudgetStr} tok)`;
+    }
+
+    const capLabel = document.getElementById('wizard-context-capacity-label');
+    if (capLabel) {
+        const capStr = capacity >= 1000 ? `${(capacity / 1000).toFixed(0)}k` : `${capacity}`;
+        capLabel.textContent = `Capacity: ${capStr} tok`;
+    }
+
+    const topBadge = document.getElementById('wizard-top-context-badge');
+    if (topBadge) {
+        const totalTokStr = totalLoad >= 1000 ? `${(totalLoad / 1000).toFixed(1)}k` : `${totalLoad}`;
+        topBadge.textContent = `${activeCount} Active (~${totalTokStr} tok / ${pct.toFixed(0)}%) · ${mutedCount} Muted`;
+        topBadge.className = isExceeded ? 'file-token-badge weight-heavy' : 'file-token-badge weight-light';
+    }
+
+    const warningBanner = document.getElementById('wizard-context-warning');
+    const warningText = document.getElementById('wizard-context-warning-text');
+    if (warningBanner) {
+        if (isExceeded) {
+            warningBanner.style.display = 'flex';
+            warningBanner.style.background = 'rgba(231, 76, 60, 0.15)';
+            warningBanner.style.borderColor = 'var(--vscode-charts-red)';
+            warningBanner.style.color = 'var(--vscode-charts-red)';
+            if (warningText) {
+                warningText.textContent = `⚠️ Active context (${totalLoad.toLocaleString()} tokens, ${pct.toFixed(0)}%) exceeds model capacity (${capacity.toLocaleString()} tokens)! Mute files or run Context Governor.`;
+            }
+        } else if (isOverTarget) {
+            warningBanner.style.display = 'flex';
+            warningBanner.style.background = 'rgba(214, 122, 13, 0.12)';
+            warningBanner.style.borderColor = 'var(--vscode-charts-orange)';
+            warningBanner.style.color = 'var(--vscode-charts-orange)';
+            if (warningText) {
+                warningText.textContent = `⚠️ Active context (${totalLoad.toLocaleString()} tokens, ${pct.toFixed(0)}%) is over the target threshold (${targetPct}%). Consider pruning with Context Governor.`;
+            }
+        } else {
+            warningBanner.style.display = 'none';
+        }
+    }
+
+    const footerSummary = document.getElementById('wizard-footer-summary');
+    if (footerSummary) {
+        footerSummary.textContent = `${activeCount} files will be loaded [C], ${mutedCount} kept in tree [M].`;
+    }
+
+    const activeCountEl = document.getElementById('wizard-active-count');
+    if (activeCountEl) activeCountEl.textContent = String(activeCount);
+    const mutedCountEl = document.getElementById('wizard-muted-count');
+    if (mutedCountEl) mutedCountEl.textContent = String(mutedCount);
+
+    const filesLoadLabel = document.getElementById('wizard-files-load-label');
+    if (filesLoadLabel) {
+        const tokStr = activeFilesTokens >= 1000 ? `${(activeFilesTokens / 1000).toFixed(1)}k` : `${activeFilesTokens}`;
+        filesLoadLabel.textContent = `~${tokStr} tok active`;
+    }
+}
+(window as any).updateWizardContextBar = updateWizardContextBar;
+
+export function renderWizardFileList(searchQuery: string = '') {
+    const listEl = document.getElementById('wizard-files-list');
+    if (!listEl) return;
+
+    const files = wizardCandidateFiles;
+    const cleanQ = searchQuery.toLowerCase().trim();
+
+    const filtered = cleanQ
+        ? files.filter(f => f.path.toLowerCase().includes(cleanQ) || f.fileName.toLowerCase().includes(cleanQ))
+        : files;
+
+    if (filtered.length === 0) {
+        listEl.innerHTML = '<div style="padding: 20px; opacity: 0.6; text-align: center; font-size: 11px;">No candidate files found matching filter.</div>';
+        updateWizardContextBar();
+        return;
+    }
+
+    listEl.innerHTML = filtered.map(f => {
+        const isMuted = wizardMutedSet.has(f.path.toLowerCase().trim());
+        const tokStr = f.tokens >= 1000 ? `${(f.tokens / 1000).toFixed(1)}k` : `${f.tokens}`;
+        const icon = isMuted ? 'codicon-eye-closed' : 'codicon-check';
+        const color = isMuted ? 'var(--vscode-charts-orange)' : 'var(--vscode-charts-green)';
+
+        let formattedBytes = `${f.bytes} B`;
+        if (f.bytes >= 1024 * 1024) formattedBytes = `${(f.bytes / (1024 * 1024)).toFixed(1)} MB`;
+        else if (f.bytes >= 1024) formattedBytes = `${(f.bytes / 1024).toFixed(1)} KB`;
+
+        return `
+        <div class="wizard-file-row ${isMuted ? 'is-muted' : 'is-active'}" data-path="${f.path}">
+            <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;">
+                <i class="codicon ${icon}" style="color: ${color}; flex-shrink: 0; font-size: 13px;"></i>
+                <div style="min-width: 0; flex: 1;">
+                    <div class="wizard-file-title" style="font-weight: 600; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f.path}">${f.fileName}</div>
+                    ${f.dirName ? `<div style="font-size: 9px; opacity: 0.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${f.dirName}</div>` : ''}
+                </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+                <span class="file-token-badge ${isMuted ? 'weight-muted' : 'weight-light'}">${isMuted ? `${formattedBytes} [MUTED]` : `${formattedBytes} (~${tokStr} tok)`}</span>
+                <button type="button" class="code-action-btn secondary-btn wizard-row-toggle-btn" data-path="${f.path}" style="height: 20px; font-size: 9px; padding: 0 6px;">
+                    ${isMuted ? 'Reveal' : 'Mute'}
+                </button>
+            </div>
+        </div>`;
+    }).join('');
+
+    listEl.querySelectorAll('.wizard-file-row').forEach((row: any) => {
+        row.onclick = () => {
+            const filePath = row.dataset.path;
+            if (!filePath) return;
+            const clean = filePath.toLowerCase().trim();
+            if (wizardMutedSet.has(clean)) {
+                wizardMutedSet.delete(clean);
+            } else {
+                wizardMutedSet.add(clean);
+            }
+            state.wizardMutedFiles = Array.from(wizardMutedSet);
+            renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+        };
+    });
+
+    updateWizardContextBar();
+}
+(window as any).renderWizardFileList = renderWizardFileList;
+
 export function openNewDiscussionWizard(selections: (string | { name: string; fileName: string; fileCount?: number })[] = []) {
     if (!dom.wizardModal) return;
+
+    // Reset staged images and candidate lists
+    wizardStagedImages = [];
+    (window as any).wizardStagedImages = wizardStagedImages;
+    renderWizardStagedImages();
+
+    // 0. Populate Candidate Files List
+    const allFiles: any[] = state.lastContextData?.files || [];
+    wizardCandidateFiles = allFiles.map((f: any) => {
+        const rawPath = typeof f === 'string' ? f : (f.path || '');
+        const normPath = rawPath.replace(/\\/g, '/');
+        const fileName = normPath.split('/').pop() || normPath;
+        const dirName = normPath.includes('/') ? normPath.substring(0, normPath.lastIndexOf('/')) : '';
+        const tokens = (typeof f === 'object' && f.tokens) ? f.tokens : (state.fileTokensMap?.[rawPath] || Math.ceil((f.bytes || 1000) / 3.5));
+        const bytes = (typeof f === 'object' && f.bytes) ? f.bytes : Math.round(tokens * 3.5);
+        return { path: rawPath, fileName, dirName, tokens, bytes };
+    });
+
+    const initialMuted = state.wizardMutedFiles || state.mutedFiles || [];
+    wizardMutedSet = new Set(initialMuted.map(m => m.replace(/\\/g, '/').toLowerCase().trim()));
+    state.wizardMutedFiles = Array.from(wizardMutedSet);
+
+    const filterInput = document.getElementById('wizard-file-filter-input') as HTMLInputElement;
+    if (filterInput) filterInput.value = '';
+
+    renderWizardFileList('');
 
     // 1. Populate Personalities Select
     if (dom.wizardPersonality && state.personalities && state.personalities.length > 0) {

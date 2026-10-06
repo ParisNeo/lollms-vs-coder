@@ -2013,6 +2013,15 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     background-size: cover;
     background-position: center;
     background-color: var(--vscode-editor-background);
+    overflow: visible;
+}
+
+.staged-image-card img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 4px;
+    display: block;
 }
 
 .image-grid {
@@ -4458,6 +4467,135 @@ mark.search-highlight.current-match {
     box-shadow: 0 0 6px rgba(244, 71, 71, 0.2);
 }
 
+/* 🚀 WIZARD STUDIO CANDIDATE FILES LIST */
+.wizard-file-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 10px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.12);
+    border: 1px solid var(--vscode-widget-border);
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+    user-select: none;
+}
+
+.wizard-file-row:hover {
+    background: var(--vscode-list-hoverBackground);
+    border-color: var(--vscode-focusBorder);
+}
+
+.wizard-file-row.is-active {
+    border-left: 3px solid var(--vscode-charts-green);
+}
+
+.wizard-file-row.is-muted {
+    border-left: 3px solid var(--vscode-charts-orange);
+    opacity: 0.65;
+}
+
+.wizard-file-row.is-muted .wizard-file-title {
+    text-decoration: line-through;
+    opacity: 0.8;
+}
+
+/* ⚠️ FILE REPAIR ALERT BUTTON (POST-PATCH ERROR BADGE) */
+.file-repair-alert-btn {
+    background: rgba(231, 76, 60, 0.15) !important;
+    border: 1px solid var(--vscode-charts-red) !important;
+    color: var(--vscode-charts-red) !important;
+    font-weight: 700 !important;
+    height: 22px !important;
+    font-size: 10px !important;
+    padding: 0 8px !important;
+    border-radius: 4px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 5px !important;
+    cursor: pointer !important;
+    transition: transform 0.15s ease, background 0.15s ease !important;
+    animation: repair-pulse 2s infinite ease-in-out;
+}
+
+.file-repair-alert-btn:hover {
+    background: rgba(231, 76, 60, 0.28) !important;
+    transform: scale(1.04);
+}
+
+@keyframes repair-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.4); }
+    50% { box-shadow: 0 0 0 4px rgba(231, 76, 60, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
+}
+
+/* 🛠️ REPAIR STUDIO CARDS */
+.repair-error-card {
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-widget-border);
+    border-left: 3px solid var(--vscode-charts-red);
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 11px;
+    transition: border-color 0.2s ease, opacity 0.2s ease;
+}
+
+.repair-error-card.resolved {
+    border-left-color: var(--vscode-charts-green) !important;
+    opacity: 0.65;
+    background: rgba(56, 142, 60, 0.05);
+}
+
+.repair-error-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10px;
+    font-weight: bold;
+}
+
+.error-line-badge {
+    background: rgba(231, 76, 60, 0.15);
+    color: var(--vscode-charts-red);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-weight: 700;
+}
+
+.repair-error-card.resolved .error-line-badge {
+    background: rgba(56, 142, 60, 0.15);
+    color: var(--vscode-charts-green);
+}
+
+.error-source {
+    opacity: 0.6;
+    font-size: 9px;
+    text-transform: uppercase;
+}
+
+.repair-error-msg {
+    line-height: 1.4;
+    font-weight: 600;
+    color: var(--vscode-foreground);
+    word-break: break-word;
+}
+
+.repair-error-snippet {
+    background: var(--vscode-textCodeBlock-background);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 10px;
+    overflow-x: auto;
+    white-space: pre;
+    opacity: 0.85;
+}
+
 .file-token-badge.weight-muted {
     color: var(--vscode-charts-orange);
     border-color: rgba(214, 122, 13, 0.4);
@@ -4466,11 +4604,14 @@ mark.search-highlight.current-match {
 }
 
 .toggle-mute-file-btn,
+.toggle-mute-folder-btn,
+.bulk-modal-mute-folder-btn,
 .toggle-mute-tool-btn,
 .toggle-mute-skill-btn,
 .toggle-mute-diagram-btn {
-    background: transparent;
-    border: none;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
     color: var(--vscode-icon-foreground);
     cursor: pointer;
     padding: 2px 4px;
@@ -4479,32 +4620,59 @@ mark.search-highlight.current-match {
     justify-content: center;
     border-radius: 3px;
     margin-right: 4px;
-    opacity: 0.8;
+    opacity: 0.85;
     transition: opacity 0.15s, color 0.15s, transform 0.1s;
     flex-shrink: 0;
+    outline: none;
 }
 
 .toggle-mute-file-btn:hover,
+.toggle-mute-folder-btn:hover,
+.bulk-modal-mute-folder-btn:hover,
 .toggle-mute-tool-btn:hover,
 .toggle-mute-skill-btn:hover,
 .toggle-mute-diagram-btn:hover {
     opacity: 1;
-    background-color: var(--vscode-toolbar-hoverBackground);
+    background-color: var(--vscode-toolbar-hoverBackground) !important;
     transform: scale(1.15);
 }
 
 .toggle-mute-file-btn.is-active,
+.toggle-mute-folder-btn.is-active,
+.bulk-modal-mute-folder-btn.is-active,
 .toggle-mute-tool-btn.is-active,
 .toggle-mute-skill-btn.is-active,
 .toggle-mute-diagram-btn.is-active {
-    color: var(--vscode-charts-green);
+    color: var(--vscode-charts-green) !important;
 }
 
 .toggle-mute-file-btn.is-muted,
+.toggle-mute-folder-btn.is-muted,
+.bulk-modal-mute-folder-btn.is-muted,
 .toggle-mute-tool-btn.is-muted,
 .toggle-mute-skill-btn.is-muted,
 .toggle-mute-diagram-btn.is-muted {
-    color: var(--vscode-charts-orange);
+    color: var(--vscode-charts-orange) !important;
+}
+
+.toggle-mute-folder-btn.is-partially-muted,
+.bulk-modal-mute-folder-btn.is-partially-muted {
+    color: var(--vscode-charts-yellow, #dcdcaa) !important;
+    position: relative;
+    opacity: 0.95;
+}
+
+.toggle-mute-folder-btn.is-partially-muted .codicon::after,
+.bulk-modal-mute-folder-btn.is-partially-muted .codicon::after {
+    content: '';
+    position: absolute;
+    top: 0px;
+    right: -2px;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background-color: var(--vscode-charts-orange);
+    border: 1px solid var(--vscode-editor-background);
 }
 
 .context-item.file-muted {
@@ -4905,6 +5073,13 @@ mark.search-highlight.current-match {
 
 .expansion-file-item.status-not-in-context {
     color: var(--vscode-editor-foreground, #000000) !important;
+}
+
+.expansion-file-item.status-muted {
+    color: var(--vscode-charts-orange, #ff9800) !important;
+    background: rgba(255, 152, 0, 0.1) !important;
+    border-color: var(--vscode-charts-orange, #ff9800) !important;
+    border-left: 4px solid var(--vscode-charts-orange, #ff9800) !important;
 }
 
 .expansion-file-item.status-not-exist {

@@ -13,6 +13,7 @@ export interface ArchitecturalProfile {
     objectives: string;
     style: string;
     prefProfileId?: string;
+    doctrine?: string;
 }
 
 export class OnboardingPanel {
@@ -63,6 +64,9 @@ export class OnboardingPanel {
                     }
                     await this.handleOnboarding(msg.data);
                     break;
+                case 'initGraphAndGovernor':
+                    await this.handleInitGraphAndGovernor(msg.data);
+                    break;
                 case 'discoverDoctrine':
                     await this.handleDiscoverDoctrine();
                     break;
@@ -81,7 +85,6 @@ export class OnboardingPanel {
             }
         }, null, this._disposables);
 
-        // Send saved profiles and preference presets to webview, then pre-fill existing workspace setup
         this.sendInitialDataToWebview().then(() => {
             this.hydrateFormFromCurrentState();
         });
@@ -181,38 +184,6 @@ export class OnboardingPanel {
                 style: "Embrace idiomatic ownership and borrowing rules. Eliminate unneeded clones. Use exhaustive pattern matching and return `Result<T, E>` / `Option<T>` for error handling instead of unwrap().",
                 prefProfileId: "rust_systems",
                 doctrine: "- Strict memory safety: no `unsafe` blocks without documented proof invariants.\n- Zero panics in runtime paths; handle all errors via `Result`.\n- Implement deterministic RAII resource cleanup.\n- Keep allocations off the critical performance path."
-            },
-            {
-                id: "profile_embedded_c",
-                name: "Embedded Systems C (Rigorous)",
-                objectives: "Develop low-level bare-metal or RTOS drivers and firmware for STM32/ESP32 microcontrollers. Focus on register-level efficiency, DMA, and interrupt safety.",
-                style: "Strict MISRA C:2012 compliance. Prevent dynamic memory allocations (no malloc/free). No blocking calls or printf inside ISRs. Use explicit bitmask macros and volatile pointers.",
-                prefProfileId: "rust_systems",
-                doctrine: "- Zero dynamic memory allocation (no malloc/free) after startup.\n- MISRA C:2012 adherence with explicit fixed-width integer types (uint32_t, etc.).\n- Fast, non-blocking Interrupt Service Routines (ISRs).\n- Volatile qualifier on all hardware peripheral registers and shared flags."
-            },
-            {
-                id: "profile_godot_game",
-                name: "Godot 4 GDScript (Game Builder)",
-                objectives: "Build 2D and 3D indie game mechanics in Godot 4 using GDScript, node hierarchy composition, signals, and finite state machines.",
-                style: "Signal-driven architecture ('call down, signal up'). Use static typing in GDScript (`var health: int = 100`). Keep physics logic strictly inside `_physics_process(delta)`.",
-                prefProfileId: "clean_craftsman",
-                doctrine: "- Enforce static typing annotations on all GDScript variables and functions.\n- Adhere to the 'Call Down, Signal Up' decoupled node architecture.\n- Frame-rate independent physics inside `_physics_process(delta)`.\n- Cache node references with `@onready` instead of repeating `get_node()` in loops."
-            },
-            {
-                id: "profile_security_pentest",
-                name: "Zero-Trust Security & Pentesting (Agentic)",
-                objectives: "Conduct rigorous security audits, vulnerability hunting, and automated defense hardening across application boundaries and APIs.",
-                style: "Zero-Trust security posture. Verify all input boundaries, parameterize all queries, block path traversals, and test edge-case payloads before shipping.",
-                prefProfileId: "security_hardened",
-                doctrine: "- Apply Zero-Trust boundary validation on all external inputs (headers, params, payloads).\n- Never hardcode secrets, tokens, or credentials in codebase.\n- Prevent injection flaws (SQLi, Command Injection, SSRF, XSS) via strict sanitization.\n- Fail closed with generic user-facing errors while logging structured diagnostics internally."
-            },
-            {
-                id: "profile_ml_research",
-                name: "AI/ML & PyTorch Research Pipeline",
-                objectives: "Construct reproducible machine learning and deep learning pipelines with PyTorch, clean DataLoader wrappers, model architectures, and validation checkpoints.",
-                style: "Modularize models, datasets, and training loops. Always seed random number generators for determinism. Use device-agnostic tensor allocation (`to(device)`). Document tensor shapes.",
-                prefProfileId: "pythonic_pep8",
-                doctrine: "- Ensure full reproducibility by seeding random generators (torch, numpy, random).\n- Device-agnostic code (`device = 'cuda' if torch.cuda.is_available() else 'cpu'`).\n- Document input and output tensor shapes in docstrings for custom modules.\n- Separate model definition, dataset loading, and training loop into distinct modules."
             }
         ];
 
@@ -301,7 +272,7 @@ export class OnboardingPanel {
                 vscode.window.showErrorMessage(`Failed to import profile: ${e.message}`);
             }
         }
-    }    
+    }
 
     private async handleDiscoverDoctrine() {
         const folder = this.folder;
@@ -366,13 +337,86 @@ Output ONLY a bulleted list of constraints. No conversational chatter.`;
         }
     }
 
+    /**
+     * Dedicated Quick-Init for Graph and Governor File
+     */
+    private async handleInitGraphAndGovernor(data: any) {
+        const folder = this.folder;
+        if (!folder) return;
+
+        const { objectives, style, doctrine, destiny, prefProfileId } = data || {};
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: `Lollms: Compiling Code Architecture Graph & Governor Report for ${folder.name}...`,
+            cancellable: false
+        }, async (progress) => {
+            progress.report({ message: "Parsing AST symbols, method signatures, and docstrings in worker threads..." });
+
+            if (this.services.codeGraphManager) {
+                this.services.codeGraphManager.setWorkspaceRoot(folder.uri);
+                await this.services.codeGraphManager.buildGraph(undefined, (p) => {
+                    progress.report({ message: `${p.status} (${p.percentage}%)` });
+                });
+                await this.services.codeGraphManager.saveToDiskCache();
+            }
+
+            progress.report({ message: "Synthesizing Governor Codebase Guide (.lollms/structure.md)..." });
+
+            let archSummary = "";
+            if (this.services.codeGraphManager) {
+                archSummary = this.services.codeGraphManager.generateTextSummary();
+            }
+
+            const rawObjectives = objectives || "General software development.";
+            const rawStyle = style || "Standard professional clean code.";
+            const rawDoctrine = doctrine || "";
+
+            const governorFileContent = `# 🏛️ Codebase Architecture & Structure Guide
+
+## 🎯 Project Overview & Objectives
+${rawObjectives}
+
+## 🛠️ Destiny & Development Mode
+- **Mode**: ${destiny === 'agentic' ? 'Agentic Engineering (Software 3.0 Rigor, TDD, Security Hardened)' : 'Vibe Coding (Rapid Prototyping & Intuition-Led Iteration)'}
+- **Developer Style**: ${rawStyle}
+- **Preference Profile**: ${prefProfileId || 'clean_craftsman'}
+
+## 📜 Non-Negotiable Project Doctrine & Constraints
+${rawDoctrine || '- Enforce Clean Code, SOLID principles, and explicit error handling.\n- Maintain type integrity across all module boundaries.\n- Never hardcode credentials, secrets, or volatile paths.'}
+
+## 🗺️ Architectural Structure & Symbol Map
+${archSummary || '(Architecture graph compiled successfully)'}
+`;
+
+            const lollmsDir = vscode.Uri.joinPath(folder.uri, '.lollms');
+            await vscode.workspace.fs.createDirectory(lollmsDir);
+            const structUri = vscode.Uri.joinPath(lollmsDir, 'structure.md');
+            await vscode.workspace.fs.writeFile(structUri, Buffer.from(governorFileContent.trim(), 'utf8'));
+
+            const nodesCount = this.services.codeGraphManager?.getGraphData()?.nodes?.length || 0;
+            const edgesCount = this.services.codeGraphManager?.getGraphData()?.edges?.length || 0;
+
+            this._panel.webview.postMessage({
+                command: 'initGraphAndGovernorComplete',
+                nodesCount,
+                edgesCount
+            });
+
+            if (ChatPanel.currentPanel) {
+                ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: false });
+            }
+
+            vscode.window.showInformationMessage(`✅ Architecture Graph compiled (${nodesCount} nodes, ${edgesCount} relations) and Governor file (.lollms/structure.md) created!`);
+        });
+    }
+
     private async handleOnboarding(data: any) {
         const { destiny, objectives, style, prefProfileId, pathway, doctrine } = data;
+        const folder = this.folder;
 
-        // 1. Save Workspace State
         await this.services.discussionManager.context.workspaceState.update('lollms_workspace_onboarded', true);
 
-        // 2. Update Global/Active capabilities & settings
         const caps = this.services.discussionManager.getLastCapabilities();
         caps.profileType = destiny;
         caps.agentMode = destiny === 'agentic';
@@ -389,60 +433,64 @@ Output ONLY a bulleted list of constraints. No conversational chatter.`;
             await config.update('defaultUserPreferenceProfileId', prefProfileId, vscode.ConfigurationTarget.Global);
         }
 
-        // 3. Lock Mission Doctrine & Global Constraints
         if (doctrine && doctrine.trim()) {
             await this.services.contextManager.setGlobalBriefing(doctrine.trim());
         }
 
-        // 4. AI Graph Generation Pass
         const rawObjectives = objectives || "General software development.";
         const rawStyle = style || "Standard professional development.";
         const rawDoctrine = doctrine || "";
 
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
-            title: "Lollms: Mapping Synaptic Engrams & Project DNA...",
+            title: `Lollms: Initializing ${folder.name} (Graph, Governor, & Memory)...`,
             cancellable: false
         }, async (progress) => {
+            // 1. Build Full Architecture Graph with worker threads, docstrings, and file references
+            if (this.services.codeGraphManager) {
+                progress.report({ message: "Compiling Architecture Graph with symbol & docstring parser..." });
+                this.services.codeGraphManager.setWorkspaceRoot(folder.uri);
+                await this.services.codeGraphManager.buildGraph(undefined, (p) => {
+                    progress.report({ message: `Graph: ${p.status} (${p.percentage}%)` });
+                });
+                await this.services.codeGraphManager.saveToDiskCache();
+            }
+
+            // 2. Synthesize and Write Governor Guide (.lollms/structure.md)
+            progress.report({ message: "Generating Governor Structure Report (.lollms/structure.md)..." });
+            let archSummary = "";
+            if (this.services.codeGraphManager) {
+                archSummary = this.services.codeGraphManager.generateTextSummary();
+            }
+
+            const governorFileContent = `# 🏛️ Codebase Architecture & Structure Guide
+
+## 🎯 Project Overview & Objectives
+${rawObjectives}
+
+## 🛠️ Destiny & Development Mode
+- **Mode**: ${destiny === 'agentic' ? 'Agentic Engineering (Software 3.0 Rigor, TDD, Security Hardened)' : 'Vibe Coding (Rapid Prototyping & Intuition-Led Iteration)'}
+- **Developer Style**: ${rawStyle}
+- **Preference Profile**: ${prefProfileId || 'clean_craftsman'}
+
+## 📜 Non-Negotiable Project Doctrine & Constraints
+${rawDoctrine || '- Enforce Clean Code, SOLID principles, and explicit error handling.\n- Maintain type integrity across all module boundaries.\n- Never hardcode credentials, secrets, or volatile paths.'}
+
+## 🗺️ Architectural Structure & Symbol Map
+${archSummary || '(Architecture graph compiled successfully)'}
+`;
+
+            const lollmsDir = vscode.Uri.joinPath(folder.uri, '.lollms');
+            await vscode.workspace.fs.createDirectory(lollmsDir);
+            const structUri = vscode.Uri.joinPath(lollmsDir, 'structure.md');
+            await vscode.workspace.fs.writeFile(structUri, Buffer.from(governorFileContent.trim(), 'utf8'));
+
+            // 3. Mapping Synaptic Memory Engrams
+            progress.report({ message: "Mapping Synaptic Engrams & Project DNA..." });
             try {
-                progress.report({ message: "Analyzing Plain-Text Persona & Project Goals..." });
-
                 const systemPrompt = `You are the Neural Synaptic Architect for the Lollms Memory Vault.
-Your goal is to parse raw user text, coding preferences, and project goals, and convert them into a structured set of memory engram nodes following the s:Engram schema.
-
-### 🧊 SOVEREIGN MEMORY ONTOLOGY (TBox Schema)
-Classes (Concepts):
-- \`s:Engram\`: Represents an individual unit of captured project knowledge, such as an architectural decision, technical fact, or lesson learned.
-- \`s:Tag\`: Represents a semantic hub or hashtag used to index and group related units of knowledge.
-- \`s:Document\`: Represents an external reference document, web scrape, or research source.
-- \`s:Rule\`: Represents an active project constraint, standard, or 'Sovereign Rule' that must be strictly enforced.
-
-Properties (Relationship Predicates):
-- \`s:has_tag\` (Subject: \`s:Engram\` | Object: \`s:Tag\`): Links an engram to a semantic hashtag.
-
-### 🧹 COMPLIANCE RULES:
-1. **CATEGORIZATION**: 
-   - Classify project architectural goals as \`standards\` or \`rules\`.
-   - Classify user personal traits (experience, style, formatting) as \`user\`.
-2. **TAG HYGIENE**: You are STRICTLY FORBIDDEN from using purely numeric or meaningless short tags (e.g. #10, #333). Generate actual semantic tags (e.g., #pygame, #junior_dev, #readable_code).
-3. **WIRING**: Create explicit 'has_tag' predicates linking each engram to its associated tags.
-4. **NO PROSE**: Output ONLY the JSON array of objects.
-
-**OUTPUT FORMAT:**
-\`\`\`json
-[
-  {
-    "id": "unique_lowercase_id",
-    "title": "Short title (2-4 words)",
-    "content": "Full concise fact content. Include hashtags like #pygame or #fastapi inside.",
-    "category": "standards" | "rules" | "user",
-    "importance": 90,
-    "predicates": [
-      { "verb": "has_tag", "targetId": "tag_name" }
-    ]
-  }
-]
-\`\`\``;
+Parse raw user text, coding preferences, and project goals, and convert them into structured s:Engram JSON objects.
+Output ONLY valid JSON.`;
 
                 const userPrompt = `### USER RAW INPUTS
 Project Goals: "${rawObjectives}"
@@ -475,8 +523,6 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     }
                 }
             } catch (err: any) {
-                Logger.error("Failed to generate structured engrams from onboarding inputs, falling back to flat write.", err);
-                
                 if (this.services.projectMemoryManager) {
                     await this.services.projectMemoryManager.updateMemory('add', 'project_dna', 'Project DNA & Standards', `## 🧬 PROJECT DNA\n- Objectives: ${rawObjectives}\n- Indentation Standard: 4 spaces\n`, 'standards', 100);
                     await this.services.projectMemoryManager.updateMemory('add', 'user_dna', 'User Persona & Preferences', `## 👤 USER DNA\n- Preferences: ${rawStyle}\n`, 'user', 95);
@@ -487,12 +533,16 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
             }
         });
 
-        // 4. Refresh tree views to display newly compiled project capabilities & memories
         this.services.treeProviders.discussion?.refresh();
         vscode.commands.executeCommand('lollmsProjectMemoryView.focus');
 
+        if (ChatPanel.currentPanel) {
+            ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: false });
+        }
+
+        const nodesCount = this.services.codeGraphManager?.getGraphData()?.nodes?.length || 0;
         vscode.window.showInformationMessage(
-            `🚀 Project "${this.folder.name}" initialized successfully! Preferences saved to profile and mapped to Project Memory.`,
+            `🚀 Project "${this.folder.name}" initialized! Full graph built (${nodesCount} nodes with docstrings) and Governor Guide (.lollms/structure.md) created.`,
             "Ok"
         );
 
@@ -524,7 +574,7 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     --fg: var(--vscode-editor-foreground);
                 }
                 body { font-family: var(--vscode-font-family); background: var(--vscode-editor-background); color: var(--fg); padding: 40px; line-height: 1.6; display: flex; justify-content: center; }
-                .container { max-width: 650px; width: 100%; display: flex; flex-direction: column; gap: 20px; animation: fadeIn 0.3s ease-out; }
+                .container { max-width: 680px; width: 100%; display: flex; flex-direction: column; gap: 20px; animation: fadeIn 0.3s ease-out; }
                 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
                 h1 { font-size: 2.2em; font-weight: 300; margin: 0; display: flex; align-items: center; gap: 12px; color: var(--accent); }
                 p { opacity: 0.8; font-size: 13px; margin: 0; }
@@ -547,17 +597,50 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
 
                 .btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; font-size: 14px; transition: filter 0.2s; display: flex; align-items: center; justify-content: center; gap: 8px; }
                 .btn:hover { filter: brightness(1.1); }
+                .btn.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid var(--border); }
+                .btn.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
                 @keyframes spin { 100% { transform: rotate(360deg); } }
                 .spin { animation: spin 1s linear infinite; display: inline-block; }
+
+                .init-feature-box {
+                    background: rgba(0, 122, 204, 0.08);
+                    border: 1px solid var(--vscode-charts-blue);
+                    border-radius: 8px;
+                    padding: 14px 16px;
+                    margin-bottom: 20px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 8px;
+                }
+                .init-feature-header {
+                    font-size: 12px;
+                    font-weight: bold;
+                    color: var(--vscode-foreground);
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                }
             </style>
         </head>
         <body>
             <div class="container">
                 <h1>🚀 Welcome to Lollms VS Coder</h1>
-                <p>Let's configure your workspace's destiny and extract its core DNA before writing any code.</p>
+                <p>Configure your workspace, compile its architectural code graph, and build the persistent Governor guide.</p>
 
                 <div class="form-card">
-                    <!-- REUSABLE ARCHITECTURAL PROFILES SELECTOR -->
+                    <div class="init-feature-box">
+                        <div class="init-feature-header">
+                            <i class="codicon codicon-sparkle" style="color:var(--vscode-charts-blue);"></i>
+                            <span>One-Click Project Initialization</span>
+                        </div>
+                        <p style="font-size:11px; opacity:0.85;">Initializing compiles the complete codebase architecture graph (methods, classes, functions with docstrings), enables single-file incremental updates on edit, and synthesizes the Governor's Codebase Guide (<code>.lollms/structure.md</code>).</p>
+                        <div style="display:flex; gap:10px; margin-top:4px;">
+                            <button type="button" class="btn secondary" id="btn-quick-init" onclick="quickInit()" style="height:32px; font-size:11px; font-weight:bold; border-color:var(--vscode-charts-blue); color:var(--vscode-textLink-foreground);">
+                                <i class="codicon codicon-graph"></i> Build Architecture Graph & Governor File Now
+                            </button>
+                        </div>
+                    </div>
+
                     <div style="background: rgba(0, 122, 204, 0.05); padding: 15px; border-radius: 8px; border: 1px dashed var(--vscode-widget-border); margin-bottom: 20px;">
                         <label><i class="codicon codicon-library"></i> Load Architectural Profile Template</label>
                         <div style="display:flex; gap:10px;">
@@ -566,7 +649,7 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                             </select>
                             <button class="btn secondary" id="delete-profile-btn" style="width:auto; height:36px; padding:0 12px; margin:0; color:var(--vscode-errorForeground);"><i class="codicon codicon-trash"></i></button>
                         </div>
-                        <span class="help-text" style="font-size:10px; opacity:0.6; display:block; margin-top:4px;">Instantly populate the forms below using a saved template.</span>
+                        <span class="help-text" style="font-size:10px; opacity:0.6; display:block; margin-top:4px;">Populate the forms below using a saved template.</span>
                     </div>
 
                     <label>1. Define your workspace's destiny</label>
@@ -630,34 +713,12 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                         <input type="text" id="save-profile-name" placeholder="e.g., My Pythonic Style">
                     </div>
 
-                    <!-- Pathway Selection (Only visible for Agentic) -->
-                    <div class="pathway-section" id="pathway-panel">
-                        <label>4. Select your starting pathway</label>
-                        <p style="font-size:11px; opacity:0.7; margin-bottom:10px;">To prevent the "Doom Loop" and desynchronization, coding comes later. We must establish a clean baseline first.</p>
-                        <div class="radio-group">
-                            <div class="radio-option active" id="opt-prd" onclick="selectPathway('prd')">
-                                <input type="radio" name="pathway" value="prd" checked id="r-prd" style="display:none">
-                                <div class="radio-text">
-                                    <span class="radio-title">📐 Path A: Design the Architecture (PRD)</span>
-                                    <span class="radio-desc">Draft the Product Requirements Document (MVC structures, user flows, database models) in the briefing.</span>
-                                </div>
-                            </div>
-                            <div class="radio-option" id="opt-scan" onclick="selectPathway('scan')">
-                                <input type="radio" name="pathway" value="scan" id="r-scan" style="display:none">
-                                <div class="radio-text">
-                                    <span class="radio-title">🔍 Path B: Codebase Reconnaissance</span>
-                                    <span class="radio-desc">Scan and build the full code graph to analyze current files and dependencies before proposing changes.</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
                     <div style="display: flex; gap: 10px; margin-bottom: 15px;">
                         <button class="btn secondary" id="import-profile-btn" onclick="importProfile()" style="flex: 1;"><i class="codicon codicon-cloud-upload"></i> Import Profile</button>
                         <button class="btn secondary" id="export-profile-btn" onclick="exportProfile()" style="flex: 1;"><i class="codicon codicon-cloud-download"></i> Export Profile</button>
                     </div>
 
-                    <button class="btn" id="submit-btn" onclick="submit()"><i class="codicon codicon-check"></i> Initialize Workspace</button>
+                    <button class="btn" id="submit-btn" onclick="submit()"><i class="codicon codicon-rocket"></i> Initialize Project (Build Full Graph & Governor File)</button>
                 </div>
             </div>
 
@@ -674,17 +735,10 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     document.getElementById('opt-agentic').classList.toggle('active', val === 'agentic');
                     document.getElementById('r-vibe').checked = val === 'vibe';
                     document.getElementById('r-agentic').checked = val === 'agentic';
-
-                    const pathwayPanel = document.getElementById('pathway-panel');
-                    pathwayPanel.style.display = val === 'agentic' ? 'block' : 'none';
                 }
 
                 function selectPathway(val) {
                     selectedPathway = val;
-                    document.getElementById('opt-prd').classList.toggle('active', val === 'prd');
-                    document.getElementById('opt-scan').classList.toggle('active', val === 'scan');
-                    document.getElementById('r-prd').checked = val === 'prd';
-                    document.getElementById('r-scan').checked = val === 'scan';
                 }
 
                 const saveAsGlobalCheck = document.getElementById('save-as-global-check');
@@ -712,7 +766,6 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                             if (p.prefProfileId) {
                                 document.getElementById('pref-profile-select').value = p.prefProfileId;
                             }
-                            // Auto-set the destiny archetype based on template focus
                             if (p.id.includes('vibe') || p.id.includes('godot')) {
                                 selectDestiny('vibe');
                             } else {
@@ -788,6 +841,29 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     vscode.postMessage({ command: 'discoverDoctrine' });
                 }
 
+                function quickInit() {
+                    const btn = document.getElementById('btn-quick-init');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="codicon codicon-loading spin"></i> Building Graph & Guide...';
+                    }
+                    const objectives = document.getElementById('instructions').value.trim();
+                    const style = document.getElementById('preferences').value.trim();
+                    const doctrine = document.getElementById('doctrine').value.trim();
+                    const prefProfileId = document.getElementById('pref-profile-select').value;
+
+                    vscode.postMessage({
+                        command: 'initGraphAndGovernor',
+                        data: {
+                            destiny: selectedDestiny,
+                            objectives: objectives,
+                            style: style,
+                            doctrine: doctrine,
+                            prefProfileId: prefProfileId
+                        }
+                    });
+                }
+
                 function submit() {
                     const btn = document.getElementById('submit-btn');
                     if (btn.disabled) return;
@@ -805,7 +881,7 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     }
 
                     btn.disabled = true;
-                    btn.innerHTML = '<i class="codicon codicon-loading spin"></i> Mapping Synaptic Engrams...';
+                    btn.innerHTML = '<i class="codicon codicon-loading spin"></i> Initializing Project (Graph & Governor)...';
 
                     document.querySelectorAll('input, textarea, select, .radio-option, button').forEach(el => {
                         el.style.pointerEvents = 'none';
@@ -833,7 +909,9 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                             style: style,
                             doctrine: doctrine,
                             prefProfileId: prefProfileId,
-                            pathway: selectedDestiny === 'agentic' ? selectedPathway : 'none'
+                            pathway: selectedDestiny === 'agentic' ? selectedPathway : 'none',
+                            saveAsGlobal: saveAsGlobalCheck.checked,
+                            profileName: profileName
                         }
                     });
                 }
@@ -843,7 +921,6 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                     if (message.command === 'loadProfileData') {
                         const d = message.data;
                         if (d.destiny) selectDestiny(d.destiny);
-                        if (d.pathway) selectPathway(d.pathway);
                         document.getElementById('instructions').value = d.instructions || d.objectives || '';
                         document.getElementById('preferences').value = d.preferences || d.style || '';
                         document.getElementById('doctrine').value = d.doctrine || '';
@@ -860,13 +937,11 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                         globalProfiles = message.architecturalProfiles || [];
                         userPrefProfiles = message.userPrefProfiles || [];
 
-                        // 1. Populate Architectural Templates Dropdown
                         globalSelect.innerHTML = '<option value="">-- Select from Library --</option>';
                         globalProfiles.forEach((p, idx) => {
                             globalSelect.appendChild(new Option(p.name, idx));
                         });
 
-                        // 2. Populate Developer Preferences Profile Dropdown
                         prefProfileSelect.innerHTML = userPrefProfiles.map(p => 
                             \`<option value="\${p.id}" \${p.isDefault ? 'selected' : ''}>\${p.name}</option>\`
                         ).join('') + \`<option value="custom">✏️ Custom Preferences</option>\`;
@@ -880,6 +955,12 @@ Generate a list of structured s:Engram JSON objects mapping these traits.`;
                         if (doctrineArea && message.doctrine) {
                             doctrineArea.value = message.doctrine;
                             syncTextareas();
+                        }
+                    } else if (message.command === 'initGraphAndGovernorComplete') {
+                        const btn = document.getElementById('btn-quick-init');
+                        if (btn) {
+                            btn.disabled = false;
+                            btn.innerHTML = \`<i class="codicon codicon-check"></i> Graph (\${message.nodesCount} nodes) & Guide Created\`;
                         }
                     } else if (message.command === 'updateGlobalProfiles') {
                         globalProfiles = message.profiles || [];

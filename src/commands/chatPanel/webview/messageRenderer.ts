@@ -3493,10 +3493,13 @@ export class ContextPresenter {
             const parts = currentModel.split('::');
             displayLabel = `${parts[1]} [${parts[0]}]`;
         }
+        const matched = (models || []).find(m => m.id === currentModel || (m.id && m.id.split('::')[1] === currentModel));
+        const hasVision = matched?.hasVision || (matched?.id && /vision|-vl|_vl|-v|_v|4v|5v|visual|multimodal|llava|bakllava|minicpm|mplug|internvl|cogvlm|pixtral|gpt-4o|gpt-4-turbo|gpt-4-vision|claude-3|gemini|omni/i.test(matched.id));
+        const visionIcon = hasVision ? `<span class="codicon codicon-eye" title="Vision Supported" style="color:var(--vscode-charts-green); margin-right: 4px; font-size: 13px;"></span>` : '';
         return `
         <div class="badge-wrapper" style="position: relative;">
-            <span id="hud-model-badge" class="mode-badge model clickable" title="Active Model: ${currentModel}. Click to select across all server bindings.">
-                <span class="codicon codicon-hubot"></span> <span class="badge-label">${displayLabel}</span>
+            <span id="hud-model-badge" class="mode-badge model clickable" title="Active Model: ${currentModel}${hasVision ? ' (Vision Supported)' : ''}. Click to select across all server bindings.">
+                <span class="codicon codicon-hubot"></span> ${visionIcon}<span class="badge-label">${displayLabel}</span>
             </span>
             <div id="hud-model-menu" class="custom-menu hidden"></div>
         </div>`;
@@ -3691,22 +3694,26 @@ export class ContextPresenter {
                     };
                     const allSubFiles = getAllSubFiles(sub);
                     const mutedSubCount = allSubFiles.filter(f => f.isMuted).length;
+                    const visibleSubCount = allSubFiles.length - mutedSubCount;
                     const isAllMuted = allSubFiles.length > 0 && mutedSubCount === allSubFiles.length;
                     const isSomeMuted = mutedSubCount > 0 && !isAllMuted;
 
                     const folderMuteClass = isAllMuted ? 'is-muted' : (isSomeMuted ? 'is-partially-muted' : 'is-active');
-                    const folderMuteIcon = isAllMuted ? 'codicon-eye-closed' : (isSomeMuted ? 'codicon-eye-closed' : 'codicon-eye');
+                    const folderMuteIcon = isAllMuted ? 'codicon-eye-closed' : 'codicon-eye';
                     const folderMuteTitle = isAllMuted 
-                        ? `Reactivate all ${allSubFiles.length} file(s) in "${sub.name}" (Unmute)`
-                        : `Mute all ${allSubFiles.length} file(s) in "${sub.name}" (0 content tokens)`;
+                        ? `All ${allSubFiles.length} file(s) muted in "${sub.name}" (Click to reveal all)`
+                        : (isSomeMuted 
+                            ? `${visibleSubCount} of ${allSubFiles.length} files visible (${mutedSubCount} muted) in "${sub.name}". Click to reveal all.`
+                            : `All ${allSubFiles.length} file(s) visible in "${sub.name}" (Click to mute all)`);
 
                     const encodedSubPaths = encodeURIComponent(JSON.stringify(allSubFiles.map(f => f.path)));
                     const hasSubfolders = sub.subDirs.size > 0;
+                    const folderAction = isAllMuted || isSomeMuted ? 'unmute' : 'mute';
 
                     html += `
-                    <details class="context-tree-folder ${isAllMuted ? 'folder-muted' : ''}" open style="margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; background: rgba(0,0,0,0.06);" data-folder="${sub.fullPath}">
+                    <details class="context-tree-folder ${isAllMuted ? 'folder-muted' : (isSomeMuted ? 'folder-partially-muted' : '')}" open style="margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; background: rgba(0,0,0,0.06);" data-folder="${sub.fullPath}">
                         <summary style="padding: 3px 6px; cursor: pointer; font-size: 11px; font-weight: 700; display: flex; align-items: center; gap: 6px; user-select: none; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 3px;">
-                            <button class="toggle-mute-folder-btn ${folderMuteClass}" data-folder="${sub.fullPath}" data-paths="${encodedSubPaths}" data-action="${isAllMuted ? 'unmute' : 'mute'}" title="${folderMuteTitle}" style="cursor: pointer;">
+                            <button class="toggle-mute-folder-btn ${folderMuteClass}" data-folder="${sub.fullPath}" data-paths="${encodedSubPaths}" data-action="${folderAction}" title="${folderMuteTitle}" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center;">
                                 <span class="codicon ${folderMuteIcon}"></span>
                             </button>
                             ${hasSubfolders ? `
@@ -3795,7 +3802,8 @@ export class ContextPresenter {
         themeClass: string,
         isAgentActive: boolean,
         finalSelections: string[],
-        finalFilesCount: number,
+        finalProjectFilesCount: number,
+        finalExternalFilesCount: number,
         finalSkillsCount: number,
         projectFilesHtml: string,
         externalFilesHtml: string,
@@ -3971,25 +3979,22 @@ export class ContextPresenter {
                     <details class="info-collapsible files-details" open style="margin-bottom: 8px;">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span class="files-count-label">Selected Files (${finalFilesCount})</span>
+                                <span class="files-count-label">Project Files (${finalProjectFilesCount})</span>
                                 <div style="display: flex; gap: 8px; align-items: center;">
-                                    <button id="new-chat-same-context-icon-btn" class="icon-btn" title="New Discussion with Same Files & Mute States" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-repo-forked"></i></button>
                                     <button id="view-usage-context-btn" class="icon-btn" title="Verify File Sizes / Token Usage"><i class="codicon codicon-dashboard"></i></button>
                                     <div style="width: 1px; height: 12px; background: var(--vscode-widget-border);"></div>
-                                    <button id="add-file-context-btn" class="icon-btn" title="Add File"><i class="codicon codicon-add"></i></button>
-                                    <button id="web-context-btn" class="icon-btn" title="Web Discovery"><i class="codicon codicon-globe"></i></button>
+                                    <button id="add-file-context-btn" class="icon-btn" title="Add Project File"><i class="codicon codicon-add"></i></button>
                                     <button id="search-add-context-btn" class="icon-btn" title="Power Search"><i class="codicon codicon-search"></i></button>
                                 </div>
                             </div>
                         </summary>
                         <div class="collapsible-content hud-files-container" style="padding-top: 8px;">
-                            <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px;">
-                                <span>Project Files</span>
+                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 8px;">
                                 <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
                                     <select id="hud-visibility-preset-select" class="section-bulk-btn" style="height:20px; font-size:10px; padding: 0 4px; max-width: 130px; cursor: pointer;" title="Quick switch visibility profile / preset">
                                         <option value="">📁 Preset...</option>
                                     </select>
-                                    ${finalFilesCount > 0 ? `<button id="governor-filter-btn" class="section-bulk-btn" title="Context Governor: Select files to keep with AI based on prompt"><span class="codicon codicon-law"></span> Governor</button>` : ''}
+                                    ${finalProjectFilesCount > 0 ? `<button id="governor-filter-btn" class="section-bulk-btn" title="Context Governor: Select files to keep with AI based on prompt"><span class="codicon codicon-law"></span> Governor</button>` : ''}
                                     <select id="sort-files-select" class="section-bulk-btn" style="height:20px; font-size:10px; padding: 0 4px; cursor: pointer; max-width: 140px;" title="Organize & Sort Files">
                                         <option value="tree" ${state.fileSortOrder === 'tree' ? 'selected' : ''}>🌳 Folder (Tree)</option>
                                         <option value="visible-first" ${state.fileSortOrder === 'visible-first' ? 'selected' : ''}>👁️ Visible First</option>
@@ -4005,19 +4010,37 @@ export class ContextPresenter {
                                     <button id="new-discussion-same-files-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-purple); color: var(--vscode-charts-purple);" title="Start a new discussion with the exact same files and muted states">
                                         <span class="codicon codicon-repo-forked"></span> Fork Chat
                                     </button>
-                                    ${finalFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn" title="Bulk manage visibility (mute/reveal) and removal"><span class="codicon codicon-checklist"></span> Bulk Operations</button>` : ''}
+                                    <button id="fork-and-compress-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);" title="Fork discussion with same files and mute states, compressing history into two alternating messages (user summary + AI acknowledgement)">
+                                        <span class="codicon codicon-git-pull-request"></span> Fork & Compress
+                                    </button>
+                                    ${finalProjectFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn" title="Bulk manage visibility (mute/reveal) and removal"><span class="codicon codicon-checklist"></span> Bulk Operations</button>` : ''}
                                 </div>
-                            </h4>
+                            </div>
                             <div class="hud-files-search-bar" style="display: flex; align-items: center; gap: 6px; margin: 0 0 8px 0; padding: 2px 8px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px;">
                                 <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.6;"></i>
                                 <input type="text" id="hud-files-search-input" placeholder="Filter context files by name or path..." value="${(state as any).hudFileFilterQuery || ''}" style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); flex: 1; height: 22px; padding: 0;">
                                 <button id="hud-files-search-clear" class="icon-btn" title="Clear filter" style="padding: 0; width: 18px; height: 18px; display: ${(state as any).hudFileFilterQuery ? 'inline-flex' : 'none'};"><i class="codicon codicon-close" style="font-size: 11px;"></i></button>
                             </div>
                             <div class="hud-project-files-list">${projectFilesHtml}</div>
-                            <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
-                                <span>External & Research</span>
-                                ${externalFilesHtml.includes('context-item') ? `<div style="display: flex; gap: 4px;"><button id="bulk-process-external-btn" class="section-bulk-btn"><span class="codicon codicon-wand"></span> Process</button><button id="bulk-delete-external-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Delete</button></div>` : ''}
-                            </h4>
+                        </div>
+                    </details>
+
+                    <!-- 📂 SEPARATE EXTERNAL & RESEARCH SECTION (.lollms/external_files) -->
+                    <details class="info-collapsible external-details" style="margin-bottom: 8px;">
+                        <summary>
+                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                <span class="external-count-label">External & Research (${finalExternalFilesCount})</span>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <button id="add-external-file-btn" class="icon-btn" title="Import Document to .lollms/external_files (PDF, DOCX, TXT, MD, etc.)"><i class="codicon codicon-add"></i></button>
+                                    <button id="web-context-btn" class="icon-btn" title="Web Discovery & Research"><i class="codicon codicon-globe"></i></button>
+                                    ${finalExternalFilesCount > 0 ? `<button id="bulk-process-external-btn" class="section-bulk-btn" title="Process external files"><span class="codicon codicon-wand"></span> Process</button><button id="bulk-delete-external-btn" class="section-bulk-btn delete" title="Remove external files"><span class="codicon codicon-trash"></span> Remove</button>` : ''}
+                                </div>
+                            </div>
+                        </summary>
+                        <div class="collapsible-content hud-external-files-container" style="padding-top: 8px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px; padding: 0 4px;">
+                                <span style="font-size: 10px; opacity: 0.65; font-family: var(--vscode-editor-font-family);"><i class="codicon codicon-folder"></i> .lollms/external_files</span>
+                            </div>
                             <div class="hud-external-files-list">${externalFilesHtml}</div>
                         </div>
                     </details>
@@ -4137,7 +4160,11 @@ export class ContextBinder {
                 const icon = isSel ? 'codicon-check' : 'codicon-circle-outline';
                 const extraStyle = isSel ? 'style="font-weight: bold; color: var(--vscode-textLink-foreground);"' : '';
                 const rawName = m.id.includes('::') ? m.id.split('::')[1] : m.id;
-                menuHtml += `<div class="custom-menu-item model-opt-item" data-id="${m.id}" ${extraStyle} style="padding-left: 20px;"><span class="codicon ${icon}"></span> ${rawName}</div>`;
+                const hasVision = m.hasVision || (m.id && /vision|-vl|_vl|-v|_v|4v|5v|visual|multimodal|llava|bakllava|minicpm|mplug|internvl|cogvlm|pixtral|gpt-4o|gpt-4-turbo|gpt-4-vision|claude-3|gemini|omni/i.test(m.id));
+                const eyeBadge = hasVision
+                    ? `<span class="codicon codicon-eye" title="Vision Supported" style="color:var(--vscode-charts-green); margin-right: 6px; font-size: 13px; flex-shrink: 0;"></span>`
+                    : `<span style="display:inline-block; width: 19px; flex-shrink: 0;"></span>`;
+                menuHtml += `<div class="custom-menu-item model-opt-item" data-id="${m.id}" ${extraStyle} style="padding-left: 16px;"><span class="codicon ${icon}"></span> ${eyeBadge}<span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${rawName}</span></div>`;
             });
         });
 
@@ -4506,27 +4533,39 @@ export class ContextBinder {
             const allFileRows = Array.from(folderDetails.querySelectorAll('.context-item[data-path]'));
             if (allFileRows.length === 0) return;
             const mutedCount = allFileRows.filter(r => r.classList.contains('file-muted')).length;
+            const visibleCount = allFileRows.length - mutedCount;
             const isAllMuted = mutedCount === allFileRows.length;
             const isSomeMuted = mutedCount > 0 && !isAllMuted;
 
             folderDetails.classList.toggle('folder-muted', isAllMuted);
+            folderDetails.classList.toggle('folder-partially-muted', isSomeMuted);
+
             const summary = folderDetails.querySelector('summary');
             if (summary) {
                 const folderBtn = summary.querySelector('.toggle-mute-folder-btn') as HTMLElement;
                 if (folderBtn) {
                     folderBtn.className = `toggle-mute-folder-btn ${isAllMuted ? 'is-muted' : (isSomeMuted ? 'is-partially-muted' : 'is-active')}`;
-                    folderBtn.dataset.action = isAllMuted ? 'unmute' : 'mute';
+                    folderBtn.dataset.action = isAllMuted || isSomeMuted ? 'unmute' : 'mute';
+                    folderBtn.title = isAllMuted 
+                        ? `All ${allFileRows.length} file(s) muted (Click to reveal all)`
+                        : (isSomeMuted 
+                            ? `${visibleCount} of ${allFileRows.length} files visible (${mutedCount} muted). Click to reveal all.`
+                            : `All ${allFileRows.length} file(s) visible (Click to mute all)`);
                     const icon = folderBtn.querySelector('.codicon');
-                    if (icon) icon.className = `codicon ${isAllMuted ? 'codicon-eye-closed' : 'codicon-eye'}`;
+                    if (icon) {
+                        icon.className = `codicon ${isAllMuted ? 'codicon-eye-closed' : 'codicon-eye'}`;
+                    }
                 }
                 const nameSpan = summary.querySelector('span:nth-of-type(2)') as HTMLElement;
                 if (nameSpan) {
                     nameSpan.style.textDecoration = isAllMuted ? 'line-through' : '';
-                    nameSpan.style.opacity = isAllMuted ? '0.75' : '';
+                    nameSpan.style.opacity = isAllMuted ? '0.65' : (isSomeMuted ? '0.85' : '1');
                 }
                 const countSpan = summary.querySelector('span:nth-of-type(3)') as HTMLElement;
                 if (countSpan) {
-                    countSpan.textContent = `${allFileRows.length} file${allFileRows.length === 1 ? '' : 's'}${isSomeMuted ? ` (${mutedCount} muted)` : ''}`;
+                    countSpan.textContent = isSomeMuted
+                        ? `${allFileRows.length} files (${visibleCount} visible, ${mutedCount} muted)`
+                        : `${allFileRows.length} file${allFileRows.length === 1 ? '' : 's'}${isAllMuted ? ' (all muted)' : ''}`;
                 }
                 const badge = summary.querySelector('.file-token-badge') as HTMLElement;
                 if (badge) {
@@ -4798,6 +4837,30 @@ export class ContextBinder {
         // Helper to extract file path string
         const getFilePath = (item: any) => typeof item === 'string' ? item : (item?.path || '');
 
+        // Bind Add External File (.lollms/external_files)
+        const addExternalFileBtn = dashboard.querySelector('#add-external-file-btn') as HTMLElement;
+        if (addExternalFileBtn) {
+            addExternalFileBtn.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'requestAddExternalFile' });
+            };
+        }
+
+        // Bind Web Discovery & Research Button
+        const webContextBtn = dashboard.querySelector('#web-context-btn') as HTMLElement;
+        if (webContextBtn) {
+            webContextBtn.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const modal = document.getElementById('web-modal');
+                if (modal) {
+                    modal.style.display = 'flex';
+                    modal.classList.add('visible');
+                }
+            };
+        }
+
         // Bind Project Files Bulk Operations button
         const bulkRemoveProjectBtn = dashboard.querySelector('#bulk-remove-project-btn') as HTMLElement;
         if (bulkRemoveProjectBtn) {
@@ -4819,10 +4882,8 @@ export class ContextBinder {
             bulkProcessExternalBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const externalFiles = files.filter(f => {
-                    const p = getFilePath(f);
-                    return p.includes('.lollms/') || p.startsWith('http') || p.startsWith('external/');
-                }).map(getFilePath);
+                const currentFiles = state.lastContextData?.files || files || [];
+                const externalFiles = currentFiles.filter((f: any) => !isProjectFile(f)).map(getFilePath);
                 showBulkProcessModal(externalFiles);
             };
         }
@@ -4833,10 +4894,8 @@ export class ContextBinder {
             bulkDeleteExternalBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const externalFiles = files.filter(f => {
-                    const p = getFilePath(f);
-                    return p.includes('.lollms/') || p.startsWith('http') || p.startsWith('external/');
-                });
+                const currentFiles = state.lastContextData?.files || files || [];
+                const externalFiles = currentFiles.filter((f: any) => !isProjectFile(f));
                 showBulkDeleteModal(externalFiles);
             };
         }
@@ -4876,6 +4935,15 @@ export class ContextBinder {
                 e.preventDefault();
                 e.stopPropagation();
                 vscode.postMessage({ command: 'newDiscussionWithSameContext' });
+            };
+        }
+
+        const forkCompressBtn = dashboard.querySelector('#fork-and-compress-btn') as HTMLElement;
+        if (forkCompressBtn) {
+            forkCompressBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'forkAndCompressDiscussion' });
             };
         }
 
@@ -5064,7 +5132,14 @@ export function updateContext(
 
     const isProjectFile = (item: any) => {
         const f = getFilePath(item);
-        const isInternal = f.includes('.lollms/') || f.startsWith('http') || f.startsWith('external/');
+        if (!f) return true;
+        const norm = f.replace(/\\/g, '/').toLowerCase();
+        const isInternal = norm.includes('.lollms/external_files') || 
+                           norm.startsWith('.lollms/external_files') ||
+                           norm.startsWith('external/') || 
+                           norm.includes('/external/') ||
+                           norm.startsWith('http') ||
+                           norm.includes('.lollms/');
         return !isInternal;
     };
 
@@ -5102,7 +5177,8 @@ export function updateContext(
             themeClass,
             isAgentActive,
             safeFinalSelections,
-            safeProjectFiles.length + safeExternalFiles.length,
+            safeProjectFiles.length,
+            safeExternalFiles.length,
             safeFinalSkills.length,
             projectFilesHtml,
             externalFilesHtml,
@@ -5468,14 +5544,19 @@ export function showBulkOperationsModal(files: any[]) {
 
                     const folderMuteClass = isAllMuted ? 'is-muted' : (mutedInSub > 0 ? 'is-partially-muted' : 'is-active');
                     const folderMuteIcon = isAllMuted ? 'codicon-eye-closed' : 'codicon-eye';
-                    const folderMuteTitle = isAllMuted ? `Reveal all ${allSubFiles.length} file(s) in "${sub.name}"` : `Mute all ${allSubFiles.length} file(s) in "${sub.name}" (0 tokens)`;
+                    const folderAction = isAllMuted || mutedInSub > 0 ? 'unmute' : 'mute';
+                    const folderMuteTitle = isAllMuted 
+                        ? `All ${allSubFiles.length} files muted in "${sub.name}" (Click to reveal all)` 
+                        : (mutedInSub > 0 
+                            ? `${allSubFiles.length - mutedInSub} visible, ${mutedInSub} muted in "${sub.name}". Click to reveal all.` 
+                            : `All ${allSubFiles.length} files visible in "${sub.name}" (Click to mute all)`);
                     const encodedSubPaths = encodeURIComponent(JSON.stringify(subPaths));
 
                     html += `
                     <details class="context-tree-folder" open style="margin-bottom: 6px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; background: rgba(0,0,0,0.1);">
                         <summary style="padding: 4px 8px; cursor: pointer; font-size: 11px; font-weight: 700; display: flex; align-items: center; gap: 8px; user-select: none; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 4px;">
                             <input type="checkbox" class="bulk-folder-check" data-paths="${encodedSubPaths}" ${isAllChecked ? 'checked' : ''} ${isSomeChecked ? 'data-indeterminate="true"' : ''} style="cursor: pointer; margin: 0;">
-                            <button class="toggle-mute-folder-btn bulk-modal-mute-folder-btn ${folderMuteClass}" data-paths="${encodedSubPaths}" data-action="${isAllMuted ? 'unmute' : 'mute'}" title="${folderMuteTitle}" style="cursor: pointer;">
+                            <button class="toggle-mute-folder-btn bulk-modal-mute-folder-btn ${folderMuteClass}" data-paths="${encodedSubPaths}" data-action="${folderAction}" title="${folderMuteTitle}" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center;">
                                 <span class="codicon ${folderMuteIcon}"></span>
                             </button>
                             ${hasSubfolders ? `

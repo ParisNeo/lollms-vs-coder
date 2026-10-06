@@ -64,6 +64,64 @@ export function initEventHandlers() {
     });
 }
 
+const handlePasteImages = (e: ClipboardEvent): boolean => {
+    const clipboardData = e.clipboardData;
+    if (!clipboardData) return false;
+
+    const imageBlobs: { blob: Blob; name: string }[] = [];
+
+    // 1. Inspect items for direct image objects (screenshots, copied image data)
+    if (clipboardData.items && clipboardData.items.length > 0) {
+        for (let i = 0; i < clipboardData.items.length; i++) {
+            const item = clipboardData.items[i];
+            if (item.type && item.type.indexOf('image') !== -1) {
+                const blob = item.getAsFile();
+                if (blob) {
+                    imageBlobs.push({ blob, name: (blob as File).name || `pasted_${Date.now()}_${i}.png` });
+                }
+            } else if (item.kind === 'file') {
+                const file = item.getAsFile();
+                if (file && (file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name))) {
+                    imageBlobs.push({ blob: file, name: file.name });
+                }
+            }
+        }
+    }
+
+    // 2. Inspect files collection as fallback (copied image files from desktop/explorer)
+    if (imageBlobs.length === 0 && clipboardData.files && clipboardData.files.length > 0) {
+        for (let i = 0; i < clipboardData.files.length; i++) {
+            const file = clipboardData.files[i];
+            if (file && (file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name))) {
+                imageBlobs.push({ blob: file, name: file.name });
+            }
+        }
+    }
+
+    if (imageBlobs.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        imageBlobs.forEach(({ blob, name }) => {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const base64 = event.target?.result as string;
+                if (base64) {
+                    state.pendingImages.push({
+                        name,
+                        data: base64
+                    });
+                    renderPendingImages();
+                }
+            };
+            reader.readAsDataURL(blob);
+        });
+        return true;
+    }
+
+    return false;
+};
+
 if (dom.sendButton) {
     dom.sendButton.addEventListener('click', () => {
         if (state.isGenerating) {
@@ -78,7 +136,11 @@ if (dom.sendButton) {
             // If we have images, wrap in multipart format
             if (state.pendingImages.length > 0) {
                 const parts: any[] = [];
-                if (text) parts.push({ type: 'text', text: text });
+                if (text) {
+                    parts.push({ type: 'text', text: text });
+                } else {
+                    parts.push({ type: 'text', text: "Attached image." });
+                }
                 state.pendingImages.forEach(img => {
                     parts.push({ type: 'image_url', image_url: { url: img.data } });
                 });
@@ -98,6 +160,32 @@ if (dom.sendButton) {
         }
     });
 }
+
+// Attach paste handler to input-area container and focus textarea on input area click
+const inputAreaEl = document.querySelector('.input-area');
+if (inputAreaEl) {
+    inputAreaEl.addEventListener('paste', (e: Event) => {
+        handlePasteImages(e as ClipboardEvent);
+    });
+    inputAreaEl.addEventListener('click', (e: Event) => {
+        const target = e.target as HTMLElement;
+        if (target !== dom.messageInput && !target.closest('button, input, select, .staged-image-card')) {
+            dom.messageInput?.focus();
+        }
+    });
+}
+
+// Catch paste events when chat window is active and no modal/search input is open
+window.addEventListener('paste', (e: ClipboardEvent) => {
+    if (document.querySelector('.modal.visible') || document.activeElement === dom.searchInput) {
+        return;
+    }
+    const target = e.target as HTMLElement;
+    if (target && target.tagName === 'INPUT' && target.id !== 'messageInput') {
+        return;
+    }
+    handlePasteImages(e);
+});
 
     const wrapText = (type: string, target?: HTMLTextAreaElement | any) => {
         // 1. Detect if target is CodeMirror (EditorView) or standard Textarea
@@ -239,31 +327,7 @@ if (dom.sendButton) {
             dom.messageInput.style.height = dom.messageInput.scrollHeight + 'px';
         });
         dom.messageInput.addEventListener('paste', (e: ClipboardEvent) => {
-            const items = e.clipboardData?.items;
-            if (!items) return;
-
-            // 1. Handle Images
-            for (const item of Array.from(items)) {
-                if (item.type.indexOf('image') !== -1) {
-                    const blob = item.getAsFile();
-                    if (blob) {
-                        const reader = new FileReader();
-                        reader.onload = (event) => {
-                            const base64 = event.target?.result as string;
-                            state.pendingImages.push({ 
-                                name: `pasted_${Date.now()}.png`, 
-                                data: base64 
-                            });
-                            renderPendingImages();
-                        };
-                        reader.readAsDataURL(blob);
-                        e.preventDefault();
-                        return;
-                    }
-                }
-            }
-
-            
+            handlePasteImages(e);
         });
     }
 
@@ -376,6 +440,18 @@ if (dom.sendButton) {
         });
     }
 
+    const forkAndCompressMenuBtn = document.getElementById('forkAndCompressMenuBtn');
+    if (forkAndCompressMenuBtn) {
+        forkAndCompressMenuBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            vscode.postMessage({ command: 'forkAndCompressDiscussion' });
+            if (dom.moreActionsMenu) {
+                dom.moreActionsMenu.classList.remove('visible');
+            }
+        });
+    }
+
     if (dom.discussionToolsButton) {
         dom.discussionToolsButton.addEventListener('click', (e) => {
             e.preventDefault();
@@ -479,7 +555,17 @@ if (dom.sendButton) {
 
     if (dom.webModalCloseBtn) {
         dom.webModalCloseBtn.addEventListener('click', () => {
+            dom.webModal.style.display = 'none';
             dom.webModal.classList.remove('visible');
+        });
+    }
+
+    if (dom.webModal) {
+        dom.webModal.addEventListener('click', (e) => {
+            if (e.target === dom.webModal) {
+                dom.webModal.style.display = 'none';
+                dom.webModal.classList.remove('visible');
+            }
         });
     }
 
@@ -504,9 +590,29 @@ if (dom.sendButton) {
             if (action === 'scrape') {
                 params = {
                     url: (document.getElementById('web-url-input') as HTMLInputElement).value,
-                    depth: parseInt((document.getElementById('web-url-depth') as HTMLInputElement).value, 10)
+                    depth: parseInt((document.getElementById('web-url-depth') as HTMLInputElement).value, 10) || 0
+                };
+                if (!params.url) {
+                    vscode.postMessage({ command: 'showError', message: 'Please enter a URL to scrape.' });
+                    return;
+                }
+                vscode.postMessage({ command: 'requestWebAction', action, params });
+                dom.webModal.style.display = 'none';
+                dom.webModal.classList.remove('visible');
+            } else if (action === 'youtube') {
+                const urlInp = document.getElementById('web-youtube-input') as HTMLInputElement;
+                const langInp = document.getElementById('web-youtube-lang') as HTMLInputElement;
+                const videoInput = urlInp ? urlInp.value.trim() : "";
+                if (!videoInput) {
+                    vscode.postMessage({ command: 'showError', message: 'Please enter a YouTube video URL or ID.' });
+                    return;
+                }
+                params = {
+                    url: videoInput,
+                    language: langInp ? langInp.value.trim() || 'en' : 'en'
                 };
                 vscode.postMessage({ command: 'requestWebAction', action, params });
+                dom.webModal.style.display = 'none';
                 dom.webModal.classList.remove('visible');
             } else if (action === 'search_provider') {
                 const queryInp = document.getElementById('web-search-query') as HTMLInputElement;
@@ -1486,7 +1592,7 @@ if (dom.sendButton) {
                 updateRawNavigation();
             }
             if (e.key === 'Escape') {
-                dom.rawCodeModal.classList.remove('visible');
+                closeRawCodeModal();
             }
         });
     }
@@ -1504,17 +1610,24 @@ if (dom.sendButton) {
     };
 
     // --- Raw Code Modal Events ---
-    if (dom.rawCodeCloseBtn) {
-        dom.rawCodeCloseBtn.addEventListener('click', () => {
-            // Force terminate any active progressive search loop
-            if ((window as any).progressiveSearchState !== undefined) {
-                (window as any).progressiveSearchState = null;
-            }
+    function closeRawCodeModal() {
+        if ((window as any).progressiveSearchState !== undefined) {
+            (window as any).progressiveSearchState = null;
+        }
+        if (dom.rawCodeModal) {
             dom.rawCodeModal.style.display = 'none';
             dom.rawCodeModal.classList.remove('visible');
+        }
+        if (dom.rawSearchResultsMini) {
             dom.rawSearchResultsMini.style.display = 'none';
-            clearRawSearch();
-            if (dom.rawSearchInput) dom.rawSearchInput.value = '';
+        }
+        clearRawSearch();
+        if (dom.rawSearchInput) dom.rawSearchInput.value = '';
+    }
+
+    if (dom.rawCodeCloseBtn) {
+        dom.rawCodeCloseBtn.addEventListener('click', () => {
+            closeRawCodeModal();
         });
     }
 
@@ -1806,33 +1919,43 @@ if (dom.sendButton) {
                 m.checkAndSyncMessageAppliedState(messageId);
             });
 
-            // 7. Automatically advance to the next unapplied hunk
-            if (!isUndo && totalHunks > 1 && tabBar) {
+            // 7. Advance to the next unapplied hunk, or auto-close modal if all hunks are completed
+            if (!isUndo) {
                 const currentApplied = state.appliedState[messageId]?.[blockIndex] || [];
                 let nextHunkIdx = -1;
 
-                // Look ahead from current hunk + 1 to end
-                for (let next = hunkIndex + 1; next < totalHunks; next++) {
-                    if (!currentApplied.includes(next)) {
-                        nextHunkIdx = next;
-                        break;
-                    }
-                }
-
-                // If not found ahead, check earlier unapplied hunks (wrap around)
-                if (nextHunkIdx === -1) {
-                    for (let prev = 0; prev < hunkIndex; prev++) {
-                        if (!currentApplied.includes(prev)) {
-                            nextHunkIdx = prev;
+                if (totalHunks > 1 && tabBar) {
+                    // Look ahead from current hunk + 1 to end
+                    for (let next = hunkIndex + 1; next < totalHunks; next++) {
+                        if (!currentApplied.includes(next)) {
+                            nextHunkIdx = next;
                             break;
                         }
                     }
+
+                    // If not found ahead, check earlier unapplied hunks (wrap around)
+                    if (nextHunkIdx === -1) {
+                        for (let prev = 0; prev < hunkIndex; prev++) {
+                            if (!currentApplied.includes(prev)) {
+                                nextHunkIdx = prev;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (nextHunkIdx !== -1 && tabBar.children[nextHunkIdx]) {
+                        setTimeout(() => {
+                            (tabBar.children[nextHunkIdx] as HTMLElement).click();
+                        }, 180);
+                    }
                 }
 
-                if (nextHunkIdx !== -1 && tabBar.children[nextHunkIdx]) {
+                // Auto-close modal when validating a single hunk or the last remaining hunk
+                const isAllDone = totalHunks <= 1 || nextHunkIdx === -1;
+                if (isAllDone) {
                     setTimeout(() => {
-                        (tabBar.children[nextHunkIdx] as HTMLElement).click();
-                    }, 180);
+                        closeRawCodeModal();
+                    }, 250);
                 }
             }
         });
@@ -1909,6 +2032,106 @@ if (dom.sendButton) {
         };
     }
 
+    // --- WIZARD LIVE PROMPT TOKEN COUNT & IMAGE IMPORT/PASTE ---
+    if (dom.wizardPrompt) {
+        dom.wizardPrompt.addEventListener('input', () => {
+            import('./ui.js').then(ui => ui.updateWizardContextBar());
+        });
+
+        // Paste handler for images inside prompt
+        dom.wizardPrompt.addEventListener('paste', (e: ClipboardEvent) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+
+            for (const item of Array.from(items)) {
+                if (item.type.indexOf('image') !== -1) {
+                    const blob = item.getAsFile();
+                    if (blob) {
+                        e.preventDefault();
+                        const reader = new FileReader();
+                        reader.onload = (ev) => {
+                            const dataUrl = ev.target?.result as string;
+                            const staged = (window as any).wizardStagedImages || [];
+                            staged.push({
+                                name: `wizard_pasted_${Date.now()}.png`,
+                                data: dataUrl
+                            });
+                            import('./ui.js').then(ui => {
+                                ui.renderWizardStagedImages();
+                            });
+                        };
+                        reader.readAsDataURL(blob);
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    const wizardAttachImgBtn = document.getElementById('wizard-attach-image-btn');
+    const wizardImgInput = document.getElementById('wizard-image-input') as HTMLInputElement;
+
+    if (wizardAttachImgBtn && wizardImgInput) {
+        wizardAttachImgBtn.onclick = () => {
+            wizardImgInput.click();
+        };
+
+        wizardImgInput.onchange = () => {
+            const files = wizardImgInput.files;
+            if (!files || files.length === 0) return;
+
+            Array.from(files).forEach(file => {
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    const dataUrl = ev.target?.result as string;
+                    const staged = (window as any).wizardStagedImages || [];
+                    staged.push({
+                        name: file.name,
+                        data: dataUrl
+                    });
+                    import('./ui.js').then(ui => {
+                        ui.renderWizardStagedImages();
+                    });
+                };
+                reader.readAsDataURL(file);
+            });
+
+            wizardImgInput.value = '';
+        };
+    }
+
+    // Wizard Candidate Files Filter and Bulk Unmute / Mute
+    const wizardFilterInp = document.getElementById('wizard-file-filter-input') as HTMLInputElement;
+    if (wizardFilterInp) {
+        wizardFilterInp.oninput = () => {
+            import('./ui.js').then(ui => {
+                ui.renderWizardFileList(wizardFilterInp.value);
+            });
+        };
+    }
+
+    const wizardUnmuteAllBtn = document.getElementById('wizard-unmute-all-btn');
+    if (wizardUnmuteAllBtn) {
+        wizardUnmuteAllBtn.onclick = () => {
+            import('./ui.js').then(ui => {
+                ui.wizardMutedSet.clear();
+                state.wizardMutedFiles = [];
+                ui.renderWizardFileList(wizardFilterInp?.value || '');
+            });
+        };
+    }
+
+    const wizardMuteAllBtn = document.getElementById('wizard-mute-all-btn');
+    if (wizardMuteAllBtn) {
+        wizardMuteAllBtn.onclick = () => {
+            import('./ui.js').then(ui => {
+                ui.wizardCandidateFiles.forEach(f => ui.wizardMutedSet.add(f.path.toLowerCase().trim()));
+                state.wizardMutedFiles = Array.from(ui.wizardMutedSet);
+                ui.renderWizardFileList(wizardFilterInp?.value || '');
+            });
+        };
+    }
+
     const wizardGovBtn = document.getElementById('wizard-governor-btn');
     if (wizardGovBtn) {
         wizardGovBtn.onclick = (e) => {
@@ -1974,7 +2197,26 @@ if (dom.sendButton) {
         };
     }
 
+    const cancelGovernorTurn = () => {
+        vscode.postMessage({ command: 'cancelGovernorFilter' });
+        import('./ui.js').then(ui => {
+            (ui as any).setGovernorRunningState(false);
+            const stepTxt = document.getElementById('gov-step-text');
+            if (stepTxt) stepTxt.textContent = 'Generation stopped by user.';
+            const roundCountEl = document.getElementById('gov-round-count');
+            if (roundCountEl) {
+                roundCountEl.textContent = 'Stopped';
+                roundCountEl.style.color = 'var(--vscode-charts-orange)';
+            }
+        });
+    };
+
     const triggerGovernorTurn = () => {
+        if ((state as any).isGovernorRunning) {
+            cancelGovernorTurn();
+            return;
+        }
+
         const promptInput = document.getElementById('governor-filter-prompt') as HTMLTextAreaElement;
         const promptVal = promptInput?.value?.trim();
         if (!promptVal) {
@@ -1983,11 +2225,11 @@ if (dom.sendButton) {
             return;
         }
 
-        const runBtn = document.getElementById('governor-filter-run-btn') as HTMLButtonElement;
-        if (runBtn) {
-            runBtn.disabled = true;
-            runBtn.innerHTML = '<div class="spinner"></div>';
-        }
+        import('./ui.js').then(ui => {
+            (ui as any).setGovernorRunningState(true);
+            ui.appendGovernorMessage('user', promptVal);
+            ui.governorStudioState.history.push({ role: 'user', text: promptVal });
+        });
 
         const roundCountEl = document.getElementById('gov-round-count');
         if (roundCountEl) {
@@ -2003,11 +2245,6 @@ if (dom.sendButton) {
             stepTxt.textContent = `Analyzing codebase & dependencies for "${promptVal.substring(0, 35)}..."`;
         }
 
-        import('./ui.js').then(ui => {
-            ui.appendGovernorMessage('user', promptVal);
-            ui.governorStudioState.history.push({ role: 'user', text: promptVal });
-        });
-
         promptInput.value = '';
 
         const studioState = (window as any).governorStudioState;
@@ -2020,15 +2257,31 @@ if (dom.sendButton) {
             caller: studioState?.caller || state.governorCaller || 'chat',
             contextSelection: contextSelectionVal,
             currentMutedFiles: Array.from(studioState?.mutedSet || []),
-            history: (studioState?.history || []).map((h: any) => ({ role: h.role, content: h.text }))
+            history: (studioState?.history || []).map((h: any) => ({ role: h.role, content: h.text })),
+            customCapacity: studioState?.customCapacity,
+            targetPercent: studioState?.targetPercent,
+            reasoningEffort: studioState?.reasoningEffort
         });
     };
+
+    const govStopIndicatorBtn = document.getElementById('gov-stop-indicator-btn');
+    if (govStopIndicatorBtn) {
+        govStopIndicatorBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            cancelGovernorTurn();
+        };
+    }
 
     if (dom.governorFilterRunBtn) {
         dom.governorFilterRunBtn.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            triggerGovernorTurn();
+            if ((state as any).isGovernorRunning) {
+                cancelGovernorTurn();
+            } else {
+                triggerGovernorTurn();
+            }
         };
     }
 
@@ -2037,8 +2290,68 @@ if (dom.sendButton) {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 triggerGovernorTurn();
+            } else if (e.key === 'Escape' && (state as any).isGovernorRunning) {
+                e.preventDefault();
+                cancelGovernorTurn();
             }
         });
+    }
+
+    // Interactive Budget and Effort Controls in Governor Studio
+    const govBudgetSelect = document.getElementById('gov-budget-preset-select') as HTMLSelectElement;
+    const govCustomCapInput = document.getElementById('gov-custom-capacity-input') as HTMLInputElement;
+    const govTargetPctInput = document.getElementById('gov-target-percent-input') as HTMLInputElement;
+    const govEffortSelect = document.getElementById('gov-effort-select') as HTMLSelectElement;
+
+    if (govBudgetSelect && govCustomCapInput) {
+        govBudgetSelect.onchange = () => {
+            const studioState = (window as any).governorStudioState;
+            const val = govBudgetSelect.value;
+            if (val === 'custom') {
+                govCustomCapInput.style.display = 'inline-block';
+                const curVal = studioState?.customCapacity || 128000;
+                govCustomCapInput.value = String(curVal);
+                if (studioState) studioState.customCapacity = curVal;
+                govCustomCapInput.focus();
+            } else if (val === 'model') {
+                govCustomCapInput.style.display = 'none';
+                if (studioState) studioState.customCapacity = undefined;
+            } else {
+                govCustomCapInput.style.display = 'none';
+                const parsed = parseInt(val, 10);
+                if (studioState) studioState.customCapacity = isNaN(parsed) ? undefined : parsed;
+            }
+            import('./ui.js').then(ui => ui.renderGovernorFileList());
+        };
+
+        govCustomCapInput.oninput = () => {
+            const studioState = (window as any).governorStudioState;
+            const parsed = parseInt(govCustomCapInput.value, 10);
+            if (studioState && !isNaN(parsed) && parsed > 0) {
+                studioState.customCapacity = parsed;
+                import('./ui.js').then(ui => ui.renderGovernorFileList());
+            }
+        };
+    }
+
+    if (govTargetPctInput) {
+        govTargetPctInput.oninput = () => {
+            const studioState = (window as any).governorStudioState;
+            const parsed = parseInt(govTargetPctInput.value, 10);
+            if (studioState && !isNaN(parsed) && parsed >= 10 && parsed <= 100) {
+                studioState.targetPercent = parsed;
+                import('./ui.js').then(ui => ui.renderGovernorFileList());
+            }
+        };
+    }
+
+    if (govEffortSelect) {
+        govEffortSelect.onchange = () => {
+            const studioState = (window as any).governorStudioState;
+            if (studioState) {
+                studioState.reasoningEffort = govEffortSelect.value as any;
+            }
+        };
     }
 
     // Interactive File Filter Input on Right Column
@@ -2336,11 +2649,24 @@ if (dom.sendButton) {
     }
 
     const handleWizardSubmit = (sendToAi: boolean) => {
-        const prompt = dom.wizardPrompt.value.trim();
-        if (sendToAi && !prompt) {
-            vscode.postMessage({ command: 'showError', message: 'You must provide a first prompt/instruction to start the discussion!' });
+        const promptText = dom.wizardPrompt.value.trim();
+        const stagedImages = (window as any).wizardStagedImages || [];
+
+        if (sendToAi && !promptText && stagedImages.length === 0) {
+            vscode.postMessage({ command: 'showError', message: 'You must provide a prompt or attach an image to start the discussion!' });
             dom.wizardPrompt.focus();
             return;
+        }
+
+        let finalPromptPayload: any = promptText;
+        if (stagedImages.length > 0) {
+            finalPromptPayload = [];
+            if (promptText) {
+                finalPromptPayload.push({ type: 'text', text: promptText });
+            }
+            stagedImages.forEach((img: any) => {
+                finalPromptPayload.push({ type: 'image_url', image_url: { url: img.data } });
+            });
         }
 
         const title = dom.wizardTitle.value.trim() || undefined;
@@ -2359,20 +2685,24 @@ if (dom.sendButton) {
             }
         });
 
+        const finalMuted = state.wizardMutedFiles !== undefined
+            ? state.wizardMutedFiles
+            : ((window as any).wizardMutedSet ? Array.from((window as any).wizardMutedSet) : (state.mutedFiles || []));
+
         vscode.postMessage({
             command: 'executeLollmsCommand',
             details: {
                 command: 'lollms-vs-coder.initializeNewDiscussionWithWizard',
                 params: {
                     title,
-                    prompt,
+                    prompt: finalPromptPayload,
                     personalityId,
                     profileId,
                     selectedFolders,
                     contextSelection,
                     userPreferenceProfileId: prefProfileId,
                     userPreferences,
-                    mutedFiles: state.wizardMutedFiles,
+                    mutedFiles: finalMuted,
                     sendToAi
                 }
             }
@@ -2435,6 +2765,129 @@ if (dom.sendButton) {
             const newSettings: Record<string, any> = {};
             folders.forEach((f: any) => newSettings[f.uri.toString()] = { tree: false, content: false });
             vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { folderSettings: newSettings } });
+        };
+    }
+
+    // --- FILE REPAIR STUDIO MODAL EVENTS ---
+    const repairCloseBtn = document.getElementById('file-repair-close-btn');
+    const repairCancelBtn = document.getElementById('repair-cancel-btn');
+    const repairModal = document.getElementById('file-repair-modal');
+
+    const closeRepairModal = () => {
+        if (repairModal) {
+            repairModal.style.display = 'none';
+            repairModal.classList.remove('visible');
+        }
+        import('./ui.js').then(ui => {
+            ui.setRepairRunningState(false);
+        });
+    };
+
+    if (repairCloseBtn) repairCloseBtn.onclick = closeRepairModal;
+    if (repairCancelBtn) repairCancelBtn.onclick = closeRepairModal;
+
+    const repairAcceptBtn = document.getElementById('repair-accept-btn');
+    const repairQuickAcceptBtn = document.getElementById('repair-quick-accept-btn');
+
+    const acceptRepairState = () => {
+        const studioState = (window as any).fileRepairStudioState;
+        vscode.postMessage({
+            command: 'acceptFileRepair',
+            filePath: studioState?.filePath,
+            messageId: studioState?.messageId,
+            blockIndex: studioState?.blockIndex,
+            blockId: studioState?.blockId,
+            errorsCount: studioState?.errors?.length || 0
+        });
+        closeRepairModal();
+    };
+
+    if (repairAcceptBtn) repairAcceptBtn.onclick = acceptRepairState;
+    if (repairQuickAcceptBtn) repairQuickAcceptBtn.onclick = acceptRepairState;
+
+    const repairRescanBtn = document.getElementById('repair-rescan-btn');
+    if (repairRescanBtn) {
+        repairRescanBtn.onclick = () => {
+            const studioState = (window as any).fileRepairStudioState;
+            if (studioState?.filePath) {
+                repairRescanBtn.innerHTML = '<i class="codicon codicon-sync spin"></i> Scanning...';
+                vscode.postMessage({
+                    command: 'rescanFileDiagnostics',
+                    filePath: studioState.filePath,
+                    messageId: studioState.messageId,
+                    blockIndex: studioState.blockIndex,
+                    blockId: studioState.blockId
+                });
+                setTimeout(() => {
+                    repairRescanBtn.innerHTML = '<i class="codicon codicon-refresh"></i> Re-scan';
+                }, 1000);
+            }
+        };
+    }
+
+    const repairRunBtn = document.getElementById('repair-run-btn');
+    const repairPromptInput = document.getElementById('repair-prompt-input') as HTMLTextAreaElement;
+
+    const handleRepairSubmit = () => {
+        const studioState = (window as any).fileRepairStudioState;
+        if (studioState?.isRunning) {
+            vscode.postMessage({ command: 'cancelFileRepairPass' });
+            import('./ui.js').then(ui => ui.setRepairRunningState(false));
+            return;
+        }
+
+        const promptVal = repairPromptInput ? repairPromptInput.value.trim() : '';
+        if (repairPromptInput) repairPromptInput.value = '';
+
+        import('./ui.js').then(ui => {
+            ui.triggerRepairPass(promptVal || undefined);
+        });
+    };
+
+    if (repairRunBtn) repairRunBtn.onclick = handleRepairSubmit;
+    if (repairPromptInput) {
+        repairPromptInput.onkeydown = (e: KeyboardEvent) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleRepairSubmit();
+            }
+        };
+    }
+
+    const repairStopIndicatorBtn = document.getElementById('repair-stop-indicator-btn');
+    if (repairStopIndicatorBtn) {
+        repairStopIndicatorBtn.onclick = () => {
+            vscode.postMessage({ command: 'cancelFileRepairPass' });
+            import('./ui.js').then(ui => ui.setRepairRunningState(false));
+        };
+    }
+
+    const repairClearChatBtn = document.getElementById('repair-clear-chat-btn');
+    if (repairClearChatBtn) {
+        repairClearChatBtn.onclick = () => {
+            const chatBox = document.getElementById('repair-chat-messages');
+            if (chatBox) chatBox.innerHTML = '';
+        };
+    }
+
+    // Tab toggle: Errors vs Code
+    const repairTabErrorsBtn = document.getElementById('repair-tab-errors-btn');
+    const repairTabCodeBtn = document.getElementById('repair-tab-code-btn');
+    const repairErrorsContainer = document.getElementById('repair-errors-container');
+    const repairCodeContainer = document.getElementById('repair-code-container');
+
+    if (repairTabErrorsBtn && repairTabCodeBtn && repairErrorsContainer && repairCodeContainer) {
+        repairTabErrorsBtn.onclick = () => {
+            repairTabErrorsBtn.classList.add('apply-btn');
+            repairTabCodeBtn.classList.remove('apply-btn');
+            repairErrorsContainer.style.display = 'flex';
+            repairCodeContainer.style.display = 'none';
+        };
+        repairTabCodeBtn.onclick = () => {
+            repairTabCodeBtn.classList.add('apply-btn');
+            repairTabErrorsBtn.classList.remove('apply-btn');
+            repairErrorsContainer.style.display = 'none';
+            repairCodeContainer.style.display = 'block';
         };
     }
 
@@ -2683,6 +3136,14 @@ if (dom.sendButton) {
                 vscode.postMessage({ command: 'requestToolPicker' });
             } else if (id === 'add-diagram-context-btn') {
                 vscode.postMessage({ command: 'requestAddDiagramToContext' });
+            } else if (id === 'web-context-btn') {
+                const modal = document.getElementById('web-modal');
+                if (modal) {
+                    modal.style.display = 'flex';
+                    modal.classList.add('visible');
+                }
+            } else if (id === 'add-external-file-btn') {
+                vscode.postMessage({ command: 'requestAddExternalFile' });
             }
             return;
         }
@@ -2828,6 +3289,26 @@ if (dom.sendButton) {
         const closeMemBtn = target.closest('.task-memory-header .codicon-close');
         if (closeMemBtn) {
             closeMemBtn.closest('.task-memory-render-area')?.classList.remove('visible');
+            return;
+        }
+
+        // --- FILE REPAIR STUDIO ALERT BUTTON HANDLER ---
+        const repairAlertBtn = target.closest('.file-repair-alert-btn') as HTMLElement;
+        if (repairAlertBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            const filePath = repairAlertBtn.getAttribute('data-filepath');
+            const messageId = repairAlertBtn.getAttribute('data-message-id');
+            const blockIdxStr = repairAlertBtn.getAttribute('data-block-index');
+            const blockIndex = blockIdxStr ? parseInt(blockIdxStr, 10) : undefined;
+            const blockId = repairAlertBtn.getAttribute('data-block-id');
+            const errors = (repairAlertBtn as any)._errors || [];
+
+            if (filePath) {
+                import('./ui.js').then(ui => {
+                    ui.openFileRepairStudio(filePath, errors, messageId || undefined, blockIndex, blockId || undefined);
+                });
+            }
             return;
         }
 

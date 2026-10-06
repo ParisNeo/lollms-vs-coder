@@ -402,6 +402,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         codeGraphManager.setContextSetter((key, value) => {
             vscode.commands.executeCommand('setContext', `lollms:${key}`, value);
         });
+        codeGraphManager.loadFromDiskCache().catch(() => {});
 
         // Update the Discussion Tree header with the project name
         if (services.treeProviders.discussion && typeof services.treeProviders.discussion.setActiveProject === 'function') {
@@ -477,9 +478,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         // Critical: Set context and sync graph manager root before anything else
         vscode.commands.executeCommand('setContext', 'lollms:hasWorkspace', true);
         codeGraphManager.setWorkspaceRoot(folders[0].uri);
-
-        // RESTRICTIVE AUTONOMY: We DO NOT build the graph on startup.
-        // It remains unbuilt until the user manually triggers a rebuild or executes a query.
+        codeGraphManager.loadFromDiskCache().catch(() => {});
 
         const initial = activeWorkspaceFolder 
             ? (folders.find(f => f && f.uri && f.uri.toString() === activeWorkspaceFolder?.uri?.toString()) || folders[0]) 

@@ -658,13 +658,44 @@ export const peekFilesPlugin: TagPlugin = {
         if (fromMatch) peekOptions.from = fromMatch[1].toLowerCase();
         if (regexMatch) peekOptions.regex = regexMatch[1];
 
+        const blockId = `peek-block-${context.messageId}-${Date.now().toString(36)}`;
+        const isAssistantMode = !context.capabilities?.agentMode && !context.capabilities?.dynamicMode;
+
+        // In Assistant mode, peek_files is disabled. Present clean fallback options to Add to Context or Unmute
+        if (isAssistantMode) {
+            return `
+            <div class="file-operation-block" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-orange); border-radius: 8px; margin: 12px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+                <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border);">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="codicon codicon-info" style="color: var(--vscode-charts-orange);"></span>
+                        <span>File Reading in Assistant Mode (${rawPaths.length} files)</span>
+                    </div>
+                </div>
+                <div class="expansion-body" style="padding: 10px 12px;">
+                    <div style="font-size: 11px; opacity: 0.85; margin-bottom: 8px;">
+                        The AI requested to inspect file content. In Assistant mode, files must be loaded into context or unmuted:
+                    </div>
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
+                        ${rawPaths.map(f => `<button class="code-action-btn secondary-btn peek-file-open-btn" data-path="${f}" style="font-size: 10px; height: 22px;"><i class="codicon codicon-file"></i> ${f.split('/').pop()}</button>`).join('')}
+                    </div>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <button class="code-action-btn apply-btn add-files-to-context-btn" data-files='${JSON.stringify(rawPaths)}' data-block-id="${blockId}" style="height: 24px; font-size: 11px; padding: 0 10px;">
+                            <i class="codicon codicon-add"></i> Add to Context (${rawPaths.length})
+                        </button>
+                        <button class="code-action-btn secondary-btn file-op-btn" data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: rawPaths })}' style="height: 24px; font-size: 11px; padding: 0 10px;">
+                            <i class="codicon codicon-eye"></i> Unmute (${rawPaths.length})
+                        </button>
+                    </div>
+                </div>
+            </div>`;
+        }
+
         const filesPayload = rawPaths.map(p => ({
             path: p,
             ...peekOptions
         }));
 
         const encodedPayload = encodeURIComponent(JSON.stringify(filesPayload));
-        const blockId = `peek-block-${context.messageId}-${Date.now().toString(36)}`;
 
         let criteriaLabel = "";
         if (peekOptions.regex) criteriaLabel = ` &middot; Regex: <code>${peekOptions.regex}</code>`;

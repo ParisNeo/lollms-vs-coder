@@ -39,48 +39,75 @@ export const contextExpansionPlugin: TagPlugin = {
         // Prioritize state.lastContextData.files which is the Source of Truth for "Possessed" code.
         const activeState = state?.lastContextData ? state : (window as any).state;
         const currentFiles = activeState?.lastContextData?.files || [];
+        const currentMuted = (state as any)?.mutedFiles || (window as any).state?.mutedFiles || activeState?.lastContextData?.mutedFiles || [];
         
         const blockId = `ctx-exp-${context.messageId}-${Math.random().toString(36).substring(7)}`;
         const fileListJson = JSON.stringify(paths).replace(/"/g, '&quot;');
 
         // --- RESILIENT PATH MATCHING ---
+        const isPathMatch = (pathA: any, pathB: any): boolean => {
+            const strA = typeof pathA === 'string' ? pathA : (pathA?.path || '');
+            const strB = typeof pathB === 'string' ? pathB : (pathB?.path || '');
+            if (!strA || !strB) return false;
+            const cleanA = strA.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
+            const cleanB = strB.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
+            return cleanA === cleanB || cleanA.endsWith('/' + cleanB) || cleanB.endsWith('/' + cleanA);
+        };
+
+        const isPathMuted = (p: string) => {
+            return (currentMuted || []).some((m: string) => isPathMatch(m, p));
+        };
+
         const isPathInContext = (p: string) => {
-            if (!p) return false;
-            const cleanP = p.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
-            return (currentFiles || []).some((cf: any) => {
-                const cfStr = typeof cf === 'string' ? cf : (cf?.path || '');
-                if (!cfStr) return false;
-                const cleanCf = cfStr.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase().trim();
-                return cleanCf === cleanP || cleanCf.endsWith('/' + cleanP) || cleanP.endsWith('/' + cleanCf);
-            });
+            return (currentFiles || []).some((cf: any) => isPathMatch(cf, p));
         };
 
         let allIncluded = true;
-        const fileItems = (paths || []).map(f => {
-            const isIncluded = isPathInContext(f);
-            if (!isIncluded) allIncluded = false;
+        let hasMuted = false;
 
-            const itemClass = isIncluded ? 'status-in-context' : 'status-not-in-context';
-            const itemStyle = isIncluded 
-                ? 'border-color: var(--vscode-charts-green, #388e3c); background: rgba(15, 157, 88, 0.1); border-left: 4px solid var(--vscode-charts-green, #388e3c); color: var(--vscode-charts-green, #388e3c);' 
-                : 'border-color: var(--vscode-widget-border); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground, #000000);';
-            const iconStyle = isIncluded ? 'color: var(--vscode-charts-green, #388e3c);' : 'color: var(--vscode-editor-foreground, #000000);';
+        const fileItems = (paths || []).map(f => {
+            const isMuted = isPathMuted(f);
+            const isInContext = isPathInContext(f);
+            const isFullyActive = isInContext && !isMuted;
+
+            if (!isFullyActive) allIncluded = false;
+            if (isMuted) hasMuted = true;
+
+            let itemClass = 'status-not-in-context';
+            let itemStyle = 'border-color: var(--vscode-widget-border); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground, #000000);';
+            let iconClass = 'codicon-file-add';
+            let iconStyle = 'color: var(--vscode-editor-foreground, #000000);';
+            let badgeHtml = '';
+
+            if (isMuted) {
+                itemClass = 'status-muted';
+                itemStyle = 'border-color: var(--vscode-charts-orange, #ff9800); background: rgba(255, 152, 0, 0.1); border-left: 4px solid var(--vscode-charts-orange, #ff9800); color: var(--vscode-charts-orange, #ff9800);';
+                iconClass = 'codicon-eye-closed';
+                iconStyle = 'color: var(--vscode-charts-orange, #ff9800);';
+                badgeHtml = '<span class="file-token-badge weight-muted muted-badge" style="margin-left: auto; font-size: 10px; color: var(--vscode-charts-orange); border-color: rgba(214, 122, 13, 0.4); background: rgba(214, 122, 13, 0.1); font-style: italic;">[MUTED]</span>';
+            } else if (isFullyActive) {
+                itemClass = 'status-in-context';
+                itemStyle = 'border-color: var(--vscode-charts-green, #388e3c); background: rgba(15, 157, 88, 0.1); border-left: 4px solid var(--vscode-charts-green, #388e3c); color: var(--vscode-charts-green, #388e3c);';
+                iconClass = 'codicon-check';
+                iconStyle = 'color: var(--vscode-charts-green, #388e3c);';
+            }
 
             return `
-            <div class="expansion-file-item ${itemClass}" data-path="${f}" data-message-id="${context.messageId}" style="display:flex; align-items:center; padding: 6px 12px; margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; ${itemStyle}">
+            <div class="expansion-file-item ${itemClass}" data-path="${f}" data-message-id="${context.messageId}" style="display:flex; align-items:center; justify-content:space-between; padding: 6px 12px; margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; ${itemStyle}">
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <span class="codicon ${isIncluded ? 'codicon-check' : 'codicon-file-add'}" style="${iconStyle}"></span>
+                    <span class="codicon ${iconClass}" style="${iconStyle}"></span>
                     <span class="file-label" style="font-family: var(--vscode-editor-font-family); font-size: 12px;">${f}</span>
                 </div>
+                ${badgeHtml}
             </div>`;
         }).join('');
 
-        const btnText = allIncluded ? 'Added to Context' : 'Add all to Context';
+        const btnText = allIncluded ? 'Added to Context' : (hasMuted ? 'Unmute & Add to Context' : 'Add all to Context');
         const addBtnClass = allIncluded ? 'applied' : 'apply-btn';
-        const btnIcon = allIncluded ? 'codicon-check' : 'codicon-add';
+        const btnIcon = allIncluded ? 'codicon-check' : (hasMuted ? 'codicon-eye' : 'codicon-add');
 
         // The Reprompt button stays active even if files are added
-        const repromptText = allIncluded ? 'Reprompt AI' : 'Add & Reprompt';
+        const repromptText = allIncluded ? 'Reprompt AI' : (hasMuted ? 'Unmute & Reprompt' : 'Add & Reprompt');
         const repromptIcon = allIncluded ? 'codicon-play' : 'codicon-sync';
 
         return `

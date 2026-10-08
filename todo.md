@@ -1,4 +1,5 @@
 # HOT
+- Forms must be validated all in one response message from the user and the button gets deactivated during generation to prevent issuing multiple generation calls.
 - there are many useless files and logs that needs to be removed from .lollms. also .lollms folder Must never become visible.
 - Files preprocessing Must only concern loaded files, not the whole database.
 - we need to optimize things in separate processes.

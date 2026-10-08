@@ -1,5 +1,6 @@
 # HOT
 - Forms must be validated all in one response message from the user and the button gets deactivated during generation to prevent issuing multiple generation calls.
+- the worker discussion with the librarian must be smooth with potential multi turns, not just one turn and the user needs to press a button to let the librarian talk to it.
 - there are many useless files and logs that needs to be removed from .lollms. also .lollms folder Must never become visible.
 - Files preprocessing Must only concern loaded files, not the whole database.
 - we need to optimize things in separate processes.

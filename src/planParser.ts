@@ -85,7 +85,7 @@ ${projectContext.projectTree}
 **STRICT DISCOVERY PROTOCOL**:
 - The tree above is your EYES. If a file is listed in the tree, you ALREADY KNOW it exists.
 - DO NOT use \`list_files\` or \`execute_command('ls')\` to check for files present in the tree.
-- To inspect code of unpossessed files, use \`read_file\` (in Agent Mode) or \`<add_files_to_context>\` (in Discussion Mode).
+- To inspect code of unpossessed files, summon the Librarian via \`<ask_librarian>\`. Describe the files to patch and the reference contracts needed.
 
 ### 📄 ACCESSIBLE FILE CONTENTS
 ${projectContext.selectedFilesContent || "(No files have been read yet. Use 'read_files' to see code.)"}
@@ -101,7 +101,7 @@ ${memoryBlock}
 6. **STRUCTURAL RECONNAISSANCE**: For any task involving more than two files, your FIRST action should be \`read_code_graph(type="summary")\`. This is 10x faster than reading files one-by-one and prevents architectural errors.
 7. **RCA**: If the last turn was a FAILURE, your 'scratchpad' MUST begin with "RCA: [Reason why the last step failed]".
 8. **JSON ONLY**: Your response must be a single valid JSON object.
-9. **GROUNDING MANDATE & ZERO CONTEXT WASTE**: Before using 'read_file' or 'add_files_to_context', you MUST check the 'ACTIVE CONTEXT INVENTORY' below. If a file is marked **[C]** or listed as loaded, you are STRICTLY FORBIDDEN from calling the tool to re-request it.
+9. **GROUNDING MANDATE & ZERO CONTEXT WASTE**: Before using 'read_file' or summoning the Librarian, you MUST check the 'ACTIVE CONTEXT INVENTORY' below. If a file is marked **[C]** or listed as loaded, you are STRICTLY FORBIDDEN from calling the tool or re-requesting it.
 10. **SPATIAL AWARENESS & NO PATH HALLUCINATIONS**: Look at the 'PROJECT WORLD STATE' tree. Every path you request MUST exist in the tree verbatim. Inventing or assuming paths that do not appear in the tree is a critical failure.
 11. **FOCUSED SHORT PATCHES & SYMBOL REPLACEMENT**: NEVER write very long patches. Aider patches MUST be very short and focused (1-5 lines). If you need to make many changes or refactor an entire function/class, you MUST use targeted symbol replacement (\`<file path="..." action="update_symbol" symbol="SymbolName">\` or \`update_function\`) instead of long patching.
 12. **STRICT COMMENT HYGIENE**: You are STRICTLY FORBIDDEN from adding comment annotations, explanations, or fix logs directly inside the code body (e.g. do NOT write \`# Critical FIX: ...\`). If you need to record a fact or lesson, write a \`<project_memory>\` tag on a new line instead. Keep code clean!
@@ -559,7 +559,7 @@ You operate in a high-frequency autonomous loop with conditions: **Reason -> Act
 6. **THE ERROR MANDATE**: If you see a compiler, syntax, or runtime error, analyze the failure in your next turn and immediately apply a surgical fix.
 7. **NO REPETITION**: If a tool call fails or is redundant, you are FORBIDDEN from repeating the same parameters. Alter your approach or change tools.
 8. **DISCOVERY & GROUNDING**:
-   - Use \`add_files_to_context\` to expand your vision when new files are required.
+   - Use \`<ask_librarian>\` to request files or architecture research from the Librarian when new files are required.
    - Use \`record_discovery\` to save critical facts to working memory.
 9. **NEURAL MEMORY**:
    - Use \`<project_memory action="add" importance="100">\` for permanent technical lessons, coding standards, or fixed bugs.

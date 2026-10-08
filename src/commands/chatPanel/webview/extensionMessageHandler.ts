@@ -199,6 +199,50 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
+            case 'updateKnowledgeContent':
+            case 'updateFindings':
+                {
+                    const newKnowledge = message.knowledge || message.findings || '';
+                    if (state.lastContextData) {
+                        state.lastContextData.governorReport = newKnowledge;
+                    }
+
+                    const summaryTextEl = document.getElementById('hud-findings-summary-text');
+                    const fullTextEl = document.getElementById('hud-findings-full-text');
+                    const badgeEl = document.getElementById('hud-findings-badge');
+
+                    const cleanLines = newKnowledge.split('\n')
+                        .map((l: string) => l.replace(/^#+\s*/, '').trim())
+                        .filter((l: string) => l.length > 0 && !l.startsWith('---') && !l.toLowerCase().includes('code knowledge'));
+                    let summary = cleanLines.slice(0, 2).join(' · ') || 'Knowledge updated.';
+                    if (summary.length > 95) {
+                        summary = summary.substring(0, 92) + '...';
+                    }
+
+                    if (summaryTextEl) summaryTextEl.textContent = summary;
+                    if (badgeEl) badgeEl.textContent = newKnowledge ? `KNOWLEDGE.md (${newKnowledge.length} chars)` : 'empty';
+                    if (fullTextEl) {
+                        fullTextEl.innerHTML = newKnowledge 
+                            ? sanitizer.sanitize((marked as any).parse(newKnowledge))
+                            : '<em>No knowledge recorded yet.</em>';
+                    }
+
+                    const expandedReportContent = document.querySelector('.governor-report-content');
+                    if (expandedReportContent) {
+                        expandedReportContent.innerHTML = newKnowledge 
+                            ? sanitizer.sanitize((marked as any).parse(newKnowledge))
+                            : '<em>No knowledge recorded yet.</em>';
+                    }
+                }
+                break;
+            case 'removeMessage':
+                {
+                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                    if (wrapper) {
+                        wrapper.remove();
+                    }
+                }
+                break;
             case 'openMissionBriefingModal':
                 if (dom.missionBriefingModal) {
                     if (dom.briefingContentInput) {
@@ -353,6 +397,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         eventsList.scrollTop = eventsList.scrollHeight;
                     }
                 }
+                break;
+            case 'librarianConsultationFinished':
+                document.querySelectorAll('.trigger-librarian-btn').forEach((btn: any) => {
+                    btn.disabled = true;
+                    btn.classList.remove('apply-btn');
+                    btn.classList.add('applied');
+                    btn.innerHTML = '<i class="codicon codicon-check"></i> Librarian Consulted';
+                });
                 break;
             case 'doctrineAutoBuilt':
                 {
@@ -834,7 +886,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const statusText = document.getElementById('wizard-governor-status-text');
                     if (statusEl && statusText) {
                         statusEl.style.display = 'flex';
-                        statusText.textContent = `Governor applied: ${message.mutedFiles.length} files muted.`;
+                        statusText.textContent = `Librarian applied: ${message.mutedFiles.length} files muted.`;
                     }
                 }
                 break;

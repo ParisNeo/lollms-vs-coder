@@ -149,10 +149,29 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         await panel.handleRunTestsAndReport();
     }));
 
+    // Start Run / View / Fix Debug Loop Command
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.startDebugLoop', async () => {
+        let panel = ChatPanel.currentPanel;
+        if (!panel) {
+            const discussion = services.discussionManager.createNewDiscussion(null);
+            discussion.title = "Debug Loop (Run/View/Fix)";
+            await services.discussionManager.saveDiscussion(discussion);
+            panel = ChatPanel.createOrShow(services, discussion.id);
+            panel.setProcessManager(services.processManager);
+            panel.setContextManager(services.contextManager);
+            panel.setPersonalityManager(services.personalityManager);
+            panel.setHerdManager(services.herdManager);
+            await panel.loadDiscussion();
+            services.treeProviders.discussion?.refresh();
+        }
+        panel._panel.reveal();
+        await panel.handleRunAndDebugLoop();
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.governorFilterFiles', async () => {
         const panel = ChatPanel.currentPanel;
         if (!panel) {
-            vscode.window.showWarningMessage("Open a chat discussion to filter context files with Governor.");
+            vscode.window.showWarningMessage("Open a chat discussion to consult the Librarian.");
             return;
         }
         panel._panel.reveal();

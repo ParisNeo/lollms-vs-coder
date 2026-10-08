@@ -76,6 +76,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.initializeNewDiscussionWithWizard', async (params: {
         title?: string,
         prompt: any,
+        model?: string,
         personalityId: string,
         profileId: string,
         selectedFolders: string[],
@@ -94,6 +95,9 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         const discussion = services.discussionManager.createNewDiscussion(null);
         discussion.title = params.title || "New Discussion";
         discussion.personalityId = params.personalityId;
+        if (params.model) {
+            discussion.model = params.model;
+        }
 
         // Apply muted files if passed (e.g. from Governor)
         if (params.mutedFiles && Array.isArray(params.mutedFiles)) {

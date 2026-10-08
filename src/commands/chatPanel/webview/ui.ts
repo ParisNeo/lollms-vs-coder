@@ -2060,8 +2060,7 @@ export class BadgesBinder {
         if (!badge || !menu) return;
 
         menu.innerHTML = `
-            <div class="custom-menu-item mode-opt" data-mode="assistant"><span class="codicon ${isAssistant ? 'codicon-check' : 'codicon-account'}"></span> 👤 Assistant (Manual)</div>
-            <div class="custom-menu-item mode-opt" data-mode="dynamic"><span class="codicon ${isDynamic ? 'codicon-check' : 'codicon-circuit-board'}"></span> 🧠 Co-Engineer (Semi-Auto)</div>
+            <div class="custom-menu-item mode-opt" data-mode="assistant"><span class="codicon ${!isAgent ? 'codicon-check' : 'codicon-account'}"></span> 👤 Assistant (3-Stage Workflow)</div>
             <div class="custom-menu-item mode-opt" data-mode="agent"><span class="codicon ${isAgent ? 'codicon-check' : 'codicon-robot'}"></span> 🤖 Agent (Autonomous)</div>
         `;
 
@@ -2070,15 +2069,12 @@ export class BadgesBinder {
                 e.preventDefault();
                 e.stopPropagation();
                 const mode = item.dataset.mode;
-                const partialUpdate = mode === 'assistant' ? { agentMode: false, dynamicMode: false } :
-                                      mode === 'dynamic' ? { agentMode: false, dynamicMode: true } :
-                                      { agentMode: true, dynamicMode: false };
+                const partialUpdate = { agentMode: mode === 'agent', dynamicMode: false };
 
                 vscode.postMessage({ 
                     command: 'updateDiscussionCapabilitiesPartial', 
                     partial: partialUpdate 
                 });
-                updateBadges();
                 menu.classList.remove('visible');
             };
         });
@@ -2332,33 +2328,27 @@ export function updateBadges() {
     BadgesBinder.bindOptionsHubMenu(optionsParentGroup, caps, wasOptionsMenuOpen);
     container.appendChild(optionsParentGroup);
 
-    // --- OPERATIONAL MODE GROUP (Assistant/Co-Engineer/Agent) ---
+    // --- OPERATIONAL MODE GROUP (Fused Assistant / Agent) ---
     const isAgent = caps.agentMode === true;
-    const isDynamic = caps.dynamicMode === true && !isAgent;
-    const isAssistant = !isAgent && !isDynamic;
+    const isAssistant = !isAgent;
 
     let activeModeLabel = '👤 Assistant';
-    let activeModeColor = 'var(--vscode-button-secondaryBackground)';
-    let activeModeTitle = 'Assistant Mode: Manual code execution.';
-    let activeModeClass = 'inactive';
+    let activeModeColor = 'var(--vscode-charts-blue)';
+    let activeModeTitle = 'Assistant Mode: Autonomous Discovery -> Plan & Acknowledgment -> Verified Implementation.';
+    let activeModeClass = 'active';
 
     if (isAgent) {
         activeModeLabel = '🤖 Agent';
         activeModeColor = 'var(--vscode-charts-red)';
-        activeModeTitle = 'Agent Mode: Autonomous execution.';
+        activeModeTitle = 'Agent Mode: Autonomous execution ReAct loop.';
         activeModeClass = 'active agent';
-    } else if (isDynamic) {
-        activeModeLabel = '🧠 Co-Engineer';
-        activeModeColor = 'var(--vscode-charts-orange)';
-        activeModeTitle = 'Co-Engineer Mode: Interactive tools loop.';
-        activeModeClass = 'active thinking';
     }
 
     const modeGroupDiv = document.createElement('div');
     modeGroupDiv.className = 'badge-group';
     modeGroupDiv.innerHTML = BadgesPresenter.renderOperationalModeBadge(activeModeClass, activeModeColor, activeModeLabel, activeModeTitle);
     const operationalModeWrapper = modeGroupDiv.firstElementChild as HTMLElement;
-    BadgesBinder.bindOperationalModeMenu(operationalModeWrapper, isAssistant, isDynamic, isAgent);
+    BadgesBinder.bindOperationalModeMenu(operationalModeWrapper, isAssistant, false, isAgent);
     modeGroupDiv.appendChild(operationalModeWrapper);
     container.appendChild(modeGroupDiv);
 
@@ -4400,21 +4390,22 @@ export function openGovernorFilterModal(initialPrompt?: string) {
     const chatContainer = document.getElementById('gov-chat-messages');
     if (chatContainer) {
         chatContainer.innerHTML = '';
-        const initialText = initialPrompt ? `Working on task: "${initialPrompt}". Analyzing files and token budget...` : `Hello! I am the **Context Governor**. Describe your technical objective, and I will scout the project, evaluate dependencies, and enforce the **Dual-Tier Context Strategy**:
+        const initialText = initialPrompt ? `Working on task: "${initialPrompt}". Analyzing files and token budget...` : `Hello! I am the **Lead Sovereign Librarian**. Describe your technical objective, and I will scout the project, evaluate dependencies, query the architecture ontology, and prepare the exact context needed:
 
-**Dual-Tier Strategy:**
-- 🛠️ **Files to Edit**: Kept active with full content loaded ([C])
-- 📖 **Reference-Only Files**: Summarized into the Structure Report (\`.lollms/structure.md\`) and muted ([M], 0 tokens)
+**Librarian Responsibilities:**
+- 🛠️ **Files to Edit**: Handed to the worker with full content loaded ([C])
+- 📖 **Reference Files**: Summarized into the Architecture Guide (\`.lollms/structure.md\`) and muted ([M], 0 tokens)
+- 📝 **Analysis Paragraph**: I will provide an architectural overview explaining codebase relationships to the worker.
 
 **My Autonomous Tools:**
-- ➕ \`Add Files\`: \`<add_files_to_context>\\npath/to/file.ext\\n</add_files_to_context>
-
-\`
 - 🔍 \`Grep Search\`: \`<grep pattern="..." />\`
 - 📊 \`SPARQL Query\`: \`<sparql query="..." />\`
 - 📄 \`Peek Files\`: \`<peek_files path="..." lines="30" />\`
+- 📖 \`Full File Read\`: \`<read_full_file path="..." />\`
 - 🏛️ \`Structure Guide\`: \`<structure>...</structure>\`
-- 👁️ \`Selection\`: \`<reveal_only>\` or \`<mute_only>\``;
+- ➕ \`Add Files\`: \`<add_files_to_context>\\npath/to/file.ext\\n</add_files_to_context>
+
+\``;
 
         appendGovernorMessage('assistant', initialText, {
             rationale: "Candidate files are loaded on the right. You can prompt or reprompt anytime, or manually toggle files directly."
@@ -4621,7 +4612,7 @@ export function updateWizardContextBar() {
             warningBanner.style.borderColor = 'var(--vscode-charts-red)';
             warningBanner.style.color = 'var(--vscode-charts-red)';
             if (warningText) {
-                warningText.textContent = `⚠️ Active context (${totalLoad.toLocaleString()} tokens, ${pct.toFixed(0)}%) exceeds model capacity (${capacity.toLocaleString()} tokens)! Mute files or run Context Governor.`;
+                warningText.textContent = `⚠️ Active context (${totalLoad.toLocaleString()} tokens, ${pct.toFixed(0)}%) exceeds model capacity (${capacity.toLocaleString()} tokens)! Mute files or consult Context Librarian.`;
             }
         } else if (isOverTarget) {
             warningBanner.style.display = 'flex';
@@ -4629,7 +4620,7 @@ export function updateWizardContextBar() {
             warningBanner.style.borderColor = 'var(--vscode-charts-orange)';
             warningBanner.style.color = 'var(--vscode-charts-orange)';
             if (warningText) {
-                warningText.textContent = `⚠️ Active context (${totalLoad.toLocaleString()} tokens, ${pct.toFixed(0)}%) is over the target threshold (${targetPct}%). Consider pruning with Context Governor.`;
+                warningText.textContent = `⚠️ Active context (${totalLoad.toLocaleString()} tokens, ${pct.toFixed(0)}%) is over the target threshold (${targetPct}%). Consider pruning with Context Librarian.`;
             }
         } else {
             warningBanner.style.display = 'none';
@@ -4746,6 +4737,75 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
     if (filterInput) filterInput.value = '';
 
     renderWizardFileList('');
+
+    // 0.5 Populate Target Model Select in Wizard
+    const wizardModelSelect = document.getElementById('wizard-model') as HTMLSelectElement;
+    if (wizardModelSelect) {
+        wizardModelSelect.innerHTML = '';
+        const currentModel = state.currentModelName || '';
+        const models = (state as any).models || [];
+
+        if (models.length > 0) {
+            models.forEach((m: any) => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                const hasVision = m.hasVision ? '👁️ ' : '';
+                const rawName = m.id.includes('::') ? m.id.split('::')[1] : m.id;
+                opt.textContent = `${hasVision}${rawName}`;
+                if (m.id === currentModel || rawName === currentModel) {
+                    opt.selected = true;
+                }
+                wizardModelSelect.appendChild(opt);
+            });
+        } else {
+            wizardModelSelect.innerHTML = `<option value="${currentModel || 'default'}" selected>${currentModel || 'Default Model'}</option>`;
+        }
+    }
+
+    // 0.6 Wire Context Export Buttons in Wizard
+    const wizardExportBtn = document.getElementById('wizard-export-context-btn');
+    if (wizardExportBtn) {
+        wizardExportBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const activePaths = wizardCandidateFiles
+                .filter(f => !wizardMutedSet.has(f.path.toLowerCase().trim()))
+                .map(f => f.path);
+            if (activePaths.length === 0) {
+                vscode.postMessage({ command: 'showError', message: 'No active files selected to export.' });
+                return;
+            }
+            vscode.postMessage({
+                command: 'executeLollmsCommand',
+                details: {
+                    command: 'lollms-vs-coder.saveCustomContextSelection',
+                    params: [activePaths]
+                }
+            });
+        };
+    }
+
+    const wizardCopyBtn = document.getElementById('wizard-copy-context-btn');
+    if (wizardCopyBtn) {
+        wizardCopyBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const activePaths = wizardCandidateFiles
+                .filter(f => !wizardMutedSet.has(f.path.toLowerCase().trim()))
+                .map(f => f.path);
+            if (activePaths.length === 0) {
+                vscode.postMessage({ command: 'showError', message: 'No active files selected to copy.' });
+                return;
+            }
+            vscode.postMessage({
+                command: 'copyFilesToClipboard',
+                files: activePaths
+            });
+            const origText = wizardCopyBtn.innerHTML;
+            wizardCopyBtn.innerHTML = '<i class="codicon codicon-check"></i> Copied';
+            setTimeout(() => { wizardCopyBtn.innerHTML = origText; }, 2000);
+        };
+    }
 
     // 1. Populate Personalities Select
     if (dom.wizardPersonality && state.personalities && state.personalities.length > 0) {

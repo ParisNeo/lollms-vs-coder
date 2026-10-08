@@ -391,6 +391,11 @@ private _cachedTreeString: string | null = null;
   }
 
   public async getStructureGuide(): Promise<string> {
+    const { KnowledgeManager } = require('./knowledgeManager');
+    const km = new KnowledgeManager(this.context);
+    const content = await km.readRootKnowledge();
+    if (content.trim()) return content;
+
     const folders = vscode.workspace.workspaceFolders || [];
     if (folders.length === 0) return "";
     for (const folder of folders) {
@@ -1517,7 +1522,10 @@ private _cachedTreeString: string | null = null;
     }
   }
 
-  result.governorReport = await this.getStructureGuide();
+  const { KnowledgeManager } = require('./knowledgeManager');
+  const km = new KnowledgeManager(this.context);
+  const liveKnowledge = await km.renderContextKnowledge();
+  result.governorReport = liveKnowledge || await this.getStructureGuide();
   this._lastContext = result;
   if (options?.discussionId) {
     this._lastContextByDiscussion.set(options.discussionId, result);
@@ -1863,7 +1871,7 @@ ${text.substring(0, 10000)}`;
     options: { matchCase?: boolean, wholeWord?: boolean, include?: string, exclude?: string, literal?: boolean; bypassGate?: boolean } = { matchCase: false, wholeWord: false },
     signal?: AbortSignal
   ): Promise<{ path: string, snippet: string, line?: string }[]> {
-    // --- GREP ACCESS CONTROL GATE (Bypassed for Governor & Diagnostic Agents) ---
+    // --- GREP ACCESS CONTROL GATE (Bypassed for Librarian & Diagnostic Agents) ---
     const capabilities = this.contextStateProvider?.context.globalState.get<any>('lollms_last_capabilities');
     if (!options.bypassGate && capabilities && capabilities.grepEnabled === false) {
         Logger.info("[Grep Gate] Aborting workspace content search: GREP engine is deactivated by user settings.");

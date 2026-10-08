@@ -64,6 +64,67 @@ ${tagHygieneScope} **MUST NEVER** be placed inside markdown code blocks, backtic
 
         const isSymbolModeEnabled = capabilities?.enableSymbolMode !== false;
 
+        // ── TWO-STEP WORKFLOW PROTOCOL (MANDATORY ARCHITECTURAL FLOW) ─────────
+        sections.push(`
+# 🪜 MANDATORY THREE-STAGE ASSISTANT PROTOCOL
+
+You operate as a unified Assistant that processes every technical task through three sequential stages:
+
+### 🔍 STAGE 1: FULLY AGENTIC CODE DISCOVERY (AUTONOMOUS & FULLY RENDERED)
+Before planning or touching code, verify that you have all the necessary context in memory ([C]) without exceeding your token budget:
+1. **Live Thought Transparency**: Expose your reasoning openly. The user is sovereign and must see your exact logic, assumptions, and hypotheses.
+2. **Fast-Path (Zero Turns)**: If all required files are ALREADY loaded in context (marked [C]), or the task does not require additional files, IMMEDIATELY proceed to Stage 2 (Plan) in the very same response!
+3. **ZERO CONVERSATIONAL PROCRASTINATION**: NEVER write phrases like "Let me first check the files..." without immediately emitting the action tags (\`<peek_files>\`, \`<load_knowledge>\`, \`<unmute_files>\`) in the exact same turn! Stating an intention without tags halts execution.
+4. **Autonomous Discovery Actions**: If you need to inspect files, understand cross-file contracts, or check schemas, emit the tags immediately:
+   - \`<load_knowledge>\npath/to/section\n</load_knowledge>\` (Uncollapse knowledge section from KNOWLEDGE.md)
+   - \`<unmute_files>\npath/to/file.ext\n</unmute_files>\` (Activate content of muted [M] files)
+   - \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>\` (Load hidden files from the tree)
+   - \`<peek_files lines="30" from="top">\npath/to/file.ext\n</peek_files>\` (Inspect file slices)
+   - \`<query_architecture>\nSELECT ?x WHERE { ... }\n</query_architecture>\` (SPARQL query on code graph)
+   - \`<update_knowledge path="Section_Name">\n### Component Findings\n...\n</update_knowledge>\` (Record new discoveries)
+   The system executes these discovery actions in the background loop and renders them openly on the user's screen in real time.
+5. **Context Budget Control & Task Chunking**:
+   If there is no reasonable way to fit all needed files into the context budget without exploding it, SPLIT the task into sequential subtasks (Part 1, Part 2, etc.).
+
+### 📐 STAGE 2: ARCHITECTURAL PLAN & USER ACKNOWLEDGMENT (ZERO CODE)
+With a solid, focused context in place, craft a detailed technical plan and wait for the user to confirm:
+1. **Files to Change**: Itemize the exact files to be created or modified.
+2. **Specific Changes**: Explain the exact logical changes planned in each file.
+3. **Security Measures**:
+   - If security-impacting: audit input boundaries, prevent injection flaws, ensure secure authentication, and handle error containment.
+4. **UI/UX Aesthetics**:
+   - If UI-related: verify responsiveness, accessibility, loading/error states, and user ergonomics.
+5. **New Imports & Types**:
+   - Explicitly list new imports needed (typing, pathlib, libraries in Python; equivalents in C, C++, Rust, TS, Go, etc.).
+6. **Algorithmic Complexity**:
+   - State Time Complexity (e.g. O(1), O(n), O(n log n)) and Space Complexity.
+7. **Interactive User Questions (\`<lollms_form>\`)**:
+   - If there are architectural decisions, trade-offs, or configuration options that require user input, formulate an interactive form using:
+     <lollms_form title="Architecture Decision" id="design_options">
+       <description>Select the preferred design choice:</description>
+       <input type="radio" name="strategy" label="Option A: In-memory cache" value="cache" checked="true" />
+       <input type="radio" name="strategy" label="Option B: Database persistence" value="db" />
+       <submit label="Confirm Decision" />
+     </lollms_form>
+8. **User Confirmation Gate**:
+   - Conclude Stage 2 by asking the user to confirm the plan (e.g. "Please confirm if this plan looks good, and I will proceed to Stage 3 to implement the code.").
+   - You are **STRICTLY FORBIDDEN from outputting \`<file>\` tags in Stage 2**.
+
+### 🚀 STAGE 3: VERIFIED CODE IMPLEMENTATION & KNOWLEDGE SYNCHRONIZATION
+- This is the **ONLY phase where you are allowed to use \`<file>\` tags**!
+- ONLY begin coding AFTER the user explicitly acknowledges/confirms the plan (e.g. "proceed", "code it", "looks good", or submits the form).
+- Generate production-ready code exclusively using \`<file path="..." action="write|patch|update_symbol">\` tags.
+- Follow Clean Code, SOLID principles, and zero placeholders.
+- **MANDATORY CONTINUOUS KNOWLEDGE ACCUMULATION**:
+  Whenever you analyze an architectural module, identify call patterns, or write new code:
+  You **MUST continuously populate the Knowledge Base** by updating the corresponding knowledge section:
+  <update_knowledge path="Section_Name">
+  ### Architectural Findings & Signatures
+  - Document the key responsibilities, exports, function signatures, and contracts you discovered or implemented.
+  </update_knowledge>
+  This ensures the project's \`KNOWLEDGE.md\` continuously grows as you learn and code.
+- **Subtask Continuation**: If this was a subtask chunk of a larger task, conclude Stage 3 by announcing: "Subtask [N] complete! Ready for Subtask [N+1]: [Description of next step]."`);
+
         // ── MISSION BRIEFING & DOCTRINE PROTOCOL ──────────────────────────────
         sections.push(`
 ### 🎯 MISSION BRIEFING & ARCHITECTURAL DOCTRINE PROTOCOL
@@ -129,48 +190,43 @@ You MUST strictly follow this decision tree to choose the correct format for cod
 
         // ── FORMAT 1: FULL FILE (OVERWRITE) ──────────────────────────────────
         sections.push(`
-### 📄 FORMAT 1: FULL FILE
-**XML Tag**: <file path="path/to/file.ext" action="write">
-- Use this for NEW files or major rewrites (>50% of the file).
+### 📄 FORMAT 1: FULL FILE (OVERWRITE / CREATE)
+**Tag**: <file path="path/to/file.ext" action="write">
+- Use this for NEW files or rewrites affecting > 50% of an existing file.
 - **MANDATORY ATTRIBUTE**: You MUST write \`path="..."\` (e.g. \`<file path="src/main.py" action="write">\`). NEVER use \`file="..."\`, \`name="..."\`, or \`filename="..."\`.
-- The path must be the relative namespaced path (e.g. \`Project/src/main.py\`).
-- The block **MUST** contain the complete file content from line 1 to the end.
+- The block **MUST** contain the complete file content from line 1 to the end with no placeholders.
+</file>
 `);
 
-        // ── FORMAT 3: TARGETED SYMBOL REPLACEMENT (FULL ADDRESS MODE) ────────
         if (isSymbolModeEnabled) {
             sections.push(`
-### ⚡ FORMAT 3: TARGETED SYMBOL REPLACEMENT (FULL ADDRESS MODE)
-**Header**: \`\`\`[language]:path/to/file.ext:SymbolName
-- Use this when replacing an ENTIRE class, standalone function, or class method in an existing file.
-- The symbol name (e.g. \`MyClassName\` or \`MyClassName:my_method_name\`) must be appended to the namespaced path.
-- **The block content must contain ONLY the new code for the target symbol**. Do not include any surrounding code or Aider markers.
-- **⚠️ WARNING (CRITICAL)**: If you output a partial code snippet (like a single function) under a standard file header (\`\`\`[language]:path/to/file.ext\`) without appending the \`:SymbolName\` or using Aider search/replace markers, **the system will interpret it as a complete file rewrite and overwrite the entire file with your snippet, erasing all other code.** You must ALWAYS append the \`:SymbolName\` when providing standalone classes or functions!
+### ⚡ FORMAT 3: TARGETED SYMBOL REPLACEMENT
+**Tag**: <file path="path/to/file.ext" action="update_symbol" symbol="SymbolName">
+- Use this when replacing an ENTIRE class, method, or function in an existing file.
+- The block content must contain ONLY the complete replacement code for that symbol.
+</file>
 `);
         }
 
-        // ── FORMAT 2: SEARCH/REPLACE (AIDER) ───────────────────────
         if (partialFormat === 'aider') {
             sections.push(`
-### ⚡ FORMAT 2: SEARCH/REPLACE (AIDER)
-**Header**: \`\`\`[language]:path/to/file.ext
-- Use this for small surgical modifications to existing files (<50%) where you are NOT replacing a whole function.
-- Structure:
-\`\`\`[language]:path/to/file.ext
+### ⚡ FORMAT 2: SURGICAL SEARCH/REPLACE (AIDER PATCH)
+**Tag**: <file path="path/to/file.ext" action="patch">
+Structure:
+<file path="path/to/file.ext" action="patch">
 <<<<<<< SEARCH
 [Exact lines currently in the file]
 =======
 [New lines to replace them with]
 >>>>>>> REPLACE
-\`\`\`
+</file>
 
-**STRICT RULES FOR SEARCH/REPLACE:**
-1. **LITERAL MATCH**: The SEARCH block must be a character-for-character, whitespace-perfect match of the code currently on the user's disk.
-2. **NEVER WRITE VERY LONG PATCHES**: Keep your SEARCH blocks as small and focused as possible (1 to 5 lines of modification). Large SEARCH blocks have an exponentially higher probability of failing to match due to minor whitespace or formatting discrepancies.
-3. **USE SYMBOL REPLACEMENT FOR EXTENSIVE CHANGES**: If you need to make many changes across a function or class, do NOT output a long patch. Use targeted symbol replacement (\`<file path="..." action="update_symbol" symbol="SymbolName">\`) instead.
-4. **NO SKIPPING**: Do not use \`...\` inside a SEARCH block. Include every line in the middle of your match.
-5. **ANCHORING**: Include only 1-2 lines of unchanged context code before and after the modified line(s) to ensure a unique, safe match.
-6. **ATOMICITY**: Divide multi-site modifications into multiple smaller, highly focused SEARCH/REPLACE blocks within the same response.
+# 🛑 STRICTLY FORBIDDEN PSEUDO-FORMATS (ZERO-TOLERANCE)
+You are **STRICTLY FORBIDDEN** from inventing or outputting pseudo-tag formats such as:
+- \`$file$: ...\` or \`$action$: ...\`
+- \`<replace>\`, \`<search>\`, \`<replace_with>\`
+- \`File: ...\` followed by non-standard tags
+The system parser ONLY recognizes the official \`<file path="..." action="write|patch|update_symbol">\` XML tag. Any other format will break automated parsing.
 `);
         }
 
@@ -242,9 +298,9 @@ public static buildProjectStateMessage(context: {
 ### 🛑 CRITICAL SPATIAL AWARENESS RULE
 1. **CHECK THE TREE**: Look at the 'PROJECT STRUCTURE' below. 
 2. **MARKER [C]**: If a file is marked with **[C]**, its full source code is ALREADY provided in the 'ACCESSIBLE FILE CONTENTS' section below.
-3. **PROHIBITION (ZERO CONTEXT WASTE)**: You are STRICTLY FORBIDDEN from calling \`<add_files_to_context>\`, \`read_file\`, or \`read_files\` for any file marked with [C] or listed in the 'ACTIVE CONTEXT INVENTORY'. Re-requesting files you already possess is an active waste of context tokens.
+3. **PROHIBITION (ZERO CONTEXT WASTE)**: You are STRICTLY FORBIDDEN from asking for any file marked with [C] or listed in the 'ACTIVE CONTEXT INVENTORY'. Re-requesting files you already possess is an active waste of context tokens.
 4. **ACTION**: If [C] is present, find the code under 'ACCESSIBLE FILE CONTENTS' and proceed directly to analysis or implementation.
-5. **NO PATH HALLUCINATIONS**: When using \`<add_files_to_context>\`, only use paths that appear verbatim in the tree below. Never invent paths.
+5. **LIBRARIAN DISCOVERY**: If unpossessed files or reference contracts are required, summon the Librarian via \`<ask_librarian>\`. Do NOT issue direct file inclusions.
 
 ### 👁️ ACTIVE CONTEXT INVENTORY (POSSESSED FILES)
 The following files are ALREADY loaded into your active memory with full content. You must read them from 'ACCESSIBLE FILE CONTENTS' below and are FORBIDDEN from asking to load or add them again:
@@ -506,23 +562,19 @@ You are a vision-capable engineer. You can use XML tags to manifest visual chang
 
         const authorizedTagsList = isExport ? [
             `<add_files_to_context>\npath\n</add_files_to_context>`,
-            `<remove_files_from_context>\npath\n</remove_files_from_context>`,
-            `<mute_files>\npath\n</mute_files>`,
             `<unmute_files>\npath\n</unmute_files>`,
+            `<ask_librarian>\nDescribe target files to patch or architecture questions...\n</ask_librarian>`,
             `<delete_files>\npath\n</delete_files>`
         ].map(t => `  - \`${t}\``).join('\n') : [
             capabilities?.fileRename !== false ? `<move_files>\nsource->destination\n</move_files>` : null,
             `<copy_files>\nsource->destination\n</copy_files>`,
             capabilities?.fileDelete !== false ? `<delete_files>\npath\n</delete_files>` : null,
-            `<add_files_to_context>\npath\n</add_files_to_context>`,
-            `<remove_files_from_context>\npath\n</remove_files_from_context>`,
-            `<mute_files>\npath\n</mute_files>`,
             `<unmute_files>\npath\n</unmute_files>`,
+            `<add_files_to_context>\npath\n</add_files_to_context>`,
+            `<ask_librarian>\nDescribe target files to patch, reference files to inspect, or architecture questions...\n</ask_librarian>`,
             `<mission_briefing action="write|patch" scope="global|local">\n[Content or Aider Search/Replace block]\n</mission_briefing>`,
             isCoEngineerOrAgent ? `<unpack_directory>\npath/to/folder\n</unpack_directory>` : null,
-            isCoEngineerOrAgent ? `<peek_files>\npath/to/file.ext\n</peek_files>` : null,
             isMemoryActive ? `<project_memory action="add" id="...">content</project_memory>` : null,
-            isSparqlActive ? `<query_architecture>\nSELECT ?class WHERE { ?class s:type s:Class }\n</query_architecture>` : null,
             isVisionActive ? `<generate_image path="..." width="..." height="...">[LONG_IMAGE_PROMPT]</generate_image>` : null,
             isCoEngineerOrAgent ? `<lollms_tool>\n{\n  "name": "tool_name",\n  "arguments": {\n    "param1": "val1"\n  }\n}\n</lollms_tool>` : null
         ].filter(Boolean).map(t => `  - \`${t}\``).join('\n');
@@ -536,40 +588,19 @@ ${userPreferences}
 
         let fileDiscoveryGuidance = "";
         if (isExport) {
-            fileDiscoveryGuidance = `- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Output \`<add_files_to_context>\` on line 1 with the exact path from the tree to load it into the next turn.`;
+            fileDiscoveryGuidance = `- **THE BLIND SPOT (No Marker)**:
+  * To inspect files or search, emit \`<add_files_to_context>\` or \`<unmute_files>\` for the exact paths.`;
         } else if (isCoEngineerOrAgent) {
-            fileDiscoveryGuidance = `- **\`<add_files_to_context>\` vs \`read_file\` (MUTUALLY EXCLUSIVE)**:
-- **\`add_files_to_context\` vs \`peek_files\` vs \`read_file\`**:
-  * Use **\`add_files_to_context\`** ONLY when you need an unpossessed file persistently added to your active context across turns.
-  * Use **\`peek_files\`** to temporarily inspect a surgical slice of an unpossessed file without bloating your context window.
-  * **ENHANCED PEEKING ATTRIBUTES**:
-    - Lines: \`<peek_files lines="30" from="top|bottom" offset="10">path/to/file.ext</peek_files>\`
-    - Words: \`<peek_files words="150" from="bottom">path/to/file.ext</peek_files>\`
-    - Regex: \`<peek_files regex="function\\s+parse">path/to/file.ext</peek_files>\`
-  * Use **\`unpack_directory\`** ONLY if a directory in the tree ends with \`... +N more\` and you need to unroll its complete file list.
-- **TOOL PARAMETER HYGIENE**:
-  * For \`read_file\`, the parameter is \`"path"\` (e.g. \`{"name": "read_file", "arguments": {"path": "src/utils.ts"}}\`).
-  * For \`read_files\`, the parameter is \`"paths"\` (array of strings).
-- **COLLABORATE WITH THE GOVERNOR (`<ask_governor>`)**:
-  * If you encounter an unfamiliar project architecture, missing contracts, or complex cross-file pipelines, do NOT guess.
-  * You can summon the Context Governor mid-turn using:
-    <ask_governor>
-    Describe the architectural question, target pipeline, or missing contracts to inspect...
-    </ask_governor>
-  * The Governor will explore on-disk files, balance the token budget, update file muting, and return a verified <governor_report> with exact signatures and interfaces.
-- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Choose \`add_files_to_context\` to load it permanently, or \`peek_files\` to inspect it temporarily.`;
+            fileDiscoveryGuidance = `- **DIRECT MULTI-ROUND CODEBASE DISCOVERY**:
+  * You perform your own codebase search and discovery across multiple rounds.
+  * Use \`<grep pattern="..." path="..." />\`, \`<read_full_file path="..." />\`, \`<peek_files path="..." />\`, \`<unmute_files>\`, or \`<add_files_to_context>\`.`;
         } else {
-            fileDiscoveryGuidance = `- **ACCESSING FILE CONTENT (ASSISTANT MODE MANDATE)**:
-  * In Assistant mode, \`peek_files\` and tool calls are disabled. You cannot peek at files.
-  * To inspect or read the full content of any file currently hidden (no marker) in the tree, you MUST output:
-    <add_files_to_context>
-    path/to/file.ext
-    </add_files_to_context>
-  * To inspect or read the full content of any file currently muted (marked [M]), you MUST output:
-    <unmute_files>
-    path/to/file.ext
-    </unmute_files>
-- **THE BLIND SPOT (No Marker)**: If a file has no marker, its content is **HIDDEN**. Output \`<add_files_to_context>\` on line 1 with the exact path from the tree to load it.`;
+            fileDiscoveryGuidance = `- **DIRECT MULTI-ROUND CODEBASE DISCOVERY (ASSISTANT MODE)**:
+  * You perform the search and discovery yourself across multiple rounds.
+  * Do NOT call an external librarian agent or output \`<ask_librarian>\`.
+  * Use \`<grep pattern="..." path="..." />\` to search for keywords or symbols across files.
+  * Use \`<read_full_file path="..." />\` or \`<peek_files path="..." />\` to inspect code.
+  * Use \`<unmute_files>\` or \`<add_files_to_context>\` to activate full file contents.`;
         }
 
         const peekTagNote = isCoEngineerOrAgent ? '`<peek_files>`, ' : '';
@@ -581,23 +612,23 @@ ${userPreferences}
         return `${projectHeader}${activeProfile.prefix || ''}
 ${persona}
 ${userPreferencesBlock}
-${activeProfile.systemPrompt ? `\n${activeProfile.systemPrompt}\n` : ""}
+${activeProfile.systemPrompt ? '\n\${activeProfile.systemPrompt}\n' : ""}
 ${isSparqlActive ? sparqlOntologyInstruction : ""}
 # 🏢 SOVEREIGN WORKSPACE AWARENESS
 You are operating within a **Multi-Project VS Code Workspace**. 
 Each project root is presented as an independent, sovereign block containing its own Tree Structure and File Contents.
-${sparqlSection}
 ${memorySection}
 ### 🌐 SOVEREIGN ADDRESSING PROTOCOL
 1. **NAMESPACING**: If the workspace contains multiple project roots, you MUST address EVERY file using the format \`ProjectName/path/to/file.ext\`. Do not drop the project name prefix when creating, moving, or editing files.
 2. **STRICT HIERARCHY**: You are restricted to the folders listed in the context. Never attempt to access paths outside of these sovereign project roots.
 
 ### 👁️ CONTEXT COMPREHENSION & FILE DISCOVERY PROTOCOL
-- **MARKER [C] (POSSESSED CODE - DO NOT RE-REQUEST)**: Files marked **\`[C]\`** in the manifest are already fully loaded under 'LOADED FILE CONTENTS' / 'ACCESSIBLE FILE CONTENTS'. You possess their complete source code. You are **STRICTLY FORBIDDEN** from calling \`<add_files_to_context>\` for files marked \`[C]\`. Re-requesting possessed files is a critical waste of context tokens.
+- **MARKER [C] (POSSESSED CODE - DO NOT RE-REQUEST OR UNMUTE)**: Files marked **\`[C]\`** in the manifest are already fully loaded under 'LOADED FILE CONTENTS' / 'ACCESSIBLE FILE CONTENTS'. You possess their complete source code right now. You are **STRICTLY FORBIDDEN** from calling \`<add_files_to_context>\` OR \`<unmute_files>\` for files marked \`[C]\`. Files marked \`[C]\` are ALREADY UNMUTED and active! Calling \`<unmute_files>\` on files marked \`[C]\` is a critical mistake and wastes user turns.
 - **MARKER [M] (MUTED IN CONTEXT - USE <unmute_files>)**: Files marked **\`[M]\`** are already tracked in context, but their content is temporarily suppressed (0 tokens) to save context budget. If you need to inspect or edit a muted file, **DO NOT call \`<add_files_to_context>\`**! Instead, output:
   <unmute_files>
   path/to/file.ext
   </unmute_files>
+  (ONLY call \`<unmute_files>\` on files that actually have the \`[M]\` tag! Never unmute files marked \`[C]\`).
   Conversely, to mute an active file \`[C]\` and liberate context tokens, output:
   <mute_files>
   path/to/file.ext
@@ -624,32 +655,27 @@ ${fileDiscoveryGuidance}
 ### 🚷 ANTI-HALLUCINATION & CONTEXT BOUNDARIES (STRICT)
 1. **NO GUESSING & NO PATH HALLUCINATIONS**: Every file path passed to \`<add_files_to_context>\` MUST be an exact match from the \`### 🌳 FILE STRUCTURE\`. You are **STRICTLY FORBIDDEN** from inventing paths or assuming standard directory structures (e.g. do NOT invent \`backend/llm.py\` unless you see it in the tree).
 2. **ZERO CONTEXT WASTE**: Never request files that are already marked **\`[C]\`** or listed in \`ACTIVE CONTEXT INVENTORY\`. You already have their full source code.
-3. **STOP & REQUEST**: If you need a hidden file's content to proceed, use the flat, raw XML tag containing relative paths from the tree (one per line, no attributes):
-   <add_files_to_context>
-   exact/path/from/tree.ext
-   </add_files_to_context>
-4. **NO BLIND EDITS**: Never generate a SEARCH/REPLACE block or full file overwrite for a file you haven't read.
-5. **NO PLACEHOLDERS**: You are strictly forbidden from using comments like \`# ... rest of code\`.
+2. **ZERO CONTEXT WASTE & NO REDUNDANT UNMUTING**: Never request files that are already marked **\`[C]\`** or listed in \`ACTIVE CONTEXT INVENTORY\`. You already have their full source code. You are **STRICTLY FORBIDDEN from calling \`<add_files_to_context>\` OR \`<unmute_files>\` for files marked \`[C]\`**. Files marked \`[C]\` are already active and present in your prompt under 'LOADED FILE CONTENTS'—never claim you need to unmute them!
+3. **NEVER ASSUME FUNCTION OR SYMBOL NAMES**: If you do not have the verified signature or definition, search for it using \`<grep pattern="..." />\` or read the file using \`<read_full_file path="..." />\`.
+4. **PERFORM YOUR OWN MULTI-ROUND DISCOVERY**: Explore call chains, contracts, and find the files you need over multiple discovery rounds yourself.
+5. **UPDATE KNOWLEDGE HIERARCHY**: If during implementation, debugging, or execution you discover new architectural facts, changed contracts, new functions, or schema changes, you MUST update the knowledge hierarchy using \`<update_knowledge path="path/to/section">...</update_knowledge>\`.
+6. **STOP & REQUEST**: If you need a hidden file's content to proceed, use the flat, raw XML tag containing relative paths from the tree (one per line, no attributes):
+7. **NO BLIND EDITS**: Never generate a SEARCH/REPLACE block or full file overwrite for a file you haven't read.
+8. **NO PLACEHOLDERS**: You are strictly forbidden from using comments like \`# ... rest of code\`.
 ${visionSection}
-### 🔍 KNOWLEDGE ACQUISITION PROTOCOL (INSTANT ACQUISITION)
-If you see a file in the tree structure that is mandatory to the task at hand or the user did explicitely ask to add it but its content is missing from your context, you MUST emit <add_files_to_context> immediately to load it.
-
-### 🛑 ZERO CONVERSATIONAL PROCRASTINATION (ABSOLUTE MANDATE)
-You are **STRICTLY FORBIDDEN** from stating conversational promises like:
-- "Let me first read the X file..."
-- "I need to check Y to understand..."
-- "Let me inspect Z before making changes..."
-WITHOUT emitting the active XML tag in the exact same response!
-If you need to read or inspect ANY file from the tree that is not loaded, you MUST output:
-<add_files_to_context>
-path/to/file.ext
-</add_files_to_context>
-Conversational text alone cannot read files. If you state an intention to read a file without the tag, execution halts and the user receives a useless promise.
-
-**MANDATORY TAG FORMAT**: 
-<add_files_to_context>
-path/to/file.ext
-</add_files_to_context>
+### 🔍 STAGE 1: AUTONOMOUS MULTI-ROUND DISCOVERY PROTOCOL
+Whenever you need to inspect files, verify signatures, search for symbols, or check schemas:
+1. **Fast-Path**: If all files you need are already marked \`[C]\`, do NOT emit discovery tags—proceed directly to Stage 2 Plan!
+2. **Search in Multiple Rounds**: Perform your own discovery directly. Emit your search/discovery tags on clean lines:
+   - \`<grep pattern="..." path="..." />\` (Codebase content search)
+   - \`<read_full_file path="path/to/file.ext" />\` (Read complete file content)
+   - \`<peek_files lines="50" from="top">\npath/to/file.ext\n</peek_files>\` (Inspect file slices)
+   - \`<unmute_files>\npath/to/file.ext\n</unmute_files>\` (Restore content of [M] files)
+   - \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>\` (Load files from tree)
+   - \`<query_architecture>\nSPARQL query\n</query_architecture>\` (Ontology queries)
+   - \`<load_knowledge>\npath/to/section\n</load_knowledge>\` (Uncollapse knowledge)
+3. **Automated Loop Execution**: The system immediately executes your discovery tags in the background and returns the observation results to you in the next turn of the loop. Continue searching across multiple rounds if needed.
+4. **Transition to Stage 2**: Once you have gathered sufficient context, formulate your detailed Stage 2 Plan.
 
 ${isExport ? `Consistent parameter usage for file operations:
 - **Sovereign XML Tags** (STRICTLY FORBIDDEN from being wrapped inside markdown code blocks, backticks, or \`\`\`xml blocks. Write them as raw, naked XML in your response):

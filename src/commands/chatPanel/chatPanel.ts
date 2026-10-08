@@ -18,7 +18,7 @@ import { BigDataProcessor } from '../../bigDataProcessing';
 import { AutomationPanel } from '../../panels/automationPanel';
 import { LocalizationManager } from '../../utils/localizationManager';
 import { LollmsServices } from '../../lollmsContext';
-import { ContextGovernor } from '../../contextGovernor';
+import { ContextLibrarian } from '../../contextLibrarian';
 
 interface ActiveGeneration {
     messageId: string;
@@ -69,6 +69,7 @@ export class ChatPanel {
   private _discussionCapabilities: DiscussionCapabilities;
   private _tokenAbortController: AbortController | null = null;
   private _isTokenizing: boolean = false;
+  private _isSendingMessage: boolean = false;
   private _currentPromptAddedFiles: Set<string> = new Set<string>();
 
   // Track active listeners to prevent duplication
@@ -259,6 +260,36 @@ export class ChatPanel {
             }
         }
 
+        // 0.3. Automatically execute Librarian consultations when auto-apply or agent mode is active
+        const libRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<(?:ask_librarian|consult_librarian|librarian|ask_governor|consult_governor|governor)\b([^>]*?)>([\s\S]*?)<\/(?:ask_librarian|consult_librarian|librarian|ask_governor|consult_governor|governor)>/gim;
+        let libMatch;
+        while ((libMatch = libRegex.exec(content)) !== null) {
+            if (signal.aborted) break;
+            if (!this._discussionCapabilities.autoApply && !this._discussionCapabilities.agentMode) continue;
+            const libQuery = (libMatch[2] || "").trim();
+            if (libQuery) {
+                const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+                try {
+                    const libRes = await ContextLibrarian.filterFilesByPrompt({
+                        lollmsAPI: this._lollmsAPI,
+                        contextManager: this._contextManager,
+                        discussionManager: this._discussionManager,
+                        currentDiscussion: this._currentDiscussion!,
+                        targetModel,
+                        prompt: libQuery,
+                        signal
+                    });
+                    if (libRes.keptFiles?.length) await this.unmuteFiles(libRes.keptFiles);
+                    if (libRes.mutedFiles?.length) await this.muteFiles(libRes.mutedFiles);
+                    if (libRes.addedFiles?.length) await this._contextManager.getContextStateProvider()?.addFilesToContext(libRes.addedFiles);
+                    await this.upgradeLibrarianFindings(libRes, libQuery, libRes.advice || libRes.rationale || '');
+                    this.log(`Automated Librarian consultation applied (${libRes.keptFiles.length} edit files loaded, ${libRes.mutedFiles.length} reference files muted).`);
+                } catch (libErr: any) {
+                    this.log(`Automated Librarian consultation failed: ${libErr.message}`, 'WARN');
+                }
+            }
+        }
+
         // 0.5. Process Mission Briefing Doctrine Tags (Autonomous in Agent Mode or when Auto-Apply is active)
         const isAgent = this._discussionCapabilities.agentMode === true;
         const isAutoApply = this._discussionCapabilities.autoApply === true;
@@ -301,9 +332,61 @@ export class ChatPanel {
             this.log(`Mission Doctrine automatically applied (Action: ${action}, Scope: ${scope}).`);
         }
 
-        // 1. Process XML <file> Mutation Tags (Depth-aware extraction handles nested tags)
-        const { extractFileBlocks, parseFileTagAttributes } = require('../../utils');
-        const fileBlocks = extractFileBlocks(content);
+        // 0.6. Process Knowledge Base Tags (<update_knowledge>, <load_knowledge>, <structure>, <findings>)
+        const updateKnowledgeRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<update_knowledge\b([^>]*?)>([\s\S]*?)<\/update_knowledge>/gim;
+        let updateKnMatch;
+        while ((updateKnMatch = updateKnowledgeRegex.exec(content)) !== null) {
+            if (signal.aborted) break;
+            const attrStr = updateKnMatch[1] || "";
+            const innerContent = updateKnMatch[2].trim();
+            if (!innerContent) continue;
+
+            const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
+            const targetPath = pathMatch ? pathMatch[1].trim() : "";
+
+            try {
+                const { KnowledgeManager } = require('../../knowledgeManager');
+                const km = new KnowledgeManager(this._discussionManager.context);
+                const res = await km.updateKnowledge(targetPath, innerContent);
+                if (res.success) {
+                    this.log(`Knowledge base updated for section: '${targetPath || 'root'}'`);
+                    const rendered = await km.renderContextKnowledge();
+                    this._panel.webview.postMessage({
+                        command: 'updateKnowledgeContent',
+                        knowledge: rendered
+                    });
+                }
+            } catch (kErr: any) {
+                this.log(`Failed to update knowledge: ${kErr.message}`, 'WARN');
+            }
+        }
+
+        const loadKnowledgeRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<load_knowledge\b[^>]*?>([\s\S]*?)<\/load_knowledge>/gim;
+        let loadKnMatch;
+        while ((loadKnMatch = loadKnowledgeRegex.exec(content)) !== null) {
+            if (signal.aborted) break;
+            const targetPath = loadKnMatch[1].trim();
+            if (!targetPath) continue;
+
+            try {
+                const { KnowledgeManager } = require('../../knowledgeManager');
+                const km = new KnowledgeManager(this._discussionManager.context);
+                const newScore = await km.incrementAccessCount(targetPath);
+                this.log(`Knowledge section uncollapsed & counter incremented: '${targetPath}' [${newScore}]`);
+                const rendered = await km.renderContextKnowledge();
+                this._panel.webview.postMessage({
+                    command: 'updateKnowledgeContent',
+                    knowledge: rendered
+                });
+            } catch (lErr: any) {
+                this.log(`Failed to load knowledge: ${lErr.message}`, 'WARN');
+            }
+        }
+
+        // 1. Process XML <file> Mutation Tags (Normalized with pseudo-tag fallback)
+        const { extractFileBlocks, parseFileTagAttributes, normalizePseudoFileBlocks } = require('../../utils');
+        const normalizedContent = normalizePseudoFileBlocks(content);
+        const fileBlocks = extractFileBlocks(normalizedContent);
 
         for (const fileBlock of fileBlocks) {
             if (signal.aborted) break;
@@ -729,14 +812,13 @@ ${originalFileContent}
         const desc = process?.description || "";
         const isBackgroundProcess = desc.toLowerCase().includes("title") || desc.toLowerCase().includes("counting");
 
-        // An active execution is only running if a non-background process or stream is active
         const isGenerating = !!(((process && !isBackgroundProcess) || !!activeGen) && !this._inputResolver);
         const isAgentActive = !!this.agentManager?.getIsActive();
         const showRaiseHand = !!(isAgentActive && process && !isBackgroundProcess);
 
-        let statusText = vscode.l10n.t("Lollms is thinking...");
+        let statusText = "Assistant is thinking...";
         if (process && !isBackgroundProcess) statusText = process.description;
-        else if (activeGen) statusText = vscode.l10n.t("Generating response...");
+        else if (activeGen) statusText = "Assistant is generating...";
         else if (isGenerating && isAgentActive) statusText = "Agent is executing...";
 
         this._panel.webview.postMessage({ 
@@ -3035,6 +3117,22 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
   public async sendMessage(message: ChatMessage, autoContext: boolean = false) {
     if (this._isDisposed || !this._currentDiscussion || !this.processManager) return;
 
+    if (this._isSendingMessage) {
+        this.log("sendMessage blocked: another message is actively being dispatched", "WARN");
+        return;
+    }
+    this._isSendingMessage = true;
+
+    try {
+        await this._executeSendMessage(message, autoContext);
+    } finally {
+        this._isSendingMessage = false;
+    }
+  }
+
+  private async _executeSendMessage(message: ChatMessage, autoContext: boolean = false) {
+    if (this._isDisposed || !this._currentDiscussion || !this.processManager) return;
+
     // Intercept input resolver if waiting for user decision (e.g. Git Safeguard or interactive forms)
     if (this._inputResolver) {
         const resolver = this._inputResolver;
@@ -3325,16 +3423,14 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
         const loadedFileCount = this._contextManager.getContextStateProvider()?.getIncludedFiles().length || 0;
 
         // Phase 1: Context & File Ingestion
-        this.processManager.updateDescription(processId, `Reading ${loadedFileCount} context file${loadedFileCount === 1 ? '' : 's'} & workspace tree...`);
+        this.processManager.updateDescription(processId, `Reading context files & workspace tree...`);
         this.updateGeneratingState();
 
         const mutedFiles = this._currentDiscussion.mutedFiles || [];
         const mutedSkills = this._currentDiscussion.mutedSkills || [];
         const mutedDiagrams = this._currentDiscussion.mutedDiagrams || [];
 
-        // Fetch contextData lexically before utilizing it in sendMessage
-        // Always provide the tree to ground the AI in the project structure
-        const contextData = await this._contextManager.getContextContent({
+        let contextData = await this._contextManager.getContextContent({
             importedSkillIds: importedIds,
             includeTree: true,
             discussionId: this.discussionId,
@@ -3346,25 +3442,17 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
             capabilities: this._discussionCapabilities
         });
 
-        // Phase 2: Neural Memory & Prompt Assembly
-        this.processManager.updateDescription(processId, "Compiling system instructions & neural memory...");
-        this.updateGeneratingState();
+        // 🛡️ CONTEXT BUDGET EXPLOSION SHIELD & AUTOMATIC REBUILDING (99% CIRCUIT BREAKER)
+        contextData = await this.enforceContextBudgetProtection(contextData, String(message.content || ''), targetModel, controller.signal);
+
+        // Fast-Path Assembly: Construct prompt context instantaneously without multi-pass disk re-reads
+        const isAssistantMode = !this._discussionCapabilities.agentMode && !this._discussionCapabilities.dynamicMode;
 
         const memManager = (this as any).projectMemoryManager || this.agentManager?.projectMemoryManager;
         const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && memManager)
             ? await memManager.getFormattedMemoryBlock(typeof message.content === 'string' ? message.content : '', this._skillsManager)
             : "";
 
-        const isAssistantMode = !this._discussionCapabilities.agentMode && !this._discussionCapabilities.dynamicMode;
-
-        const localContext = { 
-            tree: contextData.projectTree, 
-            files: contextData.selectedFilesContent, 
-            skills: contextData.skillsContent,
-            memory: projectMemory
-        };
-
-        // 1. Get Base System Instructions (VS Code Interface Tools, Skills, Rules) using localContext
         const baseInstructions = await getProcessedSystemPrompt(
             'chat', 
             this._discussionCapabilities, 
@@ -3372,60 +3460,17 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
             undefined, 
             forceFullCode, 
             { 
-                ...localContext, 
-                tree: '', 
-                files: '', 
+                tree: contextData.projectTree, 
+                files: contextData.selectedFilesContent, 
+                skills: contextData.skillsContent,
+                memory: projectMemory,
                 projectName: contextData.projectName,
                 toolManager: isAssistantMode ? undefined : this.agentManager?.['toolManager']
             } 
         );
 
-        // 2. Prepare the Bundled Project Context Message (User role)
-        const briefing = this._contextManager.renderBriefing(this._currentDiscussion);
-
-        // Guarantee that the tree is non-empty before assembling project context
-        if (!localContext.tree || !localContext.tree.trim()) {
-            try {
-                localContext.tree = await this._contextManager.generateProjectTree(controller.signal, undefined, this._discussionCapabilities);
-                contextData.projectTree = localContext.tree;
-            } catch {}
-        }
-
-        const projectStateText = `
-### 📂 ATTACHED PROJECT CONTEXT
-I am providing you with the current, ground-truth state of my project files and the Librarian's technical briefing. 
-Use this information as your current "vision" of the workspace.
-
-${briefing && !briefing.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefing}\n` : ""}
-#### 🌳 PROJECT STRUCTURE
-${localContext.tree || "```text\n./: [Workspace root]\n```"}
-
-${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No files currently selected)*"}
---------------------------------------------------
-`.trim();
-
-
-        // --- MULTIMODAL INJECTION ---
-        let projectContextContent: any = projectStateText;
-        if (this._discussionCapabilities.enableImages !== false && contextData.images.length > 0) {
-            projectContextContent = [
-                { type: 'text', text: projectStateText }
-            ];
-            contextData.images.forEach(img => {
-                projectContextContent.push({
-                    type: 'image_url',
-                    image_url: { url: img.data }
-                });
-            });
-        }
-
-        const projectContextUserMessage: ChatMessage = {
-            role: 'user',
-            content: projectContextContent
-        };
-
-        // 3. Prepare Chronological History
-        const allMessages = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
+        // Sanitize history and extract current prompt
+        const allMessages = (this._currentDiscussion.messages || []).filter(m => !m.skipInPrompt);
         const lastUserIdx = [...allMessages].reverse().findIndex(m => m.role === 'user');
         const actualLastUserIdx = lastUserIdx === -1 ? -1 : (allMessages.length - 1 - lastUserIdx);
 
@@ -3439,8 +3484,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
             history = allMessages;
         }
 
-        // Extract governor-specific directives (<governor>...</governor>) before arbitration
-        const { extractGovernorDirectives } = require('../../utils');
+        // Clean user prompt text
         let rawUserPromptText = "";
         if (typeof message.content === 'string') {
             rawUserPromptText = message.content;
@@ -3452,119 +3496,21 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
         } else {
             rawUserPromptText = String(message.content || '');
         }
-        // Scrub any accidental base64 image data URIs from prompt text
         rawUserPromptText = rawUserPromptText.replace(/data:image\/[a-zA-Z+]+;base64,[A-Za-z0-9+/=]{100,}/g, '[Attached Image]').trim();
 
-        const { cleanText: cleanWorkerPromptContent, governorDirectives } = extractGovernorDirectives(currentPromptMessage?.content || '');
-
-        if (currentPromptMessage) {
-            currentPromptMessage.content = cleanWorkerPromptContent;
-        }
-
-        // Sanitize history so the worker never sees earlier <governor> directives or thinking blocks
-        history = history.map(hMsg => {
-            let content = hMsg.content;
-            if (typeof content === 'string') {
-                content = stripThinkingTags(content);
-            } else if (Array.isArray(content)) {
-                content = content.map((part: any) => {
-                    if (part && part.type === 'text' && typeof part.text === 'string') {
-                        return { ...part, text: stripThinkingTags(part.text) };
-                    }
-                    return part;
-                });
-            }
-            if (hMsg.role === 'user') {
-                const { cleanText } = extractGovernorDirectives(content);
-                return { ...hMsg, content: cleanText };
-            }
-            return { ...hMsg, content };
-        });
-
-        let messagesToSend: ChatMessage[] = [];
-
-        // =========================================================================
-        // 🛡️ CONTEXT GOVERNOR & 120% HARD-CAP ARBITRATION (PRE-EXECUTION GATE)
-        // =========================================================================
-        try {
-            const arbitrationResult = await ContextGovernor.arbitrate({
-                lollmsAPI: this._lollmsAPI,
-                contextManager: this._contextManager,
-                discussionManager: this._discussionManager,
-                currentDiscussion: this._currentDiscussion,
-                contextData,
-                baseInstructions,
-                history,
-                currentPromptMessage,
-                userPromptText: rawUserPromptText,
-                targetModel,
-                capabilities: this._discussionCapabilities,
-                currentPromptAddedFiles: this.getCurrentPromptFiles(),
-                signal: controller.signal,
-                governorDirectives,
-                isMultiPartContinuation: (message as any).isMultiPartContinuation === true,
-                onStatusUpdate: (status) => {
-                    if (processId) {
-                        this.processManager.updateDescription(processId, status);
-                        this.updateGeneratingState();
-                    }
-                },
-                onAddMessage: (msg) => this.addMessageToDiscussion(msg),
-                onUpdateMessage: (messageId, newContent) => this.updateMessageContent(messageId, newContent)
-            });
-
-            if (!arbitrationResult) {
-                if (processId) this.processManager.unregister(processId);
-                this.updateGeneratingState();
-                return;
-            }
-
-            if (arbitrationResult.multiPartPlan && arbitrationResult.multiPartPlan.totalParts > 1) {
-                this._activeMultiPartPlan = arbitrationResult.multiPartPlan;
-            } else if (!(message as any).isMultiPartContinuation) {
-                this._activeMultiPartPlan = undefined;
-            }
-
-            history = arbitrationResult.history;
-            messagesToSend = arbitrationResult.messagesToSend;
-
-            // Re-sync webview HUD context and tokens
-            if (this._panel && this._panel.webview) {
-                this._panel.webview.postMessage({
-                    command: 'updateContext',
-                    mutedFiles: this._currentDiscussion?.mutedFiles || []
-                });
-                this._panel.webview.postMessage({
-                    command: 'updateTokenProgress',
-                    totalTokens: arbitrationResult.totalTokens,
-                    contextSize: arbitrationResult.contextSize,
-                    isApproximate: true,
-                    segments: this._currentDiscussion?.lastTokenMetrics?.segments
-                });
-            }
-        } catch (e: any) {
-            this.log(`Error during context arbitration: ${e.message}`, 'ERROR');
-        }
-
-        // --- CO-ENGINEER (DYNAMIC) MODE LOOP LAYER ---
-        const isDynamicMode = this._discussionCapabilities.dynamicMode === true;
-        const originalIncludedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles() || [];
-
+        // --- THREE-STAGE ASSISTANT EXECUTION LOOP (HIGH-SPEED DISPATCH) ---
         let currentTurnIndex = 0;
-        const maxTurnsLimit = 8;
+        const maxTurnsLimit = 12;
         const completedDynamicActions: string[] = [];
 
-        // Retries & repetition safeguards state
         let consecutiveFailsCount = 0;
         const maxFailsAllowed = 3;
         let lastExecutedFingerprint = "";
 
         assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
-
-        // Keep local reference to allow updates to the same bubble
         let currentFullResponseBuffer = "";
 
-        if (isDynamicMode) {
+        if (true) {
             const initialAssistantMessage: ChatMessage = {
                 id: assistantMessageId,
                 role: 'assistant',
@@ -3575,52 +3521,66 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                 timestamp: Date.now()
             };
 
-            // Mount the single visible assistant bubble in the discussion history and UI
             await this.addMessageToDiscussion(initialAssistantMessage, true);
 
-            // Maintain strictly alternating messages for Co-Engineer loop
             const { ensureStrictAlternatingRoles } = require('../../utils');
-            const rawLoopMessages: ChatMessage[] = [
-                { role: 'system', content: baseInstructions },
-                ...history.filter(m => !m.skipInPrompt),
-                projectContextUserMessage
-            ];
-            if (currentPromptMessage) {
-                rawLoopMessages.push(currentPromptMessage);
-            }
-            const loopMessages: ChatMessage[] = ensureStrictAlternatingRoles(rawLoopMessages);
+
+            const buildLoopMessages = (activeContextData: ContextResult): ChatMessage[] => {
+                const knowledgeText = activeContextData.governorReport || this._contextManager.renderBriefing(this._currentDiscussion);
+                const stateText = `
+### 📂 ATTACHED PROJECT CONTEXT
+${knowledgeText ? `#### 🏛️ CODE KNOWLEDGE (KNOWLEDGE.md)\n${knowledgeText}\n` : ""}
+#### 🌳 PROJECT STRUCTURE
+${activeContextData.projectTree || "```text\n./: [Workspace root]\n```"}
+
+${activeContextData.selectedFilesContent ? `#### 📄 FILE CONTENTS\n${activeContextData.selectedFilesContent}` : "*(No files currently selected)*"}
+--------------------------------------------------`.trim();
+
+                let userContentPayload: any = stateText;
+                if (currentPromptMessage?.content) {
+                    const promptStr = typeof currentPromptMessage.content === 'string' 
+                        ? currentPromptMessage.content 
+                        : (Array.isArray(currentPromptMessage.content) ? currentPromptMessage.content.map((p: any) => p.text || '').join('\n') : '');
+                    userContentPayload = `${stateText}\n\n${promptStr}`.trim();
+                }
+
+                if (this._discussionCapabilities.enableImages !== false && activeContextData.images && activeContextData.images.length > 0) {
+                    userContentPayload = [
+                        { type: 'text', text: userContentPayload },
+                        ...activeContextData.images.map(img => ({ type: 'image_url', image_url: { url: img.data } }))
+                    ];
+                }
+
+                const updatedUserMessage: ChatMessage = {
+                    role: 'user',
+                    content: userContentPayload
+                };
+
+                const rawMsgs: ChatMessage[] = [
+                    { role: 'system', content: baseInstructions },
+                    ...history.filter(m => !m.skipInPrompt),
+                    updatedUserMessage
+                ];
+                return ensureStrictAlternatingRoles(rawMsgs);
+            };
+
+            let currentContextPayload = contextData;
+            let loopMessages: ChatMessage[] = buildLoopMessages(currentContextPayload);
 
             const runTurn = async () => {
                 if (controller?.signal.aborted || currentTurnIndex >= maxTurnsLimit) return;
                 currentTurnIndex++;
 
                 if (consecutiveFailsCount >= maxFailsAllowed) {
-                    const finalErrorMsg = `\n\n🛑 **CO-ENGINEER MODE TERMINATED**: Exceeded maximum self-correction retries (${maxFailsAllowed}). Please adjust your prompt.`;
+                    const finalErrorMsg = `\n\n🛑 **ASSISTANT TERMINATED**: Exceeded maximum self-correction retries (${maxFailsAllowed}). Please adjust your prompt.`;
                     currentFullResponseBuffer += finalErrorMsg;
                     await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
                     return;
                 }
 
-                // Recalculate on-demand context weights to keep track of dynamic folder/file selections
-                const currentData = await this._contextManager.getContextContent({ 
-                    importedSkillIds: importedIds,
-                    includeTree: true,
-                    mutedFiles: this._currentDiscussion?.mutedFiles || [],
-                    modelName: targetModel 
-                });
-
-                // Check context window boundary against the 85% safety threshold
-                const tokenCheck = await this._lollmsAPI.tokenize(currentData.text, targetModel);
-                const limitCheck = await this._lollmsAPI.getContextSize(targetModel);
-                const usageRatio = tokenCheck.count / limitCheck.context_size;
-
-                if (usageRatio > 0.85) {
-                    this.log(`[Token Economy] Active context near capacity: ${Math.round(usageRatio * 100)}%`);
-                    const warningMsg = `\n\n⚠️ **TOKEN BUDGET EXCEEDED**: Your active context has reached **${Math.round(usageRatio * 100)}%** capacity. Please use \`remove_files\` to release unused file slots.`;
-                    currentFullResponseBuffer += warningMsg;
-                    await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer);
-                    completedDynamicActions.push(`⚠️ WARNING: Exceeded 85% token budget.`);
-                }
+                // Immediate UI status update so the user never sees stale initialization text
+                this.processManager.updateDescription(processId, `Connecting to ${targetModel} (waiting for response)...`);
+                this.updateGeneratingState();
 
                 // Format the memory scratchpad and append it to the active prompt context
                 const scratchpadBlock = completedDynamicActions.length > 0 
@@ -3628,7 +3588,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                       completedDynamicActions.map((a, i) => `${i+1}. ${a}`).join('\n')
                     : "";
 
-                const isFinalTurn = currentTurnIndex > 1 && !currentFullResponseBuffer.match(/<(add_files_to_context|query_architecture|lollms_tool|search_web)/);
+                const isFinalTurn = currentTurnIndex > 1 && !currentFullResponseBuffer.match(/<(add_files_to_context|query_architecture|lollms_tool|search_web|grep|read_full_file|peek_files|unmute_files|load_knowledge)/);
                 const isCodeUpdate = typeof message.content === 'string' && (message.content.toLowerCase().includes('fix') || message.content.toLowerCase().includes('update') || message.content.toLowerCase().includes('write'));
 
                 const profileId = (isFinalTurn && isCodeUpdate) ? (this._discussionCapabilities.responseProfileId || 'balanced') : 'minimalist';
@@ -3637,15 +3597,16 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                 const finalBaseInstructions = await getProcessedSystemPrompt(
                     'chat', 
                     this._discussionCapabilities, 
-                    personaContent + `\n\n${activeProfile.systemPrompt}`, 
+                    personaContent + `\n\n${activeProfile.systemPrompt}` + (scratchpadBlock ? `\n\n${scratchpadBlock}` : ''), 
                     undefined, 
                     forceFullCode, 
                     { 
-                        ...localContext, 
-                        tree: !isContextMuted ? currentData.projectTree : '', 
-                        files: currentData.selectedFilesContent, 
-                        projectName: currentData.projectName || folders?.[0]?.name || "Workspace",
-                        toolManager: this.agentManager?.['toolManager']
+                        tree: !isContextMuted ? currentContextPayload.projectTree : '', 
+                        files: currentContextPayload.selectedFilesContent, 
+                        skills: currentContextPayload.skillsContent,
+                        memory: projectMemory,
+                        projectName: currentContextPayload.projectName || folders?.[0]?.name || "Workspace",
+                        toolManager: isAssistantMode ? undefined : this.agentManager?.['toolManager']
                     } 
                 );
 
@@ -3653,7 +3614,7 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                 loopMessages[0] = { role: 'system', content: finalBaseInstructions };
 
                 let turnResponse = "";
-                this.processManager.updateDescription(processId, `Co-Engineer Turn ${currentTurnIndex}: Generating...`);
+                this.processManager.updateDescription(processId, `Assistant Turn ${currentTurnIndex}: Discovering & Reasoning...`);
                 this.updateGeneratingState();
 
                 try {
@@ -3698,17 +3659,21 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                     return protectedRanges.some(r => index >= r.start && index < r.end);
                 };
 
-                // Discover ALL action tags in the response and record their start positions
+                // Discover Stage 1 action tags in the response and record their start positions
                 const patterns = [
                     { tag: 'add_files_to_context', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<add_files_to_context\b([^>]*?)>([\s\S]*?)<\/add_files_to_context>/gim },
                     { tag: 'remove_files_from_context', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<remove_files_from_context\b([^>]*?)>([\s\S]*?)<\/remove_files_from_context>/gim },
                     { tag: 'mute_files', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<mute_files\b([^>]*?)>([\s\S]*?)<\/mute_files>/gim },
                     { tag: 'unmute_files', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<unmute_files\b([^>]*?)>([\s\S]*?)<\/unmute_files>/gim },
+                    { tag: 'load_knowledge', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<load_knowledge\b([^>]*?)>([\s\S]*?)<\/load_knowledge>/gim },
+                    { tag: 'update_knowledge', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<update_knowledge\b([^>]*?)>([\s\S]*?)<\/update_knowledge>/gim },
                     { tag: 'unpack_directory', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<unpack_directory\b([^>]*?)>([\s\S]*?)<\/unpack_directory>/gim },
                     { tag: 'peek_files', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/gim },
+                    { tag: 'read_full_file', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:read_full_file|read_file)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:read_full_file|read_file)>)/gim },
+                    { tag: 'grep', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:grep|grep_search|search_files)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:grep|grep_search|search_files)>)/gim },
                     { tag: 'query_architecture', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<query_architecture\b([^>]*?)>([\s\S]*?)<\/query_architecture>/gim },
-                    { tag: 'ask_governor', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:ask_governor|consult_governor)\b([^>]*?)>([\s\S]*?)<\/(?:ask_governor|consult_governor)>/gim },
-                    { tag: 'mission_briefing', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<mission_briefing\b([^>]*?)>([\s\S]*?)<\/mission_briefing>/gim },
+                    { tag: 'sparql', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<sparql\b([^>]*?)>([\s\S]*?)<\/sparql>/gim },
+                    { tag: 'ask_librarian', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:ask_librarian|consult_librarian|librarian|ask_governor|consult_governor|governor)\b([^>]*?)>([\s\S]*?)<\/(?:ask_librarian|consult_librarian|librarian|ask_governor|consult_governor|governor)>/gim },
                     { tag: 'lollms_tool', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<lollms_tool\b([^>]*?)>([\s\S]*?)<\/lollms_tool>|(?:^[ \t]*|(?<=>)[ \t]*)<lollms_tool\s+([^>]*?)\s*(?:\/>)/gim }
                 ];
 
@@ -3725,10 +3690,12 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                     let pMatch;
                     while ((pMatch = item.pattern.exec(turnResponse)) !== null) {
                         if (!isIndexInsideFence(pMatch.index)) {
+                            const rawParams = (pMatch[2] !== undefined && pMatch[2].trim() ? pMatch[2] : pMatch[1]).trim();
                             discoveredActions.push({
                                 index: pMatch.index,
                                 tag: item.tag,
-                                params: pMatch[1].trim()
+                                params: rawParams,
+                                attrStr: pMatch[1] || ""
                             });
                         }
                     }
@@ -3736,6 +3703,40 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
 
                 // Sort all discovered actions in their exact order of appearance
                 discoveredActions.sort((a, b) => a.index - b.index);
+
+                // --- AUTONOMOUS RECOVERY FOR CONVERSATIONAL STALLING ---
+                // If model states conversational intent (e.g. "Let me check the theme files...") without emitting action tags:
+                if (discoveredActions.length === 0 && currentTurnIndex === 1) {
+                    const stallingRegex = /(?:let me|need to|going to|will|first)\s+(?:first\s+)?(?:check|inspect|look at|examine|read|open|see)\s+(?:the\s+)?([^\n\r]+)/i;
+                    const stallMatch = turnResponse.match(stallingRegex);
+
+                    if (stallMatch) {
+                        const targetPhrase = stallMatch[1].toLowerCase();
+                        const candidatePaths: string[] = [];
+
+                        // Search tree for matching files (e.g. theme, css, style)
+                        const searchTerms = targetPhrase.replace(/[^a-zA-Z0-9_\-./]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+                        const provider = this._contextManager.getContextStateProvider();
+                        const allFiles = provider ? provider.getIncludedFiles().map(f => f.path) : [];
+
+                        for (const f of allFiles) {
+                            const lowerF = f.toLowerCase();
+                            if (searchTerms.some(t => lowerF.includes(t))) {
+                                candidatePaths.push(f);
+                            }
+                        }
+
+                        if (candidatePaths.length > 0) {
+                            const pathsToInspect = candidatePaths.slice(0, 3);
+                            this.log(`[Assistant Recovery] Model promised to check files without tags. Auto-initiating peek for: [${pathsToInspect.join(', ')}]`);
+                            discoveredActions.push({
+                                index: turnResponse.length,
+                                tag: 'peek_files',
+                                params: pathsToInspect.join('\n')
+                            });
+                        }
+                    }
+                }
 
                 if (discoveredActions.length > 0) {
                     // Check batch loop repetition
@@ -3854,6 +3855,17 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                             } else if (action.tag === 'unmute_files') {
                                 const filesToUnmute = action.params.split(/[\s\r\n,]+/).map(f => f.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
                                 await this.unmuteFiles(filesToUnmute);
+                                // Refresh in-memory payload with newly unmuted files
+                                currentContextPayload = await this._contextManager.getContextContent({
+                                    importedSkillIds: importedIds,
+                                    includeTree: true,
+                                    discussionId: this.discussionId,
+                                    mutedFiles: this._currentDiscussion?.mutedFiles || [],
+                                    modelName: targetModel,
+                                    signal: controller.signal,
+                                    capabilities: this._discussionCapabilities
+                                });
+                                loopMessages = buildLoopMessages(currentContextPayload);
                                 toolResult = `Success: Unmuted content for [${filesToUnmute.join(', ')}]. Full content is now active and tagged [C].`;
                                 completedDynamicActions.push(`Unmuted ${filesToUnmute.length} files.`);
                             } else if (action.tag === 'unpack_directory') {
@@ -3895,62 +3907,137 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                                     isSuccess = anyOk;
                                     completedDynamicActions.push(`Peeked at ${rawPaths.length} file(s).`);
                                 }
-                            } else if (action.tag === 'mission_briefing') {
-                                // In Co-Engineer mode, doctrine updates are proposed to the user for manual approval
-                                toolResult = `Proposed mission doctrine update. An interactive review card has been presented to the user to inspect diff and apply.`;
-                                isSuccess = true;
-                                completedDynamicActions.push(`Proposed mission doctrine update for user review.`);
-                            } else if (action.tag === 'query_architecture') {
+                            } else if (action.tag === 'read_full_file') {
+                                const attrStr = action.params || "";
+                                const pMatch = attrStr.match(/path=["']([^"']+)["']/i);
+                                const reqPath = (pMatch ? pMatch[1] : attrStr.split(/[\r\n\s]+/)[0]).replace(/^['"]|['"]$/g, '').trim();
+                                if (!reqPath) {
+                                    toolResult = "Error: No file path specified in <read_full_file>.";
+                                    isSuccess = false;
+                                } else {
+                                    const res = await this._contextManager.resolveWorkspaceFromPath(reqPath);
+                                    if (res) {
+                                        try {
+                                            const fileBytes = await vscode.workspace.fs.readFile(res.uri);
+                                            const text = Buffer.from(fileBytes).toString('utf8');
+                                            toolResult = `### 📄 FULL FILE: \`${reqPath}\` (${text.split('\n').length} lines, ~${Math.ceil(text.length / 3.5)} tokens)\n\`\`\`\n${text}\n\`\`\``;
+                                            isSuccess = true;
+                                            completedDynamicActions.push(`Read file: ${reqPath}`);
+                                        } catch (e: any) {
+                                            toolResult = `Error reading file ${reqPath}: ${e.message}`;
+                                            isSuccess = false;
+                                        }
+                                    } else {
+                                        toolResult = `Error: Could not resolve path "${reqPath}" on disk.`;
+                                        isSuccess = false;
+                                    }
+                                }
+                            } else if (action.tag === 'grep') {
+                                const attrStr = action.params || "";
+                                const pMatch = attrStr.match(/(?:pattern|query)=["']([^"']+)["']/i);
+                                const pattern = (pMatch ? pMatch[1] : attrStr.split(/[\r\n]+/)[0]).replace(/^['"]|['"]$/g, '').trim();
+                                const pathSubMatch = attrStr.match(/(?:path|include)=["']([^"']+)["']/i);
+                                const subPath = pathSubMatch ? pathSubMatch[1].trim() : undefined;
+
+                                if (!pattern) {
+                                    toolResult = "Error: No search pattern specified in <grep>.";
+                                    isSuccess = false;
+                                } else {
+                                    const searchRes = await this._contextManager.searchWorkspaceContent(
+                                        pattern,
+                                        { matchCase: false, wholeWord: false, include: subPath, bypassGate: true },
+                                        controller.signal
+                                    );
+                                    if (searchRes.length > 0) {
+                                        const snippet = searchRes.slice(0, 15).map(r => `${r.path}:${r.line} - ${r.snippet}`).join('\n');
+                                        toolResult = `### 🔍 GREP RESULTS FOR "${pattern}" (${searchRes.length} hits):\n\`\`\`\n${snippet}\n\`\`\``;
+                                        isSuccess = true;
+                                        completedDynamicActions.push(`Grepped for: "${pattern}" (${searchRes.length} hits)`);
+                                    } else {
+                                        toolResult = `### 🔍 GREP RESULTS FOR "${pattern}":\nNo matches found in workspace.`;
+                                        isSuccess = true;
+                                        completedDynamicActions.push(`Grepped for: "${pattern}" (0 hits)`);
+                                    }
+                                }
+                            } else if (action.tag === 'load_knowledge') {
+                                const secPath = action.params.trim();
+                                try {
+                                    const { KnowledgeManager } = require('../../knowledgeManager');
+                                    const km = new KnowledgeManager(this._discussionManager.context);
+                                    const newScore = await km.incrementAccessCount(secPath);
+                                    const secContent = await km.readSectionKnowledge(secPath);
+                                    toolResult = `### 📖 KNOWLEDGE SECTION LOADED: \`${secPath}\` [${newScore}]\n\`\`\`markdown\n${secContent || '(Section content empty)'}\n\`\`\``;
+                                    isSuccess = true;
+                                    completedDynamicActions.push(`Loaded knowledge section: ${secPath} [${newScore}]`);
+                                    const rendered = await km.renderContextKnowledge();
+                                    this._panel.webview.postMessage({ command: 'updateKnowledgeContent', knowledge: rendered });
+                                } catch (e: any) {
+                                    toolResult = `Error loading knowledge section: ${e.message}`;
+                                    isSuccess = false;
+                                }
+                            } else if (action.tag === 'update_knowledge') {
+                                const attrStr = (action as any).attrStr || action.params || "";
+                                const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
+                                const secPath = pathMatch ? pathMatch[1].trim() : "";
+                                const cleanContent = action.params.replace(/^[^\n]*\n/, '').trim();
+                                try {
+                                    const { KnowledgeManager } = require('../../knowledgeManager');
+                                    const km = new KnowledgeManager(this._discussionManager.context);
+                                    await km.updateKnowledge(secPath, cleanContent || action.params);
+                                    toolResult = `Successfully updated knowledge for \`${secPath || 'root'}\`.`;
+                                    isSuccess = true;
+                                    completedDynamicActions.push(`Updated knowledge: ${secPath || 'root'}`);
+                                    const rendered = await km.renderContextKnowledge();
+                                    this._panel.webview.postMessage({ command: 'updateKnowledgeContent', knowledge: rendered });
+                                } catch (e: any) {
+                                    toolResult = `Error updating knowledge: ${e.message}`;
+                                    isSuccess = false;
+                                }
+                            } else if (action.tag === 'read_full_file') {
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-file"></i> Read File: ${action.params.substring(0, 50)}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        } else if (action.tag === 'grep') {
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-search"></i> Grep Code Search: ${action.params.substring(0, 50)}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        } else if (action.tag === 'query_architecture' || action.tag === 'sparql') {
                                 const sparql = action.params.trim();
                                 const rawResult = await this.agentManager.codeGraphManager.executeSparql(sparql);
                                 toolResult = rawResult || "No matches.";
-                                if (rawResult.includes("Error") || rawResult.includes("failed")) {
-                                    isSuccess = false;
-                                }
-                                completedDynamicActions.push(`Executed SPARQL query: "${sparql.split('\n')[0]}..."`);
-                            } else if (action.tag === 'ask_governor') {
-                                const governorQuery = action.params.trim();
-                                this.log(`Co-Engineer: Worker summoned Context Governor for: "${governorQuery.substring(0, 80)}..."`);
-                                this.processManager.updateDescription(processId, `Consulting Context Governor...`);
-                                this.updateGeneratingState();
+                                isSuccess = !rawResult.includes("Error");
+                                completedDynamicActions.push(`Executed SPARQL query`);
+                            } else if (action.tag === 'ask_librarian' || action.tag === 'ask_governor') {
+                                const query = action.params.trim();
+                                const pathRegex = /([a-zA-Z0-9_.\-\/]+\.[a-zA-Z0-9_\-]+)/g;
+                                const mentionedPaths = [...query.matchAll(pathRegex)].map(m => m[1]);
+                                const added: string[] = [];
+                                const unmuted: string[] = [];
 
-                                const govResult = await ContextGovernor.filterFilesByPrompt({
-                                    lollmsAPI: this._lollmsAPI,
-                                    contextManager: this._contextManager,
-                                    discussionManager: this._discussionManager,
-                                    currentDiscussion: this._currentDiscussion!,
-                                    targetModel,
-                                    prompt: governorQuery,
-                                    signal: controller.signal,
-                                    onStatusUpdate: (st) => {
-                                        this.processManager.updateDescription(processId, `Governor: ${st}`);
-                                        this.updateGeneratingState();
+                                for (const p of mentionedPaths) {
+                                    if (await this._contextManager.resolveWorkspaceFromPath(p)) {
+                                        const count = await this.unmuteFiles([p]);
+                                        if (count > 0) unmuted.push(p);
+                                        const addedCount = await this._contextManager.getContextStateProvider()?.addFilesToContext([p]) || [];
+                                        if (addedCount.length > 0) added.push(p);
                                     }
-                                });
-
-                                if (govResult.keptFiles && govResult.keptFiles.length > 0) {
-                                    await this.unmuteFiles(govResult.keptFiles);
-                                }
-                                if (govResult.mutedFiles && govResult.mutedFiles.length > 0) {
-                                    await this.muteFiles(govResult.mutedFiles);
-                                }
-                                if (govResult.addedFiles && govResult.addedFiles.length > 0) {
-                                    await this._contextManager.getContextStateProvider()?.addFilesToContext(govResult.addedFiles);
                                 }
 
-                                const reportBlock = govResult.governorReport 
-                                    ? `\n<governor_report>\n${govResult.governorReport}\n</governor_report>\n` 
-                                    : (govResult.signatures ? `\n<governor_report>\n${govResult.signatures}\n</governor_report>\n` : '');
+                                const keywords = query.replace(/[^a-zA-Z0-9_]/g, ' ').split(/\s+/).filter(w => w.length > 3).slice(0, 3);
+                                const grepHits: string[] = [];
+                                for (const kw of keywords) {
+                                    const hits = await this._contextManager.searchWorkspaceContent(kw, { matchCase: false, wholeWord: false, bypassGate: true }, controller.signal);
+                                    if (hits.length > 0) {
+                                        grepHits.push(...hits.slice(0, 4).map(h => `${h.path}:${h.line} - ${h.snippet}`));
+                                    }
+                                }
 
-                                toolResult = `### 🏛️ CONTEXT GOVERNOR COLLABORATION REPORT${reportBlock}\n` +
-                                    `- **Files Kept Active [C]**: ${govResult.keptFiles.join(', ') || 'None'}\n` +
-                                    `- **Files Muted for Reference [M]**: ${govResult.mutedFiles.join(', ') || 'None'}\n` +
-                                    `- **Context Optimization**: Liberated ${govResult.liberatedTokens.toLocaleString()} tokens.\n\n` +
-                                    `**Governor Analysis**:\n${govResult.rationale}\n\n` +
-                                    (govResult.advice ? `**Directive for Worker**:\n${govResult.advice}` : '');
-
+                                let reportOut = `### 🔍 DIRECT DISCOVERY OBSERVATION\n`;
+                                if (unmuted.length > 0) reportOut += `- Unmuted [C]: ${unmuted.join(', ')}\n`;
+                                if (added.length > 0) reportOut += `- Added to Context [C]: ${added.join(', ')}\n`;
+                                if (grepHits.length > 0) {
+                                    reportOut += `\n**Matching Code Search**:\n\`\`\`\n${grepHits.slice(0, 8).join('\n')}\n\`\`\`\n`;
+                                }
+                                reportOut += `\n> 💡 *Direct Search*: You do not need to call the librarian. Use \`<grep>\`, \`<read_full_file>\`, \`<peek_files>\`, \`<unmute_files>\`, or \`<add_files_to_context>\` to continue searching in the next round, or proceed to Stage 2 Plan.`;
+                                toolResult = reportOut;
                                 isSuccess = true;
-                                completedDynamicActions.push(`Consulted Governor on: "${governorQuery.substring(0, 50)}..."`);
+                                completedDynamicActions.push(`Searched context for "${query.substring(0, 30)}..."`);
                             } else if (action.tag === 'lollms_tool') {
                                 const rawJson = action.params.trim();
                                 let parsedCall: any = {};
@@ -4007,29 +4094,31 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
 
                         if (action.tag === 'add_files_to_context') {
                             const filesToAdd = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
-                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-cloud-download' : 'codicon-error'}"></i> ${isSuccess ? 'Loaded Files Context' : 'File Loading Notice'}: ${filesToAdd.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-cloud-download' : 'codicon-error'}"></i> ${isSuccess ? 'Loaded Files Context' : 'File Loading Notice'}: ${filesToAdd.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
                         } else if (action.tag === 'mute_files') {
                             const files = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(Boolean);
-                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-eye-closed"></i> Muted Files: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-eye-closed"></i> Muted Files: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
                         } else if (action.tag === 'unmute_files') {
                             const files = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(Boolean);
-                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-eye"></i> Unmuted Files: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-eye"></i> Unmuted Files: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        } else if (action.tag === 'load_knowledge') {
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-book"></i> Knowledge Loaded: ${action.params}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        } else if (action.tag === 'update_knowledge') {
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-pass-filled"></i> Knowledge Synchronized: ${action.params.substring(0, 30)}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
                         } else if (action.tag === 'remove_files_from_context') {
                             const filesToRemove = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
-                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-trash' : 'codicon-error'}"></i> ${isSuccess ? 'Pruned Files Context' : 'Pruning Failed'}: ${filesToRemove.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-trash' : 'codicon-error'}"></i> ${isSuccess ? 'Pruned Files Context' : 'Pruning Failed'}: ${filesToRemove.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
                         } else if (action.tag === 'unpack_directory') {
                             const dirs = action.params.split(/[\s\r\n,]+/).map((f: string) => f.trim()).filter((f: string) => f);
-                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-folder-opened' : 'codicon-error'}"></i> ${isSuccess ? 'Unpacked Directory' : 'Directory Unpack Notice'}: ${dirs.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-folder-opened' : 'codicon-error'}"></i> ${isSuccess ? 'Unpacked Directory' : 'Directory Unpack Notice'}: ${dirs.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
                         } else if (action.tag === 'peek_files') {
                             const files = action.params.split(/[\s\r\n,]+/).map((f: string) => f.trim()).filter((f: string) => f);
-                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-eye' : 'codicon-error'}"></i> ${isSuccess ? 'Peeked at Files' : 'Peek Notice'}: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
-                        } else if (action.tag === 'query_architecture') {
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-eye' : 'codicon-error'}"></i> ${isSuccess ? 'Inspected Files (Live)' : 'Peek Notice'}: ${files.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                        } else if (action.tag === 'query_architecture' || action.tag === 'sparql') {
                             const sparql = action.params.trim();
-                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-graph"></i> ${isSuccess ? 'Ran SPARQL Query' : 'SPARQL Query Failed'}</summary><div class="processing-body">\`\`\`sparql\n${sparql}\n\`\`\`\n\n**Result:**\n${toolResult}</div></details>\n\n`;
-                        } else if (action.tag === 'ask_governor') {
-                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-law"></i> Context Governor Collaboration: ${action.params.substring(0, 60)}...</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-graph"></i> ${isSuccess ? 'Architecture Query (SPARQL)' : 'SPARQL Query Failed'}</summary><div class="processing-body">\`\`\`sparql\n${sparql}\n\`\`\`\n\n**Result:**\n${toolResult}</div></details>\n\n`;
                         } else {
-                            blockWidgetHtml = `\n\n<details class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-tools"></i> ${headerPrefix}: ${toolDisplayName}</summary><div class="processing-body">**Output:**\n${toolResult}</div></details>\n\n`;
+                            blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon codicon-tools"></i> ${headerPrefix}: ${toolDisplayName}</summary><div class="processing-body">**Output:**\n${toolResult}</div></details>\n\n`;
                         }
 
                         currentFullResponseBuffer += blockWidgetHtml;
@@ -4099,20 +4188,29 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
 
             await runTurn();
 
-            // RESTORE STATE CONSTITUTION: Always restore original included files list once loop finishes
-            const finalFilesList = originalIncludedFiles.map(f => f.path);
-            await this._contextManager.getContextStateProvider()?.softReset();
-            await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', finalFilesList);
+            // Persist discovered files and unmuted states into discussion memory
+            if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
+                await this._discussionManager.saveDiscussion(this._currentDiscussion);
+            }
 
-            // --- AUTOMATION PIPELINE FOR DYNAMIC MODE ---
-            if (this._discussionCapabilities.autoApply && !controller?.signal.aborted && processId) {
-                await this.executeAutomationPipeline(currentFullResponseBuffer, assistantMessageId, controller?.signal, processId);
-                this.updateContextAndTokens();
+            // Continuous Knowledge Synchronization: Ensure any knowledge tags are persisted
+            await this.processKnowledgeUpdates(currentFullResponseBuffer);
+
+            // Post-Code Execution Pipeline (Only runs when code blocks were produced in Stage 3)
+            const { normalizePseudoFileBlocks } = require('../../utils');
+            const normalizedBuffer = normalizePseudoFileBlocks(currentFullResponseBuffer);
+            const hasCodeBlocks = normalizedBuffer.includes('<file') || normalizedBuffer.includes('<<<<<<< SEARCH');
+
+            if (hasCodeBlocks && !controller?.signal.aborted) {
+                if (this._discussionCapabilities.autoApply && processId) {
+                    await this.executeAutomationPipeline(normalizedBuffer, assistantMessageId, controller.signal, processId);
+                }
             }
 
             this.processManager.unregister(processId);
             this.updateGeneratingState();
-            return; // Terminate execution to bypass standard non-looping flow below
+            this.updateContextAndTokens({ isBackgroundSync: false });
+            return;
         }
 
 
@@ -4239,6 +4337,12 @@ ${localContext.files ? `#### 📄 FILE CONTENTS\n${localContext.files}` : "*(No 
                 generationSession.buffer += chunk;
                 generationSession.tokenCount++;
 
+                if (fullResponse.includes('<structure') || fullResponse.includes('<findings') || fullResponse.includes('<librarian_report')) {
+                    if (processId && !generationSession.buffer.includes('</structure>') && !generationSession.buffer.includes('</findings>') && !generationSession.buffer.includes('</librarian_report>')) {
+                        this.processManager.updateDescription(processId, `Writing codebase findings (.lollms/structure.md)...`);
+                    }
+                }
+
                 const elapsed = (Date.now() - generationSession.startTime) / 1000;
                 const tps = (generationSession.tokenCount / elapsed).toFixed(1);
 
@@ -4345,11 +4449,13 @@ The API endpoint returned an empty response.
         );
 
         // --- CONVERSATIONAL PROMISE RECOVERY SHIELD ---
-        // Catches models that state conversational intentions to read/check files without emitting the XML tag
+        // Catches models stating conversational intentions to read/check files and converts them into Librarian requests
+        const libTagRegex = /<(?:ask_librarian|consult_librarian|librarian|ask_governor)\b[^>]*>([\s\S]*?)<\/(?:ask_librarian|consult_librarian|librarian|ask_governor)>/i;
         const addFilesRegex = /<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/i;
+        let libTagMatch = processedResponse.match(libTagRegex);
         let addFilesMatch = processedResponse.match(addFilesRegex);
 
-        if (!addFilesMatch && !processedResponse.includes('<file') && !processedResponse.includes('```') && !controller?.signal.aborted) {
+        if (!libTagMatch && !addFilesMatch && !processedResponse.includes('<file') && !processedResponse.includes('```') && !controller?.signal.aborted) {
             const promiseRegex = /(?:let me|need to|have to|going to|should|will|first|want to)\s+(?:first\s+)?(?:read|check|inspect|look at|examine|open|view|review|see)\s+(?:the\s+)?`?([a-zA-Z0-9_.\-\/]+\.[a-zA-Z0-9]+)`?/gi;
             const mentionedFiles: string[] = [];
             let pMatch: RegExpExecArray | null;
@@ -4372,18 +4478,38 @@ The API endpoint returned an empty response.
 
                 if (resolvedPaths.length > 0) {
                     const uniqueResolved = Array.from(new Set(resolvedPaths));
-                    processedResponse += `\n\n<add_files_to_context>\n${uniqueResolved.join('\n')}\n</add_files_to_context>`;
-                    this.log(`Recovered conversational file promise into active <add_files_to_context> for: [${uniqueResolved.join(', ')}]`);
+                    processedResponse += `\n\n<ask_librarian>\nI need to inspect the following files to verify contracts and requirements for this task:\n${uniqueResolved.join('\n')}\nPlease load only files that must be patched, and extract contracts for reference files into the report.\n</ask_librarian>`;
+                    this.log(`Recovered conversational file promise into active <ask_librarian> for: [${uniqueResolved.join(', ')}]`);
                 }
             }
         }
 
-        // --- CONTEXT EXPANSION (STOP & WAIT) ---
-        if (addFilesMatch && !controller.signal.aborted) {
-            // We do nothing here in the backend because the Webview UI already renders 
-            // the <add_files> widget with a manual "Add to Context" button.
-            // By NOT calling sendMessage here, we respect the "Don't call LLM" rule.
-            this.log(`AI issued context expansion request. Waiting for user interaction.`);
+        // --- CONTEXT EXPANSION & LIBRARIAN CONSULTATION (STOP & WAIT) ---
+        if ((addFilesMatch || libTagMatch) && !controller.signal.aborted) {
+            this.log(`AI issued context expansion or Librarian consultation request. Waiting for user interaction.`);
+        }
+
+        // --- PROCESS WORKER FINDINGS UPDATES ON DEMAND ---
+        const workerFindingsMatch = processedResponse.match(/<(?:structure|findings|update_findings)\b([^>]*?)>([\s\S]*?)<\/(?:structure|findings|update_findings)>/i);
+        if (workerFindingsMatch && !controller?.signal.aborted) {
+            const attrStr = workerFindingsMatch[1] || "";
+            const innerContent = workerFindingsMatch[2].trim();
+            if (innerContent) {
+                const isPatch = attrStr.includes('action="patch"') || attrStr.includes("action='patch'") || innerContent.includes('<<<<<<< SEARCH');
+                const action = isPatch ? 'patch' : 'write';
+                try {
+                    const res = await ContextLibrarian.updateStructureGuide(innerContent, action);
+                    if (res.success) {
+                        this.log(`Librarian findings updated by worker on disk (.lollms/structure.md).`);
+                        this._panel.webview.postMessage({
+                            command: 'updateFindings',
+                            findings: res.content
+                        });
+                    }
+                } catch (fErr: any) {
+                    this.log(`Failed to update findings: ${fErr.message}`, 'WARN');
+                }
+            }
         }
 
         // --- PROJECT MEMORY PROCESSING (NON-BLOCKING DEFERRED - ONLY WHEN SPARQL IS ACTIVE) ---
@@ -5197,6 +5323,277 @@ ${targetContent}
   }
 
   /**
+   * Upgrades the Librarian's findings in .lollms/structure.md and the discussion data zone.
+   */
+  public async upgradeLibrarianFindings(
+      result: { governorReport?: string; advice?: string; rationale?: string; signatures?: string; keptFiles?: string[]; mutedFiles?: string[] },
+      objective: string,
+      analysis: string
+  ): Promise<void> {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) return;
+
+      try {
+          // A. Upgrade .lollms/structure.md on disk (patching stale sections)
+          const existingStructure = await ContextLibrarian.getStructureGuide();
+          const cleanReport = (result.governorReport || result.signatures || "").trim();
+
+          if (cleanReport.includes('<<<<<<< SEARCH')) {
+              await ContextLibrarian.updateStructureGuide(cleanReport, 'patch');
+          } else {
+              const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+              const findingsHeader = `## 📝 Latest Verified Findings [${timestamp}]`;
+              const findingsBlock = `${findingsHeader}\n**Task**: ${objective}\n\n**Analysis**:\n${analysis}\n\n${cleanReport ? `### Contracts & Signatures:\n${cleanReport}\n\n` : ''}`.trim();
+
+              if (!existingStructure.trim()) {
+                  await ContextLibrarian.saveStructureGuide(`# 🏛️ Codebase Architecture & Structure Guide\n\n${findingsBlock}`);
+              } else {
+                  // Purge older duplicate entries for the same objective to prevent stale stacking
+                  const objSnippet = objective.substring(0, 35).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                  const existingObjRegex = new RegExp(`## 📝 Latest Verified Findings[\\s\\S]*?\\*\\*Task\\*\\*: [^\\n]*${objSnippet}[\\s\\S]*?(?=\\n## |$)`, 'i');
+
+                  if (existingObjRegex.test(existingStructure)) {
+                      const updated = existingStructure.replace(existingObjRegex, findingsBlock);
+                      await ContextLibrarian.saveStructureGuide(updated);
+                  } else {
+                      await ContextLibrarian.saveStructureGuide(`${existingStructure.trim()}\n\n${findingsBlock}`);
+                  }
+              }
+          }
+
+          // B. Upgrade discussion data zone (local briefing)
+          if (this._currentDiscussion) {
+              let parsed: any = {};
+              if (this._currentDiscussion.discussion_data_zone) {
+                  try {
+                      parsed = JSON.parse(this._currentDiscussion.discussion_data_zone);
+                  } catch {
+                      parsed = { legacy: this._currentDiscussion.discussion_data_zone };
+                  }
+              }
+              const findingsKey = `librarian_findings_${Date.now()}`;
+              parsed[findingsKey] = `[Librarian Findings for "${objective.substring(0, 60)}"]\n${analysis}${result.governorReport ? '\n\n' + result.governorReport : ''}`;
+              this._currentDiscussion.discussion_data_zone = JSON.stringify(parsed, null, 2);
+              if (!this._currentDiscussion.id.startsWith('temp-')) {
+                  await this._discussionManager.saveDiscussion(this._currentDiscussion);
+              }
+          }
+          this.log("Upgraded Librarian findings in .lollms/structure.md and discussion data zone.");
+      } catch (err: any) {
+          this.log(`Failed to upgrade Librarian findings: ${err.message}`, 'WARN');
+      }
+  }
+
+  /**
+   * Immediately recalls the worker to act upon the freshly scouted files and findings.
+   */
+  public async recallWorkerAfterLibrarian(
+      result: { keptFiles?: string[]; mutedFiles?: string[]; governorReport?: string },
+      objective: string,
+      analysis: string
+  ): Promise<void> {
+      if (this._isDisposed) return;
+
+      await new Promise(r => setTimeout(r, 100));
+
+      // Dispatch only the direct objective so the worker receives a clean prompt without librarian artifacts
+      await this.sendMessage({
+          id: 'user_direct_' + Date.now(),
+          role: 'user',
+          content: objective
+      });
+  }
+
+  /**
+   * Executes the project entry point, captures output/logs, and initiates a Run / View / Fix loop.
+   * In Assistant mode, human validation is required at each coding step via diff review cards.
+   */
+  public async handleRunAndDebugLoop() {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) {
+          vscode.window.showErrorMessage("Active workspace required to debug.");
+          return;
+      }
+
+      // 1. Detect Entry Point or Launch Configuration
+      let defaultCmd = "";
+      try {
+          const launchPath = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', 'launch.json');
+          const bytes = await vscode.workspace.fs.readFile(launchPath);
+          const launch = JSON.parse(Buffer.from(bytes).toString('utf8'));
+          if (launch?.configurations?.[0]?.program) {
+              const prog = vscode.workspace.asRelativePath(launch.configurations[0].program);
+              const ext = path.extname(prog).toLowerCase();
+              if (ext === '.py') defaultCmd = `python -u "${prog}"`;
+              else if (ext === '.js') defaultCmd = `node "${prog}"`;
+              else if (ext === '.ts') defaultCmd = `npx ts-node "${prog}"`;
+          }
+      } catch {}
+
+      if (!defaultCmd) {
+          const pyEntries = ['main.py', 'app.py', 'run.py', 'server.py'];
+          for (const pe of pyEntries) {
+              try {
+                  const stat = await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceFolder.uri, pe));
+                  if (stat.type === vscode.FileType.File) {
+                      defaultCmd = `python -u "${pe}"`;
+                      break;
+                  }
+              } catch {}
+          }
+      }
+
+      if (!defaultCmd) {
+          try {
+              const pkgUri = vscode.Uri.joinPath(workspaceFolder.uri, 'package.json');
+              const pkgBytes = await vscode.workspace.fs.readFile(pkgUri);
+              const pkg = JSON.parse(Buffer.from(pkgBytes).toString('utf8'));
+              if (pkg.scripts && (pkg.scripts.dev || pkg.scripts.start)) {
+                  defaultCmd = pkg.scripts.dev ? 'npm run dev' : 'npm start';
+              } else if (pkg.main) {
+                  defaultCmd = `node "${pkg.main}"`;
+              }
+          } catch {}
+      }
+
+      if (!defaultCmd) {
+          try {
+              await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceFolder.uri, 'Cargo.toml'));
+              defaultCmd = 'cargo run';
+          } catch {}
+      }
+
+      if (!defaultCmd) {
+          defaultCmd = 'python -u main.py';
+      }
+
+      const isAssistant = !this._discussionCapabilities.agentMode;
+
+      const commandInput = await vscode.window.showInputBox({
+          prompt: `Confirm command to run & debug for ${workspaceFolder.name} (${isAssistant ? 'Assistant Mode: Human validation required for each fix' : 'Autonomous Mode'}):`,
+          value: defaultCmd,
+          placeHolder: "e.g. python -u main.py, npm start, cargo run"
+      });
+
+      if (!commandInput || !commandInput.trim()) return;
+      const finalCmd = commandInput.trim();
+
+      const { id: procId, controller } = this.processManager.register(this.discussionId, `Debugging: ${finalCmd}...`);
+      this.updateGeneratingState();
+
+      await this.addMessageToDiscussion({
+          id: 'debug_run_launch_' + Date.now(),
+          role: 'system',
+          content: `🐞 **Debug Loop Initiated**
+- **Command**: \`${finalCmd}\`
+- **Mode**: ${isAssistant ? '👤 Assistant Mode (Human validation at each step)' : '🤖 Agent Mode (Autonomous)'}
+- *Running project in background, capturing output and logs...*`,
+          skipInPrompt: true
+      });
+
+      try {
+          const { runCommandInTerminal } = require('../../extensionState');
+          let res: { success: boolean; output: string };
+
+          if (this.agentManager && !isAssistant) {
+              res = await this.agentManager.runCommand(finalCmd, controller.signal, { timeoutMs: 180000 });
+          } else {
+              res = await runCommandInTerminal(finalCmd, workspaceFolder.uri.fsPath, "Debug Runner", controller.signal, { stealth: true, timeoutMs: 180000 });
+          }
+
+          const disc = this._currentDiscussion;
+          const monitoredLogPaths = disc?.capabilities?.monitoredLogPaths || [];
+          let extraLogs = "";
+          for (const lp of monitoredLogPaths) {
+              try {
+                  const logUri = vscode.Uri.joinPath(workspaceFolder.uri, lp);
+                  const logBytes = await vscode.workspace.fs.readFile(logUri);
+                  const logText = Buffer.from(logBytes).toString('utf8');
+                  if (logText.trim().length > 0) {
+                      extraLogs += `\n\n--- MONITORED LOG: ${lp} ---\n${logText.substring(0, 3000)}`;
+                  }
+              } catch {}
+          }
+
+          const { stripAnsiCodes } = require('../../utils');
+          const cleanOutput = stripAnsiCodes((res.output || "") + extraLogs).trim();
+
+          const timestamp = new Date().toISOString();
+          const logFileName = 'debug_run.log';
+          const logUri = vscode.Uri.joinPath(workspaceFolder.uri, logFileName);
+          const logReport = `======================================================================
+DEBUG RUN LOG
+Timestamp: ${timestamp}
+Command: ${finalCmd}
+Success: ${res.success}
+OUTPUT:
+${cleanOutput || '(No output recorded)'}
+`;
+          await vscode.workspace.fs.writeFile(logUri, Buffer.from(logReport, 'utf8'));
+
+          // Add debug_run.log to context
+          await this._contextManager.getContextStateProvider()?.addFilesToContext([logFileName]);
+          this._contextManager.recordRecentlyAddedFiles([logFileName]);
+          this.recordCurrentPromptFiles([logFileName]);
+          await this.updateContextAndTokens({ isBackgroundSync: false });
+
+          const hasError = !res.success || 
+                           cleanOutput.toLowerCase().includes('error:') || 
+                           cleanOutput.toLowerCase().includes('traceback') || 
+                           cleanOutput.toLowerCase().includes('exception:') || 
+                           cleanOutput.toLowerCase().includes('failed');
+
+          let debugPrompt = "";
+          if (hasError) {
+              debugPrompt = `### 🐞 RUN/VIEW/FIX DEBUG LOOP: ISSUE DETECTED
+I executed the project using \`${finalCmd}\` and an issue was detected. The full log was written to \`${logFileName}\` and added to your context.
+
+**EXECUTION SUMMARY / LOG EXCERPT:**
+\`\`\`
+${cleanOutput.substring(0, 3000) || '(Process exited with error)'}
+\`\`\`
+
+**DEBUGGING MANDATE (${isAssistant ? 'ASSISTANT MODE - HUMAN VALIDATION REQUIRED' : 'AGENT MODE'}):**
+1. **View & Analyze**: Diagnose the exact root cause from the traceback, exception, or unexpected output.
+2. **Consult Librarian if needed**: If you need to inspect or locate files, summon the Librarian using \`<ask_librarian>\`.
+3. **Propose Surgical Fix**: Provide the surgical fix using \`<file path="..." action="patch">\` (or targeted symbol replacement \`<file path="..." action="update_symbol">\`).
+${isAssistant ? '4. **Human Validation Gate**: Because we are in Assistant Mode, do not assume changes are applied automatically. Present the changes clearly for the user to review in the diff editor and apply. Explain how the fix resolves the issue.' : '4. Apply the fix and verify.'}`;
+          } else {
+              debugPrompt = `### 🐞 RUN/VIEW/FIX DEBUG LOOP: CLEAN RUN
+I executed the project using \`${finalCmd}\` and it ran without errors (Exit Code 0). Output was saved to \`${logFileName}\`.
+
+**OUTPUT EXCERPT:**
+\`\`\`
+${cleanOutput.substring(0, 2000) || '(No errors reported)'}
+\`\`\`
+
+Please review the output to verify if the application state behaved as expected or if there are any subtle warnings/leaks to optimize.`;
+          }
+
+          this.processManager.unregister(procId);
+          this.updateGeneratingState();
+
+          await this.sendMessage({
+              id: 'user_debug_loop_' + Date.now(),
+              role: 'user',
+              content: debugPrompt
+          });
+
+      } catch (err: any) {
+          this.processManager.unregister(procId);
+          this.updateGeneratingState();
+          if (err.name !== 'AbortError') {
+              vscode.window.showErrorMessage(`Debug execution failed: ${err.message}`);
+              await this.addMessageToDiscussion({
+                  role: 'system',
+                  content: `❌ **Debug Execution Error:** ${err.message}`,
+                  skipInPrompt: true
+              });
+          }
+      }
+  }
+
+  /**
    * Executes project tests, captures output to test_run.log, adds the log to context,
    * and dispatches a prompt to the LLM to inspect results and fix failures.
    */
@@ -5290,6 +5687,56 @@ ${res.output || '(No output recorded)'}
                   skipInPrompt: true
               });
           }
+      }
+  }
+
+  public async processKnowledgeUpdates(content: string): Promise<void> {
+      if (!content) return;
+      const updateKnRegex = /<update_knowledge\b([^>]*?)>([\s\S]*?)<\/update_knowledge>/gi;
+      let match: RegExpExecArray | null;
+      let updatedAny = false;
+
+      while ((match = updateKnRegex.exec(content)) !== null) {
+          const attrStr = match[1] || "";
+          const innerContent = match[2].trim();
+          if (!innerContent) continue;
+          const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
+          const secPath = pathMatch ? pathMatch[1].trim() : "";
+          try {
+              const { KnowledgeManager } = require('../../knowledgeManager');
+              const km = new KnowledgeManager(this._discussionManager.context);
+              await km.updateKnowledge(secPath, innerContent);
+              updatedAny = true;
+              this.log(`Knowledge base updated for section: '${secPath || 'root'}'`);
+          } catch (e: any) {
+              this.log(`Failed to update knowledge base: ${e.message}`, 'WARN');
+          }
+      }
+
+      const structRegex = /<(?:structure|findings|update_findings)\b([^>]*?)>([\s\S]*?)<\/(?:structure|findings|update_findings)>/gi;
+      while ((match = structRegex.exec(content)) !== null) {
+          const attrStr = match[1] || "";
+          const inner = match[2].trim();
+          if (inner) {
+              const isPatch = attrStr.includes('action="patch"') || inner.includes('<<<<<<< SEARCH');
+              try {
+                  await ContextLibrarian.updateStructureGuide(inner, isPatch ? 'patch' : 'write');
+                  updatedAny = true;
+                  this.log(`Structure findings guide updated on disk.`);
+              } catch (e: any) {
+                  this.log(`Failed to update structure guide: ${e.message}`, 'WARN');
+              }
+          }
+      }
+
+      if (updatedAny) {
+          const { KnowledgeManager } = require('../../knowledgeManager');
+          const km = new KnowledgeManager(this._discussionManager.context);
+          const rendered = await km.renderContextKnowledge();
+          this._panel.webview.postMessage({
+              command: 'updateKnowledgeContent',
+              knowledge: rendered
+          });
       }
   }
 
@@ -6195,6 +6642,21 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             } else if (action.type === 'unmute') {
                                 const count = await this.unmuteFiles(action.payload);
                                 resultsLog.push(`#### ✅ Unmuted Files: [${action.payload.join(', ')}] (${count} files reactivated with full content)`);
+                            } else if (action.type === 'librarian') {
+                                const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+                                const libRes = await ContextLibrarian.filterFilesByPrompt({
+                                    lollmsAPI: this._lollmsAPI,
+                                    contextManager: this._contextManager,
+                                    discussionManager: this._discussionManager,
+                                    currentDiscussion: this._currentDiscussion!,
+                                    targetModel,
+                                    prompt: action.payload,
+                                    signal: new AbortController().signal
+                                });
+                                if (libRes.keptFiles?.length) await this.unmuteFiles(libRes.keptFiles);
+                                if (libRes.mutedFiles?.length) await this.muteFiles(libRes.mutedFiles);
+                                if (libRes.addedFiles?.length) await this._contextManager.getContextStateProvider()?.addFilesToContext(libRes.addedFiles);
+                                resultsLog.push(`#### ✅ Librarian Selection Applied\n- Loaded for patching [C]: [${libRes.keptFiles.join(', ') || 'None'}]\n- Muted for reference [M]: [${libRes.mutedFiles.join(', ') || 'None'}]\n- Findings: ${libRes.rationale}`);
                             } else if (action.type === 'tool') {
                                 const toolDef = this.agentManager.getTools().find(t => t.name === action.payload.name);
                                 if (toolDef) {
@@ -6859,9 +7321,24 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
 
                     const { id: govProcId, controller: govCtrl } = this.processManager.register(
                         this.discussionId,
-                        'Governor: Evaluating file relevance...'
+                        'Librarian: Scouting codebase & context...'
                     );
                     this.updateGeneratingState();
+
+                    const isChatCaller = caller === 'chat' || !caller;
+                    let libMsgId = '';
+
+                    if (isChatCaller) {
+                        libMsgId = 'librarian_consultation_' + Date.now();
+                        await this.addMessageToDiscussion({
+                            id: libMsgId,
+                            role: 'assistant',
+                            personalityName: '📚 Lead Librarian',
+                            content: `### 📚 **Lead Librarian: Consulting on Technical Task**\n*Objective: "${filterPrompt.substring(0, 100)}..."*\n\n<div class="waiting-animation" style="display:flex; align-items:center; gap:8px; opacity:0.85;"><div class="spinner"></div> <span>Initializing investigation (Round 1)...</span></div>`,
+                            model: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
+                            timestamp: Date.now()
+                        });
+                    }
 
                     try {
                         const targetModel = this._currentDiscussion.model || this._lollmsAPI.getModelName();
@@ -6887,7 +7364,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             }
                         }
 
-                        const result = await ContextGovernor.filterFilesByPrompt({
+                        const result = await ContextLibrarian.filterFilesByPrompt({
                             lollmsAPI: this._lollmsAPI,
                             contextManager: this._contextManager,
                             discussionManager: this._discussionManager,
@@ -6901,6 +7378,10 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             customCapacity,
                             targetPercent,
                             reasoningEffort: 'none',
+                            pruneMsgId: isChatCaller ? libMsgId : undefined,
+                            onUpdateMessage: isChatCaller ? async (msgId, content) => {
+                                await this.updateMessageContent(msgId, content);
+                            } : undefined,
                             onStatusUpdate: (status) => {
                                 this.processManager.updateDescription(govProcId, status);
                                 this.updateGeneratingState();
@@ -6943,6 +7424,60 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             updatedPresets = currentPresets;
                         } else {
                             updatedPresets = this._discussionManager.context.workspaceState.get<Record<string, string[]>>('lollms_saved_mute_patterns') || {};
+                        }
+
+                        if (isChatCaller && libMsgId) {
+                            const analysis = result.advice || result.rationale || 'Codebase dependencies analyzed.';
+                            const reportBlock = result.governorReport ? `\n<librarian_report>\n${result.governorReport}\n</librarian_report>\n` : '';
+
+                            const finalReport = `### 📚 **Lead Librarian: Context Arbitration Complete**
+- **Decision Status**: \`${(result.decision?.status || 'fit_edits_only').toUpperCase()}\`
+- **Active Files for Patching [C]**: ${result.keptFiles.length} (${result.keptFiles.map(k => `\`${k}\``).join(', ') || 'None'})
+- **Reference Files Muted [M]**: ${result.mutedFiles.length} (${result.mutedFiles.map(m => `\`${m}\``).join(', ') || 'None'})
+- **Liberated Tokens**: ~${result.liberatedTokens.toLocaleString()} tokens
+- **Rounds Used**: ${result.roundsUsed} of ${result.maxRounds}
+
+#### 📝 **Librarian Architectural Analysis**:
+${analysis}
+${reportBlock}
+
+> 💡 **Context Synchronized**: Files required for editing are loaded with full content ([C]), and reference files are muted ([M]) with contracts preserved above. You can now proceed with the implementation.`;
+
+                            await this.updateMessageContent(libMsgId, finalReport);
+
+                            if (result.keptFiles?.length) await this.unmuteFiles(result.keptFiles);
+                            if (result.mutedFiles?.length) await this.muteFiles(result.mutedFiles);
+                            if (result.addedFiles?.length) {
+                                await this._contextManager.getContextStateProvider()?.addFilesToContext(result.addedFiles);
+                            }
+
+                            // 1. Upgrade findings in .lollms/structure.md and discussion data zone
+                            await this.upgradeLibrarianFindings(result, filterPrompt, analysis);
+
+                            this.updateContextAndTokens({ isBackgroundSync: false });
+
+                            webview.postMessage({
+                                command: 'librarianConsultationFinished',
+                                keptFiles: result.keptFiles,
+                                mutedFiles: result.mutedFiles
+                            });
+
+                            // Clean up temporary consultation message so it does not persist in discussion history
+                            const libIdx = this._currentDiscussion.messages.findIndex(m => m.id === libMsgId);
+                            if (libIdx !== -1) {
+                                this._currentDiscussion.messages.splice(libIdx, 1);
+                            }
+                            this._panel.webview.postMessage({
+                                command: 'removeMessage',
+                                messageId: libMsgId
+                            });
+
+                            // 2. Clear scout process and immediately recall the worker
+                            this.processManager.unregister(govProcId);
+                            this.updateGeneratingState();
+
+                            await this.recallWorkerAfterLibrarian(result, filterPrompt, analysis);
+                            return;
                         }
 
                         webview.postMessage({
@@ -7015,7 +7550,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         this.updateContextAndTokens({ isBackgroundSync: false });
                         const addedCount = Array.isArray(addedFiles) ? addedFiles.length : 0;
                         const addedInfo = addedCount > 0 ? ` (+${addedCount} files added to context)` : '';
-                        vscode.window.showInformationMessage(`⚖️ Context Governor: Selection applied (${this._currentDiscussion.mutedFiles.length} files muted)${addedInfo}.`);
+                        vscode.window.showInformationMessage(`📚 Librarian: Selection applied (${this._currentDiscussion.mutedFiles.length} files muted)${addedInfo}.`);
                     }
                 }
                 break;
@@ -7226,6 +7761,55 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
 
                     // Run the background sync asynchronously to align with disk state
                     this.updateContextAndTokens({ isBackgroundSync: true });
+                }
+                break;
+            case 'scrutinizeKnowledgeTree':
+                await this.handleScrutinizeKnowledgeTree();
+                break;
+            case 'resetKnowledge':
+                {
+                    const { KnowledgeManager } = require('../../knowledgeManager');
+                    const km = new KnowledgeManager(this._discussionManager.context);
+                    await km.resetKnowledge();
+
+                    if (this._currentDiscussion) {
+                        let parsed: any = {};
+                        try { parsed = JSON.parse(this._currentDiscussion.discussion_data_zone || '{}'); } catch {}
+                        Object.keys(parsed).forEach(k => {
+                            if (k.startsWith('librarian_findings_') || k.startsWith('findings_')) delete parsed[k];
+                        });
+                        this._currentDiscussion.discussion_data_zone = JSON.stringify(parsed);
+                        if (!this._currentDiscussion.id.startsWith('temp-')) {
+                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                        }
+                    }
+
+                    this._panel.webview.postMessage({
+                        command: 'updateKnowledgeContent',
+                        knowledge: ''
+                    });
+                    this.updateContextAndTokens({ isBackgroundSync: false });
+                    vscode.window.showInformationMessage("🧹 Knowledge Base (.lollms/KNOWLEDGE.md & structure.md) has been reset.");
+                }
+                break;
+            case 'loadKnowledgeSection':
+                {
+                    const targetSecPath = message.path;
+                    if (targetSecPath) {
+                        try {
+                            const { KnowledgeManager } = require('../../knowledgeManager');
+                            const km = new KnowledgeManager(this._discussionManager.context);
+                            const newScore = await km.incrementAccessCount(targetSecPath);
+                            const rendered = await km.renderContextKnowledge();
+                            webview.postMessage({
+                                command: 'updateKnowledgeContent',
+                                knowledge: rendered
+                            });
+                            vscode.window.showInformationMessage(`Uncollapsed section '${targetSecPath}' [${newScore}]`);
+                        } catch (err: any) {
+                            vscode.window.showErrorMessage(`Failed to load knowledge section: ${err.message}`);
+                        }
+                    }
                 }
                 break;
             case 'openFile':
@@ -7781,6 +8365,9 @@ Task:
                 break;
             case 'runTestsAndReport':
                 await this.handleRunTestsAndReport();
+                break;
+            case 'startDebugLoop':
+                await this.handleRunAndDebugLoop();
                 break;
             case 'executeProject':
                 await vscode.commands.executeCommand('lollms-vs-coder.executeProject', this);
@@ -8785,6 +9372,181 @@ Task:
                 break;
         }
     });
+  }
+
+  /**
+   * Intelligently protects the LLM from exploding context payloads.
+   * If total tokens exceed the model's budget threshold (e.g. 1.2M tokens when capacity is 350k),
+   * this identifies relevant files for the current task, mutes unrelated bloat files,
+   * and triggers an automatic rebuild of the context so the model runs safely and quickly.
+   */
+  private async enforceContextBudgetProtection(
+      currentContext: ContextResult,
+      promptText: string,
+      targetModel: string,
+      signal: AbortSignal
+  ): Promise<ContextResult> {
+      if (!this._currentDiscussion || !this._contextManager) return currentContext;
+
+      // Use cached context size to eliminate blocking HTTP network overhead
+      const maxTokens = this._currentDiscussion.lastTokenMetrics?.contextSize || 128000;
+      const targetThresholdPct = this._discussionCapabilities.contextGovernorTargetThreshold ?? 70;
+      const targetBudget = Math.round(maxTokens * (targetThresholdPct / 100));
+
+      const activeCodeTokens = Math.ceil((currentContext.selectedFilesContent || '').length / 3.5);
+      const otherTokens = Math.ceil((currentContext.text.length - (currentContext.selectedFilesContent || '').length) / 3.5);
+      const totalEstimated = otherTokens + activeCodeTokens;
+
+      const isOver99Percent = totalEstimated >= Math.round(maxTokens * 0.99);
+      const isOverTarget = totalEstimated > targetBudget;
+
+      if (!isOver99Percent && !isOverTarget) {
+          return currentContext;
+      }
+
+      this.log(`[Context Shield] Active load (~${totalEstimated.toLocaleString()} tok) exceeds budget (${targetBudget.toLocaleString()} tok). Instant in-memory pruning activated...`);
+
+      // 1. Measure real in-memory block sizes directly from existing text without disk I/O
+      const { extractFileBlocks, parseFileTagAttributes } = require('../../utils');
+      const loadedBlocks = extractFileBlocks(currentContext.selectedFilesContent || '');
+
+      const cleanPrompt = promptText.toLowerCase();
+      const recentTurns = (this._currentDiscussion.messages || []).slice(-4).map(m => typeof m.content === 'string' ? m.content.toLowerCase() : '').join(' ');
+      const combinedQuery = `${cleanPrompt} ${recentTurns}`;
+
+      const mentionedPaths: string[] = [];
+      const pathRegex = /([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+)/g;
+      let pMatch;
+      while ((pMatch = pathRegex.exec(combinedQuery)) !== null) {
+          mentionedPaths.push(pMatch[1].replace(/\\/g, '/').toLowerCase());
+      }
+
+      const keywords = combinedQuery
+          .replace(/[^a-z0-9_$\-\/.]/g, ' ')
+          .split(/\s+/)
+          .filter(w => w.length > 2);
+
+      const candidateBlocks = loadedBlocks.map((fb: any) => {
+          const attrs = parseFileTagAttributes(fb.attrStr, fb.rawContent);
+          const p = attrs?.path ? attrs.path.replace(/\\/g, '/').toLowerCase() : '';
+          const baseName = path.basename(p);
+          const toks = Math.max(1, Math.ceil((fb.rawContent || '').length / 3.5));
+          let score = 0;
+
+          if (mentionedPaths.some(mp => p.includes(mp) || mp.includes(p) || mp.includes(baseName))) score += 50000;
+          if (cleanPrompt.includes(p) || cleanPrompt.includes(baseName)) score += 10000;
+          if (recentTurns.includes(p) || recentTurns.includes(baseName)) score += 2000;
+          if (this._contextManager.isRecentlyAdded(p)) score += 3000;
+
+          for (const kw of keywords) {
+              if (p.includes(kw)) score += 150;
+          }
+
+          return { block: fb, path: attrs?.path || '', norm: p, score, tokens: toks };
+      });
+
+      candidateBlocks.sort((a: any, b: any) => b.score - a.score || a.tokens - b.tokens);
+
+      const availableForCode = Math.max(2000, Math.round(maxTokens * 0.45) - otherTokens);
+      let cumulativeCodeTokens = 0;
+      const blocksToKeep: any[] = [];
+      const pathsToMute: string[] = [];
+
+      for (const cand of candidateBlocks) {
+          if (blocksToKeep.length === 0 || (cumulativeCodeTokens + cand.tokens <= availableForCode)) {
+              blocksToKeep.push(cand);
+              cumulativeCodeTokens += cand.tokens;
+          } else {
+              pathsToMute.push(cand.path);
+          }
+      }
+
+      // 2. Perform INSTANT IN-MEMORY CONTEXT ASSEMBLY (0 disk reads, 0 network calls)
+      const newSelectedFilesContent = blocksToKeep.map(b => b.block.fullMatch).join('\n\n');
+
+      const existingMuted = this._currentDiscussion.mutedFiles || [];
+      const newMutedSet = new Set(existingMuted.map(p => p.replace(/\\/g, '/').toLowerCase()));
+      pathsToMute.forEach(p => newMutedSet.add(p.replace(/\\/g, '/').toLowerCase()));
+      blocksToKeep.forEach(b => newMutedSet.delete(b.norm));
+
+      this._currentDiscussion.mutedFiles = Array.from(newMutedSet);
+      this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
+
+      if (!this._currentDiscussion.id.startsWith('temp-')) {
+          this._discussionManager.saveDiscussion(this._currentDiscussion).catch(() => {});
+      }
+
+      const prunedContext: ContextResult = {
+          ...currentContext,
+          selectedFilesContent: newSelectedFilesContent
+      };
+
+      // Asynchronously update HUD without blocking main thread execution
+      setImmediate(() => {
+          this.updateContextAndTokens({ isBackgroundSync: false });
+      });
+
+      return prunedContext;
+  }
+
+    /**
+   * Performs an automated, deep architectural scrutiny of the codebase
+   * to build the complete, hierarchical KNOWLEDGE.md tree and section files.
+   */
+  public async handleScrutinizeKnowledgeTree() {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) {
+          vscode.window.showErrorMessage("Active workspace required to scrutinize codebase.");
+          return;
+      }
+
+      await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: `Lollms: Scrutinizing Codebase & Building Knowledge Tree (${folder.name})...`,
+          cancellable: true
+      }, async (progress, token) => {
+          const controller = new AbortController();
+          token.onCancellationRequested(() => controller.abort());
+
+          try {
+              const { KnowledgeManager } = require('../../knowledgeManager');
+              const km = new KnowledgeManager(this._discussionManager.context);
+
+              const result = await km.scrutinizeAndBuildFullTree(
+                  this._lollmsAPI,
+                  this._codeGraphManager,
+                  this._contextManager,
+                  controller.signal,
+                  (status: string, pct: number) => {
+                      progress.report({ message: `${status} (${pct}%)` });
+                  }
+              );
+
+              if (result.success) {
+                  const rendered = await km.renderContextKnowledge();
+                  this._panel.webview.postMessage({
+                      command: 'updateKnowledgeContent',
+                      knowledge: rendered
+                  });
+                  this.updateContextAndTokens({ isBackgroundSync: false });
+
+                  vscode.window.showInformationMessage(
+                      `✅ Codebase Scrutiny Complete! Built KNOWLEDGE.md tree with ${result.sectionsCount} architectural sections.`,
+                      "Open KNOWLEDGE.md"
+                  ).then(sel => {
+                      if (sel === "Open KNOWLEDGE.md") {
+                          vscode.commands.executeCommand('lollms-vs-coder.openKnowledgeRoot');
+                      }
+                  });
+              } else {
+                  vscode.window.showErrorMessage(`Scrutiny failed: ${result.error || 'Unknown error'}`);
+              }
+          } catch (err: any) {
+              if (err.name !== 'AbortError') {
+                  vscode.window.showErrorMessage(`Scrutiny error: ${err.message}`);
+              }
+          }
+      });
   }
 
   public async handleRequestAddExternalFile() {

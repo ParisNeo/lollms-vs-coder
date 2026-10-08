@@ -2,7 +2,7 @@ import { TagPlugin, PluginContext } from '../pluginSystem';
 
 export const formPlugin: TagPlugin = {
     id: 'lollms_form',
-    tagPattern: /<lollms_form\b[^>]*>([\s\S]*?)<\/lollms_form>/gi,
+    tagPattern: /<(?:lollms_form|form)\b[^>]*>([\s\S]*?)<\/(?:lollms_form|form)>/gi,
     render: (match, context) => {
         const fullXml = match[0];
         const inner = match[1];
@@ -48,7 +48,7 @@ export const formPlugin: TagPlugin = {
         return `
         <div class="lollms-form-block" id="form-${formId}" style="border: 1.5px solid var(--vscode-charts-orange); border-radius: 8px; padding: 12px; margin: 12px 0; background: var(--vscode-editorWidget-background); box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
             <div class="lollms-form-header" style="font-size: 13px; font-weight: bold; color: var(--vscode-charts-orange); display: flex; align-items: center; gap: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 6px;">
-                <span class="codicon codicon-shield"></span> <span>${title}</span>
+                <span class="codicon codicon-feedback"></span> <span>${title}</span>
             </div>
             <div class="lollms-form-body">${descriptionHtml}${inputsHtml}</div>
             <div class="lollms-form-footer" style="display: flex; justify-content: flex-end; margin-top: 10px;">
@@ -58,20 +58,7 @@ export const formPlugin: TagPlugin = {
             </div>
         </div>`;
     },
-    initialize: (container, context) => {
-        container.querySelectorAll('.lollms-form-submit-btn').forEach(btn => {
-            (btn as HTMLElement).onclick = (e) => {
-                const formBlock = btn.closest('.lollms-form-block') as HTMLElement;
-                const data: Record<string, string> = {};
-                formBlock.querySelectorAll('input:checked, input[type="text"], input[type="number"], textarea').forEach((input: any) => {
-                    if (input.name) data[input.name] = input.value;
-                });
-                context.vscode.postMessage({
-                    command: 'sendMessage',
-                    message: { role: 'user', content: `FORM_SUBMISSION:${JSON.stringify(data)}`, isSilentSignal: true }
-                });
-                formBlock.remove();
-            };
-        });
+    initialize: () => {
+        // Event delegation is handled exclusively in events.ts to prevent duplicate submissions
     }
 };

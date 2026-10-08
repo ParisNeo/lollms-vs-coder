@@ -457,33 +457,35 @@ ${archSummary || '(Architecture graph compiled successfully)'}
             }
 
             // 2. Synthesize and Write Governor Guide (.lollms/structure.md)
-            progress.report({ message: "Generating Governor Structure Report (.lollms/structure.md)..." });
+            progress.report({ message: "Generating Librarian Structure Report (.lollms/structure.md)..." });
             let archSummary = "";
             if (this.services.codeGraphManager) {
                 archSummary = this.services.codeGraphManager.generateTextSummary();
             }
 
-            const governorFileContent = `# 🏛️ Codebase Architecture & Structure Guide
+            const projectName = folder.name;
+            const rootKnowledgeContent = `# ${projectName}
 
-## 🎯 Project Overview & Objectives
+## Abstract
 ${rawObjectives}
 
-## 🛠️ Destiny & Development Mode
-- **Mode**: ${destiny === 'agentic' ? 'Agentic Engineering (Software 3.0 Rigor, TDD, Security Hardened)' : 'Vibe Coding (Rapid Prototyping & Intuition-Led Iteration)'}
-- **Developer Style**: ${rawStyle}
-- **Preference Profile**: ${prefProfileId || 'clean_craftsman'}
-
-## 📜 Non-Negotiable Project Doctrine & Constraints
 ${rawDoctrine || '- Enforce Clean Code, SOLID principles, and explicit error handling.\n- Maintain type integrity across all module boundaries.\n- Never hardcode credentials, secrets, or volatile paths.'}
 
-## 🗺️ Architectural Structure & Symbol Map
-${archSummary || '(Architecture graph compiled successfully)'}
+## Index
+### Architecture_Overview [1]
+### Core_Services [0]
+### Configuration_And_Environment [0]
 `;
 
             const lollmsDir = vscode.Uri.joinPath(folder.uri, '.lollms');
             await vscode.workspace.fs.createDirectory(lollmsDir);
-            const structUri = vscode.Uri.joinPath(lollmsDir, 'structure.md');
-            await vscode.workspace.fs.writeFile(structUri, Buffer.from(governorFileContent.trim(), 'utf8'));
+
+            const knowledgeUri = vscode.Uri.joinPath(lollmsDir, 'KNOWLEDGE.md');
+            await vscode.workspace.fs.writeFile(knowledgeUri, Buffer.from(rootKnowledgeContent.trim(), 'utf8'));
+
+            const { KnowledgeManager } = require('../knowledgeManager');
+            const km = new KnowledgeManager(this.services.discussionManager.context);
+            await km.updateKnowledge('Architecture_Overview', `## Architecture Overview\n\n${archSummary || 'Initial architecture map compiled.'}`, folder);
 
             // 3. Mapping Synaptic Memory Engrams
             progress.report({ message: "Mapping Synaptic Engrams & Project DNA..." });

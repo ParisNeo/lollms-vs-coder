@@ -3,7 +3,7 @@ import * as path from 'path';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { ContextManager, ContextResult } from './contextManager';
 import { DiscussionManager, Discussion } from './discussionManager';
-import { DiscussionCapabilities, stripThinkingTags, extractFileBlocks, parseFileTagAttributes } from './utils';
+import { DiscussionCapabilities, stripThinkingTags, extractFileBlocks, parseFileTagAttributes, applySearchReplace, normalizeAiderContent, parseAiderHunks } from './utils';
 import { Logger } from './logger';
 
 export interface MultiPartPhase {
@@ -30,6 +30,8 @@ export interface GovernorArbitrationResult {
     governorReport?: string;
     multiPartPlan?: MultiPartPlan;
 }
+
+export type LibrarianArbitrationResult = GovernorArbitrationResult;
 
 export interface ArbitrateOptions {
     lollmsAPI: LollmsAPI;
@@ -70,7 +72,7 @@ interface ParsedFileCandidate {
     evictionReason?: string;
 }
 
-export class ContextGovernor {
+export class ContextLibrarian {
     private static readonly STOP_WORDS = new Set([
         'the', 'and', 'for', 'with', 'this', 'that', 'from', 'your', 'will', 'have', 'been', 'should',
         'what', 'when', 'where', 'which', 'who', 'how', 'why', 'can', 'could', 'would', 'file', 'files',
@@ -106,6 +108,13 @@ export class ContextGovernor {
         const folders = vscode.workspace.workspaceFolders || [];
         if (folders.length === 0) return "";
         try {
+            const rootKnowledge = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'KNOWLEDGE.md');
+            const bytes = await vscode.workspace.fs.readFile(rootKnowledge);
+            const text = Buffer.from(bytes).toString('utf8');
+            if (text.trim()) return text;
+        } catch {}
+
+        try {
             const structUri = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'structure.md');
             const bytes = await vscode.workspace.fs.readFile(structUri);
             return Buffer.from(bytes).toString('utf8');
@@ -122,7 +131,7 @@ export class ContextGovernor {
 
         for (const line of lines) {
             const lower = line.toLowerCase().trim();
-            if (lower.match(/^#+\s*(?:muted\s+files|active\s+files|files\s+kept|files\s+to\s+edit|priority\s+edit\s+files|evicted\s+files|token\s+budget|governor\s+selection|session\s+events)/i)) {
+            if (lower.match(/^#+\s*(?:muted\s+files|active\s+files|files\s+kept|files\s+to\s+edit|priority\s+edit\s+files|evicted\s+files|token\s+budget|governor\s+selection|librarian\s+selection|session\s+events)/i)) {
                 skippingMuteSection = true;
                 continue;
             }
@@ -151,18 +160,65 @@ export class ContextGovernor {
             if (!cleaned.trim()) return false;
             const lollmsDir = vscode.Uri.joinPath(folders[0].uri, '.lollms');
             await vscode.workspace.fs.createDirectory(lollmsDir);
+
+            const knowledgeUri = vscode.Uri.joinPath(lollmsDir, 'KNOWLEDGE.md');
+            await vscode.workspace.fs.writeFile(knowledgeUri, Buffer.from(cleaned, 'utf8'));
+
             const structUri = vscode.Uri.joinPath(lollmsDir, 'structure.md');
             await vscode.workspace.fs.writeFile(structUri, Buffer.from(cleaned, 'utf8'));
             return true;
         } catch (err: any) {
-            Logger.warn("Failed to write .lollms/structure.md", err);
+            Logger.warn("Failed to write .lollms/KNOWLEDGE.md", err);
             return false;
         }
     }
 
     /**
-     * Interactive Studio filtering routine supporting peeks, full-file reads, and tri-tier classification.
+     * Surgically patches or updates .lollms/structure.md so obsolete findings are replaced.
      */
+    public static async updateStructureGuide(
+        content: string, 
+        action: 'write' | 'patch' = 'write'
+    ): Promise<{ success: boolean; content: string; error?: string }> {
+        const folders = vscode.workspace.workspaceFolders || [];
+        if (folders.length === 0 || !content.trim()) {
+            return { success: false, content: '', error: 'No workspace folder open or empty content.' };
+        }
+
+        const currentStructure = await this.getStructureGuide();
+        let updatedText = "";
+
+        const isPatch = action === 'patch' || content.includes('<<<<<<< SEARCH');
+
+        if (isPatch && currentStructure.trim().length > 0) {
+            const normalizedAider = normalizeAiderContent(content);
+            const hunks = parseAiderHunks(normalizedAider);
+
+            if (hunks.length > 0) {
+                updatedText = currentStructure;
+                let anyHunkApplied = false;
+                for (const hunk of hunks) {
+                    const res = applySearchReplace(updatedText, hunk.searchPart, hunk.replacePart);
+                    if (res.success) {
+                        updatedText = res.result;
+                        anyHunkApplied = true;
+                    }
+                }
+                if (!anyHunkApplied) {
+                    const additions = hunks.map((h: any) => h.replacePart || '').filter(Boolean).join('\n\n');
+                    updatedText = `${currentStructure.trim()}\n\n${additions}`.trim();
+                }
+            } else {
+                updatedText = currentStructure ? `${currentStructure.trim()}\n\n${content.trim()}` : content.trim();
+            }
+        } else {
+            updatedText = content.trim();
+        }
+
+        const saved = await this.saveStructureGuide(updatedText);
+        return { success: saved, content: updatedText };
+    }
+
     public static async filterFilesByPrompt(options: {
         lollmsAPI: LollmsAPI;
         contextManager: ContextManager;
@@ -177,10 +233,12 @@ export class ContextGovernor {
         customCapacity?: number;
         targetPercent?: number;
         reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
+        pruneMsgId?: string;
         onStatusUpdate?: (status: string) => void;
         onRoundProgress?: (progress: { round: number; maxRounds: number; status: string; discoverySteps?: any[] }) => void;
         onStreamChunk?: (data: { round: number; maxRounds: number; chunk: string; fullText: string; messageId: string }) => void;
         onDiscoveryAction?: (data: { type: string; label: string; detail?: string; output?: string }) => void;
+        onUpdateMessage?: (messageId: string, content: string) => Promise<void>;
     }): Promise<{
         keptFiles: string[];
         mutedFiles: string[];
@@ -206,7 +264,7 @@ export class ContextGovernor {
             rawIncluded = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
         }
 
-        if (onStatusUpdate) onStatusUpdate("Governor: Initializing token budget & reading files...");
+        if (onStatusUpdate) onStatusUpdate("Librarian: Initializing token budget & reading files...");
 
         const isStructural = this.isBroadOrStructuralQuery(prompt);
         const keywords = this.extractQueryKeywords(prompt, []);
@@ -268,8 +326,8 @@ export class ContextGovernor {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const configuredRounds = options.currentDiscussion?.capabilities?.contextGovernorMaxRounds;
         const fallbackConfigRounds = config.get<number>('contextGovernorMaxRounds');
-        const effectiveRounds = (configuredRounds && configuredRounds >= 10) ? configuredRounds : (fallbackConfigRounds || 20);
-        const maxRounds = Math.max(15, effectiveRounds);
+        const effectiveRounds = (configuredRounds && configuredRounds >= 1) ? configuredRounds : (fallbackConfigRounds || 5);
+        const maxRounds = Math.min(20, Math.max(2, effectiveRounds));
 
         const totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
 
@@ -290,6 +348,8 @@ export class ContextGovernor {
             canAvoidEvictingCurrentPrompt: false,
             keywords,
             maxRounds,
+            pruneMsgId: options.pruneMsgId,
+            optionsUpdateMessage: options.onUpdateMessage,
             onStatusUpdate,
             onStreamChunk,
             onDiscoveryAction,
@@ -303,8 +363,10 @@ export class ContextGovernor {
         let totalTokens = 0;
         let liberatedTokens = 0;
 
+        const hasEditFiles = fileCandidates.some(c => c.role === 'edit');
         for (const candidate of fileCandidates) {
-            const keep = candidate.role === 'edit' || (candidate.role === 'context' && decision?.status === 'fit_all');
+            // Mandate: Only load files that are needed for patching exactly. Reference files are compressed into the report and kept muted.
+            const keep = candidate.role === 'edit' || (!hasEditFiles && candidate.role === 'context' && decision?.status === 'fit_all');
             if (keep) {
                 keptFiles.push(candidate.path);
                 totalTokens += candidate.tokens;
@@ -331,9 +393,6 @@ export class ContextGovernor {
         };
     }
 
-    /**
-     * Executes the Context Governor arbitration algorithm before worker generation.
-     */
     public static async arbitrate(options: ArbitrateOptions): Promise<GovernorArbitrationResult | null> {
         const {
             lollmsAPI,
@@ -372,8 +431,8 @@ export class ContextGovernor {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const configuredRounds = capabilities.contextGovernorMaxRounds;
         const fallbackConfigRounds = config.get<number>('contextGovernorMaxRounds');
-        const effectiveRounds = (configuredRounds && configuredRounds >= 10) ? configuredRounds : (fallbackConfigRounds || 20);
-        const maxNegotiationRounds = Math.max(15, effectiveRounds);
+        const effectiveRounds = (configuredRounds && configuredRounds >= 1) ? configuredRounds : (fallbackConfigRounds || 5);
+        const maxNegotiationRounds = Math.min(20, Math.max(2, effectiveRounds));
         const hardCap120 = Math.round(maxTokens * 1.2);
 
         const getCleanHistoryText = (msgs: ChatMessage[]) => msgs
@@ -393,11 +452,13 @@ export class ContextGovernor {
         let historyTokens = Math.ceil(getCleanHistoryText(history).length / 3.5);
         const treeTokens = Math.ceil((contextData.projectTree || '').length / 3.5);
         const skillsTokens = Math.ceil((contextData.skillsContent || '').length / 3.5);
-        const briefingContent = contextManager.renderBriefing(currentDiscussion);
+        const { KnowledgeManager } = require('./knowledgeManager');
+        const km = new KnowledgeManager(this.context);
+        const knowledgeContent = await km.renderContextKnowledge();
+        const briefingContent = knowledgeContent || contextManager.renderBriefing(currentDiscussion);
         const briefingTokens = Math.ceil((briefingContent || '').length / 3.5);
         const promptTokens = Math.ceil(cleanUserPromptText.length / 3.5);
 
-        // Account for images as fixed multimodal vision tokens (~600 tok/img), NOT base64 character text
         const { estimateImageTokens } = require('./utils');
         const visionCostPerImage = estimateImageTokens(targetModel) || 600;
         let visionTokens = 0;
@@ -413,7 +474,6 @@ export class ContextGovernor {
 
         let fixedLoad = systemTokens + historyTokens + treeTokens + skillsTokens + briefingTokens + promptTokens + visionTokens;
 
-        // Continuation Fast-Path: Bypass re-splitting if continuing multi-part sequence
         if (isMultiPartContinuation) {
             const passingTotal = fixedLoad + Math.ceil((contextData.selectedFilesContent || '').length / 3.5);
             return this.buildPassingResult(
@@ -425,7 +485,6 @@ export class ContextGovernor {
         const provider = contextManager.getContextStateProvider();
         const allIncludedFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
 
-        // If context governor is explicitly disabled via discussion settings
         if (capabilities.contextGovernorEnabled === false) {
             const activeFilesTokens = Math.ceil((contextData.selectedFilesContent || '').length / 3.5);
             const totalLoad = fixedLoad + activeFilesTokens;
@@ -433,7 +492,7 @@ export class ContextGovernor {
                 if (onAddMessage) {
                     await onAddMessage({
                         role: 'system',
-                        content: `🛑 **Context Limit Exceeded (>100%)**\nActive context load (~${totalLoad.toLocaleString()} tokens) exceeds model capacity (**${maxTokens.toLocaleString()}** tokens).\n\nEnable Context Governor in settings or mute unneeded files.`
+                        content: `🛑 **Context Limit Exceeded (>100%)**\nActive context load (~${totalLoad.toLocaleString()} tokens) exceeds model capacity (**${maxTokens.toLocaleString()}** tokens).\n\nEnable Context Librarian in settings or mute unneeded files.`
                     });
                 }
                 return null;
@@ -514,9 +573,6 @@ export class ContextGovernor {
         const totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
         const activeContextLoad = fixedLoad + currentUnmutedTokens;
 
-        // --- SMART THRESHOLD GATING (AVOID WASTEFUL PER-TURN RUNS) ---
-        // Most of the time inside a discussion, once the right files are selected we keep using them.
-        // If active load is within the trigger threshold and no explicit governor directive was given, pass through cleanly!
         if (!hasGovernorDirective && activeContextLoad <= triggerThreshold) {
             this.updateDiscussionMetrics(
                 currentDiscussion, discussionManager, activeContextLoad, maxTokens,
@@ -529,79 +585,24 @@ export class ContextGovernor {
             );
         }
 
-        const activeUsagePercent = maxTokens > 0 ? Math.round((activeContextLoad / maxTokens) * 100) : 0;
-        if (onStatusUpdate) {
-            onStatusUpdate(`⚖️ Governor: Active load at ${activeUsagePercent}%. Arbitrating context...`);
-        }
-
-        const pruneMsgId = 'gov_stream_' + Date.now();
-        if (onAddMessage) {
-            await onAddMessage({
-                id: pruneMsgId,
-                role: 'system',
-                personalityName: '⚖️ Context Governor',
-                content: `⚖️ **Context Governor: Engaged**\nAnalyzing ${fileCandidates.length} files (Pool: ~${totalCandidateTokens.toLocaleString()} tok, Unmuted: ~${currentUnmutedTokens.toLocaleString()} tok)...\nTarget budget: ~${objectiveThreshold.toLocaleString()} tok (${objectiveThresholdPercent}% of ${maxTokens.toLocaleString()}).`,
-                skipInPrompt: true
-            });
-        }
-
-        const negotiationResult = await this.runGovernorNegotiation({
-            lollmsAPI,
-            contextManager,
-            targetModel,
-            signal,
-            userPromptText,
+        // Fast, deterministic budget balancing: Mute lowest-relevance candidates so active load fits budget.
+        // Zero pre-turn LLM calls, zero wasted tokens! The assistant itself discovers what it needs in Stage 1.
+        const overflow = Math.max(0, activeContextLoad - objectiveThreshold);
+        const fallbackDecision = this.buildDeterministicFallback(
             fileCandidates,
-            currentMuted,
-            totalEstimated: activeContextLoad,
-            maxTokens,
-            triggerThresholdPercent,
+            overflow,
+            true,
             objectiveThresholdPercent,
             objectiveThreshold,
-            overflow: Math.max(0, activeContextLoad - objectiveThreshold),
-            canAvoidEvictingCurrentPrompt: true,
-            keywords,
-            maxRounds: maxNegotiationRounds,
-            governorDirectives: allGovernorDirectives,
-            pruneMsgId,
-            onStatusUpdate,
-            onAddMessage,
-            optionsUpdateMessage: options.onUpdateMessage
-        });
+            currentMuted
+        );
 
-        const { decision, workerAdvice, signatures, governorReport, multiPartPlan } = negotiationResult;
-
-        // Apply classification to candidates
-        const editCandidates = fileCandidates.filter(c => c.role === 'edit');
-        const contextCandidates = fileCandidates.filter(c => c.role === 'context');
-        const unneededCandidates = fileCandidates.filter(c => c.role === 'unneeded');
-
-        let keptBlocks: ParsedFileCandidate[] = [];
-        let mutedBlocks: ParsedFileCandidate[] = [];
-
-        if (decision.status === 'fit_all') {
-            keptBlocks = [...editCandidates, ...contextCandidates];
-            mutedBlocks = unneededCandidates;
-        } else if (decision.status === 'fit_edits_only') {
-            keptBlocks = editCandidates;
-            mutedBlocks = [...contextCandidates, ...unneededCandidates];
-        } else {
-            // multiPartPlan: Phase 1 files unmuted
-            const phase1Files = multiPartPlan?.parts[0]?.editFiles || [];
-            keptBlocks = fileCandidates.filter(c => phase1Files.some(pf => this.pathsMatch(pf, c.path)));
-            mutedBlocks = fileCandidates.filter(c => !phase1Files.some(pf => this.pathsMatch(pf, c.path)));
-        }
+        const keptBlocks = fileCandidates.filter(c => c.keep);
+        const mutedBlocks = fileCandidates.filter(c => !c.keep);
 
         currentDiscussion.mutedFiles = mutedBlocks.map(b => b.path);
         if (!currentDiscussion.id.startsWith('temp-')) {
-            await discussionManager.saveDiscussion(currentDiscussion);
-        }
-
-        // If Governor identified missing files from tree that should be in context, add them
-        if (negotiationResult.addedFiles && negotiationResult.addedFiles.length > 0) {
-            try {
-                await contextManager.getContextStateProvider()?.addFilesToContext(negotiationResult.addedFiles);
-            } catch {}
+            discussionManager.saveDiscussion(currentDiscussion).catch(() => {});
         }
 
         const newSelectedFilesContent = keptBlocks.map(b => {
@@ -611,71 +612,14 @@ export class ContextGovernor {
 \n\n` : b.fullMatch;
         }).join('\n\n');
 
-        const updatedProjectTree = this.updateTreeWithKeptFiles(
-            contextData.projectTree,
-            keptBlocks.map(b => b.path),
-            mutedBlocks.map(b => b.path)
-        );
-        contextData.projectTree = updatedProjectTree;
-
         const newActiveFilesTokens = keptBlocks.reduce((sum, b) => sum + b.tokens, 0);
         const newTotal = fixedLoad + newActiveFilesTokens;
 
-        if (newTotal > hardCap120) {
-            if (onAddMessage) {
-                await onAddMessage({
-                    role: 'system',
-                    content: `🛑 **Context Limit Exceeded (>120%)**\nPayload (~${newTotal.toLocaleString()} tokens) exceeds 120% of model capacity. Clear history or prune files.`
-                });
-            }
-            return null;
-        }
-
-        let finalReportWithHistory = "";
-        const steps = (negotiationResult as any)?.discoverySteps || [];
-
-        if (steps.length > 0 || (negotiationResult as any).roundsUsed > 1) {
-            finalReportWithHistory += `### ⚖️ **Context Governor: Multi-Round Investigation History**\n\n`;
-            finalReportWithHistory += `<details open style="margin-bottom: 12px; border: 1px solid var(--vscode-widget-border); border-radius: 6px; padding: 8px 12px; background: rgba(0,0,0,0.1);">\n`;
-            finalReportWithHistory += `<summary style="font-size: 11px; font-weight: bold; cursor: pointer; color: var(--vscode-charts-orange);"><i class="codicon codicon-history"></i> Investigation Rounds (${(negotiationResult as any).roundsUsed || 1} rounds evaluated)</summary>\n\n`;
-
-            if (steps.length > 0) {
-                finalReportWithHistory += `**Discovery Actions Taken**:\n` + steps.map((s: any) => `- \`${s.label}\` (${s.detail || s.type})`).join('\n') + '\n\n';
-            }
-
-            finalReportWithHistory += `</details>\n\n---\n\n`;
-        }
-
-        finalReportWithHistory += `### ⚖️ **Context Governor: Arbitration Complete**
-- **Decision Status**: \`${decision.status.toUpperCase()}\`
-- **Active Files to Modify [C]**: ${keptBlocks.length} (${keptBlocks.map(k => `\`${k.path}\``).join(', ') || 'None'})
-- **Muted Reference Files [M]**: ${mutedBlocks.length} (Key interfaces preserved in Governor's Report in prompt)
-- **Active Context Load**: ${Math.round((newTotal / maxTokens) * 100)}% (~${newTotal.toLocaleString()} / ${maxTokens.toLocaleString()} tokens)
-${multiPartPlan ? `\n⚠️ **Task Partitioned**: Split into **${multiPartPlan.totalParts} sequential phases** to guarantee context window capacity.` : ''}`;
-
-        if (options.onUpdateMessage) {
-            await options.onUpdateMessage(pruneMsgId, finalReportWithHistory);
-        } else if (onAddMessage) {
-            await onAddMessage({
-                id: 'gov_result_' + Date.now(),
-                role: 'system',
-                personalityName: '⚖️ Context Governor',
-                content: finalReportWithHistory,
-                skipInPrompt: true
-            });
-        }
-
-        const finalPassingResult = this.buildPassingResult(
+        return this.buildPassingResult(
             contextData, baseInstructions, history, currentPromptMessage, newTotal, maxTokens,
             systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities, briefingContent, userPromptText,
-            governorReport, newSelectedFilesContent
+            contextData.governorReport, newSelectedFilesContent
         );
-
-        finalPassingResult.multiPartPlan = multiPartPlan;
-        finalPassingResult.governorReport = governorReport;
-        finalPassingResult.signatures = signatures;
-
-        return finalPassingResult;
     }
 
     private static async runGovernorNegotiation(options: {
@@ -750,7 +694,7 @@ ${multiPartPlan ? `\n⚠️ **Task Partitioned**: Split into **${multiPartPlan.t
         const discoverySteps: { type: string; label: string; detail?: string }[] = [];
 
         const cleanActionTagsFromText = (text: string) => {
-            return text
+            let cleaned = text
                 .replace(/<read_full_file\b[^>]*\/>/gi, '')
                 .replace(/<read_file\b[^>]*\/>/gi, '')
                 .replace(/<peek_files\b[^>]*\/>/gi, '')
@@ -761,19 +705,27 @@ ${multiPartPlan ? `\n⚠️ **Task Partitioned**: Split into **${multiPartPlan.t
                 .replace(/<sparql\b[^>]*>[\s\S]*?<\/sparql>/gi, '')
                 .replace(/<add_files_to_context\b[^>]*>[\s\S]*?<\/add_files_to_context>/gi, '')
                 .replace(/<structure\b[^>]*>[\s\S]*?<\/structure>/gi, '')
+                .replace(/<librarian_decision\b[^>]*>[\s\S]*?<\/librarian_decision>/gi, '')
                 .replace(/<governor_decision\b[^>]*>[\s\S]*?<\/governor_decision>/gi, '')
                 .replace(/<reveal_only\b[^>]*>[\s\S]*?<\/reveal_only>/gi, '')
                 .replace(/<mute_only\b[^>]*>[\s\S]*?<\/mute_only>/gi, '')
-                .trim();
+                .replace(/<edit_files>[\s\S]*?<\/edit_files>/gi, '')
+                .replace(/<context_files>[\s\S]*?<\/context_files>/gi, '')
+                .replace(/<unneeded_files>[\s\S]*?<\/unneeded_files>/gi, '')
+                .replace(/<librarian_report>[\s\S]*?<\/librarian_report>/gi, '');
+
+            // Strip in-progress / unclosed XML tags from live streaming view
+            cleaned = cleaned.replace(/<(?:librarian_decision|governor_decision|edit_files|context_files|unneeded_files|read_full_file|read_file|peek_files|grep|sparql|structure|librarian_report)\b[\s\S]*$/i, '');
+            return cleaned.trim();
         };
 
         const formatAccumulatedRoundsMarkdown = (liveRoundIndex?: number, liveStreamContent?: string) => {
-            let md = `### ⚖️ **Context Governor Investigation**\n`;
+            let md = `### 📚 **Lead Librarian Investigation**\n`;
             md += `*Pool: ~${totalCandidateTokens.toLocaleString()} tok &middot; Unmuted: ~${currentUnmutedTokens.toLocaleString()} tok &middot; Target: ~${objectiveThreshold.toLocaleString()} tok (${objectiveThresholdPercent}%)*\n\n`;
 
             if (completedRounds.length > 0) {
                 md += completedRounds.map(r => {
-                    let block = `#### ⚖️ **Round ${r.round}/${maxRounds}**\n${r.thoughts}`;
+                    let block = `#### 📚 **Round ${r.round}/${maxRounds}**\n${r.thoughts}`;
                     if (r.toolAction) {
                         block += `\n\n> 🛠️ **Action**: \`${r.toolAction}\``;
                         if (r.toolObservation) {
@@ -786,7 +738,7 @@ ${multiPartPlan ? `\n⚠️ **Task Partitioned**: Split into **${multiPartPlan.t
 
             if (liveRoundIndex !== undefined && liveStreamContent !== undefined) {
                 const cleanedLive = cleanActionTagsFromText(liveStreamContent);
-                md += `#### ⚖️ **Round ${liveRoundIndex}/${maxRounds} (Evaluating live)**\n${cleanedLive || liveStreamContent || '*(Analyzing...)*'}`;
+                md += `#### 📚 **Round ${liveRoundIndex}/${maxRounds} (Evaluating live)**\n${cleanedLive || liveStreamContent || '*(Analyzing...)*'}`;
             }
 
             return md;
@@ -800,19 +752,26 @@ ${multiPartPlan ? `\n⚠️ **Task Partitioned**: Split into **${multiPartPlan.t
             projectTreePreview = await contextManager.generateProjectTree(signal);
         } catch {}
 
-        const formatSize = (b: number) => {
-            if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
-            if (b >= 1024) return `${(b / 1024).toFixed(1)} KB`;
-            return `${b} B`;
-        };
-
         const totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
         const currentUnmutedTokens = fileCandidates.filter(c => !options.currentMuted.some(m => this.pathsMatch(m, c.path))).reduce((sum, c) => sum + c.tokens, 0);
 
-        const systemPrompt = `You are the **Sovereign Context Governor**.
-Your mission is to manage active context, explore the project to understand the user's task, and arbitrate files to bring the active unmuted files count below the objective budget (${objectiveThresholdPercent}%, max ${objectiveThreshold.toLocaleString()} tokens).
+        const systemPrompt = `You are the **Lead Sovereign Librarian**.
+Your mission is to be the intelligent eyes, memory, and architectural scout for the AI worker. The worker cannot add/remove files or run grep/SPARQL directly—it relies exclusively on you to scout the codebase, verify dependencies, balance the token budget, and provide the exact files or reference summaries needed.
 Capacity limit: ${maxTokens.toLocaleString()} tokens.
-Allowed Negotiation Rounds: Up to ${maxRounds}.
+Maximum Allowed Negotiation Rounds: Up to ${maxRounds}.
+
+### ⚡ FAST-PATH MANDATE (CONCLUDE IN ROUND 1 WHENEVER POSSIBLE):
+- If the user prompt mentions specific files (e.g. "load main.py, core.py..."), or if the relevant files are obvious, you MUST output your <librarian_decision> IMMEDIATELY in Round 1.
+- DO NOT execute <grep>, <peek_files>, or <read_full_file> unless you genuinely lack the information needed to categorize the files.
+- Speed and low latency are top priorities: avoid taking extra rounds when the requested files are already known.
+
+### 🏛️ CONTINUOUS FINDINGS EVOLUTION & PATCHING (.lollms/structure.md):
+The previous findings in .lollms/structure.md are provided in your prompt.
+The codebase changes over time, so previous findings may contain STALE, CHANGED, or MISSING information.
+- **Inspect & Compare**: As you inspect files via <read_full_file>, <peek_files>, or <grep>, compare the actual code on disk with the previous findings.
+- **Patch Stale Findings**: If any function, class, endpoint, route, or schema changed or was removed:
+  You MUST patch .lollms/structure.md using an Aider Search/Replace block:
+  <structure action="patch">
 
 ### 📊 REAL-TIME TOKEN AUDIT & BUDGET OBJECTIVE:
 - **Total Candidates Pool Tokens (Muted + Unmuted)**: ~${totalCandidateTokens.toLocaleString()} tokens (${fileCandidates.length} files)
@@ -821,21 +780,21 @@ Allowed Negotiation Rounds: Up to ${maxRounds}.
 - **Target Objective Threshold (${objectiveThresholdPercent}%)**: ~${objectiveThreshold.toLocaleString()} tokens
 - **Goal**: Ensure the unmuted files token count fits within the target budget.
 
-### ⚖️ TRI-TIER CLASSIFICATION ARBITRATION (EDIT VS REFERENCE):
-You MUST categorize all files into three distinct categories:
-1. **EDIT FILES (Mandatory)**: Files that MUST be modified or created to fulfill the user's task.
-2. **CONTEXT FILES (Reference)**: Files needed ONLY as references to understand function signatures, contracts, schemas, or callers (files that will NOT be changed).
-3. **UNNEEDED FILES**: Files completely unrelated to the user's task.
+### ⚖️ TRI-TIER CLASSIFICATION & PATCH-FOCUSED CONTEXT MANDATE:
+You MUST categorize all candidate files into three distinct categories:
+1. **EDIT FILES (Mandatory for Patching)**: Files that MUST be modified, written, or created to fulfill the user's task. ONLY these files will be loaded with full content ([C]) for the worker.
+2. **CONTEXT FILES (Reference Only)**: Files needed ONLY as references to understand function signatures, contracts, schemas, or callers (files that will NOT be changed). You MUST inspect these files with <read_full_file> or <peek_files>, compress their essential interfaces, types, and contracts into <librarian_report>, and MUTE them ([M], 0 tokens) so they do not consume context budget.
+3. **UNNEEDED FILES**: Files unrelated to the user's task (must be muted [M]).
 
 ### 🚦 THREE-TIER FITTING LOGIC:
-- **TIER A (fit_all)**: If tokens(edit_files) + tokens(context_files) <= targetBudget, unmute both!
-- **TIER B (fit_edits_only)**: If tokens(edit_files) fits within budget, but full context files would exceed it:
-  * Unmute EDIT FILES (they must be loaded with full content [C]).
+- **TIER A (fit_edits_only - PRIMARY)**:
+  * Unmute EDIT FILES (they must be loaded with full content [C] for the worker to patch).
   * Mute CONTEXT FILES (0 tokens [M] in tree).
-  * Extract relevant function signatures, types, and interfaces from context files into <governor_report>...</governor_report>.
+  * Extract relevant function signatures, types, and interfaces from context files into <librarian_report>...</librarian_report>.
+- **TIER B (fit_all - OVERVIEW ONLY)**: Only if there are ZERO files to edit (e.g. an architectural explanation or system audit question) and all reference files fit within target budget.
 - **TIER C (split_multi_part)**: If even tokens(edit_files) exceeds the budget alone:
   * Partition edit files into sequential parts: Part 1, Part 2, etc., so each part fits.
-  * Formulate clear multi-phase instructions in <governor_report>.
+  * Formulate clear multi-phase instructions in <librarian_report>.
 
 ### 🛠️ ACTIVE INVESTIGATION TOOLS:
 1. **Full File Read**: <read_full_file path="path/to/file.ext" />
@@ -843,50 +802,75 @@ You MUST categorize all files into three distinct categories:
 2. **Peek File Slice**: <peek_files path="path/to/file.ext" lines="30" from="top|bottom" />
 3. **Grep Search**: <grep pattern="searchTerm" path="optional/subdir" />
 4. **SPARQL Architecture Query**: <sparql query="SELECT ?x WHERE { ?x s:type s:Class }" />
-5. **Add Tree Files to Context**: <add_files_to_context>\\npath/to/file.ext\\n</add_files_to_context>
-6. **Update Structure Guide**: <structure># Architecture Guide\\n...</structure> (.lollms/structure.md)
+5. **Add Tree Files to Context**: <add_files_to_context>\npath/to/file.ext\n</add_files_to_context>
+6. **Update Structure Guide**: <structure># Architecture Guide\n...</structure> (.lollms/structure.md)
 
 ### 📋 FINAL ARBITRATION TAG:
 When ready to conclude, output your final decision using:
-<governor_decision status="fit_all|fit_edits_only|split_multi_part">
+<librarian_decision status="fit_edits_only|fit_all|split_multi_part">
 <edit_files>
-path/to/file_to_edit.ext
+path/to/file_to_modify.ext
 </edit_files>
 <context_files>
 path/to/reference_file.ext
 </context_files>
-<unneeded_files>
-path/to/unneeded_file.ext
-</unneeded_files>
-<governor_report>
+<librarian_analysis>
+MANDATORY: Write a comprehensive analysis paragraph to the worker explaining:
+1. What you discovered about the codebase workings, call graphs, or architecture.
+2. Why the selected edit files were chosen and how they relate.
+3. Summary of key contracts and types from reference files.
+</librarian_analysis>
+<librarian_report>
 ### 🏛️ ARCHITECTURAL CONTRACTS & REFERENCE FINDINGS
-- Specific functions, contracts, types, or multi-phase instructions from reference files ...
-</governor_report>
-<rationale>
-Why these files were chosen.
-</rationale>
-</governor_decision>`;
+- Specific functions, contracts, types, or multi-phase instructions from reference files...
+</librarian_report>
+</librarian_decision>
+
+🛑 ZERO-ECHO MANDATE (NEVER LIST UNNEEDED FILES):
+- You are **STRICTLY FORBIDDEN from listing, reciting, or outputting unneeded files**.
+- DO NOT output an \`<unneeded_files>\` tag. Any file not listed in \`<edit_files>\` or \`<context_files>\` is AUTOMATICALLY muted by the system at 0 tokens.
+- Never recite file paths in your thoughts. Focus exclusively on the files you need to inspect or modify.`;
 
         const safeUserPromptText = (userPromptText || '')
             .replace(/data:image\/[a-zA-Z+]+;base64,[A-Za-z0-9+/=]{50,}/g, '[Attached Image]')
             .trim();
 
+        // Extract files explicitly mentioned or requested in the prompt
+        const promptLower = safeUserPromptText.toLowerCase();
+        const requestedCandidates = fileCandidates.filter(c => {
+            const cleanP = c.path.toLowerCase().replace(/\\/g, '/');
+            const baseName = path.basename(cleanP);
+            return promptLower.includes(cleanP) || promptLower.includes(baseName);
+        });
+
+        const requestedSection = requestedCandidates.length > 0 ? `
+### 🎯 EXPLICITLY REQUESTED FILES IN PROMPT (${requestedCandidates.length} files):
+${requestedCandidates.map(c => `- \`${c.path}\` (~${c.tokens} tok)`).join('\n')}
+
+**DIRECT FAST-PATH INSTRUCTION**:
+The user/worker explicitly named these files.
+1. If you need to verify code before deciding, use \`<read_full_file path="...">\` on the relevant file now.
+2. Otherwise, assign them to \`<edit_files>\` (for patching) or \`<context_files>\` (for reference) and output \`<librarian_decision>\` in Round 1.
+3. DO NOT evaluate, recite, or list other files. All other files are automatically muted.
+` : '';
+
         const initialUserPrompt = `### 🎯 USER OBJECTIVE:
 "${safeUserPromptText}"
+${requestedSection}
 
 ### 📊 REAL-TIME TOKEN AUDIT & BUDGET OBJECTIVE:
 - Total Candidates Pool (Muted + Unmuted): ~${totalCandidateTokens.toLocaleString()} tokens (${fileCandidates.length} files)
 - Current Unmuted Files Load: ~${currentUnmutedTokens.toLocaleString()} tokens
 - Target Budget Threshold: ~${objectiveThreshold.toLocaleString()} tokens (${objectiveThresholdPercent}% of ${maxTokens.toLocaleString()})
 
-${existingStructure ? `### 🏛️ CODEBASE STRUCTURE GUIDE (.lollms/structure.md):\n${existingStructure.substring(0, 2000)}\n` : '*(No .lollms/structure.md yet. Make an educated guess from the tree below, then verify with <peek_files> or <read_full_file>)*\n'}
+${existingStructure ? `### 🏛️ CURRENT CODEBASE STRUCTURE GUIDE (.lollms/structure.md):\n${existingStructure}\n` : '*(No .lollms/structure.md yet. You will create the initial structure guide using <structure action="write">...)*\n'}
 ### 🌳 PROJECT STRUCTURE TREE:
 ${projectTreePreview ? projectTreePreview.substring(0, 3000) : '(No tree available)'}
 
 ${governorDirectives && governorDirectives.length > 0 ? `### ⚖️ DIRECT USER DIRECTIVES:\n${governorDirectives.map(d => `- ${d}`).join('\n')}\n\n` : ''}### 📄 CANDIDATE FILES CATALOG:
 ${compactCatalog}
 
-Analyze the requirements. If you lack information on contracts or implementations, execute discovery tools (<read_full_file>, <peek_files>, <grep>, <sparql>). When ready, output your <governor_decision>.`;
+Analyze the requirements. If you lack information on contracts or implementations, execute discovery tools (<read_full_file>, <peek_files>, <grep>, <sparql>). When ready, output your <librarian_decision>.`;
 
         const conversation: ChatMessage[] = [
             { role: 'system', content: systemPrompt },
@@ -898,8 +882,8 @@ Analyze the requirements. If you lack information on contracts or implementation
             currentRound++;
             if (onRoundUsed) onRoundUsed(currentRound);
 
-            const roundMessageId = `gov_round_${currentRound}_${Date.now()}`;
-            const statusText = `Governor: Round ${currentRound}/${maxRounds} (Active: ~${currentUnmutedTokens.toLocaleString()}/${objectiveThreshold.toLocaleString()} tok)...`;
+            const roundMessageId = `lib_round_${currentRound}_${Date.now()}`;
+            const statusText = `Librarian: Round ${currentRound}/${maxRounds} (Active: ~${currentUnmutedTokens.toLocaleString()}/${objectiveThreshold.toLocaleString()} tok)...`;
             if (onStatusUpdate) onStatusUpdate(statusText);
             if (onRoundProgress) {
                 onRoundProgress({
@@ -942,25 +926,33 @@ Analyze the requirements. If you lack information on contracts or implementation
 
                 cleanResponse = stripThinkingTags(response).trim();
             } catch (err: any) {
-                Logger.error(`[Governor] LLM query failed in round ${currentRound}: ${err.message}`);
-                throw new Error(`Governor could not communicate with LLM: ${err.message}`);
+                Logger.error(`[Librarian] LLM query failed in round ${currentRound}: ${err.message}`);
+                throw new Error(`Librarian could not communicate with LLM: ${err.message}`);
             }
 
             const currentThoughts = cleanActionTagsFromText(cleanResponse) || cleanResponse;
 
-            // 1. Structure guide update
-            const structMatch = cleanResponse.match(/<structure\b[^>]*>([\s\S]*?)<\/structure>/i);
-            if (structMatch && structMatch[1].trim()) {
-                await this.saveStructureGuide(structMatch[1].trim());
-                const step = { type: 'structure', label: 'Updated Structure Guide', detail: '.lollms/structure.md' };
+            const structMatch = cleanResponse.match(/<structure\b([^>]*?)>([\s\S]*?)<\/structure>/i);
+            if (structMatch && structMatch[2] !== undefined) {
+                const attrStr = structMatch[1] || "";
+                const inner = structMatch[2].trim();
+                const isPatch = attrStr.includes('action="patch"') || attrStr.includes("action='patch'") || inner.includes('<<<<<<< SEARCH');
+                const action = isPatch ? 'patch' : 'write';
+
+                await this.updateStructureGuide(inner, action);
+                const step = { 
+                    type: 'structure', 
+                    label: isPatch ? 'Patched Structure Guide' : 'Updated Structure Guide', 
+                    detail: isPatch ? 'Replaced stale findings in .lollms/structure.md' : '.lollms/structure.md' 
+                };
                 discoverySteps.push(step);
                 if (onDiscoveryAction) onDiscoveryAction(step);
 
                 completedRounds.push({
                     round: currentRound,
                     thoughts: currentThoughts,
-                    toolAction: 'Updated Codebase Architecture Guide (.lollms/structure.md)',
-                    toolObservation: 'Architecture and component contracts recorded to persistent storage.'
+                    toolAction: isPatch ? 'Patched Codebase Architecture Guide (.lollms/structure.md)' : 'Updated Codebase Architecture Guide (.lollms/structure.md)',
+                    toolObservation: isPatch ? 'Applied patch to remove stale info and synchronize findings with disk.' : 'Architecture and component contracts recorded to persistent storage.'
                 });
 
                 if (options.optionsUpdateMessage && options.pruneMsgId) {
@@ -968,7 +960,6 @@ Analyze the requirements. If you lack information on contracts or implementation
                 }
             }
 
-            // 2. Full File Read Tool
             const readFullMatch = cleanResponse.match(/<read_full_file\b[^>]*path=["']([^"']+)["'][^>]*\/>/i) ||
                                   cleanResponse.match(/<read_file\b[^>]*path=["']([^"']+)["'][^>]*\/>/i);
             if (readFullMatch) {
@@ -1002,15 +993,15 @@ Analyze the requirements. If you lack information on contracts or implementation
                     options.optionsUpdateMessage(options.pruneMsgId, formatAccumulatedRoundsMarkdown()).catch(() => {});
                 }
 
+                const remaining = maxRounds - currentRound;
                 conversation.push({ role: 'assistant', content: cleanResponse });
                 conversation.push({
                     role: 'user',
-                    content: `### 📄 FULL FILE INSPECTION: \`${reqPath}\`\n\`\`\`\n${contentText}\n\`\`\`\n\nYou have now read this file for this round. Extract any key contracts/signatures into your scratchpad or <structure>, categorize it as edit or context, or proceed with other files.`
+                    content: `### 📄 FULL FILE INSPECTION: \`${reqPath}\`\n\`\`\`\n${contentText}\n\`\`\`\n\n⏳ **BUDGET NOTICE**: You have ${remaining} round${remaining === 1 ? '' : 's'} remaining. Use as few rounds as possible. If you have enough information, finalize immediately with <librarian_decision>.`
                 });
                 continue;
             }
 
-            // 3. Peek File Tool
             const peekMatch = cleanResponse.match(/<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/i) ||
                               cleanResponse.match(/<peek_files\s+([^>]*?)\/>/i);
             if (peekMatch) {
@@ -1039,16 +1030,16 @@ Analyze the requirements. If you lack information on contracts or implementation
                         options.optionsUpdateMessage(options.pruneMsgId, formatAccumulatedRoundsMarkdown()).catch(() => {});
                     }
 
+                    const remaining = maxRounds - currentRound;
                     conversation.push({ role: 'assistant', content: cleanResponse });
                     conversation.push({
                         role: 'user',
-                        content: `### 📄 PEEK SLICE FOR "${targetPath}":\n\`\`\`\n${snippet}\n\`\`\`\n\nContinue scouting or output your <governor_decision>.`
+                        content: `### 📄 PEEK SLICE FOR "${targetPath}":\n\`\`\`\n${snippet}\n\`\`\`\n\n⏳ **BUDGET NOTICE**: You have ${remaining} round${remaining === 1 ? '' : 's'} remaining. Use as few rounds as possible. Conclude with <librarian_decision> if ready.`
                     });
                     continue;
                 }
             }
 
-            // 4. Grep Tool
             const grepMatch = cleanResponse.match(/<grep\b([^>]*?)(?:\/>|>([\s\S]*?)<\/grep>)/i);
             if (grepMatch) {
                 const attrStr = grepMatch[1] || "";
@@ -1075,16 +1066,16 @@ Analyze the requirements. If you lack information on contracts or implementation
                         options.optionsUpdateMessage(options.pruneMsgId, formatAccumulatedRoundsMarkdown()).catch(() => {});
                     }
 
+                    const remaining = maxRounds - currentRound;
                     conversation.push({ role: 'assistant', content: cleanResponse });
                     conversation.push({
                         role: 'user',
-                        content: `### 🔍 GREP RESULTS FOR "${pattern}":\n${snippet}\n\nContinue scouting or output your <governor_decision>.`
+                        content: `### 🔍 GREP RESULTS FOR "${pattern}":\n${snippet}\n\n⏳ **BUDGET NOTICE**: You have ${remaining} round${remaining === 1 ? '' : 's'} remaining. Strive to finalize with <librarian_decision>.`
                     });
                     continue;
                 }
             }
 
-            // 5. SPARQL Tool
             const sparqlMatch = cleanResponse.match(/<sparql\b[^>]*query=["']([\s\S]*?)["'][^>]*\/>/i) ||
                                 cleanResponse.match(/<sparql\b[^>]*>([\s\S]*?)<\/sparql>/i);
             if (sparqlMatch) {
@@ -1110,13 +1101,12 @@ Analyze the requirements. If you lack information on contracts or implementation
                     conversation.push({ role: 'assistant', content: cleanResponse });
                     conversation.push({
                         role: 'user',
-                        content: `### 📊 SPARQL RESULTS:\n${sparqlRes}\n\nContinue scouting or output your <governor_decision>.`
+                        content: `### 📊 SPARQL RESULTS:\n${sparqlRes}\n\nContinue scouting or output your <librarian_decision>.`
                     });
                     continue;
                 }
             }
 
-            // 6. Add Files to Context Tool
             const addFilesMatch = cleanResponse.match(/<add_files_to_context\b[^>]*>([\s\S]*?)<\/add_files_to_context>/i);
             if (addFilesMatch) {
                 const requestedPaths = addFilesMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
@@ -1159,23 +1149,24 @@ Analyze the requirements. If you lack information on contracts or implementation
                 conversation.push({ role: 'assistant', content: cleanResponse });
                 conversation.push({
                     role: 'user',
-                    content: `Added files to candidate pool. Now evaluate them and output your <governor_decision>.`
+                    content: `Added files to candidate pool. Now evaluate them and output your <librarian_decision>.`
                 });
                 continue;
             }
 
-            // 7. Parse Arbitration Decision Tag
-            const decisionTagMatch = cleanResponse.match(/<governor_decision\b[^>]*status=["']([^"']+)["'][^>]*>([\s\S]*?)<\/governor_decision>/i) ||
-                                     cleanResponse.match(/<governor_decision>([\s\S]*?)<\/governor_decision>/i);
+            const decisionTagMatch = cleanResponse.match(/<(?:librarian_decision|governor_decision)\b[^>]*status=["']([^"']+)["'][^>]*>([\s\S]*?)<\/(?:librarian_decision|governor_decision)>/i) ||
+                                     cleanResponse.match(/<(?:librarian_decision|governor_decision)>([\s\S]*?)<\/(?:librarian_decision|governor_decision)>/i);
 
-            const reportTagMatch = cleanResponse.match(/<governor_report\b[^>]*>([\s\S]*?)<\/governor_report>/i);
+            const analysisTagMatch = cleanResponse.match(/<(?:librarian_analysis|analysis)\b[^>]*>([\s\S]*?)<\/(?:librarian_analysis|analysis)>/i);
+            const reportTagMatch = cleanResponse.match(/<(?:librarian_report|governor_report)\b[^>]*>([\s\S]*?)<\/librarian_report>/i);
             const rationaleTagMatch = cleanResponse.match(/<rationale\b[^>]*>([\s\S]*?)<\/rationale>/i);
             const adviceTagMatch = cleanResponse.match(/<worker\b[^>]*>([\s\S]*?)<\/worker>/i);
             const sigTagMatch = cleanResponse.match(/<signatures\b[^>]*>([\s\S]*?)<\/signatures>/i);
 
+            if (analysisTagMatch) extractedAdvice = analysisTagMatch[1].trim();
             if (reportTagMatch) extractedReport = reportTagMatch[1].trim();
-            if (rationaleTagMatch) extractedAdvice = rationaleTagMatch[1].trim();
-            if (adviceTagMatch) extractedAdvice = extractedAdvice || adviceTagMatch[1].trim();
+            if (rationaleTagMatch && !extractedAdvice) extractedAdvice = rationaleTagMatch[1].trim();
+            if (adviceTagMatch && !extractedAdvice) extractedAdvice = adviceTagMatch[1].trim();
             if (sigTagMatch) extractedSignatures = sigTagMatch[1].trim();
 
             let decisionStatus = 'fit_all';
@@ -1184,7 +1175,7 @@ Analyze the requirements. If you lack information on contracts or implementation
             let unneededPaths: string[] = [];
 
             if (decisionTagMatch) {
-                const statusAttr = cleanResponse.match(/<governor_decision\b[^>]*status=["']([^"']+)["']/i);
+                const statusAttr = cleanResponse.match(/<(?:librarian_decision|governor_decision)\b[^>]*status=["']([^"']+)["']/i);
                 if (statusAttr) decisionStatus = statusAttr[1].toLowerCase();
 
                 const inner = decisionTagMatch[2] || decisionTagMatch[1] || "";
@@ -1209,7 +1200,6 @@ Analyze the requirements. If you lack information on contracts or implementation
                 }
             }
 
-            // Assign roles to candidates
             fileCandidates.forEach(c => {
                 if (editPaths.some(ep => this.pathsMatch(ep, c.path))) {
                     c.role = 'edit';
@@ -1217,26 +1207,28 @@ Analyze the requirements. If you lack information on contracts or implementation
                 } else if (contextPaths.some(cp => this.pathsMatch(cp, c.path))) {
                     c.role = 'context';
                     c.keep = false;
-                } else if (unneededPaths.some(up => this.pathsMatch(up, c.path))) {
-                    c.role = 'unneeded';
-                    c.keep = false;
                 } else {
-                    c.role = c.isCurrentPromptFile ? 'edit' : 'context';
+                    // Any unmentioned file is automatically unneeded and muted
+                    c.role = 'unneeded';
                     c.keep = false;
                 }
             });
 
-            // Perform budget verification
             const editTokens = fileCandidates.filter(c => c.role === 'edit').reduce((sum, c) => sum + c.tokens, 0);
             const contextTokens = fileCandidates.filter(c => c.role === 'context').reduce((sum, c) => sum + c.tokens, 0);
             const availableBudget = objectiveThreshold;
 
             let multiPartPlan: MultiPartPlan | undefined = undefined;
 
-            if (editTokens + contextTokens <= availableBudget) {
+            if (editTokens > 0 && editTokens <= availableBudget) {
+                decisionStatus = 'fit_edits_only';
+                fileCandidates.forEach(c => {
+                    c.keep = (c.role === 'edit');
+                });
+            } else if (editTokens === 0 && contextTokens <= availableBudget) {
                 decisionStatus = 'fit_all';
                 fileCandidates.forEach(c => {
-                    if (c.role === 'edit' || c.role === 'context') c.keep = true;
+                    c.keep = (c.role === 'context');
                 });
             } else if (editTokens <= availableBudget) {
                 decisionStatus = 'fit_edits_only';
@@ -1254,7 +1246,7 @@ Analyze the requirements. If you lack information on contracts or implementation
 
             lastDecision = {
                 status: decisionStatus,
-                rationale: extractedAdvice || `Governor arbitrated context: status ${decisionStatus}.`,
+                rationale: extractedAdvice || `Librarian arbitrated context: status ${decisionStatus}.`,
                 editFiles: fileCandidates.filter(c => c.role === 'edit').map(c => c.path),
                 contextFiles: fileCandidates.filter(c => c.role === 'context').map(c => c.path),
                 unneededFiles: fileCandidates.filter(c => c.role === 'unneeded').map(c => c.path)
@@ -1272,7 +1264,6 @@ Analyze the requirements. If you lack information on contracts or implementation
             };
         }
 
-        // Record final round if thoughts were generated
         if (currentThoughts && !completedRounds.some(r => r.round === currentRound)) {
             completedRounds.push({
                 round: currentRound,
@@ -1280,7 +1271,6 @@ Analyze the requirements. If you lack information on contracts or implementation
             });
         }
 
-        // Fallback if negotiation ended without explicit decision
         const fallbackDecision = this.buildDeterministicFallback(fileCandidates, options.overflow, options.canAvoidEvictingCurrentPrompt, objectiveThresholdPercent, objectiveThreshold, options.currentMuted);
         return {
             decision: fallbackDecision,
@@ -1299,7 +1289,7 @@ Analyze the requirements. If you lack information on contracts or implementation
         originalPrompt: string
     ): MultiPartPlan {
         const phases: MultiPartPhase[] = [];
-        const targetBudgetPerPhase = Math.max(1000, budget - 4000); // 4k buffer for instructions/report
+        const targetBudgetPerPhase = Math.max(1000, budget - 4000);
 
         let currentPhaseFiles: string[] = [];
         let currentPhaseTokens = 0;
@@ -1366,6 +1356,7 @@ Apply the required modifications for this phase.`;
     ): any {
         const evictList: any[] = [];
         let liberated = 0;
+        const analysisParagraph = "The Librarian evaluated the codebase candidates against the objective budget. Priority files were kept active with full content, while supplementary files were set to reference mode.";
 
         const isAlreadyMuted = (p: string) => currentMuted.some(m => this.pathsMatch(m, p));
 
@@ -1390,7 +1381,7 @@ Apply the required modifications for this phase.`;
 
         return {
             status: 'fit_edits_only',
-            rationale: "Deterministic fallback applied to satisfy context budget.",
+            rationale: analysisParagraph,
             keep: candidates.filter(b => b.keep).map(b => ({ path: b.path, justification: "Active file." })),
             evict: evictList
         };
@@ -1403,14 +1394,27 @@ Apply the required modifications for this phase.`;
             return `${b} B`;
         };
 
-        return candidates.map(c => {
-            const isMuted = currentMuted.some(m => this.pathsMatch(m, c.path));
-            const statusTag = isMuted ? ' [MUTED]' : ' [ACTIVE]';
-            const shieldTag = c.isCurrentPromptFile ? ' [CURRENT PROMPT]' : '';
-            const coreTag = c.isCoreOrInterface ? ' [CORE / INTERFACE]' : '';
-            const sizeStr = `${formatSize(c.bytes)} (~${c.tokens.toLocaleString()} tok${c.linesCount > 0 ? `, ${c.linesCount} lines` : ''})`;
-            return `- File: \`${c.path}\`${statusTag} (${sizeStr})${shieldTag}${coreTag}`;
-        }).join('\n');
+        if (candidates.length <= 35) {
+            return candidates.map(c => {
+                const isMuted = currentMuted.some(m => this.pathsMatch(m, c.path));
+                const statusTag = isMuted ? ' [MUTED]' : ' [ACTIVE]';
+                const sizeStr = `${formatSize(c.bytes)} (~${c.tokens.toLocaleString()} tok)`;
+                return `- File: \`${c.path}\`${statusTag} (${sizeStr})`;
+            }).join('\n');
+        }
+
+        // Bounded Catalog for large projects: show relevant candidates + directory scopes
+        const highRelevance = candidates.filter(c => c.relevanceScore > 0 || c.isCurrentPromptFile).slice(0, 25);
+        const dirs = new Map<string, number>();
+        candidates.forEach(c => {
+            const d = c.dirName || './';
+            dirs.set(d, (dirs.get(d) || 0) + 1);
+        });
+
+        const dirSummary = Array.from(dirs.entries()).map(([d, cnt]) => `  - Directory \`${d}/\`: ${cnt} file(s)`).join('\n');
+
+        return `Top Candidate Files:\n` + highRelevance.map(c => `- File: \`${c.path}\` (${formatSize(c.bytes)}, ~${c.tokens} tok)`).join('\n') +
+               `\n\nOther Candidate Directories in Pool (${candidates.length} total files):\n` + dirSummary;
     }
 
     private static buildCandidate(
@@ -1520,7 +1524,7 @@ Apply the required modifications for this phase.`;
             return `[${role}]: ${txt}`;
         }).join('\n\n');
 
-        const summaryPrompt = `You are the Sovereign Context Governor.
+        const summaryPrompt = `You are the Sovereign Context Librarian.
 The conversation history has grown large and must be cropped to fit the token budget.
 Analyze the following earlier discussion transcript and synthesize a concise, high-density summary focusing on:
 1. **Accomplished**: Key decisions made, files created or modified, and problems resolved.
@@ -1543,7 +1547,7 @@ ${transcript}`;
 
             summaryText = stripThinkingTags(summaryRes).trim();
         } catch (err: any) {
-            Logger.warn(`[Governor] LLM history summarization failed: ${err.message}`);
+            Logger.warn(`[Librarian] LLM history summarization failed: ${err.message}`);
         }
 
         if (!summaryText) {
@@ -1559,7 +1563,7 @@ ${transcript}`;
         const summaryMessage: ChatMessage = {
             id: 'history_summary_' + Date.now(),
             role: 'system',
-            content: `### 📋 CROPPED HISTORY SUMMARY & IMPORTANT STUFF TO DO\n*Earlier conversation history was cropped by the Context Governor to free token budget.*\n\n${summaryText}`
+            content: `### 📋 CROPPED HISTORY SUMMARY & IMPORTANT STUFF TO DO\n*Earlier conversation history was cropped by the Context Librarian to free token budget.*\n\n${summaryText}`
         };
 
         olderHistory.forEach(oldMsg => {
@@ -1689,23 +1693,11 @@ ${filesContent ? `#### 📄 FILE CONTENTS\n${filesContent}` : "*(No files curren
             ? currentPromptMessage.content
             : (fallbackPromptText || "");
 
-        // INJECT <governor_report> DIRECTLY INTO THE USER PROMPT TURN
-        let enrichedPrompt = promptText;
-        if (governorReport && governorReport.trim().length > 0) {
-            const reportBlock = `<governor_report>\n${governorReport.trim()}\n</governor_report>\n\n`;
-            if (typeof enrichedPrompt === 'string') {
-                enrichedPrompt = reportBlock + enrichedPrompt;
-            } else if (Array.isArray(enrichedPrompt)) {
-                enrichedPrompt = [
-                    { type: 'text', text: reportBlock },
-                    ...enrichedPrompt
-                ];
-            }
-        }
-
+        // The Worker and Librarian communicate solely through the findings file in the system prompt (.lollms/structure.md).
+        // The user's prompt text must remain clean without librarian report blocks or decision text.
         let singleUserContent: any = projectStateText;
-        if (enrichedPrompt) {
-            singleUserContent = mergeMessageContents(projectStateText, enrichedPrompt);
+        if (promptText) {
+            singleUserContent = mergeMessageContents(projectStateText, promptText);
         }
 
         if (capabilities.enableImages !== false && contextData.images && contextData.images.length > 0) {
@@ -1745,4 +1737,6 @@ ${filesContent ? `#### 📄 FILE CONTENTS\n${filesContent}` : "*(No files curren
     }
 }
 
-export default ContextGovernor;
+export { ContextLibrarian as ContextGovernor };
+export { ContextLibrarian as Librarian };
+export default ContextLibrarian;

@@ -450,14 +450,13 @@ body.agent-mode-active.has-active-plan #plan-resizer {
 .assistant-message .message-avatar { background-image: var(--lollms-icon); background-color: transparent; border: none; }
 
 /* Mutually Exclusive Mode Icons inside Message Avatars */
-.message.assistant-mode-message .message-avatar { background-image: none !important; background-color: transparent; border: none; }
-.message.assistant-mode-message .message-avatar::before { content: '\eaab'; font-family: codicon; font-size: 18px; color: var(--vscode-charts-blue); }
-
-.message.dynamic-mode-message .message-avatar { background-image: none !important; background-color: transparent; border: none; }
-.message.dynamic-mode-message .message-avatar::before { content: '\eb14'; font-family: codicon; font-size: 18px; color: var(--vscode-charts-orange); }
-
-.message.agent-mode-message .message-avatar { background-image: none !important; background-color: transparent; border: none; }
-.message.agent-mode-message .message-avatar::before { content: '\ebe2'; font-family: codicon; font-size: 18px; color: var(--vscode-charts-red); }
+.message.assistant-mode-message .message-avatar,
+.message.dynamic-mode-message .message-avatar,
+.message.agent-mode-message .message-avatar { 
+    background-image: none !important; 
+    background-color: transparent; 
+    border: none; 
+}
 
 /* 🤖 TECHNICAL EVENT SOVEREIGNTY */
 .message.technical-event {
@@ -4723,6 +4722,27 @@ mark.search-highlight.current-match {
 .hud-files-search-bar:focus-within {
     border-color: var(--vscode-focusBorder) !important;
     box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.hud-findings-bar {
+    transition: opacity 0.2s ease;
+}
+
+.hud-findings-header:hover {
+    opacity: 1;
+}
+
+.hud-findings-header:hover .hud-findings-summary {
+    color: var(--vscode-textLink-foreground);
+}
+
+.hud-findings-drawer::-webkit-scrollbar {
+    width: 6px;
+}
+
+.hud-findings-drawer::-webkit-scrollbar-thumb {
+    background: var(--vscode-scrollbarSlider-background);
+    border-radius: 3px;
 }
 
 .file-token-badge.file-mtime-badge {

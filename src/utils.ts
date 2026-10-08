@@ -399,17 +399,11 @@ export function sanitizeAiderMarkers(text: string): string {
         .join('\n');
 }
 
-/**
- * Normalizes Aider Search/Replace block content.
- * Handles:
- * 1. Standard Aider: <<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE
- * 2. Indented Aider markers: "  <<<<<<< SEARCH" -> "<<<<<<< SEARCH"
- * 3. AI emitting ONLY the "=======" separator without outer <<<<<<< SEARCH and >>>>>>> REPLACE markers.
- */
+
 export function normalizeAiderContent(rawBlock: string): string {
     if (!rawBlock || typeof rawBlock !== 'string') return '';
 
-    let text = rawBlock.replace(/\r\n/g, '\n');
+    let text = normalizePseudoFileBlocks(rawBlock).replace(/\r\n/g, '\n');
 
     // 1. If it already has <<<<<<< SEARCH and >>>>>>> REPLACE, normalize markers to line start
     if (text.includes('<<<<<<< SEARCH') && text.includes('>>>>>>> REPLACE')) {
@@ -1037,37 +1031,31 @@ const sparqlDynamicRule = isSparqlActive ? `
         operationalMandate = `
     ### 🧠 CO-ENGINEER DYNAMIC MODE (MULTI-TURN INTERACTIVE LOOP)
     You are operating under **Co-Engineer Mode (Dynamic Multi-Turn Loop)**.
-    You have direct authority to call tools, query the architecture ontology, and load files *inside this single turn*.
-${sparqlDynamicRule}
-    **⚡ THE ACTION-FIRST MANDATE & STEP-BY-STEP REASONING:**
-    1. **ACT IMMEDIATELY**: If you need files from the project, output \`<add_files_to_context>\` or \`<peek_files>\` starting on **LINE 1**.
-    2. **COOPERATIVE STEP-BY-STEP HYDRATION (TOKEN PRESERVATION)**:
-       - If you need to inspect multiple large files, do NOT load them all at once.
-       - Load File A, note what you need into your thoughts/scratchpad, and use \`<remove_files_from_context>\` to mute/evict File A before loading File B.
-    3. **NO INTERMEDIATE CODE PATCHING (STRICT INVARIANT)**:
-       - In Co-Engineer mode, you **NEVER apply patches to disk during intermediate exploration steps** unless \`autoApply\` is explicitly active.
-       - You must keep all code mutations exclusively in your **final synthesized message** after all research and inspections are complete.
-    4. **EXCLUSIVE FILE DISCOVERY VIA <add_files_to_context> & <peek_files>**: To inspect files without bloating context, use \`<peek_files lines="30" from="top">path</peek_files>\`.
-    5. **TOKEN BUDGET LIMIT**: If active context exceeds **85%**, prune using \`<remove_files_from_context>\` before requesting more.
-    6. **USER VALIDATION IN ASSISTANT MODE**: In Assistant Mode, every action is presented to the user for step-by-step confirmation. In Co-Engineer mode, you execute inspections autonomously within the turn.
 
-    **CORRECT BEHAVIOR FORMAT (ONLY USE REAL PATHS FROM THE MANIFEST):**
-    <add_files_to_context>
-    exact/path/from/project/manifest/file1.ext
-    exact/path/from/project/manifest/file2.ext
-    </add_files_to_context>
+    **⚡ THE TWO-STEP WORKFLOW & LIBRARIAN CONSULTATION MANDATE:**
+    1. **NO PREMATURE CODING (STEP 1 FIRST)**:
+       - In Step 1, perform pure analysis, hypothesis formulation, algorithmic complexity evaluation, security audit, and UI/UX checks.
+       - Propose a detailed plan with the exact files to be changed.
+       - If you need user input or trade-off decisions, use an interactive form (\`<lollms_form>\`).
+       - Do NOT output \`<file>\` code blocks until the user confirms the plan!
+    2. **DELEGATE ALL RECONNAISSANCE TO THE LIBRARIAN**:
+       - You do NOT have direct SPARQL, Grep, or file inclusion tools.
+       - You MUST summon the Librarian:
+         <ask_librarian>
+         Describe the technical objective, files you need to patch, and any dependencies you need to understand...
+         </ask_librarian>
+       - The Librarian will query the Code Graph via SPARQL, run Grep across the codebase, load ONLY the exact files needed for patching ([C]), and compress reference files into an architectural report.
+    3. **INTERACTIVE USER CONFIRMATION (STEP 2)**:
+       - Wait for user confirmation before executing any code changes.
+       - If the user confirms or submits the form, proceed to Step 2 and manifest the code using \`<file>\` tags.
 
-    **🛑 ZERO CONTEXT WASTE MANDATE (NO REDUNDANT REQUESTS):**
-    - Inspect 'ACTIVE CONTEXT INVENTORY' and files marked '[C]'. If a file is ALREADY loaded, calling <add_files_to_context> for it is FORBIDDEN.
-    - Only request files that are visible in the manifest WITHOUT a [C] marker.
-    - DO NOT hallucinate paths: concatenate the 4-space nested directory scopes and filename directly.
-
-    **AUTHORIZED TOOLS (OUTPUT XML TAGS VERBATIM):**
-    ${authorizedXmlTags}
-
-    *Available Tools for the <lollms_tool> JSON name parameter:*
-    ${availableToolsList}
-    `;
+    **AUTHORIZED WORKER TAGS:**
+    - \`<unmute_files>\npath/to/muted_file.ext\n</unmute_files>\` (Direct fast-path when file is known)
+    - \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>\` (Direct fast-path for tree files)
+    - \`<ask_librarian>\nWhat you need the Librarian to scout, load, or compress...\n</ask_librarian>\` (When unclear or needing reference compression)
+    - \`<lollms_form title="..." id="...">\nInteractive form inputs for the user...\n</lollms_form>\`
+    - \`<mission_briefing action="write|patch">\nUpdate project doctrine...\n</mission_briefing>\`
+    - \`<file path="..." action="write|patch|update_symbol">\n(ONLY after user confirms the plan)\n</file>`;
     } else {
         // --- DISCUSSION MODE: SCOPE-AWARE FILTERING ---
         const allTools = (context as any)?.toolManager?.getEnabledTools() || [];
@@ -1111,7 +1099,7 @@ ${sparqlDynamicRule}
         } catch {}
     }
 
-    let governorReportSection = "";
+    let librarianReportSection = "";
     if (governorReport && governorReport.trim().length > 0) {
         const lines = governorReport.split('\n');
         const cleanedLines: string[] = [];
@@ -1139,11 +1127,11 @@ ${sparqlDynamicRule}
         const cleanReport = cleanedLines.join('\n').trim();
 
         if (cleanReport) {
-            governorReportSection = `\n\n## 🏛️ CODEBASE ARCHITECTURE & WORKINGS GUIDE (GOVERNOR'S REPORT)\nThe following architectural reference guide was compiled by the Context Governor (.lollms/structure.md) to explain the internal workings, component relationships, and logic flow of the codebase:\n\n${cleanReport}\n`;
+            librarianReportSection = `\n\n## 🏛️ CODEBASE ARCHITECTURE & WORKINGS GUIDE (LIBRARIAN FINDINGS REPORT)\nThe following architectural reference guide was compiled and patched by the Context Librarian (.lollms/structure.md) to explain the ground-truth internal workings, component relationships, and logic flow of the codebase. Always let the Librarian discover the inner workings and select files you need. Never assume function names if not seen explicitly in code or in these findings. If you detect something new or changed, update the findings using <structure action="patch">:\n${cleanReport}\n`;
         }
     }
 
-    return finalizedBasePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness + governorReportSection;
+    return finalizedBasePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness + librarianReportSection;
 }
 
 /**
@@ -1674,28 +1662,68 @@ export function parseFileTagAttributes(attrStr: string, rawContent?: string): Fi
  * Depth-aware extractor for <file> mutation blocks.
  * Correctly handles nested <file>...</file> tags inside code strings or templates.
  */
+export function normalizePseudoFileBlocks(text: string): string {
+    if (!text || typeof text !== 'string') return '';
+    let result = text;
+
+    const replaceTagRegex = /<replace\b[^>]*>[\s\r\n]*<search\b[^>]*>([\s\S]*?)<\/search>[\s\r\n]*<(?:replace_with|replace)\b[^>]*>([\s\S]*?)<\/(?:replace_with|replace)>[\s\r\n]*<\/replace>/gi;
+    result = result.replace(replaceTagRegex, (_match, s, r) => {
+        return `<<<<<<< SEARCH\n${s.trimEnd()}\n=======\n${r.trimStart()}\n>>>>>>> REPLACE`;
+    });
+
+    const standaloneSearchReplace = /<search\b[^>]*>([\s\S]*?)<\/search>[\s\r\n]*<(?:replace_with|replace)\b[^>]*>([\s\S]*?)<\/(?:replace_with|replace)>/gi;
+    result = result.replace(standaloneSearchReplace, (_match, s, r) => {
+        return `<<<<<<< SEARCH\n${s.trimEnd()}\n=======\n${r.trimStart()}\n>>>>>>> REPLACE`;
+    });
+
+    const fileHeaderRegex = /(?:(?:\$file\$|\*\*File\*\*|^File)\s*:\s*[`"']?([^\s`"'\r\n]+)[`"']?\s*(?:(?:\$action\$|\*\*Action\*\*|Action)\s*:\s*[`"']?(\w+)[`"']?)?)([\s\S]*?)(?=(?:(?:\$file\$|\*\*File\*\*|^File)\s*:\s*[`"']?[^\s`"'\r\n]+|<file\b|$))/gim;
+
+    result = result.replace(fileHeaderRegex, (fullMatch, filePath, actionRaw, body) => {
+        const cleanPath = (filePath || '').replace(/^[`"']|[`"']$/g, '').trim();
+        if (!isValidFilePath(cleanPath)) return fullMatch;
+        const action = (actionRaw && actionRaw.toLowerCase().includes('write')) ? 'write' : 'patch';
+
+        if (body.includes('<file\b')) return fullMatch;
+
+        const hunks = body.match(/<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE/g);
+        if (hunks && hunks.length > 0) {
+            return `\n\n<file path="${cleanPath}" action="patch">\n${hunks.join('\n\n')}\n</file>\n\n`;
+        }
+
+        const fenceMatch = body.match(/```(?:\w+)?\r?\n([\s\S]*?)\r?\n```/);
+        if (fenceMatch) {
+            return `\n\n<file path="${cleanPath}" action="${action}">\n${fenceMatch[1]}\n</file>\n\n`;
+        }
+
+        return fullMatch;
+    });
+
+    return result;
+}
+
 export function extractFileBlocks(text: string): ExtractedFileBlock[] {
     const blocks: ExtractedFileBlock[] = [];
     if (!text || typeof text !== 'string') return blocks;
 
+    const targetText = normalizePseudoFileBlocks(text);
     const openTagRegex = /^[ \t]*<file\s+([^>]*?)>/gim;
     let match: RegExpExecArray | null;
 
-    while ((match = openTagRegex.exec(text)) !== null) {
+    while ((match = openTagRegex.exec(targetText)) !== null) {
         let start = match.index;
         const attrStr = match[1] || "";
         const bodyStart = match.index + match[0].length;
 
         let depth = 1;
         let isClosed = false;
-        let end = text.length;
-        let bodyEnd = text.length;
+        let end = targetText.length;
+        let bodyEnd = targetText.length;
 
         const tagFinder = /<file\b([^>]*?)>|<\/file>/gi;
         tagFinder.lastIndex = bodyStart;
 
         let innerMatch: RegExpExecArray | null;
-        while ((innerMatch = tagFinder.exec(text)) !== null) {
+        while ((innerMatch = tagFinder.exec(targetText)) !== null) {
             const tag = innerMatch[0];
             if (tag.toLowerCase() === '</file>') {
                 depth--;
@@ -1713,8 +1741,7 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
             }
         }
 
-        // Check if <file> was wrapped inside outer markdown fences (```python ... ```)
-        const textBefore = text.substring(0, start);
+        const textBefore = targetText.substring(0, start);
         const fenceBeforeMatch = textBefore.match(/(?:^|\n)[ \t]*(`{3,}|~{3,})(?:[a-zA-Z0-9_\-]+)?[ \t]*\r?\n[ \t]*$/);
 
         let fenceLen = 0;
@@ -1728,7 +1755,7 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
         }
 
         if (fenceLen > 0 && isClosed) {
-            const textAfter = text.substring(end);
+            const textAfter = targetText.substring(end);
             const fenceAfterRegex = new RegExp(`^[ \\t]*(?:\\r?\\n)[ \\t]*${fenceChar}{${fenceLen},}[ \\t]*(?=\\r?\\n|$)`);
             const fenceAfterMatch = textAfter.match(fenceAfterRegex);
             if (fenceAfterMatch) {
@@ -1736,12 +1763,12 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
             }
         }
 
-        let rawContent = text.substring(bodyStart, bodyEnd);
+        let rawContent = targetText.substring(bodyStart, bodyEnd);
         if (/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s.test(rawContent.trim())) {
             rawContent = rawContent.trim().replace(/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s, '$1');
         }
 
-        const fullMatch = text.substring(start, end);
+        const fullMatch = targetText.substring(start, end);
 
         blocks.push({
             attrStr,

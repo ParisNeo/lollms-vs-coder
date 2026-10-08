@@ -297,7 +297,18 @@ export class DiscussionManager {
         this._onDidChangeDiscussions.fire();
 
         this.saveMutex = this.saveMutex.then(async () => {
-            const content = Buffer.from(JSON.stringify(discussion, null, 2), 'utf8');
+            // Do not persist ephemeral Librarian consultation messages across subsequent turns
+            const cleanMessages = (discussion.messages || []).filter(m => {
+                const id = m.id || '';
+                const pName = (m.personalityName || '').toLowerCase();
+                if (id.startsWith('librarian_') || id.startsWith('gov_') || id.startsWith('prune_') || id.startsWith('user_librarian_recall_')) return false;
+                if (pName.includes('librarian') || pName.includes('governor')) return false;
+                const c = typeof m.content === 'string' ? m.content : '';
+                if (c.includes('Lead Librarian:') || c.includes('Context Arbitration Complete') || c.includes('LIBRARIAN CONSULTATION COMPLETED')) return false;
+                return true;
+            });
+            const discussionToSave = { ...discussion, messages: cleanMessages };
+            const content = Buffer.from(JSON.stringify(discussionToSave, null, 2), 'utf8');
             const { getLollmsStorageUri } = require('./utils');
             const dir = vscode.Uri.joinPath(getLollmsStorageUri(this.context), 'discussions');
             const filePath = vscode.Uri.joinPath(dir, `${discussion.id}.json`);

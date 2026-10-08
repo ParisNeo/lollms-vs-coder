@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.51",
+  "version": "1.0.56",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -194,9 +194,29 @@
         "icon": "$(beaker)"
       },
       {
+        "command": "lollms-vs-coder.startDebugLoop",
+        "title": "Lollms: Run/View/Fix Debug Loop",
+        "icon": "$(debug)"
+      },
+      {
         "command": "lollms-vs-coder.governorFilterFiles",
-        "title": "Lollms: Governor Filter Context Files",
-        "icon": "$(law)"
+        "title": "Lollms: Consult Librarian for Context",
+        "icon": "$(library)"
+      },
+      {
+        "command": "lollms-vs-coder.openKnowledgeRoot",
+        "title": "Lollms: Open KNOWLEDGE.md",
+        "icon": "$(book)"
+      },
+      {
+        "command": "lollms-vs-coder.resetKnowledge",
+        "title": "Lollms: Reset Knowledge Base",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "lollms-vs-coder.scrutinizeKnowledgeTree",
+        "title": "Lollms: Scrutinize Code & Build Knowledge Tree",
+        "icon": "$(sparkle)"
       },
       {
         "command": "lollms-vs-coder.autoSelectContextFiles",
@@ -747,7 +767,7 @@
               "id": "balanced",
               "name": "Balanced (Default)",
               "description": "Standard helper with security-first and clean code reasoning.",
-              "systemPrompt": "### RESPONSE STYLE: BALANCED (SECURITY & CLEAN CODE FIRST)\n- **1. Approach & Rationale**: Briefly outline the technical approach and architectural reasoning.\n- **2. Security First (Zero-Trust)**:\n  * Validate and sanitize all input boundaries; guard against injections (SQLi, command injection, path traversal, XSS) and unsafe deserialization.\n  * Never hardcode credentials, tokens, or secrets.\n  * Use safe defaults, principle of least privilege, and robust error handling without exposing internal stack traces to users.\n- **3. Code Cleanliness & Hygiene**:\n  * No unused variables, dead code, or unreferenced imports.\n  * Ensure strict type compliance, explicit error checking, and proper resource disposal (close file handles, database connections, streams).\n- **4. Implementation**: Immediately output the clean code update or XML mutation tags following the explanation.",
+              "systemPrompt": "### RESPONSE STYLE: BALANCED (STAGE-LOCKED ARCHITECTURAL FLOW)\nStart with a brief, direct opening framing the objective. Perform your own search and discovery in multiple rounds using <grep>, <read_full_file>, <peek_files>, <unmute_files>, and <add_files_to_context>—do NOT call an external librarian agent or make conversational promises without tags.\n- **1. Deep Diagnostic & Logical Understanding**: Break down the problem logically and verify architectural constraints. No <file> tags in this section.\n- **2. File-by-File Change Plan**: Itemized plan listing every file to modify/create and why. No <file> tags.\n- **3. Verified Implementation**: Production-ready code updates exclusively using <file path=\"...\" action=\"...\"> XML tags.\n- **4. Summary of Changes & Verification**: Concise bulleted summary stating exactly what was done, what files were changed, and edge cases handled. No <file> tags.",              
               "prefix": ""
             },
             {
@@ -1437,12 +1457,12 @@
         "lollmsVsCoder.contextGovernorThreshold": {
           "type": "number",
           "default": 95,
-          "description": "Default context filling percentage (10-99%) that triggers automatic Context Governor pruning."
+          "description": "Default context filling percentage (10-99%) that triggers automatic Context Librarian pruning."
         },
         "lollmsVsCoder.contextGovernorTargetThreshold": {
           "type": "number",
           "default": 70,
-          "description": "Target context percentage (10-90%) to reduce down to once the Governor is triggered."
+          "description": "Target context percentage (10-90%) to reduce down to once the Librarian is triggered."
         },
         "lollmsVsCoder.doctrineScoutingRounds": {
           "type": "number",
@@ -1452,7 +1472,7 @@
         "lollmsVsCoder.contextGovernorMaxRounds": {
           "type": "number",
           "default": 20,
-          "description": "Maximum negotiation and scouting rounds (up to 20) for Context Governor to explore the codebase, update the Structure file, and optimize file selection."
+          "description": "Maximum negotiation and scouting rounds (up to 20) for Context Librarian to explore the codebase, update the Structure file, and optimize file selection."
         },
         "lollmsVsCoder.contextMaxDepth": {
           "type": "number",

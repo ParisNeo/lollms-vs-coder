@@ -71,8 +71,22 @@ Stop navigating blindly. Lollms provides three layers of high-performance, real-
 - **Surgical Subgraph Isolation & Visualization**: Executing a `CONSTRUCT` query highlights the matched sub-architectures (like a pure function call graph or inheritance trees) with a distinctive, glowing neon-cyan layout (`path-node` and `path-edge` styles). You can instantly isolate and render only this constructed graph with one click from the Actions menu.
 - **The Surgical HUD**: A high-speed, inline analyzer. Click the ✨ **Lollms HUD** button above any function to instantly see its architectural risks and potential bugs without leaving the code.
 
-### 3. 🎯 Mission Briefing (Prime Directive)
-Standard AI chat suffers from "context drift." Lollms introduces the **Mission Briefing**. Pin specific constraints (e.g., *"Must use Python 3.12, No external libraries"*) to a dedicated briefing zone. These rules are treated as the **Prime Directive**, remaining the AI's highest priority regardless of how long the chat becomes.
+### 3. 🏛️ Unified Code Knowledge & The 3-Stage Workflow
+Standard AI chat suffers from context drift and disconnected sub-agents. Lollms introduces a unified **Assistant** operating across three sequential stages for every task, grounded in **`KNOWLEDGE.md`**:
+
+#### 🪜 The 3-Stage Assistant Protocol
+1. **Stage 1: Fully Agentic Code Discovery (Autonomous & Fast)**:
+   - Analyzes what context is needed.
+   - **Fast-Path**: If all needed files are already loaded (`[C]`), immediately proceeds to Stage 2 Plan without burning extra turns.
+   - **Discovery**: Autonomously loads sections (`<load_knowledge>`), unrolls files (`<unmute_files>`, `<add_files_to_context>`), peeks slices, or queries SPARQL. Zero user button clicks required!
+   - **Subtask Chunking**: If files exceed the context budget, automatically partitions the task into sequential subtasks.
+2. **Stage 2: Architectural Plan & User Acknowledgment Gate (Zero Code)**:
+   - Presents files to change, exact modifications, security audit, UX, new imports (typing, pathlib, etc.), and complexity.
+   - Formulates `<lollms_form>` for user decisions if options exist.
+   - Waits for human acknowledgment before writing any code. Strictly **NO `<file>` tags allowed**.
+3. **Stage 3: Verified Code Implementation**:
+   - The **ONLY** phase where `<file>` tags are allowed (`write`, `patch`, `update_symbol`).
+   - Triggered upon user confirmation. If this was a subtask, it announces completion and transitions to the next part.
 
 ### 4. 🧬 Project DNA (Automated Standards)
 Lollms can extract a "DNA" profile of your project (naming conventions, folder patterns, tech stack). It saves this to **Project Memory**, ensuring the AI understands your project's unique identity across all discussions.
@@ -142,6 +156,7 @@ Lollms provides two distinct ways to work. Choose the one that fits your current
 | 📊 **Architecture Graph**  | Visualize your project structure with interactive call graphs and class diagrams. Features a background-managed, incremental index and a SPARQL `CONSTRUCT` sub-graph visualizer with glowing path isolation. |
 | 🛡️ **Guardian Audit**       | Background self-healing loop. The AI automatically detects and repairs linting or import errors in generated code before finalizing tasks.                             |
 | ⚡ **Quick Edit Companion**  | A lightweight, floating window for fast code edits, explanations, or questions without leaving your current context (Ctrl+Shift+L).                                     |
+| 🏛️ **Code Knowledge**       | Unified `KNOWLEDGE.md` system replacing findings and briefings with an Abstract, frequency-scored Index `[N]`, and dynamic 30% uncollapsing. |
 | 🧠 **Smart Context**         | A sidebar file tree lets you precisely control which files the AI can "see." Includes **🔍 Definitions-Only** mode to save tokens while keeping API visibility. |
 | 📝 **Smart Edits**           | Apply AI-generated code directly to your files with a single click, supporting both full-file updates and Aider-style SEARCH/REPLACE patching.                        |
 | 🚀 **Run & Monitor**      | Execute your application in the background with one click from any assistant message. Intelligently parses, sanitizes, and deduplicates outputs and custom log files, then automatically reprompts the LLM. |
@@ -169,7 +184,7 @@ The **Lollms Chat** is your central hub for interacting with the AI.
     *   **🔍 Definitions**: The AI sees the file structure (classes/functions) but not implementation details.
     *   **📄 Tree-Only**: The AI sees the file path but not the content (saves tokens).
     *   **🚫 Excluded**: The file is hidden from the AI.
-*   **Mission Briefing**: Use the **🛡️ Briefing** button to set task-specific constraints that stay at the top of the AI's memory.
+*   **Code Knowledge**: Access the unified **`KNOWLEDGE.md`** through the HUD to inspect the Abstract, access scores, and uncollapsed sections.
 *   **Attach Files**: Click the paperclip icon or drag & drop images and documents directly into the chat area.
 
 ---

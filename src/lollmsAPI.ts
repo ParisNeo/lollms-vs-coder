@@ -1426,11 +1426,12 @@ export class LollmsAPI {
             let buffer = '';
             const decoder = new TextDecoder();
 
+            let isStreamingReasoning = false;
+
             for await (const chunk of response.body) {
                 if (!firstTokenReceived) {
                     firstTokenReceived = true;
                 }
-                // Once we have data, switch to inter-token timeout
                 resetTimer(interTokenTimeoutValue);
 
                 buffer += decoder.decode(chunk as any, { stream: true });
@@ -1442,20 +1443,27 @@ export class LollmsAPI {
                     if (!trimmed) continue;
 
                     let content = '';
+                    let isReasoningChunk = false;
+
                     try {
                         if (backend === 'ollama') {
                             const data = JSON.parse(trimmed);
-                            content = data.message?.content || 
-                                     data.message?.thinking || 
-                                     data.response || 
-                                     '';
+                            if (data.message?.thinking) {
+                                content = data.message.thinking;
+                                isReasoningChunk = true;
+                            } else {
+                                content = data.message?.content || data.response || '';
+                            }
                         } else if (backend === 'anthropic') {
                             if (trimmed.startsWith('data: ')) {
                                 const data = JSON.parse(trimmed.substring(6));
                                 if (data.type === 'content_block_delta') {
-                                    content = data.delta?.text || 
-                                             data.delta?.thinking || 
-                                             '';
+                                    if (data.delta?.thinking) {
+                                        content = data.delta.thinking;
+                                        isReasoningChunk = true;
+                                    } else {
+                                        content = data.delta?.text || '';
+                                    }
                                 }
                             }
                         } else if (backend === 'google') {
@@ -1468,14 +1476,17 @@ export class LollmsAPI {
                                 const data = JSON.parse(raw);
                                 const delta = data.choices?.[0]?.delta;
                                 if (delta) {
-                                    if (delta.content !== undefined && delta.content !== null) {
-                                        content = delta.content;
-                                    } else if (delta.reasoning_content !== undefined && delta.reasoning_content !== null) {
+                                    if (delta.reasoning_content !== undefined && delta.reasoning_content !== null) {
                                         content = delta.reasoning_content;
+                                        isReasoningChunk = true;
                                     } else if (delta.reasoning !== undefined && delta.reasoning !== null) {
                                         content = delta.reasoning;
+                                        isReasoningChunk = true;
                                     } else if (delta.thought !== undefined && delta.thought !== null) {
                                         content = delta.thought;
+                                        isReasoningChunk = true;
+                                    } else if (delta.content !== undefined && delta.content !== null) {
+                                        content = delta.content;
                                     }
                                 } else if (data.choices?.[0]?.text) {
                                     content = data.choices[0].text;
@@ -1485,11 +1496,30 @@ export class LollmsAPI {
                     } catch (e) {}
 
                     if (content) {
-                        fullResponse += content;
+                        let formattedContent = content;
+
+                        // Wrap streaming reasoning tokens in <think> tags so the UI renders them live
+                        if (isReasoningChunk && !isStreamingReasoning) {
+                            formattedContent = `<think>\n${content}`;
+                            isStreamingReasoning = true;
+                        } else if (!isReasoningChunk && isStreamingReasoning && content.trim().length > 0) {
+                            formattedContent = `\n</think>\n\n${content}`;
+                            isStreamingReasoning = false;
+                        }
+
+                        fullResponse += formattedContent;
                         if (typeof onChunk === 'function') {
-                            onChunk(content);
+                            onChunk(formattedContent);
                         }
                     }
+                }
+            }
+
+            if (isStreamingReasoning) {
+                const closeTag = '\n</think>\n\n';
+                fullResponse += closeTag;
+                if (typeof onChunk === 'function') {
+                    onChunk(closeTag);
                 }
             }
 

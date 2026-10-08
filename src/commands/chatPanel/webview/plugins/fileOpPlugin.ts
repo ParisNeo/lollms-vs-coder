@@ -19,28 +19,68 @@ export interface ExtractedFileBlock {
     isClosed: boolean;
 }
 
+export function normalizePseudoFileBlocks(text: string): string {
+    if (!text || typeof text !== 'string') return '';
+    let result = text;
+
+    const replaceTagRegex = /<replace\b[^>]*>[\s\r\n]*<search\b[^>]*>([\s\S]*?)<\/search>[\s\r\n]*<(?:replace_with|replace)\b[^>]*>([\s\S]*?)<\/(?:replace_with|replace)>[\s\r\n]*<\/replace>/gi;
+    result = result.replace(replaceTagRegex, (_match, s, r) => {
+        return `<<<<<<< SEARCH\n${s.trimEnd()}\n=======\n${r.trimStart()}\n>>>>>>> REPLACE`;
+    });
+
+    const standaloneSearchReplace = /<search\b[^>]*>([\s\S]*?)<\/search>[\s\r\n]*<(?:replace_with|replace)\b[^>]*>([\s\S]*?)<\/(?:replace_with|replace)>/gi;
+    result = result.replace(standaloneSearchReplace, (_match, s, r) => {
+        return `<<<<<<< SEARCH\n${s.trimEnd()}\n=======\n${r.trimStart()}\n>>>>>>> REPLACE`;
+    });
+
+    const fileHeaderRegex = /(?:(?:\$file\$|\*\*File\*\*|^File)\s*:\s*[`"']?([^\s`"'\r\n]+)[`"']?\s*(?:(?:\$action\$|\*\*Action\*\*|Action)\s*:\s*[`"']?(\w+)[`"']?)?)([\s\S]*?)(?=(?:(?:\$file\$|\*\*File\*\*|^File)\s*:\s*[`"']?[^\s`"'\r\n]+|<file\b|$))/gim;
+
+    result = result.replace(fileHeaderRegex, (fullMatch, filePath, actionRaw, body) => {
+        const cleanPath = (filePath || '').replace(/^[`"']|[`"']$/g, '').trim();
+        if (!isValidFilePath(cleanPath)) return fullMatch;
+        const action = (actionRaw && actionRaw.toLowerCase().includes('write')) ? 'write' : 'patch';
+
+        if (body.includes('<file\b')) return fullMatch;
+
+        const hunks = body.match(/<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE/g);
+        if (hunks && hunks.length > 0) {
+            return `\n\n<file path="${cleanPath}" action="patch">\n${hunks.join('\n\n')}\n</file>\n\n`;
+        }
+
+        const fenceMatch = body.match(/```(?:\w+)?\r?\n([\s\S]*?)\r?\n```/);
+        if (fenceMatch) {
+            return `\n\n<file path="${cleanPath}" action="${action}">\n${fenceMatch[1]}\n</file>\n\n`;
+        }
+
+        return fullMatch;
+    });
+
+    return result;
+}
+
 export function extractFileBlocks(text: string): ExtractedFileBlock[] {
     const blocks: ExtractedFileBlock[] = [];
     if (!text || typeof text !== 'string') return blocks;
 
+    const targetText = normalizePseudoFileBlocks(text);
     const openTagRegex = /^[ \t]*<file\s+([^>]*?)>/gim;
     let match: RegExpExecArray | null;
 
-    while ((match = openTagRegex.exec(text)) !== null) {
+    while ((match = openTagRegex.exec(targetText)) !== null) {
         const start = match.index;
         const attrStr = match[1] || "";
         const bodyStart = match.index + match[0].length;
 
         let depth = 1;
         let isClosed = false;
-        let end = text.length;
-        let bodyEnd = text.length;
+        let end = targetText.length;
+        let bodyEnd = targetText.length;
 
         const tagFinder = /<file\b([^>]*?)>|<\/file>/gi;
         tagFinder.lastIndex = bodyStart;
 
         let innerMatch: RegExpExecArray | null;
-        while ((innerMatch = tagFinder.exec(text)) !== null) {
+        while ((innerMatch = tagFinder.exec(targetText)) !== null) {
             const tag = innerMatch[0];
             if (tag.toLowerCase() === '</file>') {
                 depth--;
@@ -58,8 +98,8 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
             }
         }
 
-        const rawContent = text.substring(bodyStart, bodyEnd);
-        const fullMatch = text.substring(start, end);
+        const rawContent = targetText.substring(bodyStart, bodyEnd);
+        const fullMatch = targetText.substring(start, end);
 
         blocks.push({
             attrStr,
@@ -502,11 +542,28 @@ export const fileOpPlugin: TagPlugin = {
                     return cleanM === cleanP || cleanP.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanP);
                 });
             };
-            const stillMutedCount = lines.filter(isPathMuted).length;
-            const allUnmuted = stillMutedCount === 0;
 
-            btnText = allUnmuted ? 'Files Unmuted' : `Unmute Files (${lines.length})`;
-            detailsHtml = lines.map(p => {
+            const mutedLines = lines.filter(isPathMuted);
+            const alreadyActiveLines = lines.filter(p => !isPathMuted(p));
+            const stillMutedCount = mutedLines.length;
+            const allAlreadyActive = stillMutedCount === 0;
+
+            btnText = allAlreadyActive ? 'All Files Already Active [C]' : `Unmute Muted Files (${stillMutedCount})`;
+
+            let infoBannerHtml = "";
+            if (allAlreadyActive) {
+                infoBannerHtml = `
+                <div style="padding: 6px 10px; background: rgba(56, 142, 60, 0.1); border: 1px solid var(--vscode-charts-green); border-radius: 4px; font-size: 11px; margin-bottom: 8px; color: var(--vscode-charts-green); display: flex; align-items: center; gap: 6px;">
+                    <i class="codicon codicon-check"></i> All requested files are ALREADY active in context [C] with full source code loaded.
+                </div>`;
+            } else if (alreadyActiveLines.length > 0) {
+                infoBannerHtml = `
+                <div style="padding: 6px 10px; background: rgba(0, 122, 204, 0.08); border: 1px solid var(--vscode-charts-blue); border-radius: 4px; font-size: 11px; margin-bottom: 8px; color: var(--vscode-foreground); display: flex; align-items: center; gap: 6px;">
+                    <i class="codicon codicon-info"></i> ${alreadyActiveLines.length} file(s) are already active in context [C]. Unmuting ${stillMutedCount} muted file(s).
+                </div>`;
+            }
+
+            detailsHtml = infoBannerHtml + lines.map(p => {
                 const muted = isPathMuted(p);
                 return `
                 <div class="expansion-file-item ${muted ? 'status-not-in-context' : 'status-in-context'}" data-path="${p}" style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
@@ -514,10 +571,10 @@ export const fileOpPlugin: TagPlugin = {
                         <span class="codicon ${muted ? 'codicon-eye-closed' : 'codicon-check'}" style="color: ${muted ? 'var(--vscode-charts-orange, #ff9800)' : 'var(--vscode-charts-green, #4caf50)'};"></span>
                         <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p}</span>
                     </div>
-                    <span class="file-token-badge ${muted ? 'weight-muted' : 'weight-light'}" style="margin-left: 8px;">${muted ? '[MUTED]' : '[ACTIVE]'}</span>
+                    <span class="file-token-badge ${muted ? 'weight-muted' : 'weight-light'}" style="margin-left: 8px;">${muted ? '[MUTED - WILL UNMUTE]' : '[ALREADY ACTIVE - [C]]'}</span>
                 </div>`;
             }).join('');
-            payload = { paths: lines };
+            payload = { paths: mutedLines.length > 0 ? mutedLines : lines };
         } else if (type === 'delete_files') {
             title = "File Deletion Proposed";
             icon = "codicon-trash";
@@ -556,11 +613,12 @@ export const fileOpPlugin: TagPlugin = {
         const blockId = `file-op-${type}-${Date.now().toString(36)}-${Math.random().toString(36).substring(7)}`;
         const encodedPaths = encodeURIComponent(JSON.stringify(lines));
 
+        const isUnmuteDisabled = isUnmuteType && (btnText.includes('Already Active') || btnText.includes('Unmuted'));
         const actionButtonsHtml = isUnmuteType ? `
-            <button class="code-action-btn ${btnText.includes('Unmuted') ? 'applied' : 'apply-btn'} file-op-btn unmute-btn" ${btnText.includes('Unmuted') ? 'disabled' : ''} data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: lines, reprompt: false })}' data-block-id="${blockId}">
-                <span class="codicon ${btnText.includes('Unmuted') ? 'codicon-check' : 'codicon-eye'}"></span> ${btnText}
+            <button class="code-action-btn ${isUnmuteDisabled ? 'applied' : 'apply-btn'} file-op-btn unmute-btn" ${isUnmuteDisabled ? 'disabled' : ''} data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: payload.paths || lines, reprompt: false })}' data-block-id="${blockId}">
+                <span class="codicon ${isUnmuteDisabled ? 'codicon-check' : 'codicon-eye'}"></span> ${btnText}
             </button>
-            <button class="code-action-btn apply-btn unmute-reprompt-btn" data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: lines, reprompt: true })}' data-block-id="${blockId}" style="background: var(--vscode-charts-green) !important; color: white !important; font-weight: bold;" title="Unmute these files and immediately ask AI to proceed">
+            <button class="code-action-btn apply-btn unmute-reprompt-btn" ${isUnmuteDisabled ? 'disabled style="opacity:0.6;"' : ''} data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: payload.paths || lines, reprompt: true })}' data-block-id="${blockId}" style="background: var(--vscode-charts-green) !important; color: white !important; font-weight: bold;" title="Unmute these files and immediately ask AI to proceed">
                 <span class="codicon codicon-play"></span> ${btnText.includes('Unmuted') ? 'Reprompt AI' : 'Unmute & Reprompt'}
             </button>
         ` : `

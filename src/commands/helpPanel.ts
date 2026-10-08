@@ -171,6 +171,7 @@ export class HelpPanel {
                     <div class="nav-item" onclick="showSection('memory')"><i class="codicon codicon-chip"></i> Project Memory</div>
                     <div class="nav-item" onclick="showSection('skills')"><i class="codicon codicon-lightbulb"></i> Skills & Library</div>
                     <div class="nav-item" onclick="showSection('run-monitor')"><i class="codicon codicon-play"></i> Run & Monitor</div>
+                    <div class="nav-item" onclick="showSection('knowledge')"><i class="codicon codicon-book"></i> Code Knowledge (KNOWLEDGE.md)</div>
                 </div>
             </div>
 
@@ -293,6 +294,114 @@ export class HelpPanel {
 
             <h2>🛡️ The Guardian Protocol (Self-Healing)</h2>
             <p>The system follows a strict <b>Reason-Act-Verify</b> loop. When code is generated, the Guardian triggers a real-time diagnostic scan. If errors (linting, missing imports) are found, the agent automatically enters a <b>Self-Heal</b> loop to patch the file until it is verified clean.</p>
+        </section>
+
+        <!-- CODE KNOWLEDGE (KNOWLEDGE.md) -->
+        <section id="knowledge">
+            <h1>🏛️ Unified Code Knowledge & The 3-Stage Workflow</h1>
+            <p>Lollms replaces fragmented project notes and the old librarian/worker schism with a single, unified Assistant operating under the <b>Three-Stage Protocol</b>, grounded in <code>KNOWLEDGE.md</code>.</p>
+
+            <div class="card">
+                <h3>🪜 The 3-Stage Sequential Assistant Workflow</h3>
+                <ol>
+                    <li><strong>Stage 1: Fully Agentic Code Discovery (Autonomous)</strong>
+                        <ul>
+                            <li><strong>Fast-Path</strong>: If all required files are already loaded in context (<code>[C]</code>), the assistant skips discovery and immediately presents the Stage 2 Plan on the very first turn!</li>
+                            <li><strong>Autonomous Discovery</strong>: If files or knowledge are needed, the assistant executes discovery tags (<code>&lt;load_knowledge&gt;</code>, <code>&lt;unmute_files&gt;</code>, <code>&lt;add_files_to_context&gt;</code>, <code>&lt;query_architecture&gt;</code>) in the background loop without requiring you to click any buttons.</li>
+                            <li><strong>Subtask Chunking</strong>: If files exceed the context budget, the assistant automatically splits the task into sequential subtask chunks (Part 1, Part 2).</li>
+                        </ul>
+                    </li>
+                    <li><strong>Stage 2: Architectural Plan & User Acknowledgment (Zero Code)</strong>
+                        <ul>
+                            <li>Details files to change, security boundaries, UX/UI considerations, new imports (typing, pathlib, etc.), and complexity.</li>
+                            <li>Presents interactive forms (<code>&lt;lollms_form&gt;</code>) for user choices if needed.</li>
+                            <li>Waits for human confirmation before writing code. Strictly <strong>NO <code>&lt;file&gt;</code> tags</strong>!</li>
+                        </ul>
+                    </li>
+                    <li><strong>Stage 3: Verified Code Implementation</strong>
+                        <ul>
+                            <li>The <strong>ONLY</strong> phase where <code>&lt;file&gt;</code> tags are allowed.</li>
+                            <li>Triggered once you confirm the plan. If part of a split task, announces the next subtask upon completion.</li>
+                        </ul>
+                    </li>
+                </ol>
+            </div>
+            <div class="card">
+                <h3>Architecture at a Glance</h3>
+                <ul>
+                    <li><strong>Root File</strong>: Stored at <code>.lollms/KNOWLEDGE.md</code>. Contains the <strong>Abstract</strong> and the master <strong>Index</strong>.</li>
+                    <li><strong>Hierarchical Subsections</strong>: Subsections live in directory-friendly folders: <code>.lollms/knowledge/&lt;section_path&gt;/KNOWLEDGE.md</code>.</li>
+                    <li><strong>Leaf vs. Non-Leaf</strong>:
+                        <ul>
+                            <li><strong>Non-Leaf Sections</strong>: Contain descriptions and sub-indexes of their child sections.</li>
+                            <li><strong>Leaf Sections</strong>: Contain concrete technical intelligence (how a concept works, symbol signatures, call graphs, module dependencies).</li>
+                        </ul>
+                    </li>
+                    <li><strong>Access Counter <code>[N]</code></strong>: Every entry in the index maintains an access count in brackets, e.g., <code>[0]</code>, <code>[1]</code>, <code>[3]</code>.</li>
+                </ul>
+            </div>
+
+            <h2>📄 Structure of the Root <code>KNOWLEDGE.md</code></h2>
+            <pre><code># Project Name
+
+## Abstract
+A concise overview of the project and core architectural invariants. No specifics,
+no volatile release numbers (e.g., no "v1.2.3"), and zero fluff.
+
+## Index
+### Architecture_Overview [2]
+#### State_Management [1]
+### Core_Services [3]
+#### Authentication [4]
+##### Token_Verification [1]
+### Database_Layer [0]
+</code></pre>
+
+            <h2>⚡ The 30% Dynamic Uncollapsing Algorithm</h2>
+            <p>To keep the AI context window lean while providing immediate awareness of active components:</p>
+            <ul>
+                <li>Entries with an access count of <code>[0]</code> are <strong>collapsed / squashed</strong> by default and take zero token budget.</li>
+                <li>When an entry is accessed (by the user or via agent tools), its access count is incremented (<code>[N+1]</code>).</li>
+                <li>Lollms automatically identifies all sections with an access count &ge; 1, sorts them by score in descending order, and <strong>uncollapses the top 30%</strong> directly into the prompt's active context area.</li>
+            </ul>
+
+            <div class="tip">
+                <strong>Why 30%?</strong> This ensures the AI always has immediate visibility into the most frequently consulted or actively modified areas of your code, while rarely used or cold sections stay squashed.
+            </div>
+
+            <h2>🤖 Agent Knowledge Protocols</h2>
+            <p>The AI Agent interacts with the knowledge hierarchy using two dedicated XML tags:</p>
+
+            <div class="card">
+                <h3>1. Loading Knowledge: <code>&lt;load_knowledge&gt;</code></h3>
+                <p>When the AI needs to inspect a specific section from the index:</p>
+                <pre><code>&lt;load_knowledge&gt;
+Core_Services/Authentication
+&lt;/load_knowledge&gt;</code></pre>
+                <p><strong>Effect:</strong> The section's access count is incremented in the root index, and its content is rendered into the active context.</p>
+
+                <h3>2. Updating Knowledge: <code>&lt;update_knowledge&gt;</code></h3>
+                <p>When the AI learns new architectural facts, clarifies contracts, or updates documentation:</p>
+                <pre><code>&lt;update_knowledge path="Core_Services/Authentication"&gt;
+## Authentication Service
+
+### Responsibilities
+- Handles JWT signing and validation using RS256.
+- Manages refresh token rotation in Redis.
+
+### Key Signatures
+- \`verifyToken(token: string): Promise&lt;TokenPayload&gt;\`
+- \`revokeSession(sessionId: string): Promise&lt;void&gt;\`
+&lt;/update_knowledge&gt;</code></pre>
+                <p><strong>Effect:</strong> Saves the content to <code>.lollms/knowledge/Core_Services/Authentication/KNOWLEDGE.md</code> and ensures the section is registered in the master index.</p>
+            </div>
+
+            <h2>🔍 Managing Knowledge & Automatic Scrutiny</h2>
+            <ul>
+                <li><strong>One-Click Scrutiny Button</strong>: Click <strong><i class="codicon codicon-sparkle"></i> Scrutinize &amp; Build Tree</strong> inside the Chat HUD's Findings/Knowledge drawer to run an autonomous scan of all AST symbols, modules, and call graphs, instantly constructing the entire <code>KNOWLEDGE.md</code> hierarchy.</li>
+                <li><strong>Mandatory Post-Implementation Sync</strong>: After coding in Stage 3, the AI is prompted to conclude by emitting <code>&lt;update_knowledge path="..."&gt;</code> to keep signatures, call graphs, and architectural facts continuously up to date.</li>
+                <li><strong>Actions Menu</strong>: Run <code>Scrutinize Code &amp; Build Knowledge Tree</code> or <code>Open KNOWLEDGE.md</code> from the Lollms sidebar.</li>
+            </ul>
         </section>
 
         <!-- OVERVIEW -->

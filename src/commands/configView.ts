@@ -1389,9 +1389,9 @@ export class SettingsPanel {
 
               <label for="maxImageSize">${t('config.maxImageSize.label', 'Max Image Size (px)')}</label>
               <input type="number" id="maxImageSize" value="${maxImageSize}" min="0" step="128" />
-              <label for="contextGovernorMaxRounds">Context Governor Maximum Negotiation & Scouting Rounds</label>
+              <label for="contextGovernorMaxRounds">Context Librarian Maximum Negotiation & Scouting Rounds</label>
               <input type="number" id="contextGovernorMaxRounds" value="${config.contextGovernorMaxRounds || 20}" min="15" max="50" />
-              <p class="help-text">Maximum exploratory and negotiation rounds (default 20, minimum 15) allowed for the Context Governor to explore code, peek at files, and optimize context.</p>
+              <p class="help-text">Maximum exploratory and negotiation rounds (default 20, minimum 15) allowed for the Context Librarian to explore code, peek at files, query SPARQL/grep, and optimize context.</p>
 
               <label for="contextMaxDepth">Maximum File Tree Depth before Truncation</label>
               <input type="number" id="contextMaxDepth" value="${contextMaxDepth}" min="1" max="100" />

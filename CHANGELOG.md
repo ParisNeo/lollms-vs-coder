@@ -4,6 +4,14 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-10-08 22:12]
+
+- feat(sparqlPlugin): add dynamic query highlighting and interactive refinement
+
+## [2026-10-08 23:25]
+
+- `fix(chat): resolve ReferenceError 'localContext is not defined' in assistant execution loop`
+
 ## [2026-10-06 23:01]
 
 - feat(registries): update chat command registry to 0.3.7

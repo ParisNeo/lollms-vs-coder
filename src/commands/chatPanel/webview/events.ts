@@ -212,10 +212,11 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         let replacement = selected;
 
         switch (type) {
+            case 'librarian':
             case 'governor':
-                before = "<governor>\n";
-                after = "\n</governor>";
-                if (!selected) replacement = "Specify instructions directly to Context Governor (e.g. files to keep or mute)...";
+                before = "<ask_librarian>\n";
+                after = "\n</ask_librarian>";
+                if (!selected) replacement = "I need to patch [file A] and verify contracts in [file B]. Please load [file A] and summarize [file B] for reference...";
                 break;
             case 'python': before = "```python\n"; after = "\n```"; break;
             case 'code': before = "```\n"; after = "\n```"; break;
@@ -889,14 +890,11 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     // Mutually Exclusive Modes (Radios)
     const handleModeRadioChange = (e: Event) => {
         const selected = (e.target as HTMLInputElement).value;
-        const partial: any = { agentMode: false, dynamicMode: false };
-        if (selected === 'dynamic') partial.dynamicMode = true;
-        if (selected === 'agent') partial.agentMode = true;
-
+        const partial: any = { agentMode: selected === 'agent', dynamicMode: false };
         vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial });
     };
 
-    ['modeAssistantRadio', 'modeDynamicRadio', 'modeAgentRadio'].forEach(id => {
+    ['modeAssistantRadio', 'modeAgentRadio'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('change', handleModeRadioChange);
     });
@@ -2220,7 +2218,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         const promptInput = document.getElementById('governor-filter-prompt') as HTMLTextAreaElement;
         const promptVal = promptInput?.value?.trim();
         if (!promptVal) {
-            vscode.postMessage({ command: 'showError', message: 'Please enter a task or question for the Governor.' });
+            vscode.postMessage({ command: 'showError', message: 'Please enter a task or question for the Librarian.' });
             promptInput?.focus();
             return;
         }
@@ -2518,7 +2516,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 const statusText = document.getElementById('wizard-governor-status-text');
                 if (statusEl && statusText) {
                     statusEl.style.display = 'flex';
-                    statusText.textContent = `Governor applied: ${studioState.candidateFiles.length - finalMuted.length} active, ${finalMuted.length} muted.`;
+                    statusText.textContent = `Librarian applied: ${studioState.candidateFiles.length - finalMuted.length} active, ${finalMuted.length} muted.`;
                 }
             }
 
@@ -2670,6 +2668,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         }
 
         const title = dom.wizardTitle.value.trim() || undefined;
+        const selectedModel = (document.getElementById('wizard-model') as HTMLSelectElement)?.value || undefined;
         const personalityId = dom.wizardPersonality.value;
         const profileId = dom.wizardProfile.value;
         const prefProfileId = dom.wizardPreferencesProfile?.value || 'clean_craftsman';
@@ -2696,6 +2695,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 params: {
                     title,
                     prompt: finalPromptPayload,
+                    model: selectedModel,
                     personalityId,
                     profileId,
                     selectedFolders,
@@ -3174,7 +3174,11 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         if (formBtn) {
             e.preventDefault();
             e.stopPropagation();
-            
+
+            if (formBtn.disabled || formBtn.dataset.submitting === 'true') {
+                return;
+            }
+
             const formBlock = formBtn.closest('.lollms-form-block') as HTMLElement;
             if (!formBlock) return;
 
@@ -3186,29 +3190,33 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             const textInputs = Array.from(formBlock.querySelectorAll('input[type="text"], input[type="number"], textarea')) as (HTMLInputElement | HTMLTextAreaElement)[];
             textInputs.forEach(input => { if (input.name) data[input.name] = input.value; });
 
-            // Validation check
-            if (Object.keys(data).length === 0 && radios.length > 0) {
+            // Validation check: ensure at least one option is selected if radios exist
+            if (radios.length > 0 && !radios.some(r => r.checked)) {
                 formBlock.style.outline = "2px solid var(--vscode-charts-red)";
                 setTimeout(() => formBlock.style.outline = "none", 500);
                 return;
             }
 
-            // Visual State Update: Remove the form immediately to prevent "Hanging" feel
-            const formContainer = formBlock.closest('.message-wrapper');
-            if (formContainer) {
-                formContainer.remove();
-            } else {
-                formBlock.remove();
-            }
+            // Lock immediately to prevent double submissions
+            formBtn.disabled = true;
+            formBtn.dataset.submitting = 'true';
+            formBtn.innerHTML = '<span class="codicon codicon-loading spin"></span> Validating...';
+
+            // Replace interactive form with a clean confirmed card in-place
+            const confirmedSummary = Object.entries(data).map(([k, v]) => `<strong>${k}</strong>: <code>${v}</code>`).join(', ');
+            const confirmedCard = document.createElement('div');
+            confirmedCard.className = 'form-confirmed-card';
+            confirmedCard.style.cssText = 'padding: 8px 12px; margin: 8px 0; background: rgba(56, 142, 60, 0.1); border: 1px solid var(--vscode-charts-green); border-radius: 6px; font-size: 11px; color: var(--vscode-charts-green); display: flex; align-items: center; gap: 8px;';
+            confirmedCard.innerHTML = `<i class="codicon codicon-check"></i> <span>Decision Confirmed: ${confirmedSummary || 'Validated'}</span>`;
+
+            formBlock.replaceWith(confirmedCard);
 
             vscode.postMessage({
                 command: 'sendMessage',
                 message: { 
                     id: 'form_response_' + Date.now(),
                     role: 'user', 
-                    content: `FORM_SUBMISSION:${JSON.stringify(data)}`,
-                    skipInPrompt: true,
-                    isSilentSignal: true // Flag to tell backend not to add a "You" bubble
+                    content: `FORM_SUBMISSION:${JSON.stringify(data)}`
                 }
             });
             return;

@@ -3,7 +3,7 @@ import DOMPurify from 'dompurify';
 
 export const sparqlPlugin: TagPlugin = {
     id: 'query_architecture',
-    tagPattern: /<query_architecture>([\s\S]*?)<\/query_architecture>/gi,
+    tagPattern: /<(?:query_architecture|sparql)\b[^>]*>([\s\S]*?)<\/(?:query_architecture|sparql)>/gi,
     render: (match, context) => {
         const queryText = match[1].trim();
         const blockId = `sparql-req-${context.messageId}-${Math.random().toString(36).substring(7)}`;

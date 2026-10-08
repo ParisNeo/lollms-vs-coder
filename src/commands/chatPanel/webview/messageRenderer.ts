@@ -39,7 +39,8 @@ import { planStatusPlugin } from './plugins/planStatusPlugin.js';
 import { toolPlugin } from './plugins/toolPlugin.js';
 import { sparqlPlugin } from './plugins/sparqlPlugin.js';
 import { missionBriefingPlugin } from './plugins/missionBriefingPlugin.js';
-import { governorPlugin } from './plugins/governorPlugin.js';
+import { librarianPlugin } from './plugins/librarianPlugin.js';
+import { loadKnowledgePlugin, updateKnowledgePlugin } from './plugins/knowledgePlugin.js';
 
 let pluginsInitialized = false;
 
@@ -47,6 +48,8 @@ export function ensurePluginsInitialized() {
     if (pluginsInitialized && pluginRegistry.length > 0) return;
     pluginRegistry.length = 0;
     const allPlugins = [
+        loadKnowledgePlugin,
+        updateKnowledgePlugin,
         contextExpansionPlugin,
         projectMemoryPlugin,
         milestonePlugin,
@@ -64,7 +67,7 @@ export function ensurePluginsInitialized() {
         toolPlugin,
         sparqlPlugin,
         missionBriefingPlugin,
-        governorPlugin
+        librarianPlugin
     ];
     allPlugins.forEach(p => {
         if (p) {
@@ -2321,6 +2324,16 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         sourceText = String(rawContent || "");
     }
 
+    // Format human-friendly display for form decision responses
+    if (typeof sourceText === 'string' && sourceText.startsWith('FORM_SUBMISSION:')) {
+        try {
+            const rawJson = sourceText.substring(16).trim();
+            const parsed = JSON.parse(rawJson);
+            const items = Object.entries(parsed).map(([k, v]) => `- **${k}**: \`${v}\``).join('\n');
+            sourceText = `✅ **Decision Confirmed**\n${items || '- Confirmed'}\n\nPlease proceed to Stage 3 to implement the verified code.`;
+        } catch {}
+    }
+
     // 1. EXTRACT AND PACKAGE COHERENT REASONING BLOCKS (THOUGHTS)
     const thinkResult = processThinkTags(sourceText);
     let mainProcessedContent = thinkResult.processedContent;
@@ -2397,15 +2410,15 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 const durationHtml = `<span class="think-duration ${isLive ? 'live-thinking' : ''}" style="font-size: 10px; ${isLive ? 'color: var(--thinking-color); font-weight: bold; animation: lollms-pulse 1.5s infinite;' : 'opacity: 0.6; font-weight: normal;'} margin-left: auto; padding-right: 12px;">${durationText}</span>`;
 
                 scratchpad.innerHTML = `
-                    <details style="border: none; background: transparent; margin: 0; box-shadow: none;">
-                        <summary class="scratchpad-header" style="color: var(--thinking-color); display: flex; align-items: center; justify-content: space-between; width: 100%; box-sizing: border-box; padding: 6px 12px; list-style: none;">
+                    <details open style="border: none; background: transparent; margin: 0; box-shadow: none;">
+                        <summary class="scratchpad-header" style="color: var(--thinking-color); display: flex; align-items: center; justify-content: space-between; width: 100%; box-sizing: border-box; padding: 6px 12px; list-style: none; cursor: pointer;">
                             <div style="display: flex; align-items: center; gap: 6px;">
                                 ${iconHtml}
-                                <span style="font-weight: bold;" class="thought-title-label">Thought (Reasoning)${!isClosed ? '...' : ''}</span>
+                                <span style="font-weight: bold;" class="thought-title-label">🧠 Thought &amp; Reasoning${!isClosed ? ' (Live)...' : ''}</span>
                             </div>
                             ${durationHtml}
                         </summary>
-                        <div class="scratchpad-content markdown-body" style="padding: 10px 15px; font-size:11px; opacity:0.9; background:rgba(0,0,0,0.05); border-radius:0 0 6px 6px;">
+                        <div class="scratchpad-content markdown-body" style="padding: 10px 15px; font-size:11.5px; opacity:0.95; line-height: 1.5; background:rgba(0,0,0,0.08); border-radius:0 0 6px 6px;">
                             ${parsedMarkdown}
                         </div>
                     </details>
@@ -2863,7 +2876,17 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 } catch {}
             });
 
-            // 2. Gather add_files_to_context
+            // 2. Gather librarian consultations
+            contentDiv.querySelectorAll('.librarian-consultation-card').forEach((card: any) => {
+                try {
+                    const query = decodeURIComponent(card.dataset.query || '');
+                    if (query) {
+                        actions.push({ type: 'librarian', payload: query });
+                    }
+                } catch {}
+            });
+
+            // 2.2. Gather add_files_to_context (legacy fallback)
             contentDiv.querySelectorAll('.context-expansion-block').forEach((block: any) => {
                 try {
                     const files = JSON.parse(block.dataset.files || '[]');
@@ -3395,6 +3418,10 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
             avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
         } else if (role === 'system') {
             avatarDiv.innerHTML = '<span class="codicon codicon-warning" style="color:var(--vscode-charts-red)"></span>';
+        } else if (isAgent) {
+            avatarDiv.innerHTML = '<span class="codicon codicon-robot" style="color:var(--vscode-charts-red)"></span>';
+        } else if (isDynamic) {
+            avatarDiv.innerHTML = '<span class="codicon codicon-circuit-board" style="color:var(--vscode-charts-orange)"></span>';
         } else {
             avatarDiv.innerHTML = '<span class="codicon codicon-hubot" style="color:var(--vscode-textLink-foreground)"></span>';
         }
@@ -3823,6 +3850,17 @@ export class ContextPresenter {
         const cleanTree = (projectTreeText || "").trim();
         const cleanReport = (governorReportText || "").trim();
 
+        let findingsSummary = "No findings recorded yet.";
+        if (cleanReport) {
+            const cleanLines = cleanReport.split('\n')
+                .map((l: string) => l.replace(/^#+\s*/, '').trim())
+                .filter((l: string) => l.length > 0 && !l.startsWith('---') && !l.toLowerCase().includes('architecture guide'));
+            findingsSummary = cleanLines.slice(0, 2).join(' · ') || "Architecture findings active.";
+            if (findingsSummary.length > 95) {
+                findingsSummary = findingsSummary.substring(0, 92) + '...';
+            }
+        }
+
         const rawTreeHtml = cleanTree
             ? `<details style="margin-top: 8px; border-top: 1px dashed var(--vscode-widget-border); padding-top: 6px;">
                  <summary style="font-size: 10px; opacity: 0.75; cursor: pointer; display: flex; align-items: center; gap: 4px;">
@@ -3843,10 +3881,10 @@ export class ContextPresenter {
         } else {
             governorReportDisplayHtml = `
                 <div class="empty-context-msg" style="padding: 10px; display: flex; flex-direction: column; gap: 8px;">
-                    <span>No Governor findings report recorded yet (<code>.lollms/structure.md</code>).</span>
+                    <span>No Librarian findings report recorded yet (<code>.lollms/structure.md</code>).</span>
                     <div style="display: flex; gap: 8px;">
                         <button id="hud-launch-governor-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; width: auto; border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);">
-                            <i class="codicon codicon-law"></i> Generate Findings with Context Governor
+                            <i class="codicon codicon-library"></i> Generate Findings with Librarian
                         </button>
                     </div>
                 </div>
@@ -3872,10 +3910,23 @@ export class ContextPresenter {
                     </div>
 
                     <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
-                        <button id="hud-run-tests-btn" class="code-action-btn secondary-btn" title="Run project tests, save output to test_run.log, add to context & prompt AI to fix" style="height: 26px; font-size: 11px; padding: 0 8px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; color: var(--vscode-charts-green); border-color: var(--vscode-charts-green); cursor: pointer;">
-                            <i class="codicon codicon-beaker"></i>
-                            <span>Run Tests</span>
-                        </button>
+                        <div class="badge-wrapper hud-qa-wrapper" style="position: relative;">
+                            <button id="hud-qa-menu-btn" class="code-action-btn secondary-btn hud-qa-trigger" title="QA Suite: Run Tests or Start Run/View/Fix Debug Loop" style="height: 26px; font-size: 11px; padding: 0 8px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; color: var(--vscode-charts-green); border-color: var(--vscode-charts-green); cursor: pointer;">
+                                <i class="codicon codicon-beaker"></i>
+                                <span>Test &amp; Debug</span>
+                                <i class="codicon codicon-chevron-down" style="font-size: 9px; margin-left: 1px;"></i>
+                            </button>
+                            <div id="hud-qa-menu" class="custom-menu hidden" style="min-width: 230px; padding: 4px 0;">
+                                <div class="custom-menu-item qa-menu-opt" data-action="test">
+                                    <span class="codicon codicon-beaker" style="color:var(--vscode-charts-green)"></span>
+                                    <span>Run Tests &amp; Report</span>
+                                </div>
+                                <div class="custom-menu-item qa-menu-opt" data-action="debug">
+                                    <span class="codicon codicon-debug" style="color:var(--vscode-charts-orange)"></span>
+                                    <span>Debug Project (Run / View / Fix)</span>
+                                </div>
+                            </div>
+                        </div>
                         <div class="hud-search-container" id="hud-search-bar" style="display: flex; align-items: center; gap: 4px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; padding: 2px 6px; height: 26px; box-sizing: border-box;">
                             <i class="codicon codicon-search" style="font-size: 12px; opacity: 0.7; color: var(--vscode-input-foreground); margin-left: 2px;"></i>
                             <input type="text" id="hud-search-input" placeholder="Search discussion..." style="background: transparent; border: none; color: var(--vscode-input-foreground); outline: none; font-family: var(--vscode-font-family); font-size: 11px; width: 140px; padding: 0 4px;" />
@@ -3919,6 +3970,38 @@ export class ContextPresenter {
                         <span id="token-count-label" style="font-size: 9px; opacity: 0.75; font-family: var(--vscode-editor-font-family);">Tokens: Initializing...</span>
                         <div id="token-bar-legend" class="token-legend" style="display: none; gap: 10px;"></div>
                     </div>
+
+                    <!-- 🏛️ ALWAYS VISIBLE COMPACT FINDINGS BAR REPORTED WITH PROGRESS BAR -->
+                    <div class="hud-findings-bar" id="hud-findings-bar" style="display: flex; flex-direction: column; gap: 2px; margin-top: 2px; padding-top: 3px; border-top: 1px dashed var(--vscode-widget-border);">
+                        <div class="hud-findings-header" id="hud-findings-toggle-btn" style="display: flex; align-items: center; justify-content: space-between; font-size: 10px; cursor: pointer; user-select: none;" title="Librarian Findings: Click to expand / collapse full findings on demand">
+                            <div style="display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0;">
+                                <i class="codicon codicon-library" style="color: var(--vscode-charts-orange); font-size: 11px; flex-shrink: 0;"></i>
+                                <span style="font-weight: 700; color: var(--vscode-charts-orange); flex-shrink: 0;">Findings:</span>
+                                <span class="hud-findings-summary" id="hud-findings-summary-text" style="opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--vscode-editor-font-family, monospace); flex: 1;">${DOMPurify.sanitize(findingsSummary)}</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: 6px;">
+                                <span class="hud-findings-badge" id="hud-findings-badge" style="font-size: 9px; opacity: 0.6; font-family: var(--vscode-editor-font-family);">${cleanReport ? `${cleanReport.length} chars` : 'empty'}</span>
+                                <button type="button" id="hud-reset-findings-quick-btn" class="icon-btn" title="Reset Knowledge Base (Clear KNOWLEDGE.md and structure.md)" style="width: 18px; height: 18px; padding: 0; color: var(--vscode-errorForeground);"><i class="codicon codicon-trash" style="font-size: 11px;"></i></button>
+                                <i class="codicon codicon-chevron-down" id="hud-findings-chevron" style="font-size: 10px; opacity: 0.7; transition: transform 0.2s;"></i>
+                            </div>
+                        </div>
+                        <div class="hud-findings-drawer" id="hud-findings-drawer" style="display: none; max-height: 220px; overflow-y: auto; padding: 6px 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-size: 11px; line-height: 1.45; margin-top: 4px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-widget-border);">
+                                <span style="font-size: 10px; font-weight: bold; color: var(--vscode-charts-orange);"><i class="codicon codicon-book"></i> KNOWLEDGE.md System</span>
+                                <div style="display: flex; gap: 6px; align-items: center;">
+                                    <button type="button" id="hud-reset-knowledge-btn" class="code-action-btn delete-btn" style="height: 20px; font-size: 9px; padding: 0 8px; color: var(--vscode-errorForeground);" title="Reset Knowledge Base (Wipes KNOWLEDGE.md, sections, and structure.md)">
+                                        <i class="codicon codicon-trash"></i> Reset Knowledge
+                                    </button>
+                                    <button type="button" id="hud-scrutinize-knowledge-btn" class="code-action-btn apply-btn" style="height: 20px; font-size: 9px; padding: 0 8px; background: var(--vscode-charts-orange) !important; color: white !important; font-weight: bold;" title="Scrutinize codebase AST symbols, imports, and calls to build the complete KNOWLEDGE.md tree">
+                                        <i class="codicon codicon-sparkle"></i> Scrutinize &amp; Build Tree
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="markdown-body" id="hud-findings-full-text">
+                                ${cleanReport ? DOMPurify.sanitize((marked as any).parse(cleanReport)) : '<em>No knowledge recorded yet. Click Scrutinize & Build Tree to generate.</em>'}
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -3948,12 +4031,13 @@ export class ContextPresenter {
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
                                 <span style="font-weight: 700; display: flex; align-items: center; gap: 6px;">
-                                    <i class="codicon codicon-law" style="color: var(--vscode-charts-orange);"></i>
-                                    <span>Governor's Report & Findings (.lollms/structure.md)</span>
+                                    <i class="codicon codicon-library" style="color: var(--vscode-charts-orange);"></i>
+                                    <span>Knowledge Base & Architecture (.lollms/KNOWLEDGE.md)</span>
                                 </span>
                                 <div style="display: flex; gap: 6px; align-items: center;">
                                     <button id="hud-edit-gov-report-btn" class="icon-btn" title="Open .lollms/structure.md in Editor" style="color: var(--vscode-charts-orange);"><i class="codicon codicon-edit"></i></button>
-                                    <button id="hud-copy-gov-report-btn" class="icon-btn" title="Copy Governor Report to Clipboard"><i class="codicon codicon-copy"></i></button>
+                                    <button id="hud-copy-gov-report-btn" class="icon-btn" title="Copy Librarian Report to Clipboard"><i class="codicon codicon-copy"></i></button>
+                                    <button id="hud-clear-gov-report-btn" class="icon-btn" title="Reset Knowledge Base" style="color: var(--vscode-errorForeground);"><i class="codicon codicon-trash"></i></button>
                                 </div>
                             </div>
                         </summary>
@@ -3994,7 +4078,7 @@ export class ContextPresenter {
                                     <select id="hud-visibility-preset-select" class="section-bulk-btn" style="height:20px; font-size:10px; padding: 0 4px; max-width: 130px; cursor: pointer;" title="Quick switch visibility profile / preset">
                                         <option value="">📁 Preset...</option>
                                     </select>
-                                    ${finalProjectFilesCount > 0 ? `<button id="governor-filter-btn" class="section-bulk-btn" title="Context Governor: Select files to keep with AI based on prompt"><span class="codicon codicon-law"></span> Governor</button>` : ''}
+                                    ${finalProjectFilesCount > 0 ? `<button id="governor-filter-btn" class="section-bulk-btn" title="Librarian: Scout codebase & optimize files with AI based on prompt"><span class="codicon codicon-library"></span> Librarian</button>` : ''}
                                     <select id="sort-files-select" class="section-bulk-btn" style="height:20px; font-size:10px; padding: 0 4px; cursor: pointer; max-width: 140px;" title="Organize & Sort Files">
                                         <option value="tree" ${state.fileSortOrder === 'tree' ? 'selected' : ''}>🌳 Folder (Tree)</option>
                                         <option value="visible-first" ${state.fileSortOrder === 'visible-first' ? 'selected' : ''}>👁️ Visible First</option>
@@ -4292,14 +4376,38 @@ export class ContextBinder {
             });
         }
 
-        // Run Tests & Report Buttons Binding
-        const runTestsBtn = dashboard.querySelector('#hud-run-tests-btn') as HTMLElement;
-        if (runTestsBtn) {
-            runTestsBtn.onclick = (e) => {
+        // QA Suite (Test & Debug) Menu Binding
+        const qaBadge = dashboard.querySelector('#hud-qa-menu-btn') as HTMLElement;
+        const qaMenu = dashboard.querySelector('#hud-qa-menu') as HTMLElement;
+        if (qaBadge && qaMenu) {
+            qaBadge.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                vscode.postMessage({ command: 'runTestsAndReport' });
+                const isOpening = !qaMenu.classList.contains('visible');
+                document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+                if (isOpening) {
+                    const adjustFn = (window as any).adjustMenuPosition || ((trig: HTMLElement, mn: HTMLElement) => {
+                        mn.style.top = '100%';
+                        mn.style.bottom = 'auto';
+                    });
+                    adjustFn(qaBadge, qaMenu);
+                    qaMenu.classList.add('visible');
+                }
             };
+
+            qaMenu.querySelectorAll('.qa-menu-opt').forEach((item: any) => {
+                item.onclick = (e: MouseEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const action = item.dataset.action;
+                    qaMenu.classList.remove('visible');
+                    if (action === 'test') {
+                        vscode.postMessage({ command: 'runTestsAndReport' });
+                    } else if (action === 'debug') {
+                        vscode.postMessage({ command: 'startDebugLoop' });
+                    }
+                };
+            });
         }
 
         const runTestsContextBtn = dashboard.querySelector('#run-tests-context-btn') as HTMLElement;
@@ -4310,6 +4418,47 @@ export class ContextBinder {
                 vscode.postMessage({ command: 'runTestsAndReport' });
             };
         }
+
+        // Bind Findings Toggle Drawer & Scrutinize Action
+        const findingsToggle = dashboard.querySelector('#hud-findings-toggle-btn') as HTMLElement;
+        const findingsDrawer = dashboard.querySelector('#hud-findings-drawer') as HTMLElement;
+        const findingsChevron = dashboard.querySelector('#hud-findings-chevron') as HTMLElement;
+        const scrutinizeBtn = dashboard.querySelector('#hud-scrutinize-knowledge-btn') as HTMLElement;
+
+        if (findingsToggle && findingsDrawer) {
+            findingsToggle.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const isOpen = findingsDrawer.style.display !== 'none';
+                findingsDrawer.style.display = isOpen ? 'none' : 'block';
+                if (findingsChevron) {
+                    findingsChevron.className = `codicon ${isOpen ? 'codicon-chevron-down' : 'codicon-chevron-up'}`;
+                }
+            };
+        }
+
+        if (scrutinizeBtn) {
+            scrutinizeBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                scrutinizeBtn.innerHTML = '<i class="codicon codicon-sync spin"></i> Scrutinizing...';
+                vscode.postMessage({ command: 'scrutinizeKnowledgeTree' });
+            };
+        }
+
+        const resetFindingsQuickBtn = dashboard.querySelector('#hud-reset-findings-quick-btn') as HTMLElement;
+        const resetKnowledgeBtn = dashboard.querySelector('#hud-reset-knowledge-btn') as HTMLElement;
+        const clearGovReportBtn = dashboard.querySelector('#hud-clear-gov-report-btn') as HTMLElement;
+
+        const handleResetKnowledge = (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            vscode.postMessage({ command: 'resetKnowledge' });
+        };
+
+        if (resetFindingsQuickBtn) resetFindingsQuickBtn.onclick = handleResetKnowledge;
+        if (resetKnowledgeBtn) resetKnowledgeBtn.onclick = handleResetKnowledge;
+        if (clearGovReportBtn) clearGovReportBtn.onclick = handleResetKnowledge;
 
         // Explicit Expand/Collapse Button Binding
         const toggleExpandBtn = dashboard.querySelector('#hud-toggle-expand-btn') as HTMLElement;
@@ -5012,7 +5161,7 @@ export class ContextBinder {
             editGovReportBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                vscode.postMessage({ command: 'openFile', path: '.lollms/structure.md' });
+                vscode.postMessage({ command: 'openFile', path: '.lollms/KNOWLEDGE.md' });
             };
         }
 

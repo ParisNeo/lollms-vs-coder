@@ -41,10 +41,14 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
 
         if (hasWorkspace) {
             actions.push(new ActionItem(vscode.l10n.t('Reconfigure Project DNA & Style'), 'lollms-vs-coder.retriggerOnboarding', 'settings-gear', 'Update Destiny, objectives, and styling preferences'));
-            actions.push(new ActionItem('Filter Context with Governor', 'lollms-vs-coder.governorFilterFiles', 'law', 'Select relevant files to keep in context using AI based on a prompt'));
+            actions.push(new ActionItem('Consult Librarian (Knowledge & Context)', 'lollms-vs-coder.governorFilterFiles', 'library', 'Scout codebase, query KNOWLEDGE.md, and optimize context files using AI'));
+            actions.push(new ActionItem('Scrutinize Code & Build Knowledge Tree', 'lollms-vs-coder.scrutinizeKnowledgeTree', 'sparkle', 'Run deep codebase scrutiny to build the complete KNOWLEDGE.md tree and section files'));
+            actions.push(new ActionItem('Reset Knowledge Base (Clear KNOWLEDGE.md)', 'lollms-vs-coder.resetKnowledge', 'trash', 'Wipe KNOWLEDGE.md, sections, and structure.md'));
+            actions.push(new ActionItem('Open KNOWLEDGE.md (Knowledge Base)', 'lollms-vs-coder.openKnowledgeRoot', 'book', 'Open the root codebase knowledge file'));
             actions.push(new ActionItem('New Discussion with Same Context', 'lollms-vs-coder.newDiscussionWithSameContext', 'repo-forked', 'Start a new discussion with the exact same files and muted files'));
             actions.push(new ActionItem('Fork & Compress Chat History', 'lollms-vs-coder.forkAndCompressDiscussion', 'git-pull-request', 'Fork discussion with same files, compressing history into two alternating messages'));
-            actions.push(new ActionItem('Run Tests & Report to AI', 'lollms-vs-coder.runTestsAndReport', 'beaker', 'Run project tests, save output to test_run.log, and prompt AI to fix errors'));
+            actions.push(new ActionItem('Test & Debug (QA Suite)', 'lollms-vs-coder.runTestsAndReport', 'beaker', 'Run tests or start a Run/View/Fix debug loop'));
+            actions.push(new ActionItem('Run / View / Fix Debug Loop', 'lollms-vs-coder.startDebugLoop', 'debug', 'Run project in background, analyze logs, and propose surgical fixes with human validation'));
             actions.push(new ActionItem('Test and Optimize Model', 'lollms-vs-coder.testAndOptimizeModel', 'beaker', 'Run benchmark tests to find and save optimal model temperature settings'));
             actions.push(new ActionItem(vscode.l10n.t('Lollms Studio (Skills/Personas)'), 'lollms-vs-coder.openStudio', 'beaker', 'Open the building studio'));
             actions.push(new ActionItem('Reset Skills to Default', 'lollms-vs-coder.resetSkillsToDefault', 'discard', 'Reset all skills and Git repositories to defaults'));

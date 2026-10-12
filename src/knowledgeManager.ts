@@ -2,510 +2,829 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { Logger } from './logger';
 
-export interface KnowledgeIndexEntry {
-    title: string;
-    normalizedPath: string;
-    accessCount: number;
-    depth: number;
-    children: KnowledgeIndexEntry[];
+export interface GraphTriple {
+    s: string;
+    p: string;
+    o: string;
+}
+
+export interface InsightEntry {
+    id: string;
+    topic: string;
+    content: string;
+    hashtags: string[];
+    files: string[];
+    timestamp: number;
 }
 
 export class KnowledgeManager {
-    public static readonly ROOT_FILENAME = 'KNOWLEDGE.md';
-    public static readonly SUBDIR_NAME = 'knowledge';
+    public static readonly TTL_FILENAME = 'knowledge.ttl';
+
+    private triples: GraphTriple[] = [];
+    private initialized: boolean = false;
 
     constructor(private context: vscode.ExtensionContext) {}
 
-    public getKnowledgeRootUri(workspaceFolder?: vscode.WorkspaceFolder): vscode.Uri | null {
+    public getKnowledgeDir(workspaceFolder?: vscode.WorkspaceFolder): vscode.Uri | null {
         const folder = workspaceFolder || vscode.workspace.workspaceFolders?.[0];
         if (!folder) return null;
         return vscode.Uri.joinPath(folder.uri, '.lollms');
     }
 
-    public async getRootKnowledgeUri(workspaceFolder?: vscode.WorkspaceFolder): Promise<vscode.Uri | null> {
-        const root = this.getKnowledgeRootUri(workspaceFolder);
-        if (!root) return null;
-        return vscode.Uri.joinPath(root, KnowledgeManager.ROOT_FILENAME);
+    public getKnowledgeTtlUri(workspaceFolder?: vscode.WorkspaceFolder): vscode.Uri | null {
+        const dir = this.getKnowledgeDir(workspaceFolder);
+        if (!dir) return null;
+        return vscode.Uri.joinPath(dir, KnowledgeManager.TTL_FILENAME);
     }
 
-    public normalizeSectionName(name: string): string {
-        return name
-            .trim()
-            .replace(/\[\d+\]/g, '')
-            .trim()
-            .replace(/[^\w\s\-.]/g, '')
-            .replace(/\s+/g, '_');
-    }
+    public async initializeGraph(workspaceFolder?: vscode.WorkspaceFolder): Promise<void> {
+        if (this.initialized) return;
+        const ttlUri = this.getKnowledgeTtlUri(workspaceFolder);
+        if (!ttlUri) return;
 
-    public async getSectionUri(sectionPath: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<vscode.Uri | null> {
-        const root = this.getKnowledgeRootUri(workspaceFolder);
-        if (!root) return null;
-
-        const cleanPath = sectionPath.trim().replace(/^\.?\/+/, '').replace(/\/+$/, '');
-        if (!cleanPath || cleanPath === KnowledgeManager.ROOT_FILENAME) {
-            return vscode.Uri.joinPath(root, KnowledgeManager.ROOT_FILENAME);
-        }
-
-        const segments = cleanPath.split(/[\/\\]+/).map(s => this.normalizeSectionName(s));
-        return vscode.Uri.joinPath(root, KnowledgeManager.SUBDIR_NAME, ...segments, KnowledgeManager.ROOT_FILENAME);
-    }
-
-    public async readRootKnowledge(workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
-        const fileUri = await this.getRootKnowledgeUri(workspaceFolder);
-        if (!fileUri) return "";
         try {
-            const bytes = await vscode.workspace.fs.readFile(fileUri);
-            return Buffer.from(bytes).toString('utf8');
+            const bytes = await vscode.workspace.fs.readFile(ttlUri);
+            const content = Buffer.from(bytes).toString('utf8');
+            this.parseTurtle(content);
+            Logger.info(`[KnowledgeManager] Loaded ${this.triples.length} triples from ${KnowledgeManager.TTL_FILENAME}`);
         } catch {
-            return "";
+            // New project: initialize baseline ontology triples
+            this.triples = this.getBaselineOntologyTriples();
+            await this.saveGraph(workspaceFolder);
+            Logger.info(`[KnowledgeManager] Initialized new knowledge graph with baseline ontology.`);
         }
+        this.initialized = true;
     }
 
-    public async readSectionKnowledge(sectionPath: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
-        const fileUri = await this.getSectionUri(sectionPath, workspaceFolder);
-        if (!fileUri) return "";
-        try {
-            const bytes = await vscode.workspace.fs.readFile(fileUri);
-            return Buffer.from(bytes).toString('utf8');
-        } catch {
-            return "";
-        }
+    /**
+     * Formal, standard-compliant Software Engineering Ontology (TBox).
+     * Defines an expressive taxonomy of artifacts, code entities, relations, and insights.
+     */
+    private getBaselineOntologyTriples(): GraphTriple[] {
+        return [
+            // Core Classes (Taxonomy)
+            { s: 's:SoftwareArtifact', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:SoftwareArtifact', p: 'rdfs:label', o: '"Software Artifact"@en' },
+
+            { s: 's:SourceFile', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:SourceFile', p: 'rdfs:subClassOf', o: 's:SoftwareArtifact' },
+            { s: 's:SourceFile', p: 'rdfs:label', o: '"Source File"@en' },
+
+            { s: 's:CodeEntity', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:CodeEntity', p: 'rdfs:label', o: '"Code Entity"@en' },
+
+            { s: 's:ClassDefinition', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:ClassDefinition', p: 'rdfs:subClassOf', o: 's:CodeEntity' },
+            { s: 's:ClassDefinition', p: 'rdfs:label', o: '"Class Definition"@en' },
+
+            { s: 's:InterfaceDefinition', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:InterfaceDefinition', p: 'rdfs:subClassOf', o: 's:CodeEntity' },
+            { s: 's:InterfaceDefinition', p: 'rdfs:label', o: '"Interface Definition"@en' },
+
+            { s: 's:FunctionDefinition', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:FunctionDefinition', p: 'rdfs:subClassOf', o: 's:CodeEntity' },
+            { s: 's:FunctionDefinition', p: 'rdfs:label', o: '"Function Definition"@en' },
+
+            { s: 's:MethodDefinition', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:MethodDefinition', p: 'rdfs:subClassOf', o: 's:FunctionDefinition' },
+            { s: 's:MethodDefinition', p: 'rdfs:label', o: '"Method Definition"@en' },
+
+            { s: 's:ExternalLibrary', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:ExternalLibrary', p: 'rdfs:label', o: '"External Library / Dependency"@en' },
+
+            { s: 's:ArchitecturalInsight', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:ArchitecturalInsight', p: 'rdfs:label', o: '"Architectural Insight"@en' },
+
+            { s: 's:TopicTag', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:TopicTag', p: 'rdfs:label', o: '"Topic Tag"@en' },
+
+            // Object Properties (Relationships)
+            { s: 's:containsEntity', p: 'rdf:type', o: 'owl:ObjectProperty' },
+            { s: 's:containsEntity', p: 'rdfs:domain', o: 's:SoftwareArtifact' },
+            { s: 's:containsEntity', p: 'rdfs:range', o: 's:CodeEntity' },
+            { s: 's:containsEntity', p: 'rdfs:label', o: '"contains code entity"@en' },
+
+            { s: 's:importsModule', p: 'rdf:type', o: 'owl:ObjectProperty' },
+            { s: 's:importsModule', p: 'rdfs:domain', o: 's:SourceFile' },
+            { s: 's:importsModule', p: 'rdfs:range', o: 's:SoftwareArtifact' },
+            { s: 's:importsModule', p: 'rdfs:label', o: '"imports module"@en' },
+
+            { s: 's:invokesFunction', p: 'rdf:type', o: 'owl:ObjectProperty' },
+            { s: 's:invokesFunction', p: 'rdfs:domain', o: 's:CodeEntity' },
+            { s: 's:invokesFunction', p: 'rdfs:range', o: 's:FunctionDefinition' },
+            { s: 's:invokesFunction', p: 'rdfs:label', o: '"invokes function or method"@en' },
+
+            { s: 's:inheritsFrom', p: 'rdf:type', o: 'owl:ObjectProperty' },
+            { s: 's:inheritsFrom', p: 'rdfs:domain', o: 's:ClassDefinition' },
+            { s: 's:inheritsFrom', p: 'rdfs:range', o: 's:ClassDefinition' },
+            { s: 's:inheritsFrom', p: 'rdfs:label', o: '"inherits from"@en' },
+
+            { s: 's:explainsArtifact', p: 'rdf:type', o: 'owl:ObjectProperty' },
+            { s: 's:explainsArtifact', p: 'rdfs:domain', o: 's:ArchitecturalInsight' },
+            { s: 's:explainsArtifact', p: 'rdfs:range', o: 's:SoftwareArtifact' },
+            { s: 's:explainsArtifact', p: 'rdfs:label', o: '"explains artifact or entity"@en' },
+
+            { s: 's:hasTopic', p: 'rdf:type', o: 'owl:ObjectProperty' },
+            { s: 's:hasTopic', p: 'rdfs:domain', o: 's:ArchitecturalInsight' },
+            { s: 's:hasTopic', p: 'rdfs:range', o: 's:TopicTag' },
+            { s: 's:hasTopic', p: 'rdfs:label', o: '"tagged with topic"@en' },
+
+            // Datatype Properties (Attributes)
+            { s: 's:name', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:filePath', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:startLine', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:signature', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:docstring', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:linesCount', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:insightText', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:timestamp', p: 'rdf:type', o: 'owl:DatatypeProperty' }
+        ];
     }
 
-    public parseIndexEntries(markdown: string): { abstract: string, entries: KnowledgeIndexEntry[] } {
-        const lines = markdown.split(/\r?\n/);
-        let inAbstract = false;
-        let inIndex = false;
-        const abstractLines: string[] = [];
-        const flatEntries: { level: number; title: string; count: number }[] = [];
+    public parseTurtle(turtleText: string): void {
+        const lines = turtleText.split(/\r?\n/);
+        const parsed: GraphTriple[] = [];
+        let currentSubject = "";
 
         for (const line of lines) {
             const trimmed = line.trim();
-            if (/^##\s+Abstract\b/i.test(trimmed)) {
-                inAbstract = true;
-                inIndex = false;
+            if (!trimmed || trimmed.startsWith('@prefix') || trimmed.startsWith('#')) continue;
+
+            // Check if line establishes a new subject without predicate (e.g. "s:my_subject")
+            if (!trimmed.includes(';') && !trimmed.endsWith('.') && !trimmed.includes(' ')) {
+                currentSubject = trimmed;
                 continue;
             }
-            if (/^##\s+Index\b/i.test(trimmed)) {
-                inAbstract = false;
-                inIndex = true;
-                continue;
-            }
-            if (/^##?\s+/i.test(trimmed) && inIndex) {
-                inIndex = false;
-            }
 
-            if (inAbstract) {
-                abstractLines.push(line);
-            } else if (inIndex) {
-                const headerMatch = trimmed.match(/^(#{3,6})\s+(.+)$/);
-                if (headerMatch) {
-                    const level = headerMatch[1].length;
-                    const fullText = headerMatch[2].trim();
-                    const countMatch = fullText.match(/\[(\d+)\]\s*$/);
-                    const count = countMatch ? parseInt(countMatch[1], 10) : 0;
-                    const title = fullText.replace(/\[\d+\]\s*$/, '').trim();
+            // Clean terminator
+            const isDotTerminated = trimmed.endsWith('.');
+            const isSemicolonTerminated = trimmed.endsWith(';');
+            const clean = trimmed.replace(/\s*[;.]$/, '').trim();
 
-                    flatEntries.push({ level, title, count });
-                }
-            }
-        }
-
-        const entries: KnowledgeIndexEntry[] = [];
-        const stack: { level: number; entry: KnowledgeIndexEntry; pathPrefix: string }[] = [];
-
-        for (const item of flatEntries) {
-            const normalized = this.normalizeSectionName(item.title);
-
-            while (stack.length > 0 && stack[stack.length - 1].level >= item.level) {
-                stack.pop();
-            }
-
-            const parent = stack.length > 0 ? stack[stack.length - 1] : null;
-            const fullPath = parent ? `${parent.pathPrefix}/${normalized}` : normalized;
-
-            const entry: KnowledgeIndexEntry = {
-                title: item.title,
-                normalizedPath: fullPath,
-                accessCount: item.count,
-                depth: item.level - 2,
-                children: []
-            };
-
-            if (parent) {
-                parent.entry.children.push(entry);
+            const parts = clean.match(/^(\S+)\s+(\S+)\s+(.+)$/);
+            if (parts) {
+                // Single line triple: s p o
+                currentSubject = parts[1].trim();
+                const p = parts[2].trim();
+                const o = parts[3].trim();
+                parsed.push({ s: currentSubject, p, o });
             } else {
-                entries.push(entry);
-            }
-
-            stack.push({ level: item.level, entry, pathPrefix: fullPath });
-        }
-
-        return {
-            abstract: abstractLines.join('\n').trim(),
-            entries
-        };
-    }
-
-    public flattenEntries(entries: KnowledgeIndexEntry[]): KnowledgeIndexEntry[] {
-        const result: KnowledgeIndexEntry[] = [];
-        const walk = (list: KnowledgeIndexEntry[]) => {
-            for (const item of list) {
-                result.push(item);
-                if (item.children.length > 0) {
-                    walk(item.children);
+                // Continuation line with predicate and object: p o (for currentSubject)
+                const predObjMatch = clean.match(/^(\S+)\s+(.+)$/);
+                if (predObjMatch && currentSubject) {
+                    const p = predObjMatch[1].trim();
+                    const o = predObjMatch[2].trim();
+                    parsed.push({ s: currentSubject, p, o });
                 }
             }
-        };
-        walk(entries);
-        return result;
+
+            if (isDotTerminated) {
+                currentSubject = "";
+            }
+        }
+        this.triples = parsed;
     }
 
-    public async incrementAccessCount(sectionPath: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<number> {
-        const rootUri = await this.getRootKnowledgeUri(workspaceFolder);
-        if (!rootUri) return 0;
+    public serializeTurtle(): string {
+        let ttl = `@prefix s: <http://lollms.io/ontology#> .\n`;
+        ttl += `@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n`;
+        ttl += `@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n`;
+        ttl += `@prefix owl: <http://www.w3.org/2002/07/owl#> .\n`;
+        ttl += `@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\n`;
 
-        let content = await this.readRootKnowledge(workspaceFolder);
-        if (!content) return 0;
+        // Section 1: TBox Vocabulary
+        ttl += `### ===================================================================\n`;
+        ttl += `### 🏛️ TBOX: FORMAL SOFTWARE ENGINEERING ONTOLOGY\n`;
+        ttl += `### ===================================================================\n\n`;
 
-        const cleanTarget = sectionPath.trim().replace(/^\.?\/+/, '').replace(/\/+$/, '');
-        const targetNormalized = cleanTarget.split(/[\/\\]+/).map(s => this.normalizeSectionName(s)).join('/');
-        const targetLeaf = this.normalizeSectionName(targetNormalized.split('/').pop() || targetNormalized);
+        const tboxSubjects = new Set(this.getBaselineOntologyTriples().map(t => t.s));
+        const tboxBySubject = new Map<string, { p: string, o: string }[]>();
+        const aboxBySubject = new Map<string, { p: string, o: string }[]>();
 
-        let newScore = 1;
-        let modified = false;
-
-        const lines = content.split(/\r?\n/);
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
-            const headerMatch = line.match(/^(#{3,6})\s+(.+)$/);
-            if (!headerMatch) continue;
-
-            const fullText = headerMatch[2].trim();
-            const cleanTitle = fullText.replace(/\[\d+\]\s*$/, '').trim();
-            const normTitle = this.normalizeSectionName(cleanTitle);
-
-            if (normTitle === targetLeaf || normTitle === targetNormalized) {
-                const countMatch = fullText.match(/\[(\d+)\]\s*$/);
-                const currentCount = countMatch ? parseInt(countMatch[1], 10) : 0;
-                newScore = currentCount + 1;
-                lines[i] = `${headerMatch[1]} ${cleanTitle} [${newScore}]`;
-                modified = true;
-                break;
+        for (const t of this.triples) {
+            if (tboxSubjects.has(t.s)) {
+                if (!tboxBySubject.has(t.s)) tboxBySubject.set(t.s, []);
+                tboxBySubject.get(t.s)!.push({ p: t.p, o: t.o });
+            } else {
+                if (!aboxBySubject.has(t.s)) aboxBySubject.set(t.s, []);
+                aboxBySubject.get(t.s)!.push({ p: t.p, o: t.o });
             }
         }
 
-        if (modified) {
-            await vscode.workspace.fs.writeFile(rootUri, Buffer.from(lines.join('\n'), 'utf8'));
+        for (const [subj, poList] of tboxBySubject.entries()) {
+            ttl += `${subj}\n`;
+            poList.forEach((po, idx) => {
+                const isLast = idx === poList.length - 1;
+                ttl += `    ${po.p} ${po.o} ${isLast ? ' .\n' : ' ;\n'}`;
+            });
+            ttl += '\n';
         }
 
-        return newScore;
+        // Section 2: ABox Individuals & Links
+        ttl += `### ===================================================================\n`;
+        ttl += `### 📦 ABOX: CODEBASE INSTANCES & ARCHITECTURAL RELATIONSHIPS\n`;
+        ttl += `### ===================================================================\n\n`;
+
+        for (const [subj, poList] of aboxBySubject.entries()) {
+            ttl += `${subj}\n`;
+            poList.forEach((po, idx) => {
+                const isLast = idx === poList.length - 1;
+                ttl += `    ${po.p} ${po.o} ${isLast ? ' .\n' : ' ;\n'}`;
+            });
+            ttl += '\n';
+        }
+
+        return ttl;
     }
 
-    public async updateKnowledge(
-        sectionPath: string,
-        newContent: string,
-        workspaceFolder?: vscode.WorkspaceFolder
-    ): Promise<{ success: boolean; uri?: vscode.Uri; error?: string }> {
-        const cleanPath = sectionPath.trim().replace(/^\.?\/+/, '').replace(/\/+$/, '');
-        const isRoot = !cleanPath || cleanPath === KnowledgeManager.ROOT_FILENAME;
-
-        const targetUri = await this.getSectionUri(cleanPath, workspaceFolder);
-        if (!targetUri) return { success: false, error: 'Cannot resolve knowledge directory.' };
+    public async saveGraph(workspaceFolder?: vscode.WorkspaceFolder): Promise<void> {
+        const dir = this.getKnowledgeDir(workspaceFolder);
+        const ttlUri = this.getKnowledgeTtlUri(workspaceFolder);
+        if (!dir || !ttlUri) return;
 
         try {
-            const dirUri = vscode.Uri.joinPath(targetUri, '..');
-            await vscode.workspace.fs.createDirectory(dirUri);
-            await vscode.workspace.fs.writeFile(targetUri, Buffer.from(newContent.trim() + '\n', 'utf8'));
-
-            if (!isRoot) {
-                await this.ensureEntryInRootIndex(cleanPath, workspaceFolder);
-            }
-
-            Logger.info(`Updated KNOWLEDGE.md at: ${targetUri.fsPath}`);
-            return { success: true, uri: targetUri };
+            await vscode.workspace.fs.createDirectory(dir);
+            const content = this.serializeTurtle();
+            await vscode.workspace.fs.writeFile(ttlUri, Buffer.from(content, 'utf8'));
         } catch (err: any) {
-            Logger.error(`Failed to update knowledge at ${cleanPath}: ${err.message}`);
-            return { success: false, error: err.message };
-        }
-    }
-
-    private async ensureEntryInRootIndex(sectionPath: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<void> {
-        const rootUri = await this.getRootKnowledgeUri(workspaceFolder);
-        if (!rootUri) return;
-
-        let content = await this.readRootKnowledge(workspaceFolder);
-        if (!content) return;
-
-        const segments = sectionPath.split(/[\/\\]+/).map(s => this.normalizeSectionName(s));
-        const leaf = segments[segments.length - 1];
-
-        const { entries } = this.parseIndexEntries(content);
-        const flat = this.flattenEntries(entries);
-        const exists = flat.some(e => e.normalizedPath === segments.join('/') || this.normalizeSectionName(e.title) === leaf);
-
-        if (!exists) {
-            const level = Math.min(6, 3 + (segments.length - 1));
-            const hashes = '#'.repeat(level);
-            const displayTitle = leaf.replace(/_/g, ' ');
-            const newIndexLine = `${hashes} ${displayTitle} [1]`;
-
-            if (content.includes('## Index')) {
-                content = content.replace(/(##\s+Index[^\n]*\n)/i, `$1${newIndexLine}\n`);
-            } else {
-                content = `${content.trim()}\n\n## Index\n${newIndexLine}\n`;
-            }
-
-            await vscode.workspace.fs.writeFile(rootUri, Buffer.from(content, 'utf8'));
+            Logger.error(`[KnowledgeManager] Failed to save ${KnowledgeManager.TTL_FILENAME}: ${err.message}`);
         }
     }
 
     /**
-     * Conducts a deep architectural scrutiny of the codebase and compiles the full KNOWLEDGE.md tree.
+     * Ingests an architectural insight emitted by the LLM into the unified Knowledge Graph.
      */
-    public async scrutinizeAndBuildFullTree(
-        lollmsAPI?: any,
-        codeGraphManager?: any,
-        contextManager?: any,
-        signal?: AbortSignal,
-        onProgress?: (status: string, pct: number) => void
-    ): Promise<{ success: boolean; sectionsCount: number; rootUri?: vscode.Uri; error?: string }> {
-        const folder = vscode.workspace.workspaceFolders?.[0];
-        if (!folder) return { success: false, sectionsCount: 0, error: 'No workspace folder open.' };
-
-        try {
-            if (onProgress) onProgress("Scrutinizing codebase structure & symbols...", 15);
-
-            if (codeGraphManager && (codeGraphManager.getBuildState() !== 'ready' || codeGraphManager.getGraphData().nodes.length === 0)) {
-                await codeGraphManager.buildGraph(undefined, (p: any) => {
-                    if (onProgress) onProgress(`Indexing symbols: ${p.status}`, Math.round(15 + p.percentage * 0.35));
-                });
-            }
-
-            const graphData = codeGraphManager?.getGraphData() || { nodes: [], edges: [] };
-            const projectName = folder.name || 'Workspace';
-
-            const rootDir = vscode.Uri.joinPath(folder.uri, '.lollms');
-            await vscode.workspace.fs.createDirectory(rootDir);
-            const knowledgeBaseDir = vscode.Uri.joinPath(rootDir, KnowledgeManager.SUBDIR_NAME);
-            await vscode.workspace.fs.createDirectory(knowledgeBaseDir);
-
-            if (onProgress) onProgress("Clustering files into architectural modules...", 55);
-
-            // Cluster nodes by directory path into clean section names
-            const fileNodes = graphData.nodes.filter((n: any) => n.type === 'file');
-            const clusters = new Map<string, { files: string[]; classes: any[]; functions: any[] }>();
-
-            const getCleanSection = (filePath?: string): string => {
-                if (!filePath) return 'Core_Services';
-                const parts = filePath.replace(/\\/g, '/').split('/').filter(p => Boolean(p) && p !== '.' && p !== '..');
-                if (parts.length <= 1) return 'Architecture_Overview';
-                const dir = parts[0] === 'src' && parts.length > 2 ? parts[1] : parts[0];
-                return this.normalizeSectionName(dir.charAt(0).toUpperCase() + dir.slice(1));
-            };
-
-            for (const fn of fileNodes) {
-                const sec = getCleanSection(fn.filePath);
-                if (!clusters.has(sec)) {
-                    clusters.set(sec, { files: [], classes: [], functions: [] });
-                }
-                clusters.get(sec)!.files.push(fn.filePath || fn.label);
-            }
-
-            // Distribute symbols to clusters
-            graphData.nodes.forEach((n: any) => {
-                if (n.type === 'class' || n.type === 'function' || n.type === 'method') {
-                    const sec = getCleanSection(n.filePath);
-                    if (!clusters.has(sec)) {
-                        clusters.set(sec, { files: [], classes: [], functions: [] });
-                    }
-                    if (n.type === 'class') clusters.get(sec)!.classes.push(n);
-                    else clusters.get(sec)!.functions.push(n);
-                }
-            });
-
-            if (!clusters.has('Architecture_Overview')) {
-                clusters.set('Architecture_Overview', { files: ['README.md', 'package.json'], classes: [], functions: [] });
-            }
-
-            if (onProgress) onProgress("Synthesizing section knowledge files...", 75);
-
-            let createdSectionsCount = 0;
-            const indexLines: string[] = [];
-
-            for (const [secName, data] of clusters.entries()) {
-                if (signal?.aborted) throw new Error("Scrutiny cancelled by user.");
-
-                const isMainOverview = secName === 'Architecture_Overview';
-                const accessCount = isMainOverview ? 2 : 0;
-                indexLines.push(`### ${secName} [${accessCount}]`);
-
-                // Generate Section KNOWLEDGE.md
-                let secMd = `## ${secName.replace(/_/g, ' ')}\n\n`;
-                secMd += `### Role & Responsibilities\n`;
-                secMd += `Handles ${secName.toLowerCase().replace(/_/g, ' ')} modules and associated domain logic.\n\n`;
-
-                secMd += `### Files In Section\n`;
-                secMd += (data.files.slice(0, 15).map(f => `- \`${f}\``).join('\n') || '- None') + '\n\n';
-
-                if (data.classes.length > 0) {
-                    secMd += `### Key Classes & Entities\n`;
-                    data.classes.slice(0, 8).forEach(c => {
-                        secMd += `- **\`${c.label}\`**${c.docstring ? `: ${c.docstring}` : ''}\n`;
-                    });
-                    secMd += '\n';
-                }
-
-                if (data.functions.length > 0) {
-                    secMd += `### Key Function & Method Signatures\n`;
-                    secMd += '```typescript\n';
-                    data.functions.slice(0, 12).forEach(f => {
-                        secMd += `${f.signature || f.label + '()'}\n`;
-                    });
-                    secMd += '```\n\n';
-                }
-
-                // Call and import relationships
-                const sectionEdges = graphData.edges.filter((e: any) => 
-                    data.files.some(f => e.source.includes(f) || e.target.includes(f))
-                );
-                const imports = sectionEdges.filter((e: any) => e.label === 'imports').slice(0, 10);
-                if (imports.length > 0) {
-                    secMd += `### Primary Dependencies\n`;
-                    imports.forEach((imp: any) => {
-                        const trg = graphData.nodes.find((n: any) => n.id === imp.target)?.label || imp.target;
-                        secMd += `- Imports: \`${trg}\`\n`;
-                    });
-                    secMd += '\n';
-                }
-
-                await this.updateKnowledge(secName, secMd, folder);
-                createdSectionsCount++;
-            }
-
-            if (onProgress) onProgress("Formulating Root KNOWLEDGE.md and Abstract...", 90);
-
-            // Generate Root KNOWLEDGE.md
-            const rootKnowledgeUri = await this.getRootKnowledgeUri(folder);
-            if (!rootKnowledgeUri) throw new Error("Could not create root knowledge URI.");
-
-            let abstractText = `This project (${projectName}) consists of ${fileNodes.length} discovered source files across ${clusters.size} core architectural modules. The codebase follows clean component boundaries, modular service decoupling, and strict type safety standards.`;
-            
-            // Try to extract doctrine from existing root knowledge if available
-            const existingRoot = await this.readRootKnowledge(folder);
-            if (existingRoot) {
-                const parsed = this.parseIndexEntries(existingRoot);
-                if (parsed.abstract.trim()) {
-                    abstractText = parsed.abstract.trim();
-                }
-            }
-
-            let rootMd = `# ${projectName}\n\n`;
-            rootMd += `## Abstract\n\n${abstractText}\n\n`;
-            rootMd += `## Index\n`;
-            rootMd += indexLines.join('\n') + '\n';
-
-            await vscode.workspace.fs.writeFile(rootKnowledgeUri, Buffer.from(rootMd, 'utf8'));
-
-            if (onProgress) onProgress("Complete! Knowledge tree ready.", 100);
-
-            return {
-                success: true,
-                sectionsCount: createdSectionsCount,
-                rootUri: rootKnowledgeUri
-            };
-        } catch (err: any) {
-            Logger.error("Scrutinize & Build Knowledge Tree failed:", err);
-            return { success: false, sectionsCount: 0, error: err.message };
-        }
-    }
-
-    public async resetKnowledge(workspaceFolder?: vscode.WorkspaceFolder): Promise<void> {
-        const root = this.getKnowledgeRootUri(workspaceFolder);
-        if (!root) return;
-
-        try {
-            const rootKnowledgeUri = vscode.Uri.joinPath(root, KnowledgeManager.ROOT_FILENAME);
-            await vscode.workspace.fs.delete(rootKnowledgeUri, { useTrash: true }).then(undefined, () => {});
-
-            const knowledgeDirUri = vscode.Uri.joinPath(root, KnowledgeManager.SUBDIR_NAME);
-            await vscode.workspace.fs.delete(knowledgeDirUri, { recursive: true, useTrash: true }).then(undefined, () => {});
-
-            const structUri = vscode.Uri.joinPath(root, 'structure.md');
-            await vscode.workspace.fs.delete(structUri, { useTrash: true }).then(undefined, () => {});
-
-            const folder = workspaceFolder || vscode.workspace.workspaceFolders?.[0];
-            const projectName = folder?.name || 'Workspace';
-
-            const initialKnowledge = `# ${projectName}
-
-## Abstract
-Knowledge base reset. Architectural findings and component contracts will be documented as the assistant works and learns.
-
-## Index
-### Architecture_Overview [1]
-### Core_Services [0]
-`;
-            await vscode.workspace.fs.writeFile(rootKnowledgeUri, Buffer.from(initialKnowledge, 'utf8'));
-            await vscode.workspace.fs.writeFile(structUri, Buffer.from(initialKnowledge, 'utf8'));
-
-            Logger.info("Knowledge Base reset successfully.");
-        } catch (err: any) {
-            Logger.error("Failed to reset knowledge base:", err);
-        }
-    }
-
-    public async renderContextKnowledge(
-        workspaceFolder?: vscode.WorkspaceFolder,
-        additionalUncollapsedPaths: string[] = []
+    public async recordInsight(
+        topic: string,
+        content: string,
+        files: string[] = [],
+        hashtags: string[] = [],
+        workspaceFolder?: vscode.WorkspaceFolder
     ): Promise<string> {
-        const rootContent = await this.readRootKnowledge(workspaceFolder);
-        if (!rootContent.trim()) {
-            return "";
+        await this.initializeGraph(workspaceFolder);
+
+        const cleanTopic = topic.trim() || 'General';
+        const cleanContent = content.trim();
+        const safeTopicId = cleanTopic.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+        const insightId = `s:insight_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const timestamp = new Date().toISOString();
+
+        // 1. Insight individual
+        this.addTriple({ s: insightId, p: 'rdf:type', o: 's:Insight' });
+        this.addTriple({ s: insightId, p: 's:topicName', o: `"${cleanTopic}"` });
+        this.addTriple({ s: insightId, p: 's:insightText', o: JSON.stringify(cleanContent) });
+        this.addTriple({ s: insightId, p: 's:timestamp', o: `"${timestamp}"^^xsd:dateTime` });
+
+        // 2. Connect to hashtags/topics
+        for (const tag of hashtags) {
+            const cleanTag = tag.replace(/^#/, '').trim().toLowerCase();
+            if (!cleanTag) continue;
+            const topicNode = `s:topic_${cleanTag}`;
+            this.addTriple({ s: topicNode, p: 'rdf:type', o: 's:Topic' });
+            this.addTriple({ s: topicNode, p: 's:name', o: `"${cleanTag}"` });
+            this.addTriple({ s: insightId, p: 's:hasTopic', o: topicNode });
         }
 
-        const { abstract, entries } = this.parseIndexEntries(rootContent);
-        const flat = this.flattenEntries(entries);
+        // 3. Connect to related files in the graph
+        for (const file of files) {
+            const cleanFile = file.replace(/\\/g, '/').trim();
+            if (!cleanFile) continue;
+            const fileNode = `s:file_${cleanFile.replace(/[^a-zA-Z0-9_]/g, '_')}`;
 
-        const scored = flat.filter(e => e.accessCount > 0);
-        scored.sort((a, b) => b.accessCount - a.accessCount);
+            // Ensure file node exists in graph
+            this.addTriple({ s: fileNode, p: 'rdf:type', o: 's:File' });
+            this.addTriple({ s: fileNode, p: 's:path', o: `"${cleanFile}"` });
+            this.addTriple({ s: fileNode, p: 's:name', o: `"${path.basename(cleanFile)}"` });
 
-        const uncollapseTargetCount = Math.max(1, Math.ceil(scored.length * 0.3));
-        const topScored = scored.slice(0, uncollapseTargetCount);
+            // Bi-directional understanding relations
+            this.addTriple({ s: insightId, p: 's:relatesTo', o: fileNode });
+            this.addTriple({ s: insightId, p: 's:explains', o: fileNode });
+        }
 
-        const uncollapsedPaths = new Set<string>();
-        topScored.forEach(e => uncollapsedPaths.add(e.normalizedPath));
-        additionalUncollapsedPaths.forEach(p => {
-            const clean = p.trim().replace(/^\.?\/+/, '').replace(/\/+$/, '');
-            const norm = clean.split(/[\/\\]+/).map(s => this.normalizeSectionName(s)).join('/');
-            uncollapsedPaths.add(norm);
+        await this.saveGraph(workspaceFolder);
+        Logger.info(`[KnowledgeManager] Ingested insight '${cleanTopic}' with ${files.length} files and ${hashtags.length} hashtags.`);
+        return insightId;
+    }
+
+    public addTriple(triple: GraphTriple): void {
+        // Prevent exact duplicates
+        const exists = this.triples.some(t => t.s === triple.s && t.p === triple.p && t.o === triple.o);
+        if (!exists) {
+            this.triples.push(triple);
+        }
+    }
+
+    public removeTriplesForSubject(subject: string): void {
+        this.triples = this.triples.filter(t => t.s !== subject);
+    }
+
+    public removeTriplesForFile(filePath: string): void {
+        const cleanPath = filePath.replace(/\\/g, '/').trim();
+        const fileNode = `s:file_${cleanPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+        // Remove triples where file is subject or object
+        this.triples = this.triples.filter(t => t.s !== fileNode && t.o !== fileNode);
+    }
+
+    /**
+     * Synchronizes AST code graph nodes and edges into the unified Knowledge Graph ABox.
+     * Completely populates instances of s:File, s:Class, s:Function, s:Method, and s:Library.
+     */
+    /**
+     * Synchronizes AST code graph nodes and edges into the unified Knowledge Graph ABox.
+     * Maps nodes to formal ontology classes and links relationships cleanly.
+     */
+    public async syncCodeGraph(
+        nodes: Array<{ id: string; label: string; type: string; filePath?: string; signature?: string; docstring?: string }>,
+        edges: Array<{ source: string; target: string; label: string }>,
+        workspaceFolder?: vscode.WorkspaceFolder
+    ): Promise<void> {
+        await this.initializeGraph(workspaceFolder);
+
+        const { isPathBlockedFromGraph } = require('./codeGraphManager');
+
+        // Filter incoming nodes to strictly valid project source files
+        const validNodes = nodes.filter(n => !n.filePath || !isPathBlockedFromGraph(n.filePath));
+        const nodeIdMap = new Map<string, string>(); // oldId -> formalId
+
+        validNodes.forEach(n => {
+            const formalId = n.id.startsWith('s:') ? n.id : `s:${n.id}`;
+            nodeIdMap.set(n.id, formalId);
+            nodeIdMap.set(formalId, formalId);
         });
 
-        const uncollapsedContents: { path: string; title: string; content: string }[] = [];
+        const validEdges = edges.filter(e => {
+            const src = nodeIdMap.get(e.source);
+            const trg = nodeIdMap.get(e.target);
+            return src !== undefined && trg !== undefined;
+        });
 
-        for (const itemPath of uncollapsedPaths) {
-            const text = await this.readSectionKnowledge(itemPath, workspaceFolder);
-            if (text.trim()) {
-                const title = itemPath.split('/').pop()?.replace(/_/g, ' ') || itemPath;
-                uncollapsedContents.push({
-                    path: itemPath,
-                    title,
-                    content: text.trim()
-                });
+        // Retain formal TBox baseline and human/AI insights & topic tags
+        const baselineTbox = this.getBaselineOntologyTriples();
+        const preservedInsights = this.triples.filter(t => 
+            t.s.startsWith('s:insight_') || 
+            t.s.startsWith('s:topic_') ||
+            t.p === 's:hasTopic' ||
+            t.p === 's:explainsArtifact'
+        );
+
+        this.triples = [...baselineTbox, ...preservedInsights];
+
+        // Map AST types to formal OWL classes
+        const typeMapping: Record<string, string> = {
+            'file': 's:SourceFile',
+            'class': 's:ClassDefinition',
+            'interface': 's:InterfaceDefinition',
+            'function': 's:FunctionDefinition',
+            'method': 's:MethodDefinition',
+            'library': 's:ExternalLibrary'
+        };
+
+        // Map edge labels to formal OWL object properties
+        const edgeMapping: Record<string, string> = {
+            'contains': 's:containsEntity',
+            'imports': 's:importsModule',
+            'calls': 's:invokesFunction',
+            'inherits': 's:inheritsFrom'
+        };
+
+        for (const n of validNodes) {
+            const nodeId = nodeIdMap.get(n.id)!;
+            const rdfClass = typeMapping[n.type.toLowerCase()] || 's:CodeEntity';
+
+            this.addTriple({ s: nodeId, p: 'rdf:type', o: rdfClass });
+            this.addTriple({ s: nodeId, p: 's:name', o: `"${n.label.replace(/"/g, "'")}"` });
+
+            if (n.filePath) {
+                this.addTriple({ s: nodeId, p: 's:filePath', o: `"${n.filePath.replace(/\\/g, '/')}"` });
+            }
+            if (n.signature) {
+                this.addTriple({ s: nodeId, p: 's:signature', o: JSON.stringify(n.signature) });
+            }
+            if (n.docstring) {
+                this.addTriple({ s: nodeId, p: 's:docstring', o: JSON.stringify(n.docstring.replace(/[\r\n]+/g, ' ')) });
             }
         }
 
-        let output = `## 🏛️ CODE KNOWLEDGE (KNOWLEDGE.md)\n\n`;
-        output += `${rootContent.trim()}\n\n`;
+        for (const e of validEdges) {
+            const src = nodeIdMap.get(e.source)!;
+            const trg = nodeIdMap.get(e.target)!;
+            const prop = edgeMapping[e.label.toLowerCase()] || `s:${e.label}`;
+            this.addTriple({ s: src, p: prop, o: trg });
+        }
 
-        if (uncollapsedContents.length > 0) {
-            output += `### 📖 UNCOLLAPSED KNOWLEDGE SECTIONS (Top 30% Active)\n`;
-            for (const section of uncollapsedContents) {
-                output += `\n#### 📌 Section: \`${section.path}\` (${section.title})\n`;
-                output += `\`\`\`markdown\n${section.content}\n\`\`\`\n`;
+        await this.saveGraph(workspaceFolder);
+        Logger.info(`[KnowledgeManager] Full ABox synchronized: ${validNodes.length} code entities and ${validEdges.length} semantic relationships saved to ${KnowledgeManager.TTL_FILENAME}.`);
+    }
+
+    /**
+     * Incrementally synchronizes a single file's AST and relationships into the ABox.
+     */
+    public async syncFileToABox(
+        relPath: string,
+        nodes: Array<{ id: string; label: string; type: string; signature?: string; docstring?: string }>,
+        edges: Array<{ source: string; target: string; label: string }>,
+        workspaceFolder?: vscode.WorkspaceFolder
+    ): Promise<void> {
+        const { isPathBlockedFromGraph } = require('./codeGraphManager');
+        if (isPathBlockedFromGraph(relPath)) {
+            return;
+        }
+
+        await this.initializeGraph(workspaceFolder);
+
+        const cleanPath = relPath.replace(/\\/g, '/').trim();
+        this.removeTriplesForFile(cleanPath);
+
+        const fileNodeId = `s:file_${cleanPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+        this.addTriple({ s: fileNodeId, p: 'rdf:type', o: 's:File' });
+        this.addTriple({ s: fileNodeId, p: 's:path', o: `"${cleanPath}"` });
+        this.addTriple({ s: fileNodeId, p: 's:name', o: `"${path.basename(cleanPath)}"` });
+
+        for (const n of nodes) {
+            const typeCap = n.type ? (n.type.charAt(0).toUpperCase() + n.type.slice(1)) : 'Symbol';
+            const symId = `s:sym_${cleanPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${n.label.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+            this.addTriple({ s: symId, p: 'rdf:type', o: `s:${typeCap}` });
+            this.addTriple({ s: symId, p: 's:name', o: `"${n.label.replace(/"/g, "'")}"` });
+            this.addTriple({ s: symId, p: 's:path', o: `"${cleanPath}"` });
+            this.addTriple({ s: fileNodeId, p: 's:contains', o: symId });
+
+            if (n.signature) {
+                this.addTriple({ s: symId, p: 's:signature', o: JSON.stringify(n.signature) });
+            }
+            if (n.docstring) {
+                this.addTriple({ s: symId, p: 's:docstring', o: JSON.stringify(n.docstring.replace(/[\r\n]+/g, ' ')) });
+            }
+        }
+
+        for (const e of edges) {
+            const src = e.source.startsWith('s:') ? e.source : `s:${e.source}`;
+            const trg = e.target.startsWith('s:') ? e.target : `s:${e.target}`;
+            const rel = e.label.startsWith('s:') ? e.label : `s:${e.label}`;
+            this.addTriple({ s: src, p: rel, o: trg });
+        }
+
+        await this.saveGraph(workspaceFolder);
+    }
+
+    /**
+     * Executes SPARQL-lite queries over the unified graph.
+     */
+    public async executeSparql(query: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
+        await this.initializeGraph(workspaceFolder);
+
+        const cleanQuery = query.replace(/#.*/g, '').trim();
+        const selectMatch = cleanQuery.match(/SELECT\s+(DISTINCT\s+)?([\?\*\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}(?:\s*LIMIT\s+(\d+))?/i);
+        const askMatch = cleanQuery.match(/ASK\s+WHERE\s*\{([\s\S]+?)\}/i);
+
+        if (!selectMatch && !askMatch) {
+            return `### ❌ SPARQL Query Error\nSupported syntax: \`SELECT ?var WHERE { ?s ?p ?o . }\` or \`ASK WHERE { ... }\`.\nQuery: \`\`\`sparql\n${query}\n\`\`\``;
+        }
+
+        const whereClause = selectMatch ? selectMatch[3].trim() : askMatch![1].trim();
+        const statements = whereClause.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/).filter(s => s.trim().length > 0);
+
+        const triplePatterns: GraphTriple[] = [];
+        const filters: string[] = [];
+
+        for (const stmt of statements) {
+            const trimmed = stmt.trim();
+            const fMatch = trimmed.match(/^FILTER\s*\(([\s\S]+)\)$/i);
+            if (fMatch) {
+                filters.push(fMatch[1].trim());
+            } else {
+                const parts = trimmed.split(/\s+/);
+                if (parts.length >= 3) {
+                    let s = parts[0];
+                    let p = parts[1];
+                    let o = parts.slice(2).join(' ');
+                    if (p === 'a') p = 'rdf:type';
+                    triplePatterns.push({ s, p, o });
+                }
+            }
+        }
+
+        const matchTerm = (actual: string, queryTerm: string): boolean => {
+            if (!actual || !queryTerm) return false;
+            const cleanA = actual.replace(/^s:/i, '').replace(/['"]/g, '').toLowerCase().trim();
+            const cleanQ = queryTerm.replace(/^s:/i, '').replace(/['"]/g, '').toLowerCase().trim();
+            return cleanA === cleanQ;
+        };
+
+        let solutions: Record<string, string>[] = [{}];
+
+        for (const pattern of triplePatterns) {
+            const nextSolutions: Record<string, string>[] = [];
+
+            for (const binding of solutions) {
+                const sBound = pattern.s.startsWith('?') ? binding[pattern.s] : pattern.s;
+                const pBound = pattern.p.startsWith('?') ? binding[pattern.p] : pattern.p;
+                const oBound = pattern.o.startsWith('?') ? binding[pattern.o] : pattern.o;
+
+                for (const t of this.triples) {
+                    const sMatch = !sBound || matchTerm(t.s, sBound);
+                    const pMatch = !pBound || matchTerm(t.p, pBound);
+                    const oMatch = !oBound || matchTerm(t.o, oBound);
+
+                    if (sMatch && pMatch && oMatch) {
+                        const newBinding = { ...binding };
+                        if (pattern.s.startsWith('?') && !binding[pattern.s]) newBinding[pattern.s] = t.s;
+                        if (pattern.p.startsWith('?') && !binding[pattern.p]) newBinding[pattern.p] = t.p;
+                        if (pattern.o.startsWith('?') && !binding[pattern.o]) newBinding[pattern.o] = t.o;
+                        nextSolutions.push(newBinding);
+                    }
+                }
+            }
+            solutions = nextSolutions;
+            if (solutions.length === 0) break;
+        }
+
+        // Apply filters
+        if (filters.length > 0) {
+            solutions = solutions.filter(b => {
+                return filters.every(f => {
+                    const regMatch = f.match(/regex\s*\(\s*(\?[a-zA-Z0-9_]+)\s*,\s*['"]([^'"]+)['"](?:\s*,\s*['"]([iI])['"])?\s*\)/i);
+                    if (regMatch) {
+                        const val = (b[regMatch[1]] || '').replace(/^"|"$/g, '');
+                        try {
+                            const re = new RegExp(regMatch[2], regMatch[3] || '');
+                            return re.test(val);
+                        } catch { return false; }
+                    }
+                    return true;
+                });
+            });
+        }
+
+        if (askMatch) {
+            return `### 🔍 SPARQL ASK Verdict: \`${solutions.length > 0 ? 'true' : 'false'}\``;
+        }
+
+        if (solutions.length === 0) {
+            return `### 🔍 SPARQL Query Results\n*(0 matches found across ${this.triples.length} triples)*`;
+        }
+
+        const selectStr = selectMatch![2].trim();
+        const vars = selectStr === '*' 
+            ? Object.keys(solutions[0])
+            : selectStr.split(/\s+/).filter(v => v.startsWith('?'));
+
+        let table = `### 🔍 SPARQL Query Results (${solutions.length} matches)\n\n`;
+        table += `| ${vars.map(v => `**${v}**`).join(' | ')} |\n`;
+        table += `| ${vars.map(() => '---').join(' | ')} |\n`;
+
+        for (const sol of solutions.slice(0, 50)) {
+            const row = vars.map(v => {
+                const val = sol[v] || '(null)';
+                return val.replace(/^"|"$/g, '');
+            });
+            table += `| ${row.join(' | ')} |\n`;
+        }
+
+        return table;
+    }
+
+    /**
+     * Extracts Cytoscape-compatible high-level graph elements (nodes & edges)
+     * representing the ontology: Files, Classes, Functions, Insights, Topics, and their links.
+     */
+    public async getHighLevelGraphElements(workspaceFolder?: vscode.WorkspaceFolder): Promise<{ nodes: any[]; edges: any[] }> {
+        await this.initializeGraph(workspaceFolder);
+
+        const nodesMap = new Map<string, any>();
+        const edgesList: any[] = [];
+        const { isPathBlockedFromGraph } = require('./codeGraphManager');
+
+        // 1. Scan triples for individuals
+        const tboxClasses = new Set([
+            's:SoftwareArtifact', 's:SourceFile', 's:CodeEntity', 's:ClassDefinition',
+            's:InterfaceDefinition', 's:FunctionDefinition', 's:MethodDefinition',
+            's:ExternalLibrary', 's:ArchitecturalInsight', 's:TopicTag',
+            's:containsEntity', 's:importsModule', 's:invokesFunction', 's:inheritsFrom',
+            's:explainsArtifact', 's:hasTopic', 's:name', 's:filePath', 's:startLine',
+            's:signature', 's:docstring', 's:linesCount', 's:insightText', 's:timestamp',
+            'owl:Class', 'owl:ObjectProperty', 'owl:DatatypeProperty', 'rdfs:Class', 'rdf:Property'
+        ]);
+
+        for (const t of this.triples) {
+            if (tboxClasses.has(t.s) || tboxClasses.has(t.o)) {
+                if (t.p === 'rdf:type' && (t.o === 'owl:Class' || t.o === 'owl:ObjectProperty' || t.o === 'owl:DatatypeProperty' || t.o === 'rdfs:Class')) {
+                    continue;
+                }
+            }
+
+            const sId = t.s;
+            if (!nodesMap.has(sId)) {
+                nodesMap.set(sId, {
+                    id: sId,
+                    label: sId.replace(/^s:/, '').replace(/^[a-z]+_/i, ''),
+                    type: 'entity'
+                });
+            }
+
+            if (t.p === 'rdf:type') {
+                const rawType = t.o.replace(/^s:/, '');
+                let simplifiedType = 'entity';
+                if (rawType.includes('SourceFile') || rawType === 'File') simplifiedType = 'file';
+                else if (rawType.includes('Class')) simplifiedType = 'class';
+                else if (rawType.includes('Interface')) simplifiedType = 'interface';
+                else if (rawType.includes('Function')) simplifiedType = 'function';
+                else if (rawType.includes('Method')) simplifiedType = 'method';
+                else if (rawType.includes('Library')) simplifiedType = 'library';
+                else if (rawType.includes('Insight')) simplifiedType = 'insight';
+                else if (rawType.includes('Topic')) simplifiedType = 'topic';
+                nodesMap.get(sId)!.type = simplifiedType;
+            } else if (t.p === 's:name' || t.p === 's:topicName' || t.p === 's:label') {
+                nodesMap.get(sId)!.label = t.o.replace(/^"|"$/g, '');
+            } else if (t.p === 's:filePath' || t.p === 's:path') {
+                const pathVal = t.o.replace(/^"|"$/g, '');
+                if (isPathBlockedFromGraph(pathVal)) {
+                    nodesMap.delete(sId);
+                    continue;
+                }
+                nodesMap.get(sId)!.filePath = pathVal;
+                nodesMap.get(sId)!.label = path.basename(pathVal) || pathVal;
+            }
+        }
+
+        // Secondary cleanup: remove any node whose path is blocked
+        for (const [id, node] of nodesMap.entries()) {
+            if (node.filePath && isPathBlockedFromGraph(node.filePath)) {
+                nodesMap.delete(id);
+            }
+        }
+
+        // 2. Scan relationships
+        const relProps = new Set([
+            's:containsEntity', 's:contains',
+            's:importsModule', 's:imports',
+            's:invokesFunction', 's:calls',
+            's:inheritsFrom', 's:inherits',
+            's:explainsArtifact', 's:explains',
+            's:hasTopic'
+        ]);
+
+        for (const t of this.triples) {
+            if (relProps.has(t.p)) {
+                const targetId = t.o.startsWith('s:') ? t.o : `s:${t.o}`;
+                if (nodesMap.has(t.s) && nodesMap.has(targetId)) {
+                    let friendlyLabel = t.p.replace(/^s:/, '');
+                    if (friendlyLabel === 'containsEntity') friendlyLabel = 'contains';
+                    else if (friendlyLabel === 'importsModule') friendlyLabel = 'imports';
+                    else if (friendlyLabel === 'invokesFunction') friendlyLabel = 'calls';
+                    else if (friendlyLabel === 'inheritsFrom') friendlyLabel = 'inherits';
+                    else if (friendlyLabel === 'explainsArtifact') friendlyLabel = 'explains';
+
+                    edgesList.push({
+                        id: `edge_${t.s}_${friendlyLabel}_${targetId}`.replace(/[^a-zA-Z0-9_]/g, '_'),
+                        source: t.s,
+                        target: targetId,
+                        label: friendlyLabel
+                    });
+                }
+            }
+        }
+
+        let allNodes = Array.from(nodesMap.values());
+
+        // Fail-safe: If graph is empty, load active context files from workspace
+        if (allNodes.length <= 1) {
+            const folder = workspaceFolder || vscode.workspace.workspaceFolders?.[0];
+            if (folder) {
+                try {
+                    const findUris = await vscode.workspace.findFiles(
+                        new vscode.RelativePattern(folder, '**/*.{ts,js,py,vue,cs,cpp}'),
+                        '**/{node_modules,venv,.venv,dist,build,out,data,data_workspace,.lollms}/**',
+                        30
+                    );
+                    findUris.forEach(u => {
+                        const rel = path.relative(folder.uri.fsPath, u.fsPath).replace(/\\/g, '/');
+                        if (!isPathBlockedFromGraph(rel)) {
+                            const id = `s:file_${rel.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+                            if (!nodesMap.has(id)) {
+                                nodesMap.set(id, {
+                                    id,
+                                    label: path.basename(rel),
+                                    type: 'file',
+                                    filePath: rel
+                                });
+                            }
+                        }
+                    });
+                    allNodes = Array.from(nodesMap.values());
+                } catch {}
+            }
+        }
+
+        return {
+            nodes: allNodes.slice(0, 80),
+            edges: edgesList.slice(0, 150)
+        };
+    }
+
+    /**
+     * Renders a high-level, compact Knowledge Graph summary for prompt grounding.
+     * Informs the model about the graph structure and provides instructions on how
+     * to deepen understanding via SPARQL queries.
+     */
+    public async renderContextKnowledge(workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
+        await this.initializeGraph(workspaceFolder);
+        if (this.triples.length === 0) return "";
+
+        // Tally high-level entities
+        let fileCount = 0;
+        let classCount = 0;
+        let funcCount = 0;
+        const topicSet = new Set<string>();
+        const insightMap = new Map<string, { topic: string; text: string; files: string[]; hashtags: string[] }>();
+
+        for (const t of this.triples) {
+            if (t.p === 'rdf:type') {
+                if (t.o === 's:File') fileCount++;
+                else if (t.o === 's:Class') classCount++;
+                else if (t.o === 's:Function') funcCount++;
+            }
+            if (t.p === 's:hasTopic') {
+                topicSet.add(t.o.replace(/^s:topic_/, ''));
+            }
+            if (t.s.startsWith('s:insight_')) {
+                if (!insightMap.has(t.s)) {
+                    insightMap.set(t.s, { topic: '', text: '', files: [], hashtags: [] });
+                }
+                const entry = insightMap.get(t.s)!;
+                if (t.p === 's:topicName') entry.topic = t.o.replace(/^"|"$/g, '');
+                if (t.p === 's:insightText') {
+                    try { entry.text = JSON.parse(t.o); } catch { entry.text = t.o.replace(/^"|"$/g, ''); }
+                }
+                if (t.p === 's:relatesTo') entry.files.push(t.o.replace(/^s:file_/, '').replace(/_/g, '/'));
+                if (t.p === 's:hasTopic') entry.hashtags.push('#' + t.o.replace(/^s:topic_/, ''));
+            }
+        }
+
+        const recentInsights = Array.from(insightMap.values()).reverse().slice(0, 5);
+
+        let output = `### 🕸️ KNOWLEDGE GRAPH TOP-LEVEL TOPOLOGY (.lollms/knowledge.ttl)\n`;
+        output += `- **Entities**: ${fileCount} Files · ${classCount} Classes · ${funcCount} Functions · ${insightMap.size} Architectural Insights · ${topicSet.size} Topics\n`;
+        if (topicSet.size > 0) {
+            output += `- **Indexed Topics**: ${Array.from(topicSet).slice(0, 10).map(t => `#${t}`).join(' ')}\n`;
+        }
+        output += `\n> 💡 **SPARQL Deepening Protocol**: This is a high-level graph projection. When you need deeper contracts, function signatures, caller/callee relations, or deeper insight contents, query the ontology with: \`<query_architecture>SELECT ?func ?doc WHERE { ?class s:contains ?func . ?func s:docstring ?doc } ...</query_architecture>\`.\n\n`;
+
+        if (recentInsights.length > 0) {
+            output += `#### 🧠 Key Architectural Insights:\n`;
+            for (const ins of recentInsights) {
+                const filesPart = ins.files.length > 0 ? ` [Files: ${ins.files.map(f => `\`${f}\``).join(', ')}]` : '';
+                output += `- **${ins.topic}** ${ins.hashtags.join(' ')}${filesPart}\n`;
+                if (ins.text) {
+                    const snippet = ins.text.length > 250 ? ins.text.substring(0, 240) + '...' : ins.text;
+                    output += `  > ${snippet.replace(/\n+/g, ' ')}\n`;
+                }
             }
         }
 
         return output.trim();
+    }
+
+    public async readRootKnowledge(workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
+        return await this.renderContextKnowledge(workspaceFolder);
+    }
+
+    public async readSectionKnowledge(sectionPath: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
+        await this.initializeGraph(workspaceFolder);
+        const cleanSection = sectionPath.replace(/^#/, '').trim().toLowerCase();
+        for (const t of this.triples) {
+            if (t.s.startsWith('s:insight_') && t.p === 's:topicName') {
+                const topicVal = t.o.replace(/^"|"$/g, '').toLowerCase();
+                if (topicVal === cleanSection || topicVal.includes(cleanSection)) {
+                    const textTriple = this.triples.find(tr => tr.s === t.s && tr.p === 's:insightText');
+                    if (textTriple) {
+                        try {
+                            return JSON.parse(textTriple.o);
+                        } catch {
+                            return textTriple.o.replace(/^"|"$/g, '');
+                        }
+                    }
+                }
+            }
+        }
+        return "";
+    }
+
+    public async incrementAccessCount(_sectionPath: string): Promise<number> {
+        return 1;
+    }
+
+    public async updateKnowledge(sectionPath: string, content: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<void> {
+        const topic = sectionPath.trim() || 'Architecture Knowledge';
+        await this.recordInsight(topic, content, [], ['#architecture', '#knowledge'], workspaceFolder);
+    }
+
+    public async resetKnowledge(workspaceFolder?: vscode.WorkspaceFolder): Promise<void> {
+        const ttlUri = this.getKnowledgeTtlUri(workspaceFolder);
+        if (ttlUri) {
+            try { await vscode.workspace.fs.delete(ttlUri); } catch {}
+        }
+        this.triples = this.getBaselineOntologyTriples();
+        this.initialized = true;
+        await this.saveGraph(workspaceFolder);
     }
 }

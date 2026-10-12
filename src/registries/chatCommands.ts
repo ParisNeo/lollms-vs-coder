@@ -10,6 +10,39 @@ import { getAvailableContextSelections } from '../commands/contextCommands';
 
 export async function registerChatCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.copyChatHistory', async (item?: any) => {
+        let disc: any = null;
+        if (item && item.discussion) {
+            disc = item.discussion;
+        } else if (ChatPanel.currentPanel) {
+            await ChatPanel.currentPanel.copyHistoryToClipboard();
+            return;
+        } else {
+            const all = await services.discussionManager.getAllDiscussions();
+            if (all.length > 0) disc = all[0];
+        }
+
+        if (!disc) {
+            vscode.window.showWarningMessage("No active discussion found.");
+            return;
+        }
+
+        let historyText = `## 🕒 CHAT HISTORY\n\n`;
+        (disc.messages || []).filter((m: any) => !m.skipInPrompt).forEach((m: any) => {
+            let raw = Array.isArray(m.content) ? m.content.map((c: any) => c.type === 'text' ? c.text : '[Image]').join('\n') : (m.content || '');
+            const cleaned = stripThinkingTags(raw)
+                .replace(/<lollms_tool\b[^>]*>[\s\S]*?<\/lollms_tool>/gi, '')
+                .replace(/<details\s+class=["']processing-block["']>[\s\S]*?<\/details>/gi, '')
+                .replace(/<details\s+class=["']lollms-form-block["']>[\s\S]*?<\/details>/gi, '')
+                .trim();
+            if (cleaned) {
+                historyText += `### ${m.role.toUpperCase()}\n${cleaned}\n\n`;
+            }
+        });
+        await vscode.env.clipboard.writeText(historyText.trim() + '\n');
+        vscode.window.showInformationMessage("✅ Chat history copied to clipboard.");
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => {
         services.treeProviders.discussion?.refresh();
     }));
@@ -118,12 +151,13 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
                 discussion.capabilities.userPreferences = params.userPreferences;
             }
 
-            // Build localized Folder Settings based on selected folders
+            // Build localized Folder Settings based on selected folders (default to all active if empty)
             const folderSettings: Record<string, any> = {};
             const allFolders = vscode.workspace.workspaceFolders || [];
+            const hasExplicitFolderSelections = Array.isArray(params.selectedFolders) && params.selectedFolders.length > 0;
             allFolders.forEach(f => {
                 const uriStr = f.uri.toString();
-                const isSelected = params.selectedFolders.includes(uriStr);
+                const isSelected = hasExplicitFolderSelections ? params.selectedFolders.includes(uriStr) : true;
                 folderSettings[uriStr] = { tree: isSelected, content: isSelected };
             });
             discussion.capabilities.folderSettings = folderSettings;

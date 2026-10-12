@@ -2379,6 +2379,20 @@ export function updateBadges() {
     if (dom.capHerdParallelGeneration) dom.capHerdParallelGeneration.checked = !!caps.herdParallelGeneration;
     if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds?.toString() || '2';
     if (dom.capProjectMemory) dom.capProjectMemory.checked = caps.projectMemoryEnabled !== false;
+
+    const isFast = !!caps.fastMode;
+    const fastModeBtn = document.getElementById('toggleFastModeBtn');
+    if (fastModeBtn) {
+        fastModeBtn.classList.toggle('active', isFast);
+    }
+
+    const fastModeInputBtn = document.getElementById('fastModeInputBtn');
+    if (fastModeInputBtn) {
+        fastModeInputBtn.classList.toggle('active', isFast);
+        fastModeInputBtn.setAttribute('title', isFast
+            ? "Fast Mode: ACTIVE (Step 2 Plan & Step 3 Code fused in one run). Click to deactivate."
+            : "Fast Mode: INACTIVE. Click to activate (fuses Step 2 Plan & Step 3 Code in one run).");
+    }
 }
 // Global exposure for events.ts
 (window as any).closeProfileEditor = () => {

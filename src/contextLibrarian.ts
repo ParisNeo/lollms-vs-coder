@@ -376,14 +376,19 @@ export class ContextLibrarian {
             }
         }
 
+        const rawReport = governorReport || signatures || workerAdvice || decision?.rationale || 'Codebase dependencies analyzed.';
+        const formattedReport = rawReport.startsWith('Librarian agent report:')
+            ? rawReport
+            : `Librarian agent report:\n${rawReport}`;
+
         return {
             keptFiles,
             mutedFiles,
             addedFiles: addedFiles || newlyAddedFiles,
-            rationale: decision?.rationale || workerAdvice || `Context optimized for target budget (${targetBudget.toLocaleString()} tok).`,
+            rationale: formattedReport,
             advice: workerAdvice,
             signatures,
-            governorReport,
+            governorReport: formattedReport,
             discoverySteps,
             totalTokens,
             liberatedTokens,
@@ -931,6 +936,14 @@ Analyze the requirements. If you lack information on contracts or implementation
             }
 
             const currentThoughts = cleanActionTagsFromText(cleanResponse) || cleanResponse;
+
+            // Track any tested SPARQL queries executed during this round to include in findings
+            const sparqlInRound = cleanResponse.match(/<sparql\b[^>]*query=["']([\s\S]*?)["'][^>]*\/>/i) ||
+                                  cleanResponse.match(/<sparql\b[^>]*>([\s\S]*?)<\/sparql>/i);
+            if (sparqlInRound && sparqlInRound[1]) {
+                const queryText = sparqlInRound[1].trim();
+                extractedReport += (extractedReport ? '\n\n' : '') + `#### 📊 Tested Architecture Query (SPARQL)\n\`\`\`sparql\n${queryText}\n\`\`\``;
+            }
 
             const structMatch = cleanResponse.match(/<structure\b([^>]*?)>([\s\S]*?)<\/structure>/i);
             if (structMatch && structMatch[2] !== undefined) {
@@ -1677,8 +1690,9 @@ ${transcript}`;
             : (contextData.selectedFilesContent || "");
 
         const projectStateText = `
-### 📂 ATTACHED PROJECT CONTEXT
-I am providing you with the current, ground-truth state of my project files and the technical briefing.
+### 📂 ATTACHED PROJECT CONTEXT (CURRENT GROUND TRUTH)
+I am providing you with the real-time, ground-truth state of my project files on disk and in my editor.
+NOTE: This loaded content is your SOLE source of truth. Do NOT assume that patches or changes you suggested in previous turns are applied unless they appear in the file content below.
 
 ${briefingText && !briefingText.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefingText}\n` : ""}
 #### 🌳 PROJECT STRUCTURE

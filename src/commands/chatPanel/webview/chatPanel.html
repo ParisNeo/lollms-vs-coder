@@ -240,6 +240,7 @@
                             <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
                             <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
                             <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
+                            <button class="menu-item" id="copyHistoryButton"><i class="codicon codicon-history"></i><span>Copy Chat History Only</span></button>
                             <button class="menu-item" id="copySystemPromptButton"><i class="codicon codicon-shield"></i><span>Copy System Prompt Only</span></button>
                             <button class="menu-item" id="copyTreeAndContentButton"><i class="codicon codicon-clippy"></i><span>Copy Tree & Content</span></button>
                             <button class="menu-item" id="runTestsMenuBtn"><i class="codicon codicon-beaker"></i><span>Run Tests & Report to AI</span></button>
@@ -317,6 +318,7 @@
                         <div class="rich-input-toolbar">
                             <button class="toolbar-tool" id="jump-to-context-btn" title="Jump to Project Context / Dashboard"><i class="codicon codicon-dashboard"></i><span>Context</span></button>
                             <button class="toolbar-tool" data-wrap-type="librarian" title="Consult the Librarian for files, architecture, or codebase research"><i class="codicon codicon-library"></i><span>Librarian</span></button>
+                            <button class="toolbar-tool toggle-fast-mode-btn" id="toggleFastModeBtn" title="Fast Mode: Combine Phase 2 (Plan) and Phase 3 (Code) in the same run without waiting for confirmation"><i class="codicon codicon-zap"></i><span>Fast Mode</span></button>
                             <div class="toolbar-separator"></div>
                             <button class="toolbar-tool" data-wrap-type="python" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
                             <button class="toolbar-tool" data-wrap-type="code" title="Code Block"><i class="codicon codicon-code"></i><span>Code</span></button>
@@ -341,6 +343,7 @@
 
                                 <div class="control-buttons">
                                     <div class="voice-controls">
+                                        <button id="fastModeInputBtn" title="Fast Mode: Fuse Step 2 (Plan) and Step 3 (Code) in one response" class="voice-btn toggle-fast-mode-btn"><i class="codicon codicon-zap"></i></button>
                                         <button id="sttButton" title="Listen (STT)" class="voice-btn"><i class="codicon codicon-mic"></i></button>
                                         <button id="toggleReasoningEffortBtn" title="Toggle Reasoning Effort (Low / Medium / High)" class="voice-btn"><i class="codicon codicon-circuit-board"></i></button>
                                         <button id="toggleTempSliderBtn" title="Toggle Custom Temperature" class="voice-btn"><i class="codicon codicon-thermometer"></i></button>

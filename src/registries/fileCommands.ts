@@ -468,16 +468,24 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 edit.insert(fileUri, new vscode.Position(0, 0), content);
 
                 await vscode.workspace.applyEdit(edit);
+                const newDoc = await vscode.workspace.openTextDocument(fileUri);
+                await newDoc.save();
+
+                services.contextManager.refreshFileInCache(fileUri);
+                services.contextManager.clearRenderedTreeCache();
+
+                if (ChatPanel.currentPanel) {
+                    await ChatPanel.currentPanel.unmuteFiles([sanitizedFilePath]);
+                }
 
                 try {
-                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [filePath]);
+                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [sanitizedFilePath]);
                 } catch (e) {
                     Logger.warn(`Failed to auto-add new file to context: ${e}`);
                 }
 
                 if (!options?.silent) {
-                    const doc = await vscode.workspace.openTextDocument(fileUri);
-                    await vscode.window.showTextDocument(doc);
+                    await vscode.window.showTextDocument(newDoc);
                 }
                 return { success: true, alreadyApplied: false };
             }
@@ -771,13 +779,18 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 const applied = await vscode.workspace.applyEdit(edit);
                 if (applied) {
                     await originalDoc.save();
+                    services.contextManager.refreshFileInCache(originalUri);
+
+                    const relPath = vscode.workspace.asRelativePath(originalUri, false);
+                    await services.contextManager.getContextStateProvider()?.addFilesToContext([relPath]);
 
                     // Notify the active ChatPanel and sync the discussion state
                     const targetDiscussionId = metadata?.discussionId || ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
                     const panel = targetDiscussionId ? ChatPanel.panels.get(targetDiscussionId) || ChatPanel.currentPanel : ChatPanel.currentPanel;
 
                     if (panel) {
-                        const relPath = vscode.workspace.asRelativePath(originalUri, false);
+                        await panel.unmuteFiles([relPath]);
+                        panel.updateContextAndTokens({ isBackgroundSync: false });
 
                         if (metadata?.messageId && metadata?.blockIndex !== undefined) {
                             await panel.updateAppliedState(metadata.messageId, metadata.blockIndex, metadata.hunkIndex);
@@ -1249,7 +1262,26 @@ ${originalFileContent}
                     Logger.info(`[AiderMatch] Strategy '${result.strategy}' matched block ${originalHunkIndex} in ${sanitizedFilePath}`);
                 } else {
                     Logger.error(`[AiderMatch] Failed all strategies for block ${originalHunkIndex} in ${sanitizedFilePath}. Error: ${result.error}`);
-                    const hunkErrMsg = result.error || "Search block mismatch";
+                    let hunkErrMsg = result.error || "Search block mismatch";
+
+                    // 🔍 CROSS-FILE BLEED DETECTOR: Check if the SEARCH block actually belongs to another file in the context
+                    const provider = services.contextManager.getContextStateProvider();
+                    const otherFiles = provider ? provider.getIncludedFiles().filter(f => f.path !== sanitizedFilePath) : [];
+                    let contaminatingFile: string | null = null;
+
+                    for (const other of otherFiles) {
+                        const otherCached = (services.contextManager as any)._fileContentCache?.get(other.path);
+                        if (otherCached?.content && otherCached.content.includes(searchCode.trim())) {
+                            contaminatingFile = other.path;
+                            break;
+                        }
+                    }
+
+                    if (contaminatingFile) {
+                        hunkErrMsg = `CROSS-FILE CONTAMINATION DETECTED: The SEARCH block you provided for '${sanitizedFilePath}' does not exist in '${sanitizedFilePath}'. It was found inside '${contaminatingFile}'. You are patching the wrong file! Ensure your SEARCH block matches '${sanitizedFilePath}' directly.`;
+                        Logger.warn(`[replaceCode] ${hunkErrMsg}`);
+                    }
+
                     errors.push(hunkErrMsg);
                     failedHunks.push({ index: originalHunkIndex, error: hunkErrMsg });
 
@@ -1601,6 +1633,10 @@ ${originalContent}
                 await applyDiff(patchContent, filePath); 
                 services.contextManager.refreshFileInCache(fileUri);
                 services.contextManager.getContextStateProvider()?.addFilesToContext([filePath]).catch(() => {});
+                if (ChatPanel.currentPanel) {
+                    await ChatPanel.currentPanel.unmuteFiles([filePath]);
+                    ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: false });
+                }
 
                 if (!options?.silent) {
                     // Scroll to the patch location

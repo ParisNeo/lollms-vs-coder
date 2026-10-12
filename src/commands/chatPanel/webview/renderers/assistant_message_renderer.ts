@@ -13,11 +13,24 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
 
     // Detect message role accurately
     const isUser = safeMessageId.startsWith('user_') || wrapper.querySelector('.message')?.classList.contains('user-message');
-    const isLibrarian = safeMessageId.startsWith('governor_') || safeMessageId.startsWith('librarian_') || wrapper.dataset.personalityName?.includes('Governor') || wrapper.dataset.personalityName?.includes('Librarian');
-    const isSystem = !isLibrarian && (safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message'));
+    const isLibrarianReport = (typeof rawContent === 'string' && rawContent.startsWith('Librarian agent report:')) || safeMessageId.startsWith('lib_report_');
+    const isContextShield = safeMessageId.startsWith('verification_notice_') || (typeof rawContent === 'string' && rawContent.startsWith('Librarian Verification Notice:')) || wrapper.dataset.personalityName?.includes('Context Shield');
+    const isLibrarian = !isContextShield && (isLibrarianReport || safeMessageId.startsWith('governor_') || safeMessageId.startsWith('librarian_') || wrapper.dataset.personalityName?.includes('Governor') || wrapper.dataset.personalityName?.includes('Librarian'));
+    const isSystem = !isLibrarian && !isContextShield && (safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message'));
 
-    // Update avatar icon for Librarian
-    if (isLibrarian) {
+    // Update avatar icon for Librarian or Context Shield
+    if (isContextShield) {
+        const avatarDiv = wrapper.querySelector('.message-avatar') as HTMLElement;
+        const msgDiv = wrapper.querySelector('.message') as HTMLElement;
+        if (avatarDiv) {
+            avatarDiv.innerHTML = '<span class="codicon codicon-shield" style="color:var(--vscode-charts-blue)"></span>';
+            avatarDiv.style.backgroundColor = 'rgba(0, 122, 204, 0.1)';
+            avatarDiv.style.border = '1px solid var(--vscode-charts-blue)';
+        }
+        if (msgDiv) {
+            msgDiv.style.borderLeftColor = 'var(--vscode-charts-blue)';
+        }
+    } else if (isLibrarian) {
         const avatarDiv = wrapper.querySelector('.message-avatar') as HTMLElement;
         const msgDiv = wrapper.querySelector('.message') as HTMLElement;
         if (avatarDiv) {
@@ -56,12 +69,16 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
 
         const roleSpan = document.createElement('span');
         roleSpan.className = 'role-name';
-        if (isUser) {
-            roleSpan.textContent = 'You';
+        if (isContextShield) {
+            roleSpan.textContent = '🛡️ Context Shield (Target File Audit)';
+            roleSpan.style.color = 'var(--vscode-charts-blue)';
+            roleSpan.style.fontWeight = 'bold';
         } else if (isLibrarian) {
-            roleSpan.textContent = '📚 Lead Librarian';
+            roleSpan.textContent = '📚 Lead Librarian (Scout Report)';
             roleSpan.style.color = 'var(--vscode-charts-orange)';
             roleSpan.style.fontWeight = 'bold';
+        } else if (isUser) {
+            roleSpan.textContent = 'You';
         } else if (isSystem) {
             roleSpan.textContent = 'System Alert';
             roleSpan.style.color = 'var(--vscode-charts-red)';

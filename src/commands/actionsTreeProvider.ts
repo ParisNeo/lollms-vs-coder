@@ -42,9 +42,9 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
         if (hasWorkspace) {
             actions.push(new ActionItem(vscode.l10n.t('Reconfigure Project DNA & Style'), 'lollms-vs-coder.retriggerOnboarding', 'settings-gear', 'Update Destiny, objectives, and styling preferences'));
             actions.push(new ActionItem('Consult Librarian (Knowledge & Context)', 'lollms-vs-coder.governorFilterFiles', 'library', 'Scout codebase, query KNOWLEDGE.md, and optimize context files using AI'));
-            actions.push(new ActionItem('Scrutinize Code & Build Knowledge Tree', 'lollms-vs-coder.scrutinizeKnowledgeTree', 'sparkle', 'Run deep codebase scrutiny to build the complete KNOWLEDGE.md tree and section files'));
-            actions.push(new ActionItem('Reset Knowledge Base (Clear KNOWLEDGE.md)', 'lollms-vs-coder.resetKnowledge', 'trash', 'Wipe KNOWLEDGE.md, sections, and structure.md'));
-            actions.push(new ActionItem('Open KNOWLEDGE.md (Knowledge Base)', 'lollms-vs-coder.openKnowledgeRoot', 'book', 'Open the root codebase knowledge file'));
+            actions.push(new ActionItem('Sync Architecture to Knowledge Graph', 'lollms-vs-coder.scrutinizeKnowledgeTree', 'sparkle', 'Synchronize codebase AST symbols and call graphs to .lollms/knowledge.ttl'));
+            actions.push(new ActionItem('Reset Knowledge Graph (.lollms/knowledge.ttl)', 'lollms-vs-coder.resetKnowledge', 'trash', 'Wipe all triples from .lollms/knowledge.ttl'));
+            actions.push(new ActionItem('Open Knowledge Graph (.lollms/knowledge.ttl)', 'lollms-vs-coder.openKnowledgeRoot', 'graph', 'Open knowledge.ttl in editor'));
             actions.push(new ActionItem('New Discussion with Same Context', 'lollms-vs-coder.newDiscussionWithSameContext', 'repo-forked', 'Start a new discussion with the exact same files and muted files'));
             actions.push(new ActionItem('Fork & Compress Chat History', 'lollms-vs-coder.forkAndCompressDiscussion', 'git-pull-request', 'Fork discussion with same files, compressing history into two alternating messages'));
             actions.push(new ActionItem('Test & Debug (QA Suite)', 'lollms-vs-coder.runTestsAndReport', 'beaker', 'Run tests or start a Run/View/Fix debug loop'));

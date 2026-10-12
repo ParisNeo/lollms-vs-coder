@@ -148,6 +148,7 @@ export class DiscussionManager {
             antiPromptInjection: config.get<boolean>('antiPromptInjection') ?? true,
             searchInCacheFirst: config.get<boolean>('searchInCacheFirst') ?? true,
             clipboardInsertRole: config.get<string>('clipboardInsertRole') as 'user' | 'assistant' || 'user',
+            fastMode: config.get<boolean>('fastMode') ?? false,
             searchSources: {
                 google: true,
                 arxiv: true,
@@ -221,7 +222,15 @@ export class DiscussionManager {
             if (saved.userPreferences === undefined) {
                 merged.userPreferences = defaults.userPreferences;
             }
-            if (globalFolderSettings) merged.folderSettings = globalFolderSettings;
+            if (globalFolderSettings && typeof globalFolderSettings === 'object') {
+                const allVals = Object.values(globalFolderSettings);
+                const hasAnyActive = allVals.some((v: any) => v && (v.content !== false || v.tree !== false));
+                if (hasAnyActive) {
+                    merged.folderSettings = globalFolderSettings;
+                } else {
+                    merged.folderSettings = {};
+                }
+            }
             if (isGlobalMuted !== undefined) merged.disableProjectContext = isGlobalMuted;
             if ((!merged.herdPreAnswerParticipants || merged.herdPreAnswerParticipants.length === 0) && (merged as any).herdPreCodeParticipants) {
                 merged.herdPreAnswerParticipants = (merged as any).herdPreCodeParticipants;

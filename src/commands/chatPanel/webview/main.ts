@@ -20,6 +20,7 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import Prism from 'prismjs';
+import cytoscape from 'cytoscape';
 
 // --- PrismJS Dependencies ---
 import 'prismjs/components/prism-clike';
@@ -69,6 +70,9 @@ const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) :
 (window as any).DOMPurify = sanitizer;
 (window as any).mermaid = mermaid;
 (window as any).Prism = Prism;
+if (typeof cytoscape !== 'undefined') {
+    (window as any).cytoscape = cytoscape;
+}
 (window as any).renderPendingImages = renderPendingImages;
 (window as any).openImageEditor = openImageEditor;
 (window as any).filterSkillsTree = filterSkillsTree;

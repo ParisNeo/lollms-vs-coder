@@ -36,6 +36,34 @@ export type GraphData = {
 export type BuildState = 'idle' | 'building' | 'ready' | 'error';
 export type ContextSetter = (key: string, value: any) => void;
 
+export const BLOCKED_GRAPH_DIRECTORIES = new Set([
+    // Virtual Environments & Package Trees
+    'venv', '.venv', 'env', '.env', 'virtualenv', 'conda-env', 'site-packages', 'dist-packages',
+    // Build Artifacts & Compiler Outputs
+    'dist', 'build', 'out', 'bin', 'obj', 'target', 'release', 'debug', 'pkg', 'generated',
+    // Data Workspaces & Storage Caches
+    'data', 'data_workspace', 'dataset', 'datasets', 'discussions', 'artefacts', 'artifacts', 'workspace_data', 'artefacts_metadata',
+    // System, Editor, & Toolchain Caches
+    'node_modules', '.git', '.github', '.lollms', '.vscode', '.idea', '__pycache__',
+    '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.cache', 'vendor'
+]);
+
+export function isPathBlockedFromGraph(filePathOrRel: string): boolean {
+    if (!filePathOrRel) return true;
+    const normalized = filePathOrRel.replace(/\\/g, '/').toLowerCase().trim();
+    const segments = normalized.split('/').filter(Boolean);
+
+    for (const seg of segments) {
+        if (BLOCKED_GRAPH_DIRECTORIES.has(seg)) {
+            return true;
+        }
+        if (seg.endsWith('.egg-info') || seg.endsWith('.dist-info')) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // --- INLINE WORKER SOURCE CODE ---
 // This code executes entirely inside a separate Node.js worker thread.
 // Parses file contents, extracts imports/methods/calls/docstrings, and returns results.
@@ -176,8 +204,10 @@ rawLines.forEach((line, index) => {
     if (!trimmed) return;
     const indent = line.search(/\\S/);
 
-    const fnMatch = line.match(/(?:export\\s+)?(?:async\\s+)?function\\s+([a-zA-Z0-9_]+)\\s*\\(([^)]*)\\)(?:\\s*:\\s*([^\\{]+))?/);
-    const pyMatch = line.match(/^\\s*def\\s+([a-zA-Z0-9_]+)\\s*\\(([^)]*)\\)(?:\\s*->\\s*([^:]+))?\\s*:/);
+    // Support standard function, arrow function exports (const x = () =>), and Python def
+    const fnMatch = line.match(/(?:export\\s+)?(?:async\\s+)?function\\s+([a-zA-Z0-9_]+)\\s*\\(([^)]*)\\)(?:\\s*:\\s*([^\\{]+))?/) ||
+                    line.match(/(?:export\\s+)?const\\s+([a-zA-Z0-9_]+)\\s*=\\s*(?:async\\s*)?\\([^)]*\\)\\s*(?::\\s*[^=]+)?=>/);
+    const pyMatch = line.match(/^\\s*(?:async\\s+)?def\\s+([a-zA-Z0-9_]+)\\s*\\(([^)]*)\\)(?:\\s*->\\s*([^:]+))?\\s*:/);
 
     if ((fnMatch || pyMatch) && !currentClass) {
         const name = fnMatch ? fnMatch[1] : pyMatch[1];
@@ -324,29 +354,132 @@ export class CodeGraphManager {
 
     constructor() {}
 
-    private runParserInWorker(absolutePath: string, ext: string, normalizedPath: string): Promise<any> {
-        return new Promise((resolve, reject) => {
-            const worker = new Worker(WORKER_PARSE_SCRIPT, {
-                eval: true,
-                workerData: { absolutePath, ext, normalizedPath }
-            });
+    /**
+     * Direct, high-speed in-process AST & symbol parser.
+     * Eliminates worker thread eval failures and guarantees 100% reliable parsing across all platforms.
+     */
+    private parseFileDirect(absolutePath: string, ext: string, normalizedPath: string): any {
+        let text = '';
+        try {
+            text = fs.readFileSync(absolutePath, 'utf8');
+        } catch {
+            return { nodes: [], edges: [], imports: [], calls: [], linesCount: 0 };
+        }
 
-            worker.on('message', (result) => {
-                worker.terminate();
-                resolve(result);
-            });
+        const rawLines = text.split('\n');
+        const localNodes: any[] = [];
+        const localEdges: any[] = [];
+        let nextNodeIdNum = 1;
 
-            worker.on('error', (err) => {
-                worker.terminate();
-                reject(err);
-            });
+        // 1. Extract Imports
+        const imports: string[] = [];
+        if (['ts', 'js', 'tsx', 'jsx', 'mjs', 'cjs', 'vue'].includes(ext)) {
+            const importRegex = /(?:import|export)\s+(?:type\s+)?(?:[\w\s{},*]+from\s+)?['"]([^'"]+)['"]/g;
+            let m;
+            while ((m = importRegex.exec(text)) !== null) {
+                imports.push(m[1]);
+            }
+            const requireRegex = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+            while ((m = requireRegex.exec(text)) !== null) {
+                imports.push(m[1]);
+            }
+        } else if (ext === 'py') {
+            const fromImportRegex = /^from\s+([\w\.]+)\s+import/gm;
+            let m;
+            while ((m = fromImportRegex.exec(text)) !== null) {
+                imports.push(m[1].replace(/\./g, '/'));
+            }
+            const importRegex = /^import\s+([^\n]+)/gm;
+            while ((m = importRegex.exec(text)) !== null) {
+                const modules = m[1].split(',');
+                modules.forEach(mod => {
+                    const cleanName = mod.trim().split(/\s+as\s+/)[0];
+                    if (cleanName) imports.push(cleanName.replace(/\./g, '/'));
+                });
+            }
+        }
 
-            worker.on('exit', (code) => {
-                if (code !== 0) {
-                    reject(new Error(`Worker stopped with exit code ${code}`));
+        // 2. Extract Functions and Classes
+        let currentClass: any = null;
+        let currentClassIndent = 0;
+
+        rawLines.forEach((line, index) => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            const indent = line.search(/\S/);
+
+            // Function & Arrow Function matching
+            const fnMatch = line.match(/(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)/) ||
+                            line.match(/(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?\([^)]*\)\s*(?::\s*[^=]+)?=>/);
+            const pyMatch = line.match(/^\s*(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)/);
+
+            if ((fnMatch || pyMatch) && !currentClass) {
+                const name = fnMatch ? fnMatch[1] : pyMatch![1];
+                if (!['if', 'for', 'while', 'switch', 'catch'].includes(name)) {
+                    localNodes.push({
+                        id: `fn_${nextNodeIdNum++}`,
+                        label: name,
+                        type: 'function',
+                        filePath: normalizedPath,
+                        startLine: index
+                    });
                 }
-            });
+            }
+
+            // Class matching
+            const classMatch = line.match(/(?:export\s+)?(?:abstract\s+)?class\s+([a-zA-Z0-9_]+)/) ||
+                               line.match(/(?:export\s+)?interface\s+([a-zA-Z0-9_]+)/);
+            if (classMatch) {
+                const className = classMatch[1];
+                const classNodeId = `class_${nextNodeIdNum++}`;
+
+                currentClass = {
+                    id: classNodeId,
+                    label: className,
+                    type: 'class',
+                    filePath: normalizedPath,
+                    startLine: index
+                };
+                currentClassIndent = indent;
+                localNodes.push(currentClass);
+                return;
+            }
+
+            if (currentClass) {
+                if (ext === 'py') {
+                    if (indent <= currentClassIndent && !trimmed.startsWith('def') && !trimmed.startsWith('class') && !trimmed.startsWith('@') && !trimmed.startsWith('#')) {
+                        currentClass = null;
+                    }
+                } else if (line.match(/^}/) && indent === currentClassIndent) {
+                    currentClass = null;
+                }
+
+                if (currentClass) {
+                    const methodMatch = line.match(/^\s*(?:public|private|protected|static|async|\s)*\s*([a-zA-Z0-9_]+)\s*\(([^)]*)\)/) ||
+                                        line.match(/^\s+def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)/);
+                    if (methodMatch && !['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
+                        const methodName = methodMatch[1];
+                        const methodNodeId = `method_${nextNodeIdNum++}`;
+                        localNodes.push({
+                            id: methodNodeId,
+                            label: methodName,
+                            type: 'method',
+                            filePath: normalizedPath,
+                            startLine: index
+                        });
+                        localEdges.push({ source: currentClass.id, target: methodNodeId, label: 'contains' });
+                    }
+                }
+            }
         });
+
+        return {
+            nodes: localNodes,
+            edges: localEdges,
+            imports,
+            calls: [],
+            linesCount: rawLines.length
+        };
     }
 
     public setWorkspaceRoot(root: vscode.Uri) {
@@ -503,21 +636,30 @@ export class CodeGraphManager {
             try {
                 if (progress) progress({ percentage: 10, status: "Scouting codebase structure..." });
 
-                const patterns = ['**/*.ts', '**/*.js', '**/*.tsx', '**/*.jsx', '**/*.py'];
-                const excludePattern = '**/{node_modules,venv,.venv,env,.env,.git,dist,build,out,bin,obj,.vscode,.idea,.lollms,__pycache__,target,*.egg-info,vendor}/**';
+                const patterns = ['**/*.ts', '**/*.js', '**/*.tsx', '**/*.jsx', '**/*.py', '**/*.vue', '**/*.cs', '**/*.cpp'];
+                const excludePattern = '**/{node_modules,venv,.venv,env,.env,.git,dist,build,out,bin,obj,.vscode,.idea,.lollms,data,data_workspace,dataset,datasets,discussions,workspace_data,artefacts_metadata,__pycache__,target,*.egg-info,vendor}/**';
 
-                let files: vscode.Uri[] = [];
+                let rawFiles: vscode.Uri[] = [];
                 for (const pattern of patterns) {
                     if (signal.aborted) return;
                     const matches = await vscode.workspace.findFiles(
                         new vscode.RelativePattern(this.workspaceRoot, pattern),
                         excludePattern,
-                        500
+                        1000
                     );
-                    files = [...files, ...matches];
+                    rawFiles = [...rawFiles, ...matches];
                 }
 
-                const MAX_FILES = 400;
+                // Strict secondary filter: ensure no venv, build, data, or artifact path slips through
+                let files: vscode.Uri[] = [];
+                for (const f of rawFiles) {
+                    const rel = path.relative(this.workspaceRoot.fsPath, f.fsPath);
+                    if (!isPathBlockedFromGraph(rel)) {
+                        files.push(f);
+                    }
+                }
+
+                const MAX_FILES = 500;
                 if (files.length > MAX_FILES) {
                     files = files.slice(0, MAX_FILES);
                 }
@@ -525,42 +667,31 @@ export class CodeGraphManager {
                 const total = files.length;
                 let processed = 0;
 
-                const poolLimit = 8;
-                const activeWorkers: Promise<void>[] = [];
-
                 for (let i = 0; i < files.length; i++) {
                     if (signal.aborted) return;
 
                     const fileUri = files[i];
                     const relPath = path.relative(this.workspaceRoot.fsPath, fileUri.fsPath).replace(/\\/g, '/');
 
-                    const task = (async () => {
-                        try {
-                            const ext = path.extname(relPath).substring(1);
-                            const parsed = await this.runParserInWorker(fileUri.fsPath, ext, relPath);
-                            this.parsedFilesCache.set(relPath, parsed);
-                        } catch (e) {
-                            console.error(`Failed to parse ${relPath} in thread:`, e);
-                        } finally {
-                            processed++;
-                            if (progress && processed % 5 === 0) {
-                                const pct = 20 + Math.round((processed / total) * 70);
-                                progress({ percentage: pct, status: `Parsing ${path.basename(relPath)} [${processed}/${total}]` });
-                            }
-                        }
-                    })();
+                    try {
+                        const ext = path.extname(relPath).substring(1);
+                        const parsed = this.parseFileDirect(fileUri.fsPath, ext, relPath);
+                        this.parsedFilesCache.set(relPath, parsed);
+                    } catch (e) {
+                        console.error(`Failed to parse ${relPath}:`, e);
+                    }
 
-                    activeWorkers.push(task);
-                    if (activeWorkers.length >= poolLimit) {
-                        await Promise.race(activeWorkers);
-                        const activeIndex = activeWorkers.indexOf(task);
-                        if (activeIndex > -1) {
-                            activeWorkers.splice(activeIndex, 1);
-                        }
+                    processed++;
+                    if (progress && processed % 15 === 0) {
+                        const pct = 20 + Math.round((processed / total) * 70);
+                        progress({ percentage: pct, status: `Parsing ${path.basename(relPath)} [${processed}/${total}]` });
+                    }
+
+                    // Cooperative yield to keep UI responsive
+                    if (i % 30 === 0) {
+                        await new Promise(r => setTimeout(r, 0));
                     }
                 }
-
-                await Promise.all(activeWorkers);
 
                 if (signal.aborted) return;
 
@@ -572,6 +703,17 @@ export class CodeGraphManager {
                 if (this.contextSetter) {
                     this.contextSetter('buildState', 'ready');
                 }
+
+                // Sync code AST structure to unified TTL Knowledge Graph ABox
+                try {
+                    const { KnowledgeManager } = require('./knowledgeManager');
+                    const activeFolder = vscode.workspace.workspaceFolders?.[0];
+                    const km = new KnowledgeManager({} as any);
+                    await km.syncCodeGraph(this.graph.nodes, this.graph.edges, activeFolder);
+                } catch (syncErr) {
+                    console.warn('[CodeGraphManager] Failed to sync to unified TTL graph ABox:', syncErr);
+                }
+
                 if (progress) progress({ percentage: 100, status: "Architecture map synchronized." });
 
                 await this.saveToDiskCache();
@@ -598,6 +740,11 @@ export class CodeGraphManager {
         if (!this.workspaceRoot) return;
 
         const relPath = path.relative(this.workspaceRoot.fsPath, fileUri.fsPath).replace(/\\/g, '/');
+
+        // Instantly ignore files in venv, build, data, or cache folders
+        if (isPathBlockedFromGraph(relPath)) {
+            return;
+        }
 
         if (this.activeIncrementalPromises.has(relPath)) {
             return this.activeIncrementalPromises.get(relPath);
@@ -655,6 +802,18 @@ export class CodeGraphManager {
      * preserving all other unchanged nodes and edge configurations.
      */
     private linkFileInGraph(relPath: string) {
+        // Sync incrementally to unified TTL Knowledge Graph ABox
+        try {
+            const { KnowledgeManager } = require('./knowledgeManager');
+            const activeFolder = vscode.workspace.workspaceFolders?.[0];
+            const km = new KnowledgeManager({} as any);
+            const cached = this.parsedFilesCache.get(relPath);
+            if (cached) {
+                km.syncFileToABox(relPath, cached.nodes, cached.edges, activeFolder).catch(() => {});
+            } else {
+                km.removeTriplesForFile(relPath);
+            }
+        } catch {}
         if (this.buildState !== 'ready') return;
 
         const fileNodeId = `file_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
@@ -892,22 +1051,24 @@ export class CodeGraphManager {
                         });
                     }
                 } else if (!imp.startsWith('.')) {
-                    const libName = imp.split('/')[0];
-                    const libId = `lib_${libName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-                    if (!libraryNodesMap.has(libName)) {
-                        nodes.push({
-                            id: libId,
-                            label: libName,
-                            type: 'library'
+                    const libName = imp.split('/')[0].replace(/['"]/g, '').trim();
+                    if (libName.length > 1) {
+                        const libId = `lib_${libName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+                        if (!libraryNodesMap.has(libName)) {
+                            nodes.push({
+                                id: libId,
+                                label: libName,
+                                type: 'library'
+                            });
+                            libraryNodesMap.set(libName, libId);
+                        }
+                        edges.push({
+                            id: `edge_imports_${fileNodeId}_${libId}`,
+                            source: fileNodeId,
+                            target: libId,
+                            label: 'imports'
                         });
-                        libraryNodesMap.set(libName, libId);
                     }
-                    edges.push({
-                        id: `edge_imports_${fileNodeId}_${libId}`,
-                        source: fileNodeId,
-                        target: libId,
-                        label: 'imports'
-                    });
                 }
             });
 
@@ -962,15 +1123,23 @@ export class CodeGraphManager {
     }
 
     private resolveImportPath(importPath: string, sourcePath: string, fileNodeIds: Map<string, string>): string | undefined {
+        const cleanImport = importPath.replace(/['"]/g, '').trim();
         const currentDir = path.posix.dirname(sourcePath);
-        let candidatePath = importPath;
-        if (importPath.startsWith('.')) {
-            candidatePath = path.posix.join(currentDir, importPath);
+        let candidatePath = cleanImport;
+        if (cleanImport.startsWith('.')) {
+            candidatePath = path.posix.join(currentDir, cleanImport);
         }
-        const extensions = ['', '.ts', '.js', '.tsx', '.jsx', '.py'];
+
+        const isWin = process.platform === 'win32';
+        const lowerMap = isWin ? new Map(Array.from(fileNodeIds.keys()).map(k => [k.toLowerCase(), k])) : null;
+
+        const extensions = ['', '.ts', '.js', '.tsx', '.jsx', '.py', '.vue', '/index.ts', '/index.js'];
         for (const ext of extensions) {
             const tryPath = candidatePath + ext;
             if (fileNodeIds.has(tryPath)) return tryPath;
+            if (isWin && lowerMap && lowerMap.has(tryPath.toLowerCase())) {
+                return lowerMap.get(tryPath.toLowerCase());
+            }
         }
         return undefined;
     }

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.56",
+  "version": "1.0.59",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -189,6 +189,11 @@
         "icon": "$(clippy)"
       },
       {
+        "command": "lollms-vs-coder.copyChatHistory",
+        "title": "Lollms: Copy Chat History Only",
+        "icon": "$(history)"
+      },
+      {
         "command": "lollms-vs-coder.runTestsAndReport",
         "title": "Lollms: Run Tests & Report to AI",
         "icon": "$(beaker)"
@@ -205,17 +210,17 @@
       },
       {
         "command": "lollms-vs-coder.openKnowledgeRoot",
-        "title": "Lollms: Open KNOWLEDGE.md",
-        "icon": "$(book)"
+        "title": "Lollms: Open Knowledge Graph (.lollms/knowledge.ttl)",
+        "icon": "$(graph)"
       },
       {
         "command": "lollms-vs-coder.resetKnowledge",
-        "title": "Lollms: Reset Knowledge Base",
+        "title": "Lollms: Reset Knowledge Graph (.lollms/knowledge.ttl)",
         "icon": "$(trash)"
       },
       {
         "command": "lollms-vs-coder.scrutinizeKnowledgeTree",
-        "title": "Lollms: Scrutinize Code & Build Knowledge Tree",
+        "title": "Lollms: Sync Architecture to Knowledge Graph",
         "icon": "$(sparkle)"
       },
       {
@@ -1484,6 +1489,11 @@
           "default": 1280000,
           "description": "Failsafe context size to use if API server context lookup fails. Set to 0 to auto-detect."
         },
+        "lollmsVsCoder.fastMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Fast Mode: Combine Phase 2 (Plan) and Phase 3 (Code) into a single run without waiting for user confirmation."
+        },
         "lollmsVsCoder.preciseTokenization": {
           "type": "boolean",
           "default": false,
@@ -2153,9 +2163,14 @@
           "group": "inline@4"
         },
         {
-          "command": "lollms-vs-coder.deleteDiscussion",
+          "command": "lollms-vs-coder.copyChatHistory",
           "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
           "group": "inline@5"
+        },
+        {
+          "command": "lollms-vs-coder.deleteDiscussion",
+          "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
+          "group": "inline@6"
         },
         {
           "command": "lollms-vs-coder.cancelProcess",

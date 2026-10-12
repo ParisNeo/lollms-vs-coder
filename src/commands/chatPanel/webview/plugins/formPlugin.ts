@@ -26,15 +26,15 @@ export const formPlugin: TagPlugin = {
             if (attrs.type === 'radio') {
                 if (!radioGroups[attrs.name]) radioGroups[attrs.name] = [];
                 radioGroups[attrs.name].push(`
-                    <label class="radio-option" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; cursor:pointer; padding:6px 10px; border-radius:6px; background:rgba(255,255,255,0.03); border:1px solid var(--vscode-widget-border);">
-                        <input type="radio" name="${attrs.name}" value="${attrs.value}" ${attrs.checked === 'true' ? 'checked' : ''} style="margin:0; cursor:pointer;">
-                        <span style="font-size:12px; font-weight:600;">${attrs.label}</span>
+                    <label class="radio-option">
+                        <input type="radio" name="${attrs.name}" value="${attrs.value}" ${attrs.checked === 'true' ? 'checked' : ''}>
+                        <span>${attrs.label}</span>
                     </label>`);
             } else {
                 inputsHtml += `
-                    <div class="form-field" style="margin-bottom:8px;">
-                        <label style="font-size:11px; font-weight:bold; display:block; margin-bottom:4px;">${attrs.label}</label>
-                        <input type="${attrs.type}" name="${attrs.name}" value="${attrs.value || ''}" placeholder="${attrs.placeholder || ''}" style="width:100%; box-sizing:border-box; padding:6px 8px; border-radius:4px; border:1px solid var(--vscode-input-border); background:var(--vscode-input-background); color:var(--vscode-input-foreground);" />
+                    <div class="form-field">
+                        <label>${attrs.label}</label>
+                        <input type="${attrs.type}" name="${attrs.name}" value="${attrs.value || ''}" placeholder="${attrs.placeholder || ''}" />
                     </div>`;
             }
         }
@@ -46,13 +46,13 @@ export const formPlugin: TagPlugin = {
         const submitLabel = fullXml.match(/<submit\s+label=["'](.*?)["']\s*\/>/i)?.[1] || "Validate Choice";
 
         return `
-        <div class="lollms-form-block" id="form-${formId}" style="border: 1.5px solid var(--vscode-charts-orange); border-radius: 8px; padding: 12px; margin: 12px 0; background: var(--vscode-editorWidget-background); box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
-            <div class="lollms-form-header" style="font-size: 13px; font-weight: bold; color: var(--vscode-charts-orange); display: flex; align-items: center; gap: 8px; margin-bottom: 10px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 6px;">
+        <div class="lollms-form-block" id="form-${formId}">
+            <div class="lollms-form-header">
                 <span class="codicon codicon-feedback"></span> <span>${title}</span>
             </div>
             <div class="lollms-form-body">${descriptionHtml}${inputsHtml}</div>
-            <div class="lollms-form-footer" style="display: flex; justify-content: flex-end; margin-top: 10px;">
-                <button class="code-action-btn apply-btn lollms-form-submit-btn" data-form-id="${formId}" style="height: 28px; padding: 0 14px; font-weight: bold;">
+            <div class="lollms-form-footer">
+                <button class="code-action-btn apply-btn lollms-form-submit-btn" data-form-id="${formId}">
                     <span class="codicon codicon-check"></span> <span>${submitLabel}</span>
                 </button>
             </div>

@@ -39,8 +39,9 @@ import { planStatusPlugin } from './plugins/planStatusPlugin.js';
 import { toolPlugin } from './plugins/toolPlugin.js';
 import { sparqlPlugin } from './plugins/sparqlPlugin.js';
 import { missionBriefingPlugin } from './plugins/missionBriefingPlugin.js';
-import { librarianPlugin } from './plugins/librarianPlugin.js';
+import { librarianPlugin, librarianOffPlugin } from './plugins/librarianPlugin.js';
 import { loadKnowledgePlugin, updateKnowledgePlugin } from './plugins/knowledgePlugin.js';
+import { insightPlugin } from './plugins/insightPlugin.js';
 
 let pluginsInitialized = false;
 
@@ -67,7 +68,9 @@ export function ensurePluginsInitialized() {
         toolPlugin,
         sparqlPlugin,
         missionBriefingPlugin,
-        librarianPlugin
+        librarianPlugin,
+        librarianOffPlugin,
+        insightPlugin
     ];
     allPlugins.forEach(p => {
         if (p) {
@@ -2738,11 +2741,13 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             </div>`;
     }
 
-    if (totalActionableCount > 1 && isFinal) {
+    if (totalActionableCount > 0 && isFinal) {
+        const fileCountText = totalActionableCount === 1 ? '1 file' : `${totalActionableCount} files`;
+        const applyText = totalActionableCount === 1 ? 'Apply Changes' : 'Apply All Changes';
         finalHtml += `
             <div class="apply-all-wrapper" style="margin-top: 16px; padding: 0 12px;">
                 <button class="apply-all-btn" id="apply-all-${messageId}">
-                    <span class="codicon codicon-check-all"></span> Apply All Changes (${totalActionableCount} files)
+                    <span class="codicon codicon-check-all"></span> ${applyText} (${fileCountText})
                 </button>
                 <div class="apply-progress-container" id="progress-container-${messageId}" style="height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden;">
                     <div class="apply-progress-bar" id="progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-blue); transition: width 0.3s ease;"></div>
@@ -3971,37 +3976,7 @@ export class ContextPresenter {
                         <div id="token-bar-legend" class="token-legend" style="display: none; gap: 10px;"></div>
                     </div>
 
-                    <!-- 🏛️ ALWAYS VISIBLE COMPACT FINDINGS BAR REPORTED WITH PROGRESS BAR -->
-                    <div class="hud-findings-bar" id="hud-findings-bar" style="display: flex; flex-direction: column; gap: 2px; margin-top: 2px; padding-top: 3px; border-top: 1px dashed var(--vscode-widget-border);">
-                        <div class="hud-findings-header" id="hud-findings-toggle-btn" style="display: flex; align-items: center; justify-content: space-between; font-size: 10px; cursor: pointer; user-select: none;" title="Librarian Findings: Click to expand / collapse full findings on demand">
-                            <div style="display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0;">
-                                <i class="codicon codicon-library" style="color: var(--vscode-charts-orange); font-size: 11px; flex-shrink: 0;"></i>
-                                <span style="font-weight: 700; color: var(--vscode-charts-orange); flex-shrink: 0;">Findings:</span>
-                                <span class="hud-findings-summary" id="hud-findings-summary-text" style="opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--vscode-editor-font-family, monospace); flex: 1;">${DOMPurify.sanitize(findingsSummary)}</span>
-                            </div>
-                            <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0; margin-left: 6px;">
-                                <span class="hud-findings-badge" id="hud-findings-badge" style="font-size: 9px; opacity: 0.6; font-family: var(--vscode-editor-font-family);">${cleanReport ? `${cleanReport.length} chars` : 'empty'}</span>
-                                <button type="button" id="hud-reset-findings-quick-btn" class="icon-btn" title="Reset Knowledge Base (Clear KNOWLEDGE.md and structure.md)" style="width: 18px; height: 18px; padding: 0; color: var(--vscode-errorForeground);"><i class="codicon codicon-trash" style="font-size: 11px;"></i></button>
-                                <i class="codicon codicon-chevron-down" id="hud-findings-chevron" style="font-size: 10px; opacity: 0.7; transition: transform 0.2s;"></i>
-                            </div>
-                        </div>
-                        <div class="hud-findings-drawer" id="hud-findings-drawer" style="display: none; max-height: 220px; overflow-y: auto; padding: 6px 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-size: 11px; line-height: 1.45; margin-top: 4px;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-widget-border);">
-                                <span style="font-size: 10px; font-weight: bold; color: var(--vscode-charts-orange);"><i class="codicon codicon-book"></i> KNOWLEDGE.md System</span>
-                                <div style="display: flex; gap: 6px; align-items: center;">
-                                    <button type="button" id="hud-reset-knowledge-btn" class="code-action-btn delete-btn" style="height: 20px; font-size: 9px; padding: 0 8px; color: var(--vscode-errorForeground);" title="Reset Knowledge Base (Wipes KNOWLEDGE.md, sections, and structure.md)">
-                                        <i class="codicon codicon-trash"></i> Reset Knowledge
-                                    </button>
-                                    <button type="button" id="hud-scrutinize-knowledge-btn" class="code-action-btn apply-btn" style="height: 20px; font-size: 9px; padding: 0 8px; background: var(--vscode-charts-orange) !important; color: white !important; font-weight: bold;" title="Scrutinize codebase AST symbols, imports, and calls to build the complete KNOWLEDGE.md tree">
-                                        <i class="codicon codicon-sparkle"></i> Scrutinize &amp; Build Tree
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="markdown-body" id="hud-findings-full-text">
-                                ${cleanReport ? DOMPurify.sanitize((marked as any).parse(cleanReport)) : '<em>No knowledge recorded yet. Click Scrutinize & Build Tree to generate.</em>'}
-                            </div>
-                        </div>
-                    </div>
+
                 </div>
             </div>
 
@@ -4027,22 +4002,49 @@ export class ContextPresenter {
                 </div>
 
                 <div class="hud-scroll-container">
-                    <details class="info-collapsible tree-details" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-orange);">
+                    <details class="info-collapsible knowledge-graph-details" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-purple);">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
                                 <span style="font-weight: 700; display: flex; align-items: center; gap: 6px;">
-                                    <i class="codicon codicon-library" style="color: var(--vscode-charts-orange);"></i>
-                                    <span>Knowledge Base & Architecture (.lollms/KNOWLEDGE.md)</span>
+                                    <i class="codicon codicon-graph" style="color: var(--vscode-charts-purple);"></i>
+                                    <span>Knowledge Graph (.lollms/knowledge.ttl)</span>
                                 </span>
                                 <div style="display: flex; gap: 6px; align-items: center;">
-                                    <button id="hud-edit-gov-report-btn" class="icon-btn" title="Open .lollms/structure.md in Editor" style="color: var(--vscode-charts-orange);"><i class="codicon codicon-edit"></i></button>
-                                    <button id="hud-copy-gov-report-btn" class="icon-btn" title="Copy Librarian Report to Clipboard"><i class="codicon codicon-copy"></i></button>
-                                    <button id="hud-clear-gov-report-btn" class="icon-btn" title="Reset Knowledge Base" style="color: var(--vscode-errorForeground);"><i class="codicon codicon-trash"></i></button>
+                                    <button id="hud-rebuild-kg-btn" class="code-action-btn apply-btn" style="height: 20px; font-size: 9px; padding: 0 7px; background: var(--vscode-charts-purple) !important; color: white !important;" title="Populate/Rebuild ABox from codebase into knowledge.ttl">
+                                        <i class="codicon codicon-sync"></i> <span>Rebuild ABox</span>
+                                    </button>
+                                    <button id="hud-view-kg-toggle-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9px; padding: 0 6px;" title="Toggle Graph / Summary View">
+                                        <i class="codicon codicon-eye"></i> <span>Summary</span>
+                                    </button>
+                                    <button id="hud-open-knowledge-ttl-btn" class="icon-btn" title="Open .lollms/knowledge.ttl in Editor" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-edit"></i></button>
+                                    <button id="hud-copy-knowledge-graph-btn" class="icon-btn" title="Copy Knowledge Graph to Clipboard"><i class="codicon codicon-copy"></i></button>
+                                    <button id="hud-reset-knowledge-graph-btn" class="icon-btn" title="Reset Knowledge Graph (.lollms/knowledge.ttl)" style="color: var(--vscode-errorForeground);"><i class="codicon codicon-trash"></i></button>
                                 </div>
                             </div>
                         </summary>
-                        <div class="collapsible-content hud-tree-view-wrapper" style="padding-top: 6px;">
-                            ${governorReportDisplayHtml}
+                        <div class="collapsible-content hud-knowledge-graph-wrapper" style="padding-top: 6px; display: flex; flex-direction: column; gap: 8px;">
+                            <!-- Interactive Visual Knowledge Graph Canvas -->
+                            <div id="hud-kg-canvas-container" style="width: 100%; height: 260px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 6px; position: relative; overflow: hidden;">
+                                <div id="hud-kg-cytoscape" style="width: 100%; height: 100%;"></div>
+                                <div style="position: absolute; bottom: 6px; right: 8px; font-size: 9px; opacity: 0.6; pointer-events: none; background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 3px;">
+                                    Scroll: Zoom · Drag: Pan · Double-Click: Open / Inspect
+                                </div>
+                            </div>
+
+                            <!-- Interactive Live SPARQL Query Bar -->
+                            <div style="display: flex; gap: 6px; align-items: center; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 3px 6px;">
+                                <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.7;"></i>
+                                <input type="text" id="hud-kg-sparql-input" placeholder="Query ontology with SPARQL (e.g. SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10)..." style="background: transparent; border: none; outline: none; font-family: monospace; font-size: 11px; color: var(--vscode-input-foreground); flex: 1;" />
+                                <button type="button" id="hud-kg-run-sparql-btn" class="code-action-btn apply-btn" style="height: 22px; font-size: 10px; padding: 0 8px; background: var(--vscode-charts-purple) !important; color: white !important;">
+                                    <i class="codicon codicon-play"></i> Run SPARQL
+                                </button>
+                            </div>
+                            <div id="hud-kg-sparql-results" style="display: none; max-height: 160px; overflow-y: auto; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 6px; font-size: 10.5px;"></div>
+
+                            <!-- High-Level Topology Summary (Text / Insights) -->
+                            <div class="knowledge-graph-content markdown-body" id="hud-knowledge-graph-full-text" style="display: none; padding: 10px 14px; font-size: 11.5px; line-height: 1.5; max-height: 240px; overflow-y: auto; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px;">
+                                ${cleanReport ? DOMPurify.sanitize((marked as any).parse(cleanReport)) : '<div class="empty-context-msg">Knowledge Graph topology initialized in <code>.lollms/knowledge.ttl</code>. Use <code>&lt;record_insight topic="..." hashtags="..."&gt;</code> to link understanding elements to files, classes, or functions.</div>'}
+                            </div>
                         </div>
                     </details>
 
@@ -4419,46 +4421,389 @@ export class ContextBinder {
             };
         }
 
-        // Bind Findings Toggle Drawer & Scrutinize Action
-        const findingsToggle = dashboard.querySelector('#hud-findings-toggle-btn') as HTMLElement;
-        const findingsDrawer = dashboard.querySelector('#hud-findings-drawer') as HTMLElement;
-        const findingsChevron = dashboard.querySelector('#hud-findings-chevron') as HTMLElement;
-        const scrutinizeBtn = dashboard.querySelector('#hud-scrutinize-knowledge-btn') as HTMLElement;
-
-        if (findingsToggle && findingsDrawer) {
-            findingsToggle.onclick = (e) => {
+        // Bind Knowledge Graph (.lollms/knowledge.ttl) Actions & Visual Graph
+        const openTtlBtn = dashboard.querySelector('#hud-open-knowledge-ttl-btn') as HTMLElement;
+        if (openTtlBtn) {
+            openTtlBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const isOpen = findingsDrawer.style.display !== 'none';
-                findingsDrawer.style.display = isOpen ? 'none' : 'block';
-                if (findingsChevron) {
-                    findingsChevron.className = `codicon ${isOpen ? 'codicon-chevron-down' : 'codicon-chevron-up'}`;
+                vscode.postMessage({ command: 'openFile', path: '.lollms/knowledge.ttl' });
+            };
+        }
+
+        const kgToggleBtn = dashboard.querySelector('#hud-view-kg-toggle-btn') as HTMLElement;
+        const kgCanvasContainer = dashboard.querySelector('#hud-kg-canvas-container') as HTMLElement;
+        const kgSummaryText = dashboard.querySelector('#hud-knowledge-graph-full-text') as HTMLElement;
+
+        if (kgToggleBtn && kgCanvasContainer && kgSummaryText) {
+            kgToggleBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const isShowingSummary = kgSummaryText.style.display !== 'none';
+                if (isShowingSummary) {
+                    kgSummaryText.style.display = 'none';
+                    kgCanvasContainer.style.display = 'block';
+                    kgToggleBtn.innerHTML = '<i class="codicon codicon-eye"></i> <span>Summary</span>';
+                } else {
+                    kgSummaryText.style.display = 'block';
+                    kgCanvasContainer.style.display = 'none';
+                    kgToggleBtn.innerHTML = '<i class="codicon codicon-graph"></i> <span>Visual Graph</span>';
                 }
             };
         }
 
-        if (scrutinizeBtn) {
-            scrutinizeBtn.onclick = (e) => {
+        // Rebuild Knowledge Graph ABox Button
+        const rebuildKgBtn = dashboard.querySelector('#hud-rebuild-kg-btn') as HTMLElement;
+        if (rebuildKgBtn) {
+            rebuildKgBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                scrutinizeBtn.innerHTML = '<i class="codicon codicon-sync spin"></i> Scrutinizing...';
-                vscode.postMessage({ command: 'scrutinizeKnowledgeTree' });
+                rebuildKgBtn.innerHTML = '<i class="codicon codicon-sync spin"></i> <span>Rebuilding ABox...</span>';
+                (rebuildKgBtn as HTMLButtonElement).disabled = true;
+                vscode.postMessage({ command: 'rebuildKnowledgeGraph' });
+                setTimeout(() => {
+                    rebuildKgBtn.innerHTML = '<i class="codicon codicon-sync"></i> <span>Rebuild ABox</span>';
+                    (rebuildKgBtn as HTMLButtonElement).disabled = false;
+                }, 4000);
             };
         }
 
-        const resetFindingsQuickBtn = dashboard.querySelector('#hud-reset-findings-quick-btn') as HTMLElement;
-        const resetKnowledgeBtn = dashboard.querySelector('#hud-reset-knowledge-btn') as HTMLElement;
-        const clearGovReportBtn = dashboard.querySelector('#hud-clear-gov-report-btn') as HTMLElement;
+        // Initialize Knowledge Graph Cytoscape Canvas with Guaranteed Rendering & Resilient Layout
+        const kgCyContainer = dashboard.querySelector('#hud-kg-cytoscape') as HTMLElement;
+        const kgDetailsAccordion = dashboard.querySelector('.knowledge-graph-details') as HTMLDetailsElement;
 
-        const handleResetKnowledge = (e: MouseEvent) => {
-            e.preventDefault();
-            e.stopPropagation();
-            vscode.postMessage({ command: 'resetKnowledge' });
+        const cyLib = (typeof cytoscape === 'function' ? cytoscape : undefined) || (window as any).cytoscape;
+
+        const renderKgWithCytoscape = (graphElements?: { nodes: any[]; edges: any[] }) => {
+            const currentContainer = document.getElementById('hud-kg-cytoscape');
+            if (!currentContainer) return;
+
+            if (!cyLib) {
+                currentContainer.innerHTML = '<div style="display:flex; align-items:center; justify-content:center; height:100%; opacity:0.6; font-size:11px;">Cytoscape engine initializing...</div>';
+                return;
+            }
+
+            (window as any)._latestKgElements = graphElements;
+
+            const cyElements: any[] = [];
+            const nodeIds = new Set<string>();
+
+            let rawNodes = (graphElements && Array.isArray(graphElements.nodes)) ? graphElements.nodes : [];
+            let rawEdges = (graphElements && Array.isArray(graphElements.edges)) ? graphElements.edges : [];
+
+            // Seed initial nodes from context files if no elements exist yet
+            if (rawNodes.length === 0) {
+                const filesList = (state.lastContextData as any)?.files || [];
+                filesList.slice(0, 30).forEach((f: any) => {
+                    const p = typeof f === 'string' ? f : f?.path;
+                    if (!p) return;
+                    const id = `s:file_${p.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+                    rawNodes.push({
+                        id,
+                        label: p.split('/').pop() || p,
+                        type: 'file',
+                        filePath: p
+                    });
+                });
+
+                if (rawNodes.length > 0) {
+                    rawNodes.push({
+                        id: 's:hub_architecture',
+                        label: 'Project Core',
+                        type: 'hub'
+                    });
+                    rawNodes.forEach(rn => {
+                        if (rn.id !== 's:hub_architecture') {
+                            rawEdges.push({
+                                source: 's:hub_architecture',
+                                target: rn.id,
+                                label: 'contains'
+                            });
+                        }
+                    });
+                }
+            }
+
+            rawNodes.forEach(n => {
+                if (!n.id) return;
+                nodeIds.add(n.id);
+                cyElements.push({
+                    group: 'nodes',
+                    data: {
+                        id: n.id,
+                        label: n.label || n.id.replace(/^s:/, ''),
+                        type: n.type || 'entity',
+                        filePath: n.filePath
+                    }
+                });
+            });
+
+            rawEdges.forEach(e => {
+                if (nodeIds.has(e.source) && nodeIds.has(e.target)) {
+                    cyElements.push({
+                        group: 'edges',
+                        data: {
+                            id: e.id || `e_${e.source}_${e.target}_${Math.random()}`,
+                            source: e.source,
+                            target: e.target,
+                            label: e.label || ''
+                        }
+                    });
+                }
+            });
+
+            if (cyElements.length === 0) {
+                currentContainer.innerHTML = '<div style="display:flex; align-items:center; justify-content:center; height:100%; opacity:0.6; font-size:11px;">Click <strong>Rebuild ABox</strong> above to scan project code and populate knowledge graph.</div>';
+                return;
+            } else {
+                currentContainer.innerHTML = '';
+            }
+
+            try {
+                if ((window as any)._kgCyInstance) {
+                    try { (window as any)._kgCyInstance.destroy(); } catch {}
+                }
+
+                const cy = cyLib({
+                    container: currentContainer,
+                    elements: cyElements,
+                    style: [
+                        {
+                            selector: 'node',
+                            style: {
+                                'label': 'data(label)',
+                                'color': '#ffffff',
+                                'font-family': 'var(--vscode-font-family), monospace',
+                                'font-size': '10px',
+                                'font-weight': 'bold',
+                                'text-valign': 'center',
+                                'text-halign': 'center',
+                                'background-color': '#2d2d2d',
+                                'border-width': '2px',
+                                'border-color': '#555555',
+                                'shape': 'round-rectangle',
+                                'width': 'label',
+                                'height': 26,
+                                'padding': '8px',
+                                'text-max-width': '140px'
+                            }
+                        },
+                        {
+                            selector: 'node[type="file"], node[type="sourcefile"]',
+                            style: {
+                                'background-color': '#1f4e79',
+                                'border-color': '#569cd6'
+                            }
+                        },
+                        {
+                            selector: 'node[type="class"], node[type="classdefinition"]',
+                            style: {
+                                'background-color': '#2d6a4f',
+                                'border-color': '#4ec9b0',
+                                'shape': 'ellipse'
+                            }
+                        },
+                        {
+                            selector: 'node[type="interface"], node[type="interfacedefinition"]',
+                            style: {
+                                'background-color': '#16a085',
+                                'border-color': '#1abc9c',
+                                'shape': 'ellipse'
+                            }
+                        },
+                        {
+                            selector: 'node[type="function"], node[type="method"], node[type="functiondefinition"], node[type="methoddefinition"]',
+                            style: {
+                                'background-color': '#8c7a1e',
+                                'border-color': '#dcdcaa',
+                                'shape': 'ellipse'
+                            }
+                        },
+                        {
+                            selector: 'node[type="hub"]',
+                            style: {
+                                'background-color': '#6a1b9a',
+                                'border-color': '#9b59b6',
+                                'shape': 'hexagon',
+                                'font-weight': 'bold',
+                                'height': 32
+                            }
+                        },
+                        {
+                            selector: 'node[type="topic"], node[type="topictag"]',
+                            style: {
+                                'background-color': '#d35400',
+                                'border-color': '#e67e22',
+                                'shape': 'hexagon'
+                            }
+                        },
+                        {
+                            selector: 'node[type="insight"], node[type="architecturalinsight"]',
+                            style: {
+                                'background-color': '#8e44ad',
+                                'border-color': '#bb86fc',
+                                'shape': 'round-rectangle'
+                            }
+                        },
+                        {
+                            selector: 'node[type="library"], node[type="externallibrary"]',
+                            style: {
+                                'background-color': '#8f5c2c',
+                                'border-color': '#d19a66',
+                                'shape': 'diamond'
+                            }
+                        },
+                        {
+                            selector: 'edge',
+                            style: {
+                                'width': 2,
+                                'line-color': '#777777',
+                                'target-arrow-color': '#999999',
+                                'target-arrow-shape': 'triangle',
+                                'curve-style': 'bezier',
+                                'arrow-scale': 0.8,
+                                'font-size': '8px',
+                                'color': '#cccccc',
+                                'text-background-opacity': 0.8,
+                                'text-background-color': '#1e1e1e',
+                                'text-background-padding': '2px',
+                                'text-background-shape': 'round-rectangle',
+                                'label': 'data(label)'
+                            }
+                        }
+                    ],
+                    layout: {
+                        name: 'cose',
+                        animate: false,
+                        nodeOverlap: 30,
+                        componentSpacing: 80,
+                        nodeRepulsion: () => 800000,
+                        idealEdgeLength: () => 90,
+                        padding: 30
+                    }
+                });
+
+                (window as any)._kgCyInstance = cy;
+
+                cy.on('dblclick', 'node', function(evt: any) {
+                    const nodeData = evt.target.data();
+                    if (nodeData) {
+                        if (nodeData.filePath) {
+                            vscode.postMessage({ command: 'openFile', path: nodeData.filePath });
+                        }
+                        const sparqlInp = document.getElementById('hud-kg-sparql-input') as HTMLInputElement;
+                        if (sparqlInp) {
+                            const targetSubject = nodeData.id.startsWith('s:') ? nodeData.id : `s:${nodeData.id}`;
+                            sparqlInp.value = `SELECT ?target ?rel WHERE { <${targetSubject}> ?rel ?target . } LIMIT 25`;
+                            const runBtn = document.getElementById('hud-kg-run-sparql-btn') as HTMLElement;
+                            if (runBtn) runBtn.click();
+                        }
+                    }
+                });
+
+                // Immediate and deferred resize/fit guarantees layout matches container width/height
+                setTimeout(() => {
+                    try {
+                        cy.resize();
+                        cy.fit(undefined, 25);
+                    } catch {}
+                }, 100);
+
+            } catch (cyErr) {
+                console.error('[KnowledgeGraph] Cytoscape init error:', cyErr);
+            }
         };
 
-        if (resetFindingsQuickBtn) resetFindingsQuickBtn.onclick = handleResetKnowledge;
-        if (resetKnowledgeBtn) resetKnowledgeBtn.onclick = handleResetKnowledge;
-        if (clearGovReportBtn) clearGovReportBtn.onclick = handleResetKnowledge;
+        (window as any).renderKgWithCytoscape = renderKgWithCytoscape;
+
+        if (kgDetailsAccordion) {
+            kgDetailsAccordion.addEventListener('toggle', () => {
+                if (kgDetailsAccordion.open) {
+                    vscode.postMessage({ command: 'requestKnowledgeGraphData' });
+                    setTimeout(() => {
+                        const cy = (window as any)._kgCyInstance;
+                        if (cy) {
+                            try {
+                                cy.resize();
+                                cy.fit(undefined, 25);
+                            } catch {}
+                        } else if ((window as any).renderKgWithCytoscape) {
+                            (window as any).renderKgWithCytoscape((window as any)._latestKgElements);
+                        }
+                    }, 120);
+                }
+            });
+        }
+
+        // Trigger request to load ABox graph data
+        vscode.postMessage({ command: 'requestKnowledgeGraphData' });
+
+        // If the accordion is open, render immediately with cached elements
+        if (kgDetailsAccordion?.open && (window as any).renderKgWithCytoscape) {
+            (window as any).renderKgWithCytoscape((window as any)._latestKgElements);
+        }
+
+        // Live SPARQL Query Bar Inside Drawer
+        const sparqlInput = dashboard.querySelector('#hud-kg-sparql-input') as HTMLInputElement;
+        const sparqlBtn = dashboard.querySelector('#hud-kg-run-sparql-btn') as HTMLElement;
+        const sparqlResultsArea = dashboard.querySelector('#hud-kg-sparql-results') as HTMLElement;
+
+        if (sparqlBtn && sparqlInput && sparqlResultsArea) {
+            const executeSparqlInDrawer = () => {
+                const queryText = sparqlInput.value.trim();
+                if (!queryText) return;
+                sparqlResultsArea.style.display = 'block';
+                sparqlResultsArea.innerHTML = '<span class="spinner"></span> Executing SPARQL query on knowledge graph...';
+                vscode.postMessage({
+                    command: 'executeLollmsCommand',
+                    details: {
+                        command: 'lollms-vs-coder.runSparqlQueryDirectly',
+                        params: {
+                            query: queryText,
+                            reprompt: false
+                        }
+                    }
+                });
+            };
+
+            sparqlBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                executeSparqlInDrawer();
+            };
+
+            sparqlInput.onkeydown = (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    executeSparqlInDrawer();
+                }
+            };
+        }
+
+        const copyGraphBtn = dashboard.querySelector('#hud-copy-knowledge-graph-btn') as HTMLElement;
+        if (copyGraphBtn) {
+            copyGraphBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const reportText = (state.lastContextData as any)?.governorReport || "";
+                if (reportText) {
+                    vscode.postMessage({ command: 'copyToClipboard', text: reportText });
+                    copyGraphBtn.innerHTML = '<i class="codicon codicon-check"></i>';
+                    setTimeout(() => { copyGraphBtn.innerHTML = '<i class="codicon codicon-copy"></i>'; }, 2000);
+                } else {
+                    vscode.postMessage({ command: 'showWarning', message: 'Knowledge Graph is currently empty.' });
+                }
+            };
+        }
+
+        const resetGraphBtn = dashboard.querySelector('#hud-reset-knowledge-graph-btn') as HTMLElement;
+        if (resetGraphBtn) {
+            resetGraphBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'resetKnowledge' });
+            };
+        }
 
         // Explicit Expand/Collapse Button Binding
         const toggleExpandBtn = dashboard.querySelector('#hud-toggle-expand-btn') as HTMLElement;
@@ -4598,11 +4943,14 @@ export class ContextBinder {
             accordion.addEventListener('toggle', () => {
                 const details = accordion as HTMLDetailsElement;
                 const filePath = details.dataset.path;
-                const registry = (window as any).lazyFilesRegistry;
 
-                if (details.open && filePath && registry) {
-                    const cachedFile = registry.get(filePath);
-                    if (cachedFile && !cachedFile.hasContent) {
+                if (details.open && filePath) {
+                    const uniqueDomId = filePath.replace(/[^a-zA-Z0-9]/g, '_');
+                    const pane = details.querySelector(`.lazy-file-pane`) as HTMLElement;
+
+                    // Fetch content if pane still displays the loading placeholder or is empty
+                    const needsLoad = !pane || pane.innerHTML.includes('Ingesting file content') || pane.innerHTML.trim() === '';
+                    if (needsLoad) {
                         vscode.postMessage({
                             command: 'requestLazyFileContent',
                             filePath: filePath
@@ -7037,13 +7385,14 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
 
     const patches = getPatchesForMessage(messageId);
     const totalCount = patches.length;
-    if (totalCount <= 1) return;
+    if (totalCount === 0) return;
 
     const excludedSet = state.excludedPatches?.[messageId] || new Set<string>();
     const validatedCount = patches.filter(p => p.isApplied).length;
     const pendingPatches = patches.filter(p => !p.isApplied);
     const includedPending = pendingPatches.filter(p => !excludedSet.has(p.id));
     const excludedPendingCount = pendingPatches.filter(p => excludedSet.has(p.id)).length;
+    const fileWord = totalCount === 1 ? 'file' : 'files';
 
     if (pendingPatches.length > 0) {
         applyAllBtn.classList.remove('applied', 'undo-all-btn', 'stop-btn-red', 'sequential-applying');
@@ -7061,7 +7410,7 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
             } else if (validatedCount > 0) {
                 applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Changes (${includedPending.length} of ${totalCount})`;
             } else {
-                applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply All Changes (${totalCount} files)`;
+                applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply ${totalCount === 1 ? 'Changes' : 'All Changes'} (${totalCount} ${fileWord})`;
             }
         }
     } else {
@@ -7070,7 +7419,7 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
         applyAllBtn.disabled = false;
         applyAllBtn.style.removeProperty('background-color');
         applyAllBtn.style.removeProperty('color');
-        applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo All Changes (${totalCount} files)`;
+        applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo ${totalCount === 1 ? 'Changes' : 'All Changes'} (${totalCount} ${fileWord})`;
     }
 }
 

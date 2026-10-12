@@ -192,16 +192,32 @@ private _cachedTreeString: string | null = null;
 
   public refreshFileInCache(uri: vscode.Uri) {
     const relPath = this.normalize(vscode.workspace.asRelativePath(uri, false));
+    const fsPathNorm = uri.fsPath.replace(/\\/g, '/').toLowerCase();
+    const fileName = path.basename(uri.fsPath).toLowerCase();
+    const relPathNorm = relPath.toLowerCase();
+
+    // Evict all path variants from file content cache
     this._fileContentCache?.delete(relPath);
-    const folders = vscode.workspace.workspaceFolders || [];
-    if (folders.length > 1) {
-        const folder = vscode.workspace.getWorkspaceFolder(uri);
-        if (folder) {
-            this._fileContentCache?.delete(`${folder.name}/${relPath}`);
+    this._fileContentCache?.delete(uri.fsPath);
+
+    for (const key of Array.from(this._fileContentCache?.keys() || [])) {
+        const cleanKey = key.replace(/\\/g, '/').toLowerCase();
+        if (
+            cleanKey === relPathNorm || 
+            cleanKey.endsWith('/' + relPathNorm) || 
+            relPathNorm.endsWith('/' + cleanKey) || 
+            cleanKey === fsPathNorm || 
+            path.basename(cleanKey).toLowerCase() === fileName
+        ) {
+            this._fileContentCache?.delete(key);
         }
     }
-    // File content change does not alter the directory structure or file presence.
-    // Preserving _fileTreeObject and _cachedVisibleFiles prevents full disk rescans.
+
+    this.removeCachedTokens(relPath);
+    this.removeCachedTokens(uri.fsPath);
+    this.clearRenderedTreeCache();
+    this._lastContext = null;
+    this._lastContextByDiscussion.clear();
   }
 
   public clearAllCaches() {
@@ -391,21 +407,15 @@ private _cachedTreeString: string | null = null;
   }
 
   public async getStructureGuide(): Promise<string> {
-    const { KnowledgeManager } = require('./knowledgeManager');
-    const km = new KnowledgeManager(this.context);
-    const content = await km.readRootKnowledge();
-    if (content.trim()) return content;
+    try {
+      const { KnowledgeManager } = require('./knowledgeManager');
+      const km = new KnowledgeManager(this.context);
+      const graphSummary = await km.renderContextKnowledge();
+      if (graphSummary && graphSummary.trim()) {
+        return graphSummary;
+      }
+    } catch {}
 
-    const folders = vscode.workspace.workspaceFolders || [];
-    if (folders.length === 0) return "";
-    for (const folder of folders) {
-      try {
-        const fileUri = vscode.Uri.joinPath(folder.uri, '.lollms', 'structure.md');
-        const bytes = await vscode.workspace.fs.readFile(fileUri);
-        const text = Buffer.from(bytes).toString('utf8');
-        if (text.trim()) return text;
-      } catch {}
-    }
     return "";
   }
 
@@ -581,11 +591,29 @@ private _cachedTreeString: string | null = null;
         try {
           const stat = await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
           if (stat) {
-            const relativePath = path.relative(folder.uri.fsPath, candidate).replace(/\\/g, '/');
-            return { folder, relativePath, uri: vscode.Uri.file(candidate) };
+            let actualPath = candidate;
+            if (isWindows) {
+              try {
+                actualPath = fs.realpathSync.native(candidate);
+              } catch {}
+            }
+            const relativePath = path.relative(folder.uri.fsPath, actualPath).replace(/\\/g, '/');
+            return { folder, relativePath, uri: vscode.Uri.file(actualPath) };
           }
         } catch {}
       }
+    }
+
+    // Direct match check for single workspace folder
+    if (folders.length === 1) {
+      const singleCandidate = path.resolve(folders[0].uri.fsPath, normalized);
+      try {
+        const stat = await vscode.workspace.fs.stat(vscode.Uri.file(singleCandidate));
+        if (stat) {
+          const relativePath = path.relative(folders[0].uri.fsPath, singleCandidate).replace(/\\/g, '/');
+          return { folder: folders[0], relativePath, uri: vscode.Uri.file(singleCandidate) };
+        }
+      } catch {}
     }
 
     const segments = normalized.split('/');
@@ -630,16 +658,17 @@ private _cachedTreeString: string | null = null;
   // TREE GENERATION
   // ─────────────────────────────────────────────────────────────
 
-  private formatFileList(
-    fileNames: string[],
-    fullRelPath: string,
+  private renderIndentedScopeHierarchy(
+    obj: any,
     baseFolder: vscode.WorkspaceFolder,
-    isUnpacked: boolean,
+    rootName: string = '',
     maxFilesInFolder: number = 30,
     mutedFiles: string[] = []
   ): string {
-    const formattedFiles = fileNames.map(fileName => {
-      const filePath = fullRelPath ? `${fullRelPath}/${fileName}` : fileName;
+    const lines: string[] = [];
+
+    const getFileMetadata = (fileName: string, dirRelPath: string) => {
+      const filePath = dirRelPath ? `${dirRelPath}/${fileName}` : fileName;
       const fileUri = vscode.Uri.joinPath(baseFolder.uri, filePath);
       const fileState = this.contextStateProvider?.getStateForUri(fileUri);
 
@@ -650,149 +679,111 @@ private _cachedTreeString: string | null = null;
       });
 
       let tag = '';
-      if (isMuted) tag = ' [M]';
-      else if (fileState === 'included') tag = ' [C]';
-      else if (fileState === 'definitions-only') tag = ' [D]';
-      return `${fileName}${tag}`;
-    });
+      if (isMuted) tag = '[M]';
+      else if (fileState === 'included') tag = '[C]';
+      else if (fileState === 'definitions-only') tag = '[D]';
 
-    if (formattedFiles.length <= maxFilesInFolder || isUnpacked) {
-      return `[${formattedFiles.join(', ')}]`;
-    } else {
-      const preview = formattedFiles.slice(0, 20).join(', ');
-      const remaining = formattedFiles.length - 20;
-      return `[${preview}, ... +${remaining} more]`;
-    }
-  }
+      return { fileName, filePath, tag, isActive: Boolean(tag) };
+    };
 
-  private renderIndentedScopeHierarchy(
-    obj: any,
-    baseFolder: vscode.WorkspaceFolder,
-    rootName: string = '',
-    maxFilesInFolder: number = 30,
-    mutedFiles: string[] = []
-  ): string {
-    const lines: string[] = [];
+    const renderDirectory = (dirObj: any, currentRelPath: string, displayDirName: string, indent: string, isRoot: boolean) => {
+      if (!dirObj || typeof dirObj !== 'object') return;
 
-    const renderNode = (currentObj: any, currentRelPath: string, indent: string, isRootLevel: boolean) => {
-      if (!currentObj || typeof currentObj !== 'object') return;
-
-      const entries = Object.keys(currentObj).sort((a, b) => a.localeCompare(b));
+      const entries = Object.keys(dirObj).sort((a, b) => a.localeCompare(b));
       const fileNames: string[] = [];
-      const dirKeys: string[] = [];
+      const subDirs: string[] = [];
 
       for (const entry of entries) {
-        if (currentObj[entry] === null) {
-          fileNames.push(entry);
-        } else {
-          dirKeys.push(entry);
+        if (dirObj[entry] === null) fileNames.push(entry);
+        else subDirs.push(entry);
+      }
+
+      // Check folder exclusion / collapsed state
+      if (!isRoot) {
+        const dirUri = vscode.Uri.joinPath(baseFolder.uri, currentRelPath);
+        const dirState = this.contextStateProvider?.getStateForUri(dirUri);
+        if (dirState === 'fully-excluded') return;
+        if (dirState === 'collapsed') {
+          lines.push(`${indent}${displayDirName}/: [COLLAPSED: ${fileNames.length} file(s)]`);
+          return;
         }
       }
 
-      const renderSubDir = (
-        subObj: any,
-        rawDirName: string,
-        fullSubRelPath: string,
-        currentIndent: string
-      ) => {
-        if (!subObj || typeof subObj !== 'object') return;
+      // Single-child path compaction (e.g., src/commands/chatPanel/webview/)
+      let effectiveDirName = displayDirName;
+      let effectiveRelPath = currentRelPath;
+      let effectiveObj = dirObj;
 
-        const dirUri = vscode.Uri.joinPath(baseFolder.uri, fullSubRelPath);
-        const state = this.contextStateProvider?.getStateForUri(dirUri);
-        if (state === 'fully-excluded') return;
-        const isCollapsed = state === 'collapsed';
+      if (!isRoot && subDirs.length === 1 && fileNames.length === 0) {
+        let child = subDirs[0];
+        let nextRel = `${effectiveRelPath}/${child}`;
+        let nextUri = vscode.Uri.joinPath(baseFolder.uri, nextRel);
+        let nextState = this.contextStateProvider?.getStateForUri(nextUri);
 
-        let displayDirName = rawDirName;
-        let effectiveSubObj = subObj;
-        let effectiveRelPath = fullSubRelPath;
+        while (effectiveObj[child] && typeof effectiveObj[child] === 'object' && nextState !== 'collapsed' && nextState !== 'fully-excluded') {
+          const grandEntries = Object.keys(effectiveObj[child]);
+          const grandFiles = grandEntries.filter(k => effectiveObj[child][k] === null);
+          const grandDirs = grandEntries.filter(k => effectiveObj[child][k] !== null);
 
-        if (!isCollapsed) {
-          while (effectiveSubObj && typeof effectiveSubObj === 'object') {
-            const subEntries = Object.keys(effectiveSubObj);
-            const subFiles = subEntries.filter(k => effectiveSubObj[k] === null);
-            const subDirs = subEntries.filter(k => effectiveSubObj[k] !== null);
+          effectiveDirName = `${effectiveDirName}/${child}`;
+          effectiveRelPath = nextRel;
+          effectiveObj = effectiveObj[child];
 
-            if (subFiles.length === 0 && subDirs.length === 1) {
-              const onlyChild = subDirs[0];
-              const nextRelPath = `${effectiveRelPath}/${onlyChild}`;
-              const nextUri = vscode.Uri.joinPath(baseFolder.uri, nextRelPath);
-              const nextState = this.contextStateProvider?.getStateForUri(nextUri);
-              if (nextState === 'collapsed' || nextState === 'fully-excluded') break;
-
-              displayDirName = `${displayDirName}/${onlyChild}`;
-              effectiveRelPath = nextRelPath;
-              effectiveSubObj = effectiveSubObj[onlyChild];
-            } else {
-              break;
-            }
-          }
-        }
-
-        const isUnpacked = Boolean(
-          this._unpackedDirectories && (
-            this._unpackedDirectories.has(effectiveRelPath) ||
-            this._unpackedDirectories.has(`${baseFolder.name}/${effectiveRelPath}`)
-          )
-        );
-
-        const effEntries = Object.keys(effectiveSubObj).sort((a, b) => a.localeCompare(b));
-        const effFiles = effEntries.filter(k => effectiveSubObj[k] === null);
-        const effDirs = effEntries.filter(k => effectiveSubObj[k] !== null);
-
-        if (isCollapsed) {
-          const preview = effFiles.slice(0, 8).join(', ');
-          const more = effFiles.length > 8 ? `, ... +${effFiles.length - 8} more` : '';
-          lines.push(`${currentIndent}${displayDirName}/: [COLLAPSED: ${effFiles.length} files: ${preview}${more}]`);
-          return;
-        }
-
-        if (effDirs.length === 0) {
-          if (effFiles.length === 0) {
-            lines.push(`${currentIndent}${displayDirName}/: []`);
+          if (grandDirs.length === 1 && grandFiles.length === 0) {
+            child = grandDirs[0];
+            nextRel = `${effectiveRelPath}/${child}`;
+            nextUri = vscode.Uri.joinPath(baseFolder.uri, nextRel);
+            nextState = this.contextStateProvider?.getStateForUri(nextUri);
           } else {
-            const listStr = this.formatFileList(effFiles, effectiveRelPath, baseFolder, isUnpacked, maxFilesInFolder, mutedFiles);
-            lines.push(`${currentIndent}${displayDirName}/: ${listStr}`);
+            break;
           }
-          return;
         }
+      }
 
-        lines.push(`${currentIndent}${displayDirName}/:`);
-        const nextIndent = currentIndent + '    ';
+      // Collect files in this directory and split into Active ([C]/[M]/[D]) vs Cold (Unmarked)
+      const effEntries = Object.keys(effectiveObj).sort((a, b) => a.localeCompare(b));
+      const effFiles = effEntries.filter(k => effectiveObj[k] === null);
+      const effDirs = effEntries.filter(k => effectiveObj[k] !== null);
 
-        if (effFiles.length > 0) {
-          const listStr = this.formatFileList(effFiles, effectiveRelPath, baseFolder, isUnpacked, maxFilesInFolder, mutedFiles);
-          lines.push(`${nextIndent}./: ${listStr}`);
-        }
+      const filesMeta = effFiles.map(fn => getFileMetadata(fn, effectiveRelPath));
+      const activeFiles = filesMeta.filter(f => f.isActive);
+      const coldFiles = filesMeta.filter(f => !f.isActive);
 
-        for (const childDir of effDirs) {
-          const nextChildRel = `${effectiveRelPath}/${childDir}`;
-          renderSubDir(effectiveSubObj[childDir], childDir, nextChildRel, nextIndent);
-        }
-      };
+      if (isRoot) {
+        lines.push(rootName ? `${rootName}/:` : `./:`);
+      } else {
+        lines.push(`${indent}${effectiveDirName}/:`);
+      }
 
-      if (isRootLevel) {
-        if (rootName) {
-          lines.push(`${rootName}/:`);
-          if (fileNames.length > 0) {
-            const listStr = this.formatFileList(fileNames, '', baseFolder, false, maxFilesInFolder, mutedFiles);
-            lines.push(`    ./: ${listStr}`);
-          }
-          for (const dirKey of dirKeys) {
-            renderSubDir(currentObj[dirKey], dirKey, dirKey, '    ');
-          }
+      const childIndent = indent + '    ';
+
+      // 1. ACTIVE / MUTED FILES: Rendered individually on distinct lines with clear markers
+      // This completely eliminates attention-blur and prevents cross-file patch confusion!
+      for (const af of activeFiles) {
+        lines.push(`${childIndent}├── ${af.fileName} ${af.tag}`);
+      }
+
+      // 2. COLD / UNMARKED FILES: Compacted together to save vertical space
+      if (coldFiles.length > 0) {
+        const coldNames = coldFiles.map(c => c.fileName);
+        if (coldNames.length <= 15) {
+          lines.push(`${childIndent}└── [${coldNames.join(', ')}]`);
         } else {
-          if (fileNames.length > 0) {
-            const listStr = this.formatFileList(fileNames, '', baseFolder, false, maxFilesInFolder, mutedFiles);
-            lines.push(`./: ${listStr}`);
-          }
-          for (const dirKey of dirKeys) {
-            renderSubDir(currentObj[dirKey], dirKey, dirKey, '');
-          }
+          const preview = coldNames.slice(0, 10).join(', ');
+          lines.push(`${childIndent}└── [${preview}, ... +${coldNames.length - 10} more]`);
         }
+      } else if (activeFiles.length === 0 && effDirs.length === 0) {
+        lines.push(`${childIndent}└── (empty)`);
+      }
+
+      // 3. Child directories
+      for (const childDir of effDirs) {
+        const nextRel = effectiveRelPath ? `${effectiveRelPath}/${childDir}` : childDir;
+        renderDirectory(effectiveObj[childDir], nextRel, childDir, childIndent, false);
       }
     };
 
-    renderNode(obj, '', '', true);
+    renderDirectory(obj, '', rootName, '', true);
     return lines.join('\n');
   }
 
@@ -1288,9 +1279,21 @@ private _cachedTreeString: string | null = null;
     };
 
     const getFolderSetting = (folder: vscode.WorkspaceFolder) => {
+      if (options?.capabilities?.disableProjectContext) {
+        return { tree: false, content: false };
+      }
+
       const uriStr = folder.uri.toString();
       const uriStrLower = uriStr.toLowerCase();
       const fsPathLower = folder.uri.fsPath.toLowerCase();
+
+      const allVals = Object.values(folderSettings);
+      const hasAnyConfiguredActive = allVals.some((v: any) => v && typeof v === 'object' && (v.content || v.tree));
+
+      // If folderSettings was corrupted with all false values, default safely to active
+      if (!hasAnyConfiguredActive && allVals.length > 0) {
+        return { tree: true, content: true };
+      }
 
       for (const [key, val] of Object.entries(folderSettings)) {
         if (!key || typeof val !== 'object') continue;
@@ -1325,6 +1328,11 @@ private _cachedTreeString: string | null = null;
       if (!result.isolatedTrees) result.isolatedTrees = {};
       result.isolatedTrees[folder.uri.toString()] = isolatedTree;
 
+      // Failsafe: Never hide content in single-root workspaces or when unmuted files exist unless context is explicitly muted globally
+      if (settings.content === false && !options?.capabilities?.disableProjectContext && activeFolders.length === 1) {
+        settings.content = true;
+      }
+
       if (settings.content === false) {
         result.text += `*(File contents hidden for ${projectName} by Workspace Access Matrix)*\n\n`;
         continue;
@@ -1339,6 +1347,25 @@ private _cachedTreeString: string | null = null;
             result.text += fallbackTree + '\n';
           }
         } catch {}
+      }
+
+      // Provide an unambiguous, flat manifest of all currently active files in this project
+      const activeProjectFiles = contextFiles.filter(f => {
+        const isMuted = mutedFiles.some(m => {
+          const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+          const cleanF = f.path.toLowerCase().trim();
+          return cleanM === cleanF || cleanM.endsWith('/' + cleanF) || cleanF.endsWith('/' + cleanM);
+        });
+        return !isMuted;
+      });
+
+      if (activeProjectFiles.length > 0) {
+        result.text += `### 📄 LOADED FILES MANIFEST [C] (${activeProjectFiles.length} files currently active):\n`;
+        activeProjectFiles.forEach(f => {
+          const headerPath = activeFolders.length > 1 ? `${folder.name}/${f.path}` : f.path;
+          result.text += `- \`${headerPath}\`\n`;
+        });
+        result.text += `\n`;
       }
 
       result.text += `### 📄 ${projectName.toUpperCase()} — LOADED FILE CONTENTS\n\n`;
@@ -1411,27 +1438,19 @@ private _cachedTreeString: string | null = null;
 
           const cached = this._fileContentCache.get(cacheKey);
 
-          // Cache verification: ensure cache matches current disk mtime and size, and is not falsely empty
-          if (cached && cached.state === contextState && cached.mtime === stat.mtime && cached.size === stat.size) {
-              if (cached.content !== undefined && (cached.content.length > 0 || stat.size === 0)) {
-                  const formatted = cached.content.endsWith('\n') ? cached.content : cached.content + '\n';
-                  projectContentBuffer += `<file path="${headerPath}">\n${formatted}</file>\n\n`;
-                  filesInThisFolderCount++;
-                  continue;
-              } else {
-                  this._fileContentCache.delete(cacheKey);
-              }
-          }
+                    if (this.binaryExtensions.has(ext)) {
+            projectContentBuffer += `<file path="${headerPath}">\n(Binary file content excluded)\n</file>
 
-          if (this.binaryExtensions.has(ext)) {
-            projectContentBuffer += `<file path="${headerPath}">\n(Binary file content excluded)\n</file>\n\n`;
+\n\n`;
             filesInThisFolderCount++;
             continue;
           }
 
           if (contextState === 'definitions-only') {
             const definitions = await this.extractDefinitions(fileUri);
-            projectContentBuffer += `<file path="${headerPath}" mode="definitions-only">\n${definitions}\n</file>\n\n`;
+            projectContentBuffer += `<file path="${headerPath}" mode="definitions-only">\n${definitions}\n</file>
+
+\n\n`;
             filesInThisFolderCount++;
             continue;
           }
@@ -1439,13 +1458,17 @@ private _cachedTreeString: string | null = null;
           let fileContent = '';
           const openDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath.toLowerCase() === fileUri.fsPath.toLowerCase());
 
+          // Live editor buffer priority: if file is open in editor, always read current buffer
           if (openDoc) {
               fileContent = openDoc.getText();
           } else {
-            let fileBuffer: Buffer;
-            const fileBytes = await vscode.workspace.fs.readFile(fileUri);
-            fileBuffer = Buffer.from(fileBytes);
-
+              const cached = this._fileContentCache.get(cacheKey);
+              if (cached && cached.state === contextState && cached.mtime === stat.mtime && cached.size === stat.size && cached.content !== undefined) {
+                  fileContent = cached.content;
+              } else {
+                  let fileBuffer: Buffer;
+                  const fileBytes = await vscode.workspace.fs.readFile(fileUri);
+                  fileBuffer = Buffer.from(fileBytes);
             if (this.imageExtensions.has(ext)) {
               if (!enableVision) {
                 projectContentBuffer += `### 🖼️ \`${headerPath}\` [IMAGE MUTED]\n> Vision is disabled in settings.\n\n`;
@@ -1489,6 +1512,7 @@ private _cachedTreeString: string | null = null;
               fileContent = fileBuffer.toString('utf8');
             }
           }
+        }
 
           if (fileContent.length < 2000000) { // Cache loaded files under 2MB
             if (this._fileContentCache.size >= 500) {
@@ -1504,9 +1528,9 @@ private _cachedTreeString: string | null = null;
                 state: contextState 
             });
           }
-
           const formattedContent = fileContent.endsWith('\n') ? fileContent : fileContent + '\n';
-          projectContentBuffer += `<file path="${headerPath}">\n${formattedContent}</file>\n\n`;
+          const lineCount = fileContent.split('\n').length;
+          projectContentBuffer += `<!-- START FILE: ${headerPath} (${lineCount} lines) -->\n<file path="${headerPath}">\n${formattedContent}</file>\n<!-- END FILE: ${headerPath} -->\n\n`;
           filesInThisFolderCount++;
 
         } catch (error) {
@@ -1607,7 +1631,7 @@ private _cachedTreeString: string | null = null;
         }
 
         let text = '';
-        const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fullPath.toString());
+        const openDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath.toLowerCase() === fullPath.fsPath.toLowerCase());
         if (openDoc && !this.docExtensions.has(ext) && !this.imageExtensions.has(ext)) {
           text = openDoc.getText();
         } else {
@@ -1630,7 +1654,8 @@ private _cachedTreeString: string | null = null;
         }
         const formatted = text.endsWith('\n') ? text : text + '\n';
         const modeAttr = this.docExtensions.has(ext) ? ' mode="read-only-doc"' : '';
-        content += `<file path="${filePath}"${modeAttr}>\n${formatted}</file>\n\n`;
+        const lineCount = text.split('\n').length;
+        content += `<!-- START FILE: ${filePath} (${lineCount} lines) -->\n<file path="${filePath}"${modeAttr}>\n${formatted}</file>\n<!-- END FILE: ${filePath} -->\n\n`;
       } catch (error) {}
     }
     return content;

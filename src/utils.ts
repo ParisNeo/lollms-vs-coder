@@ -228,6 +228,7 @@ export interface DiscussionCapabilities {
     contextGovernorEnabled?: boolean; // New key
     contextGovernorPermanentPruning?: boolean; // New key
     enableSymbolMode?: boolean; // New key
+    fastMode?: boolean; // Combine Phase 2 (Plan) and Phase 3 (Code) in a single run
     userPreferences?: string; // Custom user preferences and coding guidelines injected into system prompt
     userPreferenceProfileId?: string; // Selected user preference profile ID
     isExport?: boolean; // True when exporting context & prompt for external clipboard use
@@ -870,6 +871,10 @@ export async function getProcessedSystemPrompt(
     }
 
     const isExport = (capabilities as any)?.isExport === true;
+    if (isExport) {
+        return PromptTemplates.buildExportSystemPrompt(finalPersona, capabilities);
+    }
+
     const shells = await getAvailableShells();
     const envAwareness = await getEnvironmentAwarenessBlock(isExport);
 

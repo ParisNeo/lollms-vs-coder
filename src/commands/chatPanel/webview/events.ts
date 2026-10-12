@@ -277,6 +277,42 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         });
     });
 
+    const toggleFastModeHandler = (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const current = !!state.capabilities?.fastMode;
+        const newFast = !current;
+        if (state.capabilities) {
+            state.capabilities.fastMode = newFast;
+        }
+
+        const topBtn = document.getElementById('toggleFastModeBtn');
+        if (topBtn) topBtn.classList.toggle('active', newFast);
+
+        const inputBtn = document.getElementById('fastModeInputBtn');
+        if (inputBtn) {
+            inputBtn.classList.toggle('active', newFast);
+            inputBtn.setAttribute('title', newFast
+                ? "Fast Mode: ACTIVE (Step 2 Plan & Step 3 Code fused in one run). Click to deactivate."
+                : "Fast Mode: INACTIVE. Click to activate (fuses Step 2 Plan & Step 3 Code in one run).");
+        }
+
+        vscode.postMessage({
+            command: 'updateDiscussionCapabilitiesPartial',
+            partial: { fastMode: newFast }
+        });
+    };
+
+    const fastModeBtn = document.getElementById('toggleFastModeBtn');
+    if (fastModeBtn) {
+        fastModeBtn.addEventListener('click', toggleFastModeHandler);
+    }
+
+    const fastModeInputBtn = document.getElementById('fastModeInputBtn');
+    if (fastModeInputBtn) {
+        fastModeInputBtn.addEventListener('click', toggleFastModeHandler);
+    }
+
     // --- GLOBAL DRAG & DROP HANDLERS ---
     const chatContainer = document.querySelector('.chat-container') as HTMLElement;
     const inputArea = dom.inputArea;
@@ -813,6 +849,17 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             const draft = dom.messageInput ? dom.messageInput.value : '';
             vscode.postMessage({ 
                 command: 'copyFullPrompt', 
+                draftMessage: draft 
+            });
+            dom.moreActionsMenu.classList.remove('visible');
+        });
+    }
+
+    if (dom.copyHistoryButton) {
+        dom.copyHistoryButton.addEventListener('click', () => {
+            const draft = dom.messageInput ? dom.messageInput.value : '';
+            vscode.postMessage({ 
+                command: 'copyHistory', 
                 draftMessage: draft 
             });
             dom.moreActionsMenu.classList.remove('visible');
@@ -1357,6 +1404,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 },
                 gitWorkflow: dom.capGitWorkflow?.checked ?? false,
                 includeGitInfo: dom.capIncludeGitInfo?.checked ?? false,
+                fastMode: state.capabilities?.fastMode ?? false,
                 enableTTS: (document.getElementById('cap-enableTTS') as HTMLInputElement)?.checked ?? true,
                 enableSTT: (document.getElementById('cap-enableSTT') as HTMLInputElement)?.checked ?? true,
                 herdMode: dom.capHerdMode?.checked ?? false,

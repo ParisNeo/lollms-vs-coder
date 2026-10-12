@@ -1,6 +1,6 @@
 :root {
     --code-bg: var(--vscode-editor-background);
-    --code-header-bg: var(--vscode-keybindingTable-headerBackground);
+    --code-header-bg: var(--vscode-sideBarSectionHeader-background, var(--vscode-editorWidget-background));
     --code-border: var(--vscode-widget-border);
     --thinking-color: #9b59b6;
     --websearch-color: #3498db;
@@ -420,31 +420,54 @@ body.agent-mode-active.has-active-plan #plan-resizer {
     padding: 12px 16px; 
     position: relative; 
     border: 1px solid var(--vscode-widget-border); 
-    border-left: 4px solid transparent; /* Role-based accent */
+    border-left: 4px solid transparent; 
     border-radius: 8px; 
     margin: 8px 12px; 
     box-sizing: border-box; 
     background-color: var(--vscode-editor-background);
-    box-shadow: none; /* Removed expensive drop-shadows */
+    box-shadow: none; 
     min-width: 0;
     overflow: visible !important; 
-}
-
-/* Zebra Striping */
-.message-wrapper:nth-child(even) .message {
-    background-color: var(--vscode-editor-inactiveSelectionBackground);
+    transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
 .message:hover { 
-    background-color: var(--vscode-list-hoverBackground);
-    /* Keep layout perfectly stationary on hover */
-    transform: none;
+    border-color: var(--vscode-focusBorder);
 }
 
-/* Role-based Accents */
-.user-message { border-left-color: var(--vscode-charts-blue) !important; }
-.assistant-message { border-left-color: var(--vscode-charts-green) !important; }
-.system-message, .technical-event { border-left-color: var(--vscode-charts-orange) !important; }
+/* Semantic Role-based Theme Alignments */
+.user-message { 
+    border-left: 4px solid var(--vscode-charts-blue) !important; 
+    background-color: var(--vscode-chat-requestBackground, var(--vscode-editor-inactiveSelectionBackground)) !important;
+    border-color: var(--vscode-chat-requestBorder, var(--vscode-widget-border));
+}
+
+.assistant-message { 
+    border-left: 4px solid var(--vscode-charts-green) !important; 
+    background-color: var(--vscode-editor-background) !important;
+    border-color: var(--vscode-widget-border);
+}
+
+.message.agent-mode-message {
+    border-left: 4px solid var(--vscode-charts-orange) !important;
+    background-color: var(--vscode-editor-background) !important;
+    border-color: var(--vscode-widget-border);
+}
+
+.message.dynamic-mode-message {
+    border-left: 4px solid var(--vscode-charts-orange) !important;
+    background-color: var(--vscode-editor-background) !important;
+    border-color: var(--vscode-widget-border);
+}
+
+.system-message { 
+    border: 1px dashed var(--vscode-inputValidation-warningBorder, var(--vscode-charts-orange));
+    border-left: 4px solid var(--vscode-charts-orange) !important;
+    background-color: var(--vscode-inputValidation-warningBackground, var(--vscode-editor-inactiveSelectionBackground)) !important;
+    margin: 8px 12px;
+    padding: 12px 16px;
+    border-radius: 8px;
+}
 .message-avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: 4px; display: flex; align-items: center; justify-content: center; margin-top: 4px; background-size: cover; background-repeat: no-repeat; background-position: center; }
 .user-message .message-avatar { background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); font-size: 16px; }
 .assistant-message .message-avatar { background-image: var(--lollms-icon); background-color: transparent; border: none; }
@@ -846,11 +869,96 @@ body.agent-mode-active .chat-container {
 
 .role-name { font-weight: 800; color: var(--vscode-editor-foreground); display: flex; align-items: center; gap: 6px; }
 .generation-stats { font-size: 11px; color: var(--vscode-descriptionForeground); margin-left: 8px; background-color: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 2px 6px; border-radius: 10px; opacity: 0.8; }
-.message-content { line-height: 1.6; font-size: var(--vscode-editor-font-size); overflow-wrap: break-word; color: var(--vscode-editor-foreground); width: 100%; }
-.custom-tag-block-container { display: block; width: 100%; clear: both; margin: 10px 0; }
+.message-content { 
+    line-height: 1.6; 
+    font-size: var(--vscode-editor-font-size, 13px); 
+    overflow-wrap: break-word; 
+    color: var(--vscode-editor-foreground); 
+    width: 100%; 
+}
+
 .message-content p { margin-top: 0; margin-bottom: 0.8em; }
 .message-content p:last-child { margin-bottom: 0; }
 .message-content pre { max-height: 500px; overflow-y: auto; }
+
+.message-content a {
+    color: var(--vscode-textLink-foreground);
+    text-decoration: none;
+}
+
+.message-content a:hover {
+    color: var(--vscode-textLink-activeForeground);
+    text-decoration: underline;
+}
+
+.message-content h1, 
+.message-content h2, 
+.message-content h3, 
+.message-content h4, 
+.message-content h5, 
+.message-content h6 {
+    color: var(--vscode-foreground);
+    font-weight: 700;
+    margin-top: 1.2em;
+    margin-bottom: 0.5em;
+    line-height: 1.3;
+}
+
+.message-content code:not(pre code) {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 0.9em;
+    background-color: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.15));
+    color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+    padding: 2px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--vscode-widget-border);
+}
+
+.message-content blockquote {
+    margin: 8px 0;
+    padding: 6px 12px;
+    border-left: 3px solid var(--vscode-textBlockQuote-border, var(--vscode-textLink-foreground));
+    background-color: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.08));
+    color: var(--vscode-editor-foreground);
+    border-radius: 0 4px 4px 0;
+}
+
+.message-content table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0;
+    font-size: 12px;
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.message-content th {
+    background-color: var(--vscode-keybindingTable-headerBackground, var(--vscode-editor-inactiveSelectionBackground));
+    color: var(--vscode-foreground);
+    font-weight: 700;
+    padding: 6px 10px;
+    border: 1px solid var(--vscode-widget-border);
+    text-align: left;
+}
+
+.message-content td {
+    padding: 6px 10px;
+    border: 1px solid var(--vscode-widget-border);
+    color: var(--vscode-editor-foreground);
+}
+
+.message-content tr:nth-child(even) {
+    background-color: rgba(127, 127, 127, 0.04);
+}
+
+.message-content hr {
+    border: none;
+    border-top: 1px solid var(--vscode-widget-border);
+    margin: 16px 0;
+}
+
+.custom-tag-block-container { display: block; width: 100%; clear: both; margin: 10px 0; }
 .msg-action-btn { background: transparent; border: none; color: var(--vscode-icon-foreground); cursor: pointer; padding: 4px; border-radius: 3px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; }
 .msg-action-btn:hover { background-color: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
 .waiting-animation { display: flex; align-items: center; gap: 12px; padding: 8px 0; color: var(--vscode-descriptionForeground); font-family: var(--vscode-font-family); opacity: 0.9; }
@@ -1962,6 +2070,21 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 
 .toolbar-tool i {
     font-size: 14px;
+}
+
+.toggle-fast-mode-btn.active,
+#fastModeInputBtn.active,
+.voice-btn.toggle-fast-mode-btn.active {
+    background-color: rgba(241, 196, 15, 0.22) !important;
+    color: #f1c40f !important;
+    border: 1px solid #f1c40f !important;
+    border-radius: 4px;
+    font-weight: 700 !important;
+    box-shadow: 0 0 8px rgba(241, 196, 15, 0.4);
+}
+
+#fastModeInputBtn:hover {
+    color: #f1c40f;
 }
 
 .toolbar-separator {
@@ -5224,48 +5347,47 @@ mark.search-highlight.current-match {
 }
 
 .lollms-form-block {
-    background-color: var(--vscode-editor-inactiveSelectionBackground);
-    border: 1px solid var(--vscode-widget-border);
+    background-color: var(--vscode-editorWidget-background);
+    border: 1.5px solid var(--vscode-charts-orange);
     border-radius: 8px;
-    margin: 10px 0;
+    margin: 12px 0;
     overflow: hidden;
     display: flex;
     flex-direction: column;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 }
 
-/* Ensure forms inside the plan zone (sidebar) take full width */
 #agent-plan-zone .lollms-form-block {
-    margin: 5px 0;
-    border-radius: 4px;
-    border-style: dashed;
+    margin: 6px 0;
+    border-radius: 6px;
+    border-style: solid;
     max-width: 100%;
 }
 
-#agent-plan-zone .lollms-form-body {
-    padding: 10px;
-}
-
-#agent-plan-zone .radio-option {
-    padding: 6px;
-    margin-bottom: 4px;
-}
-
 .lollms-form-header {
-    padding: 10px 15px;
-    background-color: var(--vscode-sideBarSectionHeader-background);
+    padding: 10px 14px;
+    background-color: var(--vscode-sideBarSectionHeader-background, var(--vscode-editor-inactiveSelectionBackground));
     border-bottom: 1px solid var(--vscode-widget-border);
-    font-weight: bold;
+    font-weight: 700;
     font-size: 12px;
+    color: var(--vscode-charts-orange);
     display: flex;
     align-items: center;
     gap: 8px;
 }
 
 .lollms-form-body {
-    padding: 15px;
+    padding: 14px;
     display: flex;
     flex-direction: column;
     gap: 12px;
+    color: var(--vscode-foreground);
+}
+
+.form-description {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--vscode-descriptionForeground, var(--vscode-foreground));
 }
 
 .form-field {
@@ -5277,25 +5399,47 @@ mark.search-highlight.current-match {
 .form-field label {
     font-weight: 600;
     font-size: 11px;
-    opacity: 0.8;
+    color: var(--vscode-foreground);
+}
+
+.form-field input[type="text"],
+.form-field input[type="number"],
+.form-field textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--vscode-input-border);
+    background: var(--vscode-input-background);
+    color: var(--vscode-input-foreground);
+    font-family: inherit;
+    font-size: 12px;
+}
+
+.form-field input:focus,
+.form-field textarea:focus {
+    border-color: var(--vscode-focusBorder);
+    outline: none;
 }
 
 .radio-group {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
 }
 
 .radio-option {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 10px;
-    padding: 10px;
+    padding: 8px 12px;
     background: var(--vscode-editor-background);
     border: 1px solid var(--vscode-widget-border);
     border-radius: 6px;
     cursor: pointer;
-    transition: border-color 0.2s, background 0.2s;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+    user-select: none;
+    color: var(--vscode-foreground);
 }
 
 .radio-option:hover {
@@ -5303,21 +5447,56 @@ mark.search-highlight.current-match {
     background: var(--vscode-list-hoverBackground);
 }
 
-.radio-option input {
-    margin-top: 2px;
+.radio-option:has(input:checked) {
+    border-color: var(--vscode-focusBorder);
+    background: var(--vscode-list-activeSelectionBackground, rgba(0, 122, 204, 0.12));
+    color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+}
+
+.radio-option input[type="radio"] {
+    margin: 0;
     cursor: pointer;
+    accent-color: var(--vscode-focusBorder);
 }
 
 .radio-option span {
     font-size: 12px;
+    font-weight: 600;
     line-height: 1.4;
+    color: inherit;
 }
 
 .lollms-form-footer {
-    padding: 10px 15px;
+    padding: 10px 14px;
     border-top: 1px solid var(--vscode-widget-border);
+    background-color: var(--vscode-editor-inactiveSelectionBackground);
     display: flex;
     justify-content: flex-end;
+}
+
+.form-confirmed-card {
+    padding: 8px 14px;
+    margin: 8px 0;
+    background: var(--vscode-inputValidation-infoBackground, rgba(56, 142, 60, 0.1));
+    border: 1px solid var(--vscode-charts-green);
+    border-radius: 6px;
+    font-size: 11px;
+    color: var(--vscode-foreground);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.form-confirmed-card .codicon {
+    color: var(--vscode-charts-green);
+    font-size: 14px;
+}
+
+.form-confirmed-card code {
+    background: var(--vscode-textCodeBlock-background);
+    padding: 2px 5px;
+    border-radius: 3px;
+    border: 1px solid var(--vscode-widget-border);
 }
 
 .context-loading-spinner {

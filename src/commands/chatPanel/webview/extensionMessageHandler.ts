@@ -199,6 +199,35 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
+            case 'updateDrawerSparqlResult':
+                {
+                    const resultsArea = document.getElementById('hud-kg-sparql-results');
+                    if (resultsArea) {
+                        resultsArea.style.display = 'block';
+                        resultsArea.innerHTML = message.result 
+                            ? sanitizer.sanitize((marked as any).parse(message.result))
+                            : 'No results found.';
+                    }
+                }
+                break;
+            case 'updateKnowledgeGraphData':
+                {
+                    const elements = message.elements;
+                    (window as any)._latestKgElements = elements;
+                    if (typeof (window as any).renderKgWithCytoscape === 'function') {
+                        (window as any).renderKgWithCytoscape(elements);
+                    }
+                    setTimeout(() => {
+                        const cy = (window as any)._kgCyInstance;
+                        if (cy) {
+                            try {
+                                cy.resize();
+                                cy.fit(undefined, 25);
+                            } catch {}
+                        }
+                    }, 150);
+                }
+                break;
             case 'updateKnowledgeContent':
             case 'updateFindings':
                 {
@@ -207,31 +236,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         state.lastContextData.governorReport = newKnowledge;
                     }
 
-                    const summaryTextEl = document.getElementById('hud-findings-summary-text');
-                    const fullTextEl = document.getElementById('hud-findings-full-text');
-                    const badgeEl = document.getElementById('hud-findings-badge');
-
-                    const cleanLines = newKnowledge.split('\n')
-                        .map((l: string) => l.replace(/^#+\s*/, '').trim())
-                        .filter((l: string) => l.length > 0 && !l.startsWith('---') && !l.toLowerCase().includes('code knowledge'));
-                    let summary = cleanLines.slice(0, 2).join(' · ') || 'Knowledge updated.';
-                    if (summary.length > 95) {
-                        summary = summary.substring(0, 92) + '...';
-                    }
-
-                    if (summaryTextEl) summaryTextEl.textContent = summary;
-                    if (badgeEl) badgeEl.textContent = newKnowledge ? `KNOWLEDGE.md (${newKnowledge.length} chars)` : 'empty';
+                    const fullTextEl = document.getElementById('hud-knowledge-graph-full-text');
                     if (fullTextEl) {
                         fullTextEl.innerHTML = newKnowledge 
                             ? sanitizer.sanitize((marked as any).parse(newKnowledge))
-                            : '<em>No knowledge recorded yet.</em>';
-                    }
-
-                    const expandedReportContent = document.querySelector('.governor-report-content');
-                    if (expandedReportContent) {
-                        expandedReportContent.innerHTML = newKnowledge 
-                            ? sanitizer.sanitize((marked as any).parse(newKnowledge))
-                            : '<em>No knowledge recorded yet.</em>';
+                            : '<div class="empty-context-msg">Knowledge Graph topology initialized in <code>.lollms/knowledge.ttl</code>. Use <code>&lt;record_insight topic="..." hashtags="..."&gt;</code> to link understanding elements to files, classes, or functions.</div>';
                     }
                 }
                 break;
@@ -687,14 +696,37 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             const cachedFile = registry.get(filePath);
                             cachedFile.content = content;
                             cachedFile.hasContent = true;
+                        }
 
-                            // Dynamically update the specific accordion pane with the resolved text
-                            const pane = document.getElementById(`lazy-pane-${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`);
-                            if (pane) {
-                                pane.innerHTML = `<pre class="markdown-body" style="padding:12px; margin:0; overflow:auto; max-height:400px; font-family:var(--vscode-editor-font-family); font-size:12px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); border-radius:4px;">${(window as any).DOMPurify.sanitize((window as any).marked.parse(content))}</pre>`;
-                                pane.querySelectorAll('pre code').forEach(block => {
-                                    (window as any).Prism.highlightElement(block);
-                                });
+                        // Robust case-insensitive DOM pane resolution
+                        const targetDomId = `lazy-pane-${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                        let pane = document.getElementById(targetDomId);
+
+                        if (!pane) {
+                            const normSearch = filePath.replace(/\\/g, '/').toLowerCase();
+                            const matchingAccordion = Array.from(document.querySelectorAll('.lazy-file-accordion')).find((acc: any) => {
+                                const p = (acc.dataset.path || '').replace(/\\/g, '/').toLowerCase();
+                                return p === normSearch || p.endsWith('/' + normSearch) || normSearch.endsWith('/' + p);
+                            });
+                            if (matchingAccordion) {
+                                pane = matchingAccordion.querySelector('.lazy-file-pane');
+                            }
+                        }
+
+                        if (pane) {
+                            const ext = filePath.split('.').pop() || 'plaintext';
+                            const escapedCode = String(content || '')
+                                .replace(/&/g, "&amp;")
+                                .replace(/</g, "&lt;")
+                                .replace(/>/g, "&gt;");
+
+                            pane.innerHTML = `
+                                <pre style="margin:0; padding:10px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); border-radius:4px; max-height:420px; overflow:auto; font-family:var(--vscode-editor-font-family); font-size:11.5px; line-height:1.45;"><code class="language-${ext}">${escapedCode}</code></pre>
+                            `;
+
+                            const codeEl = pane.querySelector('code');
+                            if (codeEl && (window as any).Prism) {
+                                (window as any).Prism.highlightElement(codeEl);
                             }
                         }
                     }

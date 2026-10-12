@@ -243,37 +243,86 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const allFileKeys = Object.keys(workspaceState);
         if (allFileKeys.length === 0) return;
 
+        const isWin = process.platform === 'win32';
         const keysToRemove: string[] = [];
+        const canonicalKeyUpdates: { oldKey: string, canonicalKey: string, state: ContextState }[] = [];
+        const seenCaseInsensitive = new Map<string, string>(); // lowerKey -> canonicalKey
         const BATCH_SIZE = 25;
 
         for (let i = 0; i < allFileKeys.length; i += BATCH_SIZE) {
             const batch = allFileKeys.slice(i, i + BATCH_SIZE);
             const batchResults = await Promise.all(batch.map(async (key) => {
                 const normalizedKey = this.normalize(key).trim().replace(/^\.?\/+/, '');
-                if (isDangerousOrBlocked(normalizedKey)) return key; // Prune blocked files automatically
+                if (isDangerousOrBlocked(normalizedKey)) return { remove: key };
 
                 for (const folder of folders) {
                     const candidate = vscode.Uri.joinPath(folder.uri, normalizedKey);
                     try {
                         await vscode.workspace.fs.stat(candidate);
+
+                        // If on Windows, resolve true filesystem casing
+                        if (isWin) {
+                            try {
+                                const realFsPath = fs.realpathSync.native(candidate.fsPath);
+                                const realRel = this.normalize(path.relative(folder.uri.fsPath, realFsPath));
+                                if (realRel && realRel !== normalizedKey) {
+                                    return { oldKey: key, canonicalKey: realRel, state: workspaceState[key] };
+                                }
+                            } catch {}
+                        }
                         return null; // Exists
                     } catch {}
                 }
-                return key;
+                return { remove: key };
             }));
 
             for (const res of batchResults) {
-                if (res) keysToRemove.push(res);
+                if (res?.remove) {
+                    keysToRemove.push(res.remove);
+                } else if (res?.canonicalKey && res.oldKey) {
+                    canonicalKeyUpdates.push(res);
+                }
             }
 
-            // Yield control back to the event loop between batches
             await new Promise(resolve => setImmediate(resolve));
         }
 
+        let modified = false;
+
+        // 1. Remove non-existent or blocked files
         if (keysToRemove.length > 0) {
-            keysToRemove.forEach(key => {
-                delete workspaceState[key];
-            });
+            keysToRemove.forEach(k => delete workspaceState[k]);
+            modified = true;
+        }
+
+        // 2. Normalize casing to true on-disk casing
+        for (const update of canonicalKeyUpdates) {
+            delete workspaceState[update.oldKey];
+            workspaceState[update.canonicalKey] = update.state;
+            modified = true;
+        }
+
+        // 3. Case-insensitive deduplication for Windows (eliminate duplicates like processingblock.vue and ProcessingBlock.vue)
+        if (isWin) {
+            for (const key of Object.keys(workspaceState)) {
+                const lower = key.toLowerCase();
+                if (seenCaseInsensitive.has(lower)) {
+                    const existingKey = seenCaseInsensitive.get(lower)!;
+                    // If existing key was all lowercase and current key has proper casing, keep current
+                    if (existingKey === existingKey.toLowerCase() && key !== key.toLowerCase()) {
+                        delete workspaceState[existingKey];
+                        seenCaseInsensitive.set(lower, key);
+                    } else {
+                        delete workspaceState[key];
+                    }
+                    modified = true;
+                } else {
+                    seenCaseInsensitive.set(lower, key);
+                }
+            }
+        }
+
+        if (modified) {
             this._cachedStateKeys = workspaceState;
             this.rebuildActivePrefixCache(workspaceState);
             await this.context.workspaceState.update(this.stateKey, workspaceState);
@@ -718,6 +767,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const folders = vscode.workspace.workspaceFolders || [];
         if (folders.length === 0) return [];
 
+        const isWin = process.platform === 'win32';
         const resultsMap = new Map<string, { path: string, state: ContextState, bytes: number, tokens: number, mtime?: number }>();
 
         for (const [key, state] of Object.entries(workspaceState)) {
@@ -741,8 +791,18 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             }
             if (isParentExcluded) continue;
 
-            // Use fast cached sizes if available
-            resultsMap.set(normalizedKey, { path: key, state, bytes: 0, tokens: 0 });
+            // On Windows, use lowercased key to deduplicate identical files with differing casing
+            const mapKey = isWin ? normalizedKey.toLowerCase() : normalizedKey;
+
+            // Prefer existing key if it has uppercase characters (canonical on-disk casing)
+            if (resultsMap.has(mapKey)) {
+                const existing = resultsMap.get(mapKey)!;
+                if (existing.path === existing.path.toLowerCase() && key !== key.toLowerCase()) {
+                    resultsMap.set(mapKey, { path: key, state, bytes: 0, tokens: 0 });
+                }
+            } else {
+                resultsMap.set(mapKey, { path: key, state, bytes: 0, tokens: 0 });
+            }
         }
 
         return Array.from(resultsMap.values());
@@ -821,10 +881,30 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                     addedPaths.push(file);
                     Logger.info(`[Librarian] Successfully resolved and expanded directory: ${targetUri.fsPath}`);
                 } else {
-                    const key = this.normalize(vscode.workspace.asRelativePath(targetUri, false));
+                    let key = this.normalize(vscode.workspace.asRelativePath(targetUri, false));
+
+                    // Canonicalize casing on Windows to match on-disk reality
+                    if (process.platform === 'win32') {
+                        try {
+                            const realPath = fs.realpathSync.native(targetUri.fsPath);
+                            const folder = vscode.workspace.getWorkspaceFolder(targetUri);
+                            if (folder) {
+                                key = this.normalize(path.relative(folder.uri.fsPath, realPath));
+                            }
+                        } catch {}
+
+                        // Purge any stale case-variant of this key
+                        const lowerKey = key.toLowerCase();
+                        for (const existingKey of Object.keys(workspaceState)) {
+                            if (existingKey.toLowerCase() === lowerKey && existingKey !== key) {
+                                delete workspaceState[existingKey];
+                            }
+                        }
+                    }
+
                     workspaceState[key] = 'included';
                     urisToFire.push(targetUri);
-                    addedPaths.push(file); // Return the original string so the webview can map it back
+                    addedPaths.push(file);
                     Logger.info(`[Librarian] Successfully resolved and added: ${key}`);
 
                     // INCREMENTAL CACHE UPDATE: Do not invalidate the entire visible files cache.
@@ -837,6 +917,8 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             }
         }
 
+        this._cachedStateKeys = workspaceState;
+        this.rebuildActivePrefixCache(workspaceState);
         await this.context.workspaceState.update(this.stateKey, workspaceState);
 
         // Fire incremental decoration updates and tree data changes without calling a full refresh()

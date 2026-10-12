@@ -53,7 +53,7 @@ export async function registerCommands(
             });
             ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: false });
         }
-        vscode.window.showInformationMessage("🧹 Knowledge Base has been reset.");
+        vscode.window.showInformationMessage("🧹 Knowledge Graph (.lollms/knowledge.ttl) has been reset.");
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.scrutinizeKnowledgeTree', async () => {
@@ -63,29 +63,26 @@ export async function registerCommands(
         } else {
             const folder = vscode.workspace.workspaceFolders?.[0];
             if (!folder) {
-                vscode.window.showErrorMessage("Workspace required to scrutinize codebase.");
+                vscode.window.showErrorMessage("Workspace required to synchronize Knowledge Graph.");
                 return;
             }
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
-                title: `Lollms: Scrutinizing Codebase & Building Knowledge Tree...`,
+                title: `Lollms: Building ABox & Synchronizing Knowledge Graph (${folder.name})...`,
                 cancellable: false
             }, async (progress) => {
+                if (services.codeGraphManager) {
+                    services.codeGraphManager.setWorkspaceRoot(folder.uri);
+                    await services.codeGraphManager.buildGraph(undefined, (p) => {
+                        progress.report({ message: `${p.status} (${p.percentage}%)` });
+                    });
+                }
                 const { KnowledgeManager } = await import('../knowledgeManager');
                 const km = new KnowledgeManager(context);
-                const res = await km.scrutinizeAndBuildFullTree(
-                    services.lollmsAPI,
-                    services.codeGraphManager,
-                    services.contextManager,
-                    undefined,
-                    (status, pct) => progress.report({ message: `${status} (${pct}%)` })
-                );
-                if (res.success) {
-                    vscode.window.showInformationMessage(`✅ Built KNOWLEDGE.md tree with ${res.sectionsCount} sections.`);
-                    vscode.commands.executeCommand('lollms-vs-coder.openKnowledgeRoot');
-                } else {
-                    vscode.window.showErrorMessage(`Scrutiny failed: ${res.error}`);
+                if (services.codeGraphManager) {
+                    await km.syncCodeGraph(services.codeGraphManager.getGraphData().nodes, services.codeGraphManager.getGraphData().edges, folder);
                 }
+                vscode.window.showInformationMessage(`✅ Knowledge Graph ABox populated in .lollms/knowledge.ttl!`);
             });
         }
     }));
@@ -93,13 +90,13 @@ export async function registerCommands(
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openKnowledgeRoot', async () => {
         const { KnowledgeManager } = await import('../knowledgeManager');
         const km = new KnowledgeManager(context);
-        const uri = await km.getRootKnowledgeUri();
+        const uri = km.getKnowledgeTtlUri();
         if (uri) {
             try {
                 const doc = await vscode.workspace.openTextDocument(uri);
                 await vscode.window.showTextDocument(doc);
             } catch (err: any) {
-                vscode.window.showErrorMessage(`Failed to open KNOWLEDGE.md: ${err.message}`);
+                vscode.window.showErrorMessage(`Failed to open knowledge.ttl: ${err.message}`);
             }
         }
     }));

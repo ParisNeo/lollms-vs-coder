@@ -1543,20 +1543,24 @@ ${originalFileContent}
             let systemText = "";
 
             try {
-                if (forceFull && self.contextStateProvider) {
-                    self._panel.webview.postMessage({ command: 'showProjectLoader', projectName: self._currentDiscussion?.title || "Workspace" });
-                    self._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Librarian: Indexing files. Please stand by...' });
+                if (forceFull) {
+                    self._contextManager.clearAllCaches();
+                    if (self.contextStateProvider) {
+                        self.contextStateProvider.refresh(true);
+                        self._panel.webview.postMessage({ command: 'showProjectLoader', projectName: self._currentDiscussion?.title || "Workspace" });
+                        self._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Librarian: Indexing files. Please stand by...' });
 
-                    await self.contextStateProvider.triggerFullScan((pct, status) => {
-                        if (signal.aborted) return;
-                        self._panel.webview.postMessage({ 
-                            command: 'updateLoaderStatus', 
-                            status: `${status} Please stand by...`,
-                            stats: { files: pct, tokens: -1 }
+                        await self.contextStateProvider.triggerFullScan((pct, status) => {
+                            if (signal.aborted) return;
+                            self._panel.webview.postMessage({ 
+                                command: 'updateLoaderStatus', 
+                                status: `${status} Please stand by...`,
+                                stats: { files: pct, tokens: -1 }
+                            });
                         });
-                    });
 
-                    self._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                        self._panel.webview.postMessage({ command: 'hideProjectLoader' });
+                    }
                 }
 
                 if (signal.aborted) return resolvePromise();
@@ -3871,16 +3875,17 @@ You already have everything needed. Skip Phase 1 and proceed directly to your St
                             this._activeMultiPartPlan = libRes.multiPartPlan;
                         }
 
-                        let libReport = `Librarian agent report:
-### 🏛️ Codebase Understanding & Findings
+                                                let libReport = `Librarian agent report:
+### 🏛️ Codebase Findings & Falsification Audit
 ${libRes.advice || libRes.rationale || 'Codebase dependencies analyzed.'}
 
 ${libRes.signatures ? `### 📋 Reference Contracts & Signatures\n${libRes.signatures}\n` : ''}
-### 📂 Context Grounding
+### 📂 Context Grounding & Budget
 - **Active Files for Modification [C]**: ${libRes.keptFiles.map(f => `\`${f}\``).join(', ') || 'None'}
 - **Muted Reference Files [M]**: ${libRes.mutedFiles.map(f => `\`${f}\``).join(', ') || 'None'}
 - **Tokens Liberated**: ~${libRes.liberatedTokens.toLocaleString()} tokens
-${libRes.multiPartPlan ? `\n⚠️ **Task Partitioned (${libRes.multiPartPlan.totalParts} Phases)**: Files exceed budget. Phase 1 targets: ${libRes.multiPartPlan.parts[0].editFiles.map(f => `\`${f}\``).join(', ')}.\n` : ''}`;
+${libRes.multiPartPlan ? `\n⚠️ **Task Partitioned (${libRes.multiPartPlan.totalParts} Phases)**: Files exceed budget. Phase 1 targets: ${libRes.multiPartPlan.parts[0].editFiles.map(f => `\`${f}\``).join(', ')}.\n` : ''}
+> 💡 *Next Step*: Compare these findings with the code you possess. If consistent with your plan, emit \`<librarian_off>\npath/to/target_file.ext\n</librarian_off>\` and present your Stage 2 Plan. If a contradiction requires further investigation, query again with \`<librarian>\` stating the revised hypothesis.`;
 
                         const libReportMsgId = 'lib_report_' + Date.now();
                         const libReportMsg: ChatMessage = {
@@ -4044,17 +4049,17 @@ Please formulate a solution:
                                         this._activeMultiPartPlan = libRes.multiPartPlan;
                                     }
 
-                                    let libReport = `Librarian agent report:
-### ⚠️ Budget Arbitration Resolution
-${libRes.advice || libRes.rationale || 'Context budget rebalanced for target edit files.'}
+                        let libReport = `Librarian agent report:
+### 🏛️ Codebase Findings & Falsification Audit
+${libRes.advice || libRes.rationale || 'Codebase dependencies analyzed.'}
 
 ${libRes.signatures ? `### 📋 Reference Contracts & Signatures\n${libRes.signatures}\n` : ''}
-### 📂 Context Grounding
+### 📂 Context Grounding & Budget
 - **Active Files for Modification [C]**: ${libRes.keptFiles.map(f => `\`${f}\``).join(', ') || 'None'}
 - **Muted Reference Files [M]**: ${libRes.mutedFiles.map(f => `\`${f}\``).join(', ') || 'None'}
 - **Tokens Liberated**: ~${libRes.liberatedTokens.toLocaleString()} tokens
-${libRes.multiPartPlan ? `\n⚠️ **Task Partitioned (${libRes.multiPartPlan.totalParts} Phases)**: Files exceed budget. Phase 1 targets: ${libRes.multiPartPlan.parts[0].editFiles.map(f => `\`${f}\``).join(', ')}.\n` : ''}`;
-
+${libRes.multiPartPlan ? `\n⚠️ **Task Partitioned (${libRes.multiPartPlan.totalParts} Phases)**: Files exceed budget. Phase 1 targets: ${libRes.multiPartPlan.parts[0].editFiles.map(f => `\`${f}\``).join(', ')}.\n` : ''}
+> 💡 *Next Step*: Compare these findings with the code you possess. If consistent with your plan, emit \`<librarian_off>\npath/to/target_file.ext\n</librarian_off>\` and present your Stage 2 Plan. If a contradiction requires further investigation, query again with \`<librarian>\` stating the revised hypothesis.`;
                                     const libReportMsgId = 'lib_report_' + Date.now();
                                     const libReportMsg: ChatMessage = {
                                         id: libReportMsgId,
@@ -7170,7 +7175,15 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 vscode.window.showInformationMessage(`✅ Accepted current file state for ${path.basename(message.filePath)} (${message.errorsCount} errors remaining).`);
                 break;
             case 'runFileRepairPass':
-                await this.executeFileRepairPass(message.filePath, message.prompt, message.round, message.errors);
+                await this.executeFileRepairPass(
+                    message.filePath,
+                    message.prompt,
+                    message.round,
+                    message.errors,
+                    message.model,
+                    message.temperature,
+                    message.reasoningEffort
+                );
                 break;
             case 'cancelGovernorFilter':
                 {
@@ -7638,16 +7651,101 @@ ${reportBlock}
             case 'requestKnowledgeGraphData':
                 {
                     try {
-                        const { KnowledgeManager } = require('../../knowledgeManager');
-                        const km = new KnowledgeManager(this._discussionManager.context);
                         const folder = vscode.workspace.workspaceFolders?.[0];
-                        const graphData = await km.getHighLevelGraphElements(folder);
-                        webview.postMessage({
-                            command: 'updateKnowledgeGraphData',
-                            elements: graphData
-                        });
+                        if (folder) {
+                            const { KnowledgeManager } = require('../../knowledgeManager');
+                            const km = new KnowledgeManager(this._discussionManager.context);
+                            const connectedOnly = message.connectedOnly === true;
+                            let graphData = await km.getHighLevelGraphElements(folder, connectedOnly);
+
+                            // Automatic ABox Auto-Population: If graph has no nodes or edges, trigger full AST parse and sync immediately
+                            if ((!graphData.edges || graphData.edges.length === 0 || !graphData.nodes || graphData.nodes.length === 0) && this._codeGraphManager) {
+                                this._codeGraphManager.setWorkspaceRoot(folder.uri);
+                                this._codeGraphManager.reset();
+                                await this._codeGraphManager.buildGraph();
+                                await km.syncCodeGraph(
+                                    this._codeGraphManager.getGraphData().nodes,
+                                    this._codeGraphManager.getGraphData().edges,
+                                    folder
+                                );
+                                graphData = await km.getHighLevelGraphElements(folder, connectedOnly);
+                            }
+
+                            webview.postMessage({
+                                command: 'updateKnowledgeGraphData',
+                                elements: graphData
+                            });
+                        }
                     } catch (e) {
                         Logger.warn("Failed to serve high-level graph elements", e);
+                    }
+                }
+                break;
+            case 'translateTextToSparql':
+                {
+                    const naturalQuery = (message.query || "").trim();
+                    if (!naturalQuery) break;
+
+                    const systemPrompt = `You are an expert SPARQL-lite query generator for the LoLLMs Software Architecture Ontology (.lollms/knowledge.ttl).
+Translate the user's natural language question into a valid, executable SPARQL-lite SELECT query.
+
+ONTOLOGY NAMESPACES:
+- Prefix: s: <http://lollms.io/ontology#>
+
+CLASSES:
+- s:SourceFile, s:BackendModule, s:VueComponent, s:AutomationScript, s:ExternalLibrary
+- s:ClassDefinition, s:InterfaceDefinition, s:FunctionDefinition, s:MethodDefinition, s:APIRoute, s:StateStore
+- s:ArchitecturalInsight, s:TopicTag
+
+PROPERTIES:
+- s:containsEntity (SourceFile or Class contains entity)
+- s:definedInFile (Entity defined in SourceFile)
+- s:memberOfClass (Method member of Class)
+- s:importsModule (SourceFile imports Module or Library)
+- s:invokesFunction (CodeEntity calls Function)
+- s:inheritsFrom (Class inherits Class)
+- s:exposesEndpoint (SourceFile exposes APIRoute)
+- s:disjointWith (Same-name entities in different files)
+- s:programmingLanguage (Literal: "Python", "Vue", "TypeScript", "JavaScript", "Bash", etc.)
+- s:layer (Literal: "Backend", "Frontend", "DevOps", "Shared")
+- s:name (Symbol name)
+- s:filePath (Relative file path)
+
+OUTPUT RULES:
+1. Provide a 1-sentence explanation of what the query searches for.
+2. Output ONLY the SPARQL query inside a \`\`\`sparql ... \`\`\` code block.
+3. Keep queries focused and always include LIMIT 25.`;
+
+                    try {
+                        const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+                        const llmRes = await this._lollmsAPI.sendChat([
+                            { role: 'system', content: systemPrompt },
+                            { role: 'user', content: `Translate this question to SPARQL: "${naturalQuery}"` }
+                        ], null, undefined, targetModel, { thinking: false });
+
+                        const cleanRes = stripThinkingTags(llmRes).trim();
+                        const sparqlMatch = cleanRes.match(/```(?:sparql)?\s*([\s\S]+?)\s*```/i);
+                        const sparqlQuery = sparqlMatch ? sparqlMatch[1].trim() : cleanRes;
+                        const explanation = cleanRes.replace(/```[\s\S]*?```/g, '').trim();
+
+                        const { KnowledgeManager } = require('../../knowledgeManager');
+                        const folder = vscode.workspace.workspaceFolders?.[0];
+                        const km = new KnowledgeManager(this._discussionManager.context);
+                        const queryResult = await km.executeSparql(sparqlQuery, folder);
+
+                        this._panel.webview.postMessage({
+                            command: 'textToSparqlResult',
+                            naturalQuery,
+                            sparqlQuery,
+                            explanation,
+                            result: queryResult
+                        });
+                    } catch (err: any) {
+                        this._panel.webview.postMessage({
+                            command: 'textToSparqlResult',
+                            naturalQuery,
+                            error: err.message
+                        });
                     }
                 }
                 break;
@@ -8952,6 +9050,9 @@ Task:
             case 'newDiscussionWithSameContext':
                 await vscode.commands.executeCommand('lollms-vs-coder.newDiscussionWithSameContext', this);
                 break;
+            case 'compressDiscussionHistory':
+                await this.compressCurrentDiscussionHistory();
+                break;
             case 'forkAndCompressDiscussion':
                 await vscode.commands.executeCommand('lollms-vs-coder.forkAndCompressDiscussion', this);
                 break;
@@ -9272,13 +9373,58 @@ Task:
 
       const activeCodeTokens = Math.ceil((currentContext.selectedFilesContent || '').length / 3.5);
       const otherTokens = Math.ceil((currentContext.text.length - (currentContext.selectedFilesContent || '').length) / 3.5);
-      const totalEstimated = otherTokens + activeCodeTokens;
+      let totalEstimated = otherTokens + activeCodeTokens;
 
       const isOver99Percent = totalEstimated >= Math.round(maxTokens * 0.99);
       const isOverTarget = totalEstimated > targetBudget;
 
       if (!isOver99Percent && !isOverTarget) {
           return currentContext;
+      }
+
+      // Check if low on context and history is bigger than file content.
+      // Priority mandate: most of the context should be kept to files, so auto-compress history first!
+      const getCleanHistoryText = (msgs: ChatMessage[]) => msgs
+          .filter(m => !m.skipInPrompt && m.role !== 'system')
+          .map(m => {
+              const c = m.content;
+              if (typeof c === 'string') return stripThinkingTags(c);
+              if (Array.isArray(c)) return c.filter((p: any) => p && p.type === 'text').map((p: any) => stripThinkingTags(p.text)).join('\n');
+              return '';
+          }).filter(t => t.trim().length > 0).join('\n');
+
+      const rawHistoryTokens = Math.ceil(getCleanHistoryText(this._currentDiscussion.messages || []).length / 3.5);
+
+      if (rawHistoryTokens > activeCodeTokens && this._currentDiscussion.messages.length > 2) {
+          this.log(`[Librarian] Low on context (~${totalEstimated.toLocaleString()} tok) and history (~${rawHistoryTokens.toLocaleString()} tok) > files (~${activeCodeTokens.toLocaleString()} tok). Auto-compressing history to prioritize file context...`, 'INFO');
+          try {
+              const compRes = await ContextLibrarian.compressHistory(
+                  this._currentDiscussion.messages,
+                  this._lollmsAPI,
+                  targetModel,
+                  signal,
+                  this._currentDiscussion,
+                  this._discussionManager
+              );
+
+              if (compRes && compRes.liberatedTokens > 0) {
+                  this.log(`[Librarian] Liberated ~${compRes.liberatedTokens.toLocaleString()} tokens via history auto-compression.`);
+                  await this.loadDiscussion();
+
+                  const newOtherTokens = Math.max(0, otherTokens - compRes.liberatedTokens);
+                  totalEstimated = newOtherTokens + activeCodeTokens;
+
+                  if (totalEstimated <= targetBudget) {
+                      this.log(`[Librarian] Context now fits within budget (~${totalEstimated.toLocaleString()} <= ${targetBudget.toLocaleString()} tok). Preserving all files in context!`, 'INFO');
+                      setImmediate(() => {
+                          this.updateContextAndTokens({ isBackgroundSync: false });
+                      });
+                      return currentContext;
+                  }
+              }
+          } catch (compErr: any) {
+              this.log(`[Librarian] Auto-compression attempt failed: ${compErr.message}`, 'WARN');
+          }
       }
 
       this.log(`[Context Shield] Active load (~${totalEstimated.toLocaleString()} tok) exceeds budget (${targetBudget.toLocaleString()} tok). Instant in-memory pruning activated...`);
@@ -9385,14 +9531,16 @@ Task:
           try {
               if (this._codeGraphManager) {
                   this._codeGraphManager.setWorkspaceRoot(folder.uri);
+                  this._codeGraphManager.reset(); // Clear stale cache to force complete fresh parse
                   await this._codeGraphManager.buildGraph(undefined, (p) => {
-                      progress.report({ message: `${p.status} (${p.percentage}%)` });
+                      progress.report({ message: `AST Parse: ${p.status} (${p.percentage}%)` });
                   });
               }
 
               const { KnowledgeManager } = require('../../knowledgeManager');
               const km = new KnowledgeManager(this._discussionManager.context);
               if (this._codeGraphManager) {
+                  progress.report({ message: 'Synchronizing ABox assertions and tagging disjoint functions...' });
                   await km.syncCodeGraph(this._codeGraphManager.getGraphData().nodes, this._codeGraphManager.getGraphData().edges, folder);
               }
 
@@ -9542,7 +9690,10 @@ Task:
       filePath: string,
       userPromptHint?: string,
       round: number = 1,
-      clientKnownErrors: any[] = []
+      clientKnownErrors: any[] = [],
+      modelOverride?: string,
+      temperature?: number,
+      reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'max' = 'medium'
   ) {
       if (this._isDisposed || !this._panel || !this._panel.webview) return;
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -9619,7 +9770,8 @@ ${currentFileContent}
 
 Generate the surgical fix to resolve these errors.`;
 
-      const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+      const targetModel = modelOverride || config.get<string>('surgicalModelName') || this._currentDiscussion?.model || this._lollmsAPI.getModelName();
       const roundMsgId = `repair_chunk_${round}_${Date.now()}`;
       let streamBuffer = "";
 
@@ -9638,7 +9790,11 @@ Generate the surgical fix to resolve these errors.`;
                   fullText: streamBuffer,
                   messageId: roundMsgId
               });
-          }, signal, targetModel, { thinking: true, reasoningEffort: 'medium' });
+          }, signal, targetModel, { 
+              thinking: reasoningEffort !== 'none', 
+              reasoningEffort: reasoningEffort,
+              temperature: temperature
+          });
 
           const cleanResponse = stripThinkingTags(response).trim();
 
@@ -10101,6 +10257,49 @@ ${langGuidance}
     /**
      * Triggered by the manual "Fix All" command.
      */
+    public async compressCurrentDiscussionHistory(): Promise<boolean> {
+        if (!this._currentDiscussion || this._isDisposed) return false;
+
+        const msgs = (this._currentDiscussion.messages || []).filter(m => !m.skipInPrompt && m.role !== 'system');
+        if (msgs.length <= 1) {
+            vscode.window.showInformationMessage("Discussion history is too short to compress.");
+            return false;
+        }
+
+        return await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Compressing conversation history...",
+            cancellable: false
+        }, async (progress) => {
+            progress.report({ message: "Synthesizing high-density conversation recap..." });
+            try {
+                const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+                const res = await ContextLibrarian.compressHistory(
+                    this._currentDiscussion!.messages,
+                    this._lollmsAPI,
+                    targetModel,
+                    new AbortController().signal,
+                    this._currentDiscussion!,
+                    this._discussionManager
+                );
+
+                if (res && res.liberatedTokens > 0) {
+                    await this.loadDiscussion();
+                    this.updateContextAndTokens({ isBackgroundSync: false });
+                    vscode.window.showInformationMessage(`✅ Chat history compressed (~${res.liberatedTokens.toLocaleString()} tokens liberated). Files preserved in context.`);
+                    return true;
+                } else {
+                    vscode.window.showWarningMessage("Could not compress conversation history.");
+                    return false;
+                }
+            } catch (err: any) {
+                this.log(`Failed to compress discussion history: ${err.message}`, 'ERROR');
+                vscode.window.showErrorMessage(`Failed to compress history: ${err.message}`);
+                return false;
+            }
+        });
+    }
+
     public async handleFixAllErrors() {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder || !this.processManager) return;

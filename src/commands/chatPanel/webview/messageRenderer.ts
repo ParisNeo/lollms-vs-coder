@@ -3989,6 +3989,7 @@ export class ContextPresenter {
                     <div style="display: flex; gap: 8px; align-items: center;">
                         <button id="run-tests-context-btn" class="icon-btn" title="Run Project Tests & Report to AI" style="padding: 2px; color: var(--vscode-charts-green);"><i class="codicon codicon-beaker"></i></button>
                         <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
+                        <button id="compress-history-context-btn" class="icon-btn" title="Compress Chat History (Summarize earlier turns in-place to free context tokens for files)" style="padding: 2px; color: var(--vscode-charts-orange);"><i class="codicon codicon-fold"></i></button>
                         <select id="hud-selections-dropdown" ${finalSelections.length === 0 ? 'disabled' : ''} style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: ${finalSelections.length === 0 ? 'default' : 'pointer'}; height: 22px; max-width: 150px; outline: none; display: inline-block; opacity: ${finalSelections.length === 0 ? '0.5' : '1'};">
                             <option value="">${finalSelections.length > 0 ? '📁 Select Saved Context...' : '📁 No Saved Contexts'}</option>
                             ${finalSelections.map((s: string) => `<option value="${s}">${s.replace('.lollms-ctx', '')}</option>`).join('')}
@@ -4010,8 +4011,11 @@ export class ContextPresenter {
                                     <span>Knowledge Graph (.lollms/knowledge.ttl)</span>
                                 </span>
                                 <div style="display: flex; gap: 6px; align-items: center;">
-                                    <button id="hud-rebuild-kg-btn" class="code-action-btn apply-btn" style="height: 20px; font-size: 9px; padding: 0 7px; background: var(--vscode-charts-purple) !important; color: white !important;" title="Populate/Rebuild ABox from codebase into knowledge.ttl">
+                                    <button id="hud-rebuild-kg-btn" class="code-action-btn apply-btn" style="height: 20px; font-size: 9px; padding: 0 7px; background: var(--vscode-charts-purple) !important; color: white !important;" title="Scan codebase AST and populate connected ABox assertions into knowledge.ttl">
                                         <i class="codicon codicon-sync"></i> <span>Rebuild ABox</span>
+                                    </button>
+                                    <button id="hud-filter-kg-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9px; padding: 0 6px;" title="Filter: Connected ABox Graph">
+                                        <i class="codicon codicon-filter"></i> <span>Connected Only</span>
                                     </button>
                                     <button id="hud-view-kg-toggle-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9px; padding: 0 6px;" title="Toggle Graph / Summary View">
                                         <i class="codicon codicon-eye"></i> <span>Summary</span>
@@ -4024,22 +4028,77 @@ export class ContextPresenter {
                         </summary>
                         <div class="collapsible-content hud-knowledge-graph-wrapper" style="padding-top: 6px; display: flex; flex-direction: column; gap: 8px;">
                             <!-- Interactive Visual Knowledge Graph Canvas -->
-                            <div id="hud-kg-canvas-container" style="width: 100%; height: 260px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 6px; position: relative; overflow: hidden;">
+                            <div id="hud-kg-canvas-container" style="width: 100%; height: 380px; min-height: 300px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 6px; position: relative; overflow: hidden;">
                                 <div id="hud-kg-cytoscape" style="width: 100%; height: 100%;"></div>
-                                <div style="position: absolute; bottom: 6px; right: 8px; font-size: 9px; opacity: 0.6; pointer-events: none; background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 3px;">
+                                <div style="position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; z-index: 5;">
+                                    <button type="button" id="hud-kg-layout-cose-btn" class="code-action-btn applied" style="height: 20px; font-size: 9px; padding: 0 6px;" title="2D Force-Directed Cluster Layout">
+                                        <span>2D Cluster</span>
+                                    </button>
+                                    <button type="button" id="hud-kg-layout-dagre-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9px; padding: 0 6px;" title="Top-Down Architecture Hierarchy">
+                                        <span>Hierarchy</span>
+                                    </button>
+                                    <button type="button" id="hud-kg-layout-grid-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9px; padding: 0 6px;" title="Structured Grid Matrix">
+                                        <span>Grid</span>
+                                    </button>
+                                </div>
+                                <div style="position: absolute; bottom: 6px; right: 8px; font-size: 9px; opacity: 0.65; pointer-events: none; background: rgba(0,0,0,0.6); padding: 2px 8px; border-radius: 3px;">
                                     Scroll: Zoom · Drag: Pan · Double-Click: Open / Inspect
                                 </div>
                             </div>
 
-                            <!-- Interactive Live SPARQL Query Bar -->
-                            <div style="display: flex; gap: 6px; align-items: center; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 3px 6px;">
-                                <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.7;"></i>
-                                <input type="text" id="hud-kg-sparql-input" placeholder="Query ontology with SPARQL (e.g. SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10)..." style="background: transparent; border: none; outline: none; font-family: monospace; font-size: 11px; color: var(--vscode-input-foreground); flex: 1;" />
-                                <button type="button" id="hud-kg-run-sparql-btn" class="code-action-btn apply-btn" style="height: 22px; font-size: 10px; padding: 0 8px; background: var(--vscode-charts-purple) !important; color: white !important;">
-                                    <i class="codicon codicon-play"></i> Run SPARQL
-                                </button>
+                            <!-- Interactive Live SPARQL Query & AI Text-to-SPARQL Assistant -->
+                            <div style="display: flex; flex-direction: column; gap: 6px;">
+                                <!-- Mode Controls & Curated Blueprints -->
+                                <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                    <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 220px;">
+                                        <span style="font-size: 10px; font-weight: bold; opacity: 0.85; text-transform: uppercase;">
+                                            <i class="codicon codicon-bookmark"></i> Blueprints:
+                                        </span>
+                                        <select id="hud-kg-sparql-presets" style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; font-size: 11px; padding: 2px 6px; height: 24px; flex: 1; outline: none;">
+                                            <option value="">-- Useful SPARQL Blueprints --</option>
+                                            <option value="functions_files" data-desc="Lists all standalone functions and the source files that declare them.">Find All Functions & Source Files</option>
+                                            <option value="classes_methods" data-desc="Maps object-oriented classes to all their member methods.">Map Classes to Member Methods</option>
+                                            <option value="api_routes" data-desc="Locates backend REST API route endpoints (FastAPI, Flask, Express).">Find All API Route Endpoints</option>
+                                            <option value="vue_components" data-desc="Lists frontend Vue.js Single File Components and their declared methods/state.">Map Vue.js Components & State</option>
+                                            <option value="file_imports" data-desc="Maps the dependency graph showing which files import other files or packages.">Find All File Imports & Dependencies</option>
+                                            <option value="class_inheritance" data-desc="Finds class inheritance and polymorphism relationships.">Trace Class Inheritance Chains</option>
+                                            <option value="disjoint_names" data-desc="Finds functions or classes with the same name declared in different files.">Find Disjoint Same-Name Entities</option>
+                                            <option value="scripts_ops" data-desc="Finds automation and DevOps scripts (Bash, Batch, PowerShell).">Find Automation & DevOps Scripts</option>
+                                        </select>
+                                    </div>
+
+                                    <div style="display: flex; gap: 6px;">
+                                        <button type="button" id="hud-kg-mode-sparql-btn" class="code-action-btn applied" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                                            <i class="codicon codicon-code"></i> <span>SPARQL</span>
+                                        </button>
+                                        <button type="button" id="hud-kg-mode-nl-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 8px; border-color: var(--vscode-charts-purple); color: var(--vscode-charts-purple);" title="Ask questions in plain English; AI writes and runs the SPARQL query">
+                                            <i class="codicon codicon-sparkle"></i> <span>Ask AI (Plain English)</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Blueprint Description Card -->
+                                <div id="hud-kg-preset-description" style="display: none; padding: 5px 8px; font-size: 10.5px; background: rgba(0, 122, 204, 0.08); border-left: 3px solid var(--vscode-charts-blue); border-radius: 3px; color: var(--vscode-foreground);"></div>
+
+                                <!-- Standard SPARQL Query Input Row -->
+                                <div id="hud-kg-sparql-row" style="display: flex; gap: 6px; align-items: center; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 3px 6px;">
+                                    <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.7;"></i>
+                                    <input type="text" id="hud-kg-sparql-input" placeholder="Query ontology with SPARQL (e.g. SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10)..." style="background: transparent; border: none; outline: none; font-family: monospace; font-size: 11px; color: var(--vscode-input-foreground); flex: 1;" />
+                                    <button type="button" id="hud-kg-run-sparql-btn" class="code-action-btn apply-btn" style="height: 22px; font-size: 10px; padding: 0 8px; background: var(--vscode-charts-purple) !important; color: white !important;">
+                                        <i class="codicon codicon-play"></i> Run SPARQL
+                                    </button>
+                                </div>
+
+                                <!-- Natural Language Text-to-SPARQL Input Row -->
+                                <div id="hud-kg-nl-row" style="display: none; gap: 6px; align-items: center; background: var(--vscode-input-background); border: 1.5px solid var(--vscode-charts-purple); border-radius: 4px; padding: 3px 6px;">
+                                    <i class="codicon codicon-sparkle" style="font-size: 12px; color: var(--vscode-charts-purple);"></i>
+                                    <input type="text" id="hud-kg-nl-input" placeholder="Ask in plain English (e.g. 'Show all backend API endpoints and their files', 'Which files import pygame?')..." style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); flex: 1;" />
+                                    <button type="button" id="hud-kg-run-nl-btn" class="code-action-btn apply-btn" style="height: 22px; font-size: 10px; padding: 0 10px; background: var(--vscode-charts-purple) !important; color: white !important; font-weight: bold;">
+                                        <i class="codicon codicon-sparkle"></i> Translate & Run
+                                    </button>
+                                </div>
                             </div>
-                            <div id="hud-kg-sparql-results" style="display: none; max-height: 160px; overflow-y: auto; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 6px; font-size: 10.5px;"></div>
+                            <div id="hud-kg-sparql-results" style="display: none; max-height: 180px; overflow-y: auto; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 8px; font-size: 11px;"></div>
 
                             <!-- High-Level Topology Summary (Text / Insights) -->
                             <div class="knowledge-graph-content markdown-body" id="hud-knowledge-graph-full-text" style="display: none; padding: 10px 14px; font-size: 11.5px; line-height: 1.5; max-height: 240px; overflow-y: auto; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px;">
@@ -4098,6 +4157,9 @@ export class ContextPresenter {
                                     </button>
                                     <button id="fork-and-compress-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);" title="Fork discussion with same files and mute states, compressing history into two alternating messages (user summary + AI acknowledgement)">
                                         <span class="codicon codicon-git-pull-request"></span> Fork & Compress
+                                    </button>
+                                    <button id="compress-history-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);" title="Compress current discussion history in-place to liberate tokens for code files">
+                                        <span class="codicon codicon-fold"></span> Compress History
                                     </button>
                                     ${finalProjectFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn" title="Bulk manage visibility (mute/reveal) and removal"><span class="codicon codicon-checklist"></span> Bulk Operations</button>` : ''}
                                 </div>
@@ -4444,11 +4506,39 @@ export class ContextBinder {
                     kgSummaryText.style.display = 'none';
                     kgCanvasContainer.style.display = 'block';
                     kgToggleBtn.innerHTML = '<i class="codicon codicon-eye"></i> <span>Summary</span>';
+
+                    setTimeout(() => {
+                        const cy = (window as any)._kgCyInstance;
+                        if (cy) {
+                            try {
+                                cy.resize();
+                                cy.fit(undefined, 30);
+                            } catch {}
+                        } else if ((window as any).renderKgWithCytoscape) {
+                            (window as any).renderKgWithCytoscape((window as any)._latestKgElements);
+                        }
+                    }, 100);
                 } else {
                     kgSummaryText.style.display = 'block';
                     kgCanvasContainer.style.display = 'none';
                     kgToggleBtn.innerHTML = '<i class="codicon codicon-graph"></i> <span>Visual Graph</span>';
                 }
+            };
+        }
+
+        const kgFilterBtn = dashboard.querySelector('#hud-filter-kg-btn') as HTMLElement;
+        if (kgFilterBtn) {
+            kgFilterBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                (window as any)._kgConnectedOnly = !(window as any)._kgConnectedOnly;
+                const isConnOnly = !!(window as any)._kgConnectedOnly;
+                kgFilterBtn.classList.toggle('applied', isConnOnly);
+                kgFilterBtn.innerHTML = `<i class="codicon codicon-filter"></i> <span>${isConnOnly ? 'Connected Only' : 'All Entities'}</span>`;
+                vscode.postMessage({
+                    command: 'requestKnowledgeGraphData',
+                    connectedOnly: isConnOnly
+                });
             };
         }
 
@@ -4488,64 +4578,39 @@ export class ContextBinder {
             const cyElements: any[] = [];
             const nodeIds = new Set<string>();
 
-            let rawNodes = (graphElements && Array.isArray(graphElements.nodes)) ? graphElements.nodes : [];
-            let rawEdges = (graphElements && Array.isArray(graphElements.edges)) ? graphElements.edges : [];
+            const rawNodes = (graphElements && Array.isArray(graphElements.nodes)) ? graphElements.nodes : [];
+            const rawEdges = (graphElements && Array.isArray(graphElements.edges)) ? graphElements.edges : [];
 
-            // Seed initial nodes from context files if no elements exist yet
-            if (rawNodes.length === 0) {
-                const filesList = (state.lastContextData as any)?.files || [];
-                filesList.slice(0, 30).forEach((f: any) => {
-                    const p = typeof f === 'string' ? f : f?.path;
-                    if (!p) return;
-                    const id = `s:file_${p.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-                    rawNodes.push({
-                        id,
-                        label: p.split('/').pop() || p,
-                        type: 'file',
-                        filePath: p
-                    });
-                });
-
-                if (rawNodes.length > 0) {
-                    rawNodes.push({
-                        id: 's:hub_architecture',
-                        label: 'Project Core',
-                        type: 'hub'
-                    });
-                    rawNodes.forEach(rn => {
-                        if (rn.id !== 's:hub_architecture') {
-                            rawEdges.push({
-                                source: 's:hub_architecture',
-                                target: rn.id,
-                                label: 'contains'
-                            });
-                        }
-                    });
-                }
-            }
+            const sanitizeCyId = (id: string) => id.replace(/^s:/, '').replace(/[^a-zA-Z0-9_]/g, '_');
 
             rawNodes.forEach(n => {
                 if (!n.id) return;
+                const safeId = sanitizeCyId(n.id);
+                nodeIds.add(safeId);
                 nodeIds.add(n.id);
                 cyElements.push({
                     group: 'nodes',
                     data: {
-                        id: n.id,
+                        id: safeId,
+                        rawId: n.id,
                         label: n.label || n.id.replace(/^s:/, ''),
                         type: n.type || 'entity',
-                        filePath: n.filePath
+                        filePath: n.filePath,
+                        startLine: n.startLine
                     }
                 });
             });
 
             rawEdges.forEach(e => {
-                if (nodeIds.has(e.source) && nodeIds.has(e.target)) {
+                const sSafe = sanitizeCyId(e.source);
+                const tSafe = sanitizeCyId(e.target);
+                if (nodeIds.has(sSafe) && nodeIds.has(tSafe)) {
                     cyElements.push({
                         group: 'edges',
                         data: {
-                            id: e.id || `e_${e.source}_${e.target}_${Math.random()}`,
-                            source: e.source,
-                            target: e.target,
+                            id: `edge_${sSafe}_${e.label}_${tSafe}`.replace(/[^a-zA-Z0-9_]/g, '_'),
+                            source: sSafe,
+                            target: tSafe,
                             label: e.label || ''
                         }
                     });
@@ -4553,7 +4618,17 @@ export class ContextBinder {
             });
 
             if (cyElements.length === 0) {
-                currentContainer.innerHTML = '<div style="display:flex; align-items:center; justify-content:center; height:100%; opacity:0.6; font-size:11px;">Click <strong>Rebuild ABox</strong> above to scan project code and populate knowledge graph.</div>';
+                currentContainer.innerHTML = '<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; opacity:0.8; font-size:11px; gap:8px;"><span>Knowledge Graph connections not populated yet.</span><button id="cy-quick-rebuild-btn" class="code-action-btn apply-btn" style="height:24px; font-size:10px;"><i class="codicon codicon-sync"></i> Rebuild ABox Now</button></div>';
+                const qb = currentContainer.querySelector('#cy-quick-rebuild-btn') as HTMLElement;
+                if (qb) {
+                    qb.onclick = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        qb.innerHTML = '<i class="codicon codicon-sync spin"></i> Building ABox...';
+                        (qb as HTMLButtonElement).disabled = true;
+                        vscode.postMessage({ command: 'rebuildKnowledgeGraph' });
+                    };
+                }
                 return;
             } else {
                 currentContainer.innerHTML = '';
@@ -4564,9 +4639,15 @@ export class ContextBinder {
                     try { (window as any)._kgCyInstance.destroy(); } catch {}
                 }
 
+                const nodeCount = cyElements.filter((el: any) => !el.data.source).length;
+                const activeLayout = (window as any)._kgActiveLayoutName || (nodeCount > 60 ? 'dagre' : 'cose');
+
                 const cy = cyLib({
                     container: currentContainer,
                     elements: cyElements,
+                    hideEdgesOnViewport: true,
+                    textureOnViewport: true,
+                    pixelRatio: 1,
                     style: [
                         {
                             selector: 'node',
@@ -4583,82 +4664,123 @@ export class ContextBinder {
                                 'border-color': '#555555',
                                 'shape': 'round-rectangle',
                                 'width': 'label',
-                                'height': 26,
-                                'padding': '8px',
-                                'text-max-width': '140px'
+                                'height': 24,
+                                'padding': '6px',
+                                'text-max-width': '160px'
                             }
                         },
                         {
                             selector: 'node[type="file"], node[type="sourcefile"]',
                             style: {
                                 'background-color': '#1f4e79',
-                                'border-color': '#569cd6'
+                                'border-color': '#569cd6',
+                                'shape': 'round-rectangle',
+                                'font-size': '10.5px'
+                            }
+                        },
+                        {
+                            selector: 'node[type="component"]',
+                            style: {
+                                'background-color': '#42b883',
+                                'border-color': '#35495e',
+                                'shape': 'round-rectangle',
+                                'color': '#ffffff',
+                                'font-size': '10.5px'
+                            }
+                        },
+                        {
+                            selector: 'node[type="script"]',
+                            style: {
+                                'background-color': '#06b6d4',
+                                'border-color': '#0891b2',
+                                'shape': 'round-rectangle',
+                                'color': '#000000',
+                                'font-size': '10px'
+                            }
+                        },
+                        {
+                            selector: 'node[type="endpoint"]',
+                            style: {
+                                'background-color': '#f59e0b',
+                                'border-color': '#d97706',
+                                'shape': 'hexagon',
+                                'color': '#000000',
+                                'font-size': '9.5px'
+                            }
+                        },
+                        {
+                            selector: 'node[type="store"]',
+                            style: {
+                                'background-color': '#8b5cf6',
+                                'border-color': '#7c3aed',
+                                'shape': 'barrel',
+                                'color': '#ffffff',
+                                'font-size': '9.5px'
                             }
                         },
                         {
                             selector: 'node[type="class"], node[type="classdefinition"]',
                             style: {
-                                'background-color': '#2d6a4f',
-                                'border-color': '#4ec9b0',
+                                'background-color': '#1b5e20',
+                                'border-color': '#4caf50',
                                 'shape': 'ellipse'
                             }
                         },
                         {
                             selector: 'node[type="interface"], node[type="interfacedefinition"]',
                             style: {
-                                'background-color': '#16a085',
-                                'border-color': '#1abc9c',
+                                'background-color': '#006064',
+                                'border-color': '#00acc1',
                                 'shape': 'ellipse'
                             }
                         },
                         {
-                            selector: 'node[type="function"], node[type="method"], node[type="functiondefinition"], node[type="methoddefinition"]',
+                            selector: 'node[type="function"], node[type="functiondefinition"]',
                             style: {
-                                'background-color': '#8c7a1e',
-                                'border-color': '#dcdcaa',
+                                'background-color': '#b7791f',
+                                'border-color': '#ecc94b',
                                 'shape': 'ellipse'
                             }
                         },
                         {
-                            selector: 'node[type="hub"]',
+                            selector: 'node[type="method"], node[type="methoddefinition"]',
                             style: {
-                                'background-color': '#6a1b9a',
-                                'border-color': '#9b59b6',
-                                'shape': 'hexagon',
-                                'font-weight': 'bold',
-                                'height': 32
-                            }
-                        },
-                        {
-                            selector: 'node[type="topic"], node[type="topictag"]',
-                            style: {
-                                'background-color': '#d35400',
-                                'border-color': '#e67e22',
-                                'shape': 'hexagon'
-                            }
-                        },
-                        {
-                            selector: 'node[type="insight"], node[type="architecturalinsight"]',
-                            style: {
-                                'background-color': '#8e44ad',
-                                'border-color': '#bb86fc',
-                                'shape': 'round-rectangle'
+                                'background-color': '#d97706',
+                                'border-color': '#fbbf24',
+                                'shape': 'round-rectangle',
+                                'font-size': '9.5px'
                             }
                         },
                         {
                             selector: 'node[type="library"], node[type="externallibrary"]',
                             style: {
-                                'background-color': '#8f5c2c',
-                                'border-color': '#d19a66',
+                                'background-color': '#7c2d12',
+                                'border-color': '#ea580c',
                                 'shape': 'diamond'
+                            }
+                        },
+                        {
+                            selector: 'node[type="insight"], node[type="architecturalinsight"]',
+                            style: {
+                                'background-color': '#581c87',
+                                'border-color': '#a855f7',
+                                'shape': 'round-rectangle'
+                            }
+                        },
+                        {
+                            selector: 'node[type="topic"], node[type="topictag"]',
+                            style: {
+                                'background-color': '#9a3412',
+                                'border-color': '#f97316',
+                                'shape': 'hexagon'
                             }
                         },
                         {
                             selector: 'edge',
                             style: {
-                                'width': 2,
-                                'line-color': '#777777',
-                                'target-arrow-color': '#999999',
+                                'width': 1.8,
+                                'line-color': '#666666',
+                                'target-arrow-color': '#888888',
                                 'target-arrow-shape': 'triangle',
                                 'curve-style': 'bezier',
                                 'arrow-scale': 0.8,
@@ -4670,16 +4792,67 @@ export class ContextBinder {
                                 'text-background-shape': 'round-rectangle',
                                 'label': 'data(label)'
                             }
+                        },
+                        {
+                            selector: 'edge[label="contains"]',
+                            style: {
+                                'line-color': '#3b82f6',
+                                'target-arrow-color': '#3b82f6',
+                                'width': 1.6
+                            }
+                        },
+                        {
+                            selector: 'edge[label="imports"]',
+                            style: {
+                                'line-color': '#a855f7',
+                                'target-arrow-color': '#a855f7',
+                                'line-style': 'dashed',
+                                'width': 1.6
+                            }
+                        },
+                        {
+                            selector: 'edge[label="calls"]',
+                            style: {
+                                'line-color': '#eab308',
+                                'target-arrow-color': '#eab308',
+                                'line-style': 'dotted',
+                                'width': 1.8
+                            }
+                        },
+                        {
+                            selector: 'edge[label="inherits"]',
+                            style: {
+                                'line-color': '#22c55e',
+                                'target-arrow-color': '#22c55e',
+                                'target-arrow-shape': 'triangle',
+                                'width': 2.0
+                            }
+                        },
+                        {
+                            selector: 'edge[label="disjointWith"]',
+                            style: {
+                                'line-color': '#ef4444',
+                                'target-arrow-color': '#ef4444',
+                                'source-arrow-shape': 'diamond',
+                                'target-arrow-shape': 'diamond',
+                                'line-style': 'dashed',
+                                'width': 1.5
+                            }
                         }
                     ],
                     layout: {
-                        name: 'cose',
+                        name: activeLayout,
                         animate: false,
-                        nodeOverlap: 30,
-                        componentSpacing: 80,
-                        nodeRepulsion: () => 800000,
-                        idealEdgeLength: () => 90,
-                        padding: 30
+                        randomize: false,
+                        componentSpacing: 35,
+                        nodeRepulsion: function() { return 4500; },
+                        nodeOverlap: 20,
+                        idealEdgeLength: function() { return 50; },
+                        edgeElasticity: function() { return 35; },
+                        nestingFactor: 1.0,
+                        gravity: 1.0,
+                        numIter: 250,
+                        padding: 25
                     }
                 });
 
@@ -4689,14 +4862,16 @@ export class ContextBinder {
                     const nodeData = evt.target.data();
                     if (nodeData) {
                         if (nodeData.filePath) {
-                            vscode.postMessage({ command: 'openFile', path: nodeData.filePath });
+                            vscode.postMessage({ 
+                                command: 'openFile', 
+                                path: nodeData.filePath,
+                                line: nodeData.startLine 
+                            });
                         }
                         const sparqlInp = document.getElementById('hud-kg-sparql-input') as HTMLInputElement;
                         if (sparqlInp) {
                             const targetSubject = nodeData.id.startsWith('s:') ? nodeData.id : `s:${nodeData.id}`;
-                            sparqlInp.value = `SELECT ?target ?rel WHERE { <${targetSubject}> ?rel ?target . } LIMIT 25`;
-                            const runBtn = document.getElementById('hud-kg-run-sparql-btn') as HTMLElement;
-                            if (runBtn) runBtn.click();
+                            sparqlInp.value = `SELECT ?prop ?target WHERE { ${targetSubject} ?prop ?target . } LIMIT 25`;
                         }
                     }
                 });
@@ -4715,6 +4890,34 @@ export class ContextBinder {
         };
 
         (window as any).renderKgWithCytoscape = renderKgWithCytoscape;
+
+        const bindLayoutBtn = (id: string, layoutName: string) => {
+            const btn = dashboard.querySelector(id) as HTMLElement;
+            if (!btn) return;
+            btn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                (window as any)._kgActiveLayoutName = layoutName;
+                dashboard.querySelectorAll('#hud-kg-layout-cose-btn, #hud-kg-layout-dagre-btn, #hud-kg-layout-grid-btn').forEach((b: any) => {
+                    b.className = 'code-action-btn secondary-btn';
+                });
+                btn.className = 'code-action-btn applied';
+                const cy = (window as any)._kgCyInstance;
+                if (cy) {
+                    const lOptions = layoutName === 'dagre'
+                        ? { name: 'dagre', rankDir: 'TB', nodeSep: 40, rankSep: 60, padding: 20 }
+                        : (layoutName === 'grid'
+                            ? { name: 'grid', padding: 20 }
+                            : { name: 'cose', animate: false, componentSpacing: 35, gravity: 0.9, padding: 20, randomize: false, numIter: 250 });
+                    cy.layout(lOptions).run();
+                    setTimeout(() => { try { cy.fit(undefined, 25); } catch {} }, 60);
+                }
+            };
+        };
+
+        bindLayoutBtn('#hud-kg-layout-cose-btn', 'cose');
+        bindLayoutBtn('#hud-kg-layout-dagre-btn', 'dagre');
+        bindLayoutBtn('#hud-kg-layout-grid-btn', 'grid');
 
         if (kgDetailsAccordion) {
             kgDetailsAccordion.addEventListener('toggle', () => {
@@ -4735,37 +4938,46 @@ export class ContextBinder {
             });
         }
 
-        // Trigger request to load ABox graph data
-        vscode.postMessage({ command: 'requestKnowledgeGraphData' });
-
-        // If the accordion is open, render immediately with cached elements
-        if (kgDetailsAccordion?.open && (window as any).renderKgWithCytoscape) {
-            (window as any).renderKgWithCytoscape((window as any)._latestKgElements);
+        // Lazy on-demand loading: Only query graph elements if the knowledge accordion is actually expanded
+        if (kgDetailsAccordion?.open) {
+            vscode.postMessage({ command: 'requestKnowledgeGraphData' });
+            if ((window as any).renderKgWithCytoscape) {
+                (window as any).renderKgWithCytoscape((window as any)._latestKgElements);
+            }
         }
 
-        // Live SPARQL Query Bar Inside Drawer
+        // Live SPARQL Query Bar & AI Text-to-SPARQL Assistant
         const sparqlInput = dashboard.querySelector('#hud-kg-sparql-input') as HTMLInputElement;
         const sparqlBtn = dashboard.querySelector('#hud-kg-run-sparql-btn') as HTMLElement;
         const sparqlResultsArea = dashboard.querySelector('#hud-kg-sparql-results') as HTMLElement;
+        const sparqlPresets = dashboard.querySelector('#hud-kg-sparql-presets') as HTMLSelectElement;
+        const presetDesc = dashboard.querySelector('#hud-kg-preset-description') as HTMLElement;
 
-        if (sparqlBtn && sparqlInput && sparqlResultsArea) {
-            const executeSparqlInDrawer = () => {
-                const queryText = sparqlInput.value.trim();
-                if (!queryText) return;
-                sparqlResultsArea.style.display = 'block';
-                sparqlResultsArea.innerHTML = '<span class="spinner"></span> Executing SPARQL query on knowledge graph...';
-                vscode.postMessage({
-                    command: 'executeLollmsCommand',
-                    details: {
-                        command: 'lollms-vs-coder.runSparqlQueryDirectly',
-                        params: {
-                            query: queryText,
-                            reprompt: false
-                        }
+        const modeSparqlBtn = dashboard.querySelector('#hud-kg-mode-sparql-btn') as HTMLElement;
+        const modeNlBtn = dashboard.querySelector('#hud-kg-mode-nl-btn') as HTMLElement;
+        const sparqlRow = dashboard.querySelector('#hud-kg-sparql-row') as HTMLElement;
+        const nlRow = dashboard.querySelector('#hud-kg-nl-row') as HTMLElement;
+        const nlInput = dashboard.querySelector('#hud-kg-nl-input') as HTMLInputElement;
+        const nlBtn = dashboard.querySelector('#hud-kg-run-nl-btn') as HTMLElement;
+
+        const executeSparqlInDrawer = (customQuery?: string) => {
+            const queryText = (customQuery || sparqlInput?.value || '').trim();
+            if (!queryText || !sparqlResultsArea) return;
+            sparqlResultsArea.style.display = 'block';
+            sparqlResultsArea.innerHTML = '<span class="spinner"></span> Executing SPARQL query on knowledge graph...';
+            vscode.postMessage({
+                command: 'executeLollmsCommand',
+                details: {
+                    command: 'lollms-vs-coder.runSparqlQueryDirectly',
+                    params: {
+                        query: queryText,
+                        reprompt: false
                     }
-                });
-            };
+                }
+            });
+        };
 
+        if (sparqlBtn && sparqlInput) {
             sparqlBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -4776,6 +4988,85 @@ export class ContextBinder {
                 if (e.key === 'Enter') {
                     e.preventDefault();
                     executeSparqlInDrawer();
+                }
+            };
+        }
+
+        // Mode Switching (Direct SPARQL vs. Plain English AI Query)
+        if (modeSparqlBtn && modeNlBtn && sparqlRow && nlRow) {
+            modeSparqlBtn.onclick = (e) => {
+                e.preventDefault();
+                modeSparqlBtn.className = 'code-action-btn applied';
+                modeNlBtn.className = 'code-action-btn secondary-btn';
+                sparqlRow.style.display = 'flex';
+                nlRow.style.display = 'none';
+                sparqlInput?.focus();
+            };
+
+            modeNlBtn.onclick = (e) => {
+                e.preventDefault();
+                modeNlBtn.className = 'code-action-btn applied';
+                modeSparqlBtn.className = 'code-action-btn secondary-btn';
+                nlRow.style.display = 'flex';
+                sparqlRow.style.display = 'none';
+                nlInput?.focus();
+            };
+        }
+
+        // Natural Language Query Translation
+        if (nlBtn && nlInput) {
+            const executeNlQuery = () => {
+                const queryText = nlInput.value.trim();
+                if (!queryText || !sparqlResultsArea) return;
+                sparqlResultsArea.style.display = 'block';
+                sparqlResultsArea.innerHTML = '<span class="spinner"></span> Consulting AI to translate English question into SPARQL-lite query...';
+                vscode.postMessage({
+                    command: 'translateTextToSparql',
+                    query: queryText
+                });
+            };
+
+            nlBtn.onclick = (e) => {
+                e.preventDefault();
+                executeNlQuery();
+            };
+
+            nlInput.onkeydown = (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    executeNlQuery();
+                }
+            };
+        }
+
+        // Curated SPARQL Blueprints Dropdown
+        if (sparqlPresets && sparqlInput) {
+            const presetMap: Record<string, string> = {
+                functions_files: `SELECT ?func ?file WHERE {\n  ?file s:containsEntity ?func .\n  ?func a s:FunctionDefinition\n} LIMIT 25`,
+                classes_methods: `SELECT ?class ?method WHERE {\n  ?class a s:ClassDefinition .\n  ?class s:containsEntity ?method .\n  ?method a s:MethodDefinition\n} LIMIT 25`,
+                api_routes: `SELECT ?route ?file WHERE {\n  ?file s:containsEntity ?route .\n  ?route a s:APIRoute\n} LIMIT 25`,
+                vue_components: `SELECT ?component ?entity WHERE {\n  ?component a s:VueComponent .\n  ?component s:containsEntity ?entity\n} LIMIT 25`,
+                file_imports: `SELECT ?sourceFile ?importedModule WHERE {\n  ?sourceFile a s:SourceFile .\n  ?sourceFile s:importsModule ?importedModule\n} LIMIT 25`,
+                class_inheritance: `SELECT ?childClass ?parentClass WHERE {\n  ?childClass s:inheritsFrom ?parentClass\n} LIMIT 25`,
+                disjoint_names: `SELECT ?entityA ?entityB WHERE {\n  ?entityA s:disjointWith ?entityB\n} LIMIT 25`,
+                scripts_ops: `SELECT ?script ?func WHERE {\n  ?script a s:AutomationScript .\n  ?script s:containsEntity ?func\n} LIMIT 25`
+            };
+
+            sparqlPresets.onchange = () => {
+                const key = sparqlPresets.value;
+                const opt = sparqlPresets.options[sparqlPresets.selectedIndex];
+                const desc = opt?.dataset.desc || '';
+
+                if (key && presetMap[key]) {
+                    sparqlInput.value = presetMap[key].replace(/\n\s*/g, ' ');
+                    if (presetDesc) {
+                        presetDesc.style.display = 'block';
+                        presetDesc.textContent = `💡 ${desc}`;
+                    }
+                    if (modeSparqlBtn) modeSparqlBtn.click();
+                    executeSparqlInDrawer(presetMap[key]);
+                } else if (presetDesc) {
+                    presetDesc.style.display = 'none';
                 }
             };
         }
@@ -4838,8 +5129,8 @@ export class ContextBinder {
                 const icon = quickRefresh.querySelector('.codicon');
                 if (icon) icon.classList.add('spin');
                 const label = document.getElementById('token-count-label');
-                if (label) label.textContent = 'Counting tokens...';
-                vscode.postMessage({ command: 'calculateTokens' });
+                if (label) label.textContent = 'Rescanning workspace...';
+                vscode.postMessage({ command: 'calculateTokens', force: true });
                 setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1200);
             };
         }
@@ -5444,6 +5735,24 @@ export class ContextBinder {
             };
         }
 
+        const compressHistBtn = dashboard.querySelector('#compress-history-btn') as HTMLElement;
+        if (compressHistBtn) {
+            compressHistBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'compressDiscussionHistory' });
+            };
+        }
+
+        const compressHistContextBtn = dashboard.querySelector('#compress-history-context-btn') as HTMLElement;
+        if (compressHistContextBtn) {
+            compressHistContextBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'compressDiscussionHistory' });
+            };
+        }
+
         const iconForkBtn = dashboard.querySelector('#new-chat-same-context-icon-btn') as HTMLElement;
         if (iconForkBtn) {
             iconForkBtn.onclick = (e) => {
@@ -5455,7 +5764,7 @@ export class ContextBinder {
 
         bindClick('new-discussion-context-header-btn', () => vscode.postMessage({ command: 'newDiscussionWithSameContext' }));
 
-        bindClick('refresh-context-btn', () => vscode.postMessage({ command: 'calculateTokens' }));
+        bindClick('refresh-context-btn', () => vscode.postMessage({ command: 'calculateTokens', force: true }));
         bindClick('save-context-btn', () => vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'saveContext', params: {} } }));
         bindClick('load-context-btn', () => vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'loadContext', params: {} } }));
         bindClick('add-context-btn', () => vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'addContext', params: {} } }));

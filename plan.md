@@ -251,6 +251,7 @@
 - [ ] Ensure that all actions (`<librarian>`, `<librarian_off/>`, `<lollms_form>`) render gracefully in the chat panel with clear state badges.
 
 ### Milestone 5: Verification & End-to-End Testing
+- [x] Fix Knowledge Graph: Strict TBox / ABox separation in `.lollms/knowledge.ttl`, link functions to files, methods to classes, and tag same-name entities as `s:disjointWith`.
 - [ ] Verify fast-path: When files are already `[C]`, verify that assistant goes straight to Stage 2 Plan without firing Librarian.
 - [ ] Verify debate flow: When context is missing, verify `<librarian>` triggers autonomous scout, returns report, worker receives it, and worker produces plan.
 - [ ] Verify budget shield: When a massive file set is requested, verify partitioning into sequential phases.

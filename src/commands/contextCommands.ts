@@ -41,15 +41,16 @@ export async function getAvailableContextSelections(): Promise<{ name: string; f
 export function registerContextCommands(context: vscode.ExtensionContext, services: LollmsServices) {
     
     const setContextState = async (uri: vscode.Uri | any, uris: vscode.Uri[] | any[], state: ContextState) => {
-        // Handle potential Search Result wrappers or plain JSON objects if passed by some views
         let validUri: vscode.Uri | undefined;
         if (uri instanceof vscode.Uri) validUri = uri;
+        else if (uri && typeof uri === 'object' && uri.resourceUri instanceof vscode.Uri) validUri = uri.resourceUri;
         else if (uri && typeof uri === 'object' && 'scheme' in uri && 'path' in uri) validUri = vscode.Uri.file(uri.path).with({ scheme: uri.scheme });
 
         let validUris: vscode.Uri[] = [];
         if (Array.isArray(uris)) {
             validUris = uris.map(u => {
                 if (u instanceof vscode.Uri) return u;
+                if (u && typeof u === 'object' && u.resourceUri instanceof vscode.Uri) return u.resourceUri;
                 if (u && typeof u === 'object' && 'scheme' in u && 'path' in u) return vscode.Uri.file(u.path).with({ scheme: u.scheme });
                 return undefined;
             }).filter((u): u is vscode.Uri => !!u);
@@ -57,11 +58,10 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
 
         const targetUris = validUris.length > 0 ? validUris : (validUri ? [validUri] : []);
 
-        Logger.info(`Command setContextState triggered for ${targetUris.length} files. State: ${state}`);
+        Logger.info(`Command setContextState triggered for ${targetUris.length} items. State: ${state}`);
         if (targetUris.length > 0) {
             const provider = services.contextManager.getContextStateProvider();
             if (provider) {
-                // If it's an 'included' request, show progress because it's a disk-heavy recursive walk
                 if (state === 'included' && targetUris.some(u => u.fsPath.includes(path.sep))) {
                     await vscode.window.withProgress({
                         location: vscode.ProgressLocation.Notification,
@@ -78,10 +78,18 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                     }
                 }
 
-                // Immediately refresh the current chat bubble if open
-                if (ChatPanel.currentPanel) {
-                    ChatPanel.currentPanel.updateContextAndTokens();
+                if (state === 'fully-excluded' || state === 'collapsed' || state === 'tree-only') {
+                    for (const u of targetUris) {
+                        const rel = vscode.workspace.asRelativePath(u, false);
+                        services.contextManager.removeFilesUnderPath(rel);
+                    }
                 }
+
+                ChatPanel.panels.forEach(panel => {
+                    if (!panel.isDisposed) {
+                        panel.updateContextAndTokens({ isBackgroundSync: false });
+                    }
+                });
             }
         } else {
             Logger.warn("setContextState: No valid URIs provided from command arguments.");
@@ -90,22 +98,8 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextIncluded', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'included')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextTreeOnly', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'tree-only')));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextExcluded', async (uri?: vscode.Uri, uris?: vscode.Uri[]) => {
-        const targetUris = getSelectedUris(uri, uris);
-        if (targetUris.length > 0 && services.contextManager) {
-            services.contextManager.clearRenderedTreeCache();
-            await services.contextManager.getContextStateProvider()?.setStateForUris(targetUris, 'fully-excluded');
-            refreshViews();
-        }
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextCollapsed', async (uri?: vscode.Uri, uris?: vscode.Uri[]) => {
-        const targetUris = getSelectedUris(uri, uris);
-        if (targetUris.length > 0 && services.contextManager) {
-            services.contextManager.clearRenderedTreeCache();
-            await services.contextManager.getContextStateProvider()?.setStateForUris(targetUris, 'collapsed');
-            refreshViews();
-        }
-    }));    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextExcluded', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'fully-excluded')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextCollapsed', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'collapsed')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextDefinitionsOnly', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'definitions-only')));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFilesToContext', async (files: string[]) => {

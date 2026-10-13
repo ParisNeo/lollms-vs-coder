@@ -232,7 +232,7 @@ export class ContextLibrarian {
         history?: any[];
         customCapacity?: number;
         targetPercent?: number;
-        reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
+        reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max';
         pruneMsgId?: string;
         onStatusUpdate?: (status: string) => void;
         onRoundProgress?: (progress: { round: number; maxRounds: number; status: string; discoverySteps?: any[] }) => void;
@@ -330,6 +330,28 @@ export class ContextLibrarian {
         const maxRounds = Math.min(20, Math.max(2, effectiveRounds));
 
         const totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
+
+        // Check if history dominates files when approaching budget
+        if (options.currentDiscussion) {
+            const rawHistoryTokens = Math.ceil(
+                (options.currentDiscussion.messages || [])
+                    .filter(m => !m.skipInPrompt && m.role !== 'system')
+                    .map(m => typeof m.content === 'string' ? m.content : '')
+                    .join(' ').length / 3.5
+            );
+            if (rawHistoryTokens > totalCandidateTokens && (totalCandidateTokens + rawHistoryTokens > targetBudget)) {
+                await this.autoCompressHistoryIfNeeded({
+                    currentDiscussion: options.currentDiscussion,
+                    discussionManager: options.discussionManager,
+                    lollmsAPI,
+                    targetModel,
+                    signal,
+                    fileTokens: totalCandidateTokens,
+                    totalTokens: totalCandidateTokens + rawHistoryTokens,
+                    targetBudget
+                });
+            }
+        }
 
         const negotiationResult = await this.runGovernorNegotiation({
             lollmsAPI,
@@ -1502,7 +1524,7 @@ Apply the required modifications for this phase.`;
             .map(([w]) => w);
     }
 
-    private static async cropAndSummarizeHistory(
+    public static async compressHistory(
         history: ChatMessage[],
         lollmsAPI: LollmsAPI,
         targetModel: string,
@@ -1510,9 +1532,12 @@ Apply the required modifications for this phase.`;
         currentDiscussion: Discussion,
         discussionManager: DiscussionManager
     ): Promise<{ newHistory: ChatMessage[]; liberatedTokens: number; newHistoryTokens: number; croppedCount: number } | null> {
-        const keepRecentCount = history.length > 4 ? 2 : 1;
-        const olderHistory = history.slice(0, history.length - keepRecentCount);
-        const recentHistory = history.slice(history.length - keepRecentCount);
+        const meaningful = history.filter(m => !m.skipInPrompt && m.role !== 'system');
+        if (meaningful.length <= 1) return null;
+
+        const keepRecentCount = meaningful.length > 4 ? 2 : 1;
+        const olderHistory = meaningful.slice(0, meaningful.length - keepRecentCount);
+        const recentHistory = meaningful.slice(meaningful.length - keepRecentCount);
 
         if (olderHistory.length === 0) return null;
 
@@ -1537,16 +1562,16 @@ Apply the required modifications for this phase.`;
             return `[${role}]: ${txt}`;
         }).join('\n\n');
 
-        const summaryPrompt = `You are the Sovereign Context Librarian.
-The conversation history has grown large and must be cropped to fit the token budget.
-Analyze the following earlier discussion transcript and synthesize a concise, high-density summary focusing on:
-1. **Accomplished**: Key decisions made, files created or modified, and problems resolved.
-2. **Important Stuff to Do (Pending Objectives)**: Outstanding requirements, pending tasks, constraints, and specific next steps that still need to be completed.
+        const summaryPrompt = `You are the Lead Sovereign Context Librarian.
+The conversation history has grown large and must be compressed to reserve context budget for code files.
+Analyze the following earlier discussion transcript and synthesize a concise, high-density technical recap:
+1. **Accomplished**: Key architectural decisions made, files created or modified, and problems resolved.
+2. **Current State & Next Steps**: Outstanding tasks, pending requirements, and constraints.
 
 STRICT INSTRUCTIONS:
 - Keep the summary under 200 words.
-- Format with clear bullet points.
-- Output ONLY the summary text. No conversational preamble.
+- Format with clear, high-density bullet points.
+- Output ONLY the summary text. Do NOT add conversational preamble.
 
 TRANSCRIPT:
 ${transcript}`;
@@ -1570,23 +1595,31 @@ ${transcript}`;
                 .filter(Boolean)
                 .map(t => `- ${t}`)
                 .join('\n');
-            summaryText = `**Accomplished:** Processed earlier turns.\n\n**Important Stuff to Do:**\n${userObjectives || '- Continue fulfilling active requests.'}`;
+            summaryText = `**Accomplished:** Progressed development in earlier turns.\n\n**Pending Objectives:**\n${userObjectives || '- Continue fulfilling active requests.'}`;
         }
 
-        const summaryMessage: ChatMessage = {
-            id: 'history_summary_' + Date.now(),
-            role: 'system',
-            content: `### 📋 CROPPED HISTORY SUMMARY & IMPORTANT STUFF TO DO\n*Earlier conversation history was cropped by the Context Librarian to free token budget.*\n\n${summaryText}`
+        const now = Date.now();
+        const summaryUserMsg: ChatMessage = {
+            id: 'user_history_recap_' + now,
+            role: 'user',
+            content: `### 📋 PREVIOUS CONVERSATION RECAP & OBJECTIVES\n*Earlier conversation turns were compressed by the Context Librarian to free context tokens for files.*\n\n${summaryText}`,
+            timestamp: now
         };
 
-        olderHistory.forEach(oldMsg => {
-            const found = currentDiscussion.messages.find(m => m.id === oldMsg.id);
-            if (found) found.skipInPrompt = true;
-        });
+        const summaryAssistantMsg: ChatMessage = {
+            id: 'assistant_history_ack_' + (now + 1),
+            role: 'assistant',
+            content: "Understood! I have reviewed and internalized the summary of our earlier work, architectural decisions, and pending objectives. All context is aligned and I am ready to continue.",
+            model: targetModel,
+            personalityName: 'Lollms',
+            timestamp: now + 1
+        };
 
-        const newHistory = [summaryMessage, ...recentHistory];
+        const newHistory = [summaryUserMsg, summaryAssistantMsg, ...recentHistory];
+        currentDiscussion.messages = newHistory;
+
         const newHistoryTokens = Math.ceil(getCleanHistoryText(newHistory).length / 3.5);
-        const liberatedTokens = Math.max(0, olderTokens - Math.ceil(summaryMessage.content.length / 3.5));
+        const liberatedTokens = Math.max(0, olderTokens - Math.ceil((summaryUserMsg.content.length + summaryAssistantMsg.content.length) / 3.5));
 
         if (!currentDiscussion.id.startsWith('temp-')) {
             await discussionManager.saveDiscussion(currentDiscussion);
@@ -1598,6 +1631,55 @@ ${transcript}`;
             newHistoryTokens,
             croppedCount: olderHistory.length
         };
+    }
+
+    public static async autoCompressHistoryIfNeeded(options: {
+        currentDiscussion: Discussion;
+        discussionManager: DiscussionManager;
+        lollmsAPI: LollmsAPI;
+        targetModel: string;
+        signal?: AbortSignal;
+        fileTokens: number;
+        totalTokens: number;
+        targetBudget: number;
+    }): Promise<{ newHistory: ChatMessage[]; liberatedTokens: number; newHistoryTokens: number; croppedCount: number } | null> {
+        const { currentDiscussion, discussionManager, lollmsAPI, targetModel, signal, fileTokens, totalTokens, targetBudget } = options;
+        if (!currentDiscussion || !currentDiscussion.messages || currentDiscussion.messages.length <= 2) {
+            return null;
+        }
+
+        const msgs = currentDiscussion.messages.filter(m => !m.skipInPrompt && m.role !== 'system');
+        if (msgs.length <= 2) return null;
+
+        const getCleanHistoryText = (messages: ChatMessage[]) => messages
+            .map(m => {
+                const c = m.content;
+                if (typeof c === 'string') return stripThinkingTags(c);
+                if (Array.isArray(c)) return c.filter((p: any) => p && p.type === 'text').map((p: any) => stripThinkingTags(p.text)).join('\n');
+                return '';
+            }).filter(t => t.trim().length > 0).join('\n');
+
+        const historyTokens = Math.ceil(getCleanHistoryText(msgs).length / 3.5);
+
+        // Low on context condition (approaching or exceeding target budget)
+        // AND history is larger than file content tokens
+        const isLowOnContext = totalTokens >= targetBudget * 0.90;
+        const isHistoryDominating = historyTokens > fileTokens;
+
+        if (!isLowOnContext || !isHistoryDominating) {
+            return null;
+        }
+
+        Logger.info(`[Librarian] Auto-compressing history: low on context (${totalTokens} tok >= ${Math.round(targetBudget * 0.9)} target threshold) and history (${historyTokens} tok) > files (${fileTokens} tok). Prioritizing file context...`);
+
+        return await this.compressHistory(
+            currentDiscussion.messages,
+            lollmsAPI,
+            targetModel,
+            signal || new AbortController().signal,
+            currentDiscussion,
+            discussionManager
+        );
     }
 
     private static updateTreeWithKeptFiles(tree: string, keptPaths: string[], mutedPaths: string[] = []): string {

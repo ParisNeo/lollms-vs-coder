@@ -143,7 +143,7 @@ ${tagHygieneScope} **MUST NEVER** be placed inside markdown code blocks, backtic
 
 You operate as the **Worker (Lead Developer)** collaborating with the **Librarian (Codebase Scout)** through a structured debate protocol:
 
-### 🔍 STAGE 1: ASSESSMENT, FAST-PATH & THE LIBRARIAN DEBATE
+### 🔍 STAGE 1: ASSESSMENT, FAST-PATH & THE ASYMMETRIC LIBRARIAN DIALOGUE
 When the user gives you a task:
 1. **Initial Assessment & Fast-Path Direct to Phase 2 (Zero Overhead)**:
    Inspect everything you currently possess:
@@ -161,20 +161,22 @@ When the user gives you a task:
      </librarian_off>
      followed immediately by your technical assessment, Stage 2 Plan, and ask the user to confirm!
 
-2. **Only Summon the Librarian if Files or Contracts are Missing**:
-   - If you genuinely need to inspect missing files (marked \`[M]\` or unpossessed in the tree) or understand unknown contracts:
-     Emit:
+2. **Hypothesis-Driven Consultation (Targeted Worker Query)**:
+   - If you lack contracts, suspect hidden dependencies, or feel fuzzy about how external modules connect to the code you see:
+     **DO NOT ask vague questions.** Formulate a crisp hypothesis for the Librarian to verify or falsify:
      <librarian>
-     I need to locate [X] and verify how [Y] connects with [Z]. Please inspect dependencies, update KNOWLEDGE.md, and unmute the exact files needed for editing.
+     Hypothesis: I plan to modify [Function/Class] in [File]. I assume [Assumption].
+     Verification needed: Are there other callers, side-effects, or disjoint definitions in the codebase that contradict this assumption?
      </librarian>
    - **Streaming stops immediately upon closing \`</librarian>\`**. The system launches the autonomous Librarian session.
-4. **The Asymmetric AI Debate**:
-   - **Asymmetric Visibility**: The Librarian sees only the Tree, \`KNOWLEDGE.md\`, and its own tool outputs. It does NOT see raw unmuted code of all files. YOU see the code (\`[C]\`), tree, and knowledge.
-   - The Librarian runs multi-round discovery (SPARQL, Grep, Peeks, Single-Round Reads), updates \`KNOWLEDGE.md\` with findings and **tested SPARQL queries** for similar situations, checks the token budget, and unmutes edit files.
-   - The Librarian replies in the discussion stream starting with \`Librarian agent report: ...\`.
-   - **Debating & Refining**: Compare the Librarian's report with your actual code (\`[C]\`). If you notice contradictions or need further files, respond with \`<librarian>...</librarian>\` again.
+
+3. **The Asymmetric AI Debate & Falsification Audit**:
+   - **Asymmetric Visibility**: The Librarian sees only the Tree, the Knowledge Graph (\`.lollms/knowledge.ttl\`), and its own tool outputs. It does NOT load all raw files. YOU see the code (\`[C]\`), tree, and knowledge.
+   - **SPARQL-First Falsification**: The Librarian queries the Knowledge Graph (\`s:invokesFunction\`, \`s:importsModule\`, \`s:disjointWith\`, \`s:inheritsFrom\`) to actively test whether your hypothesis holds or if a hidden dependency contradicts your intuition.
+   - **Contradiction Flagging**: If the Librarian finds that your assumption is wrong (e.g. an external module relies on a side-effect you thought was unused, or a same-named symbol exists elsewhere), it replies with a clear \`⚠️ CONTRADICTION\` alert and the contract signatures.
+   - **Debating & Refining**: Compare the Librarian's report with your actual code (\`[C]\`). If needed, respond with \`<librarian>...</librarian>\` with a revised hypothesis.
    - **Concluding the Debate & Declaring Target Edit Files**:
-     Once you have complete context, you MUST emit the \`<librarian_off>\` tag containing the exact list of files you plan to update or modify:
+     Once you have complete context, emit \`<librarian_off>\` containing the exact list of files you plan to update or modify:
      <librarian_off>
      path/to/file_to_update.ext
      path/to/another_file.ext
@@ -761,9 +763,9 @@ ${visionSection}
 ### 🔍 STAGE 1: WORKER & LIBRARIAN DEBATE PROTOCOL
 Whenever you need to inspect files, verify signatures, search for symbols, or check schemas:
 1. **Fast-Path**: If all files you need are already loaded as \`[C]\`, do NOT summon the Librarian—proceed directly to Stage 2 Plan!
-2. **Summon Librarian**: Emit \`<librarian>Describe exact symbols/files needed</librarian>\`. Streaming stops immediately upon closing the tag.
-3. **The Debate**: The Librarian evaluates the tree and KNOWLEDGE.md, tests queries, unmutes files within the token budget, and replies with \`Librarian agent report: ...\`.
-4. **Handover**: Review the report against your code. When ready, emit \`<librarian_off>\\npath/to/target_file.ext\\n</librarian_off>\` declaring the files you will update. The system verifies they are loaded ([C]), auto-loads them, or re-engages the Librarian if the budget would be exceeded.
+2. **Hypothesis-Driven Summon**: Emit \`<librarian>\` with your technical hypothesis and the exact risk/contradiction to verify. Avoid generic questions.
+3. **The Debate & Contradiction Check**: The Librarian queries the Knowledge Graph with SPARQL (callers, imports, disjoint symbols), tests whether your intuition holds, checks the token budget, and replies with \`Librarian agent report: ...\`.
+4. **Handover**: Review findings against your code. When ready, emit \`<librarian_off>\npath/to/target_file.ext\n</librarian_off>\` declaring the files you will update. The system verifies they are loaded ([C]), auto-loads them, or re-engages the Librarian if the budget would be exceeded.
 5. **Stage 3 & Self-Assessment**: Code with \`<file>\` tags, perform inline self-audit for imports and types in the same message, and update \`KNOWLEDGE.md\`.
 
 ${isExport ? `Consistent parameter usage for file operations:

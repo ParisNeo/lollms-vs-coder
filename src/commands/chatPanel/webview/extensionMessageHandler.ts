@@ -210,6 +210,37 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
+            case 'textToSparqlResult':
+                {
+                    const resultsArea = document.getElementById('hud-kg-sparql-results');
+                    const sparqlInput = document.getElementById('hud-kg-sparql-input') as HTMLInputElement;
+
+                    if (message.sparqlQuery && sparqlInput) {
+                        sparqlInput.value = message.sparqlQuery.replace(/\n\s*/g, ' ');
+                    }
+
+                    if (resultsArea) {
+                        resultsArea.style.display = 'block';
+                        if (message.error) {
+                            resultsArea.innerHTML = `<div style="color:var(--vscode-charts-red); font-size:11px;"><i class="codicon codicon-error"></i> AI Translation Error: ${sanitizer.sanitize(message.error)}</div>`;
+                        } else {
+                            const queryMarkdown = `\`\`\`sparql\n${message.sparqlQuery}\n\`\`\``;
+                            resultsArea.innerHTML = `
+                                <div style="display:flex; flex-direction:column; gap:6px;">
+                                    <div style="font-size:10.5px; color:var(--vscode-charts-purple); font-weight:bold;">
+                                        <i class="codicon codicon-sparkle"></i> AI Generated SPARQL Query:
+                                    </div>
+                                    <div class="markdown-body" style="font-size:10.5px;">${sanitizer.sanitize((marked as any).parse(queryMarkdown))}</div>
+                                    ${message.explanation ? `<div style="font-size:10px; opacity:0.8; font-style:italic;">${sanitizer.sanitize(message.explanation)}</div>` : ''}
+                                    <div style="border-top:1px solid var(--vscode-widget-border); padding-top:6px; margin-top:4px;">
+                                        ${sanitizer.sanitize((marked as any).parse(message.result || 'No matches found.'))}
+                                    </div>
+                                </div>
+                            `;
+                        }
+                    }
+                }
+                break;
             case 'updateKnowledgeGraphData':
                 {
                     const elements = message.elements;

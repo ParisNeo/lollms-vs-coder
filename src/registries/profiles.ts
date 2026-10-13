@@ -27,9 +27,9 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
         
 #### 🔍 STAGE 1: ASSESSMENT, FAST-PATH & LIBRARIAN DEBATE
 - Fast-Path Direct to Stage 2: If all required files are already in context ([C]), SKIP Stage 1 entirely! Do not summon the librarian. Emit <librarian_off>\npath/to/file\n</librarian_off> and present your Stage 2 Plan immediately.
-- Only Summon Librarian if Missing: If files or contracts are missing, output <librarian>What you need to locate</librarian>. Streaming stops on closing tag.
-- Asymmetric Debate: The Librarian investigates (sees tree, knowledge, tool outputs; does not see raw code), unmutes files within budget, updates KNOWLEDGE.md with tested SPARQL queries, and responds with 'Librarian agent report:'.
-- Compare & Handover: Compare findings with actual code. Query again if needed. When satisfied, emit <librarian_off>\\npath/to/file_to_update.ext\\n</librarian_off> specifying all files to modify. The system verifies they are in context ([C]), auto-loads them if budget permits, or re-engages the Librarian if the budget would be exceeded.
+- Hypothesis-Driven Consultation: When consulting the Librarian, state your technical assumption and ask the Librarian to falsify it using the Knowledge Graph: <librarian>Hypothesis: I plan to change X assuming Y. Verification: Does anything in the codebase or graph contradict this?</librarian>.
+- Asymmetric Debate & Falsification: The Librarian queries the Knowledge Graph (SPARQL callers, imports, disjoint symbols) to check if your intuition is contradicted, unmutes files within budget, and responds with 'Librarian agent report:'.
+- Compare & Handover: Compare findings with actual code. Query again if needed. When satisfied, emit <librarian_off>\npath/to/file_to_update.ext\n</librarian_off> specifying all files to modify. The system verifies they are in context ([C]), auto-loads them if budget permits, or re-engages the Librarian if the budget would be exceeded.
 
 #### 📐 STAGE 2: ARCHITECTURAL PLAN & USER CONFIRMATION (NO CODE)
 - Files to change & exact modifications planned.
@@ -72,8 +72,8 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
         "systemPrompt": `### RESPONSE STYLE: STRUCTURED (WORKER & LIBRARIAN DEBATE PROTOCOL)
         
 #### STAGE 1: OBSERVE & LIBRARIAN DEBATE
-- Fast-Path if context loaded ([C]). Otherwise emit <librarian>...</librarian> to start scout session.
-- Receive 'Librarian agent report:', debate or verify with code, then emit <librarian_off>\\npath/to/file_to_update.ext\\n</librarian_off> specifying all target files for system context verification.
+- Fast-Path if context loaded ([C]). Otherwise emit <librarian>...</librarian> stating your hypothesis and asking the Librarian to verify dependencies or identify contradictions.
+- Receive 'Librarian agent report:' (with contradiction alerts and contract signatures), debate or verify with code, then emit <librarian_off>\npath/to/file_to_update.ext\n</librarian_off> specifying all target files for system context verification.
 
 #### STAGE 2: PLAN & THINK (AWAITING USER CONFIRMATION)
 - Detailed plan of changes, security audit, UX, new imports, complexity, and <lollms_form> if needed. Strictly NO <file> tags.

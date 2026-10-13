@@ -3634,7 +3634,10 @@ export const fileRepairStudioState = {
     history: [] as { role: 'user' | 'assistant'; text: string; patchApplied?: boolean }[],
     round: 0,
     maxRounds: 5,
-    isRunning: false
+    isRunning: false,
+    model: '',
+    temperature: 0.2 as number | undefined,
+    reasoningEffort: 'medium' as 'none' | 'low' | 'medium' | 'high' | 'max'
 };
 (window as any).fileRepairStudioState = fileRepairStudioState;
 
@@ -3925,6 +3928,54 @@ export function openFileRepairStudio(
         appendRepairStreamMessage('system', `Spotted **${errors.length} error(s)** in \`${filePath}\` after applying changes.\n\nI will inspect the file on disk and language server diagnostics, then generate surgical patches to fix missing imports, type mismatches, or syntax errors.\n\n*You can prompt the agent anytime with hints or click **Accept & Keep File** at any time.*`);
     }
 
+    // Populate model selector dropdown
+    const modelSelect = document.getElementById('repair-model-select') as HTMLSelectElement;
+    if (modelSelect) {
+        modelSelect.innerHTML = '';
+        const allModels = (state as any).models || Array.from(dom.modelSelector?.options || []).map((o: any) => ({ id: o.value, name: o.text })).filter(m => m.id);
+        const preferredModel = (state as any).currentModelName || dom.modelSelector?.value || '';
+
+        allModels.forEach((m: any) => {
+            const opt = document.createElement('option');
+            opt.value = m.id;
+            const raw = m.id.includes('::') ? m.id.split('::')[1] : m.id;
+            opt.textContent = (m.hasVision ? '👁️ ' : '') + raw;
+            if (m.id === preferredModel || raw === preferredModel) {
+                opt.selected = true;
+            }
+            modelSelect.appendChild(opt);
+        });
+
+        if (modelSelect.options.length === 0) {
+            modelSelect.innerHTML = `<option value="${preferredModel || 'default'}" selected>${preferredModel || 'Default Model'}</option>`;
+        }
+        fileRepairStudioState.model = modelSelect.value;
+
+        modelSelect.onchange = () => {
+            fileRepairStudioState.model = modelSelect.value;
+            const tag = document.getElementById('repair-agent-model-tag');
+            if (tag) tag.textContent = modelSelect.value.split('::').pop() || 'Linter Surgeon';
+        };
+    }
+
+    // Bind temperature dropdown
+    const tempSelect = document.getElementById('repair-temp-select') as HTMLSelectElement;
+    if (tempSelect) {
+        tempSelect.value = fileRepairStudioState.temperature !== undefined ? String(fileRepairStudioState.temperature) : '0.2';
+        tempSelect.onchange = () => {
+            fileRepairStudioState.temperature = tempSelect.value === 'auto' ? undefined : parseFloat(tempSelect.value);
+        };
+    }
+
+    // Bind reasoning effort dropdown
+    const effortSelect = document.getElementById('repair-effort-select') as HTMLSelectElement;
+    if (effortSelect) {
+        effortSelect.value = fileRepairStudioState.reasoningEffort || 'medium';
+        effortSelect.onchange = () => {
+            fileRepairStudioState.reasoningEffort = effortSelect.value as any;
+        };
+    }
+
     // Default to Errors tab
     const errorsTabBtn = document.getElementById('repair-tab-errors-btn');
     const codeTabBtn = document.getElementById('repair-tab-code-btn');
@@ -3972,6 +4023,15 @@ export function triggerRepairPass(promptText?: string) {
         fileRepairStudioState.history.push({ role: 'user', text: promptText });
     }
 
+    const modelSelect = document.getElementById('repair-model-select') as HTMLSelectElement;
+    const tempSelect = document.getElementById('repair-temp-select') as HTMLSelectElement;
+    const effortSelect = document.getElementById('repair-effort-select') as HTMLSelectElement;
+
+    const selectedModel = modelSelect?.value || fileRepairStudioState.model || '';
+    const tempVal = tempSelect?.value;
+    const parsedTemp = (tempVal === 'auto' || !tempVal) ? undefined : parseFloat(tempVal);
+    const selectedEffort = (effortSelect?.value || fileRepairStudioState.reasoningEffort || 'medium') as any;
+
     vscode.postMessage({
         command: 'runFileRepairPass',
         filePath: fileRepairStudioState.filePath,
@@ -3981,7 +4041,10 @@ export function triggerRepairPass(promptText?: string) {
         prompt: promptText,
         round: fileRepairStudioState.round,
         maxRounds: fileRepairStudioState.maxRounds,
-        errors: fileRepairStudioState.errors
+        errors: fileRepairStudioState.errors,
+        model: selectedModel,
+        temperature: parsedTemp,
+        reasoningEffort: selectedEffort
     });
 }
 (window as any).triggerRepairPass = triggerRepairPass;
@@ -3996,7 +4059,7 @@ export const governorStudioState = {
     initialPrompt: '',
     customCapacity: undefined as number | undefined,
     targetPercent: 70,
-    reasoningEffort: 'none' as 'none' | 'low' | 'medium' | 'high'
+    reasoningEffort: 'none' as 'none' | 'low' | 'medium' | 'high' | 'max'
 };
 (window as any).governorStudioState = governorStudioState;
 

@@ -39,10 +39,10 @@ export class ContextItem extends vscode.TreeItem {
 }
 
 export const DANGEROUS_BLOCKED_FOLDERS = new Set([
-    '.git', '.github', '.lollms', 'node_modules',
+    '.git', '.github', '.lollms', '.lollms_code', 'lollms_code', '.claude', 'claude', 'node_modules',
     'venv', '.venv', 'env', '.env', 'virtualenv', 'conda-env',
     '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
-    'dist', 'build', 'out', 'bin', 'obj', 'target',
+    'dist', 'build', 'out', 'bin', 'obj', 'target', '.output', 'output',
     'data', 'data_workspace', '.idea', '.vscode',
     '.next', '.nuxt', '.turbo', '.svelte-kit', '.cache'
 ]);
@@ -222,9 +222,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const workspaceState = this.getUnifiedWorkspaceState();
         let modified = false;
 
-        for (const key of Object.keys(workspaceState)) {
+        for (const [key, state] of Object.entries(workspaceState)) {
             const basename = path.basename(key);
-            if (this.defaultCollapsedFolders.has(basename) && workspaceState[key] === 'tree-only') {
+            if (this.defaultCollapsedFolders.has(basename) && state === 'tree-only') {
                 delete workspaceState[key];
                 modified = true;
             }
@@ -253,7 +253,8 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             const batch = allFileKeys.slice(i, i + BATCH_SIZE);
             const batchResults = await Promise.all(batch.map(async (key) => {
                 const normalizedKey = this.normalize(key).trim().replace(/^\.?\/+/, '');
-                if (isDangerousOrBlocked(normalizedKey)) return { remove: key };
+                const curState = workspaceState[key];
+                if (curState === 'included' && isDangerousOrBlocked(normalizedKey)) return { remove: key };
 
                 for (const folder of folders) {
                     const candidate = vscode.Uri.joinPath(folder.uri, normalizedKey);
@@ -355,7 +356,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const folders = vscode.workspace.workspaceFolders;
         if (!folders || folders.length === 0) return [];
 
-        if (element && element.state === 'collapsed') {
+        if (element && (element.state === 'collapsed' || element.state === 'fully-excluded')) {
             return [];
         }
 
@@ -438,6 +439,13 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const workspaceState = this.getUnifiedWorkspaceState();
         if (workspaceState[relativePath] === 'fully-excluded') return true;
 
+        let currentPath = relativePath;
+        while (currentPath.includes('/')) {
+            const lastSlash = currentPath.lastIndexOf('/');
+            currentPath = currentPath.substring(0, lastSlash);
+            if (workspaceState[currentPath] === 'fully-excluded') return true;
+        }
+
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const exceptions = config.get<string[]>('contextFileExceptions') || [];
         return exceptions.some(pattern => minimatch(relativePath, pattern, { dot: true }));
@@ -492,7 +500,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         for (const uri of uris) {
             if (uri.scheme !== 'file') continue;
-            if (isDangerousOrBlocked(uri.fsPath)) continue;
+            if (state === 'included' && isDangerousOrBlocked(uri.fsPath)) continue;
 
             const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
             if (!workspaceFolder) continue;
@@ -509,27 +517,38 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             }
 
             if (isDirectory) {
-                // O(1) in-memory state pruning for folder children: no recursive disk walks needed
                 const prefix = relativePath + '/';
+                const lowerPrefix = prefix.toLowerCase();
+                const lowerRel = relativePath.toLowerCase();
+
                 for (const key of Object.keys(workspaceState)) {
-                    const normKey = this.normalize(key);
-                    if (normKey === relativePath || normKey.startsWith(prefix)) {
+                    const normKey = this.normalize(key).toLowerCase();
+                    if (normKey === lowerRel || normKey.startsWith(lowerPrefix)) {
                         delete workspaceState[key];
                     }
                 }
 
                 if (state === 'included' || state === 'definitions-only') {
-                    // Lightweight bounded crawl for text inclusion only
                     await this.updateChildrenState(uri, state, workspaceState);
                 } else {
-                    // For 'fully-excluded', 'collapsed', 'tree-only': set folder directly
                     workspaceState[relativePath] = state;
+                }
+
+                if (state === 'fully-excluded' && this._cachedVisibleFiles) {
+                    this._cachedVisibleFiles = this._cachedVisibleFiles.filter(f => {
+                        const normF = this.normalize(f).toLowerCase();
+                        return normF !== lowerRel && !normF.startsWith(lowerPrefix);
+                    });
                 }
             } else {
                 if (state === 'collapsed') {
                     workspaceState[relativePath] = 'tree-only';
                 } else {
                     workspaceState[relativePath] = state;
+                }
+                if (state === 'fully-excluded' && this._cachedVisibleFiles) {
+                    const lowerRel = relativePath.toLowerCase();
+                    this._cachedVisibleFiles = this._cachedVisibleFiles.filter(f => this.normalize(f).toLowerCase() !== lowerRel);
                 }
             }
         }

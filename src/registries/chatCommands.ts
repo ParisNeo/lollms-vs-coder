@@ -436,6 +436,28 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         vscode.window.showInformationMessage(`Created new discussion "${newDiscussion.title}" with ${allTargetFiles.length} files (${mutedFiles.length} muted).`);
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.compressDiscussionHistory', async (arg?: any) => {
+        let activePanel: ChatPanel | undefined = undefined;
+
+        if (arg instanceof ChatPanel || (arg && typeof arg.compressCurrentDiscussionHistory === 'function')) {
+            activePanel = arg;
+        } else if (ChatPanel.currentPanel) {
+            activePanel = ChatPanel.currentPanel;
+        } else {
+            const allDiscussions = await services.discussionManager.getAllDiscussions();
+            if (allDiscussions.length > 0) {
+                await vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', allDiscussions[0].id);
+                activePanel = ChatPanel.currentPanel;
+            }
+        }
+
+        if (activePanel) {
+            await activePanel.compressCurrentDiscussionHistory();
+        } else {
+            vscode.window.showWarningMessage("No active discussion found to compress.");
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.forkAndCompressDiscussion', async (arg?: any) => {
         let sourceDiscussion: any = null;
         let activePanel: ChatPanel | undefined = undefined;

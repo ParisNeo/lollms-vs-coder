@@ -39,12 +39,15 @@ export class FileDecorationProvider implements vscode.FileDecorationProvider {
             return undefined;
         }
 
+        const state: ContextState = this.stateProvider.getStateForUri(uri);
+        const relativePath = (this.stateProvider as any).normalize?.(vscode.workspace.asRelativePath(uri, false)) || '';
+        const workspaceState = (this.stateProvider as any).getUnifiedWorkspaceState?.() || {};
+        const isExplicit = relativePath && (workspaceState[relativePath] !== undefined || workspaceState[relativePath.toLowerCase()] !== undefined);
+
         const { isDangerousOrBlocked } = require('./contextStateProvider');
-        if (isDangerousOrBlocked(uri.fsPath)) {
+        if (!isExplicit && isDangerousOrBlocked(uri.fsPath)) {
             return undefined;
         }
-
-        const state: ContextState = this.stateProvider.getStateForUri(uri);
 
         switch (state) {
             case 'included':
@@ -57,7 +60,6 @@ export class FileDecorationProvider implements vscode.FileDecorationProvider {
                 return new vscode.FileDecoration('D', 'Definitions Only (Structure)', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'));
             case 'tree-only':
             default:
-                // No decoration for the default 'tree-only' state
                 return undefined;
         }
     }

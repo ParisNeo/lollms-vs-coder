@@ -48,27 +48,33 @@ export class KnowledgeManager {
             this.parseTurtle(content);
             Logger.info(`[KnowledgeManager] Loaded ${this.triples.length} triples from ${KnowledgeManager.TTL_FILENAME}`);
         } catch {
-            // New project: initialize baseline ontology triples
             this.triples = this.getBaselineOntologyTriples();
             await this.saveGraph(workspaceFolder);
-            Logger.info(`[KnowledgeManager] Initialized new knowledge graph with baseline ontology.`);
+            Logger.info(`[KnowledgeManager] Initialized new knowledge graph with baseline TBox ontology.`);
         }
         this.initialized = true;
     }
 
-    /**
-     * Formal, standard-compliant Software Engineering Ontology (TBox).
-     * Defines an expressive taxonomy of artifacts, code entities, relations, and insights.
-     */
-    private getBaselineOntologyTriples(): GraphTriple[] {
+    public getBaselineOntologyTriples(): GraphTriple[] {
         return [
-            // Core Classes (Taxonomy)
             { s: 's:SoftwareArtifact', p: 'rdf:type', o: 'owl:Class' },
             { s: 's:SoftwareArtifact', p: 'rdfs:label', o: '"Software Artifact"@en' },
 
             { s: 's:SourceFile', p: 'rdf:type', o: 'owl:Class' },
             { s: 's:SourceFile', p: 'rdfs:subClassOf', o: 's:SoftwareArtifact' },
             { s: 's:SourceFile', p: 'rdfs:label', o: '"Source File"@en' },
+
+            { s: 's:BackendModule', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:BackendModule', p: 'rdfs:subClassOf', o: 's:SourceFile' },
+            { s: 's:BackendModule', p: 'rdfs:label', o: '"Backend Service / Module"@en' },
+
+            { s: 's:VueComponent', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:VueComponent', p: 'rdfs:subClassOf', o: 's:SourceFile' },
+            { s: 's:VueComponent', p: 'rdfs:label', o: '"Vue.js Single File Component"@en' },
+
+            { s: 's:AutomationScript', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:AutomationScript', p: 'rdfs:subClassOf', o: 's:SourceFile' },
+            { s: 's:AutomationScript', p: 'rdfs:label', o: '"Installation & DevOps Script"@en' },
 
             { s: 's:CodeEntity', p: 'rdf:type', o: 'owl:Class' },
             { s: 's:CodeEntity', p: 'rdfs:label', o: '"Code Entity"@en' },
@@ -89,6 +95,14 @@ export class KnowledgeManager {
             { s: 's:MethodDefinition', p: 'rdfs:subClassOf', o: 's:FunctionDefinition' },
             { s: 's:MethodDefinition', p: 'rdfs:label', o: '"Method Definition"@en' },
 
+            { s: 's:APIRoute', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:APIRoute', p: 'rdfs:subClassOf', o: 's:CodeEntity' },
+            { s: 's:APIRoute', p: 'rdfs:label', o: '"REST / API Route Endpoint"@en' },
+
+            { s: 's:StateStore', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:StateStore', p: 'rdfs:subClassOf', o: 's:CodeEntity' },
+            { s: 's:StateStore', p: 'rdfs:label', o: '"State Store / Composable"@en' },
+
             { s: 's:ExternalLibrary', p: 'rdf:type', o: 'owl:Class' },
             { s: 's:ExternalLibrary', p: 'rdfs:label', o: '"External Library / Dependency"@en' },
 
@@ -98,11 +112,21 @@ export class KnowledgeManager {
             { s: 's:TopicTag', p: 'rdf:type', o: 'owl:Class' },
             { s: 's:TopicTag', p: 'rdfs:label', o: '"Topic Tag"@en' },
 
-            // Object Properties (Relationships)
             { s: 's:containsEntity', p: 'rdf:type', o: 'owl:ObjectProperty' },
             { s: 's:containsEntity', p: 'rdfs:domain', o: 's:SoftwareArtifact' },
             { s: 's:containsEntity', p: 'rdfs:range', o: 's:CodeEntity' },
             { s: 's:containsEntity', p: 'rdfs:label', o: '"contains code entity"@en' },
+
+            { s: 's:definedInFile', p: 'rdf:type', o: 'owl:ObjectProperty' },
+            { s: 's:definedInFile', p: 'rdfs:domain', o: 's:CodeEntity' },
+            { s: 's:definedInFile', p: 'rdfs:range', o: 's:SourceFile' },
+            { s: 's:definedInFile', p: 'owl:inverseOf', o: 's:containsEntity' },
+            { s: 's:definedInFile', p: 'rdfs:label', o: '"defined in source file"@en' },
+
+            { s: 's:memberOfClass', p: 'rdf:type', o: 'owl:ObjectProperty' },
+            { s: 's:memberOfClass', p: 'rdfs:domain', o: 's:MethodDefinition' },
+            { s: 's:memberOfClass', p: 'rdfs:range', o: 's:ClassDefinition' },
+            { s: 's:memberOfClass', p: 'rdfs:label', o: '"member method of class"@en' },
 
             { s: 's:importsModule', p: 'rdf:type', o: 'owl:ObjectProperty' },
             { s: 's:importsModule', p: 'rdfs:domain', o: 's:SourceFile' },
@@ -117,7 +141,17 @@ export class KnowledgeManager {
             { s: 's:inheritsFrom', p: 'rdf:type', o: 'owl:ObjectProperty' },
             { s: 's:inheritsFrom', p: 'rdfs:domain', o: 's:ClassDefinition' },
             { s: 's:inheritsFrom', p: 'rdfs:range', o: 's:ClassDefinition' },
-            { s: 's:inheritsFrom', p: 'rdfs:label', o: '"inherits from"@en' },
+            { s: 's:inheritsFrom', p: 'rdfs:label', o: '"inherits from class"@en' },
+
+            { s: 's:exposesEndpoint', p: 'rdf:type', o: 'owl:ObjectProperty' },
+            { s: 's:exposesEndpoint', p: 'rdfs:domain', o: 's:SourceFile' },
+            { s: 's:exposesEndpoint', p: 'rdfs:range', o: 's:APIRoute' },
+            { s: 's:exposesEndpoint', p: 'rdfs:label', o: '"exposes API endpoint"@en' },
+
+            { s: 's:disjointWith', p: 'rdf:type', o: 'owl:SymmetricProperty' },
+            { s: 's:disjointWith', p: 'rdfs:domain', o: 's:CodeEntity' },
+            { s: 's:disjointWith', p: 'rdfs:range', o: 's:CodeEntity' },
+            { s: 's:disjointWith', p: 'rdfs:label', o: '"disjoint with same-name entity in different file"@en' },
 
             { s: 's:explainsArtifact', p: 'rdf:type', o: 'owl:ObjectProperty' },
             { s: 's:explainsArtifact', p: 'rdfs:domain', o: 's:ArchitecturalInsight' },
@@ -129,7 +163,10 @@ export class KnowledgeManager {
             { s: 's:hasTopic', p: 'rdfs:range', o: 's:TopicTag' },
             { s: 's:hasTopic', p: 'rdfs:label', o: '"tagged with topic"@en' },
 
-            // Datatype Properties (Attributes)
+            { s: 's:programmingLanguage', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:layer', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:httpMethod', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:routePath', p: 'rdf:type', o: 'owl:DatatypeProperty' },
             { s: 's:name', p: 'rdf:type', o: 'owl:DatatypeProperty' },
             { s: 's:filePath', p: 'rdf:type', o: 'owl:DatatypeProperty' },
             { s: 's:startLine', p: 'rdf:type', o: 'owl:DatatypeProperty' },
@@ -141,6 +178,22 @@ export class KnowledgeManager {
         ];
     }
 
+    public isTBoxSubject(subject: string): boolean {
+        const clean = subject.replace(/^s:/, '');
+        const tboxNames = new Set([
+            'SoftwareArtifact', 'SourceFile', 'CodeEntity', 'ClassDefinition',
+            'InterfaceDefinition', 'FunctionDefinition', 'MethodDefinition',
+            'ExternalLibrary', 'ArchitecturalInsight', 'TopicTag',
+            'containsEntity', 'definedInFile', 'memberOfClass', 'importsModule',
+            'invokesFunction', 'inheritsFrom', 'disjointWith', 'explainsArtifact',
+            'hasTopic', 'name', 'filePath', 'startLine', 'signature',
+            'docstring', 'linesCount', 'insightText', 'timestamp'
+        ]);
+        if (tboxNames.has(clean) || tboxNames.has(subject)) return true;
+        if (subject.startsWith('owl:') || subject.startsWith('rdfs:') || subject.startsWith('rdf:')) return true;
+        return false;
+    }
+
     public parseTurtle(turtleText: string): void {
         const lines = turtleText.split(/\r?\n/);
         const parsed: GraphTriple[] = [];
@@ -150,31 +203,37 @@ export class KnowledgeManager {
             const trimmed = line.trim();
             if (!trimmed || trimmed.startsWith('@prefix') || trimmed.startsWith('#')) continue;
 
-            // Check if line establishes a new subject without predicate (e.g. "s:my_subject")
-            if (!trimmed.includes(';') && !trimmed.endsWith('.') && !trimmed.includes(' ')) {
-                currentSubject = trimmed;
-                continue;
-            }
-
-            // Clean terminator
+            const isIndented = /^\s+/.test(line);
             const isDotTerminated = trimmed.endsWith('.');
-            const isSemicolonTerminated = trimmed.endsWith(';');
             const clean = trimmed.replace(/\s*[;.]$/, '').trim();
 
-            const parts = clean.match(/^(\S+)\s+(\S+)\s+(.+)$/);
-            if (parts) {
-                // Single line triple: s p o
-                currentSubject = parts[1].trim();
-                const p = parts[2].trim();
-                const o = parts[3].trim();
-                parsed.push({ s: currentSubject, p, o });
+            if (isIndented && currentSubject) {
+                // Indented line is strictly a predicate-object pair for currentSubject
+                const firstSpace = clean.indexOf(' ');
+                if (firstSpace !== -1) {
+                    const p = clean.substring(0, firstSpace).trim();
+                    const o = clean.substring(firstSpace + 1).trim();
+                    if (p && o) {
+                        parsed.push({ s: currentSubject, p, o });
+                    }
+                }
             } else {
-                // Continuation line with predicate and object: p o (for currentSubject)
-                const predObjMatch = clean.match(/^(\S+)\s+(.+)$/);
-                if (predObjMatch && currentSubject) {
-                    const p = predObjMatch[1].trim();
-                    const o = predObjMatch[2].trim();
-                    parsed.push({ s: currentSubject, p, o });
+                // Non-indented line declares a new subject
+                const firstSpace = clean.indexOf(' ');
+                if (firstSpace === -1) {
+                    currentSubject = clean;
+                } else {
+                    const s = clean.substring(0, firstSpace).trim();
+                    const rest = clean.substring(firstSpace + 1).trim();
+                    const secondSpace = rest.indexOf(' ');
+                    if (secondSpace !== -1) {
+                        const p = rest.substring(0, secondSpace).trim();
+                        const o = rest.substring(secondSpace + 1).trim();
+                        parsed.push({ s, p, o });
+                        currentSubject = isDotTerminated ? "" : s;
+                    } else {
+                        currentSubject = s;
+                    }
                 }
             }
 
@@ -192,17 +251,15 @@ export class KnowledgeManager {
         ttl += `@prefix owl: <http://www.w3.org/2002/07/owl#> .\n`;
         ttl += `@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\n`;
 
-        // Section 1: TBox Vocabulary
         ttl += `### ===================================================================\n`;
-        ttl += `### 🏛️ TBOX: FORMAL SOFTWARE ENGINEERING ONTOLOGY\n`;
+        ttl += `### 🏛️ TBOX: FORMAL SOFTWARE ENGINEERING ONTOLOGY SCHEMA\n`;
         ttl += `### ===================================================================\n\n`;
 
-        const tboxSubjects = new Set(this.getBaselineOntologyTriples().map(t => t.s));
         const tboxBySubject = new Map<string, { p: string, o: string }[]>();
         const aboxBySubject = new Map<string, { p: string, o: string }[]>();
 
         for (const t of this.triples) {
-            if (tboxSubjects.has(t.s)) {
+            if (this.isTBoxSubject(t.s)) {
                 if (!tboxBySubject.has(t.s)) tboxBySubject.set(t.s, []);
                 tboxBySubject.get(t.s)!.push({ p: t.p, o: t.o });
             } else {
@@ -220,9 +277,8 @@ export class KnowledgeManager {
             ttl += '\n';
         }
 
-        // Section 2: ABox Individuals & Links
         ttl += `### ===================================================================\n`;
-        ttl += `### 📦 ABOX: CODEBASE INSTANCES & ARCHITECTURAL RELATIONSHIPS\n`;
+        ttl += `### 📦 ABOX: CODEBASE ASSERTIONS & ARCHITECTURAL INSTANCES\n`;
         ttl += `### ===================================================================\n\n`;
 
         for (const [subj, poList] of aboxBySubject.entries()) {
@@ -251,63 +307,7 @@ export class KnowledgeManager {
         }
     }
 
-    /**
-     * Ingests an architectural insight emitted by the LLM into the unified Knowledge Graph.
-     */
-    public async recordInsight(
-        topic: string,
-        content: string,
-        files: string[] = [],
-        hashtags: string[] = [],
-        workspaceFolder?: vscode.WorkspaceFolder
-    ): Promise<string> {
-        await this.initializeGraph(workspaceFolder);
-
-        const cleanTopic = topic.trim() || 'General';
-        const cleanContent = content.trim();
-        const safeTopicId = cleanTopic.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-        const insightId = `s:insight_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        const timestamp = new Date().toISOString();
-
-        // 1. Insight individual
-        this.addTriple({ s: insightId, p: 'rdf:type', o: 's:Insight' });
-        this.addTriple({ s: insightId, p: 's:topicName', o: `"${cleanTopic}"` });
-        this.addTriple({ s: insightId, p: 's:insightText', o: JSON.stringify(cleanContent) });
-        this.addTriple({ s: insightId, p: 's:timestamp', o: `"${timestamp}"^^xsd:dateTime` });
-
-        // 2. Connect to hashtags/topics
-        for (const tag of hashtags) {
-            const cleanTag = tag.replace(/^#/, '').trim().toLowerCase();
-            if (!cleanTag) continue;
-            const topicNode = `s:topic_${cleanTag}`;
-            this.addTriple({ s: topicNode, p: 'rdf:type', o: 's:Topic' });
-            this.addTriple({ s: topicNode, p: 's:name', o: `"${cleanTag}"` });
-            this.addTriple({ s: insightId, p: 's:hasTopic', o: topicNode });
-        }
-
-        // 3. Connect to related files in the graph
-        for (const file of files) {
-            const cleanFile = file.replace(/\\/g, '/').trim();
-            if (!cleanFile) continue;
-            const fileNode = `s:file_${cleanFile.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-
-            // Ensure file node exists in graph
-            this.addTriple({ s: fileNode, p: 'rdf:type', o: 's:File' });
-            this.addTriple({ s: fileNode, p: 's:path', o: `"${cleanFile}"` });
-            this.addTriple({ s: fileNode, p: 's:name', o: `"${path.basename(cleanFile)}"` });
-
-            // Bi-directional understanding relations
-            this.addTriple({ s: insightId, p: 's:relatesTo', o: fileNode });
-            this.addTriple({ s: insightId, p: 's:explains', o: fileNode });
-        }
-
-        await this.saveGraph(workspaceFolder);
-        Logger.info(`[KnowledgeManager] Ingested insight '${cleanTopic}' with ${files.length} files and ${hashtags.length} hashtags.`);
-        return insightId;
-    }
-
     public addTriple(triple: GraphTriple): void {
-        // Prevent exact duplicates
         const exists = this.triples.some(t => t.s === triple.s && t.p === triple.p && t.o === triple.o);
         if (!exists) {
             this.triples.push(triple);
@@ -321,20 +321,57 @@ export class KnowledgeManager {
     public removeTriplesForFile(filePath: string): void {
         const cleanPath = filePath.replace(/\\/g, '/').trim();
         const fileNode = `s:file_${cleanPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-        // Remove triples where file is subject or object
         this.triples = this.triples.filter(t => t.s !== fileNode && t.o !== fileNode);
     }
 
-    /**
-     * Synchronizes AST code graph nodes and edges into the unified Knowledge Graph ABox.
-     * Completely populates instances of s:File, s:Class, s:Function, s:Method, and s:Library.
-     */
-    /**
-     * Synchronizes AST code graph nodes and edges into the unified Knowledge Graph ABox.
-     * Maps nodes to formal ontology classes and links relationships cleanly.
-     */
+    public async recordInsight(
+        topic: string,
+        content: string,
+        files: string[] = [],
+        hashtags: string[] = [],
+        workspaceFolder?: vscode.WorkspaceFolder
+    ): Promise<string> {
+        await this.initializeGraph(workspaceFolder);
+
+        const cleanTopic = topic.trim() || 'General';
+        const cleanContent = content.trim();
+        const insightId = `s:insight_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const timestamp = new Date().toISOString();
+
+        this.addTriple({ s: insightId, p: 'rdf:type', o: 's:ArchitecturalInsight' });
+        this.addTriple({ s: insightId, p: 's:name', o: `"${cleanTopic.replace(/"/g, "'")}"` });
+        this.addTriple({ s: insightId, p: 's:insightText', o: JSON.stringify(cleanContent) });
+        this.addTriple({ s: insightId, p: 's:timestamp', o: `"${timestamp}"^^xsd:dateTime` });
+
+        for (const tag of hashtags) {
+            const cleanTag = tag.replace(/^#/, '').trim().toLowerCase();
+            if (!cleanTag) continue;
+            const topicNode = `s:topic_${cleanTag.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+            this.addTriple({ s: topicNode, p: 'rdf:type', o: 's:TopicTag' });
+            this.addTriple({ s: topicNode, p: 's:name', o: `"${cleanTag}"` });
+            this.addTriple({ s: insightId, p: 's:hasTopic', o: topicNode });
+        }
+
+        for (const file of files) {
+            const cleanFile = file.replace(/\\/g, '/').trim();
+            if (!cleanFile) continue;
+            const fileNode = `s:file_${cleanFile.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+
+            this.addTriple({ s: fileNode, p: 'rdf:type', o: 's:SourceFile' });
+            this.addTriple({ s: fileNode, p: 's:filePath', o: `"${cleanFile}"` });
+            this.addTriple({ s: fileNode, p: 's:name', o: `"${path.basename(cleanFile)}"` });
+
+            this.addTriple({ s: insightId, p: 's:explainsArtifact', o: fileNode });
+            this.addTriple({ s: fileNode, p: 's:containsEntity', o: insightId });
+        }
+
+        await this.saveGraph(workspaceFolder);
+        Logger.info(`[KnowledgeManager] Ingested architectural insight '${cleanTopic}' into ABox.`);
+        return insightId;
+    }
+
     public async syncCodeGraph(
-        nodes: Array<{ id: string; label: string; type: string; filePath?: string; signature?: string; docstring?: string }>,
+        nodes: Array<{ id: string; label: string; type: string; filePath?: string; signature?: string; docstring?: string; startLine?: number }>,
         edges: Array<{ source: string; target: string; label: string }>,
         workspaceFolder?: vscode.WorkspaceFolder
     ): Promise<void> {
@@ -342,9 +379,8 @@ export class KnowledgeManager {
 
         const { isPathBlockedFromGraph } = require('./codeGraphManager');
 
-        // Filter incoming nodes to strictly valid project source files
         const validNodes = nodes.filter(n => !n.filePath || !isPathBlockedFromGraph(n.filePath));
-        const nodeIdMap = new Map<string, string>(); // oldId -> formalId
+        const nodeIdMap = new Map<string, string>();
 
         validNodes.forEach(n => {
             const formalId = n.id.startsWith('s:') ? n.id : `s:${n.id}`;
@@ -358,7 +394,6 @@ export class KnowledgeManager {
             return src !== undefined && trg !== undefined;
         });
 
-        // Retain formal TBox baseline and human/AI insights & topic tags
         const baselineTbox = this.getBaselineOntologyTriples();
         const preservedInsights = this.triples.filter(t => 
             t.s.startsWith('s:insight_') || 
@@ -369,9 +404,12 @@ export class KnowledgeManager {
 
         this.triples = [...baselineTbox, ...preservedInsights];
 
-        // Map AST types to formal OWL classes
         const typeMapping: Record<string, string> = {
             'file': 's:SourceFile',
+            'component': 's:VueComponent',
+            'script': 's:AutomationScript',
+            'endpoint': 's:APIRoute',
+            'store': 's:StateStore',
             'class': 's:ClassDefinition',
             'interface': 's:InterfaceDefinition',
             'function': 's:FunctionDefinition',
@@ -379,7 +417,6 @@ export class KnowledgeManager {
             'library': 's:ExternalLibrary'
         };
 
-        // Map edge labels to formal OWL object properties
         const edgeMapping: Record<string, string> = {
             'contains': 's:containsEntity',
             'imports': 's:importsModule',
@@ -387,21 +424,75 @@ export class KnowledgeManager {
             'inherits': 's:inheritsFrom'
         };
 
+        const fileNodeMap = new Map<string, string>();
+        validNodes.forEach(n => {
+            if ((n.type === 'file' || n.type === 'component' || n.type === 'script') && n.filePath) {
+                const fId = nodeIdMap.get(n.id)!;
+                fileNodeMap.set(n.filePath.replace(/\\/g, '/').toLowerCase(), fId);
+            }
+        });
+
         for (const n of validNodes) {
             const nodeId = nodeIdMap.get(n.id)!;
-            const rdfClass = typeMapping[n.type.toLowerCase()] || 's:CodeEntity';
+            const normType = n.type.toLowerCase();
+            let rdfClass = typeMapping[normType] || 's:CodeEntity';
+
+            const normPath = n.filePath ? n.filePath.replace(/\\/g, '/').toLowerCase() : '';
+            const ext = normPath ? normPath.split('.').pop() || '' : '';
+
+            // Language & Layer inference
+            let lang = 'TypeScript';
+            let layer = 'Shared';
+
+            if (ext === 'py') {
+                lang = 'Python';
+                layer = 'Backend';
+                if (normType === 'file') rdfClass = 's:BackendModule';
+            } else if (ext === 'vue') {
+                lang = 'Vue';
+                layer = 'Frontend';
+                if (normType === 'file') rdfClass = 's:VueComponent';
+            } else if (['sh', 'bash', 'bat', 'cmd', 'ps1'].includes(ext)) {
+                lang = ext === 'ps1' ? 'PowerShell' : (['bat', 'cmd'].includes(ext) ? 'Batch' : 'Bash');
+                layer = 'DevOps';
+                if (normType === 'file') rdfClass = 's:AutomationScript';
+            } else if (['ts', 'js', 'tsx', 'jsx'].includes(ext)) {
+                lang = ext.startsWith('t') ? 'TypeScript' : 'JavaScript';
+                if (normPath.includes('backend') || normPath.includes('server') || normPath.includes('api')) {
+                    layer = 'Backend';
+                } else if (normPath.includes('frontend') || normPath.includes('client') || normPath.includes('ui') || normPath.includes('components')) {
+                    layer = 'Frontend';
+                }
+            }
 
             this.addTriple({ s: nodeId, p: 'rdf:type', o: rdfClass });
             this.addTriple({ s: nodeId, p: 's:name', o: `"${n.label.replace(/"/g, "'")}"` });
+            this.addTriple({ s: nodeId, p: 's:programmingLanguage', o: `"${lang}"` });
+            this.addTriple({ s: nodeId, p: 's:layer', o: `"${layer}"` });
 
             if (n.filePath) {
                 this.addTriple({ s: nodeId, p: 's:filePath', o: `"${n.filePath.replace(/\\/g, '/')}"` });
+
+                const ownerFileId = fileNodeMap.get(normPath);
+                if (ownerFileId && ownerFileId !== nodeId) {
+                    this.addTriple({ s: nodeId, p: 's:definedInFile', o: ownerFileId });
+                    this.addTriple({ s: ownerFileId, p: 's:containsEntity', o: nodeId });
+                }
+            }
+            if (n.startLine !== undefined) {
+                this.addTriple({ s: nodeId, p: 's:startLine', o: String(n.startLine) });
             }
             if (n.signature) {
                 this.addTriple({ s: nodeId, p: 's:signature', o: JSON.stringify(n.signature) });
             }
             if (n.docstring) {
                 this.addTriple({ s: nodeId, p: 's:docstring', o: JSON.stringify(n.docstring.replace(/[\r\n]+/g, ' ')) });
+            }
+            if ((n as any).httpMethod) {
+                this.addTriple({ s: nodeId, p: 's:httpMethod', o: `"${(n as any).httpMethod}"` });
+            }
+            if ((n as any).routePath) {
+                this.addTriple({ s: nodeId, p: 's:routePath', o: `"${(n as any).routePath}"` });
             }
         }
 
@@ -410,70 +501,67 @@ export class KnowledgeManager {
             const trg = nodeIdMap.get(e.target)!;
             const prop = edgeMapping[e.label.toLowerCase()] || `s:${e.label}`;
             this.addTriple({ s: src, p: prop, o: trg });
+
+            if (prop === 's:containsEntity') {
+                const srcNode = validNodes.find(n => nodeIdMap.get(n.id) === src);
+                const trgNode = validNodes.find(n => nodeIdMap.get(n.id) === trg);
+                if (srcNode?.type === 'class' && trgNode?.type === 'method') {
+                    this.addTriple({ s: trg, p: 's:memberOfClass', o: src });
+                }
+            }
         }
+
+        this.detectAndTagDisjointEntities(validNodes, nodeIdMap);
 
         await this.saveGraph(workspaceFolder);
-        Logger.info(`[KnowledgeManager] Full ABox synchronized: ${validNodes.length} code entities and ${validEdges.length} semantic relationships saved to ${KnowledgeManager.TTL_FILENAME}.`);
+        Logger.info(`[KnowledgeManager] Full ABox synchronized: ${validNodes.length} nodes and ${validEdges.length} semantic relations in ${KnowledgeManager.TTL_FILENAME}`);
     }
 
-    /**
-     * Incrementally synchronizes a single file's AST and relationships into the ABox.
-     */
-    public async syncFileToABox(
-        relPath: string,
-        nodes: Array<{ id: string; label: string; type: string; signature?: string; docstring?: string }>,
-        edges: Array<{ source: string; target: string; label: string }>,
-        workspaceFolder?: vscode.WorkspaceFolder
-    ): Promise<void> {
-        const { isPathBlockedFromGraph } = require('./codeGraphManager');
-        if (isPathBlockedFromGraph(relPath)) {
-            return;
-        }
-
-        await this.initializeGraph(workspaceFolder);
-
-        const cleanPath = relPath.replace(/\\/g, '/').trim();
-        this.removeTriplesForFile(cleanPath);
-
-        const fileNodeId = `s:file_${cleanPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-        this.addTriple({ s: fileNodeId, p: 'rdf:type', o: 's:File' });
-        this.addTriple({ s: fileNodeId, p: 's:path', o: `"${cleanPath}"` });
-        this.addTriple({ s: fileNodeId, p: 's:name', o: `"${path.basename(cleanPath)}"` });
+    private detectAndTagDisjointEntities(
+        nodes: Array<{ id: string; label: string; type: string; filePath?: string }>,
+        nodeIdMap: Map<string, string>
+    ): void {
+        const nameGroups = new Map<string, Array<{ id: string; filePath?: string; type: string }>>();
 
         for (const n of nodes) {
-            const typeCap = n.type ? (n.type.charAt(0).toUpperCase() + n.type.slice(1)) : 'Symbol';
-            const symId = `s:sym_${cleanPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${n.label.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-            this.addTriple({ s: symId, p: 'rdf:type', o: `s:${typeCap}` });
-            this.addTriple({ s: symId, p: 's:name', o: `"${n.label.replace(/"/g, "'")}"` });
-            this.addTriple({ s: symId, p: 's:path', o: `"${cleanPath}"` });
-            this.addTriple({ s: fileNodeId, p: 's:contains', o: symId });
-
-            if (n.signature) {
-                this.addTriple({ s: symId, p: 's:signature', o: JSON.stringify(n.signature) });
-            }
-            if (n.docstring) {
-                this.addTriple({ s: symId, p: 's:docstring', o: JSON.stringify(n.docstring.replace(/[\r\n]+/g, ' ')) });
+            if (n.type === 'function' || n.type === 'method' || n.type === 'class') {
+                const key = `${n.type}:${n.label.toLowerCase()}`;
+                if (!nameGroups.has(key)) nameGroups.set(key, []);
+                nameGroups.get(key)!.push({
+                    id: nodeIdMap.get(n.id) || n.id,
+                    filePath: n.filePath?.replace(/\\/g, '/').toLowerCase(),
+                    type: n.type
+                });
             }
         }
 
-        for (const e of edges) {
-            const src = e.source.startsWith('s:') ? e.source : `s:${e.source}`;
-            const trg = e.target.startsWith('s:') ? e.target : `s:${e.target}`;
-            const rel = e.label.startsWith('s:') ? e.label : `s:${e.label}`;
-            this.addTriple({ s: src, p: rel, o: trg });
+        let disjointCount = 0;
+        for (const [_key, group] of nameGroups.entries()) {
+            if (group.length > 1) {
+                for (let i = 0; i < group.length; i++) {
+                    for (let j = i + 1; j < group.length; j++) {
+                        const itemA = group[i];
+                        const itemB = group[j];
+                        if (itemA.filePath && itemB.filePath && itemA.filePath !== itemB.filePath) {
+                            this.addTriple({ s: itemA.id, p: 's:disjointWith', o: itemB.id });
+                            this.addTriple({ s: itemB.id, p: 's:disjointWith', o: itemA.id });
+                            disjointCount++;
+                        }
+                    }
+                }
+            }
         }
 
-        await this.saveGraph(workspaceFolder);
+        if (disjointCount > 0) {
+            Logger.info(`[KnowledgeManager] Tagged ${disjointCount} cross-file redundant same-name entities as disjoint.`);
+        }
     }
 
-    /**
-     * Executes SPARQL-lite queries over the unified graph.
-     */
     public async executeSparql(query: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
         await this.initializeGraph(workspaceFolder);
 
         const cleanQuery = query.replace(/#.*/g, '').trim();
-        const selectMatch = cleanQuery.match(/SELECT\s+(DISTINCT\s+)?([\?\*\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}(?:\s*LIMIT\s+(\d+))?/i);
+        const selectMatch = cleanQuery.match(/SELECT\s+(DISTINCT\s+)?([\?\*\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}(?:\s*ORDER\s+BY\s+[\?\w]+)?(?:\s*LIMIT\s+(\d+))?/i);
         const askMatch = cleanQuery.match(/ASK\s+WHERE\s*\{([\s\S]+?)\}/i);
 
         if (!selectMatch && !askMatch) {
@@ -497,14 +585,51 @@ export class KnowledgeManager {
                     let s = parts[0];
                     let p = parts[1];
                     let o = parts.slice(2).join(' ');
-                    if (p === 'a') p = 'rdf:type';
                     triplePatterns.push({ s, p, o });
                 }
             }
         }
 
-        const matchTerm = (actual: string, queryTerm: string): boolean => {
+        const normPred = (raw: string): string => {
+            const c = raw.replace(/^s:/i, '').replace(/^rdf:/i, '').toLowerCase().trim();
+            if (c === 'a' || c === 'type') return 'type';
+            if (c === 'contains' || c === 'containsentity') return 'contains';
+            if (c === 'definedin' || c === 'definedinfile') return 'definedin';
+            if (c === 'memberof' || c === 'memberofclass') return 'memberof';
+            if (c === 'imports' || c === 'importsmodule') return 'imports';
+            if (c === 'calls' || c === 'invokes' || c === 'invokesfunction') return 'calls';
+            if (c === 'inherits' || c === 'inheritsfrom') return 'inherits';
+            if (c === 'disjoint' || c === 'disjointwith') return 'disjoint';
+            if (c === 'name' || c === 'label' || c === 'rdfs:label') return 'name';
+            if (c === 'path' || c === 'filepath') return 'filepath';
+            return c;
+        };
+
+        const normType = (raw: string): string => {
+            const c = raw.replace(/^s:/i, '').toLowerCase().trim();
+            if (c === 'function' || c === 'functiondefinition') return 'function';
+            if (c === 'method' || c === 'methoddefinition') return 'method';
+            if (c === 'class' || c === 'classdefinition') return 'class';
+            if (c === 'interface' || c === 'interfacedefinition') return 'interface';
+            if (c === 'file' || c === 'sourcefile' || c === 'backendmodule') return 'file';
+            if (c === 'component' || c === 'vuecomponent') return 'component';
+            if (c === 'script' || c === 'automationscript') return 'script';
+            if (c === 'route' || c === 'endpoint' || c === 'apiroute') return 'endpoint';
+            if (c === 'store' || c === 'statestore') return 'store';
+            if (c === 'library' || c === 'externallibrary') return 'library';
+            return c;
+        };
+
+        const matchTerm = (actual: string, queryTerm: string, isTypeCheck: boolean = false): boolean => {
             if (!actual || !queryTerm) return false;
+            if (isTypeCheck) {
+                const ta = normType(actual);
+                const tq = normType(queryTerm);
+                if (ta === tq) return true;
+                if (tq === 'function' && (ta === 'method' || ta === 'endpoint')) return true;
+                if (tq === 'file' && (ta === 'component' || ta === 'script')) return true;
+                return false;
+            }
             const cleanA = actual.replace(/^s:/i, '').replace(/['"]/g, '').toLowerCase().trim();
             const cleanQ = queryTerm.replace(/^s:/i, '').replace(/['"]/g, '').toLowerCase().trim();
             return cleanA === cleanQ;
@@ -514,22 +639,59 @@ export class KnowledgeManager {
 
         for (const pattern of triplePatterns) {
             const nextSolutions: Record<string, string>[] = [];
+            const pNorm = normPred(pattern.p);
+            const isTypePattern = pNorm === 'type';
 
             for (const binding of solutions) {
                 const sBound = pattern.s.startsWith('?') ? binding[pattern.s] : pattern.s;
-                const pBound = pattern.p.startsWith('?') ? binding[pattern.p] : pattern.p;
                 const oBound = pattern.o.startsWith('?') ? binding[pattern.o] : pattern.o;
 
                 for (const t of this.triples) {
-                    const sMatch = !sBound || matchTerm(t.s, sBound);
-                    const pMatch = !pBound || matchTerm(t.p, pBound);
-                    const oMatch = !oBound || matchTerm(t.o, oBound);
+                    const tpNorm = normPred(t.p);
 
-                    if (sMatch && pMatch && oMatch) {
+                    let directMatch = false;
+                    let inverseMatch = false;
+
+                    if (isTypePattern && tpNorm === 'type') {
+                        const sMatch = !sBound || matchTerm(t.s, sBound);
+                        const oMatch = !oBound || matchTerm(t.o, oBound, true);
+                        directMatch = sMatch && oMatch;
+                    } else if (pNorm === 'contains') {
+                        if (tpNorm === 'contains') {
+                            const sMatch = !sBound || matchTerm(t.s, sBound);
+                            const oMatch = !oBound || matchTerm(t.o, oBound);
+                            directMatch = sMatch && oMatch;
+                        } else if (tpNorm === 'definedin') {
+                            const sMatch = !sBound || matchTerm(t.o, sBound);
+                            const oMatch = !oBound || matchTerm(t.s, oBound);
+                            inverseMatch = sMatch && oMatch;
+                        }
+                    } else if (pNorm === 'definedin') {
+                        if (tpNorm === 'definedin') {
+                            const sMatch = !sBound || matchTerm(t.s, sBound);
+                            const oMatch = !oBound || matchTerm(t.o, oBound);
+                            directMatch = sMatch && oMatch;
+                        } else if (tpNorm === 'contains') {
+                            const sMatch = !sBound || matchTerm(t.o, sBound);
+                            const oMatch = !oBound || matchTerm(t.s, oBound);
+                            inverseMatch = sMatch && oMatch;
+                        }
+                    } else {
+                        const pMatch = pNorm === tpNorm;
+                        const sMatch = !sBound || matchTerm(t.s, sBound);
+                        const oMatch = !oBound || matchTerm(t.o, oBound);
+                        directMatch = pMatch && sMatch && oMatch;
+                    }
+
+                    if (directMatch) {
                         const newBinding = { ...binding };
                         if (pattern.s.startsWith('?') && !binding[pattern.s]) newBinding[pattern.s] = t.s;
-                        if (pattern.p.startsWith('?') && !binding[pattern.p]) newBinding[pattern.p] = t.p;
                         if (pattern.o.startsWith('?') && !binding[pattern.o]) newBinding[pattern.o] = t.o;
+                        nextSolutions.push(newBinding);
+                    } else if (inverseMatch) {
+                        const newBinding = { ...binding };
+                        if (pattern.s.startsWith('?') && !binding[pattern.s]) newBinding[pattern.s] = t.o;
+                        if (pattern.o.startsWith('?') && !binding[pattern.o]) newBinding[pattern.o] = t.s;
                         nextSolutions.push(newBinding);
                     }
                 }
@@ -538,7 +700,6 @@ export class KnowledgeManager {
             if (solutions.length === 0) break;
         }
 
-        // Apply filters
         if (filters.length > 0) {
             solutions = solutions.filter(b => {
                 return filters.every(f => {
@@ -568,14 +729,37 @@ export class KnowledgeManager {
             ? Object.keys(solutions[0])
             : selectStr.split(/\s+/).filter(v => v.startsWith('?'));
 
-        let table = `### 🔍 SPARQL Query Results (${solutions.length} matches)\n\n`;
+        const nodeLabelMap = new Map<string, string>();
+        for (const t of this.triples) {
+            if (normPred(t.p) === 'name' || normPred(t.p) === 'filepath') {
+                const cleanVal = t.o.replace(/^"|"$/g, '');
+                if (!nodeLabelMap.has(t.s) || normPred(t.p) === 'name') {
+                    nodeLabelMap.set(t.s, cleanVal);
+                }
+            }
+        }
+
+        const seenRows = new Set<string>();
+        const uniqueSolutions = solutions.filter(sol => {
+            const key = vars.map(v => sol[v] || '').join('||');
+            if (seenRows.has(key)) return false;
+            seenRows.add(key);
+            return true;
+        });
+
+        let table = `### 🔍 SPARQL Query Results (${uniqueSolutions.length} matches)\n\n`;
         table += `| ${vars.map(v => `**${v}**`).join(' | ')} |\n`;
         table += `| ${vars.map(() => '---').join(' | ')} |\n`;
 
-        for (const sol of solutions.slice(0, 50)) {
+        for (const sol of uniqueSolutions.slice(0, 50)) {
             const row = vars.map(v => {
                 const val = sol[v] || '(null)';
-                return val.replace(/^"|"$/g, '');
+                const cleanVal = val.replace(/^"|"$/g, '');
+                const friendlyLabel = nodeLabelMap.get(cleanVal) || nodeLabelMap.get(`s:${cleanVal}`);
+                if (friendlyLabel) {
+                    return `\`${friendlyLabel}\` <small style="opacity:0.6;">(${cleanVal.replace(/^s:/, '')})</small>`;
+                }
+                return `\`${cleanVal.replace(/^s:/, '')}\``;
             });
             table += `| ${row.join(' | ')} |\n`;
         }
@@ -583,239 +767,221 @@ export class KnowledgeManager {
         return table;
     }
 
-    /**
-     * Extracts Cytoscape-compatible high-level graph elements (nodes & edges)
-     * representing the ontology: Files, Classes, Functions, Insights, Topics, and their links.
-     */
-    public async getHighLevelGraphElements(workspaceFolder?: vscode.WorkspaceFolder): Promise<{ nodes: any[]; edges: any[] }> {
+    public async getHighLevelGraphElements(
+        workspaceFolder?: vscode.WorkspaceFolder, 
+        connectedOnly: boolean = true,
+        maxNodesLimit: number = 120
+    ): Promise<{ nodes: any[]; edges: any[]; totalGraphNodes?: number; isTruncated?: boolean }> {
         await this.initializeGraph(workspaceFolder);
 
         const nodesMap = new Map<string, any>();
         const edgesList: any[] = [];
         const { isPathBlockedFromGraph } = require('./codeGraphManager');
 
-        // 1. Scan triples for individuals
-        const tboxClasses = new Set([
-            's:SoftwareArtifact', 's:SourceFile', 's:CodeEntity', 's:ClassDefinition',
-            's:InterfaceDefinition', 's:FunctionDefinition', 's:MethodDefinition',
-            's:ExternalLibrary', 's:ArchitecturalInsight', 's:TopicTag',
-            's:containsEntity', 's:importsModule', 's:invokesFunction', 's:inheritsFrom',
-            's:explainsArtifact', 's:hasTopic', 's:name', 's:filePath', 's:startLine',
-            's:signature', 's:docstring', 's:linesCount', 's:insightText', 's:timestamp',
-            'owl:Class', 'owl:ObjectProperty', 'owl:DatatypeProperty', 'rdfs:Class', 'rdf:Property'
-        ]);
+        const aboxTriples = this.triples.filter(t => !this.isTBoxSubject(t.s));
 
-        for (const t of this.triples) {
-            if (tboxClasses.has(t.s) || tboxClasses.has(t.o)) {
-                if (t.p === 'rdf:type' && (t.o === 'owl:Class' || t.o === 'owl:ObjectProperty' || t.o === 'owl:DatatypeProperty' || t.o === 'rdfs:Class')) {
-                    continue;
-                }
-            }
-
+        for (const t of aboxTriples) {
             const sId = t.s;
             if (!nodesMap.has(sId)) {
                 nodesMap.set(sId, {
                     id: sId,
                     label: sId.replace(/^s:/, '').replace(/^[a-z]+_/i, ''),
-                    type: 'entity'
+                    type: 'entity',
+                    degree: 0
                 });
             }
 
             if (t.p === 'rdf:type') {
-                const rawType = t.o.replace(/^s:/, '');
+                const rawType = t.o.replace(/^s:/, '').toLowerCase();
                 let simplifiedType = 'entity';
-                if (rawType.includes('SourceFile') || rawType === 'File') simplifiedType = 'file';
-                else if (rawType.includes('Class')) simplifiedType = 'class';
-                else if (rawType.includes('Interface')) simplifiedType = 'interface';
-                else if (rawType.includes('Function')) simplifiedType = 'function';
-                else if (rawType.includes('Method')) simplifiedType = 'method';
-                else if (rawType.includes('Library')) simplifiedType = 'library';
-                else if (rawType.includes('Insight')) simplifiedType = 'insight';
-                else if (rawType.includes('Topic')) simplifiedType = 'topic';
+                if (rawType.includes('vuecomponent') || rawType === 'component') simplifiedType = 'component';
+                else if (rawType.includes('automationscript') || rawType === 'script') simplifiedType = 'script';
+                else if (rawType.includes('apiroute') || rawType === 'endpoint') simplifiedType = 'endpoint';
+                else if (rawType.includes('statestore') || rawType === 'store') simplifiedType = 'store';
+                else if (rawType.includes('backendmodule')) simplifiedType = 'file';
+                else if (rawType.includes('sourcefile') || rawType === 'file') simplifiedType = 'file';
+                else if (rawType.includes('class')) simplifiedType = 'class';
+                else if (rawType.includes('interface')) simplifiedType = 'interface';
+                else if (rawType.includes('function')) simplifiedType = 'function';
+                else if (rawType.includes('method')) simplifiedType = 'method';
+                else if (rawType.includes('library')) simplifiedType = 'library';
+                else if (rawType.includes('insight')) simplifiedType = 'insight';
+                else if (rawType.includes('topic')) simplifiedType = 'topic';
                 nodesMap.get(sId)!.type = simplifiedType;
-            } else if (t.p === 's:name' || t.p === 's:topicName' || t.p === 's:label') {
-                nodesMap.get(sId)!.label = t.o.replace(/^"|"$/g, '');
-            } else if (t.p === 's:filePath' || t.p === 's:path') {
-                const pathVal = t.o.replace(/^"|"$/g, '');
+            } else if (t.p === 's:name' || t.p === 's:label') {
+                const nameVal = t.o.replace(/^"|"$/g, '').trim();
+                if (nameVal) {
+                    nodesMap.get(sId)!.label = nameVal;
+                }
+            } else if (t.p === 's:filePath') {
+                const pathVal = t.o.replace(/^"|"$/g, '').trim();
                 if (isPathBlockedFromGraph(pathVal)) {
                     nodesMap.delete(sId);
                     continue;
                 }
                 nodesMap.get(sId)!.filePath = pathVal;
-                nodesMap.get(sId)!.label = path.basename(pathVal) || pathVal;
+                if (nodesMap.get(sId)!.type === 'file') {
+                    nodesMap.get(sId)!.label = path.basename(pathVal) || pathVal;
+                }
+            } else if (t.p === 's:startLine') {
+                nodesMap.get(sId)!.startLine = parseInt(t.o, 10);
             }
         }
 
-        // Secondary cleanup: remove any node whose path is blocked
         for (const [id, node] of nodesMap.entries()) {
             if (node.filePath && isPathBlockedFromGraph(node.filePath)) {
                 nodesMap.delete(id);
             }
         }
 
-        // 2. Scan relationships
-        const relProps = new Set([
-            's:containsEntity', 's:contains',
-            's:importsModule', 's:imports',
-            's:invokesFunction', 's:calls',
-            's:inheritsFrom', 's:inherits',
-            's:explainsArtifact', 's:explains',
-            's:hasTopic'
-        ]);
+        const edgeSet = new Set<string>();
 
-        for (const t of this.triples) {
-            if (relProps.has(t.p)) {
+        for (const t of aboxTriples) {
+            const rawP = t.p.replace(/^s:/, '').toLowerCase();
+            let friendlyLabel: string | null = null;
+
+            if (rawP === 'contains' || rawP === 'containsentity') friendlyLabel = 'contains';
+            else if (rawP === 'definedin' || rawP === 'definedinfile') friendlyLabel = 'definedIn';
+            else if (rawP === 'memberof' || rawP === 'memberofclass') friendlyLabel = 'memberOf';
+            else if (rawP === 'imports' || rawP === 'importsmodule') friendlyLabel = 'imports';
+            else if (rawP === 'calls' || rawP === 'invokes' || rawP === 'invokesfunction') friendlyLabel = 'calls';
+            else if (rawP === 'inherits' || rawP === 'inheritsfrom') friendlyLabel = 'inherits';
+            else if (rawP === 'disjoint' || rawP === 'disjointwith') friendlyLabel = 'disjointWith';
+            else if (rawP === 'exposes' || rawP === 'exposesendpoint') friendlyLabel = 'exposes';
+            else if (rawP === 'explains' || rawP === 'explainsartifact') friendlyLabel = 'explains';
+            else if (rawP === 'hastopic') friendlyLabel = 'hasTopic';
+
+            if (friendlyLabel) {
                 const targetId = t.o.startsWith('s:') ? t.o : `s:${t.o}`;
                 if (nodesMap.has(t.s) && nodesMap.has(targetId)) {
-                    let friendlyLabel = t.p.replace(/^s:/, '');
-                    if (friendlyLabel === 'containsEntity') friendlyLabel = 'contains';
-                    else if (friendlyLabel === 'importsModule') friendlyLabel = 'imports';
-                    else if (friendlyLabel === 'invokesFunction') friendlyLabel = 'calls';
-                    else if (friendlyLabel === 'inheritsFrom') friendlyLabel = 'inherits';
-                    else if (friendlyLabel === 'explainsArtifact') friendlyLabel = 'explains';
-
-                    edgesList.push({
-                        id: `edge_${t.s}_${friendlyLabel}_${targetId}`.replace(/[^a-zA-Z0-9_]/g, '_'),
-                        source: t.s,
-                        target: targetId,
-                        label: friendlyLabel
-                    });
-                }
-            }
-        }
-
-        let allNodes = Array.from(nodesMap.values());
-
-        // Fail-safe: If graph is empty, load active context files from workspace
-        if (allNodes.length <= 1) {
-            const folder = workspaceFolder || vscode.workspace.workspaceFolders?.[0];
-            if (folder) {
-                try {
-                    const findUris = await vscode.workspace.findFiles(
-                        new vscode.RelativePattern(folder, '**/*.{ts,js,py,vue,cs,cpp}'),
-                        '**/{node_modules,venv,.venv,dist,build,out,data,data_workspace,.lollms}/**',
-                        30
-                    );
-                    findUris.forEach(u => {
-                        const rel = path.relative(folder.uri.fsPath, u.fsPath).replace(/\\/g, '/');
-                        if (!isPathBlockedFromGraph(rel)) {
-                            const id = `s:file_${rel.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-                            if (!nodesMap.has(id)) {
-                                nodesMap.set(id, {
-                                    id,
-                                    label: path.basename(rel),
-                                    type: 'file',
-                                    filePath: rel
-                                });
-                            }
-                        }
-                    });
-                    allNodes = Array.from(nodesMap.values());
-                } catch {}
-            }
-        }
-
-        return {
-            nodes: allNodes.slice(0, 80),
-            edges: edgesList.slice(0, 150)
-        };
-    }
-
-    /**
-     * Renders a high-level, compact Knowledge Graph summary for prompt grounding.
-     * Informs the model about the graph structure and provides instructions on how
-     * to deepen understanding via SPARQL queries.
-     */
-    public async renderContextKnowledge(workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
-        await this.initializeGraph(workspaceFolder);
-        if (this.triples.length === 0) return "";
-
-        // Tally high-level entities
-        let fileCount = 0;
-        let classCount = 0;
-        let funcCount = 0;
-        const topicSet = new Set<string>();
-        const insightMap = new Map<string, { topic: string; text: string; files: string[]; hashtags: string[] }>();
-
-        for (const t of this.triples) {
-            if (t.p === 'rdf:type') {
-                if (t.o === 's:File') fileCount++;
-                else if (t.o === 's:Class') classCount++;
-                else if (t.o === 's:Function') funcCount++;
-            }
-            if (t.p === 's:hasTopic') {
-                topicSet.add(t.o.replace(/^s:topic_/, ''));
-            }
-            if (t.s.startsWith('s:insight_')) {
-                if (!insightMap.has(t.s)) {
-                    insightMap.set(t.s, { topic: '', text: '', files: [], hashtags: [] });
-                }
-                const entry = insightMap.get(t.s)!;
-                if (t.p === 's:topicName') entry.topic = t.o.replace(/^"|"$/g, '');
-                if (t.p === 's:insightText') {
-                    try { entry.text = JSON.parse(t.o); } catch { entry.text = t.o.replace(/^"|"$/g, ''); }
-                }
-                if (t.p === 's:relatesTo') entry.files.push(t.o.replace(/^s:file_/, '').replace(/_/g, '/'));
-                if (t.p === 's:hasTopic') entry.hashtags.push('#' + t.o.replace(/^s:topic_/, ''));
-            }
-        }
-
-        const recentInsights = Array.from(insightMap.values()).reverse().slice(0, 5);
-
-        let output = `### 🕸️ KNOWLEDGE GRAPH TOP-LEVEL TOPOLOGY (.lollms/knowledge.ttl)\n`;
-        output += `- **Entities**: ${fileCount} Files · ${classCount} Classes · ${funcCount} Functions · ${insightMap.size} Architectural Insights · ${topicSet.size} Topics\n`;
-        if (topicSet.size > 0) {
-            output += `- **Indexed Topics**: ${Array.from(topicSet).slice(0, 10).map(t => `#${t}`).join(' ')}\n`;
-        }
-        output += `\n> 💡 **SPARQL Deepening Protocol**: This is a high-level graph projection. When you need deeper contracts, function signatures, caller/callee relations, or deeper insight contents, query the ontology with: \`<query_architecture>SELECT ?func ?doc WHERE { ?class s:contains ?func . ?func s:docstring ?doc } ...</query_architecture>\`.\n\n`;
-
-        if (recentInsights.length > 0) {
-            output += `#### 🧠 Key Architectural Insights:\n`;
-            for (const ins of recentInsights) {
-                const filesPart = ins.files.length > 0 ? ` [Files: ${ins.files.map(f => `\`${f}\``).join(', ')}]` : '';
-                output += `- **${ins.topic}** ${ins.hashtags.join(' ')}${filesPart}\n`;
-                if (ins.text) {
-                    const snippet = ins.text.length > 250 ? ins.text.substring(0, 240) + '...' : ins.text;
-                    output += `  > ${snippet.replace(/\n+/g, ' ')}\n`;
-                }
-            }
-        }
-
-        return output.trim();
-    }
-
-    public async readRootKnowledge(workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
-        return await this.renderContextKnowledge(workspaceFolder);
-    }
-
-    public async readSectionKnowledge(sectionPath: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
-        await this.initializeGraph(workspaceFolder);
-        const cleanSection = sectionPath.replace(/^#/, '').trim().toLowerCase();
-        for (const t of this.triples) {
-            if (t.s.startsWith('s:insight_') && t.p === 's:topicName') {
-                const topicVal = t.o.replace(/^"|"$/g, '').toLowerCase();
-                if (topicVal === cleanSection || topicVal.includes(cleanSection)) {
-                    const textTriple = this.triples.find(tr => tr.s === t.s && tr.p === 's:insightText');
-                    if (textTriple) {
-                        try {
-                            return JSON.parse(textTriple.o);
-                        } catch {
-                            return textTriple.o.replace(/^"|"$/g, '');
-                        }
+                    const edgeKey = `${t.s}->${friendlyLabel}->${targetId}`;
+                    if (!edgeSet.has(edgeKey)) {
+                        edgeSet.add(edgeKey);
+                        edgesList.push({
+                            id: `edge_${t.s}_${friendlyLabel}_${targetId}`.replace(/[^a-zA-Z0-9_]/g, '_'),
+                            source: t.s,
+                            target: targetId,
+                            label: friendlyLabel
+                        });
+                        nodesMap.get(t.s)!.degree = (nodesMap.get(t.s)!.degree || 0) + 1;
+                        nodesMap.get(targetId)!.degree = (nodesMap.get(targetId)!.degree || 0) + 1;
                     }
                 }
             }
         }
-        return "";
+
+        const totalGraphNodes = nodesMap.size;
+        const candidateNodes = Array.from(nodesMap.values());
+
+        // Sort by architectural importance: high degree centrality + structural types first
+        candidateNodes.sort((a, b) => {
+            const typeWeight = (t: string) => {
+                if (t === 'file' || t === 'component') return 10;
+                if (t === 'class' || t === 'interface') return 8;
+                if (t === 'endpoint' || t === 'store') return 6;
+                if (t === 'function') return 4;
+                return 1;
+            };
+            const wDiff = typeWeight(b.type) - typeWeight(a.type);
+            if (wDiff !== 0) return wDiff;
+            return (b.degree || 0) - (a.degree || 0);
+        });
+
+        const activeNodes: any[] = [];
+        const targetLimit = Math.min(maxNodesLimit, 150);
+
+        for (const node of candidateNodes) {
+            if (connectedOnly && (node.degree || 0) === 0) continue;
+            activeNodes.push(node);
+            if (activeNodes.length >= targetLimit) break;
+        }
+
+        const activeNodeIdSet = new Set(activeNodes.map(n => n.id));
+        const finalEdges = edgesList.filter(e => activeNodeIdSet.has(e.source) && activeNodeIdSet.has(e.target));
+
+        return {
+            nodes: activeNodes,
+            edges: finalEdges,
+            totalGraphNodes,
+            isTruncated: totalGraphNodes > activeNodes.length
+        };
     }
 
-    public async incrementAccessCount(_sectionPath: string): Promise<number> {
-        return 1;
-    }
+    public async renderContextKnowledge(workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
+        await this.initializeGraph(workspaceFolder);
+        if (this.triples.length === 0) return "";
 
-    public async updateKnowledge(sectionPath: string, content: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<void> {
-        const topic = sectionPath.trim() || 'Architecture Knowledge';
-        await this.recordInsight(topic, content, [], ['#architecture', '#knowledge'], workspaceFolder);
+        let fileCount = 0;
+        let classCount = 0;
+        let funcCount = 0;
+        let methodCount = 0;
+        let componentCount = 0;
+        let scriptCount = 0;
+        let endpointCount = 0;
+        let storeCount = 0;
+        let relationCount = 0;
+        let disjointCount = 0;
+        const topicSet = new Set<string>();
+        const languagesSet = new Set<string>();
+        const layersSet = new Set<string>();
+
+        for (const t of this.triples) {
+            if (t.p === 'rdf:type') {
+                const target = t.o;
+                if (target === 's:SourceFile' || target === 's:File' || target === 's:BackendModule') fileCount++;
+                else if (target === 's:VueComponent') componentCount++;
+                else if (target === 's:AutomationScript') scriptCount++;
+                else if (target === 's:ClassDefinition' || target === 's:Class') classCount++;
+                else if (target === 's:FunctionDefinition' || target === 's:Function') funcCount++;
+                else if (target === 's:MethodDefinition' || target === 's:Method') methodCount++;
+                else if (target === 's:APIRoute') endpointCount++;
+                else if (target === 's:StateStore') storeCount++;
+            }
+            if (t.p === 's:programmingLanguage') {
+                languagesSet.add(t.o.replace(/^"|"$/g, ''));
+            }
+            if (t.p === 's:layer') {
+                layersSet.add(t.o.replace(/^"|"$/g, ''));
+            }
+            if (t.p === 's:hasTopic') {
+                topicSet.add(t.o.replace(/^s:topic_/, ''));
+            }
+            if (t.p === 's:containsEntity' || t.p === 's:importsModule' || t.p === 's:invokesFunction' || t.p === 's:inheritsFrom' || t.p === 's:exposesEndpoint') {
+                relationCount++;
+            }
+            if (t.p === 's:disjointWith') {
+                disjointCount++;
+            }
+        }
+
+        const entitiesParts: string[] = [
+            `${fileCount} Files`
+        ];
+        if (componentCount > 0) entitiesParts.push(`${componentCount} Vue Components`);
+        if (classCount > 0) entitiesParts.push(`${classCount} Classes`);
+        if (funcCount > 0) entitiesParts.push(`${funcCount} Functions`);
+        if (methodCount > 0) entitiesParts.push(`${methodCount} Methods`);
+        if (endpointCount > 0) entitiesParts.push(`${endpointCount} API Endpoints`);
+        if (storeCount > 0) entitiesParts.push(`${storeCount} Stores`);
+        if (scriptCount > 0) entitiesParts.push(`${scriptCount} Scripts`);
+        if (disjointCount > 0) entitiesParts.push(`${Math.round(disjointCount / 2)} Disjoint Pairs`);
+
+        let output = `### 🕸️ KNOWLEDGE GRAPH ABOX TOPOLOGY (.lollms/knowledge.ttl)\n`;
+        output += `- **Entities**: ${entitiesParts.join(' · ')}\n`;
+        output += `- **Active Assertions**: ${relationCount} Connected Code Relations (containsEntity, importsModule, invokesFunction, inheritsFrom, exposesEndpoint)\n`;
+
+        if (layersSet.size > 0 || languagesSet.size > 0) {
+            const langs = Array.from(languagesSet).join(', ');
+            const layers = Array.from(layersSet).join(' · ');
+            output += `- **Stack Architecture**: ${layers}${langs ? ` (${langs})` : ''}\n`;
+        }
+
+        if (topicSet.size > 0) {
+            output += `- **Indexed Topics**: ${Array.from(topicSet).slice(0, 10).map(t => `#${t}`).join(' ')}\n`;
+        }
+        output += `\n> 💡 **Ontology SPARQL Protocol**: Every code entity is connected to its file and parent class. Query with: \`<query_architecture>SELECT ?func ?file WHERE { ?file s:containsEntity ?func . ?func a s:FunctionDefinition } LIMIT 20</query_architecture>\`.\n`;
+
+        return output.trim();
     }
 
     public async resetKnowledge(workspaceFolder?: vscode.WorkspaceFolder): Promise<void> {

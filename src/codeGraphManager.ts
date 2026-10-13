@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { Worker } from 'worker_threads';
 
 /**
@@ -19,6 +20,8 @@ export type GraphNode = {
     attributes?: string[];
     signature?: string;
     linesCount?: number;
+    isCircular?: boolean;
+    parent?: string;
 };
 
 export type GraphEdge = {
@@ -26,6 +29,7 @@ export type GraphEdge = {
     source: string;
     target: string;
     label: string;
+    isCircular?: boolean;
 };
 
 export type GraphData = {
@@ -41,18 +45,27 @@ export const BLOCKED_GRAPH_DIRECTORIES = new Set([
     'venv', '.venv', 'env', '.env', 'virtualenv', 'conda-env', 'site-packages', 'dist-packages',
     // Build Artifacts & Compiler Outputs
     'dist', 'build', 'out', 'bin', 'obj', 'target', 'release', 'debug', 'pkg', 'generated',
+    '.output', 'output', 'coverage', '.nyc_output',
     // Data Workspaces & Storage Caches
     'data', 'data_workspace', 'dataset', 'datasets', 'discussions', 'artefacts', 'artifacts', 'workspace_data', 'artefacts_metadata',
     // System, Editor, & Toolchain Caches
-    'node_modules', '.git', '.github', '.lollms', '.vscode', '.idea', '__pycache__',
-    '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.cache', 'vendor'
+    'node_modules', '.git', '.github', '.lollms', '.lollms_code', 'lollms_code', '.claude', 'claude',
+    '.vscode', '.idea', '__pycache__',
+    '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.cache', 'vendor',
+    '.next', '.nuxt', '.turbo', '.svelte-kit', 'bower_components', 'jspm_packages', '.yarn'
 ]);
 
 export function isPathBlockedFromGraph(filePathOrRel: string): boolean {
     if (!filePathOrRel) return true;
     const normalized = filePathOrRel.replace(/\\/g, '/').toLowerCase().trim();
-    const segments = normalized.split('/').filter(Boolean);
 
+    const basename = path.posix.basename(normalized);
+    if (basename.endsWith('.min.js') || basename.endsWith('.min.css') || basename.endsWith('.map') ||
+        basename === 'package-lock.json' || basename === 'yarn.lock' || basename === 'pnpm-lock.yaml') {
+        return true;
+    }
+
+    const segments = normalized.split('/').filter(Boolean);
     for (const seg of segments) {
         if (BLOCKED_GRAPH_DIRECTORIES.has(seg)) {
             return true;
@@ -359,106 +372,271 @@ export class CodeGraphManager {
      * Eliminates worker thread eval failures and guarantees 100% reliable parsing across all platforms.
      */
     private parseFileDirect(absolutePath: string, ext: string, normalizedPath: string): any {
-        let text = '';
-        try {
-            text = fs.readFileSync(absolutePath, 'utf8');
-        } catch {
-            return { nodes: [], edges: [], imports: [], calls: [], linesCount: 0 };
-        }
-
-        const rawLines = text.split('\n');
-        const localNodes: any[] = [];
-        const localEdges: any[] = [];
-        let nextNodeIdNum = 1;
-
-        // 1. Extract Imports
-        const imports: string[] = [];
-        if (['ts', 'js', 'tsx', 'jsx', 'mjs', 'cjs', 'vue'].includes(ext)) {
-            const importRegex = /(?:import|export)\s+(?:type\s+)?(?:[\w\s{},*]+from\s+)?['"]([^'"]+)['"]/g;
-            let m;
-            while ((m = importRegex.exec(text)) !== null) {
-                imports.push(m[1]);
+            let text = '';
+            try {
+                text = fs.readFileSync(absolutePath, 'utf8');
+            } catch {
+                return { nodes: [], edges: [], imports: [], calls: [], linesCount: 0 };
             }
-            const requireRegex = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-            while ((m = requireRegex.exec(text)) !== null) {
-                imports.push(m[1]);
-            }
-        } else if (ext === 'py') {
-            const fromImportRegex = /^from\s+([\w\.]+)\s+import/gm;
-            let m;
-            while ((m = fromImportRegex.exec(text)) !== null) {
-                imports.push(m[1].replace(/\./g, '/'));
-            }
-            const importRegex = /^import\s+([^\n]+)/gm;
-            while ((m = importRegex.exec(text)) !== null) {
-                const modules = m[1].split(',');
-                modules.forEach(mod => {
-                    const cleanName = mod.trim().split(/\s+as\s+/)[0];
-                    if (cleanName) imports.push(cleanName.replace(/\./g, '/'));
-                });
-            }
-        }
 
-        // 2. Extract Functions and Classes
-        let currentClass: any = null;
-        let currentClassIndent = 0;
+            const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            const rawLines = normalizedText.split('\n');
+            const localNodes: any[] = [];
+            const localEdges: any[] = [];
+            let nextNodeIdNum = 1;
 
-        rawLines.forEach((line, index) => {
-            const trimmed = line.trim();
-            if (!trimmed) return;
-            const indent = line.search(/\S/);
+            const imports: string[] = [];
+            const calls: string[] = [];
 
-            // Function & Arrow Function matching
-            const fnMatch = line.match(/(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)/) ||
-                            line.match(/(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?\([^)]*\)\s*(?::\s*[^=]+)?=>/);
-            const pyMatch = line.match(/^\s*(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)/);
-
-            if ((fnMatch || pyMatch) && !currentClass) {
-                const name = fnMatch ? fnMatch[1] : pyMatch![1];
-                if (!['if', 'for', 'while', 'switch', 'catch'].includes(name)) {
-                    localNodes.push({
-                        id: `fn_${nextNodeIdNum++}`,
-                        label: name,
-                        type: 'function',
-                        filePath: normalizedPath,
-                        startLine: index
+            // 1. EXTRACT IMPORTS ACROSS LANGUAGES
+            if (['ts', 'js', 'tsx', 'jsx', 'mjs', 'cjs', 'vue'].includes(ext)) {
+                const importRegex = /(?:import|export)\s+(?:type\s+)?(?:[\w\s{},*]+from\s+)?['"]([^'"]+)['"]/g;
+                let m;
+                while ((m = importRegex.exec(normalizedText)) !== null) {
+                    imports.push(m[1]);
+                }
+                const dynamicImportRegex = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+                while ((m = dynamicImportRegex.exec(normalizedText)) !== null) {
+                    imports.push(m[1]);
+                }
+                const requireRegex = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+                while ((m = requireRegex.exec(normalizedText)) !== null) {
+                    imports.push(m[1]);
+                }
+            } else if (ext === 'py') {
+                const fromImportRegex = /^from\s+([.\w]+)\s+import/gm;
+                let m;
+                while ((m = fromImportRegex.exec(normalizedText)) !== null) {
+                    imports.push(m[1].replace(/\./g, '/'));
+                }
+                const importRegex = /^import\s+([^\n#]+)/gm;
+                while ((m = importRegex.exec(normalizedText)) !== null) {
+                    const modules = m[1].split(',');
+                    modules.forEach(mod => {
+                        const cleanName = mod.trim().split(/\s+as\s+/)[0].trim();
+                        if (cleanName) imports.push(cleanName.replace(/\./g, '/'));
                     });
                 }
             }
 
-            // Class matching
-            const classMatch = line.match(/(?:export\s+)?(?:abstract\s+)?class\s+([a-zA-Z0-9_]+)/) ||
-                               line.match(/(?:export\s+)?interface\s+([a-zA-Z0-9_]+)/);
-            if (classMatch) {
-                const className = classMatch[1];
-                const classNodeId = `class_${nextNodeIdNum++}`;
+            // 2. EXTRACT CALLS
+            const callRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
+            const reservedKeywords = new Set([
+                'if', 'for', 'while', 'switch', 'catch', 'return', 'typeof', 'sizeof',
+                'require', 'import', 'function', 'class', 'super', 'print', 'len', 'range',
+                'def', 'async', 'await', 'new', 'throw', 'yield', 'console', 'log'
+            ]);
+            let callMatch;
+            while ((callMatch = callRegex.exec(normalizedText)) !== null) {
+                const name = callMatch[1];
+                if (!reservedKeywords.has(name) && name.length > 2) {
+                    calls.push(name);
+                }
+            }
+            const uniqueCalls = Array.from(new Set(calls));
 
-                currentClass = {
-                    id: classNodeId,
-                    label: className,
-                    type: 'class',
+            // 3. VUE.JS COMPONENT RECONNAISSANCE (.vue)
+            if (ext === 'vue') {
+                const componentName = path.posix.basename(normalizedPath, '.vue');
+                const componentNodeId = `comp_${nextNodeIdNum++}`;
+
+                const compNode = {
+                    id: componentNodeId,
+                    label: componentName,
+                    type: 'component',
                     filePath: normalizedPath,
-                    startLine: index
+                    startLine: 0
                 };
-                currentClassIndent = indent;
-                localNodes.push(currentClass);
-                return;
+                localNodes.push(compNode);
+
+                // Extract script content (both <script> and <script setup>)
+                const scriptMatch = normalizedText.match(/<script\b[^>]*>([\s\S]*?)<\/script>/i);
+                const scriptContent = scriptMatch ? scriptMatch[1] : '';
+
+                if (scriptContent) {
+                    const scriptLines = scriptContent.split('\n');
+                    scriptLines.forEach((sLine, sIdx) => {
+                        const trimmed = sLine.trim();
+                        if (!trimmed) return;
+
+                        // Functions inside Vue script
+                        const fnMatch = trimmed.match(/(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)/) ||
+                                        trimmed.match(/(?:const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?\([^)]*\)\s*(?::\s*[^=]+)?=>/) ||
+                                        trimmed.match(/(?:const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?function/);
+
+                        if (fnMatch && !reservedKeywords.has(fnMatch[1])) {
+                            const fnId = `fn_${nextNodeIdNum++}`;
+                            localNodes.push({
+                                id: fnId,
+                                label: fnMatch[1],
+                                type: 'function',
+                                filePath: normalizedPath,
+                                startLine: sIdx
+                            });
+                            localEdges.push({ source: componentNodeId, target: fnId, label: 'contains' });
+                            return;
+                        }
+
+                        // Vue Composables & Reactive State (ref, computed, reactive, store)
+                        const compMatch = trimmed.match(/(?:const|let)\s+([a-zA-Z0-9_]+)\s*=\s*(ref|computed|reactive|use[A-Z][a-zA-Z0-9_]*|defineStore)\s*\(/);
+                        if (compMatch) {
+                            const varName = compMatch[1];
+                            const hookType = compMatch[2];
+                            const hookId = `state_${nextNodeIdNum++}`;
+                            localNodes.push({
+                                id: hookId,
+                                label: `${varName} (${hookType})`,
+                                type: hookType === 'defineStore' ? 'store' : 'method',
+                                filePath: normalizedPath,
+                                startLine: sIdx
+                            });
+                            localEdges.push({ source: componentNodeId, target: hookId, label: 'contains' });
+                        }
+                    });
+                }
+
+                return {
+                    nodes: localNodes,
+                    edges: localEdges,
+                    imports,
+                    calls: uniqueCalls,
+                    linesCount: rawLines.length
+                };
             }
 
-            if (currentClass) {
-                if (ext === 'py') {
-                    if (indent <= currentClassIndent && !trimmed.startsWith('def') && !trimmed.startsWith('class') && !trimmed.startsWith('@') && !trimmed.startsWith('#')) {
-                        currentClass = null;
+            // 4. SHELL & AUTOMATION SCRIPTS (.sh, .bash, .bat, .cmd, .ps1)
+            if (['sh', 'bash', 'bat', 'cmd', 'ps1'].includes(ext)) {
+                const scriptName = path.posix.basename(normalizedPath);
+                const scriptNodeId = `script_${nextNodeIdNum++}`;
+
+                localNodes.push({
+                    id: scriptNodeId,
+                    label: scriptName,
+                    type: 'script',
+                    filePath: normalizedPath,
+                    startLine: 0
+                });
+
+                rawLines.forEach((line, index) => {
+                    const trimmed = line.trim();
+                    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('::') || trimmed.startsWith('rem ')) return;
+
+                    // Bash / Sh function
+                    const shFnMatch = trimmed.match(/^(?:function\s+)?([a-zA-Z0-9_]+)\s*\(\s*\)\s*\{?/) ||
+                                      trimmed.match(/^function\s+([a-zA-Z0-9_]+)\s*\{?/);
+                    // PowerShell function
+                    const psFnMatch = trimmed.match(/^function\s+([a-zA-Z0-9_:-]+)/i);
+                    // Batch label
+                    const batLabelMatch = trimmed.match(/^:([a-zA-Z0-9_]+)/);
+
+                    const fnName = shFnMatch ? shFnMatch[1] : (psFnMatch ? psFnMatch[1] : (batLabelMatch ? batLabelMatch[1] : null));
+
+                    if (fnName && !reservedKeywords.has(fnName)) {
+                        const fnId = `fn_${nextNodeIdNum++}`;
+                        localNodes.push({
+                            id: fnId,
+                            label: fnName,
+                            type: 'function',
+                            filePath: normalizedPath,
+                            startLine: index
+                        });
+                        localEdges.push({ source: scriptNodeId, target: fnId, label: 'contains' });
                     }
-                } else if (line.match(/^}/) && indent === currentClassIndent) {
-                    currentClass = null;
+                });
+
+                return {
+                    nodes: localNodes,
+                    edges: localEdges,
+                    imports: [],
+                    calls: uniqueCalls,
+                    linesCount: rawLines.length
+                };
+            }
+
+            // 5. PYTHON & TYPESCRIPT/JAVASCRIPT/C#/C++ PARSER
+            let currentClass: any = null;
+            let currentClassIndent = 0;
+            let lastDecorator = '';
+
+            rawLines.forEach((line, index) => {
+                const trimmed = line.trim();
+                if (!trimmed) return;
+                const indent = line.search(/\S/);
+
+                // Capture API Route Decorators in Python (FastAPI, Flask, etc.)
+                if (ext === 'py' && trimmed.startsWith('@')) {
+                    const routeMatch = trimmed.match(/@(?:app|router|bp|api)\.(get|post|put|delete|patch|options|head)\s*\(\s*['"]([^'"]+)['"]/i);
+                    if (routeMatch) {
+                        lastDecorator = `${routeMatch[1].toUpperCase()} ${routeMatch[2]}`;
+                    }
+                    return;
+                }
+
+                // Express / Fastify / Router Endpoints in TS/JS
+                if (['ts', 'js', 'tsx', 'jsx'].includes(ext)) {
+                    const routeMatch = trimmed.match(/(?:app|router|server|api)\.(get|post|put|delete|patch)\s*\(\s*['"]([^'"]+)['"]/i);
+                    if (routeMatch) {
+                        const httpMethod = routeMatch[1].toUpperCase();
+                        const routePath = routeMatch[2];
+                        const endpointId = `ep_${nextNodeIdNum++}`;
+                        localNodes.push({
+                            id: endpointId,
+                            label: `${httpMethod} ${routePath}`,
+                            type: 'endpoint',
+                            filePath: normalizedPath,
+                            startLine: index,
+                            httpMethod,
+                            routePath
+                        });
+                    }
+                }
+
+                // Class & Interface matching
+                const classMatch = line.match(/(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([a-zA-Z0-9_]+)(?:\s+extends\s+([a-zA-Z0-9_]+))?/) ||
+                                   line.match(/(?:export\s+)?interface\s+([a-zA-Z0-9_]+)/) ||
+                                   line.match(/^\s*class\s+([a-zA-Z0-9_]+)(?:\s*\(\s*([a-zA-Z0-9_.]+)\s*\))?/);
+
+                if (classMatch) {
+                    const className = classMatch[1];
+                    const parentName = classMatch[2];
+                    const classNodeId = `class_${nextNodeIdNum++}`;
+
+                    currentClass = {
+                        id: classNodeId,
+                        label: className,
+                        type: classMatch[0].includes('interface') ? 'interface' : 'class',
+                        filePath: normalizedPath,
+                        startLine: index
+                    };
+                    currentClassIndent = indent;
+                    localNodes.push(currentClass);
+
+                    if (parentName && parentName !== 'object') {
+                        localEdges.push({ source: classNodeId, target: parentName, label: 'inherits' });
+                    }
+                    lastDecorator = '';
+                    return;
                 }
 
                 if (currentClass) {
-                    const methodMatch = line.match(/^\s*(?:public|private|protected|static|async|\s)*\s*([a-zA-Z0-9_]+)\s*\(([^)]*)\)/) ||
-                                        line.match(/^\s+def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)/);
-                    if (methodMatch && !['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
-                        const methodName = methodMatch[1];
+                    if (ext === 'py') {
+                        if (indent <= currentClassIndent && !trimmed.startsWith('def') && !trimmed.startsWith('class') && !trimmed.startsWith('@') && !trimmed.startsWith('#')) {
+                            currentClass = null;
+                        }
+                    } else if (line.match(/^}/) && indent === currentClassIndent) {
+                        currentClass = null;
+                    }
+                }
+
+                // Method inside active class
+                if (currentClass) {
+                    const pyMethodMatch = line.match(/^\s+(?:async\s+)?def\s+([a-zA-Z0-9_]+)/);
+                    const jsMethodMatch = line.match(/^\s*(?:public|private|protected|static|async|\s)*\s*([a-zA-Z0-9_]+)\s*\(/);
+
+                    const isMethod = ext === 'py' ? pyMethodMatch : (jsMethodMatch && !['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(jsMethodMatch[1]));
+
+                    if (isMethod) {
+                        const methodName = ext === 'py' ? pyMethodMatch![1] : jsMethodMatch![1];
                         const methodNodeId = `method_${nextNodeIdNum++}`;
                         localNodes.push({
                             id: methodNodeId,
@@ -468,19 +646,59 @@ export class CodeGraphManager {
                             startLine: index
                         });
                         localEdges.push({ source: currentClass.id, target: methodNodeId, label: 'contains' });
+                        lastDecorator = '';
+                        return;
                     }
                 }
-            }
-        });
 
-        return {
-            nodes: localNodes,
-            edges: localEdges,
-            imports,
-            calls: [],
-            linesCount: rawLines.length
-        };
-    }
+                // Standalone Functions
+                const fnMatch = line.match(/(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)/) ||
+                                line.match(/(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?\([^)]*\)\s*(?::\s*[^=]+)?=>/) ||
+                                line.match(/(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?function/);
+                const pyMatch = line.match(/^(\s*)(?:async\s+)?def\s+([a-zA-Z0-9_]+)/);
+
+                const isPyTopLevel = pyMatch && pyMatch[1].length === 0;
+                const isJsFunction = fnMatch && !currentClass;
+
+                if (isJsFunction || isPyTopLevel) {
+                    const name = fnMatch ? fnMatch[1] : pyMatch![2];
+                    if (!reservedKeywords.has(name)) {
+                        const fnNodeId = `fn_${nextNodeIdNum++}`;
+                        localNodes.push({
+                            id: fnNodeId,
+                            label: name,
+                            type: lastDecorator ? 'endpoint' : 'function',
+                            filePath: normalizedPath,
+                            startLine: index
+                        });
+
+                        if (lastDecorator) {
+                            const parts = lastDecorator.split(' ');
+                            localNodes.push({
+                                id: `ep_${nextNodeIdNum++}`,
+                                label: lastDecorator,
+                                type: 'endpoint',
+                                filePath: normalizedPath,
+                                startLine: index,
+                                httpMethod: parts[0],
+                                routePath: parts[1]
+                            });
+                            localEdges.push({ source: fnNodeId, target: `ep_${nextNodeIdNum - 1}`, label: 'contains' });
+                        }
+                    }
+                }
+
+                lastDecorator = '';
+            });
+
+            return {
+                nodes: localNodes,
+                edges: localEdges,
+                imports,
+                calls: uniqueCalls,
+                linesCount: rawLines.length
+            };
+        }
 
     public setWorkspaceRoot(root: vscode.Uri) {
         this.workspaceRoot = root;
@@ -630,36 +848,90 @@ export class CodeGraphManager {
                 this.contextSetter('buildState', 'building');
             }
 
+            // Fresh rebuild: clear in-memory caches to guarantee fresh AST connections
+            this.parsedFilesCache.clear();
+            this.fileIdsMap.clear();
+
             this.abortController = new AbortController();
             const signal = this.abortController.signal;
 
             try {
                 if (progress) progress({ percentage: 10, status: "Scouting codebase structure..." });
 
-                const patterns = ['**/*.ts', '**/*.js', '**/*.tsx', '**/*.jsx', '**/*.py', '**/*.vue', '**/*.cs', '**/*.cpp'];
-                const excludePattern = '**/{node_modules,venv,.venv,env,.env,.git,dist,build,out,bin,obj,.vscode,.idea,.lollms,data,data_workspace,dataset,datasets,discussions,workspace_data,artefacts_metadata,__pycache__,target,*.egg-info,vendor}/**';
+                const patterns = [
+                    '**/*.py',
+                    '**/*.vue',
+                    '**/*.ts',
+                    '**/*.js',
+                    '**/*.tsx',
+                    '**/*.jsx',
+                    '**/*.sh',
+                    '**/*.bash',
+                    '**/*.bat',
+                    '**/*.cmd',
+                    '**/*.ps1',
+                    '**/*.cs',
+                    '**/*.cpp',
+                    '**/*.rs',
+                    '**/*.go',
+                    '**/*.java'
+                ];
+
+                const excludePattern = '**/{.git,node_modules,venv,.venv,env,.env,out,dist,bin,build,.lollms,.lollms_code,lollms_code,.claude,claude,__pycache__,.vscode,.idea,.next,.nuxt,.output,coverage}/**';
 
                 let rawFiles: vscode.Uri[] = [];
                 for (const pattern of patterns) {
                     if (signal.aborted) return;
-                    const matches = await vscode.workspace.findFiles(
-                        new vscode.RelativePattern(this.workspaceRoot, pattern),
-                        excludePattern,
-                        1000
-                    );
-                    rawFiles = [...rawFiles, ...matches];
+                    try {
+                        const matches = await vscode.workspace.findFiles(
+                            new vscode.RelativePattern(this.workspaceRoot, pattern),
+                            excludePattern,
+                            2000
+                        );
+                        rawFiles.push(...matches);
+                    } catch {}
                 }
 
-                // Strict secondary filter: ensure no venv, build, data, or artifact path slips through
+                // Robust Direct Filesystem Fallback: If findFiles returned 0 files, crawl directory directly
+                if (rawFiles.length === 0 && !signal.aborted) {
+                    const targetExts = new Set(['.py', '.vue', '.ts', '.js', '.tsx', '.jsx', '.sh', '.bash', '.bat', '.cmd', '.ps1', '.cs', '.cpp', '.rs', '.go', '.java']);
+                    const walkDir = (dirFsPath: string): void => {
+                        if (signal.aborted) return;
+                        try {
+                            const entries = fs.readdirSync(dirFsPath, { withFileTypes: true });
+                            for (const entry of entries) {
+                                const name = entry.name;
+                                const fullEntryPath = path.join(dirFsPath, name);
+                                const rel = path.relative(this.workspaceRoot!.fsPath, fullEntryPath);
+                                if (isPathBlockedFromGraph(rel)) continue;
+
+                                if (entry.isDirectory()) {
+                                    walkDir(fullEntryPath);
+                                } else if (entry.isFile()) {
+                                    const ext = path.extname(name).toLowerCase();
+                                    if (targetExts.has(ext)) {
+                                        rawFiles.push(vscode.Uri.file(fullEntryPath));
+                                    }
+                                }
+                            }
+                        } catch {}
+                    };
+                    walkDir(this.workspaceRoot.fsPath);
+                }
+
+                const seenFsPaths = new Set<string>();
                 let files: vscode.Uri[] = [];
                 for (const f of rawFiles) {
+                    if (seenFsPaths.has(f.fsPath)) continue;
+                    seenFsPaths.add(f.fsPath);
+
                     const rel = path.relative(this.workspaceRoot.fsPath, f.fsPath);
                     if (!isPathBlockedFromGraph(rel)) {
                         files.push(f);
                     }
                 }
 
-                const MAX_FILES = 500;
+                const MAX_FILES = 2500;
                 if (files.length > MAX_FILES) {
                     files = files.slice(0, MAX_FILES);
                 }
@@ -752,14 +1024,14 @@ export class CodeGraphManager {
 
         const task = (async () => {
             try {
-                const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
+                const stat = await Promise.resolve(vscode.workspace.fs.stat(fileUri)).catch(() => null);
                 if (!stat || stat.type === vscode.FileType.Directory) {
                     this.removeFileFromGraph(fileUri);
                     return;
                 }
 
                 const ext = path.extname(relPath).substring(1);
-                const parsed = await this.runParserInWorker(fileUri.fsPath, ext, relPath);
+                const parsed = this.parseFileDirect(fileUri.fsPath, ext, relPath);
                 this.parsedFilesCache.set(relPath, parsed);
 
                 if (this.buildState === 'ready') {
@@ -802,201 +1074,53 @@ export class CodeGraphManager {
      * preserving all other unchanged nodes and edge configurations.
      */
     private linkFileInGraph(relPath: string) {
-        // Sync incrementally to unified TTL Knowledge Graph ABox
-        try {
-            const { KnowledgeManager } = require('./knowledgeManager');
-            const activeFolder = vscode.workspace.workspaceFolders?.[0];
-            const km = new KnowledgeManager({} as any);
-            const cached = this.parsedFilesCache.get(relPath);
-            if (cached) {
-                km.syncFileToABox(relPath, cached.nodes, cached.edges, activeFolder).catch(() => {});
-            } else {
-                km.removeTriplesForFile(relPath);
-            }
-        } catch {}
-        if (this.buildState !== 'ready') return;
-
-        const fileNodeId = `file_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-
-        // 1. Evict only old file node, symbol nodes, and relationships matching this file path
-        this.graph.nodes = this.graph.nodes.filter(n => n.filePath !== relPath && n.id !== fileNodeId);
-
-        const activeNodeIds = new Set(this.graph.nodes.map(n => n.id));
-        this.graph.edges = this.graph.edges.filter(e => {
-            return activeNodeIds.has(e.source) && activeNodeIds.has(e.target);
-        });
-
-        const cache = this.parsedFilesCache.get(relPath);
-        if (!cache) return;
-
-        // 2. Add New File Node with exact file reference
-        this.graph.nodes.push({
-            id: fileNodeId,
-            label: path.basename(relPath),
-            type: 'file',
-            filePath: relPath,
-            startLine: 0,
-            linesCount: cache.linesCount
-        });
-
-        const classNameToId = new Map<string, string>();
-        this.graph.nodes.forEach(n => {
-            if (n.type === 'class') {
-                classNameToId.set(n.label, n.id);
-            }
-        });
-
-        // 3. Re-inject symbol nodes with docstrings and file references
-        cache.nodes.forEach(n => {
-            const sysId = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${n.label}`;
-            this.graph.nodes.push({
-                ...n,
-                id: sysId,
-                filePath: relPath,
-                docstring: n.docstring || undefined
-            });
-
-            if (n.type === 'class') {
-                classNameToId.set(n.label, sysId);
-            }
-
-            this.graph.edges.push({
-                id: `edge_contains_${fileNodeId}_${sysId}`,
-                source: fileNodeId,
-                target: sysId,
-                label: 'contains'
-            });
-        });
-
-        // Re-inject internal symbol hierarchies (Class contains Method)
-        cache.edges.forEach(e => {
-            const srcSymbol = cache.nodes.find(n => n.id === e.source);
-            const trgSymbol = cache.nodes.find(n => n.id === e.target);
-            if (srcSymbol && trgSymbol) {
-                const srcMapped = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${srcSymbol.label}`;
-                const trgMapped = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${trgSymbol.label}`;
-                this.graph.edges.push({
-                    id: `edge_${e.label}_${srcMapped}_${trgMapped}`,
-                    source: srcMapped,
-                    target: trgMapped,
-                    label: e.label
-                });
-            }
-        });
-
-        // 4. Map File Nodes and Re-link imports surgically
-        const fileNodeIds = new Map<string, string>();
-        this.graph.nodes.forEach(n => {
-            if (n.type === 'file' && n.filePath) {
-                fileNodeIds.set(n.filePath, n.id);
-            }
-        });
-
-        cache.imports.forEach(imp => {
-            const targetPath = this.resolveImportPath(imp, relPath, fileNodeIds);
-            if (targetPath) {
-                const targetFileId = fileNodeIds.get(targetPath);
-                if (targetFileId && targetFileId !== fileNodeId) {
-                    this.graph.edges.push({
-                        id: `edge_imports_${fileNodeId}_${targetFileId}`,
-                        source: fileNodeId,
-                        target: targetFileId,
-                        label: 'imports'
-                    });
+            try {
+                const { KnowledgeManager } = require('./knowledgeManager');
+                const activeFolder = vscode.workspace.workspaceFolders?.[0];
+                const km = new KnowledgeManager({} as any);
+                const cached = this.parsedFilesCache.get(relPath);
+                if (cached) {
+                    km.syncFileToABox(relPath, cached.nodes, cached.edges, activeFolder).catch(() => {});
+                } else {
+                    km.removeTriplesForFile(relPath);
                 }
-            } else if (!imp.startsWith('.')) {
-                const libName = imp.split('/')[0];
-                const libId = `lib_${libName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-                if (!this.graph.nodes.some(n => n.id === libId)) {
-                    this.graph.nodes.push({
-                        id: libId,
-                        label: libName,
-                        type: 'library'
-                    });
-                }
-                this.graph.edges.push({
-                    id: `edge_imports_${fileNodeId}_${libId}`,
-                    source: fileNodeId,
-                    target: libId,
-                    label: 'imports'
-                });
-            }
-        });
+            } catch {}
+            if (this.buildState !== 'ready') return;
 
-        // 5. Re-link function/method calls
-        if (cache.calls && Array.isArray(cache.calls)) {
-            cache.calls.forEach(calledName => {
-                const targetSymbol = this.graph.nodes.find(n => (n.type === 'function' || n.type === 'method') && n.label === calledName && n.id !== fileNodeId);
-                if (targetSymbol) {
-                    this.graph.edges.push({
-                        id: `edge_calls_${fileNodeId}_${targetSymbol.id}`,
-                        source: fileNodeId,
-                        target: targetSymbol.id,
-                        label: 'calls'
-                    });
-                }
-            });
-        }
-
-        // 6. Re-link inheritances surgically
-        const jsInheritance = /class\s+([a-zA-Z0-9_]+)\s+extends\s+([a-zA-Z0-9_.]+)/g;
-        const pyInheritance = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_.]+)\s*\)/g;
-
-        const ext = path.extname(relPath).toLowerCase();
-        const text = cache.nodes.map(n => n.label).join(' ');
-        const regex = (ext === '.py') ? pyInheritance : jsInheritance;
-        regex.lastIndex = 0;
-
-        let match;
-        while ((match = regex.exec(text)) !== null) {
-            const className = match[1];
-            const parentName = match[2];
-
-            if (parentName && parentName !== 'object') {
-                const childId = classNameToId.get(className);
-                const parentId = classNameToId.get(parentName);
-
-                if (childId && parentId) {
-                    this.graph.edges.push({
-                        id: `edge_inherits_${childId}_${parentId}`,
-                        source: childId,
-                        target: parentId,
-                        label: 'inherits'
-                    });
-                }
-            }
-        }
-    }
-
-    /**
-     * Resolves local symbols, imports, calls, docstrings, and inheritances.
-     */
-    private linkGraphStructure() {
-        const nodes: GraphNode[] = [];
-        const edges: GraphEdge[] = [];
-
-        const fileNodeIds = new Map<string, string>();
-        const classNameToId = new Map<string, string>();
-        const libraryNodesMap = new Map<string, string>();
-
-        // 1. First Pass: Instantiate nodes with stable IDs (Files and nested Symbols)
-        for (const [relPath, cache] of this.parsedFilesCache.entries()) {
             const fileNodeId = `file_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-            fileNodeIds.set(relPath, fileNodeId);
 
-            nodes.push({
+            // 1. Evict old nodes and relationships matching this file path
+            this.graph.nodes = this.graph.nodes.filter(n => n.filePath !== relPath && n.id !== fileNodeId);
+
+            const activeNodeIds = new Set(this.graph.nodes.map(n => n.id));
+            this.graph.edges = this.graph.edges.filter(e => {
+                return activeNodeIds.has(e.source) && activeNodeIds.has(e.target);
+            });
+
+            const cache = this.parsedFilesCache.get(relPath);
+            if (!cache) return;
+
+            // 2. Add File Node
+            this.graph.nodes.push({
                 id: fileNodeId,
-                label: path.basename(relPath),
+                label: path.posix.basename(relPath),
                 type: 'file',
                 filePath: relPath,
                 startLine: 0,
                 linesCount: cache.linesCount
             });
 
+            const classNameToId = new Map<string, string>();
+            this.graph.nodes.forEach(n => {
+                if (n.type === 'class') {
+                    classNameToId.set(n.label, n.id);
+                }
+            });
+
+            // 3. Inject symbols with hierarchical containment
             cache.nodes.forEach(n => {
                 const sysId = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${n.label}`;
-
-                nodes.push({
+                this.graph.nodes.push({
                     ...n,
                     id: sysId,
                     filePath: relPath,
@@ -1005,24 +1129,30 @@ export class CodeGraphManager {
 
                 if (n.type === 'class') {
                     classNameToId.set(n.label, sysId);
+                    this.graph.edges.push({
+                        id: `edge_contains_${fileNodeId}_${sysId}`,
+                        source: fileNodeId,
+                        target: sysId,
+                        label: 'contains'
+                    });
+                } else if (n.type === 'function') {
+                    this.graph.edges.push({
+                        id: `edge_contains_${fileNodeId}_${sysId}`,
+                        source: fileNodeId,
+                        target: sysId,
+                        label: 'contains'
+                    });
                 }
-
-                edges.push({
-                    id: `edge_contains_${fileNodeId}_${sysId}`,
-                    source: fileNodeId,
-                    target: sysId,
-                    label: 'contains'
-                });
             });
 
-            // Map internal container relations (Class contains Method)
+            // Class contains Method
             cache.edges.forEach(e => {
                 const srcSymbol = cache.nodes.find(n => n.id === e.source);
                 const trgSymbol = cache.nodes.find(n => n.id === e.target);
                 if (srcSymbol && trgSymbol) {
                     const srcMapped = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${srcSymbol.label}`;
                     const trgMapped = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${trgSymbol.label}`;
-                    edges.push({
+                    this.graph.edges.push({
                         id: `edge_${e.label}_${srcMapped}_${trgMapped}`,
                         source: srcMapped,
                         target: trgMapped,
@@ -1030,20 +1160,21 @@ export class CodeGraphManager {
                     });
                 }
             });
-        }
 
-        // 2. Second Pass: Link dependencies, Invocations & Calls
-        for (const [relPath, cache] of this.parsedFilesCache.entries()) {
-            const fileNodeId = fileNodeIds.get(relPath);
-            if (!fileNodeId) continue;
+            // 4. Re-link imports
+            const fileNodeIds = new Map<string, string>();
+            this.graph.nodes.forEach(n => {
+                if (n.type === 'file' && n.filePath) {
+                    fileNodeIds.set(n.filePath, n.id);
+                }
+            });
 
-            // Link Imports
             cache.imports.forEach(imp => {
                 const targetPath = this.resolveImportPath(imp, relPath, fileNodeIds);
                 if (targetPath) {
                     const targetFileId = fileNodeIds.get(targetPath);
                     if (targetFileId && targetFileId !== fileNodeId) {
-                        edges.push({
+                        this.graph.edges.push({
                             id: `edge_imports_${fileNodeId}_${targetFileId}`,
                             source: fileNodeId,
                             target: targetFileId,
@@ -1054,15 +1185,14 @@ export class CodeGraphManager {
                     const libName = imp.split('/')[0].replace(/['"]/g, '').trim();
                     if (libName.length > 1) {
                         const libId = `lib_${libName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-                        if (!libraryNodesMap.has(libName)) {
-                            nodes.push({
+                        if (!this.graph.nodes.some(n => n.id === libId)) {
+                            this.graph.nodes.push({
                                 id: libId,
                                 label: libName,
                                 type: 'library'
                             });
-                            libraryNodesMap.set(libName, libId);
                         }
-                        edges.push({
+                        this.graph.edges.push({
                             id: `edge_imports_${fileNodeId}_${libId}`,
                             source: fileNodeId,
                             target: libId,
@@ -1072,76 +1202,408 @@ export class CodeGraphManager {
                 }
             });
 
-            // Link Invocations & Function Calls
-            if (cache.calls && Array.isArray(cache.calls)) {
-                cache.calls.forEach(calledName => {
-                    const targetSymbol = nodes.find(n => (n.type === 'function' || n.type === 'method') && n.label === calledName && n.id !== fileNodeId);
-                    if (targetSymbol) {
+            this.detectCircularImports();
+        }
+
+    /**
+     * Resolves local symbols, imports, calls, docstrings, and inheritances.
+     */
+    private linkGraphStructure() {
+            const nodes: GraphNode[] = [];
+            const edges: GraphEdge[] = [];
+
+            const fileNodeIds = new Map<string, string>();
+            const classNameToId = new Map<string, string>();
+            const libraryNodesMap = new Map<string, string>();
+
+            // 1. First Pass: Instantiate nodes with stable IDs (Files and nested Symbols)
+            for (const [relPath, cache] of this.parsedFilesCache.entries()) {
+                const fileNodeId = `file_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+                fileNodeIds.set(relPath, fileNodeId);
+
+                nodes.push({
+                    id: fileNodeId,
+                    label: path.posix.basename(relPath),
+                    type: 'file',
+                    filePath: relPath,
+                    startLine: 0,
+                    linesCount: cache.linesCount
+                });
+
+                const localIdToGlobal = new Map<string, string>();
+
+                cache.nodes.forEach(n => {
+                    const sysId = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${n.type}_${n.label.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+                    localIdToGlobal.set(n.id, sysId);
+
+                    nodes.push({
+                        ...n,
+                        id: sysId,
+                        filePath: relPath,
+                        docstring: n.docstring || undefined
+                    });
+
+                    if (n.type === 'class' || n.type === 'interface') {
+                        classNameToId.set(n.label, sysId);
+                    }
+
+                    // Top-level entities are contained in the source file
+                    if (n.type !== 'method') {
                         edges.push({
-                            id: `edge_calls_${fileNodeId}_${targetSymbol.id}`,
+                            id: `edge_contains_${fileNodeId}_${sysId}`,
                             source: fileNodeId,
-                            target: targetSymbol.id,
-                            label: 'calls'
+                            target: sysId,
+                            label: 'contains'
+                        });
+                    }
+                });
+
+                // Map Class -> Method containment accurately via unique node IDs
+                cache.edges.forEach(e => {
+                    const srcMapped = localIdToGlobal.get(e.source);
+                    const trgMapped = localIdToGlobal.get(e.target);
+                    if (srcMapped && trgMapped) {
+                        edges.push({
+                            id: `edge_${e.label}_${srcMapped}_${trgMapped}`,
+                            source: srcMapped,
+                            target: trgMapped,
+                            label: e.label
                         });
                     }
                 });
             }
-        }
 
-        // 3. Establish Inheritance
-        const jsInheritance = /class\s+([a-zA-Z0-9_]+)\s+extends\s+([a-zA-Z0-9_.]+)/g;
-        const pyInheritance = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_.]+)\s*\)/g;
+            // 2. Second Pass: Link dependencies (Imports) & Invocations (Calls)
+            for (const [relPath, cache] of this.parsedFilesCache.entries()) {
+                const fileNodeId = fileNodeIds.get(relPath);
+                if (!fileNodeId) continue;
 
-        for (const [relPath, cache] of this.parsedFilesCache.entries()) {
-            const ext = path.extname(relPath).toLowerCase();
-            const text = cache.nodes.map(n => n.label).join(' ');
-            const regex = (ext === '.py') ? pyInheritance : jsInheritance;
-            regex.lastIndex = 0;
+                // Link Imports
+                cache.imports.forEach(imp => {
+                    const targetPath = this.resolveImportPath(imp, relPath, fileNodeIds);
+                    if (targetPath) {
+                        const targetFileId = fileNodeIds.get(targetPath);
+                        if (targetFileId && targetFileId !== fileNodeId) {
+                            const edgeId = `edge_imports_${fileNodeId}_${targetFileId}`;
+                            if (!edges.some(e => e.id === edgeId)) {
+                                edges.push({
+                                    id: edgeId,
+                                    source: fileNodeId,
+                                    target: targetFileId,
+                                    label: 'imports'
+                                });
+                            }
+                        }
+                    } else if (!imp.startsWith('.')) {
+                        const libName = imp.split('/')[0].replace(/['"]/g, '').trim();
+                        if (libName.length > 1) {
+                            const libId = `lib_${libName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+                            if (!libraryNodesMap.has(libName)) {
+                                nodes.push({
+                                    id: libId,
+                                    label: libName,
+                                    type: 'library'
+                                });
+                                libraryNodesMap.set(libName, libId);
+                            }
+                            const edgeId = `edge_imports_${fileNodeId}_${libId}`;
+                            if (!edges.some(e => e.id === edgeId)) {
+                                edges.push({
+                                    id: edgeId,
+                                    source: fileNodeId,
+                                    target: libId,
+                                    label: 'imports'
+                                });
+                            }
+                        }
+                    }
+                });
 
-            let match;
-            while ((match = regex.exec(text)) !== null) {
-                const className = match[1];
-                const parentName = match[2];
+                // Link Function/Method Calls
+                if (cache.calls && Array.isArray(cache.calls)) {
+                    cache.calls.forEach(calledName => {
+                        const targetSymbol = nodes.find(n => 
+                            (n.type === 'function' || n.type === 'method') && 
+                            n.label === calledName && 
+                            n.filePath !== relPath
+                        );
+                        if (targetSymbol) {
+                            const edgeId = `edge_calls_${fileNodeId}_${targetSymbol.id}`;
+                            if (!edges.some(e => e.id === edgeId)) {
+                                edges.push({
+                                    id: edgeId,
+                                    source: fileNodeId,
+                                    target: targetSymbol.id,
+                                    label: 'calls'
+                                });
+                            }
+                        }
+                    });
+                }
+            }
 
-                if (parentName && parentName !== 'object') {
-                    const childId = classNameToId.get(className);
-                    const parentId = classNameToId.get(parentName);
+            // 3. Establish Inheritance
+            const jsInheritance = /class\s+([a-zA-Z0-9_]+)\s+extends\s+([a-zA-Z0-9_.]+)/g;
+            const pyInheritance = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_.]+)\s*\)/g;
 
-                    if (childId && parentId) {
-                        edges.push({
-                            id: `edge_inherits_${childId}_${parentId}`,
-                            source: childId,
-                            target: parentId,
-                            label: 'inherits'
-                        });
+            for (const [relPath, cache] of this.parsedFilesCache.entries()) {
+                const ext = path.extname(relPath).toLowerCase();
+                const text = cache.nodes.map(n => n.label).join(' ');
+                const regex = (ext === '.py') ? pyInheritance : jsInheritance;
+                regex.lastIndex = 0;
+
+                let match;
+                while ((match = regex.exec(text)) !== null) {
+                    const className = match[1];
+                    const parentName = match[2];
+
+                    if (parentName && parentName !== 'object') {
+                        const childId = classNameToId.get(className);
+                        const parentId = classNameToId.get(parentName);
+
+                        if (childId && parentId) {
+                            const edgeId = `edge_inherits_${childId}_${parentId}`;
+                            if (!edges.some(e => e.id === edgeId)) {
+                                edges.push({
+                                    id: edgeId,
+                                    source: childId,
+                                    target: parentId,
+                                    label: 'inherits'
+                                });
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        this.graph = { nodes, edges };
-    }
+            this.graph = { nodes, edges };
+            this.detectCircularImports();
+        }
 
     private resolveImportPath(importPath: string, sourcePath: string, fileNodeIds: Map<string, string>): string | undefined {
-        const cleanImport = importPath.replace(/['"]/g, '').trim();
-        const currentDir = path.posix.dirname(sourcePath);
-        let candidatePath = cleanImport;
-        if (cleanImport.startsWith('.')) {
-            candidatePath = path.posix.join(currentDir, cleanImport);
+            const cleanImport = importPath.replace(/['"]/g, '').trim();
+            const currentDir = path.posix.dirname(sourcePath);
+            const isWin = process.platform === 'win32';
+            const lowerMap = isWin ? new Map(Array.from(fileNodeIds.keys()).map(k => [k.toLowerCase(), k])) : null;
+
+            const extensions = ['', '.ts', '.js', '.tsx', '.jsx', '.py', '.vue', '.cs', '.cpp', '.h', '/index.ts', '/index.js', '/__init__.py'];
+
+            const tryCandidate = (candidate: string): string | undefined => {
+                for (const ext of extensions) {
+                    const tryPath = path.posix.normalize(candidate + ext);
+                    if (fileNodeIds.has(tryPath)) return tryPath;
+                    if (isWin && lowerMap && lowerMap.has(tryPath.toLowerCase())) {
+                        return lowerMap.get(tryPath.toLowerCase());
+                    }
+                }
+                return undefined;
+            };
+
+            // 1. Python leading dots handling (e.g. .utils, ..services)
+            if (cleanImport.startsWith('.')) {
+                let dotCount = 0;
+                while (dotCount < cleanImport.length && cleanImport[dotCount] === '.') {
+                    dotCount++;
+                }
+                const subModule = cleanImport.substring(dotCount).replace(/\./g, '/');
+
+                // 1 dot = currentDir; 2 dots = parentDir; etc.
+                let baseDir = currentDir;
+                for (let i = 1; i < dotCount; i++) {
+                    baseDir = path.posix.dirname(baseDir);
+                }
+                const candidate = subModule ? path.posix.join(baseDir, subModule) : baseDir;
+                const res = tryCandidate(candidate);
+                if (res) return res;
+            }
+
+            // 2. Relative path starting with ./ or ../
+            if (cleanImport.startsWith('./') || cleanImport.startsWith('../')) {
+                const candidate = path.posix.join(currentDir, cleanImport);
+                const res = tryCandidate(candidate);
+                if (res) return res;
+            }
+
+            // 3. Normalized dot notation (e.g. from src.utils or package.sub)
+            const dotAsSlash = cleanImport.replace(/\./g, '/');
+
+            // Check relative to currentDir (common in Python: "import utils" inside same directory)
+            const relativeToCurrent = tryCandidate(path.posix.join(currentDir, dotAsSlash));
+            if (relativeToCurrent) return relativeToCurrent;
+
+            // Check relative to workspace root
+            const relativeToRoot = tryCandidate(dotAsSlash);
+            if (relativeToRoot) return relativeToRoot;
+
+            // Check with src/ prefix if not already present
+            if (!dotAsSlash.startsWith('src/')) {
+                const relativeToSrc = tryCandidate(path.posix.join('src', dotAsSlash));
+                if (relativeToSrc) return relativeToSrc;
+            }
+
+            // 4. Check for aliases like @/ or ~/
+            if (cleanImport.startsWith('@/') || cleanImport.startsWith('~/')) {
+                const stripped = cleanImport.substring(2);
+                const resSrc = tryCandidate(path.posix.join('src', stripped)) || tryCandidate(stripped);
+                if (resSrc) return resSrc;
+            }
+
+            return undefined;
         }
 
-        const isWin = process.platform === 'win32';
-        const lowerMap = isWin ? new Map(Array.from(fileNodeIds.keys()).map(k => [k.toLowerCase(), k])) : null;
+    /**
+     * Circular Import Detection Engine
+     * Identifies cycles across all file-to-file import relationships.
+     */
+    public detectCircularImports(): {
+        cycles: Array<{ files: string[]; display: string }>;
+        circularEdges: Set<string>;
+        circularFileIds: Set<string>;
+    } {
+        const fileNodeSet = new Set(this.graph.nodes.filter(n => n.type === 'file').map(n => n.id));
+        const fileIdToPath = new Map<string, string>();
+        this.graph.nodes.forEach(n => {
+            if (n.type === 'file') fileIdToPath.set(n.id, n.filePath || n.label);
+        });
 
-        const extensions = ['', '.ts', '.js', '.tsx', '.jsx', '.py', '.vue', '/index.ts', '/index.js'];
-        for (const ext of extensions) {
-            const tryPath = candidatePath + ext;
-            if (fileNodeIds.has(tryPath)) return tryPath;
-            if (isWin && lowerMap && lowerMap.has(tryPath.toLowerCase())) {
-                return lowerMap.get(tryPath.toLowerCase());
+        const adj = new Map<string, string[]>();
+        this.graph.edges.forEach(e => {
+            if (e.label === 'imports' && fileNodeSet.has(e.source) && fileNodeSet.has(e.target)) {
+                if (!adj.has(e.source)) adj.set(e.source, []);
+                adj.get(e.source)!.push(e.target);
+            }
+        });
+
+        const cycles: Array<{ files: string[]; display: string }> = [];
+        const circularEdges = new Set<string>();
+        const circularFileIds = new Set<string>();
+
+        const visited = new Set<string>();
+        const onStack = new Set<string>();
+        const pathStack: string[] = [];
+        const seenCycles = new Set<string>();
+
+        const dfs = (nodeId: string) => {
+            visited.add(nodeId);
+            onStack.add(nodeId);
+            pathStack.push(nodeId);
+
+            const neighbors = adj.get(nodeId) || [];
+            for (const neighbor of neighbors) {
+                if (!visited.has(neighbor)) {
+                    dfs(neighbor);
+                } else if (onStack.has(neighbor)) {
+                    const cycleStartIdx = pathStack.indexOf(neighbor);
+                    if (cycleStartIdx !== -1) {
+                        const cycleNodeIds = pathStack.slice(cycleStartIdx).concat(neighbor);
+                        const cyclePaths = cycleNodeIds.map(id => fileIdToPath.get(id) || id);
+
+                        const coreCycle = cyclePaths.slice(0, cyclePaths.length - 1);
+                        const minIdx = coreCycle.indexOf([...coreCycle].sort()[0]);
+                        const normalizedSig = coreCycle.slice(minIdx).concat(coreCycle.slice(0, minIdx)).join(' -> ');
+
+                        if (!seenCycles.has(normalizedSig)) {
+                            seenCycles.add(normalizedSig);
+                            cycles.push({
+                                files: cyclePaths,
+                                display: cyclePaths.map(p => path.posix.basename(p)).join(' → ')
+                            });
+
+                            for (let i = 0; i < cycleNodeIds.length - 1; i++) {
+                                const u = cycleNodeIds[i];
+                                const v = cycleNodeIds[i + 1];
+                                circularFileIds.add(u);
+                                circularFileIds.add(v);
+                                const edge = this.graph.edges.find(e => e.label === 'imports' && e.source === u && e.target === v);
+                                if (edge) {
+                                    circularEdges.add(edge.id);
+                                    edge.isCircular = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            pathStack.pop();
+            onStack.delete(nodeId);
+        };
+
+        for (const fileId of fileNodeSet) {
+            if (!visited.has(fileId)) {
+                dfs(fileId);
             }
         }
-        return undefined;
+
+        // Tag circular nodes and edges directly in this.graph
+        this.graph.nodes.forEach(n => {
+            n.isCircular = circularFileIds.has(n.id);
+        });
+        this.graph.edges.forEach(e => {
+            if (circularEdges.has(e.id)) {
+                e.isCircular = true;
+            }
+        });
+
+        return { cycles, circularEdges, circularFileIds };
+    }
+
+    /**
+     * Primary API providing the interconnected Architecture Graph to the HUD and Webview.
+     */
+    public getArchitectureGraphElements(): {
+        nodes: any[];
+        edges: any[];
+        circularImports: Array<{ files: string[]; display: string }>;
+        stats: {
+            filesCount: number;
+            classesCount: number;
+            functionsCount: number;
+            methodsCount: number;
+            importsCount: number;
+            circularCount: number;
+        };
+    } {
+        const { cycles, circularEdges, circularFileIds } = this.detectCircularImports();
+
+        const activeNodeIds = new Set(this.graph.nodes.map(n => n.id));
+        const validEdges = this.graph.edges.filter(e => activeNodeIds.has(e.source) && activeNodeIds.has(e.target));
+
+        const filesCount = this.graph.nodes.filter(n => n.type === 'file').length;
+        const classesCount = this.graph.nodes.filter(n => n.type === 'class').length;
+        const functionsCount = this.graph.nodes.filter(n => n.type === 'function').length;
+        const methodsCount = this.graph.nodes.filter(n => n.type === 'method').length;
+        const importsCount = validEdges.filter(e => e.label === 'imports').length;
+        const circularCount = cycles.length;
+
+        return {
+            nodes: this.graph.nodes.map(n => ({
+                id: n.id,
+                label: n.label,
+                type: n.type,
+                filePath: n.filePath,
+                startLine: n.startLine,
+                signature: n.signature,
+                docstring: n.docstring,
+                isCircular: !!n.isCircular
+            })),
+            edges: validEdges.map(e => ({
+                id: e.id,
+                source: e.source,
+                target: e.target,
+                label: e.label,
+                isCircular: !!e.isCircular
+            })),
+            circularImports: cycles,
+            stats: {
+                filesCount,
+                classesCount,
+                functionsCount,
+                methodsCount,
+                importsCount,
+                circularCount
+            }
+        };
     }
 
     public generateCytoscapeJson(): string {
@@ -1290,8 +1752,40 @@ export class CodeGraphManager {
         const varList = Array.from(variables);
         const rawSolutions: SparqlBinding[] = [];
 
-        const matchVal = (factVal: string, queryVal: string): boolean => {
+        const normPred = (raw: string): string => {
+            const c = raw.replace(/^s:/i, '').replace(/^rdf:/i, '').toLowerCase().trim();
+            if (c === 'a' || c === 'type') return 'type';
+            if (c === 'contains' || c === 'containsentity') return 'contains';
+            if (c === 'definedin' || c === 'definedinfile') return 'definedin';
+            if (c === 'memberof' || c === 'memberofclass') return 'memberof';
+            if (c === 'imports' || c === 'importsmodule') return 'imports';
+            if (c === 'calls' || c === 'invokes' || c === 'invokesfunction') return 'calls';
+            if (c === 'inherits' || c === 'inheritsfrom') return 'inherits';
+            if (c === 'name' || c === 'label' || c === 'rdfs:label') return 'name';
+            if (c === 'path' || c === 'filepath') return 'filepath';
+            return c;
+        };
+
+        const normType = (raw: string): string => {
+            const c = raw.replace(/^s:/i, '').toLowerCase().trim();
+            if (c === 'function' || c === 'functiondefinition') return 'function';
+            if (c === 'method' || c === 'methoddefinition') return 'method';
+            if (c === 'class' || c === 'classdefinition') return 'class';
+            if (c === 'interface' || c === 'interfacedefinition') return 'interface';
+            if (c === 'file' || c === 'sourcefile') return 'file';
+            if (c === 'endpoint' || c === 'apiroute') return 'endpoint';
+            return c;
+        };
+
+        const matchVal = (factVal: string, queryVal: string, isTypeCheck: boolean = false): boolean => {
             if (!factVal || !queryVal) return false;
+            if (isTypeCheck) {
+                const ta = normType(factVal);
+                const tq = normType(queryVal);
+                if (ta === tq) return true;
+                if (tq === 'function' && (ta === 'method' || ta === 'endpoint')) return true;
+                return false;
+            }
             const cleanF = factVal.replace(/^s:/i, '').replace(/['"]/g, '').toLowerCase().trim();
             const cleanQ = queryVal.replace(/^s:/i, '').replace(/['"]/g, '').toLowerCase().trim();
             return cleanF === cleanQ;
@@ -1348,15 +1842,35 @@ export class CodeGraphManager {
                 const oBound = pattern.o.startsWith('?') ? binding[pattern.o] : pattern.o;
 
                 for (const fact of facts) {
-                    const sMatch = !sBound || matchVal(fact.s, sBound);
-                    const pMatch = !pBound || matchVal(fact.p, pBound);
-                    const oMatch = !oBound || matchVal(fact.o, oBound);
+                    const pNorm = normPred(pattern.p);
+                    const isTypeCheck = pNorm === 'type';
+                    const factPNorm = normPred(fact.p);
 
-                    if (sMatch && pMatch && oMatch) {
+                    let directMatch = false;
+                    let inverseMatch = false;
+
+                    if (isTypeCheck && factPNorm === 'type') {
+                        directMatch = (!sBound || matchVal(fact.s, sBound)) && (!oBound || matchVal(fact.o, oBound, true));
+                    } else if (pNorm === 'contains') {
+                        if (factPNorm === 'contains') {
+                            directMatch = (!sBound || matchVal(fact.s, sBound)) && (!oBound || matchVal(fact.o, oBound));
+                        } else if (factPNorm === 'definedin') {
+                            inverseMatch = (!sBound || matchVal(fact.o, sBound)) && (!oBound || matchVal(fact.s, oBound));
+                        }
+                    } else {
+                        directMatch = (pNorm === factPNorm) && (!sBound || matchVal(fact.s, sBound)) && (!oBound || matchVal(fact.o, oBound));
+                    }
+
+                    if (directMatch) {
                         const newBinding: SparqlBinding = { ...binding };
                         if (pattern.s.startsWith('?') && !binding[pattern.s]) newBinding[pattern.s] = fact.s;
                         if (pattern.p.startsWith('?') && !binding[pattern.p]) newBinding[pattern.p] = fact.p;
                         if (pattern.o.startsWith('?') && !binding[pattern.o]) newBinding[pattern.o] = fact.o;
+                        nextSolutions.push(newBinding);
+                    } else if (inverseMatch) {
+                        const newBinding: SparqlBinding = { ...binding };
+                        if (pattern.s.startsWith('?') && !binding[pattern.s]) newBinding[pattern.s] = fact.o;
+                        if (pattern.o.startsWith('?') && !binding[pattern.o]) newBinding[pattern.o] = fact.s;
                         nextSolutions.push(newBinding);
                     }
                 }

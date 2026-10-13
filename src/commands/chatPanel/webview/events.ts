@@ -489,6 +489,18 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         });
     }
 
+    const compressHistoryMenuBtn = document.getElementById('compressHistoryMenuBtn');
+    if (compressHistoryMenuBtn) {
+        compressHistoryMenuBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            vscode.postMessage({ command: 'compressDiscussionHistory' });
+            if (dom.moreActionsMenu) {
+                dom.moreActionsMenu.classList.remove('visible');
+            }
+        });
+    }
+
     if (dom.discussionToolsButton) {
         dom.discussionToolsButton.addEventListener('click', (e) => {
             e.preventDefault();
@@ -3119,12 +3131,12 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 if (state.lastTokenMetrics && state.lastTokenMetrics.totalTokens > 0) {
                     const prevTotal = state.lastTokenMetrics.totalTokens.toLocaleString();
                     const prevSize = state.lastTokenMetrics.contextSize.toLocaleString();
-                    label.textContent = `Tokens: ${prevTotal} / ${prevSize} (Recalculating...)`;
+                    label.textContent = `Tokens: ${prevTotal} / ${prevSize} (Rescanning...)`;
                 } else {
-                    label.textContent = 'Tokens: Recalculating...';
+                    label.textContent = 'Tokens: Rescanning...';
                 }
             }
-            vscode.postMessage({ command: 'calculateTokens' });
+            vscode.postMessage({ command: 'calculateTokens', force: true });
             setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1200);
             return;
         }
@@ -3159,6 +3171,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
 
             if (id === 'save-context-btn') {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'saveContext', params: {} } });
+            } else if (id === 'compress-history-context-btn' || id === 'compress-history-btn') {
+                vscode.postMessage({ command: 'compressDiscussionHistory' });
             } else if (id === 'new-discussion-context-header-btn' || id === 'new-chat-same-context-icon-btn' || id === 'new-discussion-same-files-btn') {
                 vscode.postMessage({ command: 'newDiscussionWithSameContext' });
             } else if (id === 'load-context-btn') {

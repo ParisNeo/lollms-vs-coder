@@ -220,6 +220,32 @@ private _cachedTreeString: string | null = null;
     this._lastContextByDiscussion.clear();
   }
 
+  public removeFilesUnderPath(dirRelPath: string) {
+    if (!dirRelPath) return;
+    const clean = this.normalize(dirRelPath).replace(/\/+$/, '');
+    const prefix = clean + '/';
+    const lowerClean = clean.toLowerCase();
+    const lowerPrefix = prefix.toLowerCase();
+
+    for (const key of Array.from(this._fileContentCache?.keys() || [])) {
+      const cleanKey = this.normalize(key).toLowerCase();
+      if (cleanKey === lowerClean || cleanKey.startsWith(lowerPrefix) || cleanKey.includes('/' + lowerPrefix)) {
+        this._fileContentCache?.delete(key);
+        this.removeCachedTokens(key);
+      }
+    }
+
+    if (this._cachedVisibleFiles) {
+      this._cachedVisibleFiles = this._cachedVisibleFiles.filter(f => {
+        const normF = this.normalize(f).toLowerCase();
+        return normF !== lowerClean && !normF.startsWith(lowerPrefix);
+      });
+    }
+
+    this.clearRenderedTreeCache();
+    this.markTreeDirty(true);
+  }
+
   public clearAllCaches() {
     this.clearRenderedTreeCache();
     this._isTreeDirty = true;

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.59",
+  "version": "1.0.62",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -320,6 +320,11 @@
         "command": "lollms-vs-coder.newDiscussionWithSameContext",
         "title": "Lollms: New Discussion with Same Context & Muted Files",
         "icon": "$(repo-forked)"
+      },
+      {
+        "command": "lollms-vs-coder.compressDiscussionHistory",
+        "title": "Lollms: Compress Current Discussion History",
+        "icon": "$(fold)"
       },
       {
         "command": "lollms-vs-coder.forkAndCompressDiscussion",
@@ -772,7 +777,7 @@
               "id": "balanced",
               "name": "Balanced (Default)",
               "description": "Standard helper with security-first and clean code reasoning.",
-              "systemPrompt": "### RESPONSE STYLE: BALANCED (STAGE-LOCKED ARCHITECTURAL FLOW)\nStart with a brief, direct opening framing the objective. Perform your own search and discovery in multiple rounds using <grep>, <read_full_file>, <peek_files>, <unmute_files>, and <add_files_to_context>—do NOT call an external librarian agent or make conversational promises without tags.\n- **1. Deep Diagnostic & Logical Understanding**: Break down the problem logically and verify architectural constraints. No <file> tags in this section.\n- **2. File-by-File Change Plan**: Itemized plan listing every file to modify/create and why. No <file> tags.\n- **3. Verified Implementation**: Production-ready code updates exclusively using <file path=\"...\" action=\"...\"> XML tags.\n- **4. Summary of Changes & Verification**: Concise bulleted summary stating exactly what was done, what files were changed, and edge cases handled. No <file> tags.",              
+              "systemPrompt": "### RESPONSE STYLE: BALANCED (STAGE-LOCKED ARCHITECTURAL FLOW)\nStart with a brief, direct opening framing the objective. Perform your own search and discovery in multiple rounds using <grep>, <read_full_file>, <peek_files>, <unmute_files>, and <add_files_to_context>—do NOT call an external librarian agent or make conversational promises without tags.\n- **1. Deep Diagnostic & Logical Understanding**: Break down the problem logically and verify architectural constraints. No <file> tags in this section.\n- **2. File-by-File Change Plan**: Itemized plan listing every file to modify/create and why. No <file> tags.\n- **3. Verified Implementation**: Production-ready code updates exclusively using <file path=\"...\" action=\"...\"> XML tags.\n- **4. Summary of Changes & Verification**: Concise bulleted summary stating exactly what was done, what files were changed, and edge cases handled. No <file> tags.",
               "prefix": ""
             },
             {
@@ -844,18 +849,61 @@
           "items": {
             "type": "object",
             "properties": {
-              "id": { "type": "string" },
-              "name": { "type": "string", "description": "Display name of the server binding (e.g. 'Ollama Local', 'Lollms GPU', 'Groq Cloud')" },
-              "apiUrl": { "type": "string", "description": "Host URL of the server" },
-              "apiKey": { "type": "string", "description": "API Key or authentication token" },
-              "backendType": { "type": "string", "enum": ["lollms", "openai", "ollama", "anthropic", "google", "groq", "grok", "novitai", "openwebui", "openrouter", "perplexity", "together"] },
-              "disableSslVerification": { "type": "boolean" },
-              "sslCertPath": { "type": "string" },
-              "useLollmsExtensions": { "type": "boolean" },
-              "enabled": { "type": "boolean", "default": true },
-              "isDefault": { "type": "boolean", "default": false }
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string",
+                "description": "Display name of the server binding (e.g. 'Ollama Local', 'Lollms GPU', 'Groq Cloud')"
+              },
+              "apiUrl": {
+                "type": "string",
+                "description": "Host URL of the server"
+              },
+              "apiKey": {
+                "type": "string",
+                "description": "API Key or authentication token"
+              },
+              "backendType": {
+                "type": "string",
+                "enum": [
+                  "lollms",
+                  "openai",
+                  "ollama",
+                  "anthropic",
+                  "google",
+                  "groq",
+                  "grok",
+                  "novitai",
+                  "openwebui",
+                  "openrouter",
+                  "perplexity",
+                  "together"
+                ]
+              },
+              "disableSslVerification": {
+                "type": "boolean"
+              },
+              "sslCertPath": {
+                "type": "string"
+              },
+              "useLollmsExtensions": {
+                "type": "boolean"
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              },
+              "isDefault": {
+                "type": "boolean",
+                "default": false
+              }
             },
-            "required": ["name", "apiUrl", "backendType"]
+            "required": [
+              "name",
+              "apiUrl",
+              "backendType"
+            ]
           }
         },
         "lollmsVsCoder.defaultResponseProfileId": {
@@ -1668,9 +1716,10 @@
             "none",
             "low",
             "medium",
-            "high"
+            "high",
+            "max"
           ],
-          "description": "Computational depth for reasoning models (none, low, medium, high). Defaults to none."
+          "description": "Computational depth for reasoning models (none, low, medium, high, max). Defaults to none."
         },
         "lollmsVsCoder.thinkingBudget": {
           "type": "number",
@@ -2158,9 +2207,14 @@
           "group": "inline@3"
         },
         {
-          "command": "lollms-vs-coder.forkAndCompressDiscussion",
+          "command": "lollms-vs-coder.compressDiscussionHistory",
           "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
           "group": "inline@4"
+        },
+        {
+          "command": "lollms-vs-coder.forkAndCompressDiscussion",
+          "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
+          "group": "inline@5"
         },
         {
           "command": "lollms-vs-coder.copyChatHistory",
@@ -2294,7 +2348,9 @@
     "audit": "npm audit --audit-level moderate",
     "audit-fix": "npm audit fix --audit-level=moderate || echo 'Audit fix finished with remaining issues.'",
     "package": "npx @vscode/vsce package",
-    "build-and-package": "npx @vscode/vsce package",
+    "optimize-icon": "powershell -ExecutionPolicy Bypass -File scripts/optimize_icon.ps1",
+    "optimize-icon": "powershell -ExecutionPolicy Bypass -File scripts/optimize_icon.ps1",
+    "build-and-package": "npm run optimize-icon && npx @vscode/vsce package",
     "pretest": "npm run compile && npm audit --audit-level=moderate",
     "test": "node ./out/test/runTest.js",
     "security-audit": "npm audit --audit-level moderate",
@@ -2305,19 +2361,19 @@
     "@types/glob": "^8.1.0",
     "@types/js-yaml": "^4.0.9",
     "@types/marked": "5.0.2",
-    "@types/mocha": "^10.0.6",
     "@types/minimatch": "^5.1.2",
+    "@types/mocha": "^10.0.6",
     "@types/node": "^18.11.18",
     "@types/node-fetch": "2.6.13",
     "@types/pdf-parse": "^1.1.1",
     "@types/prismjs": "^1.26.4",
     "@types/vscode": "1.74.0",
     "@vscode/test-electron": "^2.3.9",
-    "@vscode/vsce": "^3.9.2",
+    "@vscode/vsce": "^4.0.0",
     "cpx2": "^4.2.0",
     "esbuild": "^0.28.1",
     "glob": "^8.1.0",
-    "mocha": "^10.3.0",
+    "mocha": "^12.0.3",
     "rimraf": "^5.0.5",
     "typescript": "5.9.2"
   },
@@ -2340,9 +2396,9 @@
     "form-data": "^4.0.0",
     "js-yaml": "^4.1.1",
     "layout-base": "^1.0.2",
-    "mammoth": "^1.7.2",
+    "mammoth": "^1.13.0",
     "marked": "16.2.1",
-    "mermaid": "^10.9.1",
+    "mermaid": "^10.8.0",
     "minimatch": "^9.0.5",
     "node-fetch": "2.7.0",
     "pdf-parse": "^1.1.1",
@@ -2351,6 +2407,7 @@
     "youtube-transcript": "^1.3.0"
   },
   "overrides": {
+    "katex": "^0.18.2",
     "tough-cookie": "^4.1.3",
     "jpeg-js": "^0.4.4",
     "minimist": "^1.2.8",

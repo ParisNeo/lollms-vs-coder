@@ -234,6 +234,7 @@
                             <div class="menu-separator"></div>
                             <button class="menu-item" id="newDiscussionSameContextBtn"><i class="codicon codicon-repo-forked"></i><span>New Discussion (Same Files & Muted States)</span></button>
                             <button class="menu-item" id="forkAndCompressMenuBtn"><i class="codicon codicon-git-pull-request"></i><span>Fork & Compress Chat History</span></button>
+                            <button class="menu-item" id="compressHistoryMenuBtn"><i class="codicon codicon-fold"></i><span>Compress Chat History (In-Place)</span></button>
                             <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-settings"></i><span>Discussion Settings</span></button>
                             <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Settings</span></button>
                             <div class="menu-separator"></div>
@@ -355,6 +356,7 @@
                                             <option value="low">🧠 Low</option>
                                             <option value="medium">🧠 Med</option>
                                             <option value="high">🧠 High</option>
+                                            <option value="max">🧠 Max</option>
                                         </select>
                                     </div>
                                     <div class="temp-slider-container" id="inputTempContainer" title="Model Temperature (Creativity)" style="display: none;">
@@ -580,6 +582,7 @@
                             <option value="low">Low (Fastest, Cost-Efficient)</option>
                             <option value="medium">Medium (Standard Reasoning Depth)</option>
                             <option value="high">High (Deep Search & High Reasoning Budget)</option>
+                            <option value="max">Max (Maximum Reasoning Depth & Budget)</option>
                         </select>
                         <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Controls the reasoning depth and budget allocated for thinking/reasoning models (o1/o3, Claude Thinking, DeepSeek, GLM).</p>
                     </div>
@@ -1056,6 +1059,50 @@
                     <button type="button" id="repair-quick-accept-btn" class="code-action-btn apply-btn" style="height: 22px; font-size: 10px; padding: 0 10px; background: var(--vscode-charts-green) !important; color: white !important; font-weight: bold;" title="Accept the file's current state and close the studio at any time">
                         <i class="codicon codicon-check"></i> Accept at Any Time
                     </button>
+                </div>
+            </div>
+
+            <!-- 🎛️ REPAIR CONFIGURATION TOOLBAR (MODEL, TEMPERATURE, REASONING EFFORT) -->
+            <div id="repair-controls-bar" style="padding: 6px 18px; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 11px; flex-wrap: wrap;">
+                <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap; flex: 1;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="font-weight: 700; opacity: 0.85; display: flex; align-items: center; gap: 4px;">
+                            <i class="codicon codicon-hubot" style="color: var(--vscode-charts-purple);"></i> Model:
+                        </span>
+                        <select id="repair-model-select" style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; font-size: 11px; padding: 2px 6px; height: 22px; max-width: 220px; outline: none;">
+                        </select>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="font-weight: 700; opacity: 0.85; display: flex; align-items: center; gap: 4px;">
+                            <i class="codicon codicon-thermometer" style="color: var(--vscode-charts-orange);"></i> Temp:
+                        </span>
+                        <select id="repair-temp-select" style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; font-size: 11px; padding: 2px 6px; height: 22px; outline: none;">
+                            <option value="auto">Auto (Default)</option>
+                            <option value="0.0">0.0 (Deterministic)</option>
+                            <option value="0.2" selected>0.2 (Precise Fix)</option>
+                            <option value="0.5">0.5 (Balanced)</option>
+                            <option value="0.7">0.7 (Creative)</option>
+                            <option value="1.0">1.0 (High)</option>
+                        </select>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="font-weight: 700; opacity: 0.85; display: flex; align-items: center; gap: 4px;">
+                            <i class="codicon codicon-circuit-board" style="color: var(--vscode-charts-blue);"></i> Effort:
+                        </span>
+                        <select id="repair-effort-select" style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; font-size: 11px; padding: 2px 6px; height: 22px; outline: none;">
+                            <option value="none">None (Fast)</option>
+                            <option value="low">Low</option>
+                            <option value="medium" selected>Medium</option>
+                            <option value="high">High (Deep)</option>
+                            <option value="max">Max (Maximum)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span id="repair-agent-model-tag" style="opacity: 0.7; font-size: 10px; font-family: var(--vscode-editor-font-family);">Linter Surgeon</span>
                 </div>
             </div>
 

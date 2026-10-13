@@ -1121,7 +1121,7 @@ export class LollmsAPI {
     onChunk?: ((chunk: string) => void) | null,
     signal?: AbortSignal,
     modelOverride?: string,
-    options?: { thinking?: boolean, capabilities?: any, temperature?: number, maxTokens?: number, max_tokens?: number, reasoningEffort?: 'none' | 'low' | 'medium' | 'high' }
+    options?: { thinking?: boolean, capabilities?: any, temperature?: number, maxTokens?: number, max_tokens?: number, reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max' }
   ): Promise<string> {
     const resolved = this.resolveBindingForModel(modelOverride);
     const targetBinding = resolved.binding;
@@ -1147,7 +1147,7 @@ export class LollmsAPI {
     const { ensureStrictAlternatingRoles } = require('./utils');
     const normalizedMessages = ensureStrictAlternatingRoles(messages.filter(m => !m.skipInPrompt));
 
-    const sanitizedMessages = normalizedMessages.map((m: any) => {
+    const sanitizedMessages: { role: string; content: string | any[] }[] = normalizedMessages.map((m: any) => {
         let content = m.content;
 
         // Strip thinking blocks from assistant messages so prior reasoning does not pollute prompt
@@ -1196,7 +1196,7 @@ export class LollmsAPI {
     });
 
     // 🛡️ DEFENSIVE PAYLOAD NORMALIZATION: Ensure at least one 'user' message exists across all backends
-    if (!sanitizedMessages.some(m => m.role === 'user')) {
+    if (!sanitizedMessages.some((m: any) => m.role === 'user')) {
         sanitizedMessages.push({
             role: 'user',
             content: 'Please proceed and generate the response based on the system instructions provided.'
@@ -1207,7 +1207,7 @@ export class LollmsAPI {
     // 🛡️ FINAL API OUTBOUND LOG (DEBUG)
     // =========================================================================
     
-    sanitizedMessages.forEach((msg, idx) => {
+    sanitizedMessages.forEach((msg: any, idx: number) => {
         const role = msg.role.toUpperCase();
         // Fixed: If content is already an object/array (multipart), don't stringify it here, 
         // just get a preview for the logs.
@@ -1284,7 +1284,7 @@ export class LollmsAPI {
         if (reasoningEffort === 'none') {
             body.think = false;
         } else if (isThinkingActive) {
-            body.think = true;
+            body.think = reasoningEffort === 'max' ? 'max' : (reasoningEffort === 'high' ? 'high' : (reasoningEffort === 'medium' ? 'medium' : (reasoningEffort === 'low' ? 'low' : true)));
         }
     } else if (backend === 'anthropic') {
         url = 'https://api.anthropic.com/v1/messages';
@@ -1296,7 +1296,7 @@ export class LollmsAPI {
         const systemMsg = messages.find(m => m.role === 'system');
         body = {
             model,
-            messages: sanitizedMessages.filter(m => m.role !== 'system'),
+            messages: sanitizedMessages.filter((m: any) => m.role !== 'system'),
             system: systemMsg ? systemMsg.content : undefined,
             stream,
             max_tokens: reqMaxTokens && reqMaxTokens > 0 ? reqMaxTokens : 4096
@@ -1305,8 +1305,9 @@ export class LollmsAPI {
             body.temperature = options.temperature;
         }
         if (isThinkingActive && reasoningEffort !== 'none') {
-            const dynamicBudget = reasoningEffort === 'low' ? 4096 : (reasoningEffort === 'high' ? 32000 : 16000);
+            const dynamicBudget = reasoningEffort === 'low' ? 4096 : (reasoningEffort === 'medium' ? 16000 : (reasoningEffort === 'high' ? 32000 : 64000));
             body.thinking = { type: "enabled", budget_tokens: dynamicBudget };
+            body.output_config = { effort: reasoningEffort };
         }
     } else if (backend === 'openai' || backend === 'lollms') {
         const pathLower = url.toLowerCase();
@@ -1339,7 +1340,7 @@ export class LollmsAPI {
         url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:${method}?key=${this.config.apiKey}`;
         headers = { 'Content-Type': 'application/json' };
         body = {
-            contents: sanitizedMessages.map(m => ({
+            contents: sanitizedMessages.map((m: any) => ({
                 role: m.role === 'assistant' ? 'model' : 'user',
                 parts: [{ text: m.content }]
             }))
@@ -1526,7 +1527,7 @@ export class LollmsAPI {
             // Record transaction to billing database asynchronously
             try {
                 const { TokenBillingManager } = require('./utils/tokenBillingManager');
-                const rawPrompt = messages.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
+                const rawPrompt = messages.map((m: ChatMessage) => typeof m.content === 'string' ? m.content : '').join('\n');
                 const estimatedInput = Math.ceil(rawPrompt.length / 3.5);
                 const estimatedOutput = Math.ceil(fullResponse.length / 3.5);
                 TokenBillingManager.logTransaction(model, estimatedInput, estimatedOutput, 'chat_stream');
@@ -1557,7 +1558,7 @@ export class LollmsAPI {
             // Record transaction to billing database
             try {
                 const { TokenBillingManager } = require('./utils/tokenBillingManager');
-                const rawPrompt = messages.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
+                const rawPrompt = messages.map((m: ChatMessage) => typeof m.content === 'string' ? m.content : '').join('\n');
                 const estimatedInput = Math.ceil(rawPrompt.length / 3.5);
                 const estimatedOutput = Math.ceil(resultText.length / 3.5);
                 TokenBillingManager.logTransaction(model, estimatedInput, estimatedOutput, 'chat_unary');

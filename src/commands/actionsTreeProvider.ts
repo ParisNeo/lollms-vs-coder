@@ -46,6 +46,7 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
             actions.push(new ActionItem('Reset Knowledge Graph (.lollms/knowledge.ttl)', 'lollms-vs-coder.resetKnowledge', 'trash', 'Wipe all triples from .lollms/knowledge.ttl'));
             actions.push(new ActionItem('Open Knowledge Graph (.lollms/knowledge.ttl)', 'lollms-vs-coder.openKnowledgeRoot', 'graph', 'Open knowledge.ttl in editor'));
             actions.push(new ActionItem('New Discussion with Same Context', 'lollms-vs-coder.newDiscussionWithSameContext', 'repo-forked', 'Start a new discussion with the exact same files and muted files'));
+            actions.push(new ActionItem('Compress Current Discussion History', 'lollms-vs-coder.compressDiscussionHistory', 'fold', 'Compress earlier conversation turns into a high-density summary to liberate tokens for code files'));
             actions.push(new ActionItem('Fork & Compress Chat History', 'lollms-vs-coder.forkAndCompressDiscussion', 'git-pull-request', 'Fork discussion with same files, compressing history into two alternating messages'));
             actions.push(new ActionItem('Test & Debug (QA Suite)', 'lollms-vs-coder.runTestsAndReport', 'beaker', 'Run tests or start a Run/View/Fix debug loop'));
             actions.push(new ActionItem('Run / View / Fix Debug Loop', 'lollms-vs-coder.startDebugLoop', 'debug', 'Run project in background, analyze logs, and propose surgical fixes with human validation'));

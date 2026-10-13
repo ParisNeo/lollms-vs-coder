@@ -4,6 +4,54 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-10-12 23:17]
+
+- feat(lolllms-api): bump version to v1.0.62 and update changelog
+
+## [2026-10-12 15:45]
+
+- `fix(code-graph): add filesystem fallback scanner in buildGraph, preventing empty ABox when ripgrep globs fail`
+- `fix(ontology): connect classes, interfaces, components, functions, and scripts to files via containsEntity edges`
+- `feat(sparql): add curated SPARQL blueprints dropdown with plain-English explanations in Knowledge Graph drawer`
+- `feat(text-to-sparql): implement AI-powered Natural Language Text-to-SPARQL translator with live execution and results table`
+
+## [2026-10-12 16:15]
+
+- `fix(knowledge-graph): resolve missing edges in Cytoscape visual graph by prioritizing connected nodes and guaranteeing both endpoints are present`
+- `fix(abox): wipe stale cache on Rebuild ABox click with codeGraphManager.reset(), forcing full AST re-parse`
+- `feat(sparql-blueprints): add curated SPARQL blueprints dropdown with plain-English descriptions in Knowledge Graph drawer`
+- `feat(text-to-sparql): implement AI-powered Natural Language to SPARQL translator enabling plain-English query generation and execution`
+
+## [2026-10-12 15:10]
+
+- `feat(knowledge-graph): overhaul full-stack multi-language ontology (Python backend modules, FastAPI/Flask API routes, Vue.js components, Pinia stores, and DevOps installation scripts)`
+- `fix(code-graph): add .lollms_code, lollms_code, .claude, claude, dist, and output folders to strict ignore lists, eliminating 500-file cap flooding`
+- `fix(parser): support multiline signatures, async def, decorators, and Vue <script setup> in code symbol parsing`
+- `feat(webview): wire Connected Only filter toggle and automatic Cytoscape canvas resize/fit on Visual Graph display`
+
+## [2026-10-12 14:35]
+
+- `feat(repair-studio): add interactive controls for model selection, temperature (Auto, 0.0, 0.2, 0.5, 0.7, 1.0), and reasoning effort (None, Low, Medium, High, Max) directly inside the File Repair Studio dialog`
+- `fix(lollmsAPI): add explicit type annotations to callback parameters in sanitizedMessages (some, forEach, filter, map) to resolve implicit 'any' compiler errors`
+
+## [2026-10-12 14:20]
+
+- `feat(reasoning): add 'max' effort setting across settings schema, webview dropdowns, and provider API payloads (OpenAI reasoning_effort, Anthropic output_config.effort / 64k budget, and Ollama think level)`
+
+## [2026-10-12 13:15]
+
+- `feat(knowledge-graph): separate TBox ontology schema from codebase ABox assertions in .lollms/knowledge.ttl`
+- `fix(knowledge-graph): link all functions and classes to source files, connect methods to parent classes, and eliminate disconnected orphan nodes`
+- `feat(knowledge-graph): tag same-name functions in different files as s:disjointWith in the ontology`
+- `fix(knowledge-graph): prevent TBox classes and properties from polluting the ABox visualization and preserve original symbol names instead of overwriting with filenames`
+- `feat(cytoscape): style distinct edge connections for contains, imports, calls, inherits, and disjointWith with directional arrows`
+
+## [2026-10-12 09:30]
+
+- `feat(hud): add in-place 'Compress History' button to Intelligence Context Explorer HUD header and Project Files toolbar`
+- `feat(librarian): implement automated history compression when context is near budget threshold and history tokens exceed loaded file tokens, preserving 100% of code files in context`
+- `feat(chatPanel): add compressCurrentDiscussionHistory to ChatPanel and wire webview messages and commands`
+
 ## [2026-10-08 22:12]
 
 - feat(sparqlPlugin): add dynamic query highlighting and interactive refinement

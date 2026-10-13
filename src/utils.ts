@@ -219,7 +219,7 @@ export interface DiscussionCapabilities {
     temperature?: number; // Optional temperature value
     enableMaxTokens?: boolean; // Added to enable/disable maximum generation tokens override
     maxTokens?: number; // Optional maximum tokens to generate
-    reasoningEffort?: 'none' | 'low' | 'medium' | 'high'; // Added reasoning effort configuration (default low)
+    reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max'; // Added reasoning effort configuration (default low)
     ttftTimeout: number;
     interTokenTimeout: number;
     contextGovernorThreshold: number; // Trigger threshold percentage (0-100)

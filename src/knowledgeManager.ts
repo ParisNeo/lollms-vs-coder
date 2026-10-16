@@ -22,6 +22,7 @@ export class KnowledgeManager {
 
     private triples: GraphTriple[] = [];
     private initialized: boolean = false;
+    public lastConstructedGraph: { nodes: any[]; edges: any[] } | null = null;
 
     constructor(private context: vscode.ExtensionContext) {}
 
@@ -95,6 +96,10 @@ export class KnowledgeManager {
             { s: 's:MethodDefinition', p: 'rdfs:subClassOf', o: 's:FunctionDefinition' },
             { s: 's:MethodDefinition', p: 'rdfs:label', o: '"Method Definition"@en' },
 
+            { s: 's:FunctionDescription', p: 'rdf:type', o: 'owl:Class' },
+            { s: 's:FunctionDescription', p: 'rdfs:subClassOf', o: 's:CodeEntity' },
+            { s: 's:FunctionDescription', p: 'rdfs:label', o: '"Function Description / Docstring / Doxygen Documentation"@en' },
+
             { s: 's:APIRoute', p: 'rdf:type', o: 'owl:Class' },
             { s: 's:APIRoute', p: 'rdfs:subClassOf', o: 's:CodeEntity' },
             { s: 's:APIRoute', p: 'rdfs:label', o: '"REST / API Route Endpoint"@en' },
@@ -153,6 +158,27 @@ export class KnowledgeManager {
             { s: 's:disjointWith', p: 'rdfs:range', o: 's:CodeEntity' },
             { s: 's:disjointWith', p: 'rdfs:label', o: '"disjoint with same-name entity in different file"@en' },
 
+            { s: 's:hasFunctionDescription', p: 'rdf:type', o: 'owl:ObjectProperty' },
+            { s: 's:hasFunctionDescription', p: 'rdfs:domain', o: 's:FunctionDefinition' },
+            { s: 's:hasFunctionDescription', p: 'rdfs:range', o: 's:FunctionDescription' },
+            { s: 's:hasFunctionDescription', p: 'rdfs:label', o: '"has function description"@en' },
+
+            { s: 's:describesFunction', p: 'rdf:type', o: 'owl:ObjectProperty' },
+            { s: 's:describesFunction', p: 'rdfs:domain', o: 's:FunctionDescription' },
+            { s: 's:describesFunction', p: 'rdfs:range', o: 's:FunctionDefinition' },
+            { s: 's:describesFunction', p: 'owl:inverseOf', o: 's:hasFunctionDescription' },
+            { s: 's:describesFunction', p: 'rdfs:label', o: '"describes function or method"@en' },
+
+            { s: 's:functionDescription', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:functionDescription', p: 'rdfs:domain', o: 's:FunctionDefinition' },
+            { s: 's:functionDescription', p: 'rdfs:range', o: 'xsd:string' },
+            { s: 's:functionDescription', p: 'rdfs:label', o: '"function description text"@en' },
+
+            { s: 's:docstringFormat', p: 'rdf:type', o: 'owl:DatatypeProperty' },
+            { s: 's:docstringFormat', p: 'rdfs:domain', o: 's:FunctionDescription' },
+            { s: 's:docstringFormat', p: 'rdfs:range', o: 'xsd:string' },
+            { s: 's:docstringFormat', p: 'rdfs:label', o: '"documentation format (Doxygen, JSDoc, PythonDocstring, RustDoc)"@en' },
+
             { s: 's:explainsArtifact', p: 'rdf:type', o: 'owl:ObjectProperty' },
             { s: 's:explainsArtifact', p: 'rdfs:domain', o: 's:ArchitecturalInsight' },
             { s: 's:explainsArtifact', p: 'rdfs:range', o: 's:SoftwareArtifact' },
@@ -183,10 +209,11 @@ export class KnowledgeManager {
         const tboxNames = new Set([
             'SoftwareArtifact', 'SourceFile', 'CodeEntity', 'ClassDefinition',
             'InterfaceDefinition', 'FunctionDefinition', 'MethodDefinition',
-            'ExternalLibrary', 'ArchitecturalInsight', 'TopicTag',
+            'FunctionDescription', 'ExternalLibrary', 'ArchitecturalInsight', 'TopicTag',
             'containsEntity', 'definedInFile', 'memberOfClass', 'importsModule',
-            'invokesFunction', 'inheritsFrom', 'disjointWith', 'explainsArtifact',
-            'hasTopic', 'name', 'filePath', 'startLine', 'signature',
+            'invokesFunction', 'inheritsFrom', 'disjointWith', 'hasFunctionDescription',
+            'describesFunction', 'functionDescription', 'docstringFormat',
+            'explainsArtifact', 'hasTopic', 'name', 'filePath', 'startLine', 'signature',
             'docstring', 'linesCount', 'insightText', 'timestamp'
         ]);
         if (tboxNames.has(clean) || tboxNames.has(subject)) return true;
@@ -460,12 +487,15 @@ export class KnowledgeManager {
                 lang = ext.startsWith('t') ? 'TypeScript' : 'JavaScript';
                 if (normPath.includes('backend') || normPath.includes('server') || normPath.includes('api')) {
                     layer = 'Backend';
-                } else if (normPath.includes('frontend') || normPath.includes('client') || normPath.includes('ui') || normPath.includes('components')) {
+                } else if (normPath.includes('frontend') || normPath.includes('client') || normPath.includes('ui') || normPath.includes('components') || normPath.includes('webui') || normPath.includes('web')) {
                     layer = 'Frontend';
                 }
             }
 
             this.addTriple({ s: nodeId, p: 'rdf:type', o: rdfClass });
+            if (rdfClass !== 's:SourceFile' && (rdfClass === 's:VueComponent' || rdfClass === 's:BackendModule' || rdfClass === 's:AutomationScript')) {
+                this.addTriple({ s: nodeId, p: 'rdf:type', o: 's:SourceFile' });
+            }
             this.addTriple({ s: nodeId, p: 's:name', o: `"${n.label.replace(/"/g, "'")}"` });
             this.addTriple({ s: nodeId, p: 's:programmingLanguage', o: `"${lang}"` });
             this.addTriple({ s: nodeId, p: 's:layer', o: `"${layer}"` });
@@ -486,7 +516,32 @@ export class KnowledgeManager {
                 this.addTriple({ s: nodeId, p: 's:signature', o: JSON.stringify(n.signature) });
             }
             if (n.docstring) {
-                this.addTriple({ s: nodeId, p: 's:docstring', o: JSON.stringify(n.docstring.replace(/[\r\n]+/g, ' ')) });
+                const cleanDoc = n.docstring.replace(/[\r\n]+/g, ' ').trim();
+                const jsonDoc = JSON.stringify(cleanDoc);
+                this.addTriple({ s: nodeId, p: 's:docstring', o: jsonDoc });
+                this.addTriple({ s: nodeId, p: 's:functionDescription', o: jsonDoc });
+
+                // Infer documentation format (Doxygen, JSDoc, Python docstring, Rustdoc)
+                let docFormat = "GenericDocstring";
+                if (cleanDoc.includes('@brief') || cleanDoc.includes('\\brief') || cleanDoc.includes('@param') || cleanDoc.includes('\\param') || cleanDoc.includes('@return') || cleanDoc.includes('\\return')) {
+                    docFormat = "Doxygen";
+                } else if (ext === 'py') {
+                    docFormat = "PythonDocstring";
+                } else if (['ts', 'js', 'tsx', 'jsx'].includes(ext)) {
+                    docFormat = "JSDoc";
+                } else if (ext === 'rs') {
+                    docFormat = "RustDoc";
+                }
+
+                // First-class s:FunctionDescription entity node
+                const descNodeId = `${nodeId}_desc`;
+                this.addTriple({ s: descNodeId, p: 'rdf:type', o: 's:FunctionDescription' });
+                this.addTriple({ s: descNodeId, p: 's:name', o: `"${n.label.replace(/"/g, "'")} Description"` });
+                this.addTriple({ s: descNodeId, p: 's:functionDescription', o: jsonDoc });
+                this.addTriple({ s: descNodeId, p: 's:docstring', o: jsonDoc });
+                this.addTriple({ s: descNodeId, p: 's:docstringFormat', o: `"${docFormat}"` });
+                this.addTriple({ s: descNodeId, p: 's:describesFunction', o: nodeId });
+                this.addTriple({ s: nodeId, p: 's:hasFunctionDescription', o: descNodeId });
             }
             if ((n as any).httpMethod) {
                 this.addTriple({ s: nodeId, p: 's:httpMethod', o: `"${(n as any).httpMethod}"` });
@@ -557,38 +612,127 @@ export class KnowledgeManager {
         }
     }
 
+    public static stripSparqlComments(q: string): string {
+        return q.split(/\r?\n/).map(line => {
+            let inQuotes = false;
+            let inIri = false;
+            for (let i = 0; i < line.length; i++) {
+                const ch = line[i];
+                if (ch === '"' && (i === 0 || line[i - 1] !== '\\')) inQuotes = !inQuotes;
+                if (ch === '<' && !inQuotes) inIri = true;
+                if (ch === '>' && !inQuotes) inIri = false;
+                if (ch === '#' && !inQuotes && !inIri) {
+                    return line.substring(0, i);
+                }
+            }
+            return line;
+        }).join('\n').trim();
+    }
+
+    public parseSparqlWhereClause(whereClause: string): { triplePatterns: GraphTriple[]; filters: string[] } {
+        const filters: string[] = [];
+        const cleanWhere = whereClause.replace(/FILTER\s*\(([\s\S]+?)\)/gi, (_m, fBody) => {
+            filters.push(fBody.trim());
+            return "";
+        });
+
+        const tokenRegex = /(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|<[^>]+>|[;,.]|[^\s;,."<>]+)/g;
+        const tokens = cleanWhere.match(tokenRegex) || [];
+
+        const triplePatterns: GraphTriple[] = [];
+        let curSubject: string | null = null;
+        let curPredicate: string | null = null;
+        let expect: 'subject' | 'predicate' | 'object' = 'subject';
+
+        const normalizeTerm = (raw: string): string => {
+            let t = raw.trim();
+            if (!t || t.startsWith('?') || t.startsWith('"') || t.startsWith("'")) {
+                return t;
+            }
+            if (t.startsWith('<') && t.endsWith('>')) {
+                const iri = t.substring(1, t.length - 1);
+                if (iri.includes('#')) {
+                    const suffix = iri.split('#')[1];
+                    return `s:${suffix}`;
+                }
+                return t;
+            }
+            if (t.toLowerCase() === 'a') {
+                return 'rdf:type';
+            }
+            if (!t.includes(':') && !t.startsWith('?')) {
+                return `s:${t}`;
+            }
+            return t;
+        };
+
+        for (let i = 0; i < tokens.length; i++) {
+            const token = tokens[i].trim();
+            if (!token) continue;
+
+            if (token === '.') {
+                curSubject = null;
+                curPredicate = null;
+                expect = 'subject';
+                continue;
+            }
+
+            if (token === ';') {
+                curPredicate = null;
+                expect = 'predicate';
+                continue;
+            }
+
+            if (token === ',') {
+                expect = 'object';
+                continue;
+            }
+
+            if (expect === 'subject') {
+                curSubject = token;
+                expect = 'predicate';
+            } else if (expect === 'predicate') {
+                if (token.startsWith('?') && curPredicate !== null) {
+                    curSubject = token;
+                    curPredicate = null;
+                    expect = 'predicate';
+                } else {
+                    curPredicate = token;
+                    expect = 'object';
+                }
+            } else if (expect === 'object') {
+                if (curSubject && curPredicate) {
+                    triplePatterns.push({
+                        s: normalizeTerm(curSubject),
+                        p: normalizeTerm(curPredicate),
+                        o: normalizeTerm(token)
+                    });
+                }
+                expect = 'predicate';
+            }
+        }
+
+        return { triplePatterns, filters };
+    }
+
     public async executeSparql(query: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
         await this.initializeGraph(workspaceFolder);
 
-        const cleanQuery = query.replace(/#.*/g, '').trim();
-        const selectMatch = cleanQuery.match(/SELECT\s+(DISTINCT\s+)?([\?\*\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}(?:\s*ORDER\s+BY\s+[\?\w]+)?(?:\s*LIMIT\s+(\d+))?/i);
+        const cleanQuery = KnowledgeManager.stripSparqlComments(query).trim();
+
+        const limitMatch = cleanQuery.match(/\bLIMIT\s+(\d+)\b/i);
+        const limit = limitMatch ? parseInt(limitMatch[1], 10) : 50;
+
+        const selectMatch = cleanQuery.match(/SELECT\s+(DISTINCT\s+)?([\?\*\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
+        const constructMatch = cleanQuery.match(/CONSTRUCT\s*\{([\s\S]+?)\}\s*WHERE\s*\{([\s\S]+?)\}/i);
         const askMatch = cleanQuery.match(/ASK\s+WHERE\s*\{([\s\S]+?)\}/i);
 
-        if (!selectMatch && !askMatch) {
-            return `### ❌ SPARQL Query Error\nSupported syntax: \`SELECT ?var WHERE { ?s ?p ?o . }\` or \`ASK WHERE { ... }\`.\nQuery: \`\`\`sparql\n${query}\n\`\`\``;
+        if (!selectMatch && !askMatch && !constructMatch) {
+            return `### ❌ SPARQL Query Error\nSupported syntax:\n- \`SELECT ?var WHERE { ?s ?p ?o . }\`\n- \`CONSTRUCT { ?s ?p ?o . } WHERE { ... }\`\n- \`ASK WHERE { ... }\`\n\nQuery:\n\`\`\`sparql\n${query}\n\`\`\``;
         }
 
-        const whereClause = selectMatch ? selectMatch[3].trim() : askMatch![1].trim();
-        const statements = whereClause.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/).filter(s => s.trim().length > 0);
-
-        const triplePatterns: GraphTriple[] = [];
-        const filters: string[] = [];
-
-        for (const stmt of statements) {
-            const trimmed = stmt.trim();
-            const fMatch = trimmed.match(/^FILTER\s*\(([\s\S]+)\)$/i);
-            if (fMatch) {
-                filters.push(fMatch[1].trim());
-            } else {
-                const parts = trimmed.split(/\s+/);
-                if (parts.length >= 3) {
-                    let s = parts[0];
-                    let p = parts[1];
-                    let o = parts.slice(2).join(' ');
-                    triplePatterns.push({ s, p, o });
-                }
-            }
-        }
+        const whereClause = selectMatch ? selectMatch[3].trim() : (constructMatch ? constructMatch[2].trim() : askMatch![1].trim());
+        const { triplePatterns, filters } = this.parseSparqlWhereClause(whereClause);
 
         const normPred = (raw: string): string => {
             const c = raw.replace(/^s:/i, '').replace(/^rdf:/i, '').toLowerCase().trim();
@@ -600,15 +744,18 @@ export class KnowledgeManager {
             if (c === 'calls' || c === 'invokes' || c === 'invokesfunction') return 'calls';
             if (c === 'inherits' || c === 'inheritsfrom') return 'inherits';
             if (c === 'disjoint' || c === 'disjointwith') return 'disjoint';
+            if (c === 'hasfunctiondescription' || c === 'functiondescription' || c === 'docstring') return 'functiondescription';
+            if (c === 'describesfunction') return 'describesfunction';
             if (c === 'name' || c === 'label' || c === 'rdfs:label') return 'name';
             if (c === 'path' || c === 'filepath') return 'filepath';
             return c;
         };
 
         const normType = (raw: string): string => {
-            const c = raw.replace(/^s:/i, '').toLowerCase().trim();
+            const c = raw.replace(/^s:/i, '').replace(/^owl:/i, '').replace(/^rdfs?:/i, '').toLowerCase().trim();
             if (c === 'function' || c === 'functiondefinition') return 'function';
             if (c === 'method' || c === 'methoddefinition') return 'method';
+            if (c === 'functiondescription' || c === 'description') return 'functiondescription';
             if (c === 'class' || c === 'classdefinition') return 'class';
             if (c === 'interface' || c === 'interfacedefinition') return 'interface';
             if (c === 'file' || c === 'sourcefile' || c === 'backendmodule') return 'file';
@@ -617,6 +764,7 @@ export class KnowledgeManager {
             if (c === 'route' || c === 'endpoint' || c === 'apiroute') return 'endpoint';
             if (c === 'store' || c === 'statestore') return 'store';
             if (c === 'library' || c === 'externallibrary') return 'library';
+            if (c === 'artifact' || c === 'softwareartifact') return 'artifact';
             return c;
         };
 
@@ -626,12 +774,13 @@ export class KnowledgeManager {
                 const ta = normType(actual);
                 const tq = normType(queryTerm);
                 if (ta === tq) return true;
+                if (tq === 'file' && (ta === 'component' || ta === 'script' || ta === 'file')) return true;
                 if (tq === 'function' && (ta === 'method' || ta === 'endpoint')) return true;
-                if (tq === 'file' && (ta === 'component' || ta === 'script')) return true;
+                if (tq === 'artifact' && (ta === 'file' || ta === 'component' || ta === 'script')) return true;
                 return false;
             }
-            const cleanA = actual.replace(/^s:/i, '').replace(/['"]/g, '').toLowerCase().trim();
-            const cleanQ = queryTerm.replace(/^s:/i, '').replace(/['"]/g, '').toLowerCase().trim();
+            const cleanA = actual.replace(/^s:/i, '').replace(/^["']|["']$/g, '').toLowerCase().trim();
+            const cleanQ = queryTerm.replace(/^s:/i, '').replace(/^["']|["']$/g, '').toLowerCase().trim();
             return cleanA === cleanQ;
         };
 
@@ -720,6 +869,106 @@ export class KnowledgeManager {
             return `### 🔍 SPARQL ASK Verdict: \`${solutions.length > 0 ? 'true' : 'false'}\``;
         }
 
+        // ─────────────────────────────────────────────────────────────
+        // SPARQL CONSTRUCT ENGINE: Instantiates graph from template
+        // ─────────────────────────────────────────────────────────────
+        if (constructMatch) {
+            this.lastConstructedGraph = null;
+            const templateClause = constructMatch[1].trim();
+            const { triplePatterns: templatePatterns } = this.parseSparqlWhereClause(templateClause);
+
+            const constructedTriples: GraphTriple[] = [];
+            const seenTriples = new Set<string>();
+
+            for (const sol of solutions) {
+                for (const tp of templatePatterns) {
+                    const resolveTerm = (t: string) => (t.startsWith('?') && sol[t] ? sol[t] : t);
+                    const s = resolveTerm(tp.s);
+                    const p = resolveTerm(tp.p);
+                    const o = resolveTerm(tp.o);
+
+                    if (!s.startsWith('?') && !p.startsWith('?') && !o.startsWith('?')) {
+                        const key = `${s} ${p} ${o}`;
+                        if (!seenTriples.has(key)) {
+                            seenTriples.add(key);
+                            constructedTriples.push({ s, p, o });
+                        }
+                    }
+                }
+            }
+
+            if (constructedTriples.length === 0) {
+                return `### 🎨 SPARQL CONSTRUCT Result\n*(0 triples constructed from ${solutions.length} query solutions)*`;
+            }
+
+            // Build visual graph nodes and edges from constructedTriples
+            const nodesMap = new Map<string, any>();
+            const edgesList: any[] = [];
+
+            const nodeLabelMap = new Map<string, string>();
+            for (const t of this.triples) {
+                if (normPred(t.p) === 'name' || normPred(t.p) === 'filepath') {
+                    nodeLabelMap.set(t.s, t.o.replace(/^"|"$/g, ''));
+                }
+            }
+
+            for (const ct of constructedTriples) {
+                const addNode = (id: string) => {
+                    const cleanId = id.replace(/^s:/, '');
+                    if (!nodesMap.has(cleanId)) {
+                        const friendlyLabel = nodeLabelMap.get(ct.s) || nodeLabelMap.get(id) || nodeLabelMap.get(`s:${cleanId}`) || cleanId;
+                        let inferredType = 'entity';
+                        if (id.startsWith('s:file_') || id.endsWith('.py') || id.endsWith('.ts') || id.endsWith('.js') || id.endsWith('.vue')) inferredType = 'file';
+                        else if (id.startsWith('s:class_') || id.includes('Class')) inferredType = 'class';
+                        else if (id.startsWith('s:fn_') || id.startsWith('s:method_') || id.includes('Func')) inferredType = 'function';
+                        else if (id.startsWith('s:ep_') || id.includes('Route')) inferredType = 'endpoint';
+                        else if (id.startsWith('s:lib_') || id.includes('Library')) inferredType = 'library';
+
+                        nodesMap.set(cleanId, {
+                            id: cleanId,
+                            rawId: id,
+                            label: friendlyLabel,
+                            type: inferredType
+                        });
+                    }
+                };
+
+                addNode(ct.s);
+                addNode(ct.o);
+
+                const srcClean = ct.s.replace(/^s:/, '');
+                const trgClean = ct.o.replace(/^s:/, '');
+                const predClean = ct.p.replace(/^s:/, '');
+
+                edgesList.push({
+                    id: `edge_c_${srcClean}_${predClean}_${trgClean}_${edgesList.length}`,
+                    source: srcClean,
+                    target: trgClean,
+                    label: predClean
+                });
+            }
+
+            const graphData = {
+                nodes: Array.from(nodesMap.values()),
+                edges: edgesList
+            };
+
+            this.lastConstructedGraph = graphData;
+
+            let output = `### 🎨 SPARQL CONSTRUCT Query Result (${constructedTriples.length} triples, ${graphData.nodes.length} nodes)\n\n`;
+            output += `| Subject | Predicate | Object |\n`;
+            output += `| --- | --- | --- |\n`;
+            for (const ct of constructedTriples.slice(0, 50)) {
+                const sName = nodeLabelMap.get(ct.s) || ct.s.replace(/^s:/, '');
+                const oName = nodeLabelMap.get(ct.o) || ct.o.replace(/^s:/, '');
+                output += `| \`${sName}\` | \`${ct.p.replace(/^s:/, '')}\` | \`${oName}\` |\n`;
+            }
+
+            output += `\n\`\`\`json:constructed_graph\n${JSON.stringify(graphData, null, 2)}\n\`\`\`\n`;
+
+            return output;
+        }
+
         if (solutions.length === 0) {
             return `### 🔍 SPARQL Query Results\n*(0 matches found across ${this.triples.length} triples)*`;
         }
@@ -767,12 +1016,105 @@ export class KnowledgeManager {
         return table;
     }
 
+    public getTBoxGraphElements(): { nodes: any[]; edges: any[] } {
+        const nodesMap = new Map<string, any>();
+        const edgesList: any[] = [];
+        const tboxTriples = this.triples.filter(t => this.isTBoxSubject(t.s));
+
+        for (const t of tboxTriples) {
+            const sId = t.s.replace(/^s:/, '');
+            if (!nodesMap.has(sId)) {
+                nodesMap.set(sId, {
+                    id: sId,
+                    rawId: t.s,
+                    label: sId,
+                    type: 'tbox-class',
+                    description: '',
+                    degree: 0
+                });
+            }
+
+            if (t.p === 'rdfs:label') {
+                const label = t.o.replace(/^"|"(@[a-z]+)?$/g, '');
+                nodesMap.get(sId)!.description = label;
+            } else if (t.p === 'rdf:type') {
+                if (t.o.includes('ObjectProperty') || t.o.includes('DatatypeProperty') || t.o.includes('SymmetricProperty')) {
+                    nodesMap.get(sId)!.type = 'tbox-property';
+                }
+            }
+        }
+
+        const propertyDomains = new Map<string, string>();
+        const propertyRanges = new Map<string, string>();
+
+        for (const t of tboxTriples) {
+            const sClean = t.s.replace(/^s:/, '');
+            const oClean = t.o.replace(/^s:/, '');
+
+            if (t.p === 'rdfs:subClassOf') {
+                if (nodesMap.has(sClean) && nodesMap.has(oClean)) {
+                    edgesList.push({
+                        id: `edge_${sClean}_subClassOf_${oClean}`,
+                        source: sClean,
+                        target: oClean,
+                        label: 'subClassOf'
+                    });
+                }
+            } else if (t.p === 'rdfs:domain') {
+                propertyDomains.set(sClean, oClean);
+            } else if (t.p === 'rdfs:range') {
+                propertyRanges.set(sClean, oClean);
+            } else if (t.p === 'owl:inverseOf') {
+                if (nodesMap.has(sClean) && nodesMap.has(oClean)) {
+                    edgesList.push({
+                        id: `edge_${sClean}_inverseOf_${oClean}`,
+                        source: sClean,
+                        target: oClean,
+                        label: 'inverseOf'
+                    });
+                }
+            }
+        }
+
+        // Link ObjectProperty edges between domain class and range class
+        for (const [prop, domain] of propertyDomains.entries()) {
+            const range = propertyRanges.get(prop);
+            if (range && nodesMap.has(domain) && nodesMap.has(range)) {
+                edgesList.push({
+                    id: `edge_${domain}_${prop}_${range}`,
+                    source: domain,
+                    target: range,
+                    label: prop
+                });
+            }
+        }
+
+        // Return formal ontology classes
+        const classNodes = Array.from(nodesMap.values()).filter(n => n.type === 'tbox-class');
+
+        return {
+            nodes: classNodes,
+            edges: edgesList
+        };
+    }
+
     public async getHighLevelGraphElements(
         workspaceFolder?: vscode.WorkspaceFolder, 
         connectedOnly: boolean = true,
-        maxNodesLimit: number = 120
+        maxNodesLimit: number = 120,
+        viewScope: 'abox' | 'tbox' | 'all' = 'abox'
     ): Promise<{ nodes: any[]; edges: any[]; totalGraphNodes?: number; isTruncated?: boolean }> {
         await this.initializeGraph(workspaceFolder);
+
+        if (viewScope === 'tbox') {
+            const tboxElements = this.getTBoxGraphElements();
+            return {
+                nodes: tboxElements.nodes,
+                edges: tboxElements.edges,
+                totalGraphNodes: tboxElements.nodes.length,
+                isTruncated: false
+            };
+        }
 
         const nodesMap = new Map<string, any>();
         const edgesList: any[] = [];
@@ -825,6 +1167,21 @@ export class KnowledgeManager {
                 }
             } else if (t.p === 's:startLine') {
                 nodesMap.get(sId)!.startLine = parseInt(t.o, 10);
+            } else if (t.p === 's:docstring' || t.p === 's:functionDescription') {
+                let doc = t.o.trim();
+                if (doc.startsWith('"') && doc.endsWith('"')) {
+                    doc = doc.substring(1, doc.length - 1);
+                }
+                doc = doc.replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+                nodesMap.get(sId)!.docstring = doc;
+            } else if (t.p === 's:signature') {
+                let sig = t.o.trim();
+                if (sig.startsWith('"') && sig.endsWith('"')) {
+                    sig = sig.substring(1, sig.length - 1);
+                }
+                nodesMap.get(sId)!.signature = sig.replace(/\\"/g, '"');
+            } else if (t.p === 's:docstringFormat') {
+                nodesMap.get(sId)!.docFormat = t.o.replace(/^"|"$/g, '').trim();
             }
         }
 
@@ -867,19 +1224,58 @@ export class KnowledgeManager {
                         nodesMap.get(targetId)!.degree = (nodesMap.get(targetId)!.degree || 0) + 1;
                     }
                 }
+            } else if (rawP === 'calls' || rawP === 'invokes' || rawP === 'invokesfunction') {
+                const targetId = t.o.startsWith('s:') ? t.o : `s:${t.o}`;
+                if (nodesMap.has(t.s) && nodesMap.has(targetId)) {
+                    const edgeKey = `${t.s}->calls->${targetId}`;
+                    if (!edgeSet.has(edgeKey)) {
+                        edgeSet.add(edgeKey);
+                        edgesList.push({
+                            id: `edge_${t.s}_calls_${targetId}`.replace(/[^a-zA-Z0-9_]/g, '_'),
+                            source: t.s,
+                            target: targetId,
+                            label: 'calls'
+                        });
+                        nodesMap.get(t.s)!.degree = (nodesMap.get(t.s)!.degree || 0) + 1;
+                        nodesMap.get(targetId)!.degree = (nodesMap.get(targetId)!.degree || 0) + 1;
+                    }
+                }
             }
         }
 
         const totalGraphNodes = nodesMap.size;
         const candidateNodes = Array.from(nodesMap.values());
 
-        // Sort by architectural importance: high degree centrality + structural types first
+        // If viewScope is calls, prioritize callables (functions, methods, endpoints) and caller entities
+        if (viewScope === 'all' || (viewScope as any) === 'calls') {
+            const callEdgesExist = edgesList.some(e => e.label === 'calls');
+            if (callEdgesExist || (viewScope as any) === 'calls') {
+                const callNodes = new Set<string>();
+                edgesList.filter(e => e.label === 'calls').forEach(e => {
+                    callNodes.add(e.source);
+                    callNodes.add(e.target);
+                });
+                candidateNodes.forEach(n => {
+                    if (callNodes.has(n.id)) {
+                        n.degree = (n.degree || 0) + 50; // Boost connected call nodes
+                    }
+                });
+            }
+        }
+
+        // Sort by architectural importance
         candidateNodes.sort((a, b) => {
             const typeWeight = (t: string) => {
+                if ((viewScope as any) === 'calls') {
+                    if (t === 'function' || t === 'method' || t === 'endpoint') return 20;
+                    if (t === 'class') return 10;
+                    return 1;
+                }
                 if (t === 'file' || t === 'component') return 10;
                 if (t === 'class' || t === 'interface') return 8;
                 if (t === 'endpoint' || t === 'store') return 6;
-                if (t === 'function') return 4;
+                if (t === 'function') return 5;
+                if (t === 'method') return 4;
                 return 1;
             };
             const wDiff = typeWeight(b.type) - typeWeight(a.type);
@@ -888,7 +1284,7 @@ export class KnowledgeManager {
         });
 
         const activeNodes: any[] = [];
-        const targetLimit = Math.min(maxNodesLimit, 150);
+        const targetLimit = Math.max(maxNodesLimit, 350);
 
         for (const node of candidateNodes) {
             if (connectedOnly && (node.degree || 0) === 0) continue;
@@ -900,7 +1296,17 @@ export class KnowledgeManager {
         const finalEdges = edgesList.filter(e => activeNodeIdSet.has(e.source) && activeNodeIdSet.has(e.target));
 
         return {
-            nodes: activeNodes,
+            nodes: activeNodes.map(n => ({
+                id: n.id,
+                label: n.label,
+                type: n.type,
+                filePath: n.filePath,
+                startLine: n.startLine,
+                degree: n.degree,
+                signature: n.signature,
+                docstring: n.docstring,
+                docFormat: n.docFormat
+            })),
             edges: finalEdges,
             totalGraphNodes,
             isTruncated: totalGraphNodes > activeNodes.length
@@ -915,6 +1321,7 @@ export class KnowledgeManager {
         let classCount = 0;
         let funcCount = 0;
         let methodCount = 0;
+        let descCount = 0;
         let componentCount = 0;
         let scriptCount = 0;
         let endpointCount = 0;
@@ -934,6 +1341,7 @@ export class KnowledgeManager {
                 else if (target === 's:ClassDefinition' || target === 's:Class') classCount++;
                 else if (target === 's:FunctionDefinition' || target === 's:Function') funcCount++;
                 else if (target === 's:MethodDefinition' || target === 's:Method') methodCount++;
+                else if (target === 's:FunctionDescription') descCount++;
                 else if (target === 's:APIRoute') endpointCount++;
                 else if (target === 's:StateStore') storeCount++;
             }
@@ -961,6 +1369,7 @@ export class KnowledgeManager {
         if (classCount > 0) entitiesParts.push(`${classCount} Classes`);
         if (funcCount > 0) entitiesParts.push(`${funcCount} Functions`);
         if (methodCount > 0) entitiesParts.push(`${methodCount} Methods`);
+        if (descCount > 0) entitiesParts.push(`${descCount} Function Descriptions (Docstrings/Doxygen)`);
         if (endpointCount > 0) entitiesParts.push(`${endpointCount} API Endpoints`);
         if (storeCount > 0) entitiesParts.push(`${storeCount} Stores`);
         if (scriptCount > 0) entitiesParts.push(`${scriptCount} Scripts`);

@@ -84,6 +84,7 @@ export function ensurePluginsInitialized() {
 
 // Initial eager attempt
 ensurePluginsInitialized();
+(window as any).renderCytoscapeDiagram = renderCytoscapeDiagram;
 
 
 const RENDER_THROTTLE_MS = 200;
@@ -408,7 +409,10 @@ function preprocessMermaid(code: string): string {
     }).join('\n');
 }
 
-function renderCytoscapeDiagram(data: any, container: HTMLElement) {
+export function renderCytoscapeDiagram(data: any, container: HTMLElement) {
+    if (!(window as any).renderCytoscapeDiagram) {
+        (window as any).renderCytoscapeDiagram = renderCytoscapeDiagram;
+    }
     container.style.width = '100%';
     container.style.height = '250px';
     container.style.position = 'relative';
@@ -2725,8 +2729,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     const hasActions = totalExecutableActionsCount > 1;
     const hasTurnFiles = turnContextFiles.length > 0;
+    const isAutoExecutionActive = state.capabilities?.autoApply === true || state.capabilities?.agentMode === true || state.capabilities?.dynamicMode === true;
 
-    if ((hasActions || hasTurnFiles) && isFinal) {
+    // Only render the manual bulk execution prompt if auto-execution is disabled and the message has unexecuted actions
+    if ((hasActions || hasTurnFiles) && isFinal && !isAutoExecutionActive) {
         const encodedTurnFiles = encodeURIComponent(JSON.stringify(turnContextFiles));
         finalHtml += `
             <div class="execute-all-actions-wrapper" style="margin-top: 14px; padding: 0 12px; display: flex; gap: 10px; flex-wrap: wrap;">
@@ -3899,27 +3905,44 @@ export class ContextPresenter {
 
         return `
         <div class="context-message ${themeClass}" id="fused-context-dashboard" data-expanded="${isExpanded ? 'true' : 'false'}">
-            <div class="fused-hud-header" style="display: flex; flex-direction: column; gap: 10px; padding: 12px; background: rgba(0,0,0,0.2);">
-                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
-                    <div id="badge-dashboard-panel" style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;">
+            <div class="fused-hud-header">
+                <!-- TOP ROW: AI Model, Personas, Styles, Mode Selector (Assistant/Agent), & Expand Control -->
+                <div class="hud-top-control-bar">
+                    <div id="badge-dashboard-panel" class="hud-badges-section">
                         ${isAgentActive 
-                            ? `<div class="agent-active-indicator">
+                            ? `<div class="agent-active-indicator" title="Agent Mode Active">
                                 <div class="genie-orb-portal" style="transform: scale(0.55);">
                                     <div class="orb-ring-outer"></div>
                                     <div class="orb-ring-inner"></div>
                                     <div class="orb-core"></div>
                                 </div>
                                </div>` 
-                            : '<span class="codicon codicon-library" style="opacity:0.6;"></span>'}
+                            : ''}
                         <div class="active-badges" id="active-badges"></div>
                     </div>
 
-                    <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+                    <div class="hud-top-actions-cluster">
+                        <!-- 🚀 EXPLICIT DEDICATED COLLAPSE / UNCOLLAPSE BUTTON -->
+                        <button id="hud-toggle-expand-btn" class="code-action-btn secondary-btn hud-expand-btn" title="${isExpanded ? 'Collapse Context Panel' : 'Expand Context Panel to inspect & configure'}">
+                            <i class="codicon ${expandIcon}" id="hud-expand-icon"></i>
+                            <span id="hud-expand-label">${expandText}</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- SUB-ROW: Git Branch Selector, Graph Studio, Test & Debug, and Search Bar -->
+                <div class="hud-secondary-search-bar">
+                    <div class="hud-secondary-tools-group">
+                        <div id="hud-secondary-git-container"></div>
+                        <button id="hud-header-kg-studio-btn" class="code-action-btn secondary-btn hud-tool-btn" title="Open Dedicated Architecture &amp; Knowledge Graph Studio Panel">
+                            <i class="codicon codicon-graph" style="color: var(--vscode-charts-purple);"></i>
+                            <span>Graph Studio</span>
+                        </button>
                         <div class="badge-wrapper hud-qa-wrapper" style="position: relative;">
-                            <button id="hud-qa-menu-btn" class="code-action-btn secondary-btn hud-qa-trigger" title="QA Suite: Run Tests or Start Run/View/Fix Debug Loop" style="height: 26px; font-size: 11px; padding: 0 8px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; color: var(--vscode-charts-green); border-color: var(--vscode-charts-green); cursor: pointer;">
-                                <i class="codicon codicon-beaker"></i>
+                            <button id="hud-qa-menu-btn" class="code-action-btn secondary-btn hud-qa-trigger hud-tool-btn" title="QA Suite: Run Tests or Start Run/View/Fix Debug Loop">
+                                <i class="codicon codicon-beaker" style="color: var(--vscode-charts-green);"></i>
                                 <span>Test &amp; Debug</span>
-                                <i class="codicon codicon-chevron-down" style="font-size: 9px; margin-left: 1px;"></i>
+                                <i class="codicon codicon-chevron-down" style="font-size: 9px; opacity: 0.7;"></i>
                             </button>
                             <div id="hud-qa-menu" class="custom-menu hidden" style="min-width: 230px; padding: 4px 0;">
                                 <div class="custom-menu-item qa-menu-opt" data-action="test">
@@ -3932,32 +3955,27 @@ export class ContextPresenter {
                                 </div>
                             </div>
                         </div>
-                        <div class="hud-search-container" id="hud-search-bar" style="display: flex; align-items: center; gap: 4px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; padding: 2px 6px; height: 26px; box-sizing: border-box;">
-                            <i class="codicon codicon-search" style="font-size: 12px; opacity: 0.7; color: var(--vscode-input-foreground); margin-left: 2px;"></i>
-                            <input type="text" id="hud-search-input" placeholder="Search discussion..." style="background: transparent; border: none; color: var(--vscode-input-foreground); outline: none; font-family: var(--vscode-font-family); font-size: 11px; width: 140px; padding: 0 4px;" />
-                            <span id="hud-search-count" style="font-size: 10px; opacity: 0.6; min-width: 25px; text-align: center; font-family: var(--vscode-editor-font-family); user-select: none;"></span>
-                            <button id="hud-search-code-toggle" class="icon-btn" title="Search Scope: Discussion Text Only (Click to include Code & Files)" style="width: 18px; height: 18px; padding: 0; opacity: 0.5;">
-                                <i class="codicon codicon-code" style="font-size: 11px;"></i>
-                            </button>
-                            <button id="hud-search-prev" class="icon-btn" title="Previous Match (Shift+Enter)" style="width: 18px; height: 18px; padding: 0;">
-                                <i class="codicon codicon-arrow-up" style="font-size: 11px;"></i>
-                            </button>
-                            <button id="hud-search-next" class="icon-btn" title="Next Match (Enter)" style="width: 18px; height: 18px; padding: 0;">
-                                <i class="codicon codicon-arrow-down" style="font-size: 11px;"></i>
-                            </button>
-                            <button id="hud-search-clear" class="icon-btn" title="Clear Search (Escape)" style="width: 18px; height: 18px; padding: 0; display: none;">
-                                <i class="codicon codicon-close" style="font-size: 11px;"></i>
-                            </button>
-                            <div style="width: 1px; height: 12px; background: var(--vscode-widget-border); margin: 0 2px;"></div>
-                            <button id="hud-search-all-btn" class="icon-btn" title="Deep Search across ALL discussions..." style="width: 18px; height: 18px; padding: 0; color: var(--vscode-textLink-foreground);">
-                                <i class="codicon codicon-globe" style="font-size: 11px;"></i>
-                            </button>
-                        </div>
+                    </div>
 
-                        <!-- 🚀 EXPLICIT DEDICATED COLLAPSE / UNCOLLAPSE BUTTON -->
-                        <button id="hud-toggle-expand-btn" class="code-action-btn secondary-btn hud-expand-btn" title="${isExpanded ? 'Collapse Context Panel' : 'Expand Context Panel to inspect & configure'}" style="height: 26px; font-size: 11px; padding: 0 10px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;">
-                            <i class="codicon ${expandIcon}" id="hud-expand-icon"></i>
-                            <span id="hud-expand-label">${expandText}</span>
+                    <div class="hud-search-container" id="hud-search-bar">
+                        <i class="codicon codicon-search hud-search-icon"></i>
+                        <input type="text" id="hud-search-input" placeholder="Search discussion..." />
+                        <span id="hud-search-count"></span>
+                        <button id="hud-search-code-toggle" class="icon-btn" title="Search Scope: Discussion Text Only (Click to include Code & Files)">
+                            <i class="codicon codicon-code"></i>
+                        </button>
+                        <button id="hud-search-prev" class="icon-btn" title="Previous Match (Shift+Enter)">
+                            <i class="codicon codicon-arrow-up"></i>
+                        </button>
+                        <button id="hud-search-next" class="icon-btn" title="Next Match (Enter)">
+                            <i class="codicon codicon-arrow-down"></i>
+                        </button>
+                        <button id="hud-search-clear" class="icon-btn" title="Clear Search (Escape)" style="display: none;">
+                            <i class="codicon codicon-close"></i>
+                        </button>
+                        <div class="hud-search-divider"></div>
+                        <button id="hud-search-all-btn" class="icon-btn" title="Deep Search across ALL discussions...">
+                            <i class="codicon codicon-globe"></i>
                         </button>
                     </div>
                 </div>
@@ -4003,109 +4021,30 @@ export class ContextPresenter {
                 </div>
 
                 <div class="hud-scroll-container">
-                    <details class="info-collapsible knowledge-graph-details" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-purple);">
-                        <summary>
-                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span style="font-weight: 700; display: flex; align-items: center; gap: 6px;">
-                                    <i class="codicon codicon-graph" style="color: var(--vscode-charts-purple);"></i>
-                                    <span>Knowledge Graph (.lollms/knowledge.ttl)</span>
-                                </span>
-                                <div style="display: flex; gap: 6px; align-items: center;">
-                                    <button id="hud-rebuild-kg-btn" class="code-action-btn apply-btn" style="height: 20px; font-size: 9px; padding: 0 7px; background: var(--vscode-charts-purple) !important; color: white !important;" title="Scan codebase AST and populate connected ABox assertions into knowledge.ttl">
-                                        <i class="codicon codicon-sync"></i> <span>Rebuild ABox</span>
-                                    </button>
-                                    <button id="hud-filter-kg-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9px; padding: 0 6px;" title="Filter: Connected ABox Graph">
-                                        <i class="codicon codicon-filter"></i> <span>Connected Only</span>
-                                    </button>
-                                    <button id="hud-view-kg-toggle-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9px; padding: 0 6px;" title="Toggle Graph / Summary View">
-                                        <i class="codicon codicon-eye"></i> <span>Summary</span>
-                                    </button>
-                                    <button id="hud-open-knowledge-ttl-btn" class="icon-btn" title="Open .lollms/knowledge.ttl in Editor" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-edit"></i></button>
-                                    <button id="hud-copy-knowledge-graph-btn" class="icon-btn" title="Copy Knowledge Graph to Clipboard"><i class="codicon codicon-copy"></i></button>
-                                    <button id="hud-reset-knowledge-graph-btn" class="icon-btn" title="Reset Knowledge Graph (.lollms/knowledge.ttl)" style="color: var(--vscode-errorForeground);"><i class="codicon codicon-trash"></i></button>
-                                </div>
+                    <div class="hud-kg-shortcut-card" style="margin-bottom: 8px; padding: 10px 14px; background: rgba(155, 89, 182, 0.08); border: 1.5px solid var(--vscode-charts-purple); border-radius: 8px; display: flex; justify-content: space-between; align-items: center; gap: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+                        <div style="display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1;">
+                            <div style="width: 28px; height: 28px; border-radius: 6px; background: rgba(155, 89, 182, 0.2); color: var(--vscode-charts-purple); display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0;">
+                                <i class="codicon codicon-graph"></i>
                             </div>
-                        </summary>
-                        <div class="collapsible-content hud-knowledge-graph-wrapper" style="padding-top: 6px; display: flex; flex-direction: column; gap: 8px;">
-                            <!-- Interactive Visual Knowledge Graph Canvas -->
-                            <div id="hud-kg-canvas-container" style="width: 100%; height: 380px; min-height: 300px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 6px; position: relative; overflow: hidden;">
-                                <div id="hud-kg-cytoscape" style="width: 100%; height: 100%;"></div>
-                                <div style="position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; z-index: 5;">
-                                    <button type="button" id="hud-kg-layout-cose-btn" class="code-action-btn applied" style="height: 20px; font-size: 9px; padding: 0 6px;" title="2D Force-Directed Cluster Layout">
-                                        <span>2D Cluster</span>
-                                    </button>
-                                    <button type="button" id="hud-kg-layout-dagre-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9px; padding: 0 6px;" title="Top-Down Architecture Hierarchy">
-                                        <span>Hierarchy</span>
-                                    </button>
-                                    <button type="button" id="hud-kg-layout-grid-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9px; padding: 0 6px;" title="Structured Grid Matrix">
-                                        <span>Grid</span>
-                                    </button>
+                            <div style="min-width: 0; flex: 1;">
+                                <div style="font-weight: 700; font-size: 12px; color: var(--vscode-foreground); display: flex; align-items: center; gap: 6px;">
+                                    <span>Architecture &amp; Knowledge Graph</span>
+                                    <span class="file-token-badge weight-light" style="font-size: 9px; padding: 1px 6px; border-color: rgba(155, 89, 182, 0.4); color: var(--vscode-charts-purple);">knowledge.ttl</span>
                                 </div>
-                                <div style="position: absolute; bottom: 6px; right: 8px; font-size: 9px; opacity: 0.65; pointer-events: none; background: rgba(0,0,0,0.6); padding: 2px 8px; border-radius: 3px;">
-                                    Scroll: Zoom · Drag: Pan · Double-Click: Open / Inspect
+                                <div style="font-size: 10.5px; opacity: 0.75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px;">
+                                    Interactive Cytoscape Visualizer, SPARQL Studio &amp; AI Architecture Copilot
                                 </div>
-                            </div>
-
-                            <!-- Interactive Live SPARQL Query & AI Text-to-SPARQL Assistant -->
-                            <div style="display: flex; flex-direction: column; gap: 6px;">
-                                <!-- Mode Controls & Curated Blueprints -->
-                                <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
-                                    <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 220px;">
-                                        <span style="font-size: 10px; font-weight: bold; opacity: 0.85; text-transform: uppercase;">
-                                            <i class="codicon codicon-bookmark"></i> Blueprints:
-                                        </span>
-                                        <select id="hud-kg-sparql-presets" style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; font-size: 11px; padding: 2px 6px; height: 24px; flex: 1; outline: none;">
-                                            <option value="">-- Useful SPARQL Blueprints --</option>
-                                            <option value="functions_files" data-desc="Lists all standalone functions and the source files that declare them.">Find All Functions & Source Files</option>
-                                            <option value="classes_methods" data-desc="Maps object-oriented classes to all their member methods.">Map Classes to Member Methods</option>
-                                            <option value="api_routes" data-desc="Locates backend REST API route endpoints (FastAPI, Flask, Express).">Find All API Route Endpoints</option>
-                                            <option value="vue_components" data-desc="Lists frontend Vue.js Single File Components and their declared methods/state.">Map Vue.js Components & State</option>
-                                            <option value="file_imports" data-desc="Maps the dependency graph showing which files import other files or packages.">Find All File Imports & Dependencies</option>
-                                            <option value="class_inheritance" data-desc="Finds class inheritance and polymorphism relationships.">Trace Class Inheritance Chains</option>
-                                            <option value="disjoint_names" data-desc="Finds functions or classes with the same name declared in different files.">Find Disjoint Same-Name Entities</option>
-                                            <option value="scripts_ops" data-desc="Finds automation and DevOps scripts (Bash, Batch, PowerShell).">Find Automation & DevOps Scripts</option>
-                                        </select>
-                                    </div>
-
-                                    <div style="display: flex; gap: 6px;">
-                                        <button type="button" id="hud-kg-mode-sparql-btn" class="code-action-btn applied" style="height: 22px; font-size: 10px; padding: 0 8px;">
-                                            <i class="codicon codicon-code"></i> <span>SPARQL</span>
-                                        </button>
-                                        <button type="button" id="hud-kg-mode-nl-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 8px; border-color: var(--vscode-charts-purple); color: var(--vscode-charts-purple);" title="Ask questions in plain English; AI writes and runs the SPARQL query">
-                                            <i class="codicon codicon-sparkle"></i> <span>Ask AI (Plain English)</span>
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <!-- Blueprint Description Card -->
-                                <div id="hud-kg-preset-description" style="display: none; padding: 5px 8px; font-size: 10.5px; background: rgba(0, 122, 204, 0.08); border-left: 3px solid var(--vscode-charts-blue); border-radius: 3px; color: var(--vscode-foreground);"></div>
-
-                                <!-- Standard SPARQL Query Input Row -->
-                                <div id="hud-kg-sparql-row" style="display: flex; gap: 6px; align-items: center; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 3px 6px;">
-                                    <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.7;"></i>
-                                    <input type="text" id="hud-kg-sparql-input" placeholder="Query ontology with SPARQL (e.g. SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10)..." style="background: transparent; border: none; outline: none; font-family: monospace; font-size: 11px; color: var(--vscode-input-foreground); flex: 1;" />
-                                    <button type="button" id="hud-kg-run-sparql-btn" class="code-action-btn apply-btn" style="height: 22px; font-size: 10px; padding: 0 8px; background: var(--vscode-charts-purple) !important; color: white !important;">
-                                        <i class="codicon codicon-play"></i> Run SPARQL
-                                    </button>
-                                </div>
-
-                                <!-- Natural Language Text-to-SPARQL Input Row -->
-                                <div id="hud-kg-nl-row" style="display: none; gap: 6px; align-items: center; background: var(--vscode-input-background); border: 1.5px solid var(--vscode-charts-purple); border-radius: 4px; padding: 3px 6px;">
-                                    <i class="codicon codicon-sparkle" style="font-size: 12px; color: var(--vscode-charts-purple);"></i>
-                                    <input type="text" id="hud-kg-nl-input" placeholder="Ask in plain English (e.g. 'Show all backend API endpoints and their files', 'Which files import pygame?')..." style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); flex: 1;" />
-                                    <button type="button" id="hud-kg-run-nl-btn" class="code-action-btn apply-btn" style="height: 22px; font-size: 10px; padding: 0 10px; background: var(--vscode-charts-purple) !important; color: white !important; font-weight: bold;">
-                                        <i class="codicon codicon-sparkle"></i> Translate & Run
-                                    </button>
-                                </div>
-                            </div>
-                            <div id="hud-kg-sparql-results" style="display: none; max-height: 180px; overflow-y: auto; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 8px; font-size: 11px;"></div>
-
-                            <!-- High-Level Topology Summary (Text / Insights) -->
-                            <div class="knowledge-graph-content markdown-body" id="hud-knowledge-graph-full-text" style="display: none; padding: 10px 14px; font-size: 11.5px; line-height: 1.5; max-height: 240px; overflow-y: auto; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px;">
-                                ${cleanReport ? DOMPurify.sanitize((marked as any).parse(cleanReport)) : '<div class="empty-context-msg">Knowledge Graph topology initialized in <code>.lollms/knowledge.ttl</code>. Use <code>&lt;record_insight topic="..." hashtags="..."&gt;</code> to link understanding elements to files, classes, or functions.</div>'}
                             </div>
                         </div>
-                    </details>
+                        <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
+                            <button id="hud-rebuild-kg-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10.5px; padding: 0 8px;" title="Rebuild ABox assertions in knowledge.ttl">
+                                <i class="codicon codicon-sync"></i> Rebuild ABox
+                            </button>
+                            <button id="hud-open-kg-panel-btn" class="code-action-btn apply-btn" style="height: 24px; font-size: 10.5px; padding: 0 10px; background: var(--vscode-charts-purple) !important; color: white !important; font-weight: bold;" title="Open Dedicated Architecture & Knowledge Graph Studio Panel">
+                                <i class="codicon codicon-link-external"></i> Open Studio
+                            </button>
+                        </div>
+                    </div>
 
                     <details class="info-collapsible briefing-details" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-purple);">
                         <summary>
@@ -4483,62 +4422,22 @@ export class ContextBinder {
             };
         }
 
-        // Bind Knowledge Graph (.lollms/knowledge.ttl) Actions & Visual Graph
-        const openTtlBtn = dashboard.querySelector('#hud-open-knowledge-ttl-btn') as HTMLElement;
-        if (openTtlBtn) {
-            openTtlBtn.onclick = (e) => {
+        // Open Dedicated Knowledge Graph & Architecture Studio Panel
+        const openKgPanelBtn = dashboard.querySelector('#hud-open-kg-panel-btn') as HTMLElement;
+        if (openKgPanelBtn) {
+            openKgPanelBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                vscode.postMessage({ command: 'openFile', path: '.lollms/knowledge.ttl' });
+                vscode.postMessage({ command: 'openKnowledgeGraphPanel' });
             };
         }
 
-        const kgToggleBtn = dashboard.querySelector('#hud-view-kg-toggle-btn') as HTMLElement;
-        const kgCanvasContainer = dashboard.querySelector('#hud-kg-canvas-container') as HTMLElement;
-        const kgSummaryText = dashboard.querySelector('#hud-knowledge-graph-full-text') as HTMLElement;
-
-        if (kgToggleBtn && kgCanvasContainer && kgSummaryText) {
-            kgToggleBtn.onclick = (e) => {
+        const headerKgStudioBtn = dashboard.querySelector('#hud-header-kg-studio-btn') as HTMLElement;
+        if (headerKgStudioBtn) {
+            headerKgStudioBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const isShowingSummary = kgSummaryText.style.display !== 'none';
-                if (isShowingSummary) {
-                    kgSummaryText.style.display = 'none';
-                    kgCanvasContainer.style.display = 'block';
-                    kgToggleBtn.innerHTML = '<i class="codicon codicon-eye"></i> <span>Summary</span>';
-
-                    setTimeout(() => {
-                        const cy = (window as any)._kgCyInstance;
-                        if (cy) {
-                            try {
-                                cy.resize();
-                                cy.fit(undefined, 30);
-                            } catch {}
-                        } else if ((window as any).renderKgWithCytoscape) {
-                            (window as any).renderKgWithCytoscape((window as any)._latestKgElements);
-                        }
-                    }, 100);
-                } else {
-                    kgSummaryText.style.display = 'block';
-                    kgCanvasContainer.style.display = 'none';
-                    kgToggleBtn.innerHTML = '<i class="codicon codicon-graph"></i> <span>Visual Graph</span>';
-                }
-            };
-        }
-
-        const kgFilterBtn = dashboard.querySelector('#hud-filter-kg-btn') as HTMLElement;
-        if (kgFilterBtn) {
-            kgFilterBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                (window as any)._kgConnectedOnly = !(window as any)._kgConnectedOnly;
-                const isConnOnly = !!(window as any)._kgConnectedOnly;
-                kgFilterBtn.classList.toggle('applied', isConnOnly);
-                kgFilterBtn.innerHTML = `<i class="codicon codicon-filter"></i> <span>${isConnOnly ? 'Connected Only' : 'All Entities'}</span>`;
-                vscode.postMessage({
-                    command: 'requestKnowledgeGraphData',
-                    connectedOnly: isConnOnly
-                });
+                vscode.postMessage({ command: 'openKnowledgeGraphPanel' });
             };
         }
 
@@ -4548,7 +4447,7 @@ export class ContextBinder {
             rebuildKgBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                rebuildKgBtn.innerHTML = '<i class="codicon codicon-sync spin"></i> <span>Rebuilding ABox...</span>';
+                rebuildKgBtn.innerHTML = '<i class="codicon codicon-sync spin"></i> <span>Rebuilding...</span>';
                 (rebuildKgBtn as HTMLButtonElement).disabled = true;
                 vscode.postMessage({ command: 'rebuildKnowledgeGraph' });
                 setTimeout(() => {

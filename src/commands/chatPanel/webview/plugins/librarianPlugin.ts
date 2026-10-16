@@ -20,12 +20,23 @@ export const librarianPlugin: TagPlugin = {
                 <span style="display: flex; align-items: center; gap: 6px; font-weight: 700; color: var(--vscode-charts-orange); text-transform: uppercase; font-size: 11px;">
                     <i class="codicon codicon-library"></i> Librarian Session Dispatched (AI Debate)
                 </span>
-                <span style="font-size: 10px; color: var(--vscode-charts-green); font-weight: bold;"><i class="codicon codicon-sync spin"></i> Scouting Codebase</span>
+                <span class="lib-status-pill" style="font-size: 10px; color: var(--vscode-charts-green); font-weight: bold;"><i class="codicon codicon-sync spin"></i> Scouting Codebase</span>
             </div>
-            <div style="opacity: 0.95; line-height: 1.45; white-space: pre-wrap; font-family: var(--vscode-font-family);">${escaped}</div>
+            <div style="opacity: 0.95; line-height: 1.45; white-space: pre-wrap; font-family: var(--vscode-font-family); margin-bottom: 6px;">${escaped}</div>
+            <div class="lib-live-action-tray" style="display:none; margin-top:8px; padding-top:6px; border-top:1px dashed rgba(214, 122, 13, 0.3); font-size:10.5px; opacity:0.9;">
+                <div class="lib-live-action-text" style="color:var(--vscode-charts-orange); font-family:var(--vscode-editor-font-family, monospace);"></div>
+            </div>
         </div>`;
     },
-    initialize: () => {}
+    initialize: (container: HTMLElement) => {
+        // If final report is already rendered in the stream, update status indicator
+        const reportEl = container.closest('.messages')?.querySelector('.role-name');
+        if (reportEl && reportEl.textContent?.includes('Librarian')) {
+            container.querySelectorAll('.lib-status-pill').forEach((pill: any) => {
+                pill.innerHTML = '<i class="codicon codicon-check"></i> Scout Complete';
+            });
+        }
+    }
 };
 
 export const librarianOffPlugin: TagPlugin = {

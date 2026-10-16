@@ -181,7 +181,8 @@ export class DiscussionManager {
             interTokenTimeout: 0,
             contextGovernorThreshold: config.get<number>('contextGovernorThreshold') ?? 95,
             contextGovernorTargetThreshold: config.get<number>('contextGovernorTargetThreshold') ?? 70,
-            contextGovernorMaxRounds: Math.max(15, config.get<number>('contextGovernorMaxRounds') ?? 20),
+            contextGovernorMaxRounds: config.get<number>('contextGovernorMaxRounds') ?? 15,
+            librarianDebateTurns: config.get<number>('librarianDebateTurns') ?? 2,
             contextGovernorCropHistory: config.get<boolean>('contextGovernorCropHistory') ?? true,
             contextAggression: 'respect',
             tokenEconomyMode: false,
@@ -306,14 +307,13 @@ export class DiscussionManager {
         this._onDidChangeDiscussions.fire();
 
         this.saveMutex = this.saveMutex.then(async () => {
-            // Do not persist ephemeral Librarian consultation messages across subsequent turns
+            // Keep final librarian reports persistent in discussion history while filtering ephemeral loading spinners
             const cleanMessages = (discussion.messages || []).filter(m => {
                 const id = m.id || '';
-                const pName = (m.personalityName || '').toLowerCase();
-                if (id.startsWith('librarian_') || id.startsWith('gov_') || id.startsWith('prune_') || id.startsWith('user_librarian_recall_')) return false;
-                if (pName.includes('librarian') || pName.includes('governor')) return false;
                 const c = typeof m.content === 'string' ? m.content : '';
-                if (c.includes('Lead Librarian:') || c.includes('Context Arbitration Complete') || c.includes('LIBRARIAN CONSULTATION COMPLETED')) return false;
+                // Filter out intermediate loading animations that did not receive final reports
+                if (c.includes('class="waiting-animation"') || c.includes('class="spinner"')) return false;
+                if (id.startsWith('user_librarian_recall_') || id.startsWith('prune_')) return false;
                 return true;
             });
             const discussionToSave = { ...discussion, messages: cleanMessages };

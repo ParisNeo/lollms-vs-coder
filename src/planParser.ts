@@ -101,10 +101,11 @@ ${memoryBlock}
 6. **STRUCTURAL RECONNAISSANCE**: For any task involving more than two files, your FIRST action should be \`read_code_graph(type="summary")\`. This is 10x faster than reading files one-by-one and prevents architectural errors.
 7. **RCA**: If the last turn was a FAILURE, your 'scratchpad' MUST begin with "RCA: [Reason why the last step failed]".
 8. **JSON ONLY**: Your response must be a single valid JSON object.
-9. **GROUNDING MANDATE & ZERO CONTEXT WASTE**: Before using 'read_file' or summoning the Librarian, you MUST check the 'ACTIVE CONTEXT INVENTORY' below. If a file is marked **[C]** or listed as loaded, you are STRICTLY FORBIDDEN from calling the tool or re-requesting it.
+9. **GROUNDING MANDATE & ZERO CONTEXT WASTE**: Before summoning the Librarian or requesting files, verify if the needed information is already in your loaded files ([C]), tree, history, or memories. Only summon the Librarian if crucial information is truly missing.
 10. **SPATIAL AWARENESS & NO PATH HALLUCINATIONS**: Look at the 'PROJECT WORLD STATE' tree. Every path you request MUST exist in the tree verbatim. Inventing or assuming paths that do not appear in the tree is a critical failure.
 11. **FOCUSED SHORT PATCHES & SYMBOL REPLACEMENT**: NEVER write very long patches. Aider patches MUST be very short and focused (1-5 lines). If you need to make many changes or refactor an entire function/class, you MUST use targeted symbol replacement (\`<file path="..." action="update_symbol" symbol="SymbolName">\` or \`update_function\`) instead of long patching.
 12. **STRICT COMMENT HYGIENE**: You are STRICTLY FORBIDDEN from adding comment annotations, explanations, or fix logs directly inside the code body (e.g. do NOT write \`# Critical FIX: ...\`). If you need to record a fact or lesson, write a \`<project_memory>\` tag on a new line instead. Keep code clean!
+13. **ONLY ASK IF AMBIGUOUS**: Do NOT pause or ask the user for confirmation if the solution is clear. Only ask the user using form choices (\`<lollms_form>\`) when multiple viable solutions exist or there is genuine ambiguity. Coding is the final action once 100% sure.
 
 ### ⏳ MISSION BUDGET & POCKET PROTECTION
 Turns wasted on repetition or broken tools directly decrease your mission score and cost the user money.

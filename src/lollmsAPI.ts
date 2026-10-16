@@ -1150,14 +1150,23 @@ export class LollmsAPI {
     const sanitizedMessages: { role: string; content: string | any[] }[] = normalizedMessages.map((m: any) => {
         let content = m.content;
 
-        // Strip thinking blocks from assistant messages so prior reasoning does not pollute prompt
+        // Strip thinking blocks and ephemeral UI artifacts from assistant messages
         if (m.role === 'assistant') {
+            const cleanAssistantText = (txt: string) => {
+                return stripThinkingTags(txt)
+                    .replace(/<details\s+class=["']processing-block["']>[\s\S]*?<\/details>/gi, '')
+                    .replace(/<div\s+class=["']waiting-animation["']>[\s\S]*?<\/div>/gi, '')
+                    .replace(/<details\s+class=["']lollms-form-block["']>[\s\S]*?<\/details>/gi, '')
+                    .replace(/<lollms_tool\b[^>]*>[\s\S]*?<\/lollms_tool>/gi, '')
+                    .trim();
+            };
+
             if (typeof content === 'string') {
-                content = stripThinkingTags(content).trim();
+                content = cleanAssistantText(content);
             } else if (Array.isArray(content)) {
                 content = content.map((part: any) => {
                     if (part && part.type === 'text' && typeof part.text === 'string') {
-                        return { ...part, text: stripThinkingTags(part.text).trim() };
+                        return { ...part, text: cleanAssistantText(part.text) };
                     }
                     return part;
                 });

@@ -4,6 +4,49 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-10-14 22:40]
+
+- `feat(librarian-visibility)`: render live tool actions (`<read_full_file>`, `<grep>`, `<peek_files>`, `<sparql>`) and raw observations directly in the real-time reasoning stream with collapsible `<details class="processing-block">` action cards.
+- `feat(librarian-audit)`: embed a permanent `🛠️ Librarian Action Audit Trail` section in the final report bubble, itemizing every file read, grep hit, and SPARQL query executed during the investigation.
+- `feat(librarian-depth)`: mandate exhaustive architectural blueprints in `ContextLibrarian` system prompt, eliminating 1-2 sentence shallow summaries in favor of comprehensive component breakdowns, control flows, and parameter signatures.
+- `fix(librarian-stream)`: add live action detector tray in `librarianPlugin.ts` showing real-time file reading and search status on the dispatch card.
+
+## [2026-10-13 19:35]
+
+- `fix(librarian)`: completely eliminate muted files list from Librarian reports, stopping massive token waste from echoing 100+ file paths already visible in the tree.
+- `feat(librarian)`: require Librarian to document exact function/method signatures, line numbers, system mechanics, and explicit reasons for unmuting each file.
+- `feat(rounds)`: reduce default communication rounds between Librarian and Worker to 2 (configurable up to 10 max).
+
+## [2026-10-13 19:20]
+
+- `feat(librarian-awareness)`: provide complete round-budget countdown (`Round X of Y (Z remaining)`) and inject cumulative previous thought ledger into every prompt turn, preventing circular reasoning loops.
+- `feat(anti-repetition)`: implement tool deduplication circuit breaker (`executedToolSignatures`) to block duplicate `<read_full_file>`, `<grep>`, and `<sparql>` invocations and force forward progress.
+
+## [2026-10-13 19:10]
+
+- `feat(librarian-streaming)`: render live Librarian reasoning, round progress (`Round X / Y`), and tool exploration steps in an interactive stream bubble during `<librarian>` consultations.
+- `feat(librarian-persistence)`: persist final synthesized Librarian findings into the discussion history on disk, preserving findings across sessions while filtering out intermediate loading spinners.
+- `fix(librarian-dispatch)`: update status badge on `<librarian>` dispatch card once scouting concludes to eliminate freeze perception.
+
+## [2026-10-13 18:30]
+
+- `feat(librarian)`: upgrade Context Librarian to output in-depth system mechanics and function-level explanations ("what this function does and how components interoperate") rather than generic boilerplate.
+- `feat(memory-rehydration)`: automatically persist Librarian findings to both `.lollms/knowledge.ttl` (Knowledge Graph) and `projectMemoryManager` (Permanent Neural Engrams) to enable automatic rehydration on subsequent queries.
+- `fix(librarian-report)`: eliminate duplicate nested `"Librarian agent report:"` headers and prevent fallback from generating empty `"status fit_all"` reports.
+
+## [2026-10-13 12:00]
+
+- `feat(knowledge-graph-studio)`: export Knowledge Graph from HUD into dedicated full-window `KnowledgeGraphPanel` with shortcuts in HUD header and summary card.
+- `feat(architecture-copilot)`: implement iterative multi-query AI Architecture Copilot for codebase discussions, automatically executing sequential SPARQL queries, with a one-click 'Send Findings to Main Discussion' handover button.
+- `fix(sparql-engine)`: repair `KnowledgeManager.executeSparql` parser to support standard SPARQL syntax with semicolons (`;`) and commas (`,`), safe comment stripping without corrupting IRI prefixes, and RDFS subclass matching (`s:SourceFile` matches `s:VueComponent`, `s:BackendModule`, and `s:AutomationScript`).
+- `fix(ontology)`: ensure all Vue components and frontend files in `webui/src/` receive `s:layer "Frontend"`, `s:programmingLanguage`, and `rdf:type s:SourceFile`.
+
+## [2026-10-13 11:50]
+
+- `fix(chatPanel)`: resolve Temporal Dead Zone (TDZ) `ReferenceError: Cannot access 'isPlanConfirmation' before initialization` in `_executeSendMessage`.
+- `fix(chatPanel)`: remove misplaced duplicate visual blocks in tool execution block and place `read_full_file` and `grep` under `blockWidgetHtml` builder.
+- `fix(chatPanel)`: replace out-of-scope `generationSession.model` with `targetModel` in message delivery abort error handler.
+
 ## [2026-10-12 23:17]
 
 - feat(lolllms-api): bump version to v1.0.62 and update changelog

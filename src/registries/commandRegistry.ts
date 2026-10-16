@@ -32,7 +32,15 @@ export async function registerCommands(
     registerPersonalityCommands(context, services);
     registerSkillsCommands(context, services);
 
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.resetKnowledge', async () => {
+    const safeRegisterCmd = (id: string, callback: (...args: any[]) => any) => {
+        try {
+            context.subscriptions.push(vscode.commands.registerCommand(id, callback));
+        } catch {
+            // Already registered, safely ignore duplicate registration
+        }
+    };
+
+    safeRegisterCmd('lollms-vs-coder.resetKnowledge', async () => {
         const { KnowledgeManager } = await import('../knowledgeManager');
         const km = new KnowledgeManager(context);
         await km.resetKnowledge();
@@ -54,9 +62,9 @@ export async function registerCommands(
             ChatPanel.currentPanel.updateContextAndTokens({ isBackgroundSync: false });
         }
         vscode.window.showInformationMessage("🧹 Knowledge Graph (.lollms/knowledge.ttl) has been reset.");
-    }));
+    });
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.scrutinizeKnowledgeTree', async () => {
+    safeRegisterCmd('lollms-vs-coder.scrutinizeKnowledgeTree', async () => {
         const panel = ChatPanel.currentPanel;
         if (panel) {
             await panel.handleScrutinizeKnowledgeTree();
@@ -85,9 +93,9 @@ export async function registerCommands(
                 vscode.window.showInformationMessage(`✅ Knowledge Graph ABox populated in .lollms/knowledge.ttl!`);
             });
         }
-    }));
+    });
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openKnowledgeRoot', async () => {
+    safeRegisterCmd('lollms-vs-coder.openKnowledgeRoot', async () => {
         const { KnowledgeManager } = await import('../knowledgeManager');
         const km = new KnowledgeManager(context);
         const uri = km.getKnowledgeTtlUri();
@@ -99,10 +107,12 @@ export async function registerCommands(
                 vscode.window.showErrorMessage(`Failed to open knowledge.ttl: ${err.message}`);
             }
         }
-    }));
+    });
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.testAndOptimizeModel', async (targetModel?: string) => {
+    safeRegisterCmd('lollms-vs-coder.testAndOptimizeModel', async (targetModel?: string) => {
         const { ModelOptimizerPanel } = await import('../commands/modelOptimizerPanel');
         ModelOptimizerPanel.createOrShow(services.extensionUri, services.lollmsAPI, services, targetModel);
-    }));
+    });
+
+
 }

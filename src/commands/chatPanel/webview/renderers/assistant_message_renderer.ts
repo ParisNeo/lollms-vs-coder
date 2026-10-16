@@ -18,10 +18,11 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
     const isLibrarian = !isContextShield && (isLibrarianReport || safeMessageId.startsWith('governor_') || safeMessageId.startsWith('librarian_') || wrapper.dataset.personalityName?.includes('Governor') || wrapper.dataset.personalityName?.includes('Librarian'));
     const isSystem = !isLibrarian && !isContextShield && (safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message'));
 
-    // Update avatar icon for Librarian or Context Shield
+    const msgDiv = wrapper.querySelector('.message') as HTMLElement;
+
+    // Update avatar icon and color theme for Librarian or Context Shield
     if (isContextShield) {
         const avatarDiv = wrapper.querySelector('.message-avatar') as HTMLElement;
-        const msgDiv = wrapper.querySelector('.message') as HTMLElement;
         if (avatarDiv) {
             avatarDiv.innerHTML = '<span class="codicon codicon-shield" style="color:var(--vscode-charts-blue)"></span>';
             avatarDiv.style.backgroundColor = 'rgba(0, 122, 204, 0.1)';
@@ -32,13 +33,13 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
         }
     } else if (isLibrarian) {
         const avatarDiv = wrapper.querySelector('.message-avatar') as HTMLElement;
-        const msgDiv = wrapper.querySelector('.message') as HTMLElement;
         if (avatarDiv) {
             avatarDiv.innerHTML = '<span class="codicon codicon-library" style="color:var(--vscode-charts-orange)"></span>';
-            avatarDiv.style.backgroundColor = 'rgba(214, 122, 13, 0.1)';
+            avatarDiv.style.backgroundColor = 'rgba(214, 122, 13, 0.18)';
             avatarDiv.style.border = '1px solid var(--vscode-charts-orange)';
         }
         if (msgDiv) {
+            msgDiv.classList.add('librarian-message');
             msgDiv.style.borderLeftColor = 'var(--vscode-charts-orange)';
         }
     }

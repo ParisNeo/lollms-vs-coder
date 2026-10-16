@@ -162,6 +162,11 @@ function saveState() {
     if (undoStack.length > 50) undoStack.shift();
 }
 
+function loadState(stateJson: string) {
+    try { annotationShapes = JSON.parse(stateJson); } catch { annotationShapes = []; }
+    redrawCanvas();
+}
+
 function undo() {
     if (undoStack.length < 2) return; 
     const current = undoStack.pop()!;
@@ -1187,7 +1192,8 @@ function showTextInput(x: number, y: number, w: number, h: number, screenPos: an
             commitTextToCanvas();
         } else if (e.key === 'Escape') {
             input.style.display = 'none';
-            loadState(undoStack[undoStack.length - 1]); // Clean up the preview box
+            annotationShapes = JSON.parse(undoStack[undoStack.length - 1] || '[]'); // Clean up the preview box
+            redrawCanvas();
         }
     };
 }
@@ -1503,6 +1509,7 @@ export function renderProfilesInModal() {
     });
 
     // Delegate Events
+    if (!container) return;
     container.querySelectorAll('.edit-p-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
@@ -1771,14 +1778,15 @@ export function closeSovereignZoom() {
 // Presentation templates decoupled from direct DOM bindings and layout managers.
 export class BadgesPresenter {
     public static renderModelBadge(model: string): string {
-        return `<span class="mode-badge model clickable" title="Current Model (Click to change)"><span class="codicon codicon-hubot"></span> ${model}</span>`;
+        return `<span class="mode-badge model clickable" title="Current Model (Click to change)"><span class="codicon codicon-hubot"></span> <span class="badge-label">${model}</span></span>`;
     }
 
     public static renderPersonalityBadge(currentPName: string): string {
         return `
-        <div class="badge-wrapper" style="position: relative;">
+        <div class="badge-wrapper">
             <span id="personality-badge" class="mode-badge personality clickable" title="Active Personality: ${currentPName}. Click to switch.">
-                <span class="codicon codicon-account"></span> <span class="badge-label">${currentPName}</span>
+                <span class="codicon codicon-account" style="color:var(--vscode-charts-orange);"></span>
+                <span class="badge-label">${currentPName}</span>
             </span>
             <div id="personality-menu" class="custom-menu hidden"></div>
         </div>`;
@@ -1786,9 +1794,10 @@ export class BadgesPresenter {
 
     public static renderResponseProfileBadge(profileName: string, profileDesc: string): string {
         return `
-        <div class="badge-wrapper" style="position: relative;">
-            <span class="mode-badge active clickable response-profile-trigger" style="background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);" title="Current Mode: ${profileName}\n${profileDesc}">
-                <span class="codicon codicon-settings"></span> <span class="badge-label">${profileName}</span>
+        <div class="badge-wrapper">
+            <span class="mode-badge active clickable response-profile-trigger profile-badge-style" title="Current Mode: ${profileName}\n${profileDesc}">
+                <span class="codicon codicon-settings" style="opacity:0.8;"></span>
+                <span class="badge-label">${profileName}</span>
             </span>
             <div id="profile-menu" class="custom-menu hidden"></div>
         </div>`;
@@ -1796,21 +1805,22 @@ export class BadgesPresenter {
 
     public static renderOptionsHubBadge(iconsLabel: string): string {
         return `
-        <div class="badge-wrapper hud-options-parent" style="position: relative;">
-            <span class="mode-badge active clickable hud-options-trigger" style="background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border-color: var(--vscode-widget-border);" title="Sovereign HUD Options (Click to configure protocols)">
+        <div class="badge-wrapper hud-options-parent">
+            <span class="mode-badge active clickable hud-options-trigger options-hub-badge" title="Sovereign Protocols & Options (Click to toggle)">
                 <span class="codicon codicon-settings-gear"></span> 
-                <span class="badge-label" style="margin-left: 4px; letter-spacing: 0.5px; font-weight: bold;">HUD: ${iconsLabel}</span>
+                <span class="badge-label">${iconsLabel}</span>
             </span>
             <div id="hud-options-menu" class="custom-menu hidden" style="min-width: 260px; padding: 8px 10px; gap: 6px;"></div>
         </div>`;
     }
 
     public static renderOperationalModeBadge(activeModeClass: string, activeModeColor: string, activeModeLabel: string, activeModeTitle: string): string {
-        const customStyle = (activeModeClass !== 'inactive') ? `style="background-color: ${activeModeColor}; color: white;"` : '';
+        const customStyle = (activeModeClass !== 'inactive') ? `style="background-color: ${activeModeColor}; color: white; border-color: ${activeModeColor};"` : '';
         return `
-        <div class="badge-wrapper" style="position: relative;">
+        <div class="badge-wrapper">
             <span class="mode-badge ${activeModeClass} clickable mode-dropdown-trigger" ${customStyle} title="${activeModeTitle} Click to switch modes.">
-                <span class="codicon codicon-unfold"></span> <span class="badge-label">${activeModeLabel}</span>
+                <span class="badge-label">${activeModeLabel}</span>
+                <span class="codicon codicon-chevron-down" style="font-size: 9px; opacity: 0.8; margin-left: 2px;"></span>
             </span>
             <div id="mode-dropdown-menu" class="custom-menu hidden"></div>
         </div>`;
@@ -2193,7 +2203,7 @@ export function updateBadges() {
     if (!state.capabilities) {
         console.log("[Lollms Debug] updateBadges: using fallback empty capabilities for early rendering.");
         state.capabilities = {
-            generationFormats: { fullFile: true, partialFormat: 'aider' },
+            generationFormats: { fullFile: true, diff: true, aider: true },
             autoApply: false,
             autoFix: false,
             autoBranch: false,
@@ -2247,7 +2257,7 @@ export function updateBadges() {
         };
     }
 
-    const caps = state.capabilities;
+    const caps: any = state.capabilities;
     container.innerHTML = '';
 
     const isAgentActive = caps.agentMode === true;
@@ -2303,32 +2313,7 @@ export function updateBadges() {
         infraGroup.appendChild(badgeWrapper);
     }
 
-    // --- Auxiliary HUD Options Dropdown Hub ---
-    const wasOptionsMenuOpen = document.getElementById('hud-options-menu')?.classList.contains('visible') || false;
-
-    const activeIcons: string[] = [];
-    if (caps.thinkingMode) activeIcons.push('🧠');
-    if (caps.sparqlEnabled !== false) activeIcons.push('📊');
-    if (caps.grepEnabled !== false) activeIcons.push('🔍');
-    if (caps.webSearch === true) activeIcons.push('🌍');
-    if (caps.projectMemoryEnabled !== false) activeIcons.push('🧬');
-    if (caps.autoSkillMode === true) activeIcons.push('💡');
-    if (caps.autoApply === true) activeIcons.push('⚡');
-    if (caps.debugMode === true) activeIcons.push('🐞');
-    if (caps.verifierMode === true) activeIcons.push('🛡️');
-    if (caps.testMode === true) activeIcons.push('🧪');
-    if (caps.documentationMode === true) activeIcons.push('📖');
-    if (caps.gitAutoWorkflow === true) activeIcons.push('🐙');
-    if (caps.herdMode === true) activeIcons.push('🐂');
-
-    const iconsLabel = activeIcons.length > 0 ? activeIcons.join(' ') : '⚙️';
-    const optDiv = document.createElement('div');
-    optDiv.innerHTML = BadgesPresenter.renderOptionsHubBadge(iconsLabel);
-    const optionsParentGroup = optDiv.firstElementChild as HTMLElement;
-    BadgesBinder.bindOptionsHubMenu(optionsParentGroup, caps, wasOptionsMenuOpen);
-    container.appendChild(optionsParentGroup);
-
-    // --- OPERATIONAL MODE GROUP (Fused Assistant / Agent) ---
+    // --- OPERATIONAL MODE GROUP (Fused Assistant / Agent) MOVED DIRECTLY NEXT TO MODEL/PERSONALITY ---
     const isAgent = caps.agentMode === true;
     const isAssistant = !isAgent;
 
@@ -2365,13 +2350,42 @@ export function updateBadges() {
         }
     }
 
-    // --- GIT FLOW DETAILS ---
-    if (caps.gitWorkflow && state.currentBranch) {
-        const gitDiv = document.createElement('div');
-        gitDiv.innerHTML = BadgesPresenter.renderGitBadge(state.currentBranch);
-        const gitWrapper = gitDiv.firstElementChild as HTMLElement;
-        BadgesBinder.bindGitMenu(gitWrapper);
-        container.appendChild(gitWrapper);
+    // --- Auxiliary HUD Options Dropdown Hub (⚙️ 📊 🔍) ---
+    const wasOptionsMenuOpen = document.getElementById('hud-options-menu')?.classList.contains('visible') || false;
+
+    const activeIcons: string[] = [];
+    if (caps.thinkingMode) activeIcons.push('🧠');
+    if (caps.sparqlEnabled !== false) activeIcons.push('📊');
+    if (caps.grepEnabled !== false) activeIcons.push('🔍');
+    if (caps.webSearch === true) activeIcons.push('🌍');
+    if (caps.projectMemoryEnabled !== false) activeIcons.push('🧬');
+    if (caps.autoSkillMode === true) activeIcons.push('💡');
+    if (caps.autoApply === true) activeIcons.push('⚡');
+    if (caps.debugMode === true) activeIcons.push('🐞');
+    if (caps.verifierMode === true) activeIcons.push('🛡️');
+    if (caps.testMode === true) activeIcons.push('🧪');
+    if (caps.documentationMode === true) activeIcons.push('📖');
+    if (caps.gitAutoWorkflow === true) activeIcons.push('🐙');
+    if (caps.herdMode === true) activeIcons.push('🐂');
+
+    const iconsLabel = activeIcons.length > 0 ? activeIcons.join(' ') : '⚙️';
+    const optDiv = document.createElement('div');
+    optDiv.innerHTML = BadgesPresenter.renderOptionsHubBadge(iconsLabel);
+    const optionsParentGroup = optDiv.firstElementChild as HTMLElement;
+    BadgesBinder.bindOptionsHubMenu(optionsParentGroup, caps, wasOptionsMenuOpen);
+    container.appendChild(optionsParentGroup);
+
+    // --- GIT FLOW DETAILS (Rendered in the Second Line Container alongside Search) ---
+    const secondaryGitContainer = document.getElementById('hud-secondary-git-container');
+    if (secondaryGitContainer) {
+        secondaryGitContainer.innerHTML = '';
+        if (caps.gitWorkflow && state.currentBranch) {
+            const gitDiv = document.createElement('div');
+            gitDiv.innerHTML = BadgesPresenter.renderGitBadge(state.currentBranch);
+            const gitWrapper = gitDiv.firstElementChild as HTMLElement;
+            BadgesBinder.bindGitMenu(gitWrapper);
+            secondaryGitContainer.appendChild(gitWrapper);
+        }
     }
 
     // Initialize capability bindings
@@ -2415,7 +2429,7 @@ export function updateBadges() {
         return;
     }
 
-    const newProfile: ResponseProfile = {
+    const newProfile: any = {
         id: currentEditingProfileIdx === -1 ? `custom_${Date.now()}` : state.profiles[currentEditingProfileIdx].id,
         name,
         description: desc,
@@ -2995,7 +3009,7 @@ export function renderDiscussionSearchResults(results: any[], query: string) {
         // Also allow single click for convenience but with a small delay or button
         item.addEventListener('click', (e) => {
             // Highlight selected item
-            container.querySelectorAll('.search-result-item').forEach(i => i.style.backgroundColor = '');
+            container.querySelectorAll('.search-result-item').forEach(i => (i as HTMLElement).style.backgroundColor = '');
             (item as HTMLElement).style.backgroundColor = 'var(--vscode-list-activeSelectionBackground)';
             (item as HTMLElement).style.color = 'var(--vscode-list-activeSelectionForeground)';
         });
@@ -3394,7 +3408,7 @@ export function renderContextUsage(usage: any[]) {
 
     // Sort buttons listener
     container.querySelectorAll('.sort-btn').forEach(btn => {
-        btn.onclick = (e) => {
+        (btn as HTMLElement).onclick = (e) => {
             e.stopPropagation();
             const col = (btn as HTMLElement).dataset.col as 'name' | 'tokens';
             if (col) {
@@ -3454,7 +3468,7 @@ export function renderToolPicker(allTools: any[], discussionTools: string[], pro
 
     if (searchInp) searchInp.value = '';
 
-    const isAssistant = isAssistantMode || (!state.capabilities?.agentMode && !state.capabilities?.dynamicMode);
+    const isAssistant = isAssistantMode || (!state.capabilities?.agentMode && !(state.capabilities as any)?.dynamicMode);
 
     const renderList = (filter = "") => {
         const query = filter.toLowerCase();
@@ -3536,7 +3550,7 @@ export function renderToolPicker(allTools: any[], discussionTools: string[], pro
             modal.classList.remove('visible');
 
             if (state.capabilities) {
-                state.capabilities.importedTools = chatTools;
+                (state.capabilities as any).importedTools = chatTools;
             }
             updateBadges();
             vscode.postMessage({ command: 'calculateTokens' });
@@ -3630,6 +3644,7 @@ export const fileRepairStudioState = {
     blockIndex: undefined as number | undefined,
     blockId: undefined as string | undefined,
     errors: [] as FileDiagnosticError[],
+    selectedErrorIndexes: new Set<number>(),
     currentCode: '',
     history: [] as { role: 'user' | 'assistant'; text: string; patchApplied?: boolean }[],
     round: 0,
@@ -3724,13 +3739,39 @@ export function renderRepairErrorsList() {
     const topStats = document.getElementById('repair-top-stats');
     const counterBadge = document.getElementById('repair-error-counter-badge');
     const footerSummary = document.getElementById('repair-footer-summary');
+    const selectAllCheck = document.getElementById('repair-select-all-errors') as HTMLInputElement | null;
+    const selectedCountLabel = document.getElementById('repair-selected-errors-count');
+    const toolbar = document.getElementById('repair-errors-selection-toolbar');
 
     if (!listEl) return;
 
     const errors = fileRepairStudioState.errors || [];
     const count = errors.length;
 
+    // By default, if selectedErrorIndexes is uninitialized or invalid, select all errors
+    if (!fileRepairStudioState.selectedErrorIndexes || fileRepairStudioState.selectedErrorIndexes.size === 0) {
+        fileRepairStudioState.selectedErrorIndexes = new Set<number>(errors.map((_, i) => i));
+    } else {
+        // Prune any indexes that are out of bounds
+        const validIndexes = new Set<number>();
+        fileRepairStudioState.selectedErrorIndexes.forEach(i => {
+            if (i >= 0 && i < count) validIndexes.add(i);
+        });
+        fileRepairStudioState.selectedErrorIndexes = validIndexes.size > 0 ? validIndexes : new Set(errors.map((_, i) => i));
+    }
+
+    const selectedCount = fileRepairStudioState.selectedErrorIndexes.size;
+
     if (spottedCountEl) spottedCountEl.textContent = String(count);
+    if (selectedCountLabel) selectedCountLabel.textContent = `(${selectedCount} of ${count} selected)`;
+    if (selectAllCheck) {
+        selectAllCheck.checked = count > 0 && selectedCount === count;
+        selectAllCheck.indeterminate = selectedCount > 0 && selectedCount < count;
+    }
+    if (toolbar) {
+        toolbar.style.display = count > 0 ? 'flex' : 'none';
+    }
+
     if (topStats) {
         const fileName = (fileRepairStudioState.filePath || 'File').split(/[\\/]/).pop() || 'File';
         topStats.textContent = `${fileName} · ${count} Error${count === 1 ? '' : 's'}`;
@@ -3743,7 +3784,7 @@ export function renderRepairErrorsList() {
     if (footerSummary) {
         footerSummary.textContent = count === 0 
             ? '🎉 All errors have been resolved! Click Accept & Keep File to close.' 
-            : `${count} error(s) remaining. You can accept and keep the file at any time.`;
+            : `${count} error(s) remaining (${selectedCount} targeted for next fix). You can accept at any time.`;
     }
 
     if (count === 0) {
@@ -3757,16 +3798,89 @@ export function renderRepairErrorsList() {
         return;
     }
 
-    listEl.innerHTML = errors.map((e, idx) => `
-        <div class="repair-error-card" data-idx="${idx}" data-line="${e.line}">
-            <div class="repair-error-header">
-                <span class="error-line-badge">Line ${e.line}:${e.character}</span>
+    listEl.innerHTML = errors.map((e, idx) => {
+        const isSelected = fileRepairStudioState.selectedErrorIndexes.has(idx);
+        return `
+        <div class="repair-error-card ${isSelected ? 'targeted-error' : 'unselected-error'}" data-idx="${idx}" data-line="${e.line}" style="cursor: pointer; opacity: ${isSelected ? '1' : '0.55'}; transition: opacity 0.15s, border-color 0.15s;">
+            <div class="repair-error-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <input type="checkbox" class="repair-error-checkbox" data-idx="${idx}" ${isSelected ? 'checked' : ''} style="margin: 0; cursor: pointer;">
+                    <span class="error-line-badge">Line ${e.line}:${e.character}</span>
+                </div>
                 <span class="error-source">${sanitizer.sanitize(e.source || e.code || 'Diagnostics')}</span>
             </div>
-            <div class="repair-error-msg">${sanitizer.sanitize(e.message)}</div>
+            <div class="repair-error-msg" style="margin-top: 4px;">${sanitizer.sanitize(e.message)}</div>
             ${e.snippet ? `<div class="repair-error-snippet"><code>${sanitizer.sanitize(e.snippet)}</code></div>` : ''}
         </div>
-    `).join('');
+        `;
+    }).join('');
+
+    // Attach row & checkbox listeners for interactive toggling
+    listEl.querySelectorAll('.repair-error-card').forEach((card: any) => {
+        const idx = parseInt(card.dataset.idx, 10);
+        const cb = card.querySelector('.repair-error-checkbox') as HTMLInputElement | null;
+
+        card.onclick = (e: MouseEvent) => {
+            if ((e.target as HTMLElement).tagName === 'INPUT') return;
+            e.stopPropagation();
+            if (fileRepairStudioState.selectedErrorIndexes.has(idx)) {
+                fileRepairStudioState.selectedErrorIndexes.delete(idx);
+            } else {
+                fileRepairStudioState.selectedErrorIndexes.add(idx);
+            }
+            renderRepairErrorsList();
+        };
+
+        if (cb) {
+            cb.onchange = (e: Event) => {
+                e.stopPropagation();
+                if (cb.checked) {
+                    fileRepairStudioState.selectedErrorIndexes.add(idx);
+                } else {
+                    fileRepairStudioState.selectedErrorIndexes.delete(idx);
+                }
+                renderRepairErrorsList();
+            };
+        }
+    });
+
+    // Wire up toolbar buttons (Select All, None, Invert)
+    if (selectAllCheck) {
+        selectAllCheck.onchange = () => {
+            if (selectAllCheck.checked) {
+                fileRepairStudioState.selectedErrorIndexes = new Set<number>(errors.map((_, i) => i));
+            } else {
+                fileRepairStudioState.selectedErrorIndexes.clear();
+            }
+            renderRepairErrorsList();
+        };
+    }
+
+    const selectNoneBtn = document.getElementById('repair-select-none-btn');
+    if (selectNoneBtn) {
+        selectNoneBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            fileRepairStudioState.selectedErrorIndexes.clear();
+            renderRepairErrorsList();
+        };
+    }
+
+    const selectInvertBtn = document.getElementById('repair-select-invert-btn');
+    if (selectInvertBtn) {
+        selectInvertBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const inverted = new Set<number>();
+            errors.forEach((_, i) => {
+                if (!fileRepairStudioState.selectedErrorIndexes.has(i)) {
+                    inverted.add(i);
+                }
+            });
+            fileRepairStudioState.selectedErrorIndexes = inverted;
+            renderRepairErrorsList();
+        };
+    }
 }
 (window as any).renderRepairErrorsList = renderRepairErrorsList;
 
@@ -3780,10 +3894,19 @@ export function renderRepairCodePreview(codeText?: string) {
 
 export function setRepairRunningState(isRunning: boolean) {
     fileRepairStudioState.isRunning = isRunning;
-    const runBtn = document.getElementById('repair-run-btn') as HTMLButtonElement;
-    const runIcon = document.getElementById('repair-run-icon');
+    const runBtn = document.getElementById('repair-run-btn') as HTMLButtonElement | null;
     const stepInd = document.getElementById('repair-step-indicator');
     const statusText = document.getElementById('repair-round-status');
+    const modelSelect = document.getElementById('repair-model-select') as HTMLSelectElement | null;
+    const tempSelect = document.getElementById('repair-temp-select') as HTMLSelectElement | null;
+    const effortSelect = document.getElementById('repair-effort-select') as HTMLSelectElement | null;
+    const promptInput = document.getElementById('repair-prompt-input') as HTMLTextAreaElement | null;
+
+    // Keep dropdowns and prompt editable whenever generation stops
+    if (modelSelect) modelSelect.disabled = isRunning;
+    if (tempSelect) tempSelect.disabled = isRunning;
+    if (effortSelect) effortSelect.disabled = isRunning;
+    if (promptInput) promptInput.disabled = isRunning;
 
     if (runBtn) {
         if (isRunning) {
@@ -3808,7 +3931,7 @@ export function setRepairRunningState(isRunning: boolean) {
     }
 
     if (statusText && !isRunning) {
-        statusText.textContent = 'Ready';
+        statusText.textContent = 'Ready (Configure settings & click Fix)';
     }
 }
 (window as any).setRepairRunningState = setRepairRunningState;
@@ -3958,9 +4081,10 @@ export function openFileRepairStudio(
         };
     }
 
-    // Bind temperature dropdown
+    // Populate temperature dropdown
     const tempSelect = document.getElementById('repair-temp-select') as HTMLSelectElement;
     if (tempSelect) {
+        tempSelect.disabled = false;
         tempSelect.value = fileRepairStudioState.temperature !== undefined ? String(fileRepairStudioState.temperature) : '0.2';
         tempSelect.onchange = () => {
             fileRepairStudioState.temperature = tempSelect.value === 'auto' ? undefined : parseFloat(tempSelect.value);
@@ -3970,10 +4094,15 @@ export function openFileRepairStudio(
     // Bind reasoning effort dropdown
     const effortSelect = document.getElementById('repair-effort-select') as HTMLSelectElement;
     if (effortSelect) {
+        effortSelect.disabled = false;
         effortSelect.value = fileRepairStudioState.reasoningEffort || 'medium';
         effortSelect.onchange = () => {
             fileRepairStudioState.reasoningEffort = effortSelect.value as any;
         };
+    }
+
+    if (modelSelect) {
+        modelSelect.disabled = false;
     }
 
     // Default to Errors tab
@@ -3999,15 +4128,23 @@ export function openFileRepairStudio(
     modal.style.display = 'flex';
     modal.classList.add('visible');
 
-    // Automatically initiate Round 1 repair pass
-    setTimeout(() => {
-        triggerRepairPass();
-    }, 200);
+    // Ensure repair is not started automatically, giving user full control over settings & error selection
+    setRepairRunningState(false);
 }
 (window as any).openFileRepairStudio = openFileRepairStudio;
 
 export function triggerRepairPass(promptText?: string) {
     if (fileRepairStudioState.isRunning) return;
+
+    // Filter target errors based on user checkboxes
+    const allErrors = fileRepairStudioState.errors || [];
+    const selectedIdxs = fileRepairStudioState.selectedErrorIndexes || new Set<number>();
+    const targetedErrors = allErrors.filter((_, idx) => selectedIdxs.has(idx));
+
+    if (allErrors.length > 0 && targetedErrors.length === 0) {
+        vscode.postMessage({ command: 'showError', message: 'Please select at least one error to repair, or click "Select All".' });
+        return;
+    }
 
     fileRepairStudioState.round++;
     setRepairRunningState(true);
@@ -4041,7 +4178,7 @@ export function triggerRepairPass(promptText?: string) {
         prompt: promptText,
         round: fileRepairStudioState.round,
         maxRounds: fileRepairStudioState.maxRounds,
-        errors: fileRepairStudioState.errors,
+        errors: targetedErrors.length > 0 ? targetedErrors : allErrors,
         model: selectedModel,
         temperature: parsedTemp,
         reasoningEffort: selectedEffort
@@ -4977,7 +5114,7 @@ export function renderWizardMatrix() {
     if (!container) return;
 
     const workspaceFolders = (window as any).workspaceFolders || (state as any).workspaceFolders || [];
-    const folderSettings = state.capabilities?.folderSettings || {};
+    const folderSettings = (state.capabilities as any)?.folderSettings || {};
 
     container.innerHTML = '';
     const validFolders = workspaceFolders.filter((f: any) => f && f.uri);
@@ -5029,14 +5166,14 @@ export function renderWizardMatrix() {
             (btn as HTMLElement).onclick = (e) => {
                 e.stopPropagation();
                 const type = (btn as HTMLElement).dataset.type as 'tree' | 'content';
-                const currentSettings = { ... (state.capabilities?.folderSettings || {}) };
+                const currentSettings = { ... ((state.capabilities as any)?.folderSettings || {}) };
                 const nodeSettings = currentSettings[uriKey] || { tree: true, content: true };
 
                 nodeSettings[type] = !nodeSettings[type];
                 currentSettings[uriKey] = nodeSettings;
 
                 if (state.capabilities) {
-                    state.capabilities.folderSettings = currentSettings;
+                    (state.capabilities as any).folderSettings = currentSettings;
                 }
 
                 // Render local changes instantly in wizard
@@ -5064,7 +5201,7 @@ export function renderWorkspaceMatrix() {
     const workspaceFolders = (window as any).workspaceFolders || (state as any).workspaceFolders || [];
 
     // Crucial: Use an empty object fallback for settings to prevent undefined errors
-    const folderSettings = state.capabilities?.folderSettings || {};
+    const folderSettings = (state.capabilities as any)?.folderSettings || {};
 
     container.innerHTML = '';
 
@@ -5121,7 +5258,7 @@ export function renderWorkspaceMatrix() {
             (btn as HTMLElement).onclick = (e) => {
                 e.stopPropagation();
                 const type = (btn as HTMLElement).dataset.type as 'tree' | 'content';
-                const currentSettings = JSON.parse(JSON.stringify(state.capabilities?.folderSettings || {}));
+                const currentSettings = JSON.parse(JSON.stringify((state.capabilities as any)?.folderSettings || {}));
                 const nodeSettings = currentSettings[uriKey] || { tree: true, content: true };
 
                 // Toggle setting
@@ -5564,8 +5701,8 @@ function renderSplitDiff(oldText: string, patch: string) {
     container.appendChild(leftPane);
     container.appendChild(rightPane);
 
-    const leftScroll = leftPane.querySelector('#left-diff')!;
-    const rightScroll = rightPane.querySelector('#right-diff')!;
+    const leftScroll = leftPane.querySelector('#left-diff') as HTMLElement;
+    const rightScroll = rightPane.querySelector('#right-diff') as HTMLElement;
 
     // Simple side-by-side reconstruction
     // We iterate through both and highlight the changes

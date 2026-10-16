@@ -232,6 +232,7 @@
                                 <span class="menu-arrow">›</span>
                             </div>
                             <div class="menu-separator"></div>
+                            <button class="menu-item" id="openCompanionMenuBtn"><i class="codicon codicon-sparkle"></i><span>Lollms Companion (Quick Edit - Ctrl+Shift+L)</span></button>
                             <button class="menu-item" id="newDiscussionSameContextBtn"><i class="codicon codicon-repo-forked"></i><span>New Discussion (Same Files & Muted States)</span></button>
                             <button class="menu-item" id="forkAndCompressMenuBtn"><i class="codicon codicon-git-pull-request"></i><span>Fork & Compress Chat History</span></button>
                             <button class="menu-item" id="compressHistoryMenuBtn"><i class="codicon codicon-fold"></i><span>Compress Chat History (In-Place)</span></button>
@@ -746,10 +747,18 @@
 
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;">
                             <div>
-                                <label style="font-size: 11px; font-weight:bold; margin:0;">Librarian Max Negotiation Rounds</label>
-                                <p style="font-size: 10px; opacity: 0.7; margin:2px 0 0 0;">Max verification & scouting rounds before finalizing context selection (default: 20).</p>
+                                <label style="font-size: 11px; font-weight:bold; margin:0;">Worker ↔ Librarian Debate Turns</label>
+                                <p style="font-size: 10px; opacity: 0.7; margin:2px 0 0 0;">How many times the Worker can invoke the Librarian per user request (default: 2).</p>
                             </div>
-                            <input type="number" id="modal-governor-max-rounds" min="1" max="30" value="20" style="width: 55px; height: 24px; text-align: center;">
+                            <input type="number" id="modal-librarian-debate-turns" min="1" max="10" value="2" style="width: 55px; height: 24px; text-align: center;">
+                        </div>
+
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;">
+                            <div>
+                                <label style="font-size: 11px; font-weight:bold; margin:0;">Librarian Tool Rounds (Internal)</label>
+                                <p style="font-size: 10px; opacity: 0.7; margin:2px 0 0 0;">Max consecutive tool calls (grep, peek, read, sparql) per consultation (default: 15).</p>
+                            </div>
+                            <input type="number" id="modal-governor-max-rounds" min="1" max="30" value="15" style="width: 55px; height: 24px; text-align: center;">
                         </div>
 
                         <div class="checkbox-container" style="margin-top: 12px;">
@@ -1155,6 +1164,19 @@
                         <div style="display: flex; gap: 6px;">
                             <button type="button" id="repair-tab-errors-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 8px; font-weight: bold;">Errors</button>
                             <button type="button" id="repair-tab-code-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 8px;">Code</button>
+                        </div>
+                    </div>
+
+                    <!-- Spotted Errors Header Toolbar: Select All / Select None & Selection Count -->
+                    <div id="repair-errors-selection-toolbar" style="padding: 6px 12px; background: var(--vscode-editor-background); border-bottom: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center; font-size: 11px;">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <input type="checkbox" id="repair-select-all-errors" checked style="margin: 0; cursor: pointer;">
+                            <label for="repair-select-all-errors" style="font-weight: 600; cursor: pointer; user-select: none;">Select All</label>
+                            <span id="repair-selected-errors-count" style="opacity: 0.7; font-size: 10px; margin-left: 4px;">(0 of 0 selected)</span>
+                        </div>
+                        <div style="display: flex; gap: 4px;">
+                            <button type="button" id="repair-select-none-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px;" title="Deselect all errors">None</button>
+                            <button type="button" id="repair-select-invert-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px;" title="Invert current error selection">Invert</button>
                         </div>
                     </div>
 

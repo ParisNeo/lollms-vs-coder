@@ -164,7 +164,9 @@ export const fileMutationPlugin: TagPlugin = {
         const actionIcon = isPatch ? 'codicon-diff-modified' : (symbol ? 'codicon-symbol-method' : 'codicon-file-code');
 
         const ext = filePath.split('.').pop() || 'plaintext';
-        const isStreaming = !context.isFinal && !match[0].includes('</file>');
+        // Only mark as streaming if the message is genuinely still in-flight AND global state is generating
+        const isActivelyGenerating = state.isGenerating || (window as any).state?.isGenerating;
+        const isStreaming = !context.isFinal && isActivelyGenerating && !match[0].includes('</file>');
 
         // Check persisted state
         const activeState = state?.appliedState ? state : (window as any).state;

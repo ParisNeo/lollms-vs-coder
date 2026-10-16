@@ -40,8 +40,10 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
         const actions: ActionItem[] = [];
 
         if (hasWorkspace) {
+            actions.push(new ActionItem('Open Lollms Companion (Quick Edit/Ask)', 'lollms-vs-coder.quickEdit', 'sparkle', 'Open floating Companion window for fast edits and questions (Ctrl+Shift+L)'));
             actions.push(new ActionItem(vscode.l10n.t('Reconfigure Project DNA & Style'), 'lollms-vs-coder.retriggerOnboarding', 'settings-gear', 'Update Destiny, objectives, and styling preferences'));
             actions.push(new ActionItem('Consult Librarian (Knowledge & Context)', 'lollms-vs-coder.governorFilterFiles', 'library', 'Scout codebase, query KNOWLEDGE.md, and optimize context files using AI'));
+            actions.push(new ActionItem('Open Architecture & Knowledge Graph Studio', 'lollms-vs-coder.showKnowledgeGraphPanel', 'graph', 'Explore ontology graph, run SPARQL queries, and discuss the codebase with the AI Copilot'));
             actions.push(new ActionItem('Sync Architecture to Knowledge Graph', 'lollms-vs-coder.scrutinizeKnowledgeTree', 'sparkle', 'Synchronize codebase AST symbols and call graphs to .lollms/knowledge.ttl'));
             actions.push(new ActionItem('Reset Knowledge Graph (.lollms/knowledge.ttl)', 'lollms-vs-coder.resetKnowledge', 'trash', 'Wipe all triples from .lollms/knowledge.ttl'));
             actions.push(new ActionItem('Open Knowledge Graph (.lollms/knowledge.ttl)', 'lollms-vs-coder.openKnowledgeRoot', 'graph', 'Open knowledge.ttl in editor'));

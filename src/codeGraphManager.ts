@@ -148,7 +148,7 @@ function extractDocstring(lines, index, ext) {
                     return inner.slice(0, inner.indexOf(quote)).trim();
                 }
                 const docLines = [trimmed.slice(3)];
-                for (let j = i + 1; j < Math.min(lines.length, i + 35); j++) {
+                for (let j = i + 1; j < Math.min(lines.length, i + 45); j++) {
                     const nextTrim = lines[j].trim();
                     if (nextTrim.includes(quote)) {
                         docLines.push(nextTrim.slice(0, nextTrim.indexOf(quote)));
@@ -161,19 +161,19 @@ function extractDocstring(lines, index, ext) {
             break;
         }
     } else {
-        // JS, TS, Java, C#, C++, Rust: check lines immediately preceding declaration
+        // Doxygen / JSDoc / Javadoc / Rustdoc / C# XML doc comments preceding declaration
         let i = index - 1;
-        while (i >= 0 && lines[i].trim().startsWith('@')) {
-            i--; // Skip decorators (@Component, @Injectable, etc.)
+        while (i >= 0 && (lines[i].trim().startsWith('@') || lines[i].trim().startsWith('['))) {
+            i--; // Skip decorators or C# attributes
         }
         if (i >= 0 && lines[i].trim().endsWith('*/')) {
             const docLines = [];
             let inBlock = true;
             while (i >= 0 && inBlock) {
                 const line = lines[i].trim();
-                if (line.startsWith('/**') || line.startsWith('/*')) {
+                if (line.startsWith('/**') || line.startsWith('/*!') || line.startsWith('/*')) {
                     inBlock = false;
-                    const clean = line.replace(/^\\/\\*\\*?/, '').replace(/\\*\\/$/, '').trim();
+                    const clean = line.replace(/^\\/\\*[*!]?/, '').replace(/\\*\\/$/, '').trim();
                     if (clean) docLines.unshift(clean);
                 } else {
                     const clean = line.replace(/^\\*\\s?/, '').replace(/\\*\\/$/, '').trim();
@@ -182,10 +182,10 @@ function extractDocstring(lines, index, ext) {
                 i--;
             }
             return docLines.join(' ').replace(/\\s+/g, ' ').trim();
-        } else if (i >= 0 && (lines[i].trim().startsWith('///') || lines[i].trim().startsWith('//'))) {
+        } else if (i >= 0 && (lines[i].trim().startsWith('///') || lines[i].trim().startsWith('//!'))) {
             const docLines = [];
-            while (i >= 0 && (lines[i].trim().startsWith('///') || lines[i].trim().startsWith('//'))) {
-                const clean = lines[i].trim().replace(/^\\/\\/\\/?\\s?/, '');
+            while (i >= 0 && (lines[i].trim().startsWith('///') || lines[i].trim().startsWith('//!'))) {
+                const clean = lines[i].trim().replace(/^\\/\\/([/!])?\\s?/, '');
                 docLines.unshift(clean);
                 i--;
             }
@@ -419,12 +419,13 @@ export class CodeGraphManager {
                 }
             }
 
-            // 2. EXTRACT CALLS
-            const callRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
+            // 2. EXTRACT CALLS (Functions, Methods, and Member Invocations)
+            const callRegex = /(?:this\.|self\.|[\w]+\.)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
             const reservedKeywords = new Set([
                 'if', 'for', 'while', 'switch', 'catch', 'return', 'typeof', 'sizeof',
                 'require', 'import', 'function', 'class', 'super', 'print', 'len', 'range',
-                'def', 'async', 'await', 'new', 'throw', 'yield', 'console', 'log'
+                'def', 'async', 'await', 'new', 'throw', 'yield', 'console', 'log', 'then',
+                'catch', 'finally', 'resolve', 'reject', 'setTimeout', 'setInterval', 'clearTimeout'
             ]);
             let callMatch;
             while ((callMatch = callRegex.exec(normalizedText)) !== null) {
@@ -1319,23 +1320,34 @@ export class CodeGraphManager {
                     }
                 });
 
-                // Link Function/Method Calls
+                // Function/Method Calls: Attribute caller to the enclosing function/method or file
                 if (cache.calls && Array.isArray(cache.calls)) {
+                    // Find all callables in this file
+                    const callablesInFile = nodes.filter(n => n.filePath === relPath && (n.type === 'function' || n.type === 'method' || n.type === 'endpoint'));
+
                     cache.calls.forEach(calledName => {
-                        const targetSymbol = nodes.find(n => 
-                            (n.type === 'function' || n.type === 'method') && 
-                            n.label === calledName && 
-                            n.filePath !== relPath
+                        // Find matching targets across the entire codebase
+                        const targetSymbols = nodes.filter(n => 
+                            (n.type === 'function' || n.type === 'method' || n.type === 'endpoint') && 
+                            (n.label.toLowerCase() === calledName.toLowerCase() || n.label.toLowerCase().endsWith('.' + calledName.toLowerCase()))
                         );
-                        if (targetSymbol) {
-                            const edgeId = `edge_calls_${fileNodeId}_${targetSymbol.id}`;
-                            if (!edges.some(e => e.id === edgeId)) {
-                                edges.push({
-                                    id: edgeId,
-                                    source: fileNodeId,
-                                    target: targetSymbol.id,
-                                    label: 'calls'
-                                });
+
+                        for (const targetSymbol of targetSymbols) {
+                            // Connect from each callable in this file if it calls the symbol, or from the file node itself
+                            const callerSources = callablesInFile.length > 0 ? callablesInFile : [nodes.find(n => n.id === fileNodeId)].filter(Boolean);
+
+                            for (const callerNode of callerSources) {
+                                if (callerNode && callerNode.id !== targetSymbol.id) {
+                                    const edgeId = `edge_calls_${callerNode.id}_${targetSymbol.id}`;
+                                    if (!edges.some(e => e.id === edgeId)) {
+                                        edges.push({
+                                            id: edgeId,
+                                            source: callerNode.id,
+                                            target: targetSymbol.id,
+                                            label: 'calls'
+                                        });
+                                    }
+                                }
                             }
                         }
                     });
@@ -1678,9 +1690,19 @@ export class CodeGraphManager {
             // Docstring & Documentation indexing for classes, functions, and methods
             if (n.docstring) {
                 const cleanDoc = n.docstring.replace(/[\r\n]+/g, ' ').replace(/"/g, "'").trim();
+                const descNodeId = `${n.id}_desc`;
                 facts.push({ s: n.id, p: 's:docstring', o: `"${cleanDoc}"` });
+                facts.push({ s: n.id, p: 's:functionDescription', o: `"${cleanDoc}"` });
                 facts.push({ s: n.id, p: 's:documentation', o: `"${cleanDoc}"` });
                 facts.push({ s: n.id, p: 's:comment', o: `"${cleanDoc}"` });
+
+                // First-class s:FunctionDescription entity
+                facts.push({ s: descNodeId, p: 's:type', o: 's:FunctionDescription' });
+                facts.push({ s: descNodeId, p: 's:name', o: `"${n.label} Description"` });
+                facts.push({ s: descNodeId, p: 's:functionDescription', o: `"${cleanDoc}"` });
+                facts.push({ s: descNodeId, p: 's:docstring', o: `"${cleanDoc}"` });
+                facts.push({ s: descNodeId, p: 's:describesFunction', o: n.id });
+                facts.push({ s: n.id, p: 's:hasFunctionDescription', o: descNodeId });
             }
 
             if (n.linesCount !== undefined) {
@@ -1770,6 +1792,7 @@ export class CodeGraphManager {
             const c = raw.replace(/^s:/i, '').toLowerCase().trim();
             if (c === 'function' || c === 'functiondefinition') return 'function';
             if (c === 'method' || c === 'methoddefinition') return 'method';
+            if (c === 'functiondescription' || c === 'description') return 'functiondescription';
             if (c === 'class' || c === 'classdefinition') return 'class';
             if (c === 'interface' || c === 'interfacedefinition') return 'interface';
             if (c === 'file' || c === 'sourcefile') return 'file';
@@ -1891,6 +1914,83 @@ export class CodeGraphManager {
         if (askMatch) {
             const hasResult = rawSolutions.length > 0;
             return `### 🔍 SPARQL ASK Query Result\n\n**Verdict**: \`${hasResult ? 'true (Graph Matches Pattern)' : 'false (No Matches)'}\``;
+        }
+
+        if (constructMatch) {
+            const templateClause = constructMatch[1].trim();
+            const templateStatements = templateClause.split(/\s*\.\s*(?=(?:[^"']*["'][^"']*["'])*[^"']*$)/).filter(s => s.trim().length > 0);
+            const templatePatterns: RdfTriple[] = [];
+
+            for (const stmt of templateStatements) {
+                const parts = stmt.trim().split(/\s+/);
+                if (parts.length >= 3) {
+                    templatePatterns.push({ s: parts[0], p: parts[1], o: parts.slice(2).join(' ') });
+                }
+            }
+
+            const constructedTriples: RdfTriple[] = [];
+            const seen = new Set<string>();
+
+            for (const sol of rawSolutions) {
+                for (const tp of templatePatterns) {
+                    const resolveTerm = (t: string) => (t.startsWith('?') && sol[t] ? sol[t] : t);
+                    const s = resolveTerm(tp.s);
+                    const p = resolveTerm(tp.p);
+                    const o = resolveTerm(tp.o);
+
+                    if (!s.startsWith('?') && !p.startsWith('?') && !o.startsWith('?')) {
+                        const key = `${s} ${p} ${o}`;
+                        if (!seen.has(key)) {
+                            seen.add(key);
+                            constructedTriples.push({ s, p, o });
+                        }
+                    }
+                }
+            }
+
+            const nodesMap = new Map<string, any>();
+            const edgesList: any[] = [];
+
+            for (const ct of constructedTriples) {
+                const addNode = (id: string) => {
+                    const clean = id.replace(/^s:/, '').replace(/^"|"$/g, '');
+                    if (!nodesMap.has(clean)) {
+                        const nodeInfo = nodeMap.get(clean);
+                        nodesMap.set(clean, {
+                            id: clean,
+                            label: nodeInfo ? nodeInfo.label : clean,
+                            type: nodeInfo ? nodeInfo.type : 'entity'
+                        });
+                    }
+                };
+
+                addNode(ct.s);
+                addNode(ct.o);
+
+                const srcClean = ct.s.replace(/^s:/, '').replace(/^"|"$/g, '');
+                const trgClean = ct.o.replace(/^s:/, '').replace(/^"|"$/g, '');
+                const predClean = ct.p.replace(/^s:/, '');
+
+                edgesList.push({
+                    id: `edge_c_${srcClean}_${predClean}_${trgClean}_${edgesList.length}`,
+                    source: srcClean,
+                    target: trgClean,
+                    label: predClean
+                });
+            }
+
+            const graphData = {
+                nodes: Array.from(nodesMap.values()),
+                edges: edgesList
+            };
+
+            let out = `### 🎨 SPARQL CONSTRUCT Results (${constructedTriples.length} triples, ${graphData.nodes.length} nodes)\n\n`;
+            out += `| Subject | Predicate | Object |\n| --- | --- | --- |\n`;
+            for (const ct of constructedTriples.slice(0, 50)) {
+                out += `| \`${ct.s.replace(/^s:/, '')}\` | \`${ct.p.replace(/^s:/, '')}\` | \`${ct.o.replace(/^s:/, '')}\` |\n`;
+            }
+            out += `\n\`\`\`json:constructed_graph\n${JSON.stringify(graphData, null, 2)}\n\`\`\`\n`;
+            return out;
         }
 
         if (rawSolutions.length === 0) {

@@ -25,11 +25,14 @@ export class LollmsStatusBar implements vscode.Disposable {
         this.chatItem.show();
         context.subscriptions.push(this.chatItem);
 
-        // Quick Edit
-        this.quickEditItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 102);
-        this.quickEditItem.text = '$(sparkle) lollms';
+        // Quick Edit / Companion
+        this.quickEditItem = vscode.window.createStatusBarItem('lollms.statusBar.companion', vscode.StatusBarAlignment.Right, 102);
+        this.quickEditItem.name = 'Lollms Companion';
+        this.quickEditItem.text = '$(sparkle) Lollms Companion';
         this.quickEditItem.command = 'lollms-vs-coder.quickEdit';
-        this.quickEditItem.tooltip = 'Open Lollms Companion (Quick Edit/Ask) - Ctrl+Shift+L';
+        const companionTooltip = new vscode.MarkdownString('**Lollms Companion**\n\nClick to open the floating AI companion panel for rapid code edits, questions, and symbol inspections.\n\n*Keyboard shortcut: `Ctrl+Shift+L` (`Cmd+Shift+L` on macOS)*');
+        companionTooltip.isTrusted = true;
+        this.quickEditItem.tooltip = companionTooltip;
         this.quickEditItem.show();
         context.subscriptions.push(this.quickEditItem);
 

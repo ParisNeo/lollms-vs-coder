@@ -104,7 +104,11 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
     });
     safeRegister('lollms-vs-coder.showGraphTab', () => {
         setTab('graph');
-        vscode.commands.executeCommand('lollms-vs-coder.showCodeGraphPanel');
+        vscode.commands.executeCommand('lollms-vs-coder.showKnowledgeGraphPanel');
+    });
+    safeRegister('lollms-vs-coder.showKnowledgeGraphPanel', () => {
+        const { KnowledgeGraphPanel } = require('../commands/knowledgeGraphPanel');
+        KnowledgeGraphPanel.createOrShow(services.extensionUri, services);
     });
     safeRegister('lollms-vs-coder.showLabTab', () => setTab('lab'));
     safeRegister('lollms-vs-coder.showDeveloperTab', () => setTab('developer'));

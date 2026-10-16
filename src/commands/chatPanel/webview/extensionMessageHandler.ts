@@ -285,20 +285,21 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'openMissionBriefingModal':
                 if (dom.missionBriefingModal) {
+                    (dom.missionBriefingModal as any)._localBriefing = message.localBriefing ?? (message.isGlobal ? '' : message.briefing);
+                    (dom.missionBriefingModal as any)._globalBriefing = message.globalBriefing ?? (message.isGlobal ? message.briefing : '');
+
                     if (dom.briefingContentInput) {
                         dom.briefingContentInput.value = message.briefing || '';
                     }
                     if (dom.briefingDnaPreview) {
                         dom.briefingDnaPreview.innerHTML = message.dna ? sanitizer.sanitize(marked.parse(message.dna) as string) : 'No Project DNA found.';
                     }
-                    
-                    const radios = document.getElementsByName('briefing-scope');
-                    radios.forEach((r: any) => {
-                        if (r.value === (message.isGlobal ? 'global' : 'local')) {
-                            r.checked = true;
-                        }
+
+                    const radios = document.getElementsByName('briefing-scope') as NodeListOf<HTMLInputElement>;
+                    radios.forEach((r) => {
+                        r.checked = (r.value === (message.isGlobal ? 'global' : 'local'));
                     });
-                    
+
                     dom.missionBriefingModal.classList.add('visible');
                 }
                 break;
@@ -596,12 +597,39 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'setGeneratingState':
-                // If we are stopping, explicitly ensure overlays are hidden
+                // If we are stopping, explicitly ensure overlays are hidden and finalize any pending streams
                 if (!message.isGenerating) {
                     const overlay = document.getElementById('generating-overlay');
                     if (overlay) overlay.style.display = 'none';
                     const input = document.querySelector('.input-area-wrapper') as HTMLElement;
                     if (input) input.style.display = 'block';
+
+                    // Finalize any streaming messages that were interrupted by user stopping generation
+                    Object.keys(state.streamingMessages).forEach(msgId => {
+                        const stream = state.streamingMessages[msgId];
+                        if (stream) {
+                            if (stream.timer) clearTimeout(stream.timer);
+                            const buffer = stream.buffer || '';
+                            delete state.streamingMessages[msgId];
+                            renderMessageContent(msgId, buffer, true);
+                        }
+                    });
+
+                    // Remove any leftover "Streaming..." badges and re-enable apply buttons
+                    document.querySelectorAll('.file-stream-indicator').forEach(el => el.remove());
+                    document.querySelectorAll('.file-mutation-card').forEach((card: any) => {
+                        const applyBtn = card.querySelector('.apply-mutation-btn') as HTMLButtonElement;
+                        if (applyBtn && applyBtn.disabled && applyBtn.innerHTML.includes('spin')) {
+                            applyBtn.disabled = false;
+                            applyBtn.style.opacity = '1';
+                            const isPatch = card.dataset.action === 'patch' || card.dataset.rawCode?.includes('SEARCH');
+                            const isApplied = card.classList.contains('applied');
+                            applyBtn.innerHTML = isApplied 
+                                ? '<i class="codicon codicon-check"></i>' 
+                                : `<i class="codicon ${isPatch ? 'codicon-arrow-swap' : 'codicon-tools'}"></i>`;
+                            applyBtn.title = isApplied ? 'Successfully applied' : (isPatch ? 'Review Diff & Apply Patch' : 'Apply File Content');
+                        }
+                    });
                 }
                 // Forward flags to the UI renderer
                 setGeneratingState(
@@ -1458,7 +1486,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     const govRoundsInput = document.getElementById('modal-governor-max-rounds') as HTMLInputElement;
                     if (govRoundsInput) {
-                        govRoundsInput.value = (caps.contextGovernorMaxRounds || 5).toString();
+                        govRoundsInput.value = (caps.contextGovernorMaxRounds || 15).toString();
+                    }
+
+                    const debateTurnsInput = document.getElementById('modal-librarian-debate-turns') as HTMLInputElement;
+                    if (debateTurnsInput) {
+                        debateTurnsInput.value = (caps.librarianDebateTurns || 2).toString();
                     }
 
                     const govCheck = document.getElementById('cap-contextGovernorEnabled') as HTMLInputElement;
@@ -2695,6 +2728,16 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 renderArea.style.display = 'block';
                                 const cleanHtml = (window as any).DOMPurify.sanitize((window as any).marked.parse(message.sparqlResult));
                                 renderArea.innerHTML = cleanHtml;
+
+                                if (message.constructedGraph && message.constructedGraph.nodes && message.constructedGraph.nodes.length > 0) {
+                                    const graphBox = document.createElement('div');
+                                    graphBox.className = 'diagram-render-zone';
+                                    graphBox.style.cssText = 'height: 280px; width: 100%; margin-top: 10px; border-radius: 6px; border: 1px solid var(--vscode-widget-border);';
+                                    renderArea.appendChild(graphBox);
+                                    if (typeof (window as any).renderCytoscapeDiagram === 'function') {
+                                        (window as any).renderCytoscapeDiagram(message.constructedGraph, graphBox);
+                                    }
+                                }
                             }
                         }
                     }

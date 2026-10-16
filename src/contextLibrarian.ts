@@ -226,14 +226,16 @@ export class ContextLibrarian {
         currentDiscussion: Discussion;
         targetModel: string;
         prompt: string;
+        userPrompt?: string;
+        history?: any[];
         signal: AbortSignal;
         candidateFiles?: string[];
         currentMutedFiles?: string[];
-        history?: any[];
         customCapacity?: number;
         targetPercent?: number;
         reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max';
         pruneMsgId?: string;
+        projectMemoryManager?: any;
         onStatusUpdate?: (status: string) => void;
         onRoundProgress?: (progress: { round: number; maxRounds: number; status: string; discoverySteps?: any[] }) => void;
         onStreamChunk?: (data: { round: number; maxRounds: number; chunk: string; fullText: string; messageId: string }) => void;
@@ -256,6 +258,7 @@ export class ContextLibrarian {
     }> {
         const { lollmsAPI, contextManager, targetModel, prompt, signal, candidateFiles, onStatusUpdate, onRoundProgress, onStreamChunk, onDiscoveryAction } = options;
 
+        const safeCurrentMuted = Array.isArray(options.currentMutedFiles) ? options.currentMutedFiles : [];
         const provider = contextManager.getContextStateProvider();
         let rawIncluded: { path: string; state?: any; bytes?: number; tokens?: number }[] = [];
         if (candidateFiles !== undefined) {
@@ -326,8 +329,12 @@ export class ContextLibrarian {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const configuredRounds = options.currentDiscussion?.capabilities?.contextGovernorMaxRounds;
         const fallbackConfigRounds = config.get<number>('contextGovernorMaxRounds');
-        const effectiveRounds = (configuredRounds && configuredRounds >= 1) ? configuredRounds : (fallbackConfigRounds || 5);
-        const maxRounds = Math.min(20, Math.max(2, effectiveRounds));
+        const effectiveRounds = (configuredRounds && configuredRounds >= 1) ? configuredRounds : (fallbackConfigRounds !== undefined ? fallbackConfigRounds : 15);
+        const maxRounds = Math.min(30, Math.max(1, effectiveRounds));
+
+        const memManager = options.projectMemoryManager || 
+                           (options.discussionManager?.context as any)?.projectMemoryManager ||
+                           (options.contextManager as any)?.agentManager?.projectMemoryManager;
 
         const totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
 
@@ -358,9 +365,11 @@ export class ContextLibrarian {
             contextManager,
             targetModel,
             signal,
-            userPromptText: prompt,
+            userPromptText: options.userPrompt || prompt,
+            librarianQuery: prompt,
+            history: options.history || [],
             fileCandidates,
-            currentMuted: options.currentMutedFiles || [],
+            currentMuted: safeCurrentMuted,
             totalEstimated: totalCandidateTokens,
             maxTokens,
             triggerThresholdPercent: targetPercent,
@@ -371,6 +380,7 @@ export class ContextLibrarian {
             keywords,
             maxRounds,
             pruneMsgId: options.pruneMsgId,
+            projectMemoryManager: memManager,
             optionsUpdateMessage: options.onUpdateMessage,
             onStatusUpdate,
             onStreamChunk,
@@ -378,7 +388,7 @@ export class ContextLibrarian {
             onRoundProgress
         });
 
-        const { decision, workerAdvice, signatures, governorReport, discoverySteps, addedFiles, multiPartPlan } = negotiationResult;
+        const { decision, workerAdvice, signatures: rawSignatures, governorReport, discoverySteps, addedFiles, multiPartPlan } = negotiationResult;
 
         const keptFiles: string[] = [];
         const mutedFiles: string[] = [];
@@ -388,29 +398,71 @@ export class ContextLibrarian {
         const hasEditFiles = fileCandidates.some(c => c.role === 'edit');
         for (const candidate of fileCandidates) {
             // Mandate: Only load files that are needed for patching exactly. Reference files are compressed into the report and kept muted.
-            const keep = candidate.role === 'edit' || (!hasEditFiles && candidate.role === 'context' && decision?.status === 'fit_all');
+            const keep = candidate.role === 'edit' || candidate.keep === true || (!hasEditFiles && candidate.role === 'context' && decision?.status === 'fit_all');
             if (keep) {
                 keptFiles.push(candidate.path);
                 totalTokens += candidate.tokens;
             } else {
-                mutedFiles.push(candidate.path);
-                liberatedTokens += candidate.tokens;
+                if (!keptFiles.includes(candidate.path)) {
+                    mutedFiles.push(candidate.path);
+                    liberatedTokens += candidate.tokens;
+                }
             }
         }
 
-        const rawReport = governorReport || signatures || workerAdvice || decision?.rationale || 'Codebase dependencies analyzed.';
-        const formattedReport = rawReport.startsWith('Librarian agent report:')
-            ? rawReport
-            : `Librarian agent report:\n${rawReport}`;
+        // Extract real, verified function and method signatures from CodeGraph/AST for target files
+        let signatures = (rawSignatures || "").trim();
+        const filesForSignatures = Array.from(new Set([...keptFiles, ...mutedFiles.slice(0, 8)]));
+        if (!signatures || signatures.length < 40) {
+            const extractedSignatures = await this.extractVerifiedSignatures(filesForSignatures, contextManager);
+            if (extractedSignatures) {
+                signatures = signatures ? `${signatures}\n\n${extractedSignatures}` : extractedSignatures;
+            }
+        }
+
+        // Synthesize rich architectural findings if model gave empty or generic status string
+        let findingsBody = (governorReport || signatures || workerAdvice || '').trim();
+        const isGenericFallback = !findingsBody || 
+            findingsBody.includes('status fit_all') || 
+            findingsBody.includes('status fit_edits_only') || 
+            findingsBody === 'Codebase dependencies analyzed.' ||
+            findingsBody.length < 60;
+
+        if (isGenericFallback) {
+            findingsBody = await this.synthesizeArchitecturalFindings(
+                prompt,
+                keptFiles,
+                mutedFiles,
+                contextManager,
+                lollmsAPI,
+                targetModel,
+                signal
+            );
+        }
+
+        // Clean any redundant prefix nesting
+        findingsBody = findingsBody.replace(/^(?:Librarian agent report:\s*)+/gi, '').trim();
+
+        // 🧠 AUTOMATIC PERSISTENCE & MEMORY REHYDRATION
+        // Persist findings into both Knowledge Graph (TTL) and Project Memory so subsequent queries rehydrate them automatically
+        await this.persistFindingsToMemoryAndGraph(
+            prompt,
+            findingsBody,
+            keptFiles,
+            mutedFiles,
+            options.discussionManager,
+            options.currentDiscussion,
+            memManager
+        );
 
         return {
             keptFiles,
             mutedFiles,
             addedFiles: addedFiles || newlyAddedFiles,
-            rationale: formattedReport,
+            rationale: findingsBody,
             advice: workerAdvice,
             signatures,
-            governorReport: formattedReport,
+            governorReport: findingsBody,
             discoverySteps,
             totalTokens,
             liberatedTokens,
@@ -458,9 +510,7 @@ export class ContextLibrarian {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const configuredRounds = capabilities.contextGovernorMaxRounds;
         const fallbackConfigRounds = config.get<number>('contextGovernorMaxRounds');
-        const effectiveRounds = (configuredRounds && configuredRounds >= 1) ? configuredRounds : (fallbackConfigRounds || 5);
-        const maxNegotiationRounds = Math.min(20, Math.max(2, effectiveRounds));
-        const hardCap120 = Math.round(maxTokens * 1.2);
+        const effectiveRounds = (configuredRounds && configuredRounds >= 1) ? configuredRounds : (fallbackConfigRounds !== undefined ? fallbackConfigRounds : 15);
 
         const getCleanHistoryText = (msgs: ChatMessage[]) => msgs
             .filter(m => !m.skipInPrompt)
@@ -479,10 +529,16 @@ export class ContextLibrarian {
         let historyTokens = Math.ceil(getCleanHistoryText(history).length / 3.5);
         const treeTokens = Math.ceil((contextData.projectTree || '').length / 3.5);
         const skillsTokens = Math.ceil((contextData.skillsContent || '').length / 3.5);
-        const { KnowledgeManager } = require('./knowledgeManager');
-        const km = new KnowledgeManager(this.context);
-        const knowledgeContent = await km.renderContextKnowledge();
-        const briefingContent = knowledgeContent || contextManager.renderBriefing(currentDiscussion);
+
+        let briefingContent = "";
+        try {
+            const { KnowledgeManager } = require('./knowledgeManager');
+            const km = new KnowledgeManager(discussionManager.context);
+            const knowledgeContent = await km.renderContextKnowledge();
+            briefingContent = knowledgeContent || contextManager.renderBriefing(currentDiscussion);
+        } catch {
+            briefingContent = contextManager.renderBriefing(currentDiscussion);
+        }
         const briefingTokens = Math.ceil((briefingContent || '').length / 3.5);
         const promptTokens = Math.ceil(cleanUserPromptText.length / 3.5);
 
@@ -587,7 +643,7 @@ export class ContextLibrarian {
 
 \n\n`;
             } else {
-                fullMatch = `### 📄 \`${f.path}\` [M] [MUTED IN CONTEXT]\n> Content is currently muted to save context tokens (0 tokens). If you need to inspect or edit this file's code, output:\n> <unmute_files>\n> ${f.path}\n </unmute_files>\n\n`;
+                fullMatch = `### 📄 \`${f.path}\` [M] [MUTED IN CONTEXT]\n> Content is currently muted to save context tokens (0 tokens). If you need to inspect or edit this file's code, output:\n> <unmute_files>\n> ${f.path}\n</unmute_files>\n\n`;
             }
 
             const candidate = this.buildCandidate(fullMatch, f.path, fileBody, tokens, currentPromptAddedFiles, keywords, contextManager);
@@ -600,7 +656,10 @@ export class ContextLibrarian {
         const totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
         const activeContextLoad = fixedLoad + currentUnmutedTokens;
 
-        if (!hasGovernorDirective && activeContextLoad <= triggerThreshold) {
+        // Hard cap safeguard: if active context exceeds capacity (100%), we MUST balance budget even without explicit directives
+        const isContextOverBudget = activeContextLoad > triggerThreshold || activeContextLoad > maxTokens;
+
+        if (!hasGovernorDirective && !isContextOverBudget) {
             this.updateDiscussionMetrics(
                 currentDiscussion, discussionManager, activeContextLoad, maxTokens,
                 systemTokens, briefingTokens, treeTokens, skillsTokens, currentUnmutedTokens, historyTokens
@@ -655,6 +714,8 @@ export class ContextLibrarian {
         targetModel: string;
         signal: AbortSignal;
         userPromptText: string;
+        librarianQuery?: string;
+        history?: any[];
         fileCandidates: ParsedFileCandidate[];
         currentMuted: string[];
         totalEstimated: number;
@@ -668,6 +729,7 @@ export class ContextLibrarian {
         maxRounds: number;
         governorDirectives?: string[];
         pruneMsgId?: string;
+        projectMemoryManager?: any;
         onStatusUpdate?: (status: string) => void;
         onRoundProgress?: (progress: { round: number; maxRounds: number; status: string; discoverySteps?: any[] }) => void;
         onStreamChunk?: (data: { round: number; maxRounds: number; chunk: string; fullText: string; messageId: string }) => void;
@@ -746,26 +808,55 @@ export class ContextLibrarian {
             return cleaned.trim();
         };
 
+        const safeNum = (v: any): number => {
+            if (typeof v === 'number' && !isNaN(v)) return v;
+            if (typeof v === 'string') {
+                const n = Number(v);
+                return isNaN(n) ? 0 : n;
+            }
+            return 0;
+        };
+        const safeLoc = (v: any): string => {
+            try {
+                return safeNum(v).toLocaleString();
+            } catch {
+                return String(safeNum(v));
+            }
+        };
+
+        const currentMutedList = Array.isArray(options.currentMuted) ? options.currentMuted : [];
+        const totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + safeNum(c.tokens), 0);
+        const currentUnmutedTokens = fileCandidates.filter(c => !currentMutedList.some(m => this.pathsMatch(m, c.path))).reduce((sum, c) => sum + safeNum(c.tokens), 0);
+
         const formatAccumulatedRoundsMarkdown = (liveRoundIndex?: number, liveStreamContent?: string) => {
-            let md = `### 📚 **Lead Librarian Investigation**\n`;
-            md += `*Pool: ~${totalCandidateTokens.toLocaleString()} tok &middot; Unmuted: ~${currentUnmutedTokens.toLocaleString()} tok &middot; Target: ~${objectiveThreshold.toLocaleString()} tok (${objectiveThresholdPercent}%)*\n\n`;
+            let md = `### 📚 **Lead Librarian Investigation & Live Activity**\n`;
+            md += `*Pool: ~${safeLoc(totalCandidateTokens)} tok &middot; Unmuted: ~${safeLoc(currentUnmutedTokens)} tok &middot; Target: ~${safeLoc(objectiveThreshold)} tok (${safeNum(objectiveThresholdPercent)}%)*\n\n`;
 
             if (completedRounds.length > 0) {
                 md += completedRounds.map(r => {
                     let block = `#### 📚 **Round ${r.round}/${maxRounds}**\n${r.thoughts}`;
                     if (r.toolAction) {
-                        block += `\n\n> 🛠️ **Action**: \`${r.toolAction}\``;
-                        if (r.toolObservation) {
-                            block += `\n>\n> *Observation*:\n\`\`\`\n${r.toolObservation}\n\`\`\``;
-                        }
+                        block += `\n\n<details open class="processing-block"><summary><i class="codicon codicon-tools"></i> <strong>Action Executed</strong>: <code>${r.toolAction}</code></summary><div class="processing-body"><pre>${r.toolObservation || '(No output recorded)'}</pre></div></details>`;
                     }
                     return block;
                 }).join('\n\n---\n\n') + '\n\n---\n\n';
             }
 
             if (liveRoundIndex !== undefined && liveStreamContent !== undefined) {
+                // Live action detector to show ongoing tool calls before round completion
+                let liveActionNotice = "";
+                const liveRead = liveStreamContent.match(/<(?:read_full_file|read_file)\b[^>]*path=["']([^"']+)["']/i);
+                const liveGrep = liveStreamContent.match(/<grep\b[^>]*query=["']([^"']+)["']/i);
+                const livePeek = liveStreamContent.match(/<peek_files\b[^>]*path=["']([^"']+)["']/i);
+                const liveSparql = liveStreamContent.match(/<sparql\b[^>]*query=["']([^"']+)["']/i);
+
+                if (liveRead) liveActionNotice = `\n\n> 🔍 *Reading on disk*: \`${liveRead[1]}\`...`;
+                else if (liveGrep) liveActionNotice = `\n\n> 🔎 *Grepping codebase for*: \`${liveGrep[1]}\`...`;
+                else if (livePeek) liveActionNotice = `\n\n> 👁️ *Peeking file slice*: \`${livePeek[1]}\`...`;
+                else if (liveSparql) liveActionNotice = `\n\n> 📊 *Executing SPARQL query*: \`${liveSparql[1].slice(0, 60)}...\`...`;
+
                 const cleanedLive = cleanActionTagsFromText(liveStreamContent);
-                md += `#### 📚 **Round ${liveRoundIndex}/${maxRounds} (Evaluating live)**\n${cleanedLive || liveStreamContent || '*(Analyzing...)*'}`;
+                md += `#### 📚 **Round ${liveRoundIndex}/${maxRounds} (Evaluating live)**\n${cleanedLive || liveStreamContent || '*(Analyzing...)*'}${liveActionNotice}`;
             }
 
             return md;
@@ -779,8 +870,13 @@ export class ContextLibrarian {
             projectTreePreview = await contextManager.generateProjectTree(signal);
         } catch {}
 
-        const totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
-        const currentUnmutedTokens = fileCandidates.filter(c => !options.currentMuted.some(m => this.pathsMatch(m, c.path))).reduce((sum, c) => sum + c.tokens, 0);
+        // Rehydrate prior architectural memories matching this prompt to accelerate understanding
+        let recalledMemories = "";
+        if (options.projectMemoryManager) {
+            try {
+                recalledMemories = await options.projectMemoryManager.getFormattedMemoryBlock(userPromptText);
+            } catch {}
+        }
 
         const systemPrompt = `You are the **Lead Sovereign Librarian**.
 Your mission is to be the intelligent eyes, memory, and architectural scout for the AI worker. The worker cannot add/remove files or run grep/SPARQL directly—it relies exclusively on you to scout the codebase, verify dependencies, balance the token budget, and provide the exact files or reference summaries needed.
@@ -800,37 +896,18 @@ The codebase changes over time, so previous findings may contain STALE, CHANGED,
   You MUST patch .lollms/structure.md using an Aider Search/Replace block:
   <structure action="patch">
 
-### 📊 REAL-TIME TOKEN AUDIT & BUDGET OBJECTIVE:
-- **Total Candidates Pool Tokens (Muted + Unmuted)**: ~${totalCandidateTokens.toLocaleString()} tokens (${fileCandidates.length} files)
-- **Current Unmuted Files Tokens ([C] Active)**: ~${currentUnmutedTokens.toLocaleString()} tokens
-- **Maximum Window Capacity**: ${maxTokens.toLocaleString()} tokens
-- **Target Objective Threshold (${objectiveThresholdPercent}%)**: ~${objectiveThreshold.toLocaleString()} tokens
-- **Goal**: Ensure the unmuted files token count fits within the target budget.
-
-### ⚖️ TRI-TIER CLASSIFICATION & PATCH-FOCUSED CONTEXT MANDATE:
-You MUST categorize all candidate files into three distinct categories:
-1. **EDIT FILES (Mandatory for Patching)**: Files that MUST be modified, written, or created to fulfill the user's task. ONLY these files will be loaded with full content ([C]) for the worker.
-2. **CONTEXT FILES (Reference Only)**: Files needed ONLY as references to understand function signatures, contracts, schemas, or callers (files that will NOT be changed). You MUST inspect these files with <read_full_file> or <peek_files>, compress their essential interfaces, types, and contracts into <librarian_report>, and MUTE them ([M], 0 tokens) so they do not consume context budget.
-3. **UNNEEDED FILES**: Files unrelated to the user's task (must be muted [M]).
-
-### 🚦 THREE-TIER FITTING LOGIC:
-- **TIER A (fit_edits_only - PRIMARY)**:
-  * Unmute EDIT FILES (they must be loaded with full content [C] for the worker to patch).
-  * Mute CONTEXT FILES (0 tokens [M] in tree).
-  * Extract relevant function signatures, types, and interfaces from context files into <librarian_report>...</librarian_report>.
-- **TIER B (fit_all - OVERVIEW ONLY)**: Only if there are ZERO files to edit (e.g. an architectural explanation or system audit question) and all reference files fit within target budget.
-- **TIER C (split_multi_part)**: If even tokens(edit_files) exceeds the budget alone:
-  * Partition edit files into sequential parts: Part 1, Part 2, etc., so each part fits.
-  * Formulate clear multi-phase instructions in <librarian_report>.
-
-### 🛠️ ACTIVE INVESTIGATION TOOLS:
-1. **Full File Read**: <read_full_file path="path/to/file.ext" />
-   Reads the complete file content for this round so you can inspect all its classes/functions and extract contracts into your report.
-2. **Peek File Slice**: <peek_files path="path/to/file.ext" lines="30" from="top|bottom" />
-3. **Grep Search**: <grep pattern="searchTerm" path="optional/subdir" />
-4. **SPARQL Architecture Query**: <sparql query="SELECT ?x WHERE { ?x s:type s:Class }" />
-5. **Add Tree Files to Context**: <add_files_to_context>\npath/to/file.ext\n</add_files_to_context>
-6. **Update Structure Guide**: <structure># Architecture Guide\n...</structure> (.lollms/structure.md)
+### ⚖️ CLASSIFICATION & REPORTING MANDATE (DEEP TECHNICAL RIGOR):
+- **ZERO SHALLOW SUMMARIES**: You are **STRICTLY FORBIDDEN** from providing brief 1-2 sentence generalizations (e.g. "Analyzed dependencies and all looks good"). You must write exhaustive, technical prose that thoroughly explains the implementation mechanics to the worker.
+- **DO NOT DISCUSS OR AUDIT TOKEN ARITHMETIC**: You are **STRICTLY FORBIDDEN** from debating whether the arbitration numbers are accurate, discussing headroom, or arguing about budget calculations.
+- **CONTEXT OVERFLOW PREVENTION & MULTI-STEP PARTITIONING**:
+  * You MUST verify if the total tokens for all files that need editing exceed the available budget threshold (~${safeLoc(objectiveThreshold)} tokens).
+  * If the context WOULD BLOW by trying to load all edit files at once, you MUST explain clearly in your report that it is impossible to update everything in one single turn without crashing or degrading the model's attention.
+  * You MUST partition the mission into two or more sequential steps (\`status="split_multi_part"\`).
+  * In Step 1, select ONLY the first set of files for modification in \`<edit_files>\`, explain the overall multi-part plan to the user, and ask the user to confirm moving forward.
+  * In subsequent steps (since you can see your prior plan and past discussion turns in your prompt), you will select the second set of files while muting the finished files, enabling the full update to complete smoothly.
+- **EDIT FILES (Mandatory for Patching)**: Files that MUST be modified, created, or tested to fulfill the user's task. ONLY these files will be loaded with full content ([C]) for the worker. State the exact reason for unmuting each file.
+- **REFERENCE CONTRACTS (Functions & Methods)**: Extract concrete function signatures, methods, parameters, return types, line numbers, and docstrings from reference files so the worker has all context needed to elaborate the plan and code without unmuting reference files.
+- **NO MUTED FILES IN REPORT**: DO NOT list, recite, or enumerate muted files. The worker already sees the tree with [M] markers. Listing dozens or hundreds of muted files wastes context tokens and is strictly forbidden.
 
 ### 📋 FINAL ARBITRATION TAG:
 When ready to conclude, output your final decision using:
@@ -842,28 +919,58 @@ path/to/file_to_modify.ext
 path/to/reference_file.ext
 </context_files>
 <librarian_analysis>
-MANDATORY: Write a comprehensive analysis paragraph to the worker explaining:
-1. What you discovered about the codebase workings, call graphs, or architecture.
-2. Why the selected edit files were chosen and how they relate.
-3. Summary of key contracts and types from reference files.
+MANDATORY EXHAUSTIVE ARCHITECTURAL BLUEPRINT:
+1. **Target Files Justification**: For every file in <edit_files>, describe exactly what code needs to be modified or added and why.
+2. **Execution & Control Flow**: Walk through the end-to-end execution path. Detail how data enters, how events or calls are dispatched, and how state transforms across modules.
+3. **Component Interactions & Contracts**: Describe the exact dependencies between components, public API interfaces, and invariants that must be preserved.
+4. **Function & Method Specifications**:
+   - \`func_name(args: Type) -> ReturnType\` (line N in path): Purpose, side-effects, caller/callee relationships, and error boundaries.
 </librarian_analysis>
 <librarian_report>
-### 🏛️ ARCHITECTURAL CONTRACTS & REFERENCE FINDINGS
-- Specific functions, contracts, types, or multi-phase instructions from reference files...
+### 🏛️ ARCHITECTURAL CONTRACTS & FUNCTION SPECIFICATIONS
+- Exact function and method signatures, contracts, schemas, and call flows discovered during scouting...
 </librarian_report>
 </librarian_decision>
 
-🛑 ZERO-ECHO MANDATE (NEVER LIST UNNEEDED FILES):
-- You are **STRICTLY FORBIDDEN from listing, reciting, or outputting unneeded files**.
-- DO NOT output an \`<unneeded_files>\` tag. Any file not listed in \`<edit_files>\` or \`<context_files>\` is AUTOMATICALLY muted by the system at 0 tokens.
-- Never recite file paths in your thoughts. Focus exclusively on the files you need to inspect or modify.`;
+🛑 ZERO-ECHO MANDATE:
+- You are **STRICTLY FORBIDDEN from listing or outputting muted or unneeded files**.
+- Focus exclusively on: 1) Reasons for unmuting edit files, 2) System mechanics, 3) Function signatures and contracts needed to implement code.`;
 
         const safeUserPromptText = (userPromptText || '')
             .replace(/data:image\/[a-zA-Z+]+;base64,[A-Za-z0-9+/=]{50,}/g, '[Attached Image]')
             .trim();
 
+        const safeLibrarianQuery = (options.librarianQuery && options.librarianQuery.trim() !== safeUserPromptText)
+            ? options.librarianQuery.replace(/data:image\/[a-zA-Z+]+;base64,[A-Za-z0-9+/=]{50,}/g, '[Attached Image]').trim()
+            : "";
+
+        // Format recent conversation context if history exists
+        let historySection = "";
+        const rawHistory = options.history || [];
+        if (rawHistory.length > 0) {
+            const meaningful = rawHistory.filter((m: any) => !m.skipInPrompt && m.role !== 'system');
+            if (meaningful.length > 0) {
+                const recent = meaningful.slice(-4);
+                const historyLines: string[] = [];
+                for (const m of recent) {
+                    const role = m.role === 'user' ? 'USER' : (m.personalityName || 'ASSISTANT');
+                    let text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map((p: any) => p.text || '').join('\n') : '');
+                    text = stripThinkingTags(text).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+                    if (text.length > 400) {
+                        text = text.substring(0, 200) + ' ... [truncated] ... ' + text.substring(text.length - 150);
+                    }
+                    if (text) {
+                        historyLines.push(`**${role}**: ${text}`);
+                    }
+                }
+                if (historyLines.length > 0) {
+                    historySection = `### 🕒 RECENT CONVERSATION CONTEXT:\n${historyLines.join('\n\n')}\n\n`;
+                }
+            }
+        }
+
         // Extract files explicitly mentioned or requested in the prompt
-        const promptLower = safeUserPromptText.toLowerCase();
+        const promptLower = `${safeUserPromptText} ${safeLibrarianQuery}`.toLowerCase();
         const requestedCandidates = fileCandidates.filter(c => {
             const cleanP = c.path.toLowerCase().replace(/\\/g, '/');
             const baseName = path.basename(cleanP);
@@ -881,15 +988,17 @@ The user/worker explicitly named these files.
 3. DO NOT evaluate, recite, or list other files. All other files are automatically muted.
 ` : '';
 
-        const initialUserPrompt = `### 🎯 USER OBJECTIVE:
-"${safeUserPromptText}"
-${requestedSection}
+        const queryHeader = safeLibrarianQuery
+            ? `### ❓ WORKER'S SCOUTING QUERY & HYPOTHESIS:\n"${safeLibrarianQuery}"\n\n### 🎯 USER'S ORIGINAL OBJECTIVE:\n"${safeUserPromptText}"\n\n`
+            : `### 🎯 USER OBJECTIVE:\n"${safeUserPromptText}"\n\n`;
 
+        const initialUserPrompt = `${queryHeader}${historySection}${requestedSection}
 ### 📊 REAL-TIME TOKEN AUDIT & BUDGET OBJECTIVE:
-- Total Candidates Pool (Muted + Unmuted): ~${totalCandidateTokens.toLocaleString()} tokens (${fileCandidates.length} files)
-- Current Unmuted Files Load: ~${currentUnmutedTokens.toLocaleString()} tokens
-- Target Budget Threshold: ~${objectiveThreshold.toLocaleString()} tokens (${objectiveThresholdPercent}% of ${maxTokens.toLocaleString()})
+- Total Candidates Pool (Muted + Unmuted): ~${safeLoc(totalCandidateTokens)} tokens (${fileCandidates.length} files)
+- Current Unmuted Files Load: ~${safeLoc(currentUnmutedTokens)} tokens
+- Target Budget Threshold: ~${safeLoc(objectiveThreshold)} tokens (${safeNum(objectiveThresholdPercent)}% of ${safeLoc(maxTokens)})
 
+${recalledMemories && recalledMemories.trim().length > 80 ? `### 🧠 RECALLED PROJECT MEMORIES & PAST ARCHITECTURAL ENGRAMS:\n${recalledMemories}\n` : ''}
 ${existingStructure ? `### 🏛️ CURRENT CODEBASE STRUCTURE GUIDE (.lollms/structure.md):\n${existingStructure}\n` : '*(No .lollms/structure.md yet. You will create the initial structure guide using <structure action="write">...)*\n'}
 ### 🌳 PROJECT STRUCTURE TREE:
 ${projectTreePreview ? projectTreePreview.substring(0, 3000) : '(No tree available)'}
@@ -898,6 +1007,24 @@ ${governorDirectives && governorDirectives.length > 0 ? `### ⚖️ DIRECT USER 
 ${compactCatalog}
 
 Analyze the requirements. If you lack information on contracts or implementations, execute discovery tools (<read_full_file>, <peek_files>, <grep>, <sparql>). When ready, output your <librarian_decision>.`;
+
+        const executedToolSignatures = new Set<string>();
+
+        const buildCumulativeLedgerBlock = () => {
+            if (completedRounds.length === 0) return "";
+            let ledger = `\n### 🧠 YOUR PREVIOUS REASONING & COMPLETED DISCOVERIES (DO NOT REPEAT):\n`;
+            completedRounds.forEach(r => {
+                ledger += `\n**Round ${r.round}/${maxRounds}**:\n`;
+                if (r.thoughts) ledger += `- *Your Deduction*: ${r.thoughts.slice(0, 300).replace(/\n/g, ' ')}\n`;
+                if (r.toolAction) ledger += `- *Tool Action*: \`${r.toolAction}\`\n`;
+                if (r.toolObservation) {
+                    const obsSnippet = r.toolObservation.slice(0, 200).replace(/\n/g, ' ');
+                    ledger += `- *Observation Summary*: ${obsSnippet}...\n`;
+                }
+            });
+            ledger += `\n**ANTI-LOOP DIRECTIVE**: Do NOT re-inspect the files or patterns listed above. Build on what you have already learned.\n`;
+            return ledger;
+        };
 
         const conversation: ChatMessage[] = [
             { role: 'system', content: systemPrompt },
@@ -909,8 +1036,11 @@ Analyze the requirements. If you lack information on contracts or implementation
             currentRound++;
             if (onRoundUsed) onRoundUsed(currentRound);
 
+            const remainingRounds = maxRounds - currentRound;
+            const isLastRound = currentRound >= maxRounds;
+
             const roundMessageId = `lib_round_${currentRound}_${Date.now()}`;
-            const statusText = `Librarian: Round ${currentRound}/${maxRounds} (Active: ~${currentUnmutedTokens.toLocaleString()}/${objectiveThreshold.toLocaleString()} tok)...`;
+            const statusText = `Librarian: Round ${currentRound}/${maxRounds} (${remainingRounds} left | ~${safeLoc(currentUnmutedTokens)}/${safeLoc(objectiveThreshold)} tok)...`;
             if (onStatusUpdate) onStatusUpdate(statusText);
             if (onRoundProgress) {
                 onRoundProgress({
@@ -919,6 +1049,23 @@ Analyze the requirements. If you lack information on contracts or implementation
                     status: statusText,
                     discoverySteps: [...discoverySteps]
                 });
+            }
+
+            // Inject dynamic round awareness and previous thought ledger directly into the active prompt
+            const roundNudge = isLastRound
+                ? `\n\n🚨 **FINAL ROUND ${currentRound} of ${maxRounds} (0 ROUNDS REMAINING)**:\nYou have reached your exploration limit. You are **STRICTLY FORBIDDEN** from running further tools (<grep>, <peek_files>, <read_full_file>, <sparql>). Synthesize your findings immediately and output your <librarian_decision>.`
+                : `\n\n⏳ **ROUND BUDGET**: You are in **Round ${currentRound} of ${maxRounds}** (${remainingRounds} round${remainingRounds === 1 ? '' : 's'} remaining).`;
+
+            const ledgerBlock = buildCumulativeLedgerBlock();
+
+            // Append the ledger to the latest user message
+            const lastUserIdx = conversation.length - 1;
+            if (conversation[lastUserIdx] && conversation[lastUserIdx].role === 'user') {
+                const currentContent = typeof conversation[lastUserIdx].content === 'string' ? conversation[lastUserIdx].content : '';
+                // Avoid duplicating ledger if already present
+                if (!currentContent.includes('### 🧠 YOUR PREVIOUS REASONING')) {
+                    conversation[lastUserIdx].content = `${currentContent}\n${ledgerBlock}${roundNudge}`.trim();
+                }
             }
 
             let turnStreamBuffer = "";
@@ -999,6 +1146,18 @@ Analyze the requirements. If you lack information on contracts or implementation
                                   cleanResponse.match(/<read_file\b[^>]*path=["']([^"']+)["'][^>]*\/>/i);
             if (readFullMatch) {
                 const reqPath = readFullMatch[1].trim();
+                const toolSig = `read:${reqPath.toLowerCase()}`;
+
+                if (executedToolSignatures.has(toolSig)) {
+                    conversation.push({ role: 'assistant', content: cleanResponse });
+                    conversation.push({
+                        role: 'user',
+                        content: `🛑 **DUPLICATE READ BLOCKED**: You already read \`${reqPath}\` in a previous round. Check your previous observations above. Do not loop. Output your <librarian_decision> now.`
+                    });
+                    continue;
+                }
+                executedToolSignatures.add(toolSig);
+
                 const res = await contextManager.resolveWorkspaceFromPath(reqPath);
                 let contentText = "(File could not be resolved)";
                 if (res) {
@@ -1032,7 +1191,7 @@ Analyze the requirements. If you lack information on contracts or implementation
                 conversation.push({ role: 'assistant', content: cleanResponse });
                 conversation.push({
                     role: 'user',
-                    content: `### 📄 FULL FILE INSPECTION: \`${reqPath}\`\n\`\`\`\n${contentText}\n\`\`\`\n\n⏳ **BUDGET NOTICE**: You have ${remaining} round${remaining === 1 ? '' : 's'} remaining. Use as few rounds as possible. If you have enough information, finalize immediately with <librarian_decision>.`
+                    content: `### 📄 FULL FILE INSPECTION: \`${reqPath}\`\n\`\`\`\n${contentText}\n\`\`\`\n\n⏳ **BUDGET NOTICE**: You have **${remaining} round${remaining === 1 ? '' : 's'} remaining** before forced exit. Build on your prior findings and finalize with <librarian_decision>.`
                 });
                 continue;
             }
@@ -1084,6 +1243,17 @@ Analyze the requirements. If you lack information on contracts or implementation
                 const subPath = pathMatch ? pathMatch[1].trim() : undefined;
 
                 if (pattern) {
+                    const toolSig = `grep:${pattern.toLowerCase()}:${subPath || ''}`;
+                    if (executedToolSignatures.has(toolSig)) {
+                        conversation.push({ role: 'assistant', content: cleanResponse });
+                        conversation.push({
+                            role: 'user',
+                            content: `🛑 **DUPLICATE GREP BLOCKED**: You already searched for pattern \`"${pattern}"\`. Review your earlier results above and advance your hypothesis or finalize.`
+                        });
+                        continue;
+                    }
+                    executedToolSignatures.add(toolSig);
+
                     const searchRes = await contextManager.searchWorkspaceContent(pattern, { matchCase: false, wholeWord: false, include: subPath, bypassGate: true }, signal);
                     const snippet = searchRes.slice(0, 8).map(r => `${r.path}:${r.line} - ${r.snippet}`).join('\n') || 'No matches found.';
                     const step = { type: 'grep', label: `Grep: "${pattern}"`, detail: `${searchRes.length} hits` };
@@ -1105,7 +1275,7 @@ Analyze the requirements. If you lack information on contracts or implementation
                     conversation.push({ role: 'assistant', content: cleanResponse });
                     conversation.push({
                         role: 'user',
-                        content: `### 🔍 GREP RESULTS FOR "${pattern}":\n${snippet}\n\n⏳ **BUDGET NOTICE**: You have ${remaining} round${remaining === 1 ? '' : 's'} remaining. Strive to finalize with <librarian_decision>.`
+                        content: `### 🔍 GREP RESULTS FOR "${pattern}":\n${snippet}\n\n⏳ **BUDGET NOTICE**: You have **${remaining} round${remaining === 1 ? '' : 's'} remaining**. Synthesize your understanding and move to <librarian_decision>.`
                     });
                     continue;
                 }
@@ -1115,6 +1285,18 @@ Analyze the requirements. If you lack information on contracts or implementation
                                 cleanResponse.match(/<sparql\b[^>]*>([\s\S]*?)<\/sparql>/i);
             if (sparqlMatch) {
                 const query = (sparqlMatch[1] || "").trim();
+                const toolSig = `sparql:${query.toLowerCase().replace(/\s+/g, ' ')}`;
+
+                if (executedToolSignatures.has(toolSig)) {
+                    conversation.push({ role: 'assistant', content: cleanResponse });
+                    conversation.push({
+                        role: 'user',
+                        content: `🛑 **DUPLICATE SPARQL BLOCKED**: You already executed this exact SPARQL query in an earlier round. Review your previous results above.`
+                    });
+                    continue;
+                }
+                executedToolSignatures.add(toolSig);
+
                 const graphManager = (contextManager as any).codeGraphManager;
                 if (query && graphManager) {
                     const sparqlRes = await graphManager.executeSparql(query);
@@ -1133,10 +1315,11 @@ Analyze the requirements. If you lack information on contracts or implementation
                         options.optionsUpdateMessage(options.pruneMsgId, formatAccumulatedRoundsMarkdown()).catch(() => {});
                     }
 
+                    const remaining = maxRounds - currentRound;
                     conversation.push({ role: 'assistant', content: cleanResponse });
                     conversation.push({
                         role: 'user',
-                        content: `### 📊 SPARQL RESULTS:\n${sparqlRes}\n\nContinue scouting or output your <librarian_decision>.`
+                        content: `### 📊 SPARQL RESULTS:\n${sparqlRes}\n\n⏳ **BUDGET NOTICE**: You have **${remaining} round${remaining === 1 ? '' : 's'} remaining**. Determine files to edit and conclude.`
                     });
                     continue;
                 }
@@ -1214,25 +1397,31 @@ Analyze the requirements. If you lack information on contracts or implementation
                 if (statusAttr) decisionStatus = statusAttr[1].toLowerCase();
 
                 const inner = decisionTagMatch[2] || decisionTagMatch[1] || "";
-                const editMatch = inner.match(/<edit_files>([\s\S]*?)<\/edit_files>/i);
-                const ctxMatch = inner.match(/<context_files>([\s\S]*?)<\/context_files>/i);
-                const unneededMatch = inner.match(/<unneeded_files>([\s\S]*?)<\/unneeded_files>/i);
+                const editMatch = inner.match(/<edit_files>([\s\S]*?)<\/edit_files>/i) || cleanResponse.match(/<edit_files>([\s\S]*?)<\/edit_files>/i);
+                const ctxMatch = inner.match(/<context_files>([\s\S]*?)<\/context_files>/i) || cleanResponse.match(/<context_files>([\s\S]*?)<\/context_files>/i);
+                const unneededMatch = inner.match(/<unneeded_files>([\s\S]*?)<\/unneeded_files>/i) || cleanResponse.match(/<unneeded_files>([\s\S]*?)<\/unneeded_files>/i);
 
                 if (editMatch) editPaths = editMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean);
                 if (ctxMatch) contextPaths = ctxMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean);
                 if (unneededMatch) unneededPaths = unneededMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean);
-            } else {
-                const revealMatch = cleanResponse.match(/<reveal_only\b[^>]*>([\s\S]*?)<\/reveal_only>/i) ||
-                                     cleanResponse.match(/<keep\b[^>]*>([\s\S]*?)<\/keep>/i);
-                const muteMatch = cleanResponse.match(/<mute_only\b[^>]*>([\s\S]*?)<\/mute_only>/i) ||
-                                  cleanResponse.match(/<mute\b[^>]*>([\s\S]*?)<\/mute>/i);
+            }
 
-                if (revealMatch) {
-                    editPaths = revealMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean);
-                }
-                if (muteMatch) {
-                    unneededPaths = muteMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean);
-                }
+            // Resilient Extraction: Detect prose hydrates e.g. "S1 hydrate: [path]" or "<unmute_files>"
+            const hydrateMatches = [...cleanResponse.matchAll(/(?:hydrate|edit|unmute|target|modify)\s*:\s*\[([^\]]+)\]/gi)];
+            hydrateMatches.forEach(hm => {
+                const paths = hm[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"`]|['"`]$/g, '')).filter(Boolean);
+                paths.forEach(p => { if (!editPaths.includes(p)) editPaths.push(p); });
+            });
+
+            const unmuteTagMatch = cleanResponse.match(/<(?:unmute_files|unmute|reveal_only|target_files)\b[^>]*>([\s\S]*?)<\/(?:unmute_files|unmute|reveal_only|target_files)>/i);
+            if (unmuteTagMatch) {
+                const paths = unmuteTagMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"`]|['"`]$/g, '')).filter(Boolean);
+                paths.forEach(p => { if (!editPaths.includes(p)) editPaths.push(p); });
+            }
+
+            // Fallback: If editPaths is still empty, include any explicitly requested files from the prompt
+            if (editPaths.length === 0 && requestedCandidates.length > 0) {
+                requestedCandidates.forEach(rc => editPaths.push(rc.path));
             }
 
             fileCandidates.forEach(c => {
@@ -1243,7 +1432,6 @@ Analyze the requirements. If you lack information on contracts or implementation
                     c.role = 'context';
                     c.keep = false;
                 } else {
-                    // Any unmentioned file is automatically unneeded and muted
                     c.role = 'unneeded';
                     c.keep = false;
                 }
@@ -1277,6 +1465,13 @@ Analyze the requirements. If you lack information on contracts or implementation
                     availableBudget,
                     userPromptText
                 );
+                // Keep only Phase 1 files active in context for this first step
+                if (multiPartPlan && multiPartPlan.parts.length > 0) {
+                    const phase1Files = new Set(multiPartPlan.parts[0].editFiles.map(f => f.toLowerCase().trim()));
+                    fileCandidates.forEach(c => {
+                        c.keep = phase1Files.has(c.path.toLowerCase().trim());
+                    });
+                }
             }
 
             lastDecision = {
@@ -1393,7 +1588,8 @@ Apply the required modifications for this phase.`;
         let liberated = 0;
         const analysisParagraph = "The Librarian evaluated the codebase candidates against the objective budget. Priority files were kept active with full content, while supplementary files were set to reference mode.";
 
-        const isAlreadyMuted = (p: string) => currentMuted.some(m => this.pathsMatch(m, p));
+        const safeMuted = Array.isArray(currentMuted) ? currentMuted : [];
+        const isAlreadyMuted = (p: string) => safeMuted.some(m => this.pathsMatch(m, p));
 
         for (const candidate of candidates) {
             if (isAlreadyMuted(candidate.path)) {
@@ -1410,7 +1606,8 @@ Apply the required modifications for this phase.`;
             if (liberated >= overflow) break;
             candidate.role = 'context';
             candidate.keep = false;
-            evictList.push({ path: candidate.path, reason: `Muted as reference to save ${candidate.tokens.toLocaleString()} tokens.` });
+            const candTok = (typeof candidate.tokens === 'number' && !isNaN(candidate.tokens)) ? candidate.tokens : Number(candidate.tokens) || 0;
+            evictList.push({ path: candidate.path, reason: `Muted as reference to save ${candTok.toLocaleString()} tokens.` });
             liberated += candidate.tokens;
         }
 
@@ -1429,11 +1626,15 @@ Apply the required modifications for this phase.`;
             return `${b} B`;
         };
 
+        const safeMuted = Array.isArray(currentMuted) ? currentMuted : [];
         if (candidates.length <= 35) {
             return candidates.map(c => {
-                const isMuted = currentMuted.some(m => this.pathsMatch(m, c.path));
+                const isMuted = safeMuted.some(m => this.pathsMatch(m, c.path));
                 const statusTag = isMuted ? ' [MUTED]' : ' [ACTIVE]';
-                const sizeStr = `${formatSize(c.bytes)} (~${c.tokens.toLocaleString()} tok)`;
+                const tokNum = (typeof c.tokens === 'number' && !isNaN(c.tokens)) ? c.tokens : Number(c.tokens) || 0;
+                let tokStr = String(tokNum);
+                try { tokStr = tokNum.toLocaleString(); } catch {}
+                const sizeStr = `${formatSize(c.bytes)} (~${tokStr} tok)`;
                 return `- File: \`${c.path}\`${statusTag} (${sizeStr})`;
             }).join('\n');
         }
@@ -1680,6 +1881,172 @@ ${transcript}`;
             currentDiscussion,
             discussionManager
         );
+    }
+
+    /**
+     * Extracts verified function, class, and method signatures directly from AST/CodeGraph.
+     */
+    public static async extractVerifiedSignatures(
+        files: string[], 
+        contextManager: ContextManager
+    ): Promise<string> {
+        if (!files || files.length === 0) return "";
+        const lines: string[] = [];
+        const graphNodes = (contextManager as any).codeGraphManager?.getGraphData()?.nodes || [];
+
+        for (const filePath of files.slice(0, 10)) {
+            const cleanPath = filePath.replace(/\\/g, '/');
+            const fileSyms = graphNodes.filter((n: any) => 
+                n.filePath && (n.filePath === cleanPath || n.filePath.endsWith('/' + cleanPath) || cleanPath.endsWith('/' + n.filePath))
+            );
+
+            if (fileSyms.length > 0) {
+                lines.push(`#### 📄 \`${cleanPath}\`:`);
+                for (const sym of fileSyms) {
+                    const sig = sym.signature || `${sym.label}()`;
+                    const doc = sym.docstring ? ` — *${sym.docstring.slice(0, 100)}*` : '';
+                    const lineInfo = sym.startLine !== undefined ? ` (line ${sym.startLine + 1})` : '';
+                    lines.push(`- \`${sig}\`${lineInfo}${doc}`);
+                }
+                lines.push('');
+            } else {
+                try {
+                    const res = await contextManager.resolveWorkspaceFromPath(cleanPath);
+                    if (res) {
+                        const defs = await contextManager.extractDefinitions(res.uri);
+                        if (defs && !defs.includes("No definitions found") && !defs.includes("Error extracting")) {
+                            lines.push(`#### 📄 \`${cleanPath}\`:`);
+                            lines.push(defs);
+                            lines.push('');
+                        }
+                    }
+                } catch {}
+            }
+        }
+        return lines.join('\n').trim();
+    }
+
+    /**
+     * Synthesizes concrete function-level workings and system mechanics when LLM returns generic boilerplate.
+     */
+    private static async synthesizeArchitecturalFindings(
+        prompt: string,
+        keptFiles: string[],
+        mutedFiles: string[],
+        contextManager: ContextManager,
+        lollmsAPI: LollmsAPI,
+        targetModel: string,
+        signal: AbortSignal
+    ): Promise<string> {
+        const targetFiles = keptFiles.length > 0 ? keptFiles : mutedFiles.slice(0, 10);
+        let codeSnippets = "";
+        try {
+            codeSnippets = await contextManager.readSpecificFiles(targetFiles.slice(0, 6));
+        } catch {}
+
+        let graphSummary = "";
+        try {
+            const graph = (contextManager as any).codeGraphManager;
+            if (graph) graphSummary = graph.generateTextSummary?.() || "";
+        } catch {}
+
+        const synthesisPrompt = `You are the Lead Sovereign Librarian.
+The user asked for: "${prompt}"
+
+Target files examined: [${targetFiles.join(', ')}]
+
+${codeSnippets ? `### CODE EXTRACTS:\n${codeSnippets.substring(0, 10000)}\n\n` : ''}
+${graphSummary ? `### GRAPH SUMMARY:\n${graphSummary.substring(0, 4000)}\n\n` : ''}
+
+TASK:
+Produce an exhaustive, highly detailed architectural report explaining system mechanics and file interactions:
+1. **System & Flow Mechanics**: Trace the complete execution pipeline, caller-callee chains, and how components communicate across boundaries.
+2. **File & Function Breakdown**:
+   - For every target file, detail its architectural role.
+   - For every key function/method: list exact signature, purpose, side effects, and parameter types.
+3. **Contracts, Events & Invariants**: Detail data contracts, schema validations, event listeners, and state invariants.
+
+Write directly and thoroughly. Do NOT summarize or shorten. Provide full explanations.`;
+
+        try {
+            const resp = await lollmsAPI.sendChat([
+                { role: 'system', content: "You are a software architect explaining codebase mechanics. Output clear, technical markdown." },
+                { role: 'user', content: synthesisPrompt }
+            ], null, signal, targetModel, { thinking: false, reasoningEffort: 'none' });
+
+            const clean = stripThinkingTags(resp).trim();
+            if (clean && clean.length > 80) return clean;
+        } catch (e) {}
+
+        // Fallback structural synthesis
+        return `### 🏛️ Codebase Mechanics & Component Relations
+- **Target Area**: Analyzed components in relation to "${prompt}".
+- **Files Inspected**: ${targetFiles.map(f => `\`${f}\``).join(', ')}.
+- **System Architecture**: Composed of modular endpoints and stores. Inspect target contracts before modifications.`;
+    }
+
+    /**
+     * Persists discovered findings to Knowledge Graph (.lollms/knowledge.ttl) and Project Memory for permanent rehydration.
+     */
+    public static async persistFindingsToMemoryAndGraph(
+        prompt: string,
+        findings: string,
+        keptFiles: string[],
+        mutedFiles: string[],
+        discussionManager: DiscussionManager,
+        discussion?: Discussion,
+        passedMemoryManager?: any
+    ): Promise<void> {
+        if (!findings || findings.length < 50) return;
+
+        const cleanTopic = prompt.replace(/[^\w\s-]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 45) || 'Codebase Architecture';
+        const relevantFiles = Array.from(new Set([...keptFiles, ...mutedFiles])).slice(0, 10);
+
+        // 1. Ingest into Knowledge Graph (.lollms/knowledge.ttl)
+        try {
+            const { KnowledgeManager } = require('./knowledgeManager');
+            const km = new KnowledgeManager(discussionManager.context);
+            await km.recordInsight(cleanTopic, findings, relevantFiles, ['#architecture', '#contracts', '#librarian']);
+            Logger.info(`[Librarian] Persisted findings '${cleanTopic}' to .lollms/knowledge.ttl`);
+        } catch (err: any) {
+            Logger.warn(`[Librarian] Failed to persist insight to Knowledge Graph: ${err.message}`);
+        }
+
+        // 2. Ingest into Project Memory (Permanent Neural Engrams with Timestamps & Tags for Dream Reconciliation)
+        try {
+            const { ChatPanel } = require('./commands/chatPanel/chatPanel');
+            const projectMemoryManager = passedMemoryManager ||
+                                          (discussionManager.context as any)?.projectMemoryManager || 
+                                          (discussionManager as any)?.services?.projectMemoryManager ||
+                                          (ChatPanel.currentPanel as any)?.projectMemoryManager;
+
+            if (projectMemoryManager) {
+                const nowIso = new Date().toISOString();
+                const engramId = `librarian_${cleanTopic.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 30)}`;
+                const engramContent = `## 🏛️ ARCHITECTURE & CONTRACTS (${nowIso})\n${findings.slice(0, 4000)}`;
+
+                await projectMemoryManager.updateMemory(
+                    'add',
+                    engramId,
+                    `Librarian: ${cleanTopic}`,
+                    engramContent,
+                    'architecture',
+                    90,
+                    [
+                        ...relevantFiles.map(f => ({ verb: 'explains', targetId: f })),
+                        { verb: 'has_tag', targetId: 'architecture' },
+                        { verb: 'has_tag', targetId: 'contracts' },
+                        { verb: 'recorded_at', targetId: nowIso }
+                    ]
+                );
+                Logger.info(`[Librarian] Ingested dated engram '${engramId}' (${nowIso}) into Project Memory.`);
+            }
+        } catch (memErr: any) {
+            Logger.warn(`[Librarian] Failed to record engram to Project Memory: ${memErr.message}`);
+        }
+
+        // Findings are saved strictly to permanent Neural Memory & Knowledge Graph.
+        // Doctrine and discussion_data_zone remain completely untouched.
     }
 
     private static updateTreeWithKeptFiles(tree: string, keptPaths: string[], mutedPaths: string[] = []): string {

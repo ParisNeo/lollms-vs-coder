@@ -88,6 +88,7 @@ export interface DiscussionCapabilities {
     contextGovernorThreshold: number;
     contextGovernorTargetThreshold?: number;
     contextGovernorMaxRounds?: number;
+    librarianDebateTurns?: number;
     contextGovernorPermanentPruning?: boolean;
     contextGovernorCropHistory?: boolean;
     selectedFolders?: string[];

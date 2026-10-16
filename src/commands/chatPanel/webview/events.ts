@@ -465,6 +465,21 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         });
     }
     // Removed old attachButton bindClick as it's now handled with processing state
+    const openCompanionMenuBtn = document.getElementById('openCompanionMenuBtn');
+    if (openCompanionMenuBtn) {
+        openCompanionMenuBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            vscode.postMessage({
+                command: 'executeLollmsCommand',
+                details: { command: 'lollms-vs-coder.quickEdit' }
+            });
+            if (dom.moreActionsMenu) {
+                dom.moreActionsMenu.classList.remove('visible');
+            }
+        });
+    }
+
     const newDiscSameCtxBtn = document.getElementById('newDiscussionSameContextBtn');
     if (newDiscSameCtxBtn) {
         newDiscSameCtxBtn.addEventListener('click', (e) => {
@@ -1376,7 +1391,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 contextGovernorEnabled: (document.getElementById('cap-contextGovernorEnabled') as HTMLInputElement)?.checked ?? true,
                 contextGovernorThreshold: parseInt((document.getElementById('modal-governor-threshold') as HTMLInputElement)?.value || '95', 10),
                 contextGovernorTargetThreshold: parseInt((document.getElementById('modal-governor-target-threshold') as HTMLInputElement)?.value || '70', 10),
-                contextGovernorMaxRounds: parseInt((document.getElementById('modal-governor-max-rounds') as HTMLInputElement)?.value || '20', 10),
+                librarianDebateTurns: parseInt((document.getElementById('modal-librarian-debate-turns') as HTMLInputElement)?.value || '2', 10),
+                contextGovernorMaxRounds: parseInt((document.getElementById('modal-governor-max-rounds') as HTMLInputElement)?.value || '15', 10),
                 contextGovernorPermanentPruning: (document.getElementById('cap-contextGovernorPermanentPruning') as HTMLInputElement)?.checked ?? false,
                 contextGovernorCropHistory: (document.getElementById('cap-contextGovernorCropHistory') as HTMLInputElement)?.checked ?? true,
                 contextAggression: dom.contextAggressionSelect?.value || 'respect',
@@ -1547,11 +1563,40 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         });
     }
 
+    const briefingScopeRadios = document.getElementsByName('briefing-scope');
+    briefingScopeRadios.forEach(radio => {
+        radio.addEventListener('change', () => {
+            const scope = (radio as HTMLInputElement).value;
+            const modal = dom.missionBriefingModal as any;
+            if (dom.briefingContentInput && modal) {
+                if (scope === 'global') {
+                    dom.briefingContentInput.value = modal._globalBriefing || '';
+                } else {
+                    dom.briefingContentInput.value = modal._localBriefing || '';
+                }
+            }
+        });
+    });
+
     if (dom.briefingClearBtn) {
         dom.briefingClearBtn.addEventListener('click', () => {
+            const scopeElement = document.querySelector('input[name="briefing-scope"]:checked') as HTMLInputElement;
+            const scope = scopeElement ? scopeElement.value : 'local';
+
             if (dom.briefingContentInput) {
                 dom.briefingContentInput.value = '';
             }
+
+            const modal = dom.missionBriefingModal as any;
+            if (modal) {
+                if (scope === 'global') modal._globalBriefing = '';
+                else modal._localBriefing = '';
+            }
+
+            vscode.postMessage({
+                command: 'clearMissionBriefing',
+                scope: scope
+            });
         });
     }
 

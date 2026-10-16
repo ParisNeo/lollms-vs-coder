@@ -224,7 +224,8 @@ export interface DiscussionCapabilities {
     interTokenTimeout: number;
     contextGovernorThreshold: number; // Trigger threshold percentage (0-100)
     contextGovernorTargetThreshold?: number; // Objective threshold percentage to reach (0-100)
-    contextGovernorMaxRounds?: number; // Maximum negotiation rounds (default 5)
+    contextGovernorMaxRounds?: number; // Maximum internal tool rounds per consultation (default 15)
+    librarianDebateTurns?: number; // Maximum conversational turns between Worker and Librarian (default 2)
     contextGovernorEnabled?: boolean; // New key
     contextGovernorPermanentPruning?: boolean; // New key
     enableSymbolMode?: boolean; // New key
@@ -1037,30 +1038,30 @@ const sparqlDynamicRule = isSparqlActive ? `
     ### 🧠 CO-ENGINEER DYNAMIC MODE (MULTI-TURN INTERACTIVE LOOP)
     You are operating under **Co-Engineer Mode (Dynamic Multi-Turn Loop)**.
 
-    **⚡ THE TWO-STEP WORKFLOW & LIBRARIAN CONSULTATION MANDATE:**
-    1. **NO PREMATURE CODING (STEP 1 FIRST)**:
-       - In Step 1, perform pure analysis, hypothesis formulation, algorithmic complexity evaluation, security audit, and UI/UX checks.
-       - Propose a detailed plan with the exact files to be changed.
-       - If you need user input or trade-off decisions, use an interactive form (\`<lollms_form>\`).
-       - Do NOT output \`<file>\` code blocks until the user confirms the plan!
-    2. **DELEGATE ALL RECONNAISSANCE TO THE LIBRARIAN**:
-       - You do NOT have direct SPARQL, Grep, or file inclusion tools.
-       - You MUST summon the Librarian:
-         <ask_librarian>
-         Describe the technical objective, files you need to patch, and any dependencies you need to understand...
-         </ask_librarian>
-       - The Librarian will query the Code Graph via SPARQL, run Grep across the codebase, load ONLY the exact files needed for patching ([C]), and compress reference files into an architectural report.
-    3. **INTERACTIVE USER CONFIRMATION (STEP 2)**:
-       - Wait for user confirmation before executing any code changes.
-       - If the user confirms or submits the form, proceed to Step 2 and manifest the code using \`<file>\` tags.
+    **⚡ ARCHITECTURAL WORKFLOW & LIBRARIAN PROTOCOL:**
+    1. **VERIFY INGREDIENTS BEFORE CALLING LIBRARIAN**:
+       - Check if all needed files, contracts, or logic are already present in the tree, loaded files (\`[C]\`), conversation history, or hydrated memories.
+       - If you already possess the required context, DO NOT call the Librarian! Proceed directly to implement.
+       - Call the Librarian ONLY if you genuinely lack crucial information that cannot be determined from your loaded files, project tree, history, or memories.
+    2. **DELEGATE RECONNAISSANCE TO LIBRARIAN (WHEN NEEDED)**:
+       - Emit:
+         <librarian>
+         Problem: [exact technical problem].
+         Working hypothesis: [explain your deduction].
+         Dependencies to scout: [what functions, files, or contracts the Librarian must verify].
+         </librarian>
+       - The Librarian investigates with awareness of your query, the user's objective, and conversation history, loads edit files, and provides architectural contracts.
+    3. **DECISIVE CODING (FORMS ONLY FOR AMBIGUITY)**:
+       - Do NOT pause or ask the user for confirmation if the solution is clear.
+       - ONLY ask the user using \`<lollms_form>\` if multiple viable solutions exist or if there is genuine ambiguity requiring user selection.
+       - In all other cases, deliver the verified code updates using \`<file>\` tags as the final action of your turn once you are 100% sure of your understanding!
 
     **AUTHORIZED WORKER TAGS:**
-    - \`<unmute_files>\npath/to/muted_file.ext\n</unmute_files>\` (Direct fast-path when file is known)
-    - \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>\` (Direct fast-path for tree files)
-    - \`<ask_librarian>\nWhat you need the Librarian to scout, load, or compress...\n</ask_librarian>\` (When unclear or needing reference compression)
+    - \`<librarian>\nExplain the technical goal, hypothesis, and needed dependencies in detail...\n</librarian>\`
+    - \`<librarian_off>\npath/to/target_file.ext\n</librarian_off>\`
     - \`<lollms_form title="..." id="...">\nInteractive form inputs for the user...\n</lollms_form>\`
     - \`<mission_briefing action="write|patch">\nUpdate project doctrine...\n</mission_briefing>\`
-    - \`<file path="..." action="write|patch|update_symbol">\n(ONLY after user confirms the plan)\n</file>`;
+    - \`<file path="..." action="write|patch|update_symbol">\n(ONLY in Stage 3 after user confirms the plan)\n</file>`;
     } else {
         // --- DISCUSSION MODE: SCOPE-AWARE FILTERING ---
         const allTools = (context as any)?.toolManager?.getEnabledTools() || [];
@@ -1095,8 +1096,9 @@ const sparqlDynamicRule = isSparqlActive ? `
     }
 
     // --- GOVERNOR'S CODEBASE ARCHITECTURE & WORKINGS REPORT ---
-    let governorReport = (context as any)?.governorReport || '';
-    if (!governorReport && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+    const isReportSuppressed = (context as any)?.suppressLibrarianReport === true;
+    let governorReport = isReportSuppressed ? '' : ((context as any)?.governorReport || '');
+    if (!governorReport && !isReportSuppressed && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
         try {
             const structUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, '.lollms', 'structure.md');
             const bytes = await vscode.workspace.fs.readFile(structUri);
@@ -1105,7 +1107,7 @@ const sparqlDynamicRule = isSparqlActive ? `
     }
 
     let librarianReportSection = "";
-    if (governorReport && governorReport.trim().length > 0) {
+    if (governorReport && governorReport.trim().length > 0 && !isReportSuppressed) {
         const lines = governorReport.split('\n');
         const cleanedLines: string[] = [];
         let skippingMuteSection = false;

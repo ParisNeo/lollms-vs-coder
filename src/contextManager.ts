@@ -1135,6 +1135,7 @@ private _cachedTreeString: string | null = null;
     activeDiagramIds?: string[],
     modelName?: string,
     allowRLM?: boolean,
+    leanMode?: boolean,
     mutedFiles?: string[],
     mutedSkills?: string[],
     mutedDiagrams?: string[],
@@ -1160,6 +1161,7 @@ private _cachedTreeString: string | null = null;
     activeDiagramIds?: string[],
     modelName?: string,
     allowRLM?: boolean,
+    leanMode?: boolean,
     mutedFiles?: string[],
     mutedSkills?: string[],
     mutedDiagrams?: string[],
@@ -1472,11 +1474,13 @@ private _cachedTreeString: string | null = null;
             continue;
           }
 
-          if (contextState === 'definitions-only') {
+          if (contextState === 'definitions-only' || options?.leanMode) {
             const definitions = await this.extractDefinitions(fileUri);
-            projectContentBuffer += `<file path="${headerPath}" mode="definitions-only">\n${definitions}\n</file>
-
-\n\n`;
+            const modeLabel = options?.leanMode ? 'deferred-contracts' : 'definitions-only';
+            const notice = options?.leanMode
+              ? `<!-- NOTE: Stripped signatures and contracts only for Stage 1 assessment. Full source code will be hydrated in Stage 3 upon <librarian_off> -->\n`
+              : '';
+            projectContentBuffer += `${notice}<file path="${headerPath}" mode="${modeLabel}">\n${definitions}\n</file>\n\n`;
             filesInThisFolderCount++;
             continue;
           }
@@ -1586,7 +1590,7 @@ private _cachedTreeString: string | null = null;
   // FILE OPERATIONS
   // ─────────────────────────────────────────────────────────────
 
-  private async extractDefinitions(uri: vscode.Uri): Promise<string> {
+  public async extractDefinitions(uri: vscode.Uri): Promise<string> {
     try {
       const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', uri);
       if (!symbols || symbols.length === 0) return "(No definitions found)";
@@ -2704,23 +2708,37 @@ Example output:
   }
 
   public renderBriefing(discussion: any): string {
-    const fallback = "Librarian is analyzing project state...";
-    let briefingText = "";
+    let globalText = "";
     try {
       const globalBriefing = this.getGlobalBriefing();
-      if (globalBriefing) briefingText += `**[GLOBAL CONSTRAINTS]**\n${globalBriefing}\n\n`;
+      if (globalBriefing && globalBriefing.trim()) {
+        globalText = `**[GLOBAL CONSTRAINTS]**\n${globalBriefing.trim()}\n\n`;
+      }
     } catch (e) {}
 
-    if (!discussion?.discussion_data_zone) return (briefingText + fallback).trim();
+    if (!discussion?.discussion_data_zone) return globalText.trim();
+
     try {
       const raw = discussion.discussion_data_zone.trim();
-      if (!raw.startsWith('{')) { briefingText += `**[LOCAL CONSTRAINTS]**\n${raw}`; return briefingText.trim(); }
+      if (!raw) return globalText.trim();
+
+      if (!raw.startsWith('{')) {
+        return (globalText + `**[LOCAL CONSTRAINTS]**\n${raw}`).trim();
+      }
+
       const entries = JSON.parse(raw);
-      const keys = Object.keys(entries);
-      if (keys.length === 0) return (briefingText + fallback).trim();
-      const entriesText = keys.map(id => `**[${id.replace(/_/g, ' ').toUpperCase()}]**\n${entries[id]}`).join('\n\n');
-      return (briefingText + entriesText).trim();
-    } catch { return (briefingText + (discussion.discussion_data_zone || fallback)).trim(); }
+      let localText = "";
+      // Strictly extract ONLY user-defined constraints or doctrine; never dump librarian findings into the briefing
+      if (entries.user_constraints && typeof entries.user_constraints === 'string' && entries.user_constraints.trim()) {
+        localText = `**[LOCAL CONSTRAINTS]**\n${entries.user_constraints.trim()}`;
+      } else if (entries.doctrine && typeof entries.doctrine === 'string' && entries.doctrine.trim()) {
+        localText = `**[LOCAL CONSTRAINTS]**\n${entries.doctrine.trim()}`;
+      }
+
+      return (globalText + localText).trim();
+    } catch {
+      return (globalText + (discussion.discussion_data_zone || "")).trim();
+    }
   }
 
   // ─────────────────────────────────────────────────────────────

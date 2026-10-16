@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.62",
+  "version": "1.0.68",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -100,7 +100,12 @@
       },
       {
         "command": "lollms-vs-coder.quickEdit",
-        "title": "Lollms: Quick Edit / Ask",
+        "title": "Lollms: Open Companion (Quick Edit / Ask)",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "lollms-vs-coder.openCompanion",
+        "title": "Lollms: Open Companion Panel",
         "icon": "$(sparkle)"
       },
       {
@@ -207,6 +212,11 @@
         "command": "lollms-vs-coder.governorFilterFiles",
         "title": "Lollms: Consult Librarian for Context",
         "icon": "$(library)"
+      },
+      {
+        "command": "lollms-vs-coder.showKnowledgeGraphPanel",
+        "title": "Lollms: Open Architecture & Knowledge Graph Studio",
+        "icon": "$(graph)"
       },
       {
         "command": "lollms-vs-coder.openKnowledgeRoot",
@@ -1522,10 +1532,15 @@
           "default": 3,
           "description": "Maximum number of investigative scouting rounds (grep, tree, and code graph inspection) when automatically building the project doctrine."
         },
+        "lollmsVsCoder.librarianDebateTurns": {
+          "type": "number",
+          "default": 2,
+          "description": "Maximum number of conversational turns the Worker may invoke the Librarian (default is 2) per user request."
+        },
         "lollmsVsCoder.contextGovernorMaxRounds": {
           "type": "number",
-          "default": 20,
-          "description": "Maximum negotiation and scouting rounds (up to 20) for Context Librarian to explore the codebase, update the Structure file, and optimize file selection."
+          "default": 15,
+          "description": "Maximum internal tool rounds the Librarian may execute in sequence (grep, read_full_file, sparql) during each consultation turn (default is 15)."
         },
         "lollmsVsCoder.contextMaxDepth": {
           "type": "number",
@@ -2348,7 +2363,6 @@
     "audit": "npm audit --audit-level moderate",
     "audit-fix": "npm audit fix --audit-level=moderate || echo 'Audit fix finished with remaining issues.'",
     "package": "npx @vscode/vsce package",
-    "optimize-icon": "powershell -ExecutionPolicy Bypass -File scripts/optimize_icon.ps1",
     "optimize-icon": "powershell -ExecutionPolicy Bypass -File scripts/optimize_icon.ps1",
     "build-and-package": "npm run optimize-icon && npx @vscode/vsce package",
     "pretest": "npm run compile && npm audit --audit-level=moderate",

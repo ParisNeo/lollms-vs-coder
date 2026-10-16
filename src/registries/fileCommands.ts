@@ -155,7 +155,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             .split('<')[0]
             .split(':')[0]
             .split('=')[0]
-            .replace(/^[#_]/, '')
+            .replace(/^#/, '') // Do NOT strip leading underscores (needed for _private and __init__ methods)
             .trim()
             .toLowerCase();
     }
@@ -201,11 +201,12 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             }
         }
 
-        // 2. Search for the target symbol in the target range
-        const pythonDefRegex = new RegExp(`^(\\s*)(?:async\\s+)?(?:def|class)\\s+${targetLeaf}\\b`);
-        const jsMethodRegex = new RegExp(`^(\\s*)(?:(?:public|private|protected|static|readonly|async|get|set|override)\\s+)*(?:function\\s+)?${targetLeaf}\\s*(?:=\\s*(?:async\\s*)?\\([^)]*\\)\\s*=>|\\()`);
-        const jsVarFuncRegex = new RegExp(`^(\\s*)(?:export\\s+)?(?:const|let|var)\\s+${targetLeaf}\\s*=\\s*`);
-        const generalBraceRegex = new RegExp(`\\b${targetLeaf}\\b`);
+        // 2. Search for the target symbol in the target range with escaped regex safety
+        const escapedLeaf = targetLeaf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const pythonDefRegex = new RegExp(`^(\\s*)(?:async\\s+)?(?:def|class)\\s+${escapedLeaf}\\b`);
+        const jsMethodRegex = new RegExp(`^(\\s*)(?:(?:public|private|protected|static|readonly|async|get|set|override)\\s+)*(?:function\\s+)?${escapedLeaf}\\s*(?:=\\s*(?:async\\s*)?\\([^)]*\\)\\s*=>|\\()`);
+        const jsVarFuncRegex = new RegExp(`^(\\s*)(?:export\\s+)?(?:const|let|var)\\s+${escapedLeaf}\\s*=\\s*`);
+        const generalDeclRegex = new RegExp(`\\b${escapedLeaf}\\s*(?:=|\\(|:)`);
 
         let declLineIdx = -1;
         let startLineIdx = -1;
@@ -214,11 +215,11 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         for (let i = searchStartLine; i < searchEndLine; i++) {
             const lineText = document.lineAt(i).text;
             const trimmed = lineText.trim();
-            if (trimmed.length === 0) continue;
+            if (trimmed.length === 0 || trimmed.startsWith('//') || (isPython && trimmed.startsWith('#'))) continue;
 
             const isMatch = isPython 
-                ? pythonDefRegex.test(lineText)
-                : (jsMethodRegex.test(lineText) || jsVarFuncRegex.test(lineText) || generalBraceRegex.test(lineText));
+                ? (pythonDefRegex.test(lineText) || new RegExp(`^(\\s*)(?:def|class)\\s+${escapedLeaf}\\b`).test(lineText))
+                : (jsMethodRegex.test(lineText) || jsVarFuncRegex.test(lineText) || generalDeclRegex.test(lineText));
 
             if (isMatch) {
                 declLineIdx = i;
@@ -389,52 +390,53 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
         return text.substring(0, startOffset) + adjustedContent + text.substring(endOffset);
     }
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean, autoSave?: boolean }) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean, autoSave?: boolean, messageId?: string, blockIndex?: number, hunkIndex?: number, blockId?: string }) => {
         // Clean up hallucinated metadata like "(2 hunks)" from the file path
-        const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
+        const rawInputPath = (filePath || '').replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
 
-        if (!isValidFilePath(sanitizedFilePath)) {
-            const err = `Invalid file path: "${sanitizedFilePath}". Refusing to create or overwrite file with illegal name.`;
-            if (!options?.silent) vscode.window.showErrorMessage(err);
-            return { success: false, error: err };
-        }
-
-        const ext = path.extname(sanitizedFilePath).toLowerCase();
-
-        const readOnlyDocExts = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.zip', '.tar', '.gz', '.exe', '.bin', '.pkl', '.onnx', '.db', '.sqlite']);
-        if (readOnlyDocExts.has(ext)) {
-            const err = `🛑 Cannot apply code content to read-only document/binary file '${sanitizedFilePath}'. Modify documents programmatically via scripts (e.g. Python with pandas/openpyxl/python-docx).`;
-            if (!options?.silent) vscode.window.showErrorMessage(err);
-            return { success: false, error: err };
-        }
-
-        // Handle Member-Targeted Replacement (path/to/file:ClassName:MethodName)
+        // 1. Extract Symbol Members BEFORE validating the file path!
+        // This ensures "path/to/file.py:my_function" is split into cleanPath = "path/to/file.py" and targetMember = ["my_function"]
         let targetMember: string[] = [];
-        let cleanPath = sanitizedFilePath;
+        let cleanPath = rawInputPath;
 
         const currentDiscussion = ChatPanel.currentPanel?.getCurrentDiscussion();
         const caps = currentDiscussion?.capabilities || services.discussionManager.getLastCapabilities();
         const symbolModeEnabled = caps?.enableSymbolMode !== false;
 
-        if (symbolModeEnabled) {
-            // Protect Windows drive letters (e.g. C:/path) from being treated as symbol colons
-            let workingPath = sanitizedFilePath;
-            let drivePrefix = "";
-            if (/^[a-zA-Z]:[\\/]/.test(workingPath)) {
-                drivePrefix = workingPath.substring(0, 2);
-                workingPath = workingPath.substring(2);
-            }
+        let workingPath = rawInputPath;
+        let drivePrefix = "";
+        if (/^[a-zA-Z]:[\\/]/.test(workingPath)) {
+            drivePrefix = workingPath.substring(0, 2);
+            workingPath = workingPath.substring(2);
+        }
 
-            if (workingPath.includes(':')) {
-                const parts = workingPath.split(':');
-                cleanPath = drivePrefix + parts[0];
-                targetMember = parts.slice(1).map(p => p.trim()).filter(p => p);
-            }
+        if (workingPath.includes(':')) {
+            const parts = workingPath.split(':');
+            cleanPath = drivePrefix + parts[0];
+            targetMember = parts.slice(1).map(p => p.trim()).filter(p => p);
+        }
+
+        // 2. Validate ONLY the clean file path (without the symbol colon)
+        if (!isValidFilePath(cleanPath)) {
+            const err = `Invalid file path: "${cleanPath}". Refusing to modify file with illegal path.`;
+            Logger.warn(`applyFileContent: ${err}`);
+            if (!options?.silent) vscode.window.showErrorMessage(err);
+            return { success: false, error: err };
+        }
+
+        const ext = path.extname(cleanPath).toLowerCase();
+
+        const readOnlyDocExts = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.zip', '.tar', '.gz', '.exe', '.bin', '.pkl', '.onnx', '.db', '.sqlite']);
+        if (readOnlyDocExts.has(ext)) {
+            const err = `🛑 Cannot apply code content to read-only document/binary file '${cleanPath}'. Modify documents programmatically via scripts.`;
+            if (!options?.silent) vscode.window.showErrorMessage(err);
+            return { success: false, error: err };
         }
 
         const resolution = await services.contextManager.resolveWorkspaceFromPath(cleanPath);
         if (!resolution) {
-            vscode.window.showErrorMessage("Could not resolve path: " + filePath);
+            Logger.warn(`applyFileContent: Could not resolve path: ${cleanPath}`);
+            if (!options?.silent) vscode.window.showErrorMessage("Could not resolve path: " + cleanPath);
             return { success: false, error: "Invalid path" };
         }
         
@@ -494,8 +496,12 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             if (targetMember.length > 0 && document) {
                 try {
                     finalWriteContent = await replaceSymbolContent(document, targetMember, content);
+                    Logger.info(`applyFileContent: Spliced symbol '${targetMember.join(':')}' into ${cleanPath} (${originalContent.length} -> ${finalWriteContent.length} chars)`);
                 } catch (err: any) {
-                    vscode.window.showErrorMessage(`Targeted symbol replacement failed: ${err.message}`);
+                    Logger.error(`applyFileContent: Targeted symbol replacement failed: ${err.message}`);
+                    if (!options?.silent) {
+                        vscode.window.showErrorMessage(`Targeted symbol replacement failed: ${err.message}`);
+                    }
                     return { success: false, error: err.message };
                 }
             } else if (symbolModeEnabled && fileExists && targetMember.length === 0 && document) {
@@ -617,8 +623,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 }
             }
 
-            // Open Diff View: Original (Disk) vs Proposed (Virtual)
-            if (options?.silent) {
+            // Write directly to disk if silent or autoSave is enabled (such as in batch "Apply All")
+            if (options?.silent || options?.autoSave) {
                 if (document) {
                     const edit = new vscode.WorkspaceEdit();
                     const lastLine = document.lineCount > 0 ? document.lineCount - 1 : 0;
@@ -631,17 +637,22 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     if (applied) {
                         await document.save();
                         services.contextManager.refreshFileInCache(fileUri);
-                        services.contextManager.getContextStateProvider()?.addFilesToContext([sanitizedFilePath]).catch(() => {});
-                        Logger.info(`applyFileContent: Successfully persisted complete rewrite to disk for ${relativePath}`);
+                        services.contextManager.getContextStateProvider()?.addFilesToContext([cleanPath]).catch(() => {});
+                        Logger.info(`applyFileContent: Successfully persisted changes to disk for ${relativePath} (Symbol: ${targetMember.join(':') || 'full'})`);
+                        return { success: true, alreadyApplied: true };
+                    } else {
+                        return { success: false, error: "Failed to apply edit to document buffer." };
                     }
                 }
             } else {
+                // Interactive Review: Open full-file diff comparing the full disk file vs the full proposed file (with symbol spliced in)
                 const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
                 await services.diffManager.openDiff(fileUri, finalWriteContent, discussionId, {
                     messageId: options?.messageId,
                     blockIndex: options?.blockIndex,
+                    hunkIndex: options?.hunkIndex,
                     blockId: options?.blockId,
-                    filePath: sanitizedFilePath
+                    filePath: cleanPath
                 });
             }
 

@@ -181,7 +181,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         return;
     }
     const target = e.target as HTMLElement;
-    if (target && target.tagName === 'INPUT' && target.id !== 'messageInput') {
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') && target.id !== 'messageInput') {
         return;
     }
     handlePasteImages(e);
@@ -293,8 +293,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         if (inputBtn) {
             inputBtn.classList.toggle('active', newFast);
             inputBtn.setAttribute('title', newFast
-                ? "Fast Mode: ACTIVE (Step 2 Plan & Step 3 Code fused in one run). Click to deactivate."
-                : "Fast Mode: INACTIVE. Click to activate (fuses Step 2 Plan & Step 3 Code in one run).");
+                ? "Fast Mode: ACTIVE (Direct Coder only on visible files. Adds/unmutes files as needed without Librarian). Click to deactivate."
+                : "Fast Mode: INACTIVE. Click to activate (Direct Coder only on visible files without Librarian).");
         }
 
         vscode.postMessage({
@@ -2936,7 +2936,10 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     const handleRepairSubmit = () => {
         const studioState = (window as any).fileRepairStudioState;
         if (studioState?.isRunning) {
-            vscode.postMessage({ command: 'cancelFileRepairPass' });
+            vscode.postMessage({ 
+                command: 'cancelFileRepairPass',
+                filePath: studioState?.filePath
+            });
             import('./ui.js').then(ui => ui.setRepairRunningState(false));
             return;
         }
@@ -2950,6 +2953,19 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     };
 
     if (repairRunBtn) repairRunBtn.onclick = handleRepairSubmit;
+
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const studioState = (window as any).fileRepairStudioState;
+            if (studioState?.isRunning) {
+                vscode.postMessage({ 
+                    command: 'cancelFileRepairPass',
+                    filePath: studioState?.filePath 
+                });
+                import('./ui.js').then(ui => ui.setRepairRunningState(false));
+            }
+        }
+    });
     if (repairPromptInput) {
         repairPromptInput.onkeydown = (e: KeyboardEvent) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -2962,7 +2978,11 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     const repairStopIndicatorBtn = document.getElementById('repair-stop-indicator-btn');
     if (repairStopIndicatorBtn) {
         repairStopIndicatorBtn.onclick = () => {
-            vscode.postMessage({ command: 'cancelFileRepairPass' });
+            const studioState = (window as any).fileRepairStudioState;
+            vscode.postMessage({ 
+                command: 'cancelFileRepairPass',
+                filePath: studioState?.filePath 
+            });
             import('./ui.js').then(ui => ui.setRepairRunningState(false));
         };
     }
@@ -3107,7 +3127,17 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
      */
     function handleGlobalClick(e: MouseEvent) {
         const target = e.target as HTMLElement;
-
+        // --- GLOBAL COLLAPSE FROM BOTTOM DELEGATION ---
+        const collapseBottomBtn = target.closest('.collapse-msg-bottom-btn') as HTMLElement;
+        if (collapseBottomBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            const wrapper = collapseBottomBtn.closest('.message-wrapper') as any;
+            if (wrapper && typeof wrapper.toggleCollapse === 'function') {
+                wrapper.toggleCollapse(true, true);
+            }
+            return;
+        }
         // --- GLOBAL MESSAGE BUBBLE COPY DELEGATION ---
         const copyMsgBtn = target.closest('.copy-msg-btn') as HTMLButtonElement;
         if (copyMsgBtn) {

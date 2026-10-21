@@ -1901,12 +1901,7 @@ export class BadgesBinder {
         const menu = wrapper.querySelector('#profile-menu') as HTMLElement;
         if (!badge || !menu) return;
 
-        let menuHtml = `
-            <div class="custom-menu-item manual-model-item" style="border-bottom: 1px solid var(--vscode-menu-separatorBackground); padding-bottom: 8px; margin-bottom: 4px;">
-                <span class="codicon codicon-edit"></span> Enter model name manually...
-            </div>`;
-
-        menuHtml += profiles.map(p => {
+        let menuHtml = profiles.map(p => {
             const isSel = p.id === currentId;
             const icon = isSel ? 'codicon-check' : 'codicon-circle-outline';
             return `<div class="custom-menu-item profile-sel-item" data-id="${p.id}"><span class="codicon ${icon}"></span> ${p.name}</div>`;
@@ -2282,11 +2277,13 @@ export function updateBadges() {
             hasVision: opt.dataset?.hasVision === 'true' || opt.textContent?.includes('👁️')
         })).filter(m => m.id);
 
+    const wasModelMenuOpen = document.getElementById('hud-model-menu')?.classList.contains('visible') || false;
+
     const modelDiv = document.createElement('div');
     import('./messageRenderer.js').then(module => {
         modelDiv.innerHTML = module.ContextPresenter.renderModelSelectorBadge(currentModelName, modelsList);
         const badgeWrapper = modelDiv.firstElementChild as HTMLElement;
-        module.ContextBinder.bindModelMenu(badgeWrapper, modelsList, currentModelName);
+        module.ContextBinder.bindModelMenu(badgeWrapper, modelsList, currentModelName, wasModelMenuOpen);
         infraGroup.appendChild(badgeWrapper);
     });
 
@@ -2404,8 +2401,8 @@ export function updateBadges() {
     if (fastModeInputBtn) {
         fastModeInputBtn.classList.toggle('active', isFast);
         fastModeInputBtn.setAttribute('title', isFast
-            ? "Fast Mode: ACTIVE (Step 2 Plan & Step 3 Code fused in one run). Click to deactivate."
-            : "Fast Mode: INACTIVE. Click to activate (fuses Step 2 Plan & Step 3 Code in one run).");
+            ? "Fast Mode: ACTIVE (Direct Coder only on visible files. Adds/unmutes files as needed without Librarian). Click to deactivate."
+            : "Fast Mode: INACTIVE. Click to activate (Direct Coder only on visible files without Librarian).");
     }
 }
 // Global exposure for events.ts
@@ -3648,7 +3645,7 @@ export const fileRepairStudioState = {
     currentCode: '',
     history: [] as { role: 'user' | 'assistant'; text: string; patchApplied?: boolean }[],
     round: 0,
-    maxRounds: 5,
+    maxRounds: 20,
     isRunning: false,
     model: '',
     temperature: 0.2 as number | undefined,
@@ -3687,13 +3684,17 @@ export function updateFileDiagnosticsUI(
                     actions.insertBefore(errorBtn, actions.firstChild);
                 }
                 if (errorBtn) {
-                    errorBtn.innerHTML = `<i class="codicon codicon-warning" style="color:var(--vscode-charts-red)"></i> <span>${errorsCount} Error${errorsCount > 1 ? 's' : ''} &middot; Fix in Studio</span>`;
-                    errorBtn.title = `${errorsCount} error(s) detected on disk after applying. Click to open Repair Studio.`;
+                    errorBtn.innerHTML = `<i class="codicon codicon-warning" style="color:var(--vscode-charts-red)"></i> <span>${errorsCount} Error${errorsCount > 1 ? 's' : ''} &middot; Fix in Studio Tab</span>`;
+                    errorBtn.title = `${errorsCount} error(s) detected on disk after applying. Click to open in File Repair Studio tab.`;
                     (errorBtn as any)._errors = errors;
                     errorBtn.onclick = (e: MouseEvent) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        openFileRepairStudio(filePath, errors, messageId, blockIndex, blockId);
+                        vscode.postMessage({
+                            command: 'openFileRepairStudio',
+                            filePath,
+                            errors
+                        });
                     };
                 }
             } else if (errorBtn) {
@@ -3717,8 +3718,17 @@ export function updateFileDiagnosticsUI(
                     if (blockIndex !== undefined) rowAlertBtn.setAttribute('data-block-index', String(blockIndex));
                     row.appendChild(rowAlertBtn);
                 }
-                rowAlertBtn.innerHTML = `<i class="codicon codicon-warning"></i> <span>${errorsCount} Err</span>`;
+                rowAlertBtn.innerHTML = `<i class="codicon codicon-warning"></i> <span>${errorsCount} Err &middot; Studio</span>`;
                 (rowAlertBtn as any)._errors = errors;
+                rowAlertBtn.onclick = (e: MouseEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    vscode.postMessage({
+                        command: 'openFileRepairStudio',
+                        filePath,
+                        errors
+                    });
+                };
             } else if (rowAlertBtn) {
                 rowAlertBtn.remove();
             }
@@ -4023,113 +4033,15 @@ export function openFileRepairStudio(
     blockIndex?: number,
     blockId?: string
 ) {
-    const modal = document.getElementById('file-repair-modal');
-    if (!modal) return;
-
-    fileRepairStudioState.filePath = filePath;
-    fileRepairStudioState.messageId = messageId || '';
-    fileRepairStudioState.blockIndex = blockIndex;
-    fileRepairStudioState.blockId = blockId;
-    fileRepairStudioState.errors = errors;
-    fileRepairStudioState.history = [];
-    fileRepairStudioState.round = 0;
-    fileRepairStudioState.maxRounds = 5;
-    fileRepairStudioState.isRunning = false;
-
-    const pathLabel = document.getElementById('repair-file-path-label');
-    if (pathLabel) pathLabel.textContent = filePath;
-
-    const roundBadge = document.getElementById('repair-round-badge');
-    if (roundBadge) roundBadge.textContent = `Round 0 / 5`;
-
-    renderRepairErrorsList();
-
-    // Clear chat stream and show welcome card
-    const chatContainer = document.getElementById('repair-chat-messages');
-    if (chatContainer) {
-        chatContainer.innerHTML = '';
-        appendRepairStreamMessage('system', `Spotted **${errors.length} error(s)** in \`${filePath}\` after applying changes.\n\nI will inspect the file on disk and language server diagnostics, then generate surgical patches to fix missing imports, type mismatches, or syntax errors.\n\n*You can prompt the agent anytime with hints or click **Accept & Keep File** at any time.*`);
-    }
-
-    // Populate model selector dropdown
-    const modelSelect = document.getElementById('repair-model-select') as HTMLSelectElement;
-    if (modelSelect) {
-        modelSelect.innerHTML = '';
-        const allModels = (state as any).models || Array.from(dom.modelSelector?.options || []).map((o: any) => ({ id: o.value, name: o.text })).filter(m => m.id);
-        const preferredModel = (state as any).currentModelName || dom.modelSelector?.value || '';
-
-        allModels.forEach((m: any) => {
-            const opt = document.createElement('option');
-            opt.value = m.id;
-            const raw = m.id.includes('::') ? m.id.split('::')[1] : m.id;
-            opt.textContent = (m.hasVision ? '👁️ ' : '') + raw;
-            if (m.id === preferredModel || raw === preferredModel) {
-                opt.selected = true;
-            }
-            modelSelect.appendChild(opt);
-        });
-
-        if (modelSelect.options.length === 0) {
-            modelSelect.innerHTML = `<option value="${preferredModel || 'default'}" selected>${preferredModel || 'Default Model'}</option>`;
-        }
-        fileRepairStudioState.model = modelSelect.value;
-
-        modelSelect.onchange = () => {
-            fileRepairStudioState.model = modelSelect.value;
-            const tag = document.getElementById('repair-agent-model-tag');
-            if (tag) tag.textContent = modelSelect.value.split('::').pop() || 'Linter Surgeon';
-        };
-    }
-
-    // Populate temperature dropdown
-    const tempSelect = document.getElementById('repair-temp-select') as HTMLSelectElement;
-    if (tempSelect) {
-        tempSelect.disabled = false;
-        tempSelect.value = fileRepairStudioState.temperature !== undefined ? String(fileRepairStudioState.temperature) : '0.2';
-        tempSelect.onchange = () => {
-            fileRepairStudioState.temperature = tempSelect.value === 'auto' ? undefined : parseFloat(tempSelect.value);
-        };
-    }
-
-    // Bind reasoning effort dropdown
-    const effortSelect = document.getElementById('repair-effort-select') as HTMLSelectElement;
-    if (effortSelect) {
-        effortSelect.disabled = false;
-        effortSelect.value = fileRepairStudioState.reasoningEffort || 'medium';
-        effortSelect.onchange = () => {
-            fileRepairStudioState.reasoningEffort = effortSelect.value as any;
-        };
-    }
-
-    if (modelSelect) {
-        modelSelect.disabled = false;
-    }
-
-    // Default to Errors tab
-    const errorsTabBtn = document.getElementById('repair-tab-errors-btn');
-    const codeTabBtn = document.getElementById('repair-tab-code-btn');
-    const errorsContainer = document.getElementById('repair-errors-container');
-    const codeContainer = document.getElementById('repair-code-container');
-    if (errorsTabBtn && codeTabBtn && errorsContainer && codeContainer) {
-        errorsTabBtn.classList.add('apply-btn');
-        codeTabBtn.classList.remove('apply-btn');
-        errorsContainer.style.display = 'flex';
-        codeContainer.style.display = 'none';
-    }
-
-    // Request fresh file content from extension host for the code viewer
+    // Open in dedicated editor tab
     vscode.postMessage({
-        command: 'requestFileContentForDiff',
-        path: filePath,
-        changeIndex: 9999
+        command: 'openFileRepairStudio',
+        filePath,
+        errors,
+        messageId,
+        blockIndex,
+        blockId
     });
-
-    modal.style.setProperty('z-index', '115000', 'important');
-    modal.style.display = 'flex';
-    modal.classList.add('visible');
-
-    // Ensure repair is not started automatically, giving user full control over settings & error selection
-    setRepairRunningState(false);
 }
 (window as any).openFileRepairStudio = openFileRepairStudio;
 

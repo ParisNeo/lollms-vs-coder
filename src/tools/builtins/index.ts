@@ -55,6 +55,7 @@ import { searchStackOverflowTool } from './searchStackOverflow';
 import { testWebPageTool } from './testWebPage';
 import { editCodeTool } from './editCode';
 import { updateFunctionTool } from './updateFunction';
+import { showSymbolTool } from './showSymbol';
 
 export const allTools: ToolDefinition[] = [
     searchWebTool,
@@ -89,6 +90,7 @@ export const allTools: ToolDefinition[] = [
     readCodeGraphTool,
     updateCodeGraphTool,
     queryArchitectureTool,
+    showSymbolTool,
     readFileRelationsTool,
     executeCommandTool,
     executePythonScriptTool,
@@ -116,6 +118,7 @@ export const allTools: ToolDefinition[] = [
 ];
 
 export const enabledToolsList = [
+    'show_symbol',
     'read_file',
     'read_files',
     'edit_code',

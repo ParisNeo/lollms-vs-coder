@@ -555,6 +555,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 {
                     import('./ui.js').then(ui => {
                         ui.setRepairRunningState(false);
+                        if (message.cancelled || message.errorsRemaining === -1) {
+                            ui.appendRepairStreamMessage('system', `✋ **Repair pass stopped by user.** Controls and settings are unlocked.`);
+                            return;
+                        }
                         ui.fileRepairStudioState.errors = message.errors || [];
                         if (message.patchedContent) {
                             ui.fileRepairStudioState.currentCode = message.patchedContent;
@@ -593,7 +597,16 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             msgDiv.dataset.originalContent = JSON.stringify(message.newContent);
                         }
                     }
-                    renderMessageContent(message.messageId, message.newContent, true);
+                    const isFinal = message.isFinal !== false;
+                    const wasAtBottom = dom.messagesDiv ? (dom.messagesDiv.scrollHeight - dom.messagesDiv.scrollTop - dom.messagesDiv.clientHeight < 80) : false;
+
+                    renderMessageContent(message.messageId, message.newContent, isFinal);
+
+                    if (dom.messagesDiv && (wasAtBottom || !isFinal)) {
+                        requestAnimationFrame(() => {
+                            if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                        });
+                    }
                 }
                 break;
             case 'setGeneratingState':
@@ -1095,7 +1108,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (message.initialPrompt !== undefined && message.initialPrompt !== null) {
                         if (dom.messageInput) {
                             dom.messageInput.value = message.initialPrompt;
-                            dom.messageInput.dispatchEvent(new Event('input'));
+                            dom.messageInput.style.height = 'auto';
+                            dom.messageInput.style.height = dom.messageInput.scrollHeight + 'px';
+                            dom.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+                            dom.messageInput.dispatchEvent(new Event('change', { bubbles: true }));
                             dom.messageInput.focus();
                         }
                     }
@@ -1804,7 +1820,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'setInputText':
                 if (dom.messageInput) {
                     dom.messageInput.value = message.text || '';
-                    dom.messageInput.dispatchEvent(new Event('input'));
+                    dom.messageInput.style.height = 'auto';
+                    dom.messageInput.style.height = dom.messageInput.scrollHeight + 'px';
+                    dom.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    dom.messageInput.dispatchEvent(new Event('change', { bubbles: true }));
                     dom.messageInput.focus();
                 }
                 if (Array.isArray(message.images) && message.images.length > 0) {

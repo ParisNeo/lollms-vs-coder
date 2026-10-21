@@ -51,6 +51,42 @@
         .custom-menu.visible {
             display: block !important;
         }
+
+        /* Collapsible Message Styling */
+        .message-wrapper.collapsed-message .message-content,
+        .message-wrapper.collapsed-message .message-thoughts-zone,
+        .message-wrapper.collapsed-message .message-images-zone {
+            display: none !important;
+        }
+        .message-wrapper.collapsed-message .message {
+            padding-bottom: 6px !important;
+            min-height: auto !important;
+            opacity: 0.88;
+        }
+        .message-wrapper.collapsed-message .message:hover {
+            opacity: 1;
+        }
+        .msg-collapse-btn {
+            background: transparent;
+            border: none;
+            color: var(--vscode-foreground);
+            cursor: pointer;
+            padding: 2px 4px;
+            border-radius: 3px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.7;
+            margin-right: 4px;
+        }
+        .msg-collapse-btn:hover {
+            opacity: 1;
+            background: var(--vscode-toolbar-hoverBackground);
+        }
+        .collapse-msg-bottom-btn:hover {
+            border-color: var(--vscode-focusBorder) !important;
+            opacity: 1 !important;
+        }
         /* Pre-hydration visual shield */
         body {
             opacity: 0;
@@ -1064,7 +1100,7 @@
                     <span id="repair-error-counter-badge" class="token-mini-badge weight-heavy" style="font-size: 9px; padding: 1px 6px; border-radius: 4px;">0 Errors</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 10px; flex-shrink: 0;">
-                    <span id="repair-round-badge" style="opacity: 0.8; font-size: 10px; font-family: var(--vscode-editor-font-family);">Round 0 / 5</span>
+                    <span id="repair-round-badge" style="opacity: 0.8; font-size: 10px; font-family: var(--vscode-editor-font-family);">Round 0 / 20</span>
                     <button type="button" id="repair-quick-accept-btn" class="code-action-btn apply-btn" style="height: 22px; font-size: 10px; padding: 0 10px; background: var(--vscode-charts-green) !important; color: white !important; font-weight: bold;" title="Accept the file's current state and close the studio at any time">
                         <i class="codicon codicon-check"></i> Accept at Any Time
                     </button>

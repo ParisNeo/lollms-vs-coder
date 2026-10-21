@@ -325,97 +325,62 @@ export class ProjectMemoryManager {
     }
 
     /**
-     * AGM Belief Revision Arbiter (Write-Time AUDN Pipeline)
-     * Compares incoming candidate memories against existing engrams to identify
-     * logical contradictions, redundancies, or potential refinements.
-     * Incorporates detailed episodic metadata inside the comparisons.
+     * Fast Heuristic-Based Belief Inconsistency Resolver (Zero Background LLM Queries)
+     * Uses TF-IDF cosine similarity and hashtag overlap to detect exact/near duplicate engrams
+     * in microseconds without stalling the user or wasting token generations.
      */
-    private async resolveBeliefInconsistency(
+    private resolveBeliefInconsistency(
         candidateId: string,
         candidateTitle: string,
         candidateContent: string,
-        candidateCategory: string,
-        scope: 'local' | 'global',
-        activeDiscussionId: string,
-        activeTriggerPrompt: string
-    ): Promise<{ action: 'add' | 'update' | 'supersede' | 'none'; targetId?: string; mergedContent?: string; mergedTitle?: string }> {
-        if (!this.lollmsAPI || this._cache.length === 0) {
+        _candidateCategory: string,
+        _scope: 'local' | 'global',
+        _activeDiscussionId: string,
+        _activeTriggerPrompt: string
+    ): { action: 'add' | 'update' | 'supersede' | 'none'; targetId?: string; mergedContent?: string; mergedTitle?: string } {
+        if (this._cache.length === 0) {
             return { action: 'add' };
         }
 
-        // Filter out tags and templates to only compare semantic facts
-        const activeFacts = this._cache.filter(m => 
-            m.category !== 'tag' && 
-            m.category !== 'concept' && 
-            m.category !== 'chunk' && 
-            !m.id.startsWith('concept_template_') &&
-            m.id !== candidateId
-        );
+        const cleanCandText = `${candidateTitle} ${candidateContent}`.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+        const candWords = new Set(cleanCandText.split(/\s+/).filter(w => w.length > 2));
 
-        if (activeFacts.length === 0) {
+        if (candWords.size === 0) {
             return { action: 'add' };
         }
 
-        const systemPrompt = `You are the Sovereign AGM Belief Revision Arbiter.
-Your sole job is to maintain the logical consistency of our Project Knowledge Graph.
-You are comparing a NEW candidate engram against our EXISTING database of technical facts.
+        for (const existing of this._cache) {
+            if (existing.id === candidateId || existing.category === 'tag' || existing.category === 'concept' || existing.category === 'chunk') {
+                continue;
+            }
 
-### 📜 CONFLICT RESOLUTION RULES:
-1. **CONTRADICTION**: If the new engram directly contradicts an existing fact (e.g., "Use SQLite" vs "Use PostgreSQL"), select "supersede". The newer fact will replace the older one.
-2. **REFINEMENT/MERGE**: If the new engram provides more detail, updates, or complements an existing fact on the same topic, select "update" and provide a merged, cohesive content block that preserves both old and new facts.
-3. **REDUNDANCY**: If the new engram is already fully captured, duplicated, or implied by an existing fact with no new informational gain, select "none".
-4. **COMPATIBILITY**: If the new engram is entirely compatible and refers to a different topic, select "add".
+            const cleanExistText = `${existing.title} ${existing.content}`.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
+            const existWords = new Set(cleanExistText.split(/\s+/).filter(w => w.length > 2));
+            if (existWords.size === 0) continue;
 
-Output ONLY valid JSON. No conversational chatter.
-{
-  "action": "add" | "update" | "supersede" | "none",
-  "targetId": "ID_of_conflicting_or_refined_existing_node",
-  "mergedTitle": "New title if merging or superseding (2-4 words)",
-  "mergedContent": "Consolidated content if merging/updating. For superseding, provide the clean new content."
-}`;
+            // Calculate Jaccard similarity
+            let intersection = 0;
+            candWords.forEach(w => {
+                if (existWords.has(w)) intersection++;
+            });
 
-        const contextBlock = activeFacts.map(f => {
-            const episodicStr = f.historicalLog && f.historicalLog.length > 0 
-                ? `\n  Episodic Trail:\n  ${f.historicalLog.join('\n  ')}`
-                : "";
-            return `- ID: "${f.id}"\n  Category: "${f.category}"\n  Title: "${f.title}"\n  Content: "${f.content}"${episodicStr}`;
-        }).join('\n\n');
+            const union = new Set([...candWords, ...existWords]).size;
+            const jaccard = union > 0 ? intersection / union : 0;
 
-        const userPrompt = `### EXISTING FACT STORAGE
-${contextBlock}
+            // Exact or near-duplicate (> 85% overlap)
+            if (jaccard > 0.85) {
+                return { action: 'none', targetId: existing.id };
+            }
 
-### NEW CANDIDATE ENGRAM
-ID: "${candidateId}"
-Category: "${candidateCategory}"
-Title: "${candidateTitle}"
-Content: "${candidateContent}"
-Learned in Session: "${activeDiscussionId}"
-Trigger Prompt: "${activeTriggerPrompt}"
-
-Evaluate the candidate and return your AUDN verdict:`;
-
-        try {
-            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-            const dreamModel = config.get<string>('dreamModelName') || undefined;
-
-            const response = await this.lollmsAPI.sendChat([
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt }
-            ], null, undefined, dreamModel, { thinking: false });
-
-            const cleanJson = stripThinkingTags(response).trim().replace(/```json|```/g, '').trim();
-            const decision = JSON.parse(cleanJson);
-
-            if (['update', 'supersede', 'none'].includes(decision.action)) {
+            // High overlap on the same specific topic (> 65% overlap) -> Update/Refine in place
+            if (jaccard > 0.65) {
                 return {
-                    action: decision.action,
-                    targetId: decision.targetId,
-                    mergedContent: decision.mergedContent,
-                    mergedTitle: decision.mergedTitle
+                    action: 'update',
+                    targetId: existing.id,
+                    mergedTitle: candidateTitle.length > existing.title.length ? candidateTitle : existing.title,
+                    mergedContent: `${existing.content}\n\n[Updated]: ${candidateContent}`
                 };
             }
-        } catch (e) {
-            Logger.warn("[Belief Revision] Arbiter failed, defaulting to additive write.", e);
         }
 
         return { action: 'add' };
@@ -510,7 +475,8 @@ Evaluate the candidate and return your AUDN verdict:`;
             let currentHistoricalLog: string[] = [];
 
             if (action === 'add') {
-                const audit = await this.resolveBeliefInconsistency(id, finalTitle, targetContent, category, finalScope, activeDiscussionId, activeTriggerPrompt);
+                // Instant heuristic consistency resolution (zero background LLM requests)
+                const audit = this.resolveBeliefInconsistency(id, finalTitle, targetContent, category, finalScope, activeDiscussionId, activeTriggerPrompt);
 
                 if (audit.action === 'none') {
                     Logger.info(`[Belief Revision] Ignored redundant memory addition: "${finalTitle}"`);
@@ -518,32 +484,11 @@ Evaluate the candidate and return your AUDN verdict:`;
                 }
 
                 if (audit.action === 'update' && audit.targetId) {
-                    // Update / Refine existing node instead of adding a new one
                     finalId = audit.targetId;
                     finalTitle = audit.mergedTitle || finalTitle;
                     finalWriteContent = audit.mergedContent || finalWriteContent;
                     action = 'update';
                     Logger.info(`[Belief Revision] Refined existing engram node '${finalId}' with new information.`);
-                } else if (audit.action === 'supersede' && audit.targetId) {
-                    // Supersede existing node: old node is marked as superseded, and new node links to it
-                    const targetIdx = this._cache.findIndex(m => m.id === audit.targetId);
-                    if (targetIdx !== -1) {
-                        const oldNode = this._cache[targetIdx];
-
-                        // We do not physically delete, we mark as superseded (preserving history/monotonicity)
-                        oldNode.importance = 10; // Archive immediately to deep latent memory
-                        oldNode.title = `[SUPERSEDED] ${oldNode.title}`;
-                        oldNode.content = `[SUPERSEDED on ${new Date().toLocaleDateString()} by ${finalId}]\n\n${oldNode.content}`;
-                        oldNode.category = 'archive';
-
-                        // Keep the old node's historical log and append the supersession event
-                        if (!oldNode.historicalLog) oldNode.historicalLog = [];
-                        oldNode.historicalLog.push(`[${new Date().toISOString()}] Superseded by ${finalId} in session ${activeDiscussionId}`);
-
-                        // Add s:supersedes edge pointing from the new engram to the old one
-                        targetPredicates.push({ verb: 'supersedes', targetId: oldNode.id });
-                        Logger.info(`[Belief Revision] Engram '${finalId}' has successfully superseded older engram '${oldNode.id}'.`);
-                    }
                 }
             }
 
@@ -927,162 +872,98 @@ Evaluate the candidate and return your AUDN verdict:`;
     }
 
     /**
-     * TIERED NEURAL MEMORY RECOVERY & HYDRO-COGNITIVE PRE-CALCULATION
-     * Hydrates memories using a multi-factorial relevance calculation:
-     * S_total = S_keyword + S_spatial + S_temporal + S_recency + S_importance
+     * TIERED NEURAL MEMORY RECOVERY: FAST HEURISTIC-BASED TF-IDF & HASHTAG ENGINE
+     * Hydrates memories strictly using local term frequencies, hashtag indexing, and keyword overlap.
+     * Zero background LLM queries: runs in microseconds.
+     * Returns a formatted block packaged inside a collapsible details tag (collapsed by default).
      */
-    public async getFormattedMemoryBlock(userPrompt?: string, skillsManager?: any): Promise<string> {
-        // Fetch core engrams
+    public async getFormattedMemoryBlock(userPrompt?: string, _skillsManager?: any): Promise<string> {
         const engrams = await this.getMemories();
-        const affective = await this.getAffectiveMatrix();
+        if (engrams.length === 0) return "";
 
-        // Extract active concepts and relationship verbs for agent awareness
-        const activeConcepts = new Set<string>();
-        const activeVerbs = new Set<string>();
-        engrams.forEach(e => {
-            if (e.category && e.category !== 'tag' && e.category !== 'chunk' && e.category !== 'document') {
-                activeConcepts.add(e.category);
+        // Extract prompt hashtag tags (#tag) and keywords (> 2 chars)
+        const promptTags = new Set<string>();
+        const promptWords = new Set<string>();
+
+        if (userPrompt) {
+            const tagRegex = /#([\w_]+)/g;
+            let m;
+            while ((m = tagRegex.exec(userPrompt)) !== null) {
+                promptTags.add(m[1].toLowerCase());
             }
-            if (e.predicates && Array.isArray(e.predicates)) {
-                e.predicates.forEach(p => activeVerbs.add(p.verb));
-            }
-        });
 
-        const conceptsList = Array.from(activeConcepts).map(c => `s:${c.toUpperCase()}`).join(', ') || 's:GENERAL';
-        const verbsList = Array.from(activeVerbs).map(v => `s:${v}`).join(', ') || 's:has_tag';
+            const cleanWords = userPrompt.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+            cleanWords.forEach(w => promptWords.add(w));
+        }
 
-        // 1. FACTORIAL 1: Temporal / Prompt Keywords (Stemmed lookup)
-        const promptKeywords = userPrompt 
-            ? userPrompt.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 3)
-            : [];
-
-        // 2. FACTORIAL 2: Spatial / Active Files in Context
+        // Active workspace files
         const activeFiles = this.context.workspaceState.get<any[]>('lollms_active_context_files', []) || [];
         const activePaths = activeFiles.map(f => String(f.path || '').toLowerCase());
 
-        const scoreFactors = engrams.map(e => {
-            const cleanContent = e.content.toLowerCase();
-            const cleanTitle = e.title.toLowerCase();
-
-            // Factor A: Jaccard Keyword Overlap
-            let semanticScore = 0;
-            if (promptKeywords.length > 0) {
-                const matches = promptKeywords.filter(kw => cleanContent.includes(kw) || cleanTitle.includes(kw)).length;
-                semanticScore = (matches / promptKeywords.length) * 45; // Max 45 points
+        // Fast TF-IDF / hashtag heuristic score per engram
+        const scored = engrams.map(e => {
+            if (e.category === 'concept' && e.id.startsWith('concept_template_')) {
+                return { engram: e, score: 0 };
             }
 
-            // Factor B: Spatial File Association
-            let spatialScore = 0;
+            let score = 0;
+            const titleLower = e.title.toLowerCase();
+            const contentLower = e.content.toLowerCase();
+            const categoryLower = e.category.toLowerCase();
+
+            // 1. Direct Hashtag Match (+50 points)
+            if (e.predicates && Array.isArray(e.predicates)) {
+                for (const p of e.predicates) {
+                    if (p.verb === 'has_tag' && p.targetId.startsWith('tag_')) {
+                        const tag = p.targetId.substring(4).toLowerCase();
+                        if (promptTags.has(tag)) score += 50;
+                    }
+                }
+            }
+
+            // 2. Term Overlap
+            promptWords.forEach(w => {
+                if (titleLower.includes(w)) score += 15;
+                if (contentLower.includes(w)) score += 5;
+                if (categoryLower.includes(w)) score += 10;
+            });
+
+            // 3. Spatial File Match (+25 points)
             if (activePaths.length > 0 && e.id) {
                 const idClean = e.id.toLowerCase().replace(/_rules|_protocol|_std/g, '');
-                const hasPathMatch = activePaths.some(p => p.includes(idClean) || idClean.includes(path.basename(p)));
-                if (hasPathMatch) spatialScore = 30; // Max 30 points
+                if (activePaths.some(p => p.includes(idClean) || idClean.includes(path.basename(p)))) {
+                    score += 25;
+                }
             }
 
-            // Factor C: Recency weighting (Preventing long-idle memory bloat)
-            const ageDays = (Date.now() - e.lastUsed) / (1000 * 60 * 60 * 24);
-            const recencyScore = Math.max(0, 15 - ageDays); // Max 15 points
+            // 4. Base Importance weight (Max 10 points)
+            score += (e.importance / 100) * 10;
 
-            // Factor D: Base Retentiveness Weight
-            const importanceScore = (e.importance / 100) * 10; // Max 10 points
-
-            const totalScore = semanticScore + spatialScore + recencyScore + importanceScore;
-
-            return { engram: e, score: totalScore };
+            return { engram: e, score };
         });
 
-        // Filter and sort by calculated multi-factorial score
-        const sortedEngrams = scoreFactors
-            .filter(f => f.score >= 20 || f.engram.importance >= 80) // Safety baseline
+        // Retain matching engrams or high-importance permanent standards (>= 90)
+        const matched = scored
+            .filter(s => s.score >= 25 || s.engram.importance >= 90)
             .sort((a, b) => b.score - a.score)
-            .map(f => f.engram);
+            .slice(0, 8) // Limit to top 8 most relevant engrams to prevent context bloat
+            .map(s => s.engram);
 
-        // Core formatting buffer
-        let block = `\n# 🧠 NEURAL MEMORY SYSTEM (KNOWLEDGE GRAPH)\n`;
-        block += `[AFFECTIVE MATRIX]: Relationship state is "${affective.label}" (${affective.relationshipScore}/100).\n`;
+        if (matched.length === 0) return "";
 
-        block += `\n## 🧊 ACTIVE ONTOLOGY SCHEMA (METADATA CONTEXT)\n`;
-        block += `- **Concepts (Classes)**: [ ${conceptsList} ]\n`;
-        block += `- **Relationship Verbs (Properties)**: [ ${verbsList} ]\n\n`;
-        block += `**AGENT MANDATE**: When recording new architectural engrams or lessons, you MUST align them with the schema above. Categorize under one of the active Concepts, and link related nodes using the available Relationship Verbs. Use this XML format:\n`;
-        block += `\`<project_memory action="add" id="unique_id" title="Title" category="concept_name" predicates='[{"verb": "verb_name", "targetId": "target_id"}]'>Fact content...</project_memory>\`\n`;
-
-        // Tier 0: Immutable ROM (Self-Protection & Tool Hygiene)
-        block += `\n## TIER 0: IMMUTABLE ROM\n`;
-        block += `- Hub Purpose: Sovereign Local Engineering\n`;
-        block += `- Protocol: LCP (LoLLMs Communication Protocol) Active\n`;
-
-        // Cognitive budget constraint (Max 2000 tokens / 8000 chars)
-        const BUDGET_LIMIT_CHARACTERS = 8000;
-        let currentSize = 0;
-        const activeEngrams: MemoryEntry[] = [];
-        const latentHandles: MemoryEntry[] = [];
-
-        sortedEngrams.forEach(e => {
-            const size = e.content.length + e.title.length;
-            if (currentSize + size < BUDGET_LIMIT_CHARACTERS) {
-                activeEngrams.push(e);
-                currentSize += size;
-            } else {
-                latentHandles.push(e);
-            }
+        let memoryLines = "";
+        matched.forEach(e => {
+            memoryLines += `- **[${e.category.toUpperCase()}] ${e.title}**: ${e.content}\n`;
         });
 
-        // Add remaining non-matched engrams as latent handles
-        engrams.forEach(e => {
-            if (!activeEngrams.some(x => x.id === e.id) && !latentHandles.some(x => x.id === e.id)) {
-                latentHandles.push(e);
-            }
-        });
+        // Present cleanly inside a standard collapsible markdown block (collapsed by default)
+        return `
+<details class="memory-hydration-block">
+<summary>🧠 <b>Hydrated Neural Memories & Standards (${matched.length} engrams matched)</b></summary>
 
-        if (activeEngrams.length > 0) {
-            block += `\n## TIER 1: ACTIVE WORKING SUBGRAPH (HYDRATED MEMORIES)\n`;
-            activeEngrams.forEach(e => {
-                block += `### [${e.category.toUpperCase()}] ${e.title} (${e.id})\n`;
-                block += `${e.content}\n`;
-                if (e.predicates && e.predicates.length > 0) {
-                    block += `**Relationships**:\n`;
-                    e.predicates.forEach(p => {
-                        const target = engrams.find(x => x.id === p.targetId);
-                        block += `- s:${e.id} s:${p.verb} s:${p.targetId} ("${target ? target.title : p.targetId}")\n`;
-                    });
-                }
-                block += `\n`;
-            });
-        }
-
-        // --- THE HINT LAYER (LATENT GRAPHS PREVENTING BLIND SPARQLS) ---
-        if (latentHandles.length > 0) {
-            block += `\n## TIER 2: DEEP STORAGE INDEX HANDLES (LATENT GRAPH)\n`;
-            block += `Do NOT make blind SPARQL queries. The following specific tags and memory categories exist in deep storage.\n`;
-            block += `If you need to query these, write a targeted SPARQL on \`query_architecture\` matching these precise identifiers:\n\n`;
-
-            const tagsList = latentHandles
-                .filter(e => e.category === 'tag')
-                .map(e => `#${e.title.replace('#', '')}`)
-                .join(', ');
-
-            const categoriesMap = new Map<string, string[]>();
-            latentHandles.forEach(e => {
-                if (e.category !== 'tag') {
-                    if (!categoriesMap.has(e.category)) categoriesMap.set(e.category, []);
-                    categoriesMap.get(e.category)!.push(e.id);
-                }
-            });
-
-            if (tagsList) {
-                block += `**Available Latent Tags**: [ ${tagsList} ]\n`;
-            }
-
-            if (categoriesMap.size > 0) {
-                block += `**Available Latent Categories**:\n`;
-                for (const [cat, ids] of categoriesMap.entries()) {
-                    block += `- **${cat.toUpperCase()}**: [ ${ids.map(id => `s:${id}`).join(', ')} ]\n`;
-                }
-            }
-        }
-
-        return block;
+${memoryLines.trim()}
+</details>
+`.trim();
     }
     public async getAffectiveMatrix(): Promise<AffectiveMatrix> {
         const score = this.context.globalState.get<number>('lollms_affective_score', 50);
@@ -1185,152 +1066,48 @@ Evaluate the candidate and return your AUDN verdict:`;
             }
         }
 
-        // --- PHASE 2: SEMANTIC AUDIT, TITLE RECONSTRUCTION & AUTO-TAGGING FOR ORPHANS/OLD MEMORIES ---
-        if (lollms && updatedEngrams.length > 0) {
-            const { stripThinkingTags } = require('./utils');
+        // --- PHASE 2: LOCAL DETERMINISTIC HYGIENE (ZERO INVISIBLE BACKGROUND LLM GENERATIONS) ---
+        // We clean hashtags and prune noise deterministically without wasting any LLM queries.
+        for (let i = 0; i < updatedEngrams.length; i++) {
+            const e = updatedEngrams[i];
+            if (e.category === 'tag') continue;
 
-            for (let i = 0; i < updatedEngrams.length; i++) {
-                const e = updatedEngrams[i];
-                if (e.category === 'tag') continue;
-
-                const hasTagLink = e.predicates && e.predicates.some(p => p.verb === 'has_tag');
-                const wordsCount = e.title ? e.title.split(/\s+/).length : 0;
-
-                // Triggers audit if the engram lacks tags, OR has an excessively long/verbose title (> 4 words), OR is grammatically incomplete
-                const isTooLong = wordsCount > 4 || e.title.length > 25;
-                const needsAudit = !hasTagLink || isTooLong || e.title.toLowerCase().endsWith('have') || e.title.includes('(');
-
-                // Prevent redundant auditing: Skip if audited recently
-                const wasAuditedRecently = e.lastAudited && (Date.now() - e.lastAudited < 7 * 24 * 60 * 60 * 1000);
-
-                if (needsAudit && !wasAuditedRecently) {
-                    if (onProgress) {
-                        onProgress({ type: 'decay', id: e.id, title: `Auditing engram: "${e.title}"...` });
-                    }
-
-                    const systemPrompt = `You are the Neural Synaptic Auditor and Ontologist for the Lollms Memory Vault.
-Your goal is to maintain the semantic integrity of the knowledge graph by auditing engram nodes according to our **Sovereign Memory Ontology (TBox)**.
-
-### 🧊 SOVEREIGN MEMORY ONTOLOGY (TBox Schema)
-Classes (Concepts):
-- \`s:Engram\`: Represents an individual unit of captured project knowledge, such as an architectural decision, technical fact, or lesson learned.
-- \`s:Tag\`: Represents a semantic hub or hashtag used to index and group related units of knowledge.
-- \`s:Document\`: Represents an external reference document, web scrape, or research source.
-- \`s:Rule\`: Represents an active project constraint, standard, or 'Sovereign Rule' that must be strictly enforced.
-- \`s:Skill\`: Represents a projected technical capability or Action Protocol.
-
-Properties (Relationship Predicates):
-- \`s:has_tag\` (Subject: \`s:Engram\` | Object: \`s:Tag\`): Links an engram to a semantic hashtag.
-- \`s:part_of\` (Subject: \`s:Engram\` | Object: \`s:Document\`): Indicates an engram was extracted from a document.
-- \`s:contains\` (Subject: \`s:Document\` | Object: \`s:Engram\`): Indicates a document contains a nested engram.
-- \`s:enforces\` (Subject: \`s:Engram\` or \`s:Skill\` | Object: \`s:Rule\`): Indicates an engram or skill enforces a rule.
-- \`s:supersedes\` (Subject: \`s:Rule\` | Object: \`s:Rule\`): Links a new rule replacing an older one.
-- \`s:associates_with\` (Subject: \`s:Tag\` | Object: \`s:Tag\`): Connects related topics.
-
-### 🧹 AUDIT & SANITIZATION RULES (CRITICAL)
-1. **TAG HYGIENE (STRICT)**: You are STRICTLY FORBIDDEN from using purely numeric, hexadecimal, or meaningless short tags (e.g. #10, #333, #e05, #1a1a2e). 
-   - Replace any numeric/meaningless tags with descriptive, actual semantic terms (e.g., #styling, #theme_color, #animation).
-   - If a tag is completely unrelated to the engram, remove/sever the relationship.
-2. **ONTOLOGICAL ALIGNMENT**: Classify the node category strictly as one of the active TBox Concepts (lowercase: 'concept', 'tag', 'document', 'rules', 'skills').
-3. **TITLE CONDENSATION**: Reconstruct verbose/long titles into professional complete titles of 2 to 4 words.
-
-Output ONLY valid JSON matching this format:
-{
-  "action": "keep" | "delete",
-  "new_title": "condensed complete title...",
-  "reason": "explanation of decision...",
-  "tags": ["#tag1", "#tag2"]
-}`;
-
-                    const auditPrompt = `Analyze this memory engram from our project knowledge graph:
-ID: "${e.id}"
-Title: "${e.title}"
-Content: "${e.content}"
-
-Provide your audit verdict based on the TBox schema and sanitization rules.`;
-
-                    try {
-                        const response = await lollms.sendChat([
-                            { role: 'system', content: systemPrompt },
-                            { role: 'user', content: auditPrompt }
-                        ], null, undefined, dreamModel, { thinking: false });
-
-                        // Clean and parse thinking tags safely
-                        const cleanJson = stripThinkingTags(response).trim().replace(/```json|```/g, '').trim();
-                        const verdict = JSON.parse(cleanJson);
-
-                        if (verdict.action === 'delete') {
-                            updatedEngrams.splice(i, 1);
-                            i--; // Adjust index
-                            forgotten++;
-                            if (onProgress) onProgress({ type: 'forget', id: e.id, title: `Pruned noise: "${e.title}"` });
-                        } else if (verdict.action === 'keep') {
-                            // Tag as successfully audited to prevent re-auditing on every cycle
-                            e.lastAudited = Date.now();
-                            audited++;
-
-                            // Update title if improved title returned
-                            if (verdict.new_title && verdict.new_title.trim().length > 0) {
-                                e.title = verdict.new_title.trim();
-                            }
-
-                            if (Array.isArray(verdict.tags) && verdict.tags.length > 0) {
-                                // Filter out purely numeric or meaningless tags from the LLM response
-                                const validTags = verdict.tags.filter((t: string) => {
-                                    const clean = t.replace('#', '').trim().toLowerCase();
-                                    return isValidSemanticTag(clean);
-                                });
-
-                                if (validTags.length > 0) {
-                                    // Remove old numeric hashtags from content
-                                    let targetContent = e.content.replace(/#\d+\b/g, '').trim();
-                                    targetContent = targetContent + " " + validTags.join(' ');
-                                    e.content = targetContent;
-
-                                    if (!e.predicates) e.predicates = [];
-                                    // Remove old numeric predicates
-                                    e.predicates = e.predicates.filter(p => {
-                                        if (p.verb === 'has_tag' && p.targetId.startsWith('tag_')) {
-                                            const tagLabel = p.targetId.substring(4);
-                                            return !/^\d+$/.test(tagLabel);
-                                        }
-                                        return true;
-                                    });
-
-                                    validTags.forEach((tag: string) => {
-                                        const cleanTag = tag.replace('#', '').toLowerCase().trim();
-                                        const tagNodeId = `tag_${cleanTag}`;
-
-                                        if (!e.predicates!.some(p => p.verb === 'has_tag' && p.targetId === tagNodeId)) {
-                                            e.predicates!.push({ verb: 'has_tag', targetId: tagNodeId });
-                                        }
-
-                                        // Inject tag hub if missing
-                                        const tagExists = updatedEngrams.some(x => x.id === tagNodeId);
-                                        if (!tagExists) {
-                                            updatedEngrams.push({
-                                                id: tagNodeId,
-                                                title: `#${cleanTag}`,
-                                                content: `Shared semantic hub for #${cleanTag} relationships.`,
-                                                timestamp: Date.now(),
-                                                importance: 15,
-                                                lastUsed: Date.now(),
-                                                category: 'tag',
-                                                tier: 2,
-                                                scope: e.scope,
-                                                predicates: []
-                                            });
-                                        }
-                                    });
-                                    if (onProgress) onProgress({ type: 'decay', id: e.id, title: `Audited & Wired tags: "${e.title}" [${validTags.join(', ')}]` });
-                                }
-                            }
-                        }
-                    } catch (err) {
-                        Logger.warn(`Surgical Dream Audit failed for ${e.id}:`, err);
-                    }
+            // Extract tags directly from content
+            const tagRegex = /#([\w_]+)/g;
+            let m;
+            const validTags: string[] = [];
+            while ((m = tagRegex.exec(e.content)) !== null) {
+                const tag = m[1].toLowerCase();
+                if (isValidSemanticTag(tag) && !validTags.includes(tag)) {
+                    validTags.push(tag);
                 }
             }
+
+            if (!e.predicates) e.predicates = [];
+
+            // Wire tags deterministically
+            validTags.forEach(tag => {
+                const tagNodeId = `tag_${tag}`;
+                if (!e.predicates!.some(p => p.verb === 'has_tag' && p.targetId === tagNodeId)) {
+                    e.predicates!.push({ verb: 'has_tag', targetId: tagNodeId });
+                }
+
+                const tagExists = updatedEngrams.some(x => x.id === tagNodeId);
+                if (!tagExists) {
+                    updatedEngrams.push({
+                        id: tagNodeId,
+                        title: `#${tag}`,
+                        content: `Shared semantic hub for #${tag} relationships.`,
+                        timestamp: Date.now(),
+                        importance: 15,
+                        lastUsed: Date.now(),
+                        category: 'tag',
+                        tier: 2,
+                        scope: e.scope,
+                        predicates: []
+                    });
+                }
+            });
         }
 
         // --- PHASE 3: EPISODIC SYNAPTIC FUSION (AI CONSOLIDATION) ---

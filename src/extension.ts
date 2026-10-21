@@ -526,12 +526,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
                 // Trigger the linear onboarding pipeline in the background
                 await runOnboardingPipeline();
 
-                // Start the Neural Dream Cycle asynchronously
-                projectMemoryManager.performDreamCycle().then(() => {
-                    Logger.info("Dream Cycle complete: Neural memory reorganized.");
-                }).catch((err: any) => {
-                    Logger.error("Dream Cycle failed", err);
-                });
+                // Memory organization complete
+                Logger.info("Memory vault initialized.");
 
                 // Deactivate conflicting extension modules in the background
                 if (config.get<boolean>('deactivateConflictingExtensions')) {

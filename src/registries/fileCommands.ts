@@ -6,9 +6,58 @@ import { normalizeToDocument } from '../utils/promptUtils';
 import { Logger } from '../logger';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 
+import { FileRepairStudioPanel } from '../panels/fileRepairStudioPanel';
+
 export function registerFileCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
 
     const lastSnapshotWrite = new Map<string, number>();
+
+    // Open dedicated File Repair Studio Tab
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openFileRepairStudio', async (fileTarget?: vscode.Uri | string, initialErrors?: any[]) => {
+        try {
+            await FileRepairStudioPanel.createOrShow(services.extensionUri, services, fileTarget, initialErrors);
+        } catch (err: any) {
+            vscode.window.showErrorMessage(`Failed to open File Repair Studio: ${err.message}`);
+        }
+    }));
+
+    // Universal Fix Errors command (Explorer context menu, editor action, left-click action)
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixErrors', async (fileTarget?: vscode.Uri | string) => {
+        try {
+            let targetUri: vscode.Uri | undefined;
+            if (fileTarget instanceof vscode.Uri) {
+                targetUri = fileTarget;
+            } else if (typeof fileTarget === 'string' && fileTarget.trim()) {
+                const res = await services.contextManager.resolveWorkspaceFromPath(fileTarget.trim());
+                targetUri = res ? res.uri : vscode.Uri.file(fileTarget.trim());
+            }
+
+            if (!targetUri) {
+                const activeEditor = vscode.window.activeTextEditor;
+                if (activeEditor && activeEditor.document.uri.scheme === 'file') {
+                    targetUri = activeEditor.document.uri;
+                }
+            }
+
+            if (!targetUri) {
+                const picked = await vscode.window.showOpenDialog({
+                    canSelectFiles: true,
+                    canSelectFolders: false,
+                    canSelectMany: false,
+                    openLabel: 'Select File to Fix Errors'
+                });
+                if (picked && picked[0]) {
+                    targetUri = picked[0];
+                }
+            }
+
+            if (!targetUri) return;
+
+            await FileRepairStudioPanel.createOrShow(services.extensionUri, services, targetUri);
+        } catch (err: any) {
+            vscode.window.showErrorMessage(`Fix Errors failed: ${err.message}`);
+        }
+    }));
 
     // Helper to find a block of code in a document with flexible whitespace matching
     function findBlockRange(document: vscode.TextDocument, searchBlock: string): { start: number, end: number } | null {
@@ -477,11 +526,11 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 services.contextManager.clearRenderedTreeCache();
 
                 if (ChatPanel.currentPanel) {
-                    await ChatPanel.currentPanel.unmuteFiles([sanitizedFilePath]);
+                    await ChatPanel.currentPanel.unmuteFiles([cleanPath]);
                 }
 
                 try {
-                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [sanitizedFilePath]);
+                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [cleanPath]);
                 } catch (e) {
                     Logger.warn(`Failed to auto-add new file to context: ${e}`);
                 }
@@ -626,23 +675,39 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             // Write directly to disk if silent or autoSave is enabled (such as in batch "Apply All")
             if (options?.silent || options?.autoSave) {
                 if (document) {
-                    const edit = new vscode.WorkspaceEdit();
-                    const lastLine = document.lineCount > 0 ? document.lineCount - 1 : 0;
-                    const fullRange = new vscode.Range(
-                        new vscode.Position(0, 0),
-                        document.lineAt(lastLine).range.end
-                    );
-                    edit.replace(fileUri, fullRange, finalWriteContent);
-                    const applied = await vscode.workspace.applyEdit(edit);
-                    if (applied) {
-                        await document.save();
-                        services.contextManager.refreshFileInCache(fileUri);
-                        services.contextManager.getContextStateProvider()?.addFilesToContext([cleanPath]).catch(() => {});
-                        Logger.info(`applyFileContent: Successfully persisted changes to disk for ${relativePath} (Symbol: ${targetMember.join(':') || 'full'})`);
-                        return { success: true, alreadyApplied: true };
-                    } else {
-                        return { success: false, error: "Failed to apply edit to document buffer." };
+                    let writeSucceeded = false;
+                    try {
+                        const edit = new vscode.WorkspaceEdit();
+                        const lastLine = document.lineCount > 0 ? document.lineCount - 1 : 0;
+                        const fullRange = new vscode.Range(
+                            new vscode.Position(0, 0),
+                            document.lineAt(lastLine).range.end
+                        );
+                        edit.replace(fileUri, fullRange, finalWriteContent);
+                        const applied = await vscode.workspace.applyEdit(edit);
+                        if (applied) {
+                            const saved = await document.save();
+                            if (saved) {
+                                writeSucceeded = true;
+                            }
+                        }
+                    } catch (bufferErr) {
+                        Logger.warn(`applyFileContent: applyEdit buffer error, falling back to direct fs write: ${bufferErr}`);
                     }
+
+                    // Guaranteed disk write fallback if editor buffer save didn't persist
+                    if (!writeSucceeded) {
+                        await vscode.workspace.fs.writeFile(fileUri, Buffer.from(finalWriteContent, 'utf8'));
+                        try {
+                            const freshDoc = await vscode.workspace.openTextDocument(fileUri);
+                            await freshDoc.save();
+                        } catch {}
+                    }
+
+                    services.contextManager.refreshFileInCache(fileUri);
+                    services.contextManager.getContextStateProvider()?.addFilesToContext([cleanPath]).catch(() => {});
+                    Logger.info(`applyFileContent: Successfully persisted changes to disk for ${relativePath} (Symbol: ${targetMember.join(':') || 'full'})`);
+                    return { success: true, alreadyApplied: true };
                 }
             } else {
                 // Interactive Review: Open full-file diff comparing the full disk file vs the full proposed file (with symbol spliced in)
@@ -1385,19 +1450,38 @@ ${originalContent}
                 if (wasActuallyModified) {
                     const shouldPersistDirectly = options?.silent || options?.autoSave;
                     if (shouldPersistDirectly) {
-                        const edit = new vscode.WorkspaceEdit();
-                        const fullRange = new vscode.Range(
-                            new vscode.Position(0, 0),
-                            document.lineAt(document.lineCount - 1).range.end
-                        );
-                        edit.replace(fileUri, fullRange, currentContent);
-                        const applied = await vscode.workspace.applyEdit(edit);
-                        if (applied) {
-                            await document.save();
-                            services.contextManager.refreshFileInCache(fileUri);
-                            services.contextManager.getContextStateProvider()?.addFilesToContext([sanitizedFilePath]).catch(() => {});
-                            Logger.info(`replaceCode: Persisted ${applyCount}/${matches.length} succeeded hunks to disk for ${sanitizedFilePath}`);
+                        let persisted = false;
+                        try {
+                            const edit = new vscode.WorkspaceEdit();
+                            const lastLine = document.lineCount > 0 ? document.lineCount - 1 : 0;
+                            const fullRange = new vscode.Range(
+                                new vscode.Position(0, 0),
+                                document.lineAt(lastLine).range.end
+                            );
+                            edit.replace(fileUri, fullRange, currentContent);
+                            const applied = await vscode.workspace.applyEdit(edit);
+                            if (applied) {
+                                const saved = await document.save();
+                                if (saved) {
+                                    persisted = true;
+                                }
+                            }
+                        } catch (buffErr) {
+                            Logger.warn(`replaceCode buffer edit failed, using fs fallback: ${buffErr}`);
                         }
+
+                        // Guaranteed filesystem write fallback
+                        if (!persisted) {
+                            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(currentContent, 'utf8'));
+                            try {
+                                const refreshed = await vscode.workspace.openTextDocument(fileUri);
+                                await refreshed.save();
+                            } catch {}
+                        }
+
+                        services.contextManager.refreshFileInCache(fileUri);
+                        services.contextManager.getContextStateProvider()?.addFilesToContext([sanitizedFilePath]).catch(() => {});
+                        Logger.info(`replaceCode: Persisted ${applyCount}/${matches.length} succeeded hunks to disk for ${sanitizedFilePath}`);
                     } else {
                         const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
                         await services.diffManager.openDiff(fileUri, currentContent, discussionId, {

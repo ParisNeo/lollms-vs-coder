@@ -1257,6 +1257,9 @@ export class LollmsAPI {
     resetTimer(ttftTimeoutValue);
 
     if (signal) {
+        if (signal.aborted) {
+            controller.abort();
+        }
         signal.addEventListener('abort', () => {
             if (activeTimer) clearTimeout(activeTimer);
             controller.abort();
@@ -1438,7 +1441,21 @@ export class LollmsAPI {
 
             let isStreamingReasoning = false;
 
-            for await (const chunk of response.body) {
+            const onStreamAbort = () => {
+                try { (response.body as any)?.destroy?.(); } catch {}
+            };
+            controller.signal.addEventListener('abort', onStreamAbort);
+            signal?.addEventListener('abort', onStreamAbort);
+
+            try {
+                for await (const chunk of response.body) {
+                    if (controller.signal.aborted || signal?.aborted) {
+                        onStreamAbort();
+                        const abortErr = new Error("AbortError");
+                        abortErr.name = "AbortError";
+                        throw abortErr;
+                    }
+
                 if (!firstTokenReceived) {
                     firstTokenReceived = true;
                 }
@@ -1531,6 +1548,10 @@ export class LollmsAPI {
                 if (typeof onChunk === 'function') {
                     onChunk(closeTag);
                 }
+            }
+            } finally {
+                controller.signal.removeEventListener('abort', onStreamAbort);
+                signal?.removeEventListener('abort', onStreamAbort);
             }
 
             // Record transaction to billing database asynchronously

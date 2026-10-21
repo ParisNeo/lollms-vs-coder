@@ -233,6 +233,11 @@ export interface DiscussionCapabilities {
     userPreferences?: string; // Custom user preferences and coding guidelines injected into system prompt
     userPreferenceProfileId?: string; // Selected user preference profile ID
     isExport?: boolean; // True when exporting context & prompt for external clipboard use
+    mutedFiles?: string[];
+    folderSettings?: Record<string, { tree?: boolean; content?: boolean }>;
+    preciseTokenization?: boolean;
+    disableProjectContext?: boolean;
+    includedFiles?: any[];
     guiState?: {
         agentBadge: boolean;
         dynamicBadge?: boolean;
@@ -923,31 +928,12 @@ You are STRICTLY FORBIDDEN from using colon-delimited markdown backticks (like \
         context
     ) + "\n" + fileMutationProtocol;
 
-    // --- CONDITIONAL SPARQL DEACTIVATION ---
+    // --- WORKER BASE PROMPT INITIALIZATION ---
     let finalizedBasePrompt = basePrompt;
-    if (capabilities?.sparqlEnabled === false) {
-        finalizedBasePrompt = finalizedBasePrompt
-            .replace(/### 🧊 SOVEREIGN DUAL-ONTOLOGY GRAPH[\s\S]*?before making decisions!/gi, "")
-            .replace(/### 📊 SOVEREIGN CODE GRAPH & PATTERNS[\s\S]*?protects your attention map\./gi, "")
-            .replace(/### 📊 GRAPH-BASED ARCHITECTURE AWARENESS[\s\S]*?or circular imports\./gi, "")
-            .replace(/<query_architecture>[\s\S]*?<\/query_architecture>/gi, "")
-            .split('\n')
-            .filter(line => {
-                const lower = line.toLowerCase();
-                return !lower.includes('sparql') && 
-                       !lower.includes('ontology') && 
-                       !lower.includes('read_code_graph') && 
-                       !lower.includes('query_architecture') &&
-                       !lower.includes('s:class') &&
-                       !lower.includes('s:file');
-            })
-            .join('\n');
-    }
 
     // --- CONDITIONAL WEB SEARCH DEACTIVATION ---
     if (capabilities?.webSearch === false) {
         finalizedBasePrompt = finalizedBasePrompt
-            .replace(/### 🛡️ PROACTIVE RESEARCH PROTOCOL[\s\S]*?until both the patch and the validation test suite are generated\./gi, "")
             .replace(/### 🛡️ PROACTIVE RESEARCH PROTOCOL[\s\S]*?until you have verified the API via research\./gi, "")
             .replace(/<search_web>[\s\S]*?<\/search_web>/gi, "");
     }
@@ -1326,7 +1312,8 @@ export function isModelVisionCapable(modelName: string, config?: vscode.Workspac
     const visionKeywords = [
         'vision', '-vl', '_vl', '-v', '_v', '4v', '5v', 'visual', 'multimodal', 
         'llava', 'bakllava', 'minicpm', 'mplug', 'internvl', 'cogvlm', 'pixtral',
-        'gpt-4o', 'gpt-4-turbo', 'gpt-4-vision', 'claude-3', 'gemini', 'omni'
+        'gpt-4o', 'gpt-4-turbo', 'gpt-4-vision', 'claude-3', 'gemini', 'omni',
+        'glm', 'glm-4', 'glm-5', 'zhipu'
     ];
     if (visionKeywords.some(k => model.includes(k) || rawModel.includes(k))) {
         return true;
@@ -1721,29 +1708,36 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
         const attrStr = match[1] || "";
         const bodyStart = match.index + match[0].length;
 
-        let depth = 1;
+        const fileAttrs = parseFileTagAttributes(attrStr);
+        if (!fileAttrs || !fileAttrs.path || !isValidFilePath(fileAttrs.path)) {
+            continue;
+        }
+
         let isClosed = false;
         let end = targetText.length;
         let bodyEnd = targetText.length;
 
-        const tagFinder = /<file\b([^>]*?)>|<\/file>/gi;
+        // Strictly match line-start tags to prevent inline code strings from corrupting block limits
+        const tagFinder = /(?:^|\r?\n)[ \t]*(?:(<\/file>[ \t]*(?:\r?\n|$))|(<file\s+[^>]*?>))/gim;
         tagFinder.lastIndex = bodyStart;
 
         let innerMatch: RegExpExecArray | null;
         while ((innerMatch = tagFinder.exec(targetText)) !== null) {
-            const tag = innerMatch[0];
-            if (tag.toLowerCase() === '</file>') {
-                depth--;
-                if (depth === 0) {
+            const closeTag = innerMatch[1];
+            const nextOpenTag = innerMatch[2];
+
+            if (closeTag) {
+                isClosed = true;
+                bodyEnd = innerMatch.index;
+                end = innerMatch.index + innerMatch[0].length;
+                break;
+            } else if (nextOpenTag) {
+                const nextAttrs = parseFileTagAttributes(nextOpenTag);
+                if (nextAttrs && nextAttrs.path && isValidFilePath(nextAttrs.path)) {
                     isClosed = true;
                     bodyEnd = innerMatch.index;
-                    end = innerMatch.index + tag.length;
+                    end = innerMatch.index;
                     break;
-                }
-            } else {
-                const innerAttr = innerMatch[1] || "";
-                if (!innerAttr.trim().endsWith('/')) {
-                    depth++;
                 }
             }
         }

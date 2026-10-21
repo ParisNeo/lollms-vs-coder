@@ -73,9 +73,15 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                     services.contextManager.recordRecentlyAddedFiles(targetUris.map(u => vscode.workspace.asRelativePath(u, false)));
                 } else {
                     await provider.setStateForUris(targetUris, state);
-                    if (state === 'included') {
+                    if (state === 'included' || state === 'definitions-only') {
                         services.contextManager.recordRecentlyAddedFiles(targetUris.map(u => vscode.workspace.asRelativePath(u, false)));
                     }
+                }
+
+                const relPaths = targetUris.map(u => vscode.workspace.asRelativePath(u, false).replace(/\\/g, '/').trim());
+
+                for (const u of targetUris) {
+                    services.contextManager.refreshFileInCache(u);
                 }
 
                 if (state === 'fully-excluded' || state === 'collapsed' || state === 'tree-only') {
@@ -85,11 +91,40 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                     }
                 }
 
-                ChatPanel.panels.forEach(panel => {
-                    if (!panel.isDisposed) {
-                        panel.updateContextAndTokens({ isBackgroundSync: false });
-                    }
+                const openPanels = new Set<ChatPanel>();
+                if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) {
+                    openPanels.add(ChatPanel.currentPanel);
+                }
+                ChatPanel.panels.forEach(p => {
+                    if (!p.isDisposed) openPanels.add(p);
                 });
+
+                const allIncluded = provider.getIncludedFiles();
+
+                for (const panel of openPanels) {
+                    if (state === 'included' || state === 'definitions-only') {
+                        await panel.unmuteFiles(relPaths);
+                        await panel.addFilesToDiscussionContext(relPaths, state);
+                    } else if (state === 'fully-excluded' || state === 'tree-only') {
+                        await panel.removeFilesFromDiscussionContext(relPaths);
+                    }
+
+                    const disc = panel.getCurrentDiscussion();
+                    if (disc) {
+                        (disc as any).includedFiles = JSON.parse(JSON.stringify(allIncluded));
+                        if (disc.capabilities) {
+                            (disc.capabilities as any).includedFiles = (disc as any).includedFiles;
+                        }
+                        if (!disc.id.startsWith('temp-')) {
+                            await services.discussionManager.saveDiscussion(disc);
+                        }
+                    }
+
+                    if (state === 'included' || state === 'definitions-only') {
+                        panel.recordCurrentPromptFiles(relPaths);
+                    }
+                    panel.updateContextAndTokens({ isBackgroundSync: false });
+                }
             }
         } else {
             Logger.warn("setContextState: No valid URIs provided from command arguments.");
@@ -105,8 +140,12 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFilesToContext', async (files: string[]) => {
         const provider = services.contextManager.getContextStateProvider();
         if (provider) {
-            if (ChatPanel.currentPanel) {
-                await ChatPanel.currentPanel.unmuteFiles(files);
+            const openPanels = new Set<ChatPanel>();
+            if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) openPanels.add(ChatPanel.currentPanel);
+            ChatPanel.panels.forEach(p => { if (!p.isDisposed) openPanels.add(p); });
+
+            for (const panel of openPanels) {
+                await panel.unmuteFiles(files);
             }
 
             const added = await provider.addFilesToContext(files);
@@ -115,9 +154,22 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                 services.contextManager.recordRecentlyAddedFiles(added);
             }
 
-            // Immediately refresh the current chat bubble if open
-            if (ChatPanel.currentPanel && (added.length > 0 || files.length > 0)) {
-                ChatPanel.currentPanel.updateContextAndTokens();
+            const allIncluded = provider.getIncludedFiles();
+
+            for (const panel of openPanels) {
+                await panel.addFilesToDiscussionContext(added.length > 0 ? added : files, 'included');
+                const disc = panel.getCurrentDiscussion();
+                if (disc) {
+                    (disc as any).includedFiles = JSON.parse(JSON.stringify(allIncluded));
+                    if (disc.capabilities) {
+                        (disc.capabilities as any).includedFiles = (disc as any).includedFiles;
+                    }
+                    if (!disc.id.startsWith('temp-')) {
+                        await services.discussionManager.saveDiscussion(disc);
+                    }
+                }
+                panel.recordCurrentPromptFiles(added.length > 0 ? added : files);
+                panel.updateContextAndTokens({ isBackgroundSync: false });
             }
             return added;
         }

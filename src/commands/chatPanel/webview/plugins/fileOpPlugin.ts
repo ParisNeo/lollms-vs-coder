@@ -67,38 +67,71 @@ export function extractFileBlocks(text: string): ExtractedFileBlock[] {
     let match: RegExpExecArray | null;
 
     while ((match = openTagRegex.exec(targetText)) !== null) {
-        const start = match.index;
+        let start = match.index;
         const attrStr = match[1] || "";
         const bodyStart = match.index + match[0].length;
 
-        let depth = 1;
+        const fileAttrs = parseFileTagAttributes(attrStr);
+        if (!fileAttrs || !fileAttrs.path || !isValidFilePath(fileAttrs.path)) {
+            continue;
+        }
+
         let isClosed = false;
         let end = targetText.length;
         let bodyEnd = targetText.length;
 
-        const tagFinder = /<file\b([^>]*?)>|<\/file>/gi;
+        // Strictly match line-start tags to prevent inline code strings (e.g. `<file path="...">`) from corrupting depth
+        const tagFinder = /(?:^|\r?\n)[ \t]*(?:(<\/file>[ \t]*(?:\r?\n|$))|(<file\s+[^>]*?>))/gim;
         tagFinder.lastIndex = bodyStart;
 
         let innerMatch: RegExpExecArray | null;
         while ((innerMatch = tagFinder.exec(targetText)) !== null) {
-            const tag = innerMatch[0];
-            if (tag.toLowerCase() === '</file>') {
-                depth--;
-                if (depth === 0) {
+            const closeTag = innerMatch[1];
+            const nextOpenTag = innerMatch[2];
+
+            if (closeTag) {
+                isClosed = true;
+                bodyEnd = innerMatch.index;
+                end = innerMatch.index + innerMatch[0].length;
+                break;
+            } else if (nextOpenTag) {
+                const nextAttrs = parseFileTagAttributes(nextOpenTag);
+                if (nextAttrs && nextAttrs.path && isValidFilePath(nextAttrs.path)) {
                     isClosed = true;
                     bodyEnd = innerMatch.index;
-                    end = innerMatch.index + tag.length;
+                    end = innerMatch.index;
                     break;
-                }
-            } else {
-                const innerAttr = innerMatch[1] || "";
-                if (!innerAttr.trim().endsWith('/')) {
-                    depth++;
                 }
             }
         }
 
-        const rawContent = targetText.substring(bodyStart, bodyEnd);
+        const textBefore = targetText.substring(0, start);
+        const fenceBeforeMatch = textBefore.match(/(?:^|\n)[ \t]*(`{3,}|~{3,})(?:[a-zA-Z0-9_\-]+)?[ \t]*\r?\n[ \t]*$/);
+
+        let fenceLen = 0;
+        let fenceChar = '';
+        if (fenceBeforeMatch) {
+            fenceChar = fenceBeforeMatch[1][0];
+            fenceLen = fenceBeforeMatch[1].length;
+            const matchOffsetInBefore = textBefore.length - fenceBeforeMatch[0].length;
+            const newlineIndex = fenceBeforeMatch[0].indexOf('\n');
+            start = newlineIndex !== -1 ? matchOffsetInBefore + newlineIndex + 1 : matchOffsetInBefore;
+        }
+
+        if (fenceLen > 0 && isClosed) {
+            const textAfter = targetText.substring(end);
+            const fenceAfterRegex = new RegExp(`^[ \\t]*(?:\\r?\\n)[ \\t]*${fenceChar}{${fenceLen},}[ \\t]*(?=\\r?\\n|$)`);
+            const fenceAfterMatch = textAfter.match(fenceAfterRegex);
+            if (fenceAfterMatch) {
+                end += fenceAfterMatch[0].length;
+            }
+        }
+
+        let rawContent = targetText.substring(bodyStart, bodyEnd);
+        if (/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s.test(rawContent.trim())) {
+            rawContent = rawContent.trim().replace(/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s, '$1');
+        }
+
         const fullMatch = targetText.substring(start, end);
 
         blocks.push({
@@ -567,13 +600,19 @@ export const fileOpPlugin: TagPlugin = {
 
             detailsHtml = infoBannerHtml + lines.map(p => {
                 const muted = isPathMuted(p);
+                const encodedSingle = JSON.stringify([p]).replace(/"/g, '&quot;');
                 return `
                 <div class="expansion-file-item ${muted ? 'status-not-in-context' : 'status-in-context'}" data-path="${p}" style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
                     <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
                         <span class="codicon ${muted ? 'codicon-eye-closed' : 'codicon-check'}" style="color: ${muted ? 'var(--vscode-charts-orange, #ff9800)' : 'var(--vscode-charts-green, #4caf50)'};"></span>
                         <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p}</span>
                     </div>
-                    <span class="file-token-badge ${muted ? 'weight-muted' : 'weight-light'}" style="margin-left: 8px;">${muted ? '[MUTED - WILL UNMUTE]' : '[ALREADY ACTIVE - [C]]'}</span>
+                    <div style="display: flex; align-items: center; gap: 6px; margin-left: 8px;">
+                        <span class="file-token-badge ${muted ? 'weight-muted' : 'weight-light'}">${muted ? '[MUTED - WILL UNMUTE]' : '[ALREADY ACTIVE - [C]]'}</span>
+                        <button class="code-action-btn secondary-btn copy-unmute-files-btn copy-files-to-clipboard-btn" data-files="${encodedSingle}" title="Copy this file as a <file> block into clipboard" style="height: 18px; font-size: 9px; padding: 0 5px;">
+                            <span class="codicon codicon-copy"></span>
+                        </button>
+                    </div>
                 </div>`;
             }).join('');
             payload = { paths: mutedLines.length > 0 ? mutedLines : lines };
@@ -614,9 +653,13 @@ export const fileOpPlugin: TagPlugin = {
         const isUnmuteType = type === 'unmute_files';
         const blockId = `file-op-${type}-${Date.now().toString(36)}-${Math.random().toString(36).substring(7)}`;
         const encodedPaths = encodeURIComponent(JSON.stringify(lines));
+        const encodedFilesJson = JSON.stringify(lines).replace(/"/g, '&quot;');
 
         const isUnmuteDisabled = isUnmuteType && (btnText.includes('Already Active') || btnText.includes('Unmuted'));
         const actionButtonsHtml = isUnmuteType ? `
+            <button class="code-action-btn secondary-btn copy-unmute-files-btn copy-files-to-clipboard-btn" data-files="${encodedFilesJson}" data-block-id="${blockId}" title="Copy content of these files as <file> blocks into clipboard">
+                <span class="codicon codicon-copy"></span> Copy to Clipboard
+            </button>
             <button class="code-action-btn ${isUnmuteDisabled ? 'applied' : 'apply-btn'} file-op-btn unmute-btn" ${isUnmuteDisabled ? 'disabled' : ''} data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: payload.paths || lines, reprompt: false })}' data-block-id="${blockId}">
                 <span class="codicon ${isUnmuteDisabled ? 'codicon-check' : 'codicon-eye'}"></span> ${btnText}
             </button>
@@ -671,6 +714,31 @@ export const fileOpPlugin: TagPlugin = {
                 (btn as HTMLButtonElement).disabled = true;
                 btn.innerHTML = '<div class="spinner"></div> Unmuting & Answering...';
                 context.vscode.postMessage({ command: d.command, ...parsedPayload });
+            };
+        });
+
+        container.querySelectorAll('.copy-unmute-files-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const raw = btnEl.dataset.files;
+                if (!raw) return;
+                try {
+                    const files = JSON.parse(raw);
+                    context.vscode.postMessage({
+                        command: 'copyFilesToClipboard',
+                        files: files
+                    });
+                    const origHtml = btnEl.innerHTML;
+                    btnEl.innerHTML = '<span class="codicon codicon-check"></span> Copied!';
+                    btnEl.classList.add('success');
+                    setTimeout(() => {
+                        btnEl.innerHTML = origHtml;
+                        btnEl.classList.remove('success');
+                    }, 2000);
+                } catch (err) {
+                    console.error("Failed to copy unmute files to clipboard:", err);
+                }
             };
         });
     }

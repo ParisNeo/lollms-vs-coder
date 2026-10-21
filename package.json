@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.68",
+  "version": "1.0.71",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1541,6 +1541,11 @@
           "type": "number",
           "default": 15,
           "description": "Maximum internal tool rounds the Librarian may execute in sequence (grep, read_full_file, sparql) during each consultation turn (default is 15)."
+        },
+        "lollmsVsCoder.fileRepairStudioMaxRounds": {
+          "type": "number",
+          "default": 20,
+          "description": "Maximum number of iterative repair rounds the File Repair Studio can execute."
         },
         "lollmsVsCoder.contextMaxDepth": {
           "type": "number",

@@ -230,10 +230,27 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             await vscode.commands.executeCommand('lollms-vs-coder.loadContextSelectionDirect', params.contextSelection);
         }
 
+        // 🎯 DUAL-PATH PROMPT PREPARATION
+        let textToSet = "";
+        let imagesToSet: any[] = [];
+        if (typeof params.prompt === 'string') {
+            textToSet = params.prompt;
+        } else if (Array.isArray(params.prompt)) {
+            textToSet = params.prompt.filter(p => p && p.type === 'text').map(p => p.text).join('\n');
+            imagesToSet = params.prompt.filter(p => p && p.type === 'image_url').map((p, idx) => ({
+                name: `attached_${idx + 1}.png`,
+                data: p.image_url?.url || p.url
+            }));
+        }
+
+        if (!params.sendToAi && (textToSet || imagesToSet.length > 0)) {
+            (panel as any)._initialPrompt = textToSet;
+            (panel as any)._initialImages = imagesToSet;
+        }
+
         await panel.loadDiscussion();
         services.treeProviders.discussion?.refresh();
 
-        // 🎯 DUAL-PATH TRIGGER DISPATCHER
         if (params.sendToAi) {
             setImmediate(async () => {
                 const initialMessage: ChatMessage = {
@@ -245,7 +262,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
 
                 await panel.sendMessage(initialMessage);
 
-                // AUTO-TITLING PASS [4]
+                // AUTO-TITLING PASS
                 if (!params.title) {
                     try {
                         const generatedTitle = await services.discussionManager.generateDiscussionTitle({
@@ -268,27 +285,15 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
                 }
             });
         } else {
-            // PATH 2: "CREATE ONLY"
-            let textToSet = "";
-            let imagesToSet: any[] = [];
-            if (typeof params.prompt === 'string') {
-                textToSet = params.prompt;
-            } else if (Array.isArray(params.prompt)) {
-                textToSet = params.prompt.filter(p => p.type === 'text').map(p => p.text).join('\n');
-                imagesToSet = params.prompt.filter(p => p.type === 'image_url').map((p, idx) => ({
-                    name: `attached_${idx+1}.png`,
-                    data: p.image_url?.url || p.url
-                }));
-            }
-
-            panel.setInputText(textToSet, imagesToSet);
+            // PATH 2: "CREATE ONLY" - reflect prompt into input
+            await panel.setInputText(textToSet, imagesToSet);
 
             if (!params.title && (textToSet || imagesToSet.length > 0)) {
                 setImmediate(async () => {
                     try {
                         const generatedTitle = await services.discussionManager.generateDiscussionTitle({
                             ...discussion,
-                            messages: [{ role: 'user', content: textToSet || "New Vision Session" } as ChatMessage]
+                            messages: [{ role: 'user', content: textToSet || "New Session" } as ChatMessage]
                         });
                         if (generatedTitle) {
                             discussion.title = generatedTitle.trim();

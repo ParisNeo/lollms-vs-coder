@@ -1,6 +1,6 @@
 import { dom, vscode, state } from './dom.js';
 import { isScrolledToBottom, collapseBlockWithScrollPreservation, parseAiderHunks, parseFileTagAttributes, isValidFilePath } from './utils.js';
-import { extractFileBlocks } from './plugins/fileOpPlugin.js';
+import { extractFileBlocks, normalizePseudoFileBlocks } from './plugins/fileOpPlugin.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
@@ -39,7 +39,7 @@ import { planStatusPlugin } from './plugins/planStatusPlugin.js';
 import { toolPlugin } from './plugins/toolPlugin.js';
 import { sparqlPlugin } from './plugins/sparqlPlugin.js';
 import { missionBriefingPlugin } from './plugins/missionBriefingPlugin.js';
-import { librarianPlugin, librarianOffPlugin } from './plugins/librarianPlugin.js';
+import { librarianPlugin, librarianOffPlugin, multiStepsTaskPlugin } from './plugins/librarianPlugin.js';
 import { loadKnowledgePlugin, updateKnowledgePlugin } from './plugins/knowledgePlugin.js';
 import { insightPlugin } from './plugins/insightPlugin.js';
 
@@ -70,6 +70,7 @@ export function ensurePluginsInitialized() {
         missionBriefingPlugin,
         librarianPlugin,
         librarianOffPlugin,
+        multiStepsTaskPlugin,
         insightPlugin
     ];
     allPlugins.forEach(p => {
@@ -85,6 +86,15 @@ export function ensurePluginsInitialized() {
 // Initial eager attempt
 ensurePluginsInitialized();
 (window as any).renderCytoscapeDiagram = renderCytoscapeDiagram;
+
+export function stripThinkingTags(text: string): string {
+    if (typeof text !== 'string') return '';
+    return text
+        .replace(/<(?:think|thinking|thought|analysis|reasoning)\b[^>]*>[\s\S]*?<\/(?:think|thinking|thought|analysis|reasoning)>/gi, '')
+        .replace(/<(?:think|thinking|thought|analysis|reasoning)\b[^>]*>[\s\S]*$/gi, '')
+        .trim();
+}
+(window as any).stripThinkingTags = stripThinkingTags;
 
 
 const RENDER_THROTTLE_MS = 200;
@@ -132,7 +142,7 @@ try {
 
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 const SANITIZE_CONFIG = {
-    ADD_TAGS: ['iframe', 'script', 'style', 'button', 'i', 'span', 'details', 'summary'],
+    ADD_TAGS: ['iframe', 'script', 'style', 'button', 'i', 'span', 'details', 'summary', 'b', 'strong', 'code', 'pre', 'ul', 'ol', 'li'],
     ADD_ATTR: [
         'target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling', 
         'onclick', 'data-value', 'data-type', 'data-message-id', 'data-pid',
@@ -157,7 +167,8 @@ const SANITIZE_CONFIG = {
             'win', 'hurdle', 'fix', 'milestone-section-title', 'milestone-section-content',
             'builder_report', 'objective', 'briefing', 'timeline', 'timeline-item', 
             'timeline-dot', 'spinner', 'step', 'active', 'success', 'failed', 'git-event',
-            'agent-thought-step', 'thought-label', 'collapsible-content'
+            'agent-thought-step', 'thought-label', 'collapsible-content',
+            'memory-hydration-block'
         ] 
     }
 };
@@ -2343,7 +2354,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     // 1. EXTRACT AND PACKAGE COHERENT REASONING BLOCKS (THOUGHTS)
     const thinkResult = processThinkTags(sourceText);
-    let mainProcessedContent = thinkResult.processedContent;
+    let mainProcessedContent = normalizePseudoFileBlocks(thinkResult.processedContent);
 
     // 🛡️ SANITIZE RESILIENCE: Automatically separate glued text/headers from closing tags
     // e.g. '</add_files_to_context>### 1. Header' -> '</add_files_to_context>\n\n### 1. Header'
@@ -2750,18 +2761,80 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     if (totalActionableCount > 0 && isFinal) {
         const fileCountText = totalActionableCount === 1 ? '1 file' : `${totalActionableCount} files`;
         const applyText = totalActionableCount === 1 ? 'Apply Changes' : 'Apply All Changes';
-        finalHtml += `
-            <div class="apply-all-wrapper" style="margin-top: 16px; padding: 0 12px;">
-                <button class="apply-all-btn" id="apply-all-${messageId}">
-                    <span class="codicon codicon-check-all"></span> ${applyText} (${fileCountText})
-                </button>
-                <div class="apply-progress-container" id="progress-container-${messageId}" style="height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden;">
-                    <div class="apply-progress-bar" id="progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-blue); transition: width 0.3s ease;"></div>
+
+        const touchedFilesMap = new Map<string, { path: string; action: string; symbol?: string; hunksCount?: number }>();
+        xmlFileBlocks.forEach((b: any) => {
+            const attrs = parseFileTagAttributes(b.attrStr, b.rawContent);
+            if (attrs && attrs.path && !/^block\s+\d+$/i.test(attrs.path.trim())) {
+                const hunks = parseAiderHunks(normalizeAiderContent(b.rawContent));
+                touchedFilesMap.set(attrs.path, {
+                    path: attrs.path,
+                    action: attrs.action,
+                    symbol: attrs.symbol,
+                    hunksCount: hunks.length > 0 ? hunks.length : undefined
+                });
+            }
+        });
+
+        globalBlockInfos.forEach((info: any) => {
+            if (info.path && !/^block\s+\d+$/i.test(info.path.trim()) && !touchedFilesMap.has(info.path)) {
+                touchedFilesMap.set(info.path, {
+                    path: info.path,
+                    action: info.type || 'patch'
+                });
+            }
+        });
+
+        const filePillsHtml = Array.from(touchedFilesMap.values()).map(f => {
+            const isPatch = f.action === 'patch' || f.action === 'replace';
+            const actionLabel = isPatch 
+                ? (f.hunksCount ? `Patch (${f.hunksCount} hunk${f.hunksCount > 1 ? 's' : ''})` : 'Patch') 
+                : (f.symbol ? `Symbol (${f.symbol})` : (f.action === 'write' ? 'Full File' : f.action.toUpperCase()));
+            const badgeClass = isPatch ? 'weight-medium' : 'weight-light';
+
+            return `
+                <div class="summary-file-pill" onclick="vscode.postMessage({command:'openFile', path:'${f.path}'})" style="cursor:pointer; display:inline-flex; align-items:center; gap:6px; padding:4px 9px; border-radius:4px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); font-size:11px;" title="Click to open ${f.path}">
+                    <i class="codicon ${isPatch ? 'codicon-diff-modified' : 'codicon-file-code'}"></i>
+                    <span style="font-weight:600; color:var(--vscode-textLink-foreground);">${f.path}</span>
+                    <span class="file-token-badge ${badgeClass}" style="font-size:9px; padding:1px 5px;">${actionLabel}</span>
                 </div>
-                <div class="apply-results-list" id="results-${messageId}" style="margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
+            `;
+        }).join('');
+
+        finalHtml += `
+            <div class="generation-summary-card" id="summary-card-${messageId}" style="margin-top: 18px; padding: 12px 14px; background: rgba(0, 122, 204, 0.08); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <div style="font-weight:800; font-size:12px; color:var(--vscode-textLink-foreground); display:flex; align-items:center; gap:6px;">
+                        <i class="codicon codicon-checklist" style="color:var(--vscode-charts-green); font-size:14px;"></i>
+                        <span>Summary of What Was Done (${fileCountText})</span>
+                    </div>
+                    <span class="mode-badge active" style="font-size:9.5px; padding:2px 8px; background:var(--vscode-charts-green); color:white;">Implementation Ready</span>
+                </div>
+                <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;">
+                    ${filePillsHtml}
+                </div>
+                <div class="apply-all-wrapper" style="margin-top: 10px; padding: 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <button class="apply-all-btn" id="apply-all-${messageId}" style="flex:1; min-width:200px;">
+                        <span class="codicon codicon-check-all"></span> ${applyText} (${fileCountText})
+                    </button>
+                    <button class="code-action-btn secondary-btn collapse-msg-bottom-btn" data-message-id="${messageId}" style="height:34px; padding:0 14px; font-size:11px; font-weight:600; display:inline-flex; align-items:center; gap:6px;" title="Collapse this message into a single-line summary bar (Scrolls to collapsed header)">
+                        <i class="codicon codicon-chevron-up"></i> Collapse Message
+                    </button>
+                    <div class="apply-progress-container" id="progress-container-${messageId}" style="width:100%; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden;">
+                        <div class="apply-progress-bar" id="progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-blue); transition: width 0.3s ease;"></div>
+                    </div>
+                    <div class="apply-results-list" id="results-${messageId}" style="width:100%; margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
+                </div>
+            </div>`;
+    } else if (isFinal && totalActionableCount === 0) {
+        // Subtle collapse from bottom button for long text responses / librarian reports
+        finalHtml += `
+            <div class="message-bottom-bar" style="display:flex; justify-content:flex-end; align-items:center; margin-top:12px; padding-top:6px; border-top:1px dashed rgba(255,255,255,0.06);">
+                <button class="code-action-btn secondary-btn collapse-msg-bottom-btn" data-message-id="${messageId}" style="height:22px; font-size:10px; padding:0 8px; opacity:0.75;" title="Collapse this message to top">
+                    <i class="codicon codicon-chevron-up"></i> Collapse Message
+                </button>
             </div>`;
     }
-
 
     // Update images and main body zones separately to keep the thoughts zone stable
     if (imagesZone) {
@@ -3401,93 +3474,75 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
     if (model) messageWrapper.dataset.model = model;
     if (personalityName) messageWrapper.dataset.personalityName = personalityName;
 
-    // Import specialized renderers dynamically to keep compilation light and clean
+    const caps = state.capabilities || { agentMode: false, dynamicMode: false };
+    const isAgent = state.capabilities?.agentMode && role === 'assistant';
+    const isDynamic = caps.dynamicMode === true && !isAgent;
+    const isAssistant = !isAgent && !isDynamic;
+
+    let modeClass = "";
+    if (role === 'assistant') {
+        if (isAgent) modeClass = "agent-mode-message";
+        else if (isDynamic) modeClass = "dynamic-mode-message";
+        else modeClass = "assistant-mode-message";
+    }
+
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${role}-message ${modeClass} ${isTechnical ? 'technical-event' : ''}`;
+    messageDiv.dataset.originalContent = JSON.stringify(rawContent);
+
+    const avatarDiv = document.createElement('div');
+    avatarDiv.className = 'message-avatar';
+
+    if (role === 'user') {
+        avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
+    } else if (role === 'system') {
+        avatarDiv.innerHTML = '<span class="codicon codicon-warning" style="color:var(--vscode-charts-red)"></span>';
+    } else if (isAgent) {
+        avatarDiv.innerHTML = '<span class="codicon codicon-robot" style="color:var(--vscode-charts-red)"></span>';
+    } else if (isDynamic) {
+        avatarDiv.innerHTML = '<span class="codicon codicon-circuit-board" style="color:var(--vscode-charts-orange)"></span>';
+    } else {
+        avatarDiv.innerHTML = '<span class="codicon codicon-hubot" style="color:var(--vscode-textLink-foreground)"></span>';
+    }
+
+    messageDiv.appendChild(avatarDiv);
+
+    const bodyDiv = document.createElement('div');
+    bodyDiv.className = 'message-body';
+    messageDiv.appendChild(bodyDiv);
+
+    messageWrapper.appendChild(messageDiv);
+
+    const insertionControls = document.getElementById('message-insertion-controls');
+    if (insertionControls) {
+        dom.chatMessagesContainer.insertBefore(messageWrapper, insertionControls);
+    } else {
+        dom.chatMessagesContainer.appendChild(messageWrapper);
+    }
+
+    let isWaiting = false;
+    const isEmptyContent = !rawContent || (typeof rawContent === 'string' && rawContent.trim() === '');
+    if (role === 'assistant' && isEmptyContent) {
+        state.streamingMessages[id] = { buffer: '', timer: null };
+        isWaiting = true;
+    }
+
+    // Render immediately so DOM nodes exist before streaming chunks arrive
     import('./renderers/assistant_message_renderer.js').then(assistant => {
-    import('./renderers/dynamic_message_renderer.js').then(dynamic => {
-    import('./renderers/agent_message_renderer.js').then(agent => {
-
-        const caps = state.capabilities || { agentMode: false, dynamicMode: false };
-        const isAgent = state.capabilities?.agentMode && role === 'assistant';
-        const isDynamic = caps.dynamicMode === true && !isAgent;
-        const isAssistant = !isAgent && !isDynamic;
-
-        let modeClass = "";
-        if (role === 'assistant') {
-            if (isAgent) modeClass = "agent-mode-message";
-            else if (isDynamic) modeClass = "dynamic-mode-message";
-            else modeClass = "assistant-mode-message";
-        }
-
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${role}-message ${modeClass} ${isTechnical ? 'technical-event' : ''}`;
-        messageDiv.dataset.originalContent = JSON.stringify(rawContent);
-
-        const avatarDiv = document.createElement('div');
-        avatarDiv.className = 'message-avatar';
-
-        if (role === 'user') {
-            avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
-        } else if (role === 'system') {
-            avatarDiv.innerHTML = '<span class="codicon codicon-warning" style="color:var(--vscode-charts-red)"></span>';
-        } else if (isAgent) {
-            avatarDiv.innerHTML = '<span class="codicon codicon-robot" style="color:var(--vscode-charts-red)"></span>';
-        } else if (isDynamic) {
-            avatarDiv.innerHTML = '<span class="codicon codicon-circuit-board" style="color:var(--vscode-charts-orange)"></span>';
-        } else {
-            avatarDiv.innerHTML = '<span class="codicon codicon-hubot" style="color:var(--vscode-textLink-foreground)"></span>';
-        }
-
-        messageDiv.appendChild(avatarDiv);
-
-        const bodyDiv = document.createElement('div');
-        bodyDiv.className = 'message-body';
-        messageDiv.appendChild(bodyDiv);
-
-        messageWrapper.appendChild(messageDiv);
-
-        const insertionControls = document.getElementById('message-insertion-controls');
-        if (insertionControls) {
-            dom.chatMessagesContainer.insertBefore(messageWrapper, insertionControls);
-        } else {
-            dom.chatMessagesContainer.appendChild(messageWrapper);
-        }
-
-        let isWaiting = false;
-        // Centralized Stream Registration: Ensure we always capture incoming text tokens
-        const isEmptyContent = !rawContent || (typeof rawContent === 'string' && rawContent.trim() === '');
-        if (role === 'assistant' && isEmptyContent) {
-            state.streamingMessages[id] = { buffer: '', timer: null };
-            isWaiting = true;
-        }
-
-        // Delegate to specialized renderer depending on active discussion layout and mode
-        if (role !== 'assistant') {
-            assistant.renderAssistantMessage(id, rawContent, isFinal);
-        } else {
-            if (isAgent) {
-                agent.renderAgentMessage(id, rawContent, isFinal);
-            } else if (isDynamic) {
-                dynamic.renderDynamicMessage(id, rawContent, isFinal);
-            } else {
-                assistant.renderAssistantMessage(id, rawContent, isFinal);
-            }
-        }
-
-        if (isWaiting && role === 'assistant') {
-            const contentDiv = messageDiv.querySelector('.message-content');
-            if (contentDiv && !contentDiv.querySelector('.waiting-animation')) {
-                // Ensure a stable, non-flickering, pre-allocated layout block is used for the thinking state
-                contentDiv.innerHTML = `
-                    <div class="waiting-animation" style="display:flex; align-items:center; gap:10px; opacity:0.95; padding:6px 0;">
-                        <div class="lollms-spinner" style="flex-shrink:0;"></div>
-                        <span class="thinking-text" style="font-style:italic; font-size:12px;">Thinking...</span>
-                    </div>
-                `;
-            }
-        }
+        assistant.renderAssistantMessage(id, rawContent, isFinal);
     });
-    });
-    });
+
+    if (isWaiting && role === 'assistant') {
+        const contentDiv = messageDiv.querySelector('.message-content');
+        if (contentDiv && !contentDiv.querySelector('.waiting-animation')) {
+            contentDiv.innerHTML = `
+                <div class="waiting-animation" style="display:flex; align-items:center; gap:10px; opacity:0.95; padding:6px 0;">
+                    <div class="lollms-spinner" style="flex-shrink:0;"></div>
+                    <span class="thinking-text" style="font-style:italic; font-size:12px;">Thinking...</span>
+                </div>
+            `;
+        }
+    }
 }
 
 const renderDataBriefing = (briefing: string) => {
@@ -4222,14 +4277,22 @@ export class ContextPresenter {
 // --- presenters/ContextBinder.ts ---
 // Dedicated DOM binding system decoupled from HTML templates.
 export class ContextBinder {
-    public static bindModelMenu(wrapper: HTMLElement, models: any[], currentModel: string) {
+    public static bindModelMenu(wrapper: HTMLElement, models: any[], currentModel: string, wasVisible: boolean = false) {
         const badge = wrapper.querySelector('#hud-model-badge') as HTMLElement;
         const menu = wrapper.querySelector('#hud-model-menu') as HTMLElement;
         if (!badge || !menu) return;
 
         let menuHtml = `
-            <div class="custom-menu-item manual-model-item" style="border-bottom: 1px solid var(--vscode-menu-separatorBackground); padding-bottom: 8px; margin-bottom: 4px;">
-                <span class="codicon codicon-edit"></span> Enter model name manually...
+            <div class="custom-menu-item refresh-models-item" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; gap: 8px; cursor: pointer;">
+                <span style="display: flex; align-items: center; gap: 8px;">
+                    <span class="codicon codicon-refresh"></span>
+                    <span class="refresh-models-label" style="font-weight: 600;">Refresh models list</span>
+                </span>
+                <span class="refresh-spinner-indicator" style="display: none;"><span class="spinner" style="width: 10px; height: 10px; border-width: 1.5px;"></span></span>
+            </div>
+            <div class="custom-menu-item manual-model-item" style="border-bottom: 1px solid var(--vscode-menu-separatorBackground); padding: 6px 12px 8px 12px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                <span class="codicon codicon-edit"></span>
+                <span>Enter model name manually...</span>
             </div>`;
 
         // Group models by server binding
@@ -4239,6 +4302,10 @@ export class ContextBinder {
             if (!serverGroups.has(sName)) serverGroups.set(sName, []);
             serverGroups.get(sName)!.push(m);
         });
+
+        if (models.length === 0) {
+            menuHtml += `<div style="padding: 10px 14px; opacity: 0.7; font-size: 11px; text-align: center; font-style: italic;">No models discovered. Click 'Refresh models list' above or check your backend server.</div>`;
+        }
 
         serverGroups.forEach((modelsInServer, serverName) => {
             menuHtml += `<div class="custom-menu-group-header" style="padding: 6px 12px 4px 12px; font-size: 10px; font-weight: 800; text-transform: uppercase; color: var(--vscode-charts-blue); opacity: 0.85; background: rgba(0,0,0,0.15); border-top: 1px solid var(--vscode-menu-separatorBackground); display:flex; align-items:center; gap:6px;"><span class="codicon codicon-server-process"></span> <span>${serverName}</span> <span class="ref-badge" style="font-size:9px; background:var(--vscode-badge-background); padding:1px 5px; border-radius:10px; margin-left:auto;">${modelsInServer.length}</span></div>`;
@@ -4269,6 +4336,21 @@ export class ContextBinder {
             };
         }
 
+        const refreshItem = menu.querySelector('.refresh-models-item') as HTMLElement;
+        if (refreshItem) {
+            refreshItem.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const icon = refreshItem.querySelector('.codicon-refresh');
+                const spinner = refreshItem.querySelector('.refresh-spinner-indicator') as HTMLElement;
+                const label = refreshItem.querySelector('.refresh-models-label') as HTMLElement;
+                if (icon) icon.classList.add('spin');
+                if (spinner) spinner.style.display = 'inline-block';
+                if (label) label.textContent = 'Refreshing models...';
+                vscode.postMessage({ command: 'refreshModels' });
+            };
+        }
+
         menu.querySelectorAll('.model-opt-item').forEach((item: any) => {
             item.onclick = (e: MouseEvent) => {
                 e.preventDefault();
@@ -4277,6 +4359,15 @@ export class ContextBinder {
                 menu.classList.remove('visible');
             };
         });
+
+        if (wasVisible) {
+            menu.classList.add('visible');
+            const adjustFn = (window as any).adjustMenuPosition || ((trig: HTMLElement, mn: HTMLElement) => {
+                mn.style.top = '100%';
+                mn.style.bottom = 'auto';
+            });
+            adjustFn(badge, menu);
+        }
 
         badge.onclick = (e) => {
             e.preventDefault();
@@ -5293,13 +5384,27 @@ export class ContextBinder {
 
                     // Optimistic token metrics update
                     const fileTok = state.fileTokensMap?.[pathVal] || 0;
-                    if (state.lastTokenMetrics && fileTok > 0) {
+                    if (state.lastTokenMetrics) {
                         if (isMutingNow) {
-                            state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - fileTok);
-                            if (state.lastTokenMetrics.segments && state.lastTokenMetrics.segments.files !== undefined) {
-                                state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - fileTok);
+                            const allFiles = (state.lastContextData?.files || []).map((f: any) => typeof f === 'string' ? f : (f?.path || ''));
+                            const isAllMuted = allFiles.length > 0 && allFiles.every(p => {
+                                const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+                                return state.mutedFiles.some(m => {
+                                    const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                                    return cleanM === cleanP || cleanM.endsWith('/' + cleanP) || cleanP.endsWith('/' + cleanM);
+                                });
+                            });
+                            if (isAllMuted && state.lastTokenMetrics.segments) {
+                                const prevFiles = state.lastTokenMetrics.segments.files || 0;
+                                state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - prevFiles);
+                                state.lastTokenMetrics.segments.files = 0;
+                            } else if (fileTok > 0) {
+                                state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - fileTok);
+                                if (state.lastTokenMetrics.segments && state.lastTokenMetrics.segments.files !== undefined) {
+                                    state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - fileTok);
+                                }
                             }
-                        } else {
+                        } else if (fileTok > 0) {
                             state.lastTokenMetrics.totalTokens += fileTok;
                             if (state.lastTokenMetrics.segments && state.lastTokenMetrics.segments.files !== undefined) {
                                 state.lastTokenMetrics.segments.files += fileTok;
@@ -5367,9 +5472,23 @@ export class ContextBinder {
                             });
                             if (state.lastTokenMetrics && totalDelta > 0) {
                                 if (!isUnmuting) {
-                                    state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - totalDelta);
-                                    if (state.lastTokenMetrics.segments?.files !== undefined) {
-                                        state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - totalDelta);
+                                    const allFiles = (state.lastContextData?.files || []).map((f: any) => typeof f === 'string' ? f : (f?.path || ''));
+                                    const isAllMuted = allFiles.length > 0 && allFiles.every(p => {
+                                        const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+                                        return state.mutedFiles.some(m => {
+                                            const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                                            return cleanM === cleanP || cleanM.endsWith('/' + cleanP) || cleanP.endsWith('/' + cleanM);
+                                        });
+                                    });
+                                    if (isAllMuted && state.lastTokenMetrics.segments) {
+                                        const prevFiles = state.lastTokenMetrics.segments.files || 0;
+                                        state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - prevFiles);
+                                        state.lastTokenMetrics.segments.files = 0;
+                                    } else if (totalDelta > 0) {
+                                        state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - totalDelta);
+                                        if (state.lastTokenMetrics.segments?.files !== undefined) {
+                                            state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - totalDelta);
+                                        }
                                     }
                                 } else {
                                     state.lastTokenMetrics.totalTokens += totalDelta;
@@ -6450,6 +6569,49 @@ export function showBulkOperationsModal(files: any[]) {
             f.isMuted = isPathMuted(f.path);
         });
 
+        // Optimistic token metrics update for HUD progressbar
+        if (state.lastTokenMetrics) {
+            let totalDelta = 0;
+            paths.forEach(p => {
+                totalDelta += (state.fileTokensMap?.[p] || 0);
+            });
+
+            if (!isUnmute) {
+                const allFiles = (state.lastContextData?.files || []).map((f: any) => typeof f === 'string' ? f : (f?.path || ''));
+                const isAllMuted = allFiles.length > 0 && allFiles.every(p => {
+                    const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+                    return state.mutedFiles.some(m => {
+                        const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                        return cleanM === cleanP || cleanM.endsWith('/' + cleanP) || cleanP.endsWith('/' + cleanM);
+                    });
+                });
+
+                if (isAllMuted && state.lastTokenMetrics.segments) {
+                    const prevFiles = state.lastTokenMetrics.segments.files || 0;
+                    state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - prevFiles);
+                    state.lastTokenMetrics.segments.files = 0;
+                } else if (totalDelta > 0) {
+                    state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - totalDelta);
+                    if (state.lastTokenMetrics.segments?.files !== undefined) {
+                        state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - totalDelta);
+                    }
+                }
+            } else {
+                state.lastTokenMetrics.totalTokens += totalDelta;
+                if (state.lastTokenMetrics.segments?.files !== undefined) {
+                    state.lastTokenMetrics.segments.files += totalDelta;
+                }
+            }
+
+            const barContainer = document.getElementById('token-progress-container');
+            const labelEl = document.getElementById('token-count-label');
+            if (labelEl) {
+                labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()}`;
+            }
+            updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
+        }
+
+        setCalculatingTokens(true, "Updating tokens...");
         renderList();
     };
 

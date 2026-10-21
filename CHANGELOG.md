@@ -4,6 +4,10 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-10-21 00:51]
+
+- `feat(prompting): update version to "1.0.71" and enhance chat panel webview UI`
+
 ## [2026-10-14 22:40]
 
 - `feat(librarian-visibility)`: render live tool actions (`<read_full_file>`, `<grep>`, `<peek_files>`, `<sparql>`) and raw observations directly in the real-time reasoning stream with collapsible `<details class="processing-block">` action cards.

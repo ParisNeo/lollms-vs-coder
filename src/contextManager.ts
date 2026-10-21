@@ -989,7 +989,10 @@ private _cachedTreeString: string | null = null;
       // Ensure the project structure is always available as the AI's foundation
       const folders = vscode.workspace.workspaceFolders;
 
-      const contextFiles = this.contextStateProvider.getIncludedFiles();
+      let contextFiles = this.contextStateProvider.getIncludedFiles();
+      if (capabilities?.includedFiles && Array.isArray(capabilities.includedFiles)) {
+        contextFiles = capabilities.includedFiles;
+      }
       const filesHash = contextFiles.map(f => `${f.path}:${f.state}`).join('|');
       const normalizedMuted = (capabilities?.mutedFiles || [])
           .map((m: string) => m.replace(/\\/g, '/').toLowerCase().trim())
@@ -1139,6 +1142,7 @@ private _cachedTreeString: string | null = null;
     mutedFiles?: string[],
     mutedSkills?: string[],
     mutedDiagrams?: string[],
+    includedFiles?: { path: string; state?: any; bytes?: number; tokens?: number }[],
     onProgress?: (pct: number) => void,
     onLoadProgress?: (progress: { current: number, total: number, percentage: number, fileName: string }) => void,
     onScanProgress?: (pct: number, status: string) => void,
@@ -1165,6 +1169,7 @@ private _cachedTreeString: string | null = null;
     mutedFiles?: string[],
     mutedSkills?: string[],
     mutedDiagrams?: string[],
+    includedFiles?: { path: string; state?: any; bytes?: number; tokens?: number }[],
     onProgress?: (pct: number) => void,
     onLoadProgress?: (progress: { current: number, total: number, percentage: number, fileName: string }) => void,
     onScanProgress?: (pct: number, status: string) => void,
@@ -1192,7 +1197,11 @@ private _cachedTreeString: string | null = null;
     }
 
     const activeFolders = vscode.workspace.workspaceFolders;
-    const contextFiles = this.contextStateProvider.getIncludedFiles();
+    const contextFiles = (options?.includedFiles && Array.isArray(options.includedFiles) && options.includedFiles.length > 0)
+      ? options.includedFiles
+      : (options?.capabilities?.includedFiles && Array.isArray(options.capabilities.includedFiles) && options.capabilities.includedFiles.length > 0)
+        ? options.capabilities.includedFiles
+        : this.contextStateProvider.getIncludedFiles();
     result.projectName = path.basename(activeFolders[0].uri.fsPath);
 
     let useRLM = false;
@@ -1459,8 +1468,6 @@ private _cachedTreeString: string | null = null;
           });
 
           if (isMuted) {
-            projectContentBuffer += `### 📄 \`${headerPath}\` [M] [MUTED IN CONTEXT]\n> Content is currently muted to save context tokens (0 tokens). If you need to inspect or edit this file's code, output:\n> <unmute_files>\n> ${headerPath}\n> </unmute_files>\n\n`;
-            filesInThisFolderCount++;
             continue;
           }
 

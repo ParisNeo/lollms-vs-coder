@@ -83,6 +83,10 @@ ${filesInventory}
 ### 🛡️ SOURCE OF TRUTH PROTOCOL
 The content under 'LOADED FILE CONTENTS' is your SOLE source of truth. Do NOT assume previous suggested changes were applied unless they appear in the loaded content below.
 
+### 🛡️ FILE BOUNDARY INTEGRITY
+Files below are strictly separated by \`<!-- START FILE: path -->\` and \`<!-- END FILE: path -->\`.
+Every patch you output MUST match code ONLY from that specific file. NEVER place hunks belonging to File B inside a patch for File A.
+
 ## 🎯 MISSION BRIEFING (Current Task Instructions)
 ${context.briefing || 'No specific task-level briefing provided.'}
 

@@ -78,8 +78,8 @@ export class SelectionHoverProvider implements vscode.HoverProvider {
         
         if (diag) {
             contents.appendMarkdown(`### 👑 Lollms AI\n\n`);
-            const args = encodeURIComponent(JSON.stringify([position]));
-            contents.appendMarkdown(`[✨ **Fix this issue with Lollms**](command:lollms-vs-coder.fixDiagnosticAtPosition?${args})\n\n`);
+            const args = encodeURIComponent(JSON.stringify([document.uri, diag]));
+            contents.appendMarkdown(`[✨ **Fix this issue with Lollms**](command:lollms-vs-coder.fixDiagnostic?${args})\n\n`);
             shouldShow = true;
         }
 

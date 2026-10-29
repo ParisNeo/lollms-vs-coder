@@ -805,6 +805,10 @@
                             <label class="switch"><input type="checkbox" id="cap-contextGovernorCropHistory" checked><span class="slider"></span></label>
                             <label for="cap-contextGovernorCropHistory"><strong>Crop History when Bloated:</strong> Summarize earlier conversation and important stuff to do when budget is tight.</label>
                         </div>
+                        <div class="checkbox-container" style="margin-top: 12px; background: rgba(0, 122, 204, 0.08); border: 1px solid var(--vscode-charts-blue); border-radius: 4px; padding: 8px;">
+                            <label class="switch"><input type="checkbox" id="cap-ignoreContextSize"><span class="slider"></span></label>
+                            <label for="cap-ignoreContextSize"><strong>Ignore Context Size:</strong> Allow Context Librarian to load all task-relevant files without token restrictions (useful for manual curation or copying to large external models).</label>
+                        </div>
                     </div>
                     <div class="checkbox-container">
                         <label class="switch"><input type="checkbox" id="cap-sparqlEnabled"><span class="slider"></span></label>
@@ -1137,12 +1141,19 @@
                             <i class="codicon codicon-circuit-board" style="color: var(--vscode-charts-blue);"></i> Effort:
                         </span>
                         <select id="repair-effort-select" style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; font-size: 11px; padding: 2px 6px; height: 22px; outline: none;">
-                            <option value="none">None (Fast)</option>
+                            <option value="none" selected>None (Fast)</option>
                             <option value="low">Low</option>
-                            <option value="medium" selected>Medium</option>
+                            <option value="medium">Medium</option>
                             <option value="high">High (Deep)</option>
                             <option value="max">Max (Maximum)</option>
                         </select>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="font-weight: 700; opacity: 0.85; display: flex; align-items: center; gap: 4px;">
+                            <i class="codicon codicon-history"></i> Rounds:
+                        </span>
+                        <input type="number" id="repair-max-rounds-input" min="1" max="100" value="20" style="background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; font-size: 11px; padding: 1px 6px; height: 20px; width: 50px; text-align: center; outline: none;" title="Maximum number of repair rounds to execute">
                     </div>
                 </div>
 
@@ -1170,9 +1181,6 @@
                             <div class="spinner" style="width: 12px; height: 12px; border-width: 2px;"></div>
                             <span id="repair-step-text" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Applying patch and auditing diagnostics...</span>
                         </div>
-                        <button id="repair-stop-indicator-btn" class="code-action-btn delete-btn" style="height: 22px; font-size: 10px; padding: 0 8px; margin-left: 8px; flex-shrink: 0;" title="Stop Repair immediately">
-                            <i class="codicon codicon-primitive-square"></i> Stop
-                        </button>
                     </div>
 
                     <div style="padding: 10px 14px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-sideBar-background); display: flex; flex-direction: column; gap: 6px;">
@@ -1210,9 +1218,14 @@
                             <label for="repair-select-all-errors" style="font-weight: 600; cursor: pointer; user-select: none;">Select All</label>
                             <span id="repair-selected-errors-count" style="opacity: 0.7; font-size: 10px; margin-left: 4px;">(0 of 0 selected)</span>
                         </div>
-                        <div style="display: flex; gap: 4px;">
+                        <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
                             <button type="button" id="repair-select-none-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px;" title="Deselect all errors">None</button>
                             <button type="button" id="repair-select-invert-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px;" title="Invert current error selection">Invert</button>
+                            <span style="opacity: 0.3; margin: 0 2px;">|</span>
+                            <button type="button" id="repair-select-critical-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px; color: var(--vscode-charts-red); border-color: rgba(231,76,60,0.4);" title="Select only critical syntax and runtime errors">🔥 Critical</button>
+                            <button type="button" id="repair-select-types-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px; color: var(--vscode-charts-orange); border-color: rgba(230,126,34,0.4);" title="Select only type mismatch errors">⚡ Types</button>
+                            <button type="button" id="repair-select-imports-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px; color: var(--vscode-charts-purple); border-color: rgba(155,89,182,0.4);" title="Select only unresolved import errors">📦 Imports</button>
+                            <button type="button" id="repair-select-warnings-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px; color: var(--vscode-charts-yellow); border-color: rgba(241,196,15,0.4);" title="Select only warnings">⚠️ Warnings</button>
                         </div>
                     </div>
 
@@ -1336,6 +1349,15 @@
                         <select id="gov-effort-select" style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; font-size: 11px; padding: 1px 6px; height: 22px;">
                             <option value="none" selected>Deactivated (Fast & Deterministic)</option>
                         </select>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px; background: rgba(0, 122, 204, 0.1); border: 1px solid var(--vscode-charts-blue); border-radius: 4px; padding: 2px 8px; height: 22px; box-sizing: border-box;">
+                        <label class="switch" style="width: 22px; height: 13px; margin: 0; flex-shrink: 0;">
+                            <input type="checkbox" id="gov-ignore-context-size">
+                            <span class="slider" style="border-radius: 13px;"></span>
+                        </label>
+                        <label for="gov-ignore-context-size" style="font-size: 10.5px; font-weight: 700; cursor: pointer; user-select: none; color: var(--vscode-foreground); margin: 0; white-space: nowrap;" title="Ignore context size limits: load all files involved in the task without auto-muting, so you can manually mute or export everything to an outside model">
+                            🚀 Ignore Context Size
+                        </label>
                     </div>
                 </div>
             </div>
@@ -1542,6 +1564,7 @@
             <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); gap: 10px; flex-wrap: wrap;">
                 <span id="bulk-delete-summary" style="font-size: 11px; opacity: 0.8; font-family: var(--vscode-editor-font-family);">0 selected</span>
                 <div style="display: flex; gap: 8px;">
+                    <button id="bulk-launch-discussion-btn" class="code-action-btn apply-btn" style="height: 28px; padding: 0 12px; background: var(--vscode-charts-purple, #9b59b6) !important; color: white !important; font-weight: bold;" title="Launch a new discussion in Fast Mode with only the selected files active (all other context files muted)"><i class="codicon codicon-comment-discussion"></i> Launch Discussion</button>
                     <button id="bulk-mute-run-btn" class="code-action-btn secondary-btn" style="height: 28px; padding: 0 10px;" title="Mute selected files (reduce content token weight to 0 while keeping files in tree)"><i class="codicon codicon-eye-closed"></i> Mute Selected</button>
                     <button id="bulk-unmute-run-btn" class="code-action-btn secondary-btn" style="height: 28px; padding: 0 10px;" title="Reveal / Unmute selected files (reload full content into context)"><i class="codicon codicon-eye"></i> Reveal Selected</button>
                     <button id="bulk-delete-run-btn" class="code-action-btn delete-btn" style="height: 28px; padding: 0 10px;" title="Remove selected files from AI context"><i class="codicon codicon-trash"></i> Remove from Context</button>
@@ -1947,6 +1970,31 @@
                         </div>
                     </div>
 
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top: 10px;">
+                        <div class="form-group" style="margin: 0;">
+                            <label for="wizard-reasoning-effort">Reasoning Effort</label>
+                            <select id="wizard-reasoning-effort" style="width:100%;">
+                                <option value="none">None (Fast / Off)</option>
+                                <option value="low" selected>Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
+                                <option value="max">Max</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin: 0; display:flex; flex-direction:column; justify-content:flex-end;">
+                            <label for="wizard-fast-mode" style="margin-bottom:4px;">Operation Mode</label>
+                            <div class="checkbox-container" style="margin:0; padding:4px 8px; background:var(--vscode-input-background); border:1px solid var(--vscode-input-border); border-radius:4px; display:flex; align-items:center; gap:8px; height:24px; box-sizing:border-box;">
+                                <label class="switch" style="width:24px; height:14px; margin:0; flex-shrink:0;">
+                                    <input type="checkbox" id="wizard-fast-mode">
+                                    <span class="slider" style="border-radius:14px;"></span>
+                                </label>
+                                <label for="wizard-fast-mode" style="font-size:11px; cursor:pointer; font-weight:600; margin:0; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="Fast Mode: Direct Coder execution on visible files without intermediate Librarian debate or confirmation">
+                                    ⚡ Fast Mode (Direct Coder)
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="form-group" style="margin: 0;">
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                             <label for="wizard-preferences-profile" style="margin:0;">User Preferences Profile</label>
@@ -1985,12 +2033,24 @@
                             <button id="wizard-governor-clear-btn" type="button" style="background:none; border:none; color:var(--vscode-errorForeground); cursor:pointer; font-size:10px; text-decoration:underline; padding:0 4px;">Clear</button>
                         </div>
 
-                        <!-- File Search Filter & Mass Actions -->
+                        <!-- File Search Filter, Sorting & Mass Actions -->
                         <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-                            <div style="display: flex; align-items: center; gap: 6px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 2px 8px; flex: 1; min-width: 140px;">
+                            <div style="display: flex; align-items: center; gap: 6px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 2px 8px; flex: 1; min-width: 130px;">
                                 <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.6;"></i>
                                 <input type="text" id="wizard-file-filter-input" placeholder="Filter candidate files..." style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); width: 100%; height: 20px; padding: 0;">
                             </div>
+                            <select id="wizard-files-sort-select" style="font-size: 10.5px; padding: 2px 4px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; height: 24px; cursor: pointer; max-width: 135px;" title="Sort and organize files">
+                                <option value="visible-first" selected>👁️ Visible First</option>
+                                <option value="tree">🌳 Folder Tree</option>
+                                <option value="muted-first">🙈 Muted First</option>
+                                <option value="heavy-to-light">📊 Size (Heavy → Light)</option>
+                                <option value="light-to-heavy">📊 Size (Light → Heavy)</option>
+                                <option value="name">🔤 Name (A-Z)</option>
+                                <option value="modified">🕒 Last Modified</option>
+                            </select>
+                            <button type="button" id="wizard-files-sort-cycle-btn" class="icon-btn" style="height: 24px; width: 24px; padding: 0;" title="Cycle Sort Mode">
+                                <i class="codicon codicon-eye" id="wizard-files-sort-icon"></i>
+                            </button>
                             <button type="button" id="wizard-export-context-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 6px;" title="Export selection to .lollms-ctx file">
                                 <i class="codicon codicon-save"></i> Export
                             </button>

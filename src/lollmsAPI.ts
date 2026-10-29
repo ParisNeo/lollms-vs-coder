@@ -1339,9 +1339,7 @@ export class LollmsAPI {
         if (reqMaxTokens !== undefined && reqMaxTokens > 0) {
             body.max_tokens = reqMaxTokens;
         }
-        if (reasoningEffort === 'none') {
-            body.reasoning_effort = 'none';
-        } else if (isThinkingActive) {
+        if (isThinkingActive && reasoningEffort !== 'none') {
             body.reasoning_effort = reasoningEffort;
             if (reqMaxTokens !== undefined && reqMaxTokens > 0) {
                 body.max_completion_tokens = reqMaxTokens;

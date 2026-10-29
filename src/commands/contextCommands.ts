@@ -6,9 +6,9 @@ import * as path from 'path';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { AgentManager } from '../agentManager';
 
-export async function getAvailableContextSelections(): Promise<{ name: string; fileName: string; fileCount?: number }[]> {
+export async function getAvailableContextSelections(): Promise<{ name: string; fileName: string; fileCount?: number; description?: string }[]> {
     const folders = vscode.workspace.workspaceFolders || [];
-    const selections: { name: string; fileName: string; fileCount?: number }[] = [];
+    const selections: { name: string; fileName: string; fileCount?: number; description?: string }[] = [];
     const seenNames = new Set<string>();
 
     for (const folder of folders) {
@@ -20,15 +20,24 @@ export async function getAvailableContextSelections(): Promise<{ name: string; f
                     if (!seenNames.has(name)) {
                         seenNames.add(name);
                         let fileCount: number | undefined = undefined;
+                        let desc: string | undefined = undefined;
+                        let displayName = name.replace('.lollms-ctx', '');
                         try {
                             const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(selectionDir, name));
                             const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
-                            if (Array.isArray(parsed)) fileCount = parsed.length;
+                            if (Array.isArray(parsed)) {
+                                fileCount = parsed.length;
+                            } else if (parsed && typeof parsed === 'object') {
+                                if (Array.isArray(parsed.files)) fileCount = parsed.files.length;
+                                if (parsed.name) displayName = parsed.name;
+                                if (parsed.description) desc = parsed.description;
+                            }
                         } catch {}
                         selections.push({
-                            name: name.replace('.lollms-ctx', ''),
+                            name: displayName,
                             fileName: name,
-                            fileCount
+                            fileCount,
+                            description: desc
                         });
                     }
                 }
@@ -136,6 +145,150 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextExcluded', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'fully-excluded')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextCollapsed', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'collapsed')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextDefinitionsOnly', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'definitions-only')));
+
+    async function collectFilesFromUri(targetUri: vscode.Uri): Promise<string[]> {
+        try {
+            const stat = await vscode.workspace.fs.stat(targetUri);
+            if (stat.type === vscode.FileType.File) {
+                const rel = vscode.workspace.asRelativePath(targetUri, false).replace(/\\/g, '/');
+                return [rel];
+            } else if (stat.type === vscode.FileType.Directory) {
+                const { isPathBlockedFromGraph } = require('../codeGraphManager');
+                const entries = await vscode.workspace.fs.readDirectory(targetUri);
+                const collected: string[] = [];
+                for (const [name, type] of entries) {
+                    const childUri = vscode.Uri.joinPath(targetUri, name);
+                    const rel = vscode.workspace.asRelativePath(childUri, false).replace(/\\/g, '/');
+                    if (isPathBlockedFromGraph(rel)) continue;
+                    if (type === vscode.FileType.File) {
+                        collected.push(rel);
+                    } else if (type === vscode.FileType.Directory) {
+                        collected.push(...(await collectFilesFromUri(childUri)));
+                    }
+                }
+                return collected;
+            }
+        } catch {}
+        return [];
+    }
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.launchDiscussionWithSelectedFiles', async (uriOrPaths?: any, uris?: vscode.Uri[]) => {
+        let selectedRelPaths: string[] = [];
+
+        if (Array.isArray(uriOrPaths) && uriOrPaths.every(p => typeof p === 'string')) {
+            selectedRelPaths = uriOrPaths.map(p => p.replace(/\\/g, '/').trim());
+        } else {
+            let targetUris: vscode.Uri[] = [];
+            if (Array.isArray(uris) && uris.length > 0) {
+                targetUris = uris;
+            } else if (uriOrPaths instanceof vscode.Uri) {
+                targetUris = [uriOrPaths];
+            } else if (uriOrPaths && typeof uriOrPaths === 'object' && uriOrPaths.resourceUri instanceof vscode.Uri) {
+                targetUris = [uriOrPaths.resourceUri];
+            } else if (vscode.window.activeTextEditor?.document.uri.scheme === 'file') {
+                targetUris = [vscode.window.activeTextEditor.document.uri];
+            }
+
+            for (const u of targetUris) {
+                const files = await collectFilesFromUri(u);
+                selectedRelPaths.push(...files);
+            }
+        }
+
+        selectedRelPaths = Array.from(new Set(selectedRelPaths.filter(Boolean)));
+
+        if (selectedRelPaths.length === 0) {
+            vscode.window.showWarningMessage("Please select at least one file to launch a discussion.");
+            return;
+        }
+
+        const provider = services.contextManager.getContextStateProvider();
+        const rawIncluded = provider ? provider.getIncludedFiles().map(f => f.path.replace(/\\/g, '/').trim()) : [];
+        const activeDisc = ChatPanel.currentPanel?.getCurrentDiscussion();
+        const discIncluded = activeDisc ? ((activeDisc as any).includedFiles || []).map((f: any) => (typeof f === 'string' ? f : f.path).replace(/\\/g, '/').trim()) : [];
+        const discMuted = activeDisc ? (activeDisc.mutedFiles || []).map((m: string) => m.replace(/\\/g, '/').trim()) : [];
+
+        const allKnownContextFiles = Array.from(new Set([...rawIncluded, ...discIncluded, ...discMuted]));
+
+        // Ensure selected files are added to context provider
+        if (provider) {
+            await provider.addFilesToContext(selectedRelPaths);
+        }
+
+        // Mute all other files in context except the selected ones
+        const normSelectedSet = new Set(selectedRelPaths.map(p => p.toLowerCase()));
+        const isSelected = (p: string) => {
+            const clean = p.toLowerCase();
+            return normSelectedSet.has(clean) || selectedRelPaths.some(sp => {
+                const sClean = sp.toLowerCase();
+                return sClean === clean || sClean.endsWith('/' + clean) || clean.endsWith('/' + sClean);
+            });
+        };
+
+        const filesToMute: string[] = [];
+        for (const f of allKnownContextFiles) {
+            if (!isSelected(f)) {
+                filesToMute.push(f);
+            }
+        }
+
+        const shortNames = selectedRelPaths.slice(0, 3).map(p => path.posix.basename(p)).join(', ');
+        const extraCount = selectedRelPaths.length > 3 ? ` +${selectedRelPaths.length - 3}` : '';
+        const title = `Discussion: ${shortNames}${extraCount} (Fast Mode)`;
+
+        const discussion = services.discussionManager.createNewDiscussion(activeDisc?.groupId || null);
+        discussion.title = title;
+        discussion.mutedFiles = filesToMute;
+        discussion.mutedTools = activeDisc ? [...(activeDisc.mutedTools || [])] : [];
+        discussion.mutedSkills = activeDisc ? [...(activeDisc.mutedSkills || [])] : [];
+        discussion.mutedDiagrams = activeDisc ? [...(activeDisc.mutedDiagrams || [])] : [];
+        discussion.importedSkills = activeDisc ? [...(activeDisc.importedSkills || [])] : [];
+        discussion.importedTools = activeDisc ? [...(activeDisc.importedTools || [])] : [];
+        discussion.activeDiagrams = activeDisc ? [...(activeDisc.activeDiagrams || [])] : [];
+        discussion.model = activeDisc?.model;
+        discussion.personalityId = activeDisc?.personalityId || 'default_coder';
+
+        if (activeDisc?.capabilities) {
+            discussion.capabilities = JSON.parse(JSON.stringify(activeDisc.capabilities));
+        }
+        if (!discussion.capabilities) {
+            discussion.capabilities = services.discussionManager.getLastCapabilities();
+        }
+
+        // Automatically configure Fast Mode and apply muting
+        discussion.capabilities.fastMode = true;
+        discussion.capabilities.mutedFiles = filesToMute;
+
+        await services.discussionManager.saveDiscussion(discussion);
+
+        const panel = ChatPanel.createOrShow(services, discussion.id);
+        panel._panel.reveal();
+
+        const agent = new AgentManager(
+            panel, services.lollmsAPI, services.contextManager, services.gitIntegration,
+            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+            services.toolManager,
+            services.rlmDb
+        );
+        agent.projectMemoryManager = services.projectMemoryManager;
+        agent.personalityManager = services.personalityManager;
+        agent.setProcessManager(services.processManager);
+        panel.setAgentManager(agent);
+
+        panel.setProcessManager(services.processManager);
+        panel.setContextManager(services.contextManager);
+        panel.setPersonalityManager(services.personalityManager);
+        panel.setHerdManager(services.herdManager);
+
+        await panel.unmuteFiles(selectedRelPaths);
+        await panel.muteFiles(filesToMute);
+        panel.recordCurrentPromptFiles(selectedRelPaths);
+
+        await panel.loadDiscussion();
+        services.treeProviders.discussion?.refresh();
+
+        vscode.window.showInformationMessage(`⚡ Launched new Fast Mode discussion with ${selectedRelPaths.length} active file(s) (${filesToMute.length} other files muted).`);
+    }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFilesToContext', async (files: string[]) => {
         const provider = services.contextManager.getContextStateProvider();
@@ -430,11 +583,22 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
 
         try {
             const content = await vscode.workspace.fs.readFile(targetUri);
-            const files = JSON.parse(Buffer.from(content).toString('utf8'));
+            const parsed = JSON.parse(Buffer.from(content).toString('utf8'));
+            const files = Array.isArray(parsed) ? parsed : (parsed?.files || []);
             if (Array.isArray(files)) {
                 await services.contextManager.getContextStateProvider()?.softReset();
                 await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', files);
-                vscode.window.showInformationMessage(`Context switched to: ${targetFileName.replace('.lollms-ctx', '')}`);
+
+                // Auto-toggle to Fast Mode when loading a selection
+                const openPanels = new Set<ChatPanel>();
+                if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) openPanels.add(ChatPanel.currentPanel);
+                ChatPanel.panels.forEach(p => { if (!p.isDisposed) openPanels.add(p); });
+                for (const panel of openPanels) {
+                    await panel.updateCapabilities({ fastMode: true });
+                }
+
+                const selName = (parsed && !Array.isArray(parsed) && parsed.name) ? parsed.name : targetFileName.replace('.lollms-ctx', '');
+                vscode.window.showInformationMessage(`Context switched to: ${selName} (Fast Mode automatically enabled)`);
             }
         } catch (e: any) {
             vscode.window.showErrorMessage(`Failed to load context ${targetFileName}: ${e.message}`);
@@ -465,12 +629,22 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         if (uris && uris[0]) {
             try {
                 const content = await vscode.workspace.fs.readFile(uris[0]);
-                const files = JSON.parse(Buffer.from(content).toString('utf8'));
+                const parsed = JSON.parse(Buffer.from(content).toString('utf8'));
+                const files = Array.isArray(parsed) ? parsed : (parsed?.files || []);
                 if (Array.isArray(files)) {
                     // REPLACE: Soft reset the selection first
                     await services.contextManager.getContextStateProvider()?.softReset();
                     await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', files);
-                    vscode.window.showInformationMessage(`Context selection replaced with ${files.length} files.`);
+
+                    // Auto-toggle to Fast Mode when loading a selection
+                    const openPanels = new Set<ChatPanel>();
+                    if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) openPanels.add(ChatPanel.currentPanel);
+                    ChatPanel.panels.forEach(p => { if (!p.isDisposed) openPanels.add(p); });
+                    for (const panel of openPanels) {
+                        await panel.updateCapabilities({ fastMode: true });
+                    }
+
+                    vscode.window.showInformationMessage(`Context selection replaced with ${files.length} files (Fast Mode automatically enabled).`);
                 } else {
                     vscode.window.showErrorMessage("Invalid context file format.");
                 }
@@ -504,11 +678,21 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         if (uris && uris[0]) {
             try {
                 const content = await vscode.workspace.fs.readFile(uris[0]);
-                const files = JSON.parse(Buffer.from(content).toString('utf8'));
+                const parsed = JSON.parse(Buffer.from(content).toString('utf8'));
+                const files = Array.isArray(parsed) ? parsed : (parsed?.files || []);
                 if (Array.isArray(files)) {
                     // APPEND: Just add files without soft reset
                     await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', files);
-                    vscode.window.showInformationMessage(`Appended ${files.length} files to context.`);
+
+                    // Auto-toggle to Fast Mode when loading a selection
+                    const openPanels = new Set<ChatPanel>();
+                    if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) openPanels.add(ChatPanel.currentPanel);
+                    ChatPanel.panels.forEach(p => { if (!p.isDisposed) openPanels.add(p); });
+                    for (const panel of openPanels) {
+                        await panel.updateCapabilities({ fastMode: true });
+                    }
+
+                    vscode.window.showInformationMessage(`Appended ${files.length} files to context (Fast Mode automatically enabled).`);
                 } else {
                     vscode.window.showErrorMessage("Invalid context file format.");
                 }

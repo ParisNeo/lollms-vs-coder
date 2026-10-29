@@ -142,14 +142,14 @@ try {
 
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 const SANITIZE_CONFIG = {
-    ADD_TAGS: ['iframe', 'script', 'style', 'button', 'i', 'span', 'details', 'summary', 'b', 'strong', 'code', 'pre', 'ul', 'ol', 'li'],
+    ADD_TAGS: ['iframe', 'script', 'style', 'button', 'i', 'span', 'details', 'summary', 'b', 'strong', 'code', 'pre', 'ul', 'ol', 'li', 'div'],
     ADD_ATTR: [
         'target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling', 
         'onclick', 'data-value', 'data-type', 'data-message-id', 'data-pid',
         'data-files', 'data-block-id', 'data-action', 'data-id', 'data-title', 
         'data-content', 'data-importance', 'data-mem-id', 'data-path', 'data-symbol',
         'data-block-index', 'data-raw-code', 'data-lang', 'data-hunk-index', 'data-idx', 'data-closed',
-        'open'
+        'open', 'style'
     ],
     // IMPORTANT: Allow all classes for our custom UI blocks
     ADD_CLASSES: { 
@@ -168,7 +168,8 @@ const SANITIZE_CONFIG = {
             'builder_report', 'objective', 'briefing', 'timeline', 'timeline-item', 
             'timeline-dot', 'spinner', 'step', 'active', 'success', 'failed', 'git-event',
             'agent-thought-step', 'thought-label', 'collapsible-content',
-            'memory-hydration-block'
+            'memory-hydration-block',
+            'context-verifier-alert', 'blame-librarian-btn'
         ] 
     }
 };
@@ -2715,6 +2716,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     const totalActionableCount = xmlActionableCount + legacyActionableCount;
 
+    // Detect Multi-Step updates structure in the current response
+    const detectedMultiSteps = detectMultiStepsInContent(sourceText);
+
     // Detect actionable interactive items (Peek, Context Add, Unmute Files, Tools)
     const peekCount = (mainProcessedContent.match(/<peek_files\b/gi) || []).length;
     const addContextCount = (mainProcessedContent.match(/<add_files_to_context\b/gi) || []).length;
@@ -2760,7 +2764,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     if (totalActionableCount > 0 && isFinal) {
         const fileCountText = totalActionableCount === 1 ? '1 file' : `${totalActionableCount} files`;
-        const applyText = totalActionableCount === 1 ? 'Apply Changes' : 'Apply All Changes';
 
         const touchedFilesMap = new Map<string, { path: string; action: string; symbol?: string; hunksCount?: number }>();
         xmlFileBlocks.forEach((b: any) => {
@@ -2785,7 +2788,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             }
         });
 
-        const filePillsHtml = Array.from(touchedFilesMap.values()).map(f => {
+        const renderPill = (f: { path: string; action: string; symbol?: string; hunksCount?: number }) => {
             const isPatch = f.action === 'patch' || f.action === 'replace';
             const actionLabel = isPatch 
                 ? (f.hunksCount ? `Patch (${f.hunksCount} hunk${f.hunksCount > 1 ? 's' : ''})` : 'Patch') 
@@ -2799,9 +2802,70 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     <span class="file-token-badge ${badgeClass}" style="font-size:9px; padding:1px 5px;">${actionLabel}</span>
                 </div>
             `;
-        }).join('');
+        };
 
-        finalHtml += `
+        const filePillsHtml = Array.from(touchedFilesMap.values()).map(renderPill).join('');
+
+        // ── 🐾 MULTI-STEP RESPONSE DETECTION & DEDICATED "APPLY ALL STEPS" BLOCK ──
+        if (detectedMultiSteps.isMultiSteps) {
+            const stepsCount = detectedMultiSteps.steps.length;
+            const stepsHtml = detectedMultiSteps.steps.map(step => {
+                const stepFiles = step.files.map(filePath => {
+                    const existing = touchedFilesMap.get(filePath);
+                    return existing || { path: filePath, action: 'patch' };
+                });
+                const stepPills = stepFiles.map(renderPill).join('');
+                const encodedFiles = encodeURIComponent(JSON.stringify(step.files));
+
+                return `
+                <div class="multistep-card-item" data-step="${step.number}" style="padding: 10px 12px; margin-bottom: 8px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-left: 3.5px solid var(--vscode-charts-purple, #9b59b6); border-radius: 6px; display: flex; flex-direction: column; gap: 6px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span class="step-badge" style="background:var(--vscode-charts-purple, #9b59b6); color:white; font-size:10px; font-weight:800; padding:2px 8px; border-radius:4px; letter-spacing:0.5px;">Step ${step.number}</span>
+                            <span style="font-weight:700; font-size:12px; color:var(--vscode-foreground);">${escapeHtml(step.title)}</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <span style="font-size:10.5px; opacity:0.8;">${step.files.length} file${step.files.length === 1 ? '' : 's'}</span>
+                            <button type="button" class="code-action-btn secondary-btn apply-single-step-btn" data-message-id="${messageId}" data-step="${step.number}" data-files="${encodedFiles}" style="height:24px; font-size:10px; padding:0 10px; font-weight:bold;" title="Apply only patches belonging to Step ${step.number}">
+                                <i class="codicon codicon-play"></i> Apply Step ${step.number}
+                            </button>
+                        </div>
+                    </div>
+                    <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:2px;">
+                        ${stepPills || '<span style="font-size:10px; opacity:0.6;">(No specific file identified)</span>'}
+                    </div>
+                </div>`;
+            }).join('');
+
+            finalHtml += `
+            <div class="generation-summary-card multisteps-summary-card" id="summary-card-${messageId}" data-multisteps="true" style="margin-top: 18px; padding: 14px 16px; background: rgba(155, 89, 182, 0.08); border: 1.5px solid var(--vscode-charts-purple, #9b59b6); border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.2);">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <div style="font-weight:800; font-size:12.5px; color:var(--vscode-charts-purple, #9b59b6); display:flex; align-items:center; gap:8px;">
+                        <i class="codicon codicon-layers" style="font-size:16px;"></i>
+                        <span>Multi-Step Updates: Apply All Steps (${stepsCount} Steps &middot; ${fileCountText})</span>
+                    </div>
+                    <span class="mode-badge active" style="font-size:9.5px; padding:2px 8px; background:var(--vscode-charts-purple, #9b59b6); color:white;">Multi-Step Execution</span>
+                </div>
+                <div class="multisteps-timeline" style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;">
+                    ${stepsHtml}
+                </div>
+                <div class="apply-all-wrapper" style="margin-top: 10px; padding: 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <button class="apply-all-btn apply-all-steps-btn" id="apply-all-${messageId}" style="flex:1; min-width:220px; background:var(--vscode-charts-purple, #9b59b6) !important; color:white !important; font-weight:bold; height:34px;">
+                        <span class="codicon codicon-check-all"></span> Apply All Steps (${stepsCount} Steps &middot; ${fileCountText})
+                    </button>
+                    <button class="code-action-btn secondary-btn collapse-msg-bottom-btn" data-message-id="${messageId}" style="height:34px; padding:0 14px; font-size:11px; font-weight:600; display:inline-flex; align-items:center; gap:6px;" title="Collapse this message into a single-line summary bar (Scrolls to collapsed header)">
+                        <i class="codicon codicon-chevron-up"></i> Collapse Message
+                    </button>
+                    <div class="apply-progress-container" id="progress-container-${messageId}" style="width:100%; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden;">
+                        <div class="apply-progress-bar" id="progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-purple, #9b59b6); transition: width 0.3s ease;"></div>
+                    </div>
+                    <div class="apply-results-list" id="results-${messageId}" style="width:100%; margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
+                </div>
+            </div>`;
+        } else {
+            // Standard Single-Run Summary Card
+            const applyText = totalActionableCount === 1 ? 'Apply Changes' : 'Apply All Changes';
+            finalHtml += `
             <div class="generation-summary-card" id="summary-card-${messageId}" style="margin-top: 18px; padding: 12px 14px; background: rgba(0, 122, 204, 0.08); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                     <div style="font-weight:800; font-size:12px; color:var(--vscode-textLink-foreground); display:flex; align-items:center; gap:6px;">
@@ -2826,6 +2890,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     <div class="apply-results-list" id="results-${messageId}" style="width:100%; margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
                 </div>
             </div>`;
+        }
     } else if (isFinal && totalActionableCount === 0) {
         // Subtle collapse from bottom button for long text responses / librarian reports
         finalHtml += `
@@ -3058,7 +3123,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         };
     }
 
-    // Attach single unified listener for the Apply All button
+    // Attach single unified listener for the Apply All / Apply All Steps button
     const applyAllBtn = contentDiv.querySelector(`#apply-all-${messageId}`) as HTMLButtonElement;
     if (applyAllBtn) {
         applyAllBtn.onclick = () => {
@@ -3071,12 +3136,15 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             }
 
             const isUndo = applyAllBtn.classList.contains('undo-all-btn');
+            const isMultiSteps = applyAllBtn.classList.contains('apply-all-steps-btn');
             const changes = gatherChangesFromBlocks(messageId, isUndo);
+
             if (changes.length > 0) {
                 applyAllBtn.disabled = true;
+                const batchLabel = isMultiSteps ? 'All Steps' : 'Batch';
                 applyAllBtn.innerHTML = isUndo 
-                    ? '<span class="codicon codicon-sync spin"></span> Undoing Batch...' 
-                    : '<span class="codicon codicon-sync spin"></span> Applying Batch...';
+                    ? `<span class="codicon codicon-sync spin"></span> Undoing ${batchLabel}...` 
+                    : `<span class="codicon codicon-sync spin"></span> Applying ${batchLabel}...`;
 
                 const resList = document.getElementById(`results-${messageId}`);
                 const progressContainer = document.getElementById(`progress-container-${messageId}`);
@@ -3101,6 +3169,46 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             }
         };
     }
+
+    // Attach listeners for individual Apply Step buttons in multi-step cards
+    contentDiv.querySelectorAll('.apply-single-step-btn').forEach((stepBtn: any) => {
+        stepBtn.onclick = (e: MouseEvent) => {
+            e.stopPropagation();
+            const stepNum = parseInt(stepBtn.dataset.step, 10);
+            const stepFilesRaw = stepBtn.dataset.files;
+            let stepFiles: string[] = [];
+            try {
+                stepFiles = JSON.parse(decodeURIComponent(stepFilesRaw || '[]'));
+            } catch {}
+
+            const normStepFiles = new Set(stepFiles.map(f => f.replace(/\\/g, '/').toLowerCase().trim()));
+            const allChanges = gatherChangesFromBlocks(messageId, false);
+            const stepChanges = allChanges.filter(c => {
+                const normC = c.path.replace(/\\/g, '/').toLowerCase().trim();
+                return normStepFiles.has(normC) || stepFiles.some(sf => {
+                    const normSf = sf.replace(/\\/g, '/').toLowerCase().trim();
+                    return normC === normSf || normC.endsWith('/' + normSf) || normSf.endsWith('/' + normC);
+                });
+            });
+
+            if (stepChanges.length === 0) {
+                stepBtn.disabled = true;
+                stepBtn.classList.add('applied');
+                stepBtn.innerHTML = `<i class="codicon codicon-check"></i> Step ${stepNum} Already Applied`;
+                return;
+            }
+
+            stepBtn.disabled = true;
+            stepBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Applying Step ${stepNum}...`;
+
+            const resList = document.getElementById(`results-${messageId}`);
+            const progressContainer = document.getElementById(`progress-container-${messageId}`);
+            if (resList) resList.style.display = 'block';
+            if (progressContainer) progressContainer.style.display = 'block';
+
+            vscode.postMessage({ command: 'applyAllChanges', changes: stepChanges, messageId, undo: false });
+        };
+    });
 
     finalSegments.forEach(seg => {
             if (seg.type === 'plugin' && seg.plugin?.initialize) {
@@ -6235,6 +6343,8 @@ export function showBulkOperationsModal(files: any[]) {
         }
 
         const hasSelection = checkedCount > 0;
+        const launchBtn = document.getElementById('bulk-launch-discussion-btn') as HTMLButtonElement;
+        if (launchBtn) launchBtn.disabled = !hasSelection;
         if (removeBtn) removeBtn.disabled = !hasSelection;
         if (muteBtn) muteBtn.disabled = !hasSelection;
         if (unmuteBtn) unmuteBtn.disabled = !hasSelection;
@@ -6888,6 +6998,20 @@ export function showBulkOperationsModal(files: any[]) {
             const selected = Array.from(selectedPaths);
             if (selected.length === 0) return;
             vscode.postMessage({ command: 'bulkRemoveFiles', paths: selected });
+            close();
+        };
+    }
+
+    // Launch Discussion with Selected Files (Fast Mode)
+    const launchDiscBtn = document.getElementById('bulk-launch-discussion-btn') as HTMLButtonElement;
+    if (launchDiscBtn) {
+        launchDiscBtn.onclick = () => {
+            const selected = Array.from(selectedPaths);
+            if (selected.length === 0) return;
+            vscode.postMessage({
+                command: 'launchDiscussionWithSelectedFiles',
+                paths: selected
+            });
             close();
         };
     }
@@ -7757,6 +7881,7 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
     const totalCount = patches.length;
     if (totalCount === 0) return;
 
+    const isMultiSteps = applyAllBtn.classList.contains('apply-all-steps-btn');
     const excludedSet = state.excludedPatches?.[messageId] || new Set<string>();
     const validatedCount = patches.filter(p => p.isApplied).length;
     const pendingPatches = patches.filter(p => !p.isApplied);
@@ -7775,12 +7900,22 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
             applyAllBtn.innerHTML = `<span class="codicon codicon-circle-slash"></span> All Pending Changes Excluded (${excludedPendingCount})`;
         } else {
             applyAllBtn.disabled = false;
-            if (excludedPendingCount > 0) {
-                applyAllBtn.innerHTML = `<span class="codicon codicon-check"></span> Apply Selected Changes (${includedPending.length} of ${pendingPatches.length})`;
-            } else if (validatedCount > 0) {
-                applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Changes (${includedPending.length} of ${totalCount})`;
+            if (isMultiSteps) {
+                if (excludedPendingCount > 0) {
+                    applyAllBtn.innerHTML = `<span class="codicon codicon-check"></span> Apply Selected Steps (${includedPending.length} of ${pendingPatches.length})`;
+                } else if (validatedCount > 0) {
+                    applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Steps (${includedPending.length} of ${totalCount})`;
+                } else {
+                    applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply All Steps (${totalCount} ${fileWord})`;
+                }
             } else {
-                applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply ${totalCount === 1 ? 'Changes' : 'All Changes'} (${totalCount} ${fileWord})`;
+                if (excludedPendingCount > 0) {
+                    applyAllBtn.innerHTML = `<span class="codicon codicon-check"></span> Apply Selected Changes (${includedPending.length} of ${pendingPatches.length})`;
+                } else if (validatedCount > 0) {
+                    applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Changes (${includedPending.length} of ${totalCount})`;
+                } else {
+                    applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply ${totalCount === 1 ? 'Changes' : 'All Changes'} (${totalCount} ${fileWord})`;
+                }
             }
         }
     } else {
@@ -7789,14 +7924,210 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
         applyAllBtn.disabled = false;
         applyAllBtn.style.removeProperty('background-color');
         applyAllBtn.style.removeProperty('color');
-        applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo ${totalCount === 1 ? 'Changes' : 'All Changes'} (${totalCount} ${fileWord})`;
+        if (isMultiSteps) {
+            applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo All Steps (${totalCount} ${fileWord})`;
+        } else {
+            applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo ${totalCount === 1 ? 'Changes' : 'All Changes'} (${totalCount} ${fileWord})`;
+        }
+    }
+
+    // Update individual step buttons in the multi-step card
+    if (isMultiSteps) {
+        wrapper.querySelectorAll('.multistep-card-item').forEach((stepItem: any) => {
+            const stepBtn = stepItem.querySelector('.apply-single-step-btn') as HTMLButtonElement;
+            if (stepBtn) {
+                const stepFilesRaw = stepBtn.dataset.files;
+                let stepFiles: string[] = [];
+                try {
+                    stepFiles = JSON.parse(decodeURIComponent(stepFilesRaw || '[]'));
+                } catch {}
+                const normStepFiles = new Set(stepFiles.map(f => f.replace(/\\/g, '/').toLowerCase().trim()));
+                const stepPatches = patches.filter(p => {
+                    const normP = p.path.replace(/\\/g, '/').toLowerCase().trim();
+                    return normStepFiles.has(normP) || stepFiles.some(sf => {
+                        const normSf = sf.replace(/\\/g, '/').toLowerCase().trim();
+                        return normP === normSf || normP.endsWith('/' + normSf) || normSf.endsWith('/' + normP);
+                    });
+                });
+                const stepNum = stepBtn.dataset.step || '1';
+                const allStepDone = stepPatches.length > 0 && stepPatches.every(p => p.isApplied);
+                if (allStepDone) {
+                    stepBtn.classList.remove('secondary-btn');
+                    stepBtn.classList.add('applied');
+                    stepBtn.disabled = true;
+                    stepBtn.innerHTML = `<i class="codicon codicon-check"></i> Step ${stepNum} Applied`;
+                } else {
+                    stepBtn.classList.remove('applied');
+                    stepBtn.classList.add('secondary-btn');
+                    stepBtn.disabled = false;
+                    stepBtn.innerHTML = `<i class="codicon codicon-play"></i> Apply Step ${stepNum}`;
+                }
+            }
+        });
     }
 }
 
 
+function escapeHtml(str: string): string {
+    return (str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+export interface DetectedStep {
+    number: number;
+    title: string;
+    files: string[];
+}
+
+export interface MultiStepsDetectionResult {
+    isMultiSteps: boolean;
+    steps: DetectedStep[];
+}
+
 /**
- * Formats the entire plan history into a single Markdown string for debugging.
+ * Robustly detects multi-step updates across an assistant response.
+ * Identifies XML tags (<step>, <MultiSteps_TASK>) and Markdown step headers (### Step 1, Step 2, Phase 1, Part 1, etc.).
  */
+export function detectMultiStepsInContent(content: string): MultiStepsDetectionResult {
+    if (!content || typeof content !== 'string') {
+        return { isMultiSteps: false, steps: [] };
+    }
+
+    const stepsMap = new Map<number, { number: number; title: string; files: string[] }>();
+
+    // 1. Detect XML <step number="N"> or <step> blocks
+    const xmlStepRegex = /<step\b([^>]*)>([\s\S]*?)<\/step>/gi;
+    let sMatch: RegExpExecArray | null;
+    let stepCounter = 1;
+
+    while ((sMatch = xmlStepRegex.exec(content)) !== null) {
+        const attrStr = sMatch[1] || "";
+        const body = sMatch[2] || "";
+
+        const numMatch = attrStr.match(/number=["']?(\d+)["']?/i) || body.match(/<number>(\d+)<\/number>/i);
+        const stepNum = numMatch ? parseInt(numMatch[1], 10) : stepCounter++;
+
+        const titleMatch = attrStr.match(/(?:title|name)=["']([^"']+)["']/i) || body.match(/<(?:title|name|summary)>([^<]+)<\//i);
+        let title = titleMatch ? titleMatch[1].trim() : "";
+        if (!title) {
+            const instMatch = body.match(/<instructions>([\s\S]*?)<\/instructions>/i);
+            if (instMatch) {
+                title = instMatch[1].trim().split('\n')[0].replace(/<[^>]+>/g, '').trim().slice(0, 60);
+            }
+        }
+        if (!title) {
+            const firstLine = body.split('\n').map(l => l.replace(/<[^>]+>/g, '').trim()).find(l => l.length > 2);
+            title = firstLine ? firstLine.slice(0, 60) : `Step ${stepNum}`;
+        }
+
+        // Collect files inside this step
+        const files: string[] = [];
+        const filesMatch = body.match(/<(?:target_files|edit_files|files)>([\s\S]*?)<\/(?:target_files|edit_files|files)>/i);
+        if (filesMatch) {
+            filesMatch[1].split(/[\r\n,]+/).map(f => f.trim().replace(/^['"`]|['"`]$/g, '')).filter(Boolean).forEach(f => {
+                if (!files.includes(f) && isValidFilePath(f)) files.push(f);
+            });
+        }
+        const fileTags = body.match(/<file\s+([^>]*?)>/gi) || [];
+        fileTags.forEach(ft => {
+            const attrs = parseFileTagAttributes(ft);
+            if (attrs?.path && !files.includes(attrs.path)) files.push(attrs.path);
+        });
+
+        stepsMap.set(stepNum, { number: stepNum, title, files });
+    }
+
+    // 2. Detect Markdown Step / Phase / Subtask / Part headers if not already detected via XML
+    if (stepsMap.size < 2) {
+        const headerRegex = /(?:^|\n)[ \t]*(?:(#{1,4})\s+|\*{2}|\b)(?:Step|Phase|Part|Subtask|Étape|Paso|Schritt)\s*(\d+)[:\.\s\-–—*]+([^\n\r*]+)/gi;
+        let hMatch: RegExpExecArray | null;
+        const matches: { number: number; title: string; index: number }[] = [];
+
+        while ((hMatch = headerRegex.exec(content)) !== null) {
+            const num = parseInt(hMatch[2], 10);
+            let title = (hMatch[3] || "").replace(/[*_#`:]/g, '').trim();
+            if (!title) title = `Step ${num}`;
+            matches.push({ number: num, title, index: hMatch.index });
+        }
+
+        if (matches.length >= 2) {
+            stepsMap.clear();
+            for (let i = 0; i < matches.length; i++) {
+                const cur = matches[i];
+                const next = matches[i + 1];
+                const sectionText = content.substring(cur.index, next ? next.index : content.length);
+
+                const files: string[] = [];
+                const fileTags = sectionText.match(/<file\s+([^>]*?)>/gi) || [];
+                fileTags.forEach(ft => {
+                    const attrs = parseFileTagAttributes(ft);
+                    if (attrs?.path && !files.includes(attrs.path)) files.push(attrs.path);
+                });
+
+                // Also check fenced code blocks with file names in this section
+                const fenceMatches = sectionText.match(/```(?:language:|lang:)?(?:\w+)?:([^\n\r\s]+)/g) || [];
+                fenceMatches.forEach(fm => {
+                    const p = fm.split(':').pop()?.trim();
+                    if (p && isValidFilePath(p) && !files.includes(p)) files.push(p);
+                });
+
+                stepsMap.set(cur.number, { number: cur.number, title: cur.title, files });
+            }
+        }
+    }
+
+    // 3. Fallback: Check for <MultiSteps_TASK nb_steps="N"> containing step blocks
+    if (stepsMap.size < 2) {
+        const multiTaskMatch = content.match(/<MultiSteps_TASK\b[^>]*nb_steps=["']?(\d+)["']?[^>]*>([\s\S]*?)<\/MultiSteps_TASK>/i);
+        if (multiTaskMatch) {
+            const inner = multiTaskMatch[2];
+            const subRegex = /<step\b[^>]*number=["']?(\d+)["']?[^>]*>([\s\S]*?)<\/step>/gi;
+            let sm;
+            while ((sm = subRegex.exec(inner)) !== null) {
+                const num = parseInt(sm[1], 10);
+                const body = sm[2];
+                const filesMatch = body.match(/<(?:target_files|edit_files)>([\s\S]*?)<\/(?:target_files|edit_files)>/i);
+                const files = filesMatch ? filesMatch[1].split(/[\r\n,]+/).map(f => f.trim().replace(/^['"`]|['"`]$/g, '')).filter(Boolean) : [];
+                const instMatch = body.match(/<instructions>([\s\S]*?)<\/instructions>/i);
+                const title = instMatch ? instMatch[1].trim().split('\n')[0].slice(0, 60) : `Step ${num}`;
+                stepsMap.set(num, { number: num, title, files });
+            }
+        }
+    }
+
+    if (stepsMap.size < 2) {
+        return { isMultiSteps: false, steps: [] };
+    }
+
+    const sortedSteps = Array.from(stepsMap.values()).sort((a, b) => a.number - b.number);
+
+    // If step files were missing, populate from all file mutation tags in the document distributed across steps
+    const allFileTags = content.match(/<file\s+([^>]*?)>/gi) || [];
+    const allDiscoveredFiles: string[] = [];
+    allFileTags.forEach(ft => {
+        const attrs = parseFileTagAttributes(ft);
+        if (attrs?.path && !allDiscoveredFiles.includes(attrs.path)) allDiscoveredFiles.push(attrs.path);
+    });
+
+    const anyStepHasFiles = sortedSteps.some(s => s.files.length > 0);
+    if (!anyStepHasFiles && allDiscoveredFiles.length > 0) {
+        // Distribute files across steps or associate with matching step names
+        allDiscoveredFiles.forEach((f, idx) => {
+            const targetStep = sortedSteps[idx % sortedSteps.length];
+            targetStep.files.push(f);
+        });
+    }
+
+    return {
+        isMultiSteps: true,
+        steps: sortedSteps
+    };
+}
+
 function formatPlanForCopy(plan: any): string {
     let log = `# AGENT EXPERIENCE LOG\n\n`;
     log += `**OBJECTIVE:** ${plan.objective}\n\n`;

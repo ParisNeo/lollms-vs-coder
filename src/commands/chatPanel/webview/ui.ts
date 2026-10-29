@@ -2203,6 +2203,9 @@ export function updateBadges() {
             autoFix: false,
             autoBranch: false,
             maxFixRetries: 3,
+            autoSkillMode: false,
+            autoToolMode: false,
+            disableProjectContext: false,
             thinkingMode: false,
             forceFullCode: false,
             allowedFormats: { fullFile: true, insert: true, replace: true, delete: true },
@@ -2310,7 +2313,7 @@ export function updateBadges() {
         infraGroup.appendChild(badgeWrapper);
     }
 
-    // --- OPERATIONAL MODE GROUP (Fused Assistant / Agent) MOVED DIRECTLY NEXT TO MODEL/PERSONALITY ---
+    // --- OPERATIONAL MODE BADGE (Assistant / Agent) INSIDE PRIMARY INFRA GROUP ---
     const isAgent = caps.agentMode === true;
     const isAssistant = !isAgent;
 
@@ -2326,13 +2329,11 @@ export function updateBadges() {
         activeModeClass = 'active agent';
     }
 
-    const modeGroupDiv = document.createElement('div');
-    modeGroupDiv.className = 'badge-group';
-    modeGroupDiv.innerHTML = BadgesPresenter.renderOperationalModeBadge(activeModeClass, activeModeColor, activeModeLabel, activeModeTitle);
-    const operationalModeWrapper = modeGroupDiv.firstElementChild as HTMLElement;
+    const modeDiv = document.createElement('div');
+    modeDiv.innerHTML = BadgesPresenter.renderOperationalModeBadge(activeModeClass, activeModeColor, activeModeLabel, activeModeTitle);
+    const operationalModeWrapper = modeDiv.firstElementChild as HTMLElement;
     BadgesBinder.bindOperationalModeMenu(operationalModeWrapper, isAssistant, false, isAgent);
-    modeGroupDiv.appendChild(operationalModeWrapper);
-    container.appendChild(modeGroupDiv);
+    infraGroup.appendChild(operationalModeWrapper);
 
     // --- AGENT CRITICAL SPECIFIC PROFILE ---
     if (isAgent && state.agentProfiles && state.agentProfiles.length > 0) {
@@ -3649,7 +3650,7 @@ export const fileRepairStudioState = {
     isRunning: false,
     model: '',
     temperature: 0.2 as number | undefined,
-    reasoningEffort: 'medium' as 'none' | 'low' | 'medium' | 'high' | 'max'
+    reasoningEffort: 'none' as 'none' | 'low' | 'medium' | 'high' | 'max'
 };
 (window as any).fileRepairStudioState = fileRepairStudioState;
 
@@ -3659,11 +3660,49 @@ export function updateFileDiagnosticsUI(
     blockIndex?: number,
     blockId?: string,
     errorsCount: number = 0,
-    errors: FileDiagnosticError[] = []
+    errors: FileDiagnosticError[] = [],
+    warningsCount?: number
 ) {
     const normTarget = filePath.replace(/\\/g, '/').toLowerCase().trim();
 
-    // 1. Locate relevant card or row element
+    // Accurately separate critical compiler/linter errors from warnings
+    const realErrorsCount = typeof warningsCount === 'number'
+        ? errorsCount
+        : errors.filter((e: any) => e.severity === 0 || e.severity === 'Error').length;
+
+    const realWarningsCount = typeof warningsCount === 'number'
+        ? warningsCount
+        : errors.filter((e: any) => e.severity === 1 || e.severity === 'Warning').length;
+
+    const totalCount = realErrorsCount + realWarningsCount;
+
+    // Build distinct visual badges and icons for errors vs warnings
+    const hasCriticalErrors = realErrorsCount > 0;
+    const isWarningsOnly = !hasCriticalErrors && realWarningsCount > 0;
+
+    let rowBadgeHtml = '';
+    let cardBadgeHtml = '';
+    let tooltipTitle = '';
+    let badgeClass = 'code-action-btn file-repair-alert-btn';
+
+    if (hasCriticalErrors && realWarningsCount > 0) {
+        rowBadgeHtml = `<i class="codicon codicon-error" style="color:var(--vscode-charts-red)"></i> <span>${realErrorsCount} Err, ${realWarningsCount} Warn &middot; Studio</span>`;
+        cardBadgeHtml = `<i class="codicon codicon-error" style="color:var(--vscode-charts-red)"></i> <span>${realErrorsCount} Error${realErrorsCount > 1 ? 's' : ''}, ${realWarningsCount} Warning${realWarningsCount > 1 ? 's' : ''} &middot; Studio</span>`;
+        tooltipTitle = `${realErrorsCount} critical error(s) and ${realWarningsCount} warning(s) detected. Click to open in File Repair Studio tab.`;
+        badgeClass += ' has-errors';
+    } else if (hasCriticalErrors) {
+        rowBadgeHtml = `<i class="codicon codicon-error" style="color:var(--vscode-charts-red)"></i> <span>${realErrorsCount} Err &middot; Studio</span>`;
+        cardBadgeHtml = `<i class="codicon codicon-error" style="color:var(--vscode-charts-red)"></i> <span>${realErrorsCount} Error${realErrorsCount > 1 ? 's' : ''} &middot; Studio</span>`;
+        tooltipTitle = `${realErrorsCount} critical error(s) detected. Click to open in File Repair Studio tab.`;
+        badgeClass += ' has-errors';
+    } else if (isWarningsOnly) {
+        rowBadgeHtml = `<i class="codicon codicon-warning" style="color:var(--vscode-charts-yellow, #cca700)"></i> <span style="color:var(--vscode-charts-yellow, #cca700)">${realWarningsCount} Warn &middot; Studio</span>`;
+        cardBadgeHtml = `<i class="codicon codicon-warning" style="color:var(--vscode-charts-yellow, #cca700)"></i> <span style="color:var(--vscode-charts-yellow, #cca700)">${realWarningsCount} Warning${realWarningsCount > 1 ? 's' : ''} &middot; Studio</span>`;
+        tooltipTitle = `${realWarningsCount} warning(s) detected (0 critical errors). Click to open in File Repair Studio tab.`;
+        badgeClass += ' has-warnings-only';
+    }
+
+    // 1. Locate relevant card or block element
     const cards = Array.from(document.querySelectorAll('.file-mutation-card, details.code-collapsible')) as HTMLElement[];
     cards.forEach(card => {
         const cardPath = (card.dataset.path || '').replace(/\\/g, '/').toLowerCase().trim();
@@ -3673,10 +3712,9 @@ export function updateFileDiagnosticsUI(
             const actions = card.querySelector('.code-actions');
             let errorBtn = card.querySelector('.file-repair-alert-btn') as HTMLElement;
 
-            if (errorsCount > 0) {
+            if (totalCount > 0) {
                 if (!errorBtn && actions) {
                     errorBtn = document.createElement('button');
-                    errorBtn.className = 'code-action-btn file-repair-alert-btn';
                     errorBtn.setAttribute('data-filepath', filePath);
                     if (messageId) errorBtn.setAttribute('data-message-id', messageId);
                     if (blockIndex !== undefined) errorBtn.setAttribute('data-block-index', String(blockIndex));
@@ -3684,8 +3722,16 @@ export function updateFileDiagnosticsUI(
                     actions.insertBefore(errorBtn, actions.firstChild);
                 }
                 if (errorBtn) {
-                    errorBtn.innerHTML = `<i class="codicon codicon-warning" style="color:var(--vscode-charts-red)"></i> <span>${errorsCount} Error${errorsCount > 1 ? 's' : ''} &middot; Fix in Studio Tab</span>`;
-                    errorBtn.title = `${errorsCount} error(s) detected on disk after applying. Click to open in File Repair Studio tab.`;
+                    errorBtn.className = badgeClass;
+                    errorBtn.innerHTML = cardBadgeHtml;
+                    errorBtn.title = tooltipTitle;
+                    if (isWarningsOnly) {
+                        errorBtn.style.borderColor = 'rgba(204, 167, 0, 0.4)';
+                        errorBtn.style.color = 'var(--vscode-charts-yellow, #cca700)';
+                    } else {
+                        errorBtn.style.borderColor = '';
+                        errorBtn.style.color = '';
+                    }
                     (errorBtn as any)._errors = errors;
                     errorBtn.onclick = (e: MouseEvent) => {
                         e.preventDefault();
@@ -3709,16 +3755,24 @@ export function updateFileDiagnosticsUI(
         const rowPath = (row.querySelector('.row-path')?.textContent || '').split('(')[0].trim().replace(/\\/g, '/').toLowerCase();
         if (rowPath === normTarget || rowPath.endsWith('/' + normTarget) || normTarget.endsWith('/' + rowPath)) {
             let rowAlertBtn = row.querySelector('.file-repair-alert-btn') as HTMLElement;
-            if (errorsCount > 0) {
+            if (totalCount > 0) {
                 if (!rowAlertBtn) {
                     rowAlertBtn = document.createElement('button');
-                    rowAlertBtn.className = 'code-action-btn file-repair-alert-btn';
                     rowAlertBtn.setAttribute('data-filepath', filePath);
                     if (messageId) rowAlertBtn.setAttribute('data-message-id', messageId);
                     if (blockIndex !== undefined) rowAlertBtn.setAttribute('data-block-index', String(blockIndex));
                     row.appendChild(rowAlertBtn);
                 }
-                rowAlertBtn.innerHTML = `<i class="codicon codicon-warning"></i> <span>${errorsCount} Err &middot; Studio</span>`;
+                rowAlertBtn.className = badgeClass;
+                rowAlertBtn.innerHTML = rowBadgeHtml;
+                rowAlertBtn.title = tooltipTitle;
+                if (isWarningsOnly) {
+                    rowAlertBtn.style.borderColor = 'rgba(204, 167, 0, 0.4)';
+                    rowAlertBtn.style.color = 'var(--vscode-charts-yellow, #cca700)';
+                } else {
+                    rowAlertBtn.style.borderColor = '';
+                    rowAlertBtn.style.color = '';
+                }
                 (rowAlertBtn as any)._errors = errors;
                 rowAlertBtn.onclick = (e: MouseEvent) => {
                     e.preventDefault();
@@ -3758,6 +3812,9 @@ export function renderRepairErrorsList() {
     const errors = fileRepairStudioState.errors || [];
     const count = errors.length;
 
+    const criticalErrorsCount = errors.filter((e: any) => (e.severity === 0 || e.severity === 'Error') && !e.isFixed).length;
+    const warningsCount = errors.filter((e: any) => (e.severity === 1 || e.severity === 'Warning') && !e.isFixed).length;
+
     // By default, if selectedErrorIndexes is uninitialized or invalid, select all errors
     if (!fileRepairStudioState.selectedErrorIndexes || fileRepairStudioState.selectedErrorIndexes.size === 0) {
         fileRepairStudioState.selectedErrorIndexes = new Set<number>(errors.map((_, i) => i));
@@ -3784,17 +3841,43 @@ export function renderRepairErrorsList() {
 
     if (topStats) {
         const fileName = (fileRepairStudioState.filePath || 'File').split(/[\\/]/).pop() || 'File';
-        topStats.textContent = `${fileName} · ${count} Error${count === 1 ? '' : 's'}`;
-        topStats.className = count === 0 ? 'file-token-badge weight-light' : 'file-token-badge weight-heavy';
+        if (count === 0) {
+            topStats.textContent = `${fileName} · Clean (0 Issues)`;
+            topStats.className = 'file-token-badge weight-light';
+        } else if (criticalErrorsCount > 0 && warningsCount > 0) {
+            topStats.textContent = `${fileName} · ${criticalErrorsCount} Error${criticalErrorsCount > 1 ? 's' : ''}, ${warningsCount} Warn`;
+            topStats.className = 'file-token-badge weight-heavy';
+        } else if (criticalErrorsCount > 0) {
+            topStats.textContent = `${fileName} · ${criticalErrorsCount} Error${criticalErrorsCount > 1 ? 's' : ''}`;
+            topStats.className = 'file-token-badge weight-heavy';
+        } else {
+            topStats.textContent = `${fileName} · ${warningsCount} Warning${warningsCount > 1 ? 's' : ''} (0 Errors)`;
+            topStats.className = 'file-token-badge weight-medium';
+        }
     }
     if (counterBadge) {
-        counterBadge.textContent = count === 0 ? 'Clean (0 Errors)' : `${count} Error${count === 1 ? '' : 's'}`;
-        counterBadge.className = count === 0 ? 'token-mini-badge weight-light' : 'token-mini-badge weight-heavy';
+        if (count === 0) {
+            counterBadge.textContent = 'Clean (0 Issues)';
+            counterBadge.className = 'token-mini-badge weight-light';
+        } else if (criticalErrorsCount > 0 && warningsCount > 0) {
+            counterBadge.textContent = `${criticalErrorsCount} Err, ${warningsCount} Warn`;
+            counterBadge.className = 'token-mini-badge weight-heavy';
+        } else if (criticalErrorsCount > 0) {
+            counterBadge.textContent = `${criticalErrorsCount} Error${criticalErrorsCount > 1 ? 's' : ''}`;
+            counterBadge.className = 'token-mini-badge weight-heavy';
+        } else {
+            counterBadge.textContent = `${warningsCount} Warning${warningsCount > 1 ? 's' : ''} (0 Errors)`;
+            counterBadge.className = 'token-mini-badge weight-medium';
+        }
     }
     if (footerSummary) {
-        footerSummary.textContent = count === 0 
-            ? '🎉 All errors have been resolved! Click Accept & Keep File to close.' 
-            : `${count} error(s) remaining (${selectedCount} targeted for next fix). You can accept at any time.`;
+        if (count === 0) {
+            footerSummary.textContent = '🎉 All diagnostics have been resolved! Click Accept & Keep File to close.';
+        } else if (criticalErrorsCount === 0) {
+            footerSummary.textContent = `${warningsCount} warning(s) remaining (0 critical errors). You can accept at any time.`;
+        } else {
+            footerSummary.textContent = `${criticalErrorsCount} error(s) and ${warningsCount} warning(s) remaining (${selectedCount} targeted for next fix). You can accept at any time.`;
+        }
     }
 
     if (count === 0) {
@@ -3810,12 +3893,50 @@ export function renderRepairErrorsList() {
 
     listEl.innerHTML = errors.map((e, idx) => {
         const isSelected = fileRepairStudioState.selectedErrorIndexes.has(idx);
+        const isFixed = (e as any).isFixed === true;
+
+        const copyPayload = `File: ${fileRepairStudioState.filePath}\nLine ${e.line}:${e.character}\nError: ${e.message}${e.source || e.code ? `\nSource: ${e.source || ''}${e.code ? ' (' + e.code + ')' : ''}` : ''}${e.snippet ? `\n\nCode snippet:\n${e.snippet}` : ''}`;
+
+        if (isFixed) {
+            return `
+            <div class="repair-error-card fixed" data-idx="${idx}" data-line="${e.line}" style="cursor: pointer; border-left: 3.5px solid var(--vscode-charts-green); background: rgba(46, 204, 113, 0.08); border-color: rgba(46, 204, 113, 0.35);">
+                <div class="repair-error-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="fixed-check-icon" style="color:white; background:var(--vscode-charts-green); border-radius:3px; width:16px; height:16px; display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:bold;">
+                            <i class="codicon codicon-check"></i>
+                        </span>
+                        <span class="error-line-badge" style="background:var(--vscode-charts-green); color:white;">Line ${e.line}:${e.character}</span>
+                        <span class="file-token-badge weight-light" style="border-color:var(--vscode-charts-green); color:var(--vscode-charts-green); font-size:9px; font-weight:bold;"><i class="codicon codicon-pass-filled"></i> FIXED</span>
+                        <button type="button" class="code-action-btn secondary-btn goto-error-btn" data-line="${e.line}" data-character="${e.character}" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Go to line in editor">
+                            <i class="codicon codicon-go-to-file"></i> Goto
+                        </button>
+                        <button type="button" class="code-action-btn secondary-btn copy-error-btn" data-copy-text="${encodeURIComponent(copyPayload)}" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Copy error content for external LLM">
+                            <i class="codicon codicon-copy"></i> Copy
+                        </button>
+                    </div>
+                    <span class="error-source" style="color:var(--vscode-charts-green); font-weight:bold;"><i class="codicon codicon-check"></i> Resolved</span>
+                </div>
+                <div class="repair-error-msg" style="margin-top: 4px;">
+                    <span style="text-decoration:line-through; opacity:0.7;">${sanitizer.sanitize(e.message)}</span>
+                    <span style="color:var(--vscode-charts-green); font-weight:bold; font-size:10.5px; margin-left:6px;">✓ Clean</span>
+                </div>
+                ${e.snippet ? `<div class="repair-error-snippet" style="border-color:rgba(46,204,113,0.3);"><code>${sanitizer.sanitize(e.snippet)}</code></div>` : ''}
+            </div>
+            `;
+        }
+
         return `
         <div class="repair-error-card ${isSelected ? 'targeted-error' : 'unselected-error'}" data-idx="${idx}" data-line="${e.line}" style="cursor: pointer; opacity: ${isSelected ? '1' : '0.55'}; transition: opacity 0.15s, border-color 0.15s;">
             <div class="repair-error-header" style="display: flex; justify-content: space-between; align-items: center;">
                 <div style="display: flex; align-items: center; gap: 8px;">
                     <input type="checkbox" class="repair-error-checkbox" data-idx="${idx}" ${isSelected ? 'checked' : ''} style="margin: 0; cursor: pointer;">
                     <span class="error-line-badge">Line ${e.line}:${e.character}</span>
+                    <button type="button" class="code-action-btn secondary-btn goto-error-btn" data-line="${e.line}" data-character="${e.character}" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Go to line in editor">
+                        <i class="codicon codicon-go-to-file"></i> Goto
+                    </button>
+                    <button type="button" class="code-action-btn secondary-btn copy-error-btn" data-copy-text="${encodeURIComponent(copyPayload)}" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Copy error content for external LLM">
+                        <i class="codicon codicon-copy"></i> Copy
+                    </button>
                 </div>
                 <span class="error-source">${sanitizer.sanitize(e.source || e.code || 'Diagnostics')}</span>
             </div>
@@ -3826,12 +3947,30 @@ export function renderRepairErrorsList() {
     }).join('');
 
     // Attach row & checkbox listeners for interactive toggling
+    listEl.querySelectorAll('.copy-error-btn').forEach((btn: any) => {
+        btn.onclick = (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const text = decodeURIComponent(btn.dataset.copyText || '');
+            vscode.postMessage({ command: 'copyToClipboard', text });
+            try { navigator.clipboard.writeText(text); } catch {}
+            const origHtml = btn.innerHTML;
+            btn.innerHTML = '<i class="codicon codicon-check"></i> Copied!';
+            btn.style.color = 'var(--vscode-charts-green)';
+            setTimeout(() => {
+                btn.innerHTML = origHtml;
+                btn.style.color = '';
+            }, 1500);
+        };
+    });
+
     listEl.querySelectorAll('.repair-error-card').forEach((card: any) => {
         const idx = parseInt(card.dataset.idx, 10);
         const cb = card.querySelector('.repair-error-checkbox') as HTMLInputElement | null;
+        const gotoBtn = card.querySelector('.goto-error-btn') as HTMLElement | null;
 
         card.onclick = (e: MouseEvent) => {
-            if ((e.target as HTMLElement).tagName === 'INPUT') return;
+            if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).closest('button')) return;
             e.stopPropagation();
             if (fileRepairStudioState.selectedErrorIndexes.has(idx)) {
                 fileRepairStudioState.selectedErrorIndexes.delete(idx);
@@ -3840,6 +3979,16 @@ export function renderRepairErrorsList() {
             }
             renderRepairErrorsList();
         };
+
+        if (gotoBtn) {
+            gotoBtn.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const l = parseInt(gotoBtn.dataset.line || '1', 10);
+                const c = parseInt(gotoBtn.dataset.character || '1', 10);
+                vscode.postMessage({ command: 'openFile', path: fileRepairStudioState.filePath, line: l, character: c });
+            };
+        }
 
         if (cb) {
             cb.onchange = (e: Event) => {
@@ -3888,6 +4037,88 @@ export function renderRepairErrorsList() {
                 }
             });
             fileRepairStudioState.selectedErrorIndexes = inverted;
+            renderRepairErrorsList();
+        };
+    }
+
+    const getErrorCategory = (err: any): 'critical' | 'type' | 'import' | 'warning' | 'cosmetic' => {
+        if (err.criticality) return err.criticality;
+        const msg = (err.message || '').toLowerCase();
+        const isWarning = err.severity === 1 || err.severity === 'Warning' || /warning/i.test(err.source || '') || /warning/i.test(msg);
+        if (isWarning) return 'warning';
+
+        if (/syntax|parse|expected|unterminated|unexpected token|cannot find name|is not defined|referenceerror|invalid/i.test(msg)) {
+            return 'critical';
+        }
+        if (/type|assignable|property|does not exist on type|expected \d+ argument|incompatible|signature|mismatch/i.test(msg)) {
+            return 'type';
+        }
+        if (/cannot find module|module not found|import|require|package|unresolved/i.test(msg)) {
+            return 'import';
+        }
+        return 'critical';
+    };
+
+    const selectCriticalBtn = document.getElementById('repair-select-critical-btn');
+    if (selectCriticalBtn) {
+        selectCriticalBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const critSet = new Set<number>();
+            errors.forEach((err, i) => {
+                if (getErrorCategory(err) === 'critical') {
+                    critSet.add(i);
+                }
+            });
+            fileRepairStudioState.selectedErrorIndexes = critSet;
+            renderRepairErrorsList();
+        };
+    }
+
+    const selectTypesBtn = document.getElementById('repair-select-types-btn');
+    if (selectTypesBtn) {
+        selectTypesBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const typeSet = new Set<number>();
+            errors.forEach((err, i) => {
+                if (getErrorCategory(err) === 'type') {
+                    typeSet.add(i);
+                }
+            });
+            fileRepairStudioState.selectedErrorIndexes = typeSet;
+            renderRepairErrorsList();
+        };
+    }
+
+    const selectImportsBtn = document.getElementById('repair-select-imports-btn');
+    if (selectImportsBtn) {
+        selectImportsBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const importSet = new Set<number>();
+            errors.forEach((err, i) => {
+                if (getErrorCategory(err) === 'import') {
+                    importSet.add(i);
+                }
+            });
+            fileRepairStudioState.selectedErrorIndexes = importSet;
+            renderRepairErrorsList();
+        };
+    }
+
+    const selectWarningsBtn = document.getElementById('repair-select-warnings-btn');
+    if (selectWarningsBtn) {
+        selectWarningsBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const warnSet = new Set<number>();
+            errors.forEach((err, i) => {
+                if (getErrorCategory(err) === 'warning') {
+                    warnSet.add(i);
+                }
+            });
+            fileRepairStudioState.selectedErrorIndexes = warnSet;
             renderRepairErrorsList();
         };
     }
@@ -3974,6 +4205,7 @@ export function appendRepairStreamMessage(role: 'user' | 'assistant' | 'system',
 (window as any).appendRepairStreamMessage = appendRepairStreamMessage;
 
 export function streamRepairChunk(round: number, maxRounds: number, chunk: string, fullText: string, messageId: string) {
+    if (!fileRepairStudioState.isRunning) return;
     const container = document.getElementById('repair-chat-messages');
     if (!container) return;
 
@@ -4026,6 +4258,26 @@ export function streamRepairChunk(round: number, maxRounds: number, chunk: strin
 }
 (window as any).streamRepairChunk = streamRepairChunk;
 
+export function populateRepairModelSelect(models?: any[], selectedModel?: string) {
+    const select = document.getElementById('repair-model-select') as HTMLSelectElement | null;
+    if (!select) return;
+    const modelList = (models && models.length > 0) ? models : ((state as any).models || []);
+    const targetSel = selectedModel || fileRepairStudioState.model || state.currentModelName || '';
+
+    if (modelList.length > 0) {
+        select.innerHTML = modelList.map((m: any) => {
+            const id = m.id || m;
+            const name = m.name || id;
+            const isMatch = id === targetSel || (targetSel && (id.endsWith('::' + targetSel) || targetSel.endsWith('::' + id)));
+            return `<option value="${id}" ${isMatch ? 'selected' : ''}>${name}</option>`;
+        }).join('');
+    } else if (targetSel) {
+        select.innerHTML = `<option value="${targetSel}" selected>${targetSel}</option>`;
+    } else {
+        select.innerHTML = `<option value="default" selected>Default Model</option>`;
+    }
+}
+
 export function openFileRepairStudio(
     filePath: string,
     errors: FileDiagnosticError[] = [],
@@ -4033,7 +4285,12 @@ export function openFileRepairStudio(
     blockIndex?: number,
     blockId?: string
 ) {
-    // Open in dedicated editor tab
+    fileRepairStudioState.filePath = filePath;
+    fileRepairStudioState.errors = errors;
+    if (errors.length === 1) {
+        fileRepairStudioState.selectedErrorIndexes = new Set<number>([0]);
+    }
+    populateRepairModelSelect();
     vscode.postMessage({
         command: 'openFileRepairStudio',
         filePath,
@@ -4075,11 +4332,16 @@ export function triggerRepairPass(promptText?: string) {
     const modelSelect = document.getElementById('repair-model-select') as HTMLSelectElement;
     const tempSelect = document.getElementById('repair-temp-select') as HTMLSelectElement;
     const effortSelect = document.getElementById('repair-effort-select') as HTMLSelectElement;
+    const roundsInput = document.getElementById('repair-max-rounds-input') as HTMLInputElement | null;
 
     const selectedModel = modelSelect?.value || fileRepairStudioState.model || '';
     const tempVal = tempSelect?.value;
     const parsedTemp = (tempVal === 'auto' || !tempVal) ? undefined : parseFloat(tempVal);
-    const selectedEffort = (effortSelect?.value || fileRepairStudioState.reasoningEffort || 'medium') as any;
+    const selectedEffort = (effortSelect?.value || fileRepairStudioState.reasoningEffort || 'none') as any;
+    const customMaxRounds = roundsInput ? parseInt(roundsInput.value, 10) : undefined;
+    if (customMaxRounds && !isNaN(customMaxRounds) && customMaxRounds > 0) {
+        fileRepairStudioState.maxRounds = customMaxRounds;
+    }
 
     vscode.postMessage({
         command: 'runFileRepairPass',
@@ -4108,7 +4370,8 @@ export const governorStudioState = {
     initialPrompt: '',
     customCapacity: undefined as number | undefined,
     targetPercent: 70,
-    reasoningEffort: 'none' as 'none' | 'low' | 'medium' | 'high' | 'max'
+    reasoningEffort: 'none' as 'none' | 'low' | 'medium' | 'high' | 'max',
+    ignoreContextSize: false
 };
 (window as any).governorStudioState = governorStudioState;
 
@@ -4186,6 +4449,7 @@ export function renderGovernorFileList() {
     if (tokenLoadLabel) tokenLoadLabel.textContent = `~${activeTokStr} tok active`;
 
     // ── 📊 CONTEXT PROGRESS BAR & CAPACITY HUD INTEGRATION ──────────────────
+    const isIgnoreLimit = governorStudioState.ignoreContextSize === true;
     const defaultCapacity = getContextCapacity();
     const capacity = (typeof governorStudioState.customCapacity === 'number' && governorStudioState.customCapacity > 0)
         ? governorStudioState.customCapacity
@@ -4193,24 +4457,29 @@ export function renderGovernorFileList() {
     const targetPct = (typeof governorStudioState.targetPercent === 'number' && governorStudioState.targetPercent > 0)
         ? governorStudioState.targetPercent
         : (state.capabilities?.contextGovernorTargetThreshold ?? 70);
-    const targetBudget = Math.round(capacity * (targetPct / 100));
+    const targetBudget = isIgnoreLimit ? 100000000 : Math.round(capacity * (targetPct / 100));
     const targetBudgetStr = targetBudget >= 1000 ? `${(targetBudget / 1000).toFixed(1)}k` : `${targetBudget}`;
-    const capacityStr = capacity >= 1000 ? `${(capacity / 1000).toFixed(0)}k` : `${capacity}`;
+    const capacityStr = isIgnoreLimit ? 'Unlimited' : (capacity >= 1000 ? `${(capacity / 1000).toFixed(0)}k` : `${capacity}`);
 
     const pct = capacity > 0 ? (activeTokens / capacity) * 100 : 0;
-    const clampedPct = Math.min(100, Math.max(0, pct));
+    const clampedPct = isIgnoreLimit ? Math.min(100, (activeTokens / 300000) * 100) : Math.min(100, Math.max(0, pct));
 
     const loadDetailEl = document.getElementById('gov-context-load-detail');
     if (loadDetailEl) {
         let sizeFormatted = `${activeBytes} B`;
         if (activeBytes >= 1024 * 1024) sizeFormatted = `${(activeBytes / (1024 * 1024)).toFixed(1)} MB`;
         else if (activeBytes >= 1024) sizeFormatted = `${(activeBytes / 1024).toFixed(1)} KB`;
-        loadDetailEl.textContent = `${activeTokens.toLocaleString()} / ${capacity.toLocaleString()} tokens (${pct.toFixed(1)}% · ${sizeFormatted})`;
+        loadDetailEl.textContent = isIgnoreLimit
+            ? `${activeTokens.toLocaleString()} tokens active · ${sizeFormatted} (Context Limit Ignored)`
+            : `${activeTokens.toLocaleString()} / ${capacity.toLocaleString()} tokens (${pct.toFixed(1)}% · ${sizeFormatted})`;
     }
 
     const budgetBadge = document.getElementById('gov-context-budget-badge');
     if (budgetBadge) {
-        if (pct > 95) {
+        if (isIgnoreLimit) {
+            budgetBadge.textContent = 'Unlimited (Ignored)';
+            budgetBadge.className = 'token-mini-badge weight-light';
+        } else if (pct > 95) {
             budgetBadge.textContent = 'Overflow (>95%)';
             budgetBadge.className = 'token-mini-badge weight-heavy';
         } else if (pct > targetPct) {
@@ -4224,12 +4493,14 @@ export function renderGovernorFileList() {
 
     const targetLabel = document.getElementById('gov-target-budget-label');
     if (targetLabel) {
-        targetLabel.textContent = `Target Budget: ${targetPct}% (~${targetBudgetStr} tok)`;
+        targetLabel.textContent = isIgnoreLimit
+            ? 'Target Budget: Unlimited (All Task Files Allowed)'
+            : `Target Budget: ${targetPct}% (~${targetBudgetStr} tok)`;
     }
 
     const capLabel = document.getElementById('gov-context-capacity-label');
     if (capLabel) {
-        capLabel.textContent = `Capacity: ${capacityStr} tok`;
+        capLabel.textContent = isIgnoreLimit ? 'Capacity: Ignored' : `Capacity: ${capacityStr} tok`;
     }
 
     const progressBar = document.getElementById('gov-context-progress-bar');
@@ -4248,7 +4519,9 @@ export function renderGovernorFileList() {
 
     const footerSummary = document.getElementById('gov-footer-summary');
     if (footerSummary) {
-        footerSummary.textContent = `${activeCount} files will be loaded with content [C], ${mutedCount} kept in tree at 0 tokens [M].`;
+        footerSummary.textContent = isIgnoreLimit
+            ? `${activeCount} files loaded with content [C] (Context limit ignored for export/manual curation).`
+            : `${activeCount} files will be loaded with content [C], ${mutedCount} kept in tree at 0 tokens [M].`;
     }
 }
 (window as any).renderGovernorFileList = renderGovernorFileList;
@@ -4283,7 +4556,6 @@ export function streamGovernorChunk(round: number, maxRounds: number, chunk: str
 
     const contentArea = bubble.querySelector('.gov-bubble-stream-content') as HTMLElement;
     if (contentArea) {
-        const { processThinkTags } = require('./messageRenderer.js');
         const thinkResult = processThinkTags(fullText);
         let htmlOut = "";
 
@@ -4491,6 +4763,7 @@ export function openGovernorFilterModal(initialPrompt?: string) {
     governorStudioState.searchFilter = '';
     governorStudioState.history = [];
     governorStudioState.initialPrompt = initialPrompt || '';
+    governorStudioState.ignoreContextSize = state.capabilities?.ignoreContextSize === true;
 
     // Collect candidate files
     const allFiles: (string | { path: string, bytes?: number, tokens?: number })[] = state.lastContextData?.files || [];
@@ -4585,6 +4858,11 @@ export function openGovernorFilterModal(initialPrompt?: string) {
         effortSelect.value = governorStudioState.reasoningEffort || 'high';
     }
 
+    const ignoreCheck = document.getElementById('gov-ignore-context-size') as HTMLInputElement;
+    if (ignoreCheck) {
+        ignoreCheck.checked = governorStudioState.ignoreContextSize;
+    }
+
     renderGovernorFileList();
 
     modal.style.setProperty('z-index', '110000', 'important');
@@ -4600,6 +4878,7 @@ export interface WizardCandidateFile {
     dirName: string;
     tokens: number;
     bytes: number;
+    mtime: number;
 }
 
 export let wizardCandidateFiles: WizardCandidateFile[] = [];
@@ -4788,7 +5067,28 @@ export function renderWizardFileList(searchQuery: string = '') {
         return;
     }
 
-    listEl.innerHTML = filtered.map(f => {
+    const sortOrder = (state as any).wizardFileSortOrder || (document.getElementById('wizard-files-sort-select') as HTMLSelectElement)?.value || 'visible-first';
+
+    // Synchronize select and cycle button icon
+    const sortSelect = document.getElementById('wizard-files-sort-select') as HTMLSelectElement;
+    if (sortSelect && sortSelect.value !== sortOrder) {
+        sortSelect.value = sortOrder;
+    }
+    const iconEl = document.getElementById('wizard-files-sort-icon');
+    if (iconEl) {
+        const iconMap: Record<string, string> = {
+            'tree': 'codicon-folder-opened',
+            'visible-first': 'codicon-eye',
+            'muted-first': 'codicon-eye-closed',
+            'heavy-to-light': 'codicon-graph-line',
+            'light-to-heavy': 'codicon-graph-line',
+            'name': 'codicon-sort-alphabetically',
+            'modified': 'codicon-history'
+        };
+        iconEl.className = `codicon ${iconMap[sortOrder] || 'codicon-eye'}`;
+    }
+
+    const renderFileRow = (f: WizardCandidateFile) => {
         const isMuted = wizardMutedSet.has(f.path.toLowerCase().trim());
         const tokStr = f.tokens >= 1000 ? `${(f.tokens / 1000).toFixed(1)}k` : `${f.tokens}`;
         const icon = isMuted ? 'codicon-eye-closed' : 'codicon-check';
@@ -4814,8 +5114,185 @@ export function renderWizardFileList(searchQuery: string = '') {
                 </button>
             </div>
         </div>`;
-    }).join('');
+    };
 
+    // ── 1. BY FOLDER (TREE VIEW) ──────────────────────────────────────────
+    if (sortOrder === 'tree') {
+        interface WizardTreeDir {
+            name: string;
+            fullPath: string;
+            subDirs: Map<string, WizardTreeDir>;
+            files: WizardCandidateFile[];
+        }
+
+        const rootDir: WizardTreeDir = {
+            name: '',
+            fullPath: '',
+            subDirs: new Map(),
+            files: []
+        };
+
+        filtered.forEach(item => {
+            const parts = item.path.split('/');
+            if (parts.length === 1) {
+                rootDir.files.push(item);
+            } else {
+                let curr = rootDir;
+                for (let i = 0; i < parts.length - 1; i++) {
+                    const seg = parts[i];
+                    if (!curr.subDirs.has(seg)) {
+                        curr.subDirs.set(seg, {
+                            name: seg,
+                            fullPath: parts.slice(0, i + 1).join('/'),
+                            subDirs: new Map(),
+                            files: []
+                        });
+                    }
+                    curr = curr.subDirs.get(seg)!;
+                }
+                curr.files.push(item);
+            }
+        });
+
+        const renderTreeDir = (dir: WizardTreeDir): string => {
+            let html = '';
+            const sortedSubDirs = Array.from(dir.subDirs.values()).sort((a, b) => a.name.localeCompare(b.name));
+
+            sortedSubDirs.forEach(sub => {
+                const getAllSubFiles = (d: WizardTreeDir): WizardCandidateFile[] => {
+                    return [...d.files, ...Array.from(d.subDirs.values()).flatMap(getAllSubFiles)];
+                };
+                const allSubFiles = getAllSubFiles(sub);
+                const totalTokens = allSubFiles.reduce((sum, f) => sum + f.tokens, 0);
+                const tokDisplay = totalTokens >= 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : `${totalTokens}`;
+
+                const subPaths = allSubFiles.map(f => f.path);
+                const mutedCount = allSubFiles.filter(f => wizardMutedSet.has(f.path.toLowerCase().trim())).length;
+                const visibleCount = allSubFiles.length - mutedCount;
+                const isAllMuted = allSubFiles.length > 0 && mutedCount === allSubFiles.length;
+                const isSomeMuted = mutedCount > 0 && !isAllMuted;
+
+                const folderMuteClass = isAllMuted ? 'is-muted' : (isSomeMuted ? 'is-partially-muted' : 'is-active');
+                const folderMuteIcon = isAllMuted ? 'codicon-eye-closed' : 'codicon-eye';
+                const folderAction = isAllMuted || isSomeMuted ? 'unmute' : 'mute';
+                const folderMuteTitle = isAllMuted 
+                    ? `All ${allSubFiles.length} files muted in "${sub.name}" (Click to reveal all)`
+                    : (isSomeMuted
+                        ? `${visibleCount} of ${allSubFiles.length} visible (${mutedCount} muted) in "${sub.name}". Click to reveal all.`
+                        : `All ${allSubFiles.length} files visible in "${sub.name}" (Click to mute all)`);
+
+                const encodedSubPaths = encodeURIComponent(JSON.stringify(subPaths));
+                const hasSubfolders = sub.subDirs.size > 0;
+
+                html += `
+                <details class="context-tree-folder ${isAllMuted ? 'folder-muted' : (isSomeMuted ? 'folder-partially-muted' : '')}" open style="margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; background: rgba(0,0,0,0.06);" data-folder="${sub.fullPath}">
+                    <summary style="padding: 3px 6px; cursor: pointer; font-size: 11px; font-weight: 700; display: flex; align-items: center; gap: 6px; user-select: none; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 3px;">
+                        <button type="button" class="toggle-mute-folder-btn wizard-folder-mute-btn ${folderMuteClass}" data-paths="${encodedSubPaths}" data-action="${folderAction}" title="${folderMuteTitle}" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center;">
+                            <span class="codicon ${folderMuteIcon}"></span>
+                        </button>
+                        ${hasSubfolders ? `
+                        <button type="button" class="collapse-folder-children-btn wizard-collapse-folder-btn" data-folder="${sub.fullPath}" title="Collapse/Expand child folders in ${sub.name}" style="background: transparent; border: none; color: var(--vscode-icon-foreground); padding: 1px 3px; border-radius: 3px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; opacity: 0.75; flex-shrink: 0;">
+                            <span class="codicon codicon-collapse-all" style="font-size: 12px;"></span>
+                        </button>` : ''}
+                        <span class="codicon codicon-folder"></span>
+                        <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; ${isAllMuted ? 'text-decoration: line-through; opacity: 0.75;' : ''}">${sub.name}</span>
+                        <span style="font-size: 9px; opacity: 0.6; font-weight: normal;">${allSubFiles.length} file${allSubFiles.length === 1 ? '' : 's'}${isSomeMuted ? ` (${mutedCount} muted)` : ''}</span>
+                        <span class="file-token-badge ${isAllMuted ? 'weight-muted' : 'weight-light'}">${isAllMuted ? `~${tokDisplay} tok [MUTED]` : `~${tokDisplay} tok`}</span>
+                    </summary>
+                    <div class="context-tree-folder-body" style="padding: 4px 2px 4px 8px; border-left: 1px dashed var(--vscode-tree-indentGuidesStroke, rgba(255,255,255,0.15)); margin-left: 6px; display: flex; flex-direction: column; gap: 3px;">
+                        ${renderTreeDir(sub)}
+                        ${sub.files.sort((a, b) => a.fileName.localeCompare(b.fileName)).map(renderFileRow).join('')}
+                    </div>
+                </details>`;
+            });
+
+            return html;
+        };
+
+        const rootTreeHtml = renderTreeDir(rootDir);
+        const rootFilesHtml = rootDir.files.sort((a, b) => a.fileName.localeCompare(b.fileName)).map(renderFileRow).join('');
+
+        listEl.innerHTML = `
+            <div style="display: flex; flex-direction: column; gap: 3px;">
+                ${rootTreeHtml}
+                ${rootFilesHtml}
+            </div>
+        `;
+
+        // Wire folder-level mute buttons inside wizard tree view
+        listEl.querySelectorAll('.wizard-folder-mute-btn').forEach((btn: any) => {
+            btn.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const rawPaths = btn.dataset.paths;
+                const action = btn.dataset.action;
+                if (rawPaths) {
+                    try {
+                        const paths: string[] = JSON.parse(decodeURIComponent(rawPaths));
+                        const isUnmuting = action === 'unmute';
+                        paths.forEach(p => {
+                            const clean = p.toLowerCase().trim();
+                            if (isUnmuting) {
+                                wizardMutedSet.delete(clean);
+                            } else {
+                                wizardMutedSet.add(clean);
+                            }
+                        });
+                        state.wizardMutedFiles = Array.from(wizardMutedSet);
+                        renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+                    } catch {}
+                }
+            };
+        });
+
+        // Wire folder collapse children buttons inside wizard tree view
+        listEl.querySelectorAll('.wizard-collapse-folder-btn').forEach((btn: any) => {
+            btn.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const folderDetails = btn.closest('.context-tree-folder');
+                if (!folderDetails) return;
+                const childFolders = folderDetails.querySelectorAll('.context-tree-folder-body .context-tree-folder');
+                if (childFolders.length === 0) return;
+
+                const anyOpen = Array.from(childFolders).some((d: any) => d.open);
+                childFolders.forEach((d: any) => { d.open = !anyOpen; });
+                const icon = btn.querySelector('.codicon');
+                if (icon) icon.className = `codicon ${anyOpen ? 'codicon-expand-all' : 'codicon-collapse-all'}`;
+                btn.title = anyOpen
+                    ? `Expand all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`
+                    : `Collapse all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`;
+            };
+        });
+    }
+    // ── 2. FLAT SORTED MODES ──────────────────────────────────────────────
+    else {
+        const sorted = [...filtered].sort((a, b) => {
+            const isAMuted = wizardMutedSet.has(a.path.toLowerCase().trim());
+            const isBMuted = wizardMutedSet.has(b.path.toLowerCase().trim());
+
+            if (sortOrder === 'visible-first') {
+                const diff = Number(isAMuted) - Number(isBMuted);
+                return diff || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName);
+            } else if (sortOrder === 'muted-first') {
+                const diff = Number(isBMuted) - Number(isAMuted);
+                return diff || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName);
+            } else if (sortOrder === 'heavy-to-light') {
+                return (b.bytes - a.bytes) || (b.tokens - a.tokens) || a.fileName.localeCompare(b.fileName);
+            } else if (sortOrder === 'light-to-heavy') {
+                return (a.bytes - b.bytes) || (a.tokens - b.tokens) || a.fileName.localeCompare(b.fileName);
+            } else if (sortOrder === 'name') {
+                return a.fileName.localeCompare(b.fileName) || a.path.localeCompare(b.path);
+            } else if (sortOrder === 'modified') {
+                return (b.mtime - a.mtime) || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName);
+            }
+            return 0;
+        });
+
+        listEl.innerHTML = sorted.map(renderFileRow).join('');
+    }
+
+    // Attach row click listeners to toggle mute/reveal
     listEl.querySelectorAll('.wizard-file-row').forEach((row: any) => {
         row.onclick = () => {
             const filePath = row.dataset.path;
@@ -4845,6 +5322,7 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
 
     // 0. Populate Candidate Files List
     const allFiles: any[] = state.lastContextData?.files || [];
+    const mtimeMap = (state as any).fileMtimeMap || {};
     wizardCandidateFiles = allFiles.map((f: any) => {
         const rawPath = typeof f === 'string' ? f : (f.path || '');
         const normPath = rawPath.replace(/\\/g, '/');
@@ -4852,8 +5330,16 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
         const dirName = normPath.includes('/') ? normPath.substring(0, normPath.lastIndexOf('/')) : '';
         const tokens = (typeof f === 'object' && f.tokens) ? f.tokens : (state.fileTokensMap?.[rawPath] || Math.ceil((f.bytes || 1000) / 3.5));
         const bytes = (typeof f === 'object' && f.bytes) ? f.bytes : Math.round(tokens * 3.5);
-        return { path: rawPath, fileName, dirName, tokens, bytes };
+        const mtime = (typeof f === 'object' && f.mtime) ? f.mtime : (mtimeMap[rawPath] || 0);
+        return { path: rawPath, fileName, dirName, tokens, bytes, mtime };
     });
+
+    const savedSortOrder = (typeof localStorage !== 'undefined' ? localStorage.getItem('lollms_wizard_file_sort_order') : null) as any || 'visible-first';
+    (state as any).wizardFileSortOrder = savedSortOrder;
+    const wizardSortSelect = document.getElementById('wizard-files-sort-select') as HTMLSelectElement;
+    if (wizardSortSelect) {
+        wizardSortSelect.value = savedSortOrder;
+    }
 
     const initialMuted = state.wizardMutedFiles || state.mutedFiles || [];
     wizardMutedSet = new Set(initialMuted.map(m => m.replace(/\\/g, '/').toLowerCase().trim()));
@@ -4973,10 +5459,12 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
             const fileName = typeof s === 'string' ? s : s.fileName;
             const displayName = typeof s === 'string' ? s.replace('.lollms-ctx', '') : s.name;
             const fileCount = typeof s === 'object' && s.fileCount !== undefined ? ` (${s.fileCount} files)` : '';
+            const desc = (typeof s === 'object' && s.description) ? ` — ${s.description}` : '';
 
             const opt = document.createElement('option');
             opt.value = fileName;
-            opt.textContent = `📁 ${displayName}${fileCount}`;
+            opt.textContent = `📁 ${displayName}${fileCount}${desc}`;
+            opt.title = (typeof s === 'object' && s.description) ? s.description : '';
             savedGroup.appendChild(opt);
             hasSaved = true;
         });
@@ -5004,6 +5492,17 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
     if (wizardUserPref) {
         const matched = profiles.find((p: any) => p.id === activeProfileId);
         wizardUserPref.value = state.capabilities?.userPreferences || matched?.preferences || '';
+    }
+
+    // 5.5 Populate Reasoning Effort & Fast Mode in Wizard
+    const wizardEffortSelect = document.getElementById('wizard-reasoning-effort') as HTMLSelectElement;
+    if (wizardEffortSelect) {
+        wizardEffortSelect.value = state.capabilities?.reasoningEffort || 'low';
+    }
+
+    const wizardFastModeCheck = document.getElementById('wizard-fast-mode') as HTMLInputElement;
+    if (wizardFastModeCheck) {
+        wizardFastModeCheck.checked = state.capabilities?.fastMode === true;
     }
 
     // 6. Clear prior governor states for wizard

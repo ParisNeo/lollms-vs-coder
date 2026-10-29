@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.71",
+  "version": "1.0.76",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -325,6 +325,11 @@
         "command": "lollms-vs-coder.newDiscussionFromClipboard",
         "title": "%command.newDiscussionFromClipboard.title%",
         "icon": "$(clippy)"
+      },
+      {
+        "command": "lollms-vs-coder.launchDiscussionWithSelectedFiles",
+        "title": "Lollms: Launch Discussion with Selected (Fast Mode)",
+        "icon": "$(comment-discussion)"
       },
       {
         "command": "lollms-vs-coder.newDiscussionWithSameContext",
@@ -1561,6 +1566,11 @@
           "type": "boolean",
           "default": false,
           "description": "Fast Mode: Combine Phase 2 (Plan) and Phase 3 (Code) into a single run without waiting for user confirmation."
+        },
+        "lollmsVsCoder.ignoreContextSize": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ignore model context window limits in Context Librarian, keeping all task-relevant files active without auto-muting or task partitioning (useful for manual filtering or exporting to external LLMs)."
         },
         "lollmsVsCoder.preciseTokenization": {
           "type": "boolean",

@@ -1045,26 +1045,44 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 failingHunk = matches[options.hunkIndex][0];
             }
 
-            // Resolve file path to get original content for the prompt
-            const resolution = await services.contextManager.resolveWorkspaceFromPath(sanitizedFilePath);
-            if (!resolution) {
-                Logger.error(`Resolution failed for path: ${sanitizedFilePath}`);
-                return { success: false, error: "Invalid path" };
-            }
+            // 🔍 PROJECT-WIDE SCAN: Check if the failing hunk actually belongs to a different file in the workspace
+            const { findHunkInWorkspace } = require('../utils');
+            const searchPart = (options?.hunkIndex !== undefined && matches[options.hunkIndex]) 
+                ? matches[options.hunkIndex][1] 
+                : (hunks[0]?.searchPart || "");
 
+            const crossFileMatch = await findHunkInWorkspace(searchPart, sanitizedFilePath, services.contextManager);
+
+            let effectiveTargetPath = sanitizedFilePath;
             let originalFileContent = "";
-            try {
-                const document = await vscode.workspace.openTextDocument(resolution.uri);
-                originalFileContent = document.getText();
-            } catch (e: any) {
-                Logger.error(`Could not read original file for repair: ${e.message}`);
-                return { success: false, error: "Could not read original file" };
+            let isCrossFile = false;
+
+            if (crossFileMatch) {
+                effectiveTargetPath = crossFileMatch.filePath;
+                originalFileContent = crossFileMatch.documentContent;
+                isCrossFile = true;
+                Logger.info(`[replaceCode:Repair] Detected cross-file contamination: hunk belongs to ${crossFileMatch.filePath} (line ${crossFileMatch.line}) instead of ${sanitizedFilePath}`);
+            } else {
+                const resolution = await services.contextManager.resolveWorkspaceFromPath(sanitizedFilePath);
+                if (!resolution) {
+                    Logger.error(`Resolution failed for path: ${sanitizedFilePath}`);
+                    return { success: false, error: "Invalid path" };
+                }
+                try {
+                    const document = await vscode.workspace.openTextDocument(resolution.uri);
+                    originalFileContent = document.getText();
+                } catch (e: any) {
+                    Logger.error(`Could not read original file for repair: ${e.message}`);
+                    return { success: false, error: "Could not read original file" };
+                }
             }
 
             // Perform AI Repair with Timeout Protection
             return await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
-                title: `Lollms: Repairing block for ${sanitizedFilePath}...`,
+                title: isCrossFile 
+                    ? `Lollms: Re-targeting misplaced patch from ${path.basename(sanitizedFilePath)} to ${path.basename(effectiveTargetPath)}...` 
+                    : `Lollms: Repairing block for ${sanitizedFilePath}...`,
                 cancellable: true
             }, async (progress, token) => {
                 const abortController = new AbortController();

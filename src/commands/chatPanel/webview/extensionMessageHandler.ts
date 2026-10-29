@@ -538,9 +538,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'fileDiagnosticsReport':
                 {
-                    const { filePath, messageId, blockIndex, blockId, errorsCount, errors } = message;
+                    const { filePath, messageId, blockIndex, blockId, errorsCount, warningsCount, errors } = message;
                     import('./ui.js').then(ui => {
-                        ui.updateFileDiagnosticsUI(filePath, messageId, blockIndex, blockId, errorsCount, errors);
+                        ui.updateFileDiagnosticsUI(filePath, messageId, blockIndex, blockId, errorsCount, errors, warningsCount);
                     });
                 }
                 break;
@@ -1528,6 +1528,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         cropHistoryCheck.checked = caps.contextGovernorCropHistory !== false;
                     }
 
+                    const ignoreContextSizeCheck = document.getElementById('cap-ignoreContextSize') as HTMLInputElement;
+                    if (ignoreContextSizeCheck) {
+                        ignoreContextSizeCheck.checked = caps.ignoreContextSize === true;
+                    }
+
                     updateBadges();
                     renderProfilesInModal();
 
@@ -1602,6 +1607,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     });
                     dom.modelSelector.value = message.currentModel || '';
                     (state as any).models = models;
+
+                    import('./ui.js').then(ui => {
+                        if (typeof (ui as any).populateRepairModelSelect === 'function') {
+                            (ui as any).populateRepairModelSelect(models, message.currentModel);
+                        }
+                    });
                     
                     updateBadges();
                     // Force refresh context header to sync model name

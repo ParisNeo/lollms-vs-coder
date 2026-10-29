@@ -1371,8 +1371,12 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             const reasoningEffortInput = document.getElementById('cap-reasoningEffort') as HTMLSelectElement;
             const selectedReasoningEffort = reasoningEffortInput ? reasoningEffortInput.value : 'low';
 
+            const ignoreContextSizeInput = document.getElementById('cap-ignoreContextSize') as HTMLInputElement;
+            const isIgnoreContextSize = ignoreContextSizeInput ? ignoreContextSizeInput.checked : false;
+
             const caps = {
                 userPreferenceProfileId: selectedPrefProfileId,
+                ignoreContextSize: isIgnoreContextSize,
                 userPreferences: (document.getElementById('cap-userPreferences') as HTMLTextAreaElement)?.value?.trim() ?? '',
                 reasoningEffort: selectedReasoningEffort,
                 generationFormats: {
@@ -2213,6 +2217,42 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         };
     }
 
+    // Wizard Candidate Files Sorting & Mode Cycling
+    const wizardSortSelect = document.getElementById('wizard-files-sort-select') as HTMLSelectElement;
+    const wizardSortCycleBtn = document.getElementById('wizard-files-sort-cycle-btn');
+
+    if (wizardSortSelect) {
+        wizardSortSelect.onchange = () => {
+            const val = wizardSortSelect.value as any;
+            (state as any).wizardFileSortOrder = val;
+            try {
+                localStorage.setItem('lollms_wizard_file_sort_order', val);
+            } catch {}
+            import('./ui.js').then(ui => {
+                ui.renderWizardFileList(wizardFilterInp?.value || '');
+            });
+        };
+    }
+
+    if (wizardSortCycleBtn) {
+        wizardSortCycleBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const modes = ['visible-first', 'tree', 'muted-first', 'heavy-to-light', 'light-to-heavy', 'name', 'modified'];
+            const curVal = (state as any).wizardFileSortOrder || wizardSortSelect?.value || 'visible-first';
+            const nextIdx = (modes.indexOf(curVal) + 1) % modes.length;
+            const nextVal = modes[nextIdx];
+            (state as any).wizardFileSortOrder = nextVal;
+            if (wizardSortSelect) wizardSortSelect.value = nextVal;
+            try {
+                localStorage.setItem('lollms_wizard_file_sort_order', nextVal);
+            } catch {}
+            import('./ui.js').then(ui => {
+                ui.renderWizardFileList(wizardFilterInp?.value || '');
+            });
+        };
+    }
+
     const wizardUnmuteAllBtn = document.getElementById('wizard-unmute-all-btn');
     if (wizardUnmuteAllBtn) {
         wizardUnmuteAllBtn.onclick = () => {
@@ -2233,6 +2273,20 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 ui.renderWizardFileList(wizardFilterInp?.value || '');
             });
         };
+    }
+
+    const wizardContextSelect = document.getElementById('wizard-context-selection') as HTMLSelectElement;
+    if (wizardContextSelect) {
+        wizardContextSelect.addEventListener('change', () => {
+            const val = wizardContextSelect.value;
+            // Selecting any saved context selection automatically enables Fast Mode
+            if (val && val !== 'current' && val !== 'empty') {
+                const fastCheck = document.getElementById('wizard-fast-mode') as HTMLInputElement;
+                if (fastCheck) {
+                    fastCheck.checked = true;
+                }
+            }
+        });
     }
 
     const wizardGovBtn = document.getElementById('wizard-governor-btn');
@@ -2363,7 +2417,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             history: (studioState?.history || []).map((h: any) => ({ role: h.role, content: h.text })),
             customCapacity: studioState?.customCapacity,
             targetPercent: studioState?.targetPercent,
-            reasoningEffort: studioState?.reasoningEffort
+            reasoningEffort: studioState?.reasoningEffort,
+            ignoreContextSize: studioState?.ignoreContextSize === true
         });
     };
 
@@ -2458,6 +2513,24 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     }
 
     // Interactive File Filter Input on Right Column
+    const govIgnoreCheck = document.getElementById('gov-ignore-context-size') as HTMLInputElement;
+    if (govIgnoreCheck) {
+        govIgnoreCheck.onchange = () => {
+            const studioState = (window as any).governorStudioState;
+            if (studioState) {
+                studioState.ignoreContextSize = govIgnoreCheck.checked;
+                if (state.capabilities) {
+                    state.capabilities.ignoreContextSize = govIgnoreCheck.checked;
+                }
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial: { ignoreContextSize: govIgnoreCheck.checked }
+                });
+                import('./ui.js').then(ui => ui.renderGovernorFileList());
+            }
+        };
+    }
+
     const govFileFilterInp = document.getElementById('gov-file-filter-input') as HTMLInputElement;
     if (govFileFilterInp) {
         govFileFilterInp.oninput = () => {
@@ -2776,10 +2849,14 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         const selectedModel = (document.getElementById('wizard-model') as HTMLSelectElement)?.value || undefined;
         const personalityId = dom.wizardPersonality.value;
         const profileId = dom.wizardProfile.value;
+        const effortSelect = document.getElementById('wizard-reasoning-effort') as HTMLSelectElement;
+        const reasoningEffort = effortSelect ? (effortSelect.value as any) : undefined;
+        const fastModeCheck = document.getElementById('wizard-fast-mode') as HTMLInputElement;
+        const fastMode = fastModeCheck ? fastModeCheck.checked : false;
         const prefProfileId = dom.wizardPreferencesProfile?.value || 'clean_craftsman';
         const userPreferences = (document.getElementById('wizard-user-preferences') as HTMLTextAreaElement)?.value?.trim();
         const contextSelectEl = document.getElementById('wizard-context-selection') as HTMLSelectElement;
-        const contextSelection = contextSelectEl ? contextSelectEl.value : 'current';
+        let contextSelection = contextSelectEl ? contextSelectEl.value : 'current';
 
         const selectedFolders: string[] = [];
         dom.wizardMatrixContainer.querySelectorAll('.ws-matrix-row').forEach((row: any) => {
@@ -2807,6 +2884,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                     contextSelection,
                     userPreferenceProfileId: prefProfileId,
                     userPreferences,
+                    reasoningEffort,
+                    fastMode,
                     mutedFiles: finalMuted,
                     sendToAi
                 }
@@ -2896,13 +2975,14 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
 
     const acceptRepairState = () => {
         const studioState = (window as any).fileRepairStudioState;
+        const remainingCount = (studioState?.errors || []).filter((e: any) => !e.isFixed).length;
         vscode.postMessage({
             command: 'acceptFileRepair',
             filePath: studioState?.filePath,
             messageId: studioState?.messageId,
             blockIndex: studioState?.blockIndex,
             blockId: studioState?.blockId,
-            errorsCount: studioState?.errors?.length || 0
+            errorsCount: remainingCount
         });
         closeRepairModal();
     };
@@ -2940,7 +3020,6 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 command: 'cancelFileRepairPass',
                 filePath: studioState?.filePath
             });
-            import('./ui.js').then(ui => ui.setRepairRunningState(false));
             return;
         }
 
@@ -2962,7 +3041,6 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                     command: 'cancelFileRepairPass',
                     filePath: studioState?.filePath 
                 });
-                import('./ui.js').then(ui => ui.setRepairRunningState(false));
             }
         }
     });
@@ -2972,18 +3050,6 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 e.preventDefault();
                 handleRepairSubmit();
             }
-        };
-    }
-
-    const repairStopIndicatorBtn = document.getElementById('repair-stop-indicator-btn');
-    if (repairStopIndicatorBtn) {
-        repairStopIndicatorBtn.onclick = () => {
-            const studioState = (window as any).fileRepairStudioState;
-            vscode.postMessage({ 
-                command: 'cancelFileRepairPass',
-                filePath: studioState?.filePath 
-            });
-            import('./ui.js').then(ui => ui.setRepairRunningState(false));
         };
     }
 
@@ -3305,7 +3371,26 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             });
             return;
         }
-
+        // --- Context Verifier: Blame Librarian Handler ---
+        const blameBtn = target.closest('.blame-librarian-btn') as HTMLButtonElement;
+        if (blameBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            const filesRaw = blameBtn.dataset.files || '[]';
+            let files: string[] = [];
+            try {
+                files = JSON.parse(decodeURIComponent(filesRaw));
+            } catch {
+                try { files = JSON.parse(filesRaw); } catch {}
+            }
+            blameBtn.disabled = true;
+            blameBtn.innerHTML = '<span class="spinner"></span> Blaming Librarian...';
+            vscode.postMessage({
+                command: 'blameLibrarianForContext',
+                files
+            });
+            return;
+        }
         // --- 0.5. Form Submission (CRITICAL) ---
         const formBtn = target.closest('.lollms-form-submit-btn') as HTMLButtonElement;
         if (formBtn) {

@@ -11,7 +11,8 @@ export class LibrarianPromptBuilder {
         objectiveThreshold: number,
         objectiveThresholdPercent: number,
         maxRounds: number,
-        sparqlEnabled: boolean = true
+        sparqlEnabled: boolean = true,
+        ignoreContextSize: boolean = false
     ): string {
         const sparqlSection = sparqlEnabled ? `
 - **SPARQL Architecture Query**:
@@ -19,21 +20,83 @@ export class LibrarianPromptBuilder {
   Tag: \`<sparql query="SELECT ?class WHERE { ?class a s:ClassDefinition }" />\`
 ` : ``;
 
-        return `You are the **Lead Sovereign Librarian and Master Architect**.
-Your mission is to be the master orchestrator of this project. You examine the codebase, scout for information, return the most accurate picture of the current code, and UNMUTE/ADD FILES TO CONTEXT for the Coder to work with while strictly respecting the context size.
+        const budgetSection = ignoreContextSize ? `
+⚠️ **UNLIMITED CONTEXT MODE ACTIVE (IGNORE CONTEXT SIZE ENABLED)**:
+- Context token capacity and budget limits are **COMPLETELY IGNORED** for this mission.
+- **DO NOT SPLIT** the task into \`<MultiSteps_TASK>\` due to token budget limitations.
+- **DO NOT MUTE FILES** merely to conserve token count.
+- Include **ALL files involved in this task** directly in \`<edit_files>\` (or \`<context_files>\` if strictly reference-only) so the developer possesses all necessary source files in active context [C] to review, manually curate, or export to an external high-capacity model.
+` : `
 Capacity limit: ${maxTokens.toLocaleString()} tokens.
 Target budget: ~${objectiveThreshold.toLocaleString()} tokens (${objectiveThresholdPercent}%).
+`;
+
+        const partitioningRule = ignoreContextSize ? `
+5. **UNLIMITED CONTEXT DIRECTIVE**:
+   - Because 'Ignore Context Size' is active, task partitioning via \`<MultiSteps_TASK>\` is disabled unless the user explicitly requested a multi-step execution.
+   - Ground all relevant files directly in \`<edit_files>\` for a comprehensive, single-pass implementation.
+` : `
+5. **MULTI-STEP TASK PARTITIONING (<MultiSteps_TASK nb_steps="N">)**:
+   - If the files required to solve the task exceed the target budget (~${objectiveThreshold.toLocaleString()} tokens), or if the task naturally requires sequential subtasks, you MUST SPLIT the work into subtasks using:
+   <MultiSteps_TASK nb_steps="2">
+   <step number="1">
+   <target_files>
+   path/to/step1_file.ext
+   </target_files>
+   <instructions>
+   Detailed instructions for what the Coder must implement in Step 1...
+   </instructions>
+   </step>
+   <step number="2">
+   <target_files>
+   path/to/step2_file.ext
+   </target_files>
+   <instructions>
+   Detailed instructions for what the Coder must implement in Step 2...
+   </instructions>
+   </step>
+   </MultiSteps_TASK>
+
+   - When you issue \`<MultiSteps_TASK nb_steps="N">\`, the Coder will be given the first batch of code and asked for the first subtask of coding.
+   - At the end of the first subtask, you (the Librarian) will be called again to review the completed code, select the next batch of files (unmuting Step 2 files and muting Step 1 files to preserve budget), and call back the Coder for the next subtask!
+`;
+
+        return `You are the **Lead Sovereign Librarian and Master Architect**.
+Your mission is to be the master orchestrator of this project. You examine the codebase, scout for information, return the most accurate picture of the current code, and UNMUTE/ADD FILES TO CONTEXT for the Coder to work with.
+${budgetSection}
 Maximum Allowed Negotiation Rounds: Up to ${maxRounds}.
 
 ### 👑 YOUR CORE RESPONSIBILITIES AS MASTER DISPATCHER:
 1. **SCOUT & RETURN ACCURATE PICTURE**:
    - You evaluate the codebase, user prompt, and conversation history.
    - You return the ground-truth technical architecture, component interactions, and execution flow so the Coder has a comprehensive, actionable plan.
-2. **UNMUTE / ADD FILES TO CONTEXT FOR CODER [C]**:
+2. **UNMUTE / ADD FILES TO CONTEXT FOR CODER [C] & SELECTION PERSISTENCE**:
    - The Coder can ONLY modify files loaded with full content under [C].
    - You MUST identify all target files needed to solve the task and declare them in \`<edit_files>\`.
    - Any file in \`<edit_files>\` will be automatically unmuted/loaded into the Coder's active context with full content [C].
    - Any reference-only files must be declared in \`<context_files>\` to be kept muted ([M], 0 tokens) while preserving their contracts.
+   - Upon conclusion, your chosen file selection is automatically saved as a reusable \`.lollms-ctx\` selection file in \`.lollms/selection/\` with an explanatory description of its architectural purpose so humans can load it in future discussions. Loading this selection will automatically engage Fast Mode.
+3. **ROUND 1 CODE HYDRATION & FAST PATH**:
+   - In Round 1, the raw source code of active unmuted files is loaded in your prompt.
+   - **Fast Path to Coding**: If the unmuted files contain all necessary definitions, styles, or logic to address the task, declare your \`<edit_files>\` and output your plan immediately in Round 1!
+   - **Subsequent Rounds (2+)**: If you must perform additional scouting rounds, the raw unmuted code is unmounted to preserve your token budget. You will NOT see all the code in rounds 2+; you must use your tools (<read_full_file>, <peek_files>, <grep>${sparqlEnabled ? ', <sparql>' : ''}) to inspect specific files or slices.
+4. **FULL VISIBLE HISTORY**:
+   - You and the Coder both see the full visible conversation history.
+${partitioningRule}
+6. **THE CODER'S MANDATE**:
+   - The Coder codes directly and exclusively from the full plan you provide.
+   - The Coder will only call you back if it discovers a genuine error in your reasoning.
+
+### 👑 YOUR CORE RESPONSIBILITIES AS MASTER DISPATCHER:
+1. **SCOUT & RETURN ACCURATE PICTURE**:
+   - You evaluate the codebase, user prompt, and conversation history.
+   - You return the ground-truth technical architecture, component interactions, and execution flow so the Coder has a comprehensive, actionable plan.
+2. **UNMUTE / ADD FILES TO CONTEXT FOR CODER [C] & SELECTION PERSISTENCE**:
+   - The Coder can ONLY modify files loaded with full content under [C].
+   - You MUST identify all target files needed to solve the task and declare them in \`<edit_files>\`.
+   - Any file in \`<edit_files>\` will be automatically unmuted/loaded into the Coder's active context with full content [C].
+   - Any reference-only files must be declared in \`<context_files>\` to be kept muted ([M], 0 tokens) while preserving their contracts.
+   - Upon conclusion, your chosen file selection is automatically saved as a reusable \`.lollms-ctx\` selection file in \`.lollms/selection/\` with an explanatory description of its architectural purpose so humans can load it in future discussions. Loading this selection will automatically engage Fast Mode.
 3. **ROUND 1 CODE HYDRATION & FAST PATH**:
    - In Round 1, the raw source code of active unmuted files is loaded in your prompt.
    - **Fast Path to Coding**: If the unmuted files contain all necessary definitions, styles, or logic to address the task, declare your \`<edit_files>\` and output your plan immediately in Round 1!
@@ -94,6 +157,13 @@ ${sparqlSection}
 ### 🛑 MANDATORY TARGET FILES FOR EDIT/FIX TASKS:
 - When the user asks to fix, patch, edit, or modify code, **<edit_files> MUST CONTAIN THE ACTUAL FILES TO MODIFY**!
 - If the files currently in context belong to the wrong subsystem (e.g. backend Python files when asked for frontend dark mode/CSS), use \`<grep query="..." />\` or \`<read_full_file path="..." />\` to locate the actual target files and put them in \`<edit_files>\`!
+
+### ⚖️ HANDLING BLAME DIRECTIVES:
+When you receive a \`BLAME DIRECTIVE\` stating that the Coder attempted to modify files that were NOT in its active context [C]:
+1. Acknowledge the omission immediately.
+2. Put those exact files into \`<edit_files>\`.
+3. Check the token budget. If adding them causes context overflow, mute reference files into \`<context_files>\` or partition into sequential subtasks (\`<MultiSteps_TASK>\`).
+4. Output your \`<librarian_decision>\` with an updated architectural directive and plan instructing the Coder to implement the changes.
 
 ### 📋 FINAL ARBITRATION TAG:
 When ready to conclude, output your final decision using:

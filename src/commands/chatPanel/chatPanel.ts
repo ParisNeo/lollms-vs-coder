@@ -53,6 +53,7 @@ export class ChatPanel {
   public static isBatchApplying = false;
   public readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
+  private readonly _services: LollmsServices;
   public readonly _lollmsAPI: LollmsAPI;
   private _contextManager!: ContextManager;
   private _discussionManager!: DiscussionManager & { context: any };
@@ -96,6 +97,7 @@ export class ChatPanel {
 
   // Tracks failing patches to prevent infinite repetition loops
   private _failedPatchesRegistry: Map<string, Set<string>> = new Map();
+  private _batchRepairAttempts: Map<string, number> = new Map();
 
   private _initialPrompt?: string;
   private _initialImages?: { name: string; data: string }[];
@@ -157,6 +159,7 @@ export class ChatPanel {
   private constructor(panel: vscode.WebviewPanel, services: LollmsServices, discussionId: string) {
     this._panel = panel;
     this._extensionUri = services.extensionUri;
+    this._services = services;
     this._lollmsAPI = services.lollmsAPI;
     this._discussionManager = services.discussionManager as any;
     this._contextManager = services.contextManager;
@@ -309,6 +312,7 @@ export class ChatPanel {
                         signal,
                         pruneMsgId: libLiveMsgId,
                         projectMemoryManager: this.projectMemoryManager,
+                        ignoreContextSize: this._discussionCapabilities.ignoreContextSize === true,
                         onUpdateMessage: async (msgId, updated) => {
                             await this.updateMessageContent(msgId, updated, false);
                         },
@@ -350,6 +354,10 @@ export class ChatPanel {
                         ? `\n${libRes.hydratedMemories.trim()}\n`
                         : `\n<details class="memory-hydration-block"><summary>🧠 <b>Hydrated Neural Memories & Standards (0 engrams)</b></summary>\n*(No matching memory engrams recalled for this query)*\n</details>\n`;
 
+                    const selectionNotice = libRes.savedSelection
+                        ? `\n- **Saved Context Selection**: \`${libRes.savedSelection.path}\` (*${libRes.savedSelection.description}*)`
+                        : '';
+
                     // Persist final comprehensive findings into this message bubble
                     const finalReport = `Librarian agent report:
 ### 🏛️ Codebase Architecture & System Mechanics
@@ -360,7 +368,7 @@ ${actionStepsLog}
 ${memoriesBlock}
 ### 📂 Context Grounding & Budget
 - **Active Files for Modification [C]**: ${libRes.keptFiles.map(f => `\`${f}\``).join(', ') || 'None'}
-- **Tokens Liberated**: ~${safeTokensLiberated} tokens (reference files preserved at 0 tokens [M] in tree)
+- **Tokens Liberated**: ~${safeTokensLiberated} tokens (reference files preserved at 0 tokens [M] in tree)${selectionNotice}
 - **Neural Memory**: Recorded to Project Memory Vault & \`.lollms/knowledge.ttl\``;
 
                     await this.updateMessageContent(libLiveMsgId, finalReport);
@@ -475,12 +483,7 @@ ${memoriesBlock}
         const contextVerification = await this.verifyGeneratedPatchContext(content);
         if (!contextVerification.valid) {
             this.log(`[Context Verifier] Rejected blind patch on unpossessed files: [${contextVerification.unpossessedFiles.join(', ')}]`, 'WARN');
-            await this.addMessageToDiscussion({
-                id: 'verifier_alert_' + Date.now(),
-                role: 'system',
-                content: `🛡️ **Context Verifier: Blind Patch Blocked**\nThe assistant attempted to modify files that are NOT in its active context [C]:\n${contextVerification.unpossessedFiles.map(f => `- \`${f}\``).join('\n')}\n\n*The Librarian must load and unmute these files before modifications can be applied.*`,
-                skipInPrompt: true
-            });
+            await this.handleContextVerifierFailure(contextVerification.unpossessedFiles, isFastMode, signal, processId);
             return;
         }
 
@@ -1019,6 +1022,248 @@ ${originalFileContent}
         });
     }
   
+  /**
+   * Dispatches a blame directive to the Lead Librarian when the Coder attempts
+   * to modify files that were omitted from active context [C].
+   */
+  public async recallLibrarianWithBlame(unpossessedFiles: string[]): Promise<void> {
+      if (this._isDisposed || unpossessedFiles.length === 0) return;
+      const unpossessedList = unpossessedFiles.join(', ');
+
+      this.log(`[Librarian Blame] Recalling Librarian with blame for omitted files: [${unpossessedList}]`, 'WARN');
+
+      await this.sendMessage({
+          id: 'user_blame_librarian_' + Date.now(),
+          role: 'user',
+          content: `<ask_librarian>
+BLAME DIRECTIVE: The Coder attempted to modify existing files that were NOT in its active context [C]:
+${unpossessedFiles.map(f => `- \`${f}\``).join('\n')}
+
+LIBRARIAN BLAME: You are the Lead Architect and Context Librarian. You failed to identify and unmute these essential files in <edit_files> in your previous plan.
+As a result, the Coder's patches were blocked by the Context Verifier.
+
+MANDATORY ACTIONS:
+1. Immediately inspect these files and analyze their dependencies.
+2. Evaluate the context token budget. If adding these files exceeds budget, mute non-essential reference files or partition the task (<MultiSteps_TASK>).
+3. Put these files into <edit_files> so they are unmuted with full content [C] for the Coder.
+4. Issue an updated architectural directive and plan instructing the Coder to implement the changes.
+</ask_librarian>`
+      });
+  }
+
+  /**
+   * Dispatches an automated AI repair turn when one or more updates fail during "Apply All" or "Apply All Steps".
+   * Resends all failed updates to the LLM with fresh ground-truth disk contents so it produces corrected patches in a new turn.
+   */
+  public async handleBatchApplyFailures(
+      failedItems: Array<{
+          change: any;
+          error: string;
+          filePath: string;
+          diskContent: string;
+          failingSnippet: string;
+          crossFileNotice?: string;
+      }>,
+      originalMessageId: string
+  ): Promise<void> {
+      if (this._isDisposed || failedItems.length === 0) return;
+
+      const currentAttempts = this._batchRepairAttempts.get(originalMessageId) || 0;
+      const MAX_BATCH_REPAIR_ATTEMPTS = 2;
+
+      if (currentAttempts >= MAX_BATCH_REPAIR_ATTEMPTS) {
+          this.log(`[Batch Repair] Reached max automated repair attempts (${MAX_BATCH_REPAIR_ATTEMPTS}) for message ${originalMessageId}. Halting automated retry.`, 'WARN');
+          await this.addMessageToDiscussion({
+              id: 'batch_repair_halted_' + Date.now(),
+              role: 'system',
+              content: `🛡️ **Batch Apply Repair Halted**
+${failedItems.length} update(s) could not be applied after ${MAX_BATCH_REPAIR_ATTEMPTS} attempts:
+${failedItems.map(f => `- \`${f.filePath}\`: *${f.error}*`).join('\n')}
+
+*Automated repair halted to protect your token budget. Please inspect the failed block(s) above or use the Raw Block button for manual stitching.*`,
+              skipInPrompt: true
+          });
+          return;
+      }
+
+      this._batchRepairAttempts.set(originalMessageId, currentAttempts + 1);
+      this.log(`[Batch Repair] Initiating automated AI repair for ${failedItems.length} failed update(s) (Attempt ${currentAttempts + 1}/${MAX_BATCH_REPAIR_ATTEMPTS})...`, 'WARN');
+
+      const noticeMsgId = `batch_repair_notice_${Date.now()}`;
+      await this.addMessageToDiscussion({
+          id: noticeMsgId,
+          role: 'system',
+          content: `🛡️ **Batch Apply Partial Failure (${failedItems.length} failed update${failedItems.length > 1 ? 's' : ''})**
+The following update(s) failed to match on disk during Apply All:
+${failedItems.map(f => `- \`${f.filePath}\`: *${f.error}*`).join('\n')}
+
+*Resending failed updates with current ground-truth disk contents to the AI for automated repair (Attempt ${currentAttempts + 1}/${MAX_BATCH_REPAIR_ATTEMPTS})...*`,
+          skipInPrompt: true
+      });
+
+      // Itemize each failed update with its exact error, failing patch, and the actual content currently on disk
+      const itemizedReports = failedItems.map((item, idx) => {
+          const crossNotice = item.crossFileNotice ? `\n> ⚠️ **${item.crossFileNotice}**\n` : '';
+          const diskExcerpt = item.diskContent.length > 6000
+              ? item.diskContent.substring(0, 6000) + `\n... [truncated at 6000 chars. Total length: ${item.diskContent.length} chars]`
+              : item.diskContent;
+
+          return `#### Failed Update ${idx + 1}: \`${item.filePath}\`
+**Error Encountered:** ${item.error}${crossNotice}
+
+**Failing Code/Patch Provided Previously:**
+\`\`\`diff
+${item.failingSnippet}
+\`\`\`
+
+**Actual Ground-Truth Content Currently on Disk for \`${item.filePath}\`:**
+\`\`\`
+${diskExcerpt || '(File is currently empty)'}
+\`\`\``;
+      }).join('\n\n---\n\n');
+
+      const repairPrompt = `### 🛑 BATCH APPLICATION FAILURE REPORT (${failedItems.length} update${failedItems.length > 1 ? 's' : ''} failed)
+The following code updates failed to apply to disk during the "Apply All" execution.
+
+${itemizedReports}
+
+---
+### 🛠️ MANDATORY REPAIR INSTRUCTIONS:
+1. **MATCH ACTUAL DISK STATE EXACTLY**:
+   - For each failed update, inspect the actual ground-truth file content on disk provided above.
+   - Your \`<<<<<<< SEARCH\` block MUST be a literal, character-for-character match of the lines currently on disk, including exact indentation (spaces vs tabs) and trailing whitespace.
+2. **KEEP SEARCH/REPLACE BLOCKS VERY SHORT**:
+   - Keep SEARCH/REPLACE blocks very short and focused (1 to 5 lines of modification with minimal 1-2 line context).
+3. **TARGETED SYMBOL REPLACEMENT**:
+   - If extensive changes are needed across a class or function, output a targeted symbol replacement instead of a long patch: \`<file path="path/to/file.ext" action="update_symbol" symbol="SymbolName">\`.
+4. **CROSS-FILE MISPLACEMENT**:
+   - If a failure notice indicates the code belongs to another file, re-target the patch to the correct file path.
+5. **OUTPUT FORMAT**:
+   - Deliver the corrected code updates inside standard top-level \`<file path="..." action="write|patch|update_symbol">\` XML tags for all failed files so they can be immediately applied.`;
+
+      // Trigger the repair turn asynchronously after the current process unregisters
+      setImmediate(async () => {
+          await this.sendMessage({
+              id: `user_batch_repair_${Date.now()}`,
+              role: 'user',
+              content: repairPrompt
+          });
+      });
+  }
+
+  public async handleContextVerifierFailure(
+      unpossessedFiles: string[],
+      isFastMode: boolean,
+      signal: AbortSignal,
+      processId?: string
+  ): Promise<void> {
+      if (this._isDisposed || unpossessedFiles.length === 0) return;
+      const unpossessedList = unpossessedFiles.join(', ');
+
+      if (isFastMode) {
+          // Fast Mode Handling:
+          // Check if unpossessed files fit within context size
+          let unpossessedTokens = 0;
+          for (const f of unpossessedFiles) {
+              const res = await this._contextManager.resolveWorkspaceFromPath(f);
+              if (res) {
+                  try {
+                      const st = await vscode.workspace.fs.stat(res.uri);
+                      unpossessedTokens += Math.max(1, Math.ceil(st.size / 3.5));
+                  } catch {
+                      unpossessedTokens += 500;
+                  }
+              } else {
+                  unpossessedTokens += 500;
+              }
+          }
+
+          const currentTokens = this._currentDiscussion?.lastTokenMetrics?.total || 0;
+          const capacity = this._currentDiscussion?.lastTokenMetrics?.contextSize || 128000;
+          const isUnlimitedContext = this._discussionCapabilities.ignoreContextSize === true;
+          const wouldExceedCapacity = !isUnlimitedContext && (currentTokens + unpossessedTokens > capacity);
+
+          if (!wouldExceedCapacity) {
+              this.log(`[Context Verifier - Fast Mode] Adding unpossessed files (~${unpossessedTokens} tok) fits within context size (${capacity} tok). Unmuting and recalling Coder with blame...`, 'INFO');
+
+              await this.unmuteFiles(unpossessedFiles);
+              await this._contextManager.getContextStateProvider()?.addFilesToContext(unpossessedFiles);
+              this.recordCurrentPromptFiles(unpossessedFiles);
+              await this.updateContextAndTokens({ isBackgroundSync: false });
+
+              await this.addMessageToDiscussion({
+                  id: 'verifier_fast_' + Date.now(),
+                  role: 'system',
+                  content: `🛡️ **Context Verifier (Fast Mode)**\nThe Coder attempted to modify files that were not loaded in active context [C]:\n${unpossessedFiles.map(f => `- \`${f}\``).join('\n')}\n\n*Files fit within context size (~${unpossessedTokens.toLocaleString()} tokens). Files have been automatically loaded [C]. Recalling Coder with blame...*`,
+                  skipInPrompt: true
+              });
+
+              setImmediate(async () => {
+                  await this.sendMessage({
+                      id: 'user_blame_coder_' + Date.now(),
+                      role: 'user',
+                      content: `⚠️ **CONTEXT VERIFIER BLAME**: You attempted to modify the following existing files that were NOT in your active context [C]:
+${unpossessedFiles.map(f => `- \`${f}\``).join('\n')}
+
+**PROTOCOL VIOLATION**: Modifying existing files not visible under 'LOADED FILE CONTENTS' [C] is strictly forbidden.
+These files have now been loaded into your active context with full source code under [C].
+Now that you possess these files, please deliver the verified code modifications using standard \`<file path="..." action="write|patch|update_symbol">\` tags.`
+                  });
+              });
+              return;
+          } else {
+              this.log(`[Context Verifier - Fast Mode] Adding unpossessed files (~${unpossessedTokens} tok) would exceed context size (${capacity} tok). Calling the Librarian...`, 'WARN');
+
+              await this.addMessageToDiscussion({
+                  id: 'verifier_exceed_' + Date.now(),
+                  role: 'system',
+                  content: `🛡️ **Context Verifier (Fast Mode)**\nAdding unpossessed files [${unpossessedList}] (~${unpossessedTokens.toLocaleString()} tokens) would exceed context capacity (~${capacity.toLocaleString()} tokens).\n\n*Calling the Lead Librarian to evaluate architecture, mute reference files, and arbitrate budget...*`,
+                  skipInPrompt: true
+              });
+
+              setImmediate(async () => {
+                  await this.recallLibrarianWithBlame(unpossessedFiles);
+              });
+              return;
+          }
+      }
+
+      // Standard Mode Handling:
+      // Show alert box with interactive "Blame Librarian & Recall" button
+      const alertHtml = `
+<div class="context-verifier-alert" style="margin: 10px 0; padding: 12px 14px; background: rgba(231, 76, 60, 0.08); border: 1.5px solid var(--vscode-charts-red); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+    <div style="font-weight: 800; font-size: 12px; color: var(--vscode-charts-red); display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">
+        <i class="codicon codicon-shield"></i>
+        <span>Context Verifier: Blind Modification Blocked</span>
+    </div>
+    <div style="font-size: 11px; opacity: 0.9; margin-bottom: 8px; line-height: 1.45;">
+        The Coder attempted to modify existing files that are <strong>NOT in active context [C]</strong>:
+        <ul style="margin: 4px 0 8px 16px; padding: 0;">
+            ${unpossessedFiles.map(f => `<li><code>${f}</code></li>`).join('')}
+        </ul>
+        <em>Modifying unseen files is strictly forbidden. The Lead Librarian must evaluate dependencies, verify token budget, and load these files before edits can proceed.</em>
+    </div>
+    <button class="code-action-btn apply-btn blame-librarian-btn" data-files="${encodeURIComponent(JSON.stringify(unpossessedFiles))}" style="background: var(--vscode-charts-red) !important; color: white !important; font-weight: bold; height: 26px; padding: 0 12px;">
+        <i class="codicon codicon-warning"></i> Blame Librarian &amp; Recall
+    </button>
+</div>`;
+
+      await this.addMessageToDiscussion({
+          id: 'verifier_alert_' + Date.now(),
+          role: 'system',
+          content: alertHtml,
+          skipInPrompt: true
+      });
+
+      // If auto-apply is enabled in capabilities, automatically recall the librarian
+      if (this._discussionCapabilities.autoApply) {
+          setImmediate(async () => {
+              await this.recallLibrarianWithBlame(unpossessedFiles);
+          });
+      }
+  }
+
+
   /**
    * Automatically verifies that all files targeted by the Coder in <file> tags
    * either exist in active unmuted context ([C]) OR are brand-new files being created.
@@ -4077,6 +4322,7 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
                     currentMutedFiles: this._currentDiscussion?.mutedFiles || [],
                     pruneMsgId: libLiveBubbleId,
                     projectMemoryManager: this.projectMemoryManager || this.agentManager?.projectMemoryManager,
+                    ignoreContextSize: this._discussionCapabilities.ignoreContextSize === true,
                     onUpdateMessage: async (msgId, liveContent) => {
                         await this.updateMessageContent(msgId, liveContent, false);
                     },
@@ -4140,6 +4386,10 @@ ${p.partInstruction}
 </MultiSteps_TASK>
 ` : '';
 
+                const masterSelectionNotice = libRes.savedSelection
+                    ? `\n- **Saved Context Selection**: \`${libRes.savedSelection.path}\` (*${libRes.savedSelection.description}*)`
+                    : '';
+
                 librarianMasterReport = `Librarian Master Directive:
 ### 🏛️ Codebase Architecture & System Mechanics
 ${cleanFindings || 'Codebase dependencies analyzed.'}
@@ -4147,7 +4397,7 @@ ${signaturesBlock}${actionStepsLog}
 ${memoriesBlock}
 ### 📂 Context Grounding
 - **Target Files for Coder [C]**: ${libRes.keptFiles.map(f => `\`${f}\``).join(', ') || 'None'}
-- **Reference Files Muted [M]**: ${libRes.mutedFiles.length} file(s) kept in tree at 0 tokens
+- **Reference Files Muted [M]**: ${libRes.mutedFiles.length} file(s) kept in tree at 0 tokens${masterSelectionNotice}
 ${multiStepsTag}
 > 🎯 **Directive to Coder**: Implement the code modifications using \`<file path="..." action="write|patch|update_symbol">\` according to the plan above.`;
 
@@ -4536,6 +4786,7 @@ You already have everything needed. Proceed directly with your analysis, answer,
                         currentMutedFiles: this._currentDiscussion?.mutedFiles || [],
                         pruneMsgId: libLiveBubbleId,
                         projectMemoryManager: this.projectMemoryManager,
+                        ignoreContextSize: this._discussionCapabilities.ignoreContextSize === true,
                         onUpdateMessage: async (msgId, liveContent) => {
                             await this.updateMessageContent(msgId, liveContent, false);
                         },
@@ -4597,7 +4848,7 @@ ${inTurnMemoriesBlock}
 ### 📂 Context Grounding & Budget
 - **Active Files for Modification [C]**: ${activeKeptFiles}
 - **Tokens Liberated**: ~${liberatedTokensCount} tokens (reference files preserved at 0 tokens [M] in tree)
-- **Neural Memory**: Synaptic engram saved to Project Memory Vault & \`.lollms/knowledge.ttl\`
+- **Neural Memory**: Synaptic engram saved to Project Memory Vault & \`.lollms/knowledge.ttl\`${libRes.savedSelection ? `\n- **Saved Context Selection**: \`${libRes.savedSelection.path}\` (*${libRes.savedSelection.description}*)` : ''}
 ${libRes.multiPartPlan ? `\n⚠️ **Task Partitioned (${libRes.multiPartPlan.totalParts} Phases)**: Files exceed budget. Phase 1 targets: ${libRes.multiPartPlan.parts[0].editFiles.map((f: string) => `\`${f}\``).join(', ')}.\n` : ''}
 > 💡 *Next Step*: Deliver the verified code updates now using \`<file path="..." action="write|patch|update_symbol">\` unless you genuinely lack crucial information not seen by the Librarian.`;
 
@@ -4771,7 +5022,8 @@ ${libRes.multiPartPlan ? `\n⚠️ **Task Partitioned (${libRes.multiPartPlan.to
                         const budgetThreshold = Math.round(maxTokens * (targetPercent / 100));
                         const currentTotal = this._currentDiscussion?.lastTokenMetrics?.total || 0;
 
-                        const wouldExceedBudget = (currentTotal + missingTokens > budgetThreshold) || (currentTotal + missingTokens > maxTokens * 0.95);
+                        const isUnlimitedContext = this._discussionCapabilities.ignoreContextSize === true;
+                        const wouldExceedBudget = !isUnlimitedContext && ((currentTotal + missingTokens > budgetThreshold) || (currentTotal + missingTokens > maxTokens * 0.95));
 
                         if (wouldExceedBudget) {
                             this.log(`[Context Shield] Adding missing files (~${missingTokens} tok) exceeds budget (${budgetThreshold} tok). Forwarding to Librarian...`, 'WARN');
@@ -4794,6 +5046,7 @@ Please formulate a solution:
                                     signal: controller.signal,
                                     currentMutedFiles: this._currentDiscussion?.mutedFiles || [],
                                     projectMemoryManager: this.projectMemoryManager,
+                                    ignoreContextSize: this._discussionCapabilities.ignoreContextSize === true,
                                     onStatusUpdate: (status) => {
                                         this.processManager.updateDescription(processId, status);
                                         this.updateGeneratingState();
@@ -5513,23 +5766,10 @@ Do NOT repeat the verbal summary. Output the code tags now.`
         // End-of-Generation Context Verification Check
         if (hasCodeBlocks && !controller?.signal.aborted) {
             const verification = await this.verifyGeneratedPatchContext(normalizedBuffer);
-            if (!verification.valid && !isFastMode) {
+            if (!verification.valid) {
                 const unpossessedList = verification.unpossessedFiles.join(', ');
                 this.log(`[End-of-Generation Verifier] Coder attempted to modify existing unseen files: [${unpossessedList}]`, 'WARN');
-
-                // Standard Mode fallback: summon Librarian only if not in fast mode
-                await this.addMessageToDiscussion({
-                    id: 'verifier_unpossessed_' + Date.now(),
-                    role: 'system',
-                    content: `🛡️ **Context Verifier: Blind Modification Blocked**\nThe Coder attempted to modify existing files that are **NOT loaded in its active context [C]**:\n${verification.unpossessedFiles.map(f => `- \`${f}\``).join('\n')}\n\n*Summoning the Librarian to evaluate and ground these files so changes can be verified safely...*`,
-                    skipInPrompt: true
-                });
-
-                await this.sendMessage({
-                    id: 'user_remediate_unpossessed_' + Date.now(),
-                    role: 'user',
-                    content: `<ask_librarian>\nThe previous turn attempted to patch files that were not in active context: [${unpossessedList}].\nPlease verify dependencies, evaluate the token budget, and load these files for editing.</ask_librarian>`
-                });
+                await this.handleContextVerifierFailure(verification.unpossessedFiles, isFastMode, controller.signal, processId);
                 return;
             }
 
@@ -6147,20 +6387,41 @@ ${targetContent}
           } catch {}
       }
 
-      if (!defaultCmd) {
-          defaultCmd = 'python -u main.py';
+      const folderKey = workspaceFolder.uri.toString();
+      const wsState = this._discussionManager?.context?.workspaceState;
+      const lastSavedDebugCmd = wsState?.get<string>(`lollms_last_debug_cmd_${folderKey}`)
+          || wsState?.get<string>('lollms_last_debug_cmd')
+          || (this._currentDiscussion as any)?.lastDebugCommand;
+
+      let initialDebugCmd = (lastSavedDebugCmd && lastSavedDebugCmd.trim()) ? lastSavedDebugCmd.trim() : defaultCmd;
+      if (!initialDebugCmd) {
+          initialDebugCmd = 'python -u main.py';
       }
 
       const isAssistant = !this._discussionCapabilities.agentMode;
 
       const commandInput = await vscode.window.showInputBox({
           prompt: `Confirm command to run & debug for ${workspaceFolder.name} (${isAssistant ? 'Assistant Mode: Human validation required for each fix' : 'Autonomous Mode'}):`,
-          value: defaultCmd,
+          value: initialDebugCmd,
           placeHolder: "e.g. python -u main.py, npm start, cargo run"
       });
 
       if (!commandInput || !commandInput.trim()) return;
       const finalCmd = commandInput.trim();
+
+      // Persist the user's confirmed command so subsequent runs remember it
+      try {
+          await wsState?.update(`lollms_last_debug_cmd_${folderKey}`, finalCmd);
+          await wsState?.update('lollms_last_debug_cmd', finalCmd);
+          if (this._currentDiscussion) {
+              (this._currentDiscussion as any).lastDebugCommand = finalCmd;
+              if (!this._currentDiscussion.id.startsWith('temp-')) {
+                  await this._discussionManager.saveDiscussion(this._currentDiscussion);
+              }
+          }
+      } catch (err) {
+          this.log(`Failed to save last debug command: ${err}`, 'WARN');
+      }
 
       const { id: procId, controller } = this.processManager.register(this.discussionId, `Debugging: ${finalCmd}...`);
       this.updateGeneratingState();
@@ -6288,16 +6549,41 @@ Please review the output to verify if the application state behaved as expected 
           return;
       }
 
-      const detected = await this.detectTestCommand(workspaceFolder);
+      const folderKey = workspaceFolder.uri.toString();
+      const wsState = this._discussionManager?.context?.workspaceState;
+      const lastSavedTestCmd = wsState?.get<string>(`lollms_last_test_cmd_${folderKey}`)
+          || wsState?.get<string>('lollms_last_test_cmd')
+          || (this._currentDiscussion as any)?.lastTestCommand;
+
+      let initialTestCmd = (lastSavedTestCmd && lastSavedTestCmd.trim()) ? lastSavedTestCmd.trim() : "";
+      if (!initialTestCmd) {
+          const detected = await this.detectTestCommand(workspaceFolder);
+          initialTestCmd = detected.command;
+      }
+
       const commandInput = await vscode.window.showInputBox({
           prompt: `Confirm or customize the test command for ${workspaceFolder.name}:`,
-          value: detected.command,
+          value: initialTestCmd,
           placeHolder: "e.g. python -m pytest tests -v, npm test, cargo test"
       });
 
       if (!commandInput || !commandInput.trim()) return;
 
       const finalCmd = commandInput.trim();
+
+      // Persist the user's confirmed command so subsequent runs remember it
+      try {
+          await wsState?.update(`lollms_last_test_cmd_${folderKey}`, finalCmd);
+          await wsState?.update('lollms_last_test_cmd', finalCmd);
+          if (this._currentDiscussion) {
+              (this._currentDiscussion as any).lastTestCommand = finalCmd;
+              if (!this._currentDiscussion.id.startsWith('temp-')) {
+                  await this._discussionManager.saveDiscussion(this._currentDiscussion);
+              }
+          }
+      } catch (err) {
+          this.log(`Failed to save last test command: ${err}`, 'WARN');
+      }
       const { id: procId, controller } = this.processManager.register(this.discussionId, `Running tests: ${finalCmd}...`);
       this.updateGeneratingState();
 
@@ -6934,6 +7220,17 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     const { id: applyProcId, controller: applyCtrl } = this.processManager.register(this.discussionId, `Applying batch changes...`);
                     this.updateGeneratingState();
 
+                    interface FailedBatchItem {
+                        change: any;
+                        error: string;
+                        filePath: string;
+                        diskContent: string;
+                        failingSnippet: string;
+                        crossFileNotice?: string;
+                    }
+                    const failedBatchItems: FailedBatchItem[] = [];
+                    const isUndoMode = message.undo === true;
+
                     // SEQUENTIAL HIGH-SPEED BATCH APPLY ENGINE (ORDER-PRESERVING)
                     const runBatch = async () => {
                         ChatPanel.isBatchApplying = true;
@@ -6958,7 +7255,6 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                                 });
 
                                 let result: any = { success: false };
-                                const isUndoMode = message.undo === true;
 
                                 try {
                                     const opts = { 
@@ -7027,6 +7323,42 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                                     this.log(`Batch failure on ${change.path}: ${e.message}`, 'ERROR');
                                 }
 
+                                const isSuccess = (result?.success === true);
+
+                                // If application failed, collect details for automated LLM batch repair pass
+                                if (!isSuccess && !isUndoMode && !applyCtrl.signal.aborted) {
+                                    const cleanP = change.path.includes(':') && !/^[a-zA-Z]:[\\/]/.test(change.path) ? change.path.split(':')[0] : change.path;
+                                    let diskText = "";
+                                    try {
+                                        const res = await this._contextManager.resolveWorkspaceFromPath(cleanP);
+                                        if (res) {
+                                            const fileBytes = await vscode.workspace.fs.readFile(res.uri);
+                                            diskText = Buffer.from(fileBytes).toString('utf8');
+                                        }
+                                    } catch (readErr: any) {
+                                        diskText = `(Could not read file: ${readErr.message})`;
+                                    }
+
+                                    let crossNotice = "";
+                                    try {
+                                        const { findHunkInWorkspace } = require('../../utils');
+                                        const searchPart = (change.content?.match(/<<<<<<< SEARCH([\s\S]*?)=======/) || [])[1] || change.content || "";
+                                        const crossFile = await findHunkInWorkspace(searchPart, cleanP, this._contextManager);
+                                        if (crossFile) {
+                                            crossNotice = `MISPLACED HUNK DETECTED: This search block does not exist in '${cleanP}', but was located in '${crossFile.filePath}' around line ${crossFile.line}.`;
+                                        }
+                                    } catch {}
+
+                                    failedBatchItems.push({
+                                        change,
+                                        error: result?.error || "Search block mismatch or block application failed.",
+                                        filePath: cleanP,
+                                        diskContent: diskText,
+                                        failingSnippet: change.content || "",
+                                        crossFileNotice: crossNotice
+                                    });
+                                }
+
                                 // 2. Notify UI: Item result with explicit alreadyApplied state
                                 this._panel.webview.postMessage({
                                     command: 'applyAllResult',
@@ -7035,9 +7367,9 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                                     blockIndex: change.blockIndex,
                                     hunkIndex: change.hunkIndex,
                                     blockId: change.blockId,
-                                    success: (result?.success === true),
-                                    alreadyApplied: (result?.success === true) && !isUndoMode,
-                                    error: result?.success ? undefined : (result?.error || "Symbol or block application failed."),
+                                    success: isSuccess,
+                                    alreadyApplied: isSuccess && !isUndoMode,
+                                    error: isSuccess ? undefined : (result?.error || "Symbol or block application failed."),
                                     currentIndex: i,
                                     totalCount: changesBatch.length,
                                     undo: isUndoMode
@@ -7072,6 +7404,12 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         this.updateGeneratingState();
                         // Final context refresh to show new state in HUD
                         this.updateContextAndTokens({ isBackgroundSync: true });
+
+                        // 🛑 AUTOMATED AI BATCH REPAIR DISPATCH
+                        // If one or more updates failed to apply, automatically assemble all failed files with fresh disk states and resend to the LLM
+                        if (failedBatchItems.length > 0 && !isUndoMode && !applyCtrl.signal.aborted) {
+                            await this.handleBatchApplyFailures(failedBatchItems, messageId);
+                        }
                     };
 
                     runBatch();
@@ -7995,21 +8333,25 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     this._activeRepairController.abort();
                     this._activeRepairController = null;
                 }
-                const maxRepairRounds = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('fileRepairStudioMaxRounds', 20) || 20;
-                // Inform the webview so it re-enables controls and resets the Fix/Stop button immediately
-                if (!this._isDisposed && this._panel.webview) {
-                    this._panel.webview.postMessage({
-                        command: 'fileRepairPassResult',
-                        filePath: message.filePath,
-                        round: 0,
-                        maxRounds: maxRepairRounds,
-                        patchApplied: false,
-                        errorsRemaining: -1,
-                        cancelled: true,
-                        errors: [],
-                        resolvedCount: 0,
-                        llmExplanation: "Repair pass stopped by user. Settings and controls are now unlocked."
-                    });
+                this.processManager.cancelForDiscussion(this.discussionId);
+                this.updateGeneratingState();
+                {
+                    const maxRepairRounds = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('fileRepairStudioMaxRounds', 20) || 20;
+                    // Inform the webview so it re-enables controls and resets the Fix/Stop button immediately
+                    if (!this._isDisposed && this._panel.webview) {
+                        this._panel.webview.postMessage({
+                            command: 'fileRepairPassResult',
+                            filePath: message.filePath,
+                            round: 0,
+                            maxRounds: maxRepairRounds,
+                            patchApplied: false,
+                            errorsRemaining: -1,
+                            cancelled: true,
+                            errors: [],
+                            resolvedCount: 0,
+                            llmExplanation: "Repair pass stopped by user. Settings and controls are now unlocked."
+                        });
+                    }
                 }
                 break;
             case 'rescanFileDiagnostics':
@@ -8017,26 +8359,22 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 break;
             case 'acceptFileRepair':
                 vscode.window.showInformationMessage(`✅ Accepted current file state for ${path.basename(message.filePath)} (${message.errorsCount} errors remaining).`);
+                if (message.filePath) {
+                    try {
+                        const res = await this._contextManager.resolveWorkspaceFromPath(message.filePath);
+                        if (res) {
+                            const doc = await vscode.workspace.openTextDocument(res.uri);
+                            await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.One });
+                        }
+                    } catch {}
+                }
                 break;
             case 'openFileRepairStudio':
                 {
                     const { FileRepairStudioPanel } = require('../../panels/fileRepairStudioPanel');
                     FileRepairStudioPanel.createOrShow(
                         this._extensionUri,
-                        (this as any)._services || {
-                            extensionUri: this._extensionUri,
-                            lollmsAPI: this._lollmsAPI,
-                            contextManager: this._contextManager,
-                            discussionManager: this._discussionManager,
-                            processManager: this.processManager,
-                            gitIntegration: this._gitIntegration,
-                            skillsManager: this._skillsManager,
-                            codeGraphManager: this._codeGraphManager,
-                            toolManager: this._toolManager,
-                            projectMemoryManager: this.projectMemoryManager,
-                            personalityManager: this._personalityManager,
-                            herdManager: this.herdManager
-                        },
+                        this._services,
                         message.filePath,
                         message.errors
                     );
@@ -8050,8 +8388,15 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     message.errors,
                     message.model,
                     message.temperature,
-                    message.reasoningEffort
+                    message.reasoningEffort,
+                    message.maxRounds
                 );
+                break;
+            case 'blameLibrarianForContext':
+                {
+                    const files = Array.isArray(message.files) ? message.files : [];
+                    await this.recallLibrarianWithBlame(files);
+                }
                 break;
             case 'cancelGovernorFilter':
                 {
@@ -8064,9 +8409,9 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 }
                 break;
             case 'runGovernorFilter':
-                {
-                    const { prompt: filterPrompt, presetName, caller, contextSelection, history, currentMutedFiles, customCapacity, targetPercent, reasoningEffort } = message;
-                    if (!filterPrompt || !this._currentDiscussion) break;
+            {
+                const { prompt: filterPrompt, presetName, caller, contextSelection, history, currentMutedFiles, customCapacity, targetPercent, reasoningEffort, ignoreContextSize } = message;
+                if (!filterPrompt || !this._currentDiscussion) break;
 
                     const { id: govProcId, controller: govCtrl } = this.processManager.register(
                         this.discussionId,
@@ -8104,8 +8449,9 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                                         const fileUri = vscode.Uri.joinPath(folder.uri, '.lollms', 'selection', targetFileName);
                                         const bytes = await vscode.workspace.fs.readFile(fileUri);
                                         const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
-                                        if (Array.isArray(parsed)) {
-                                            candidateFiles = parsed;
+                                        const parsedFiles = Array.isArray(parsed) ? parsed : (parsed?.files || []);
+                                        if (Array.isArray(parsedFiles)) {
+                                            candidateFiles = parsedFiles;
                                             break;
                                         }
                                     } catch {}
@@ -8127,6 +8473,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             customCapacity,
                             targetPercent,
                             reasoningEffort: 'none',
+                            ignoreContextSize: ignoreContextSize ?? (this._discussionCapabilities.ignoreContextSize === true),
                             pruneMsgId: isChatCaller ? libMsgId : undefined,
                             projectMemoryManager: this.projectMemoryManager,
                             onUpdateMessage: isChatCaller ? async (msgId, content) => {
@@ -8205,6 +8552,17 @@ ${reportBlock}
                             await this.upgradeLibrarianFindings(result, filterPrompt, analysis);
 
                             this.updateContextAndTokens({ isBackgroundSync: false });
+
+                            if (result.savedSelection) {
+                                const { getAvailableContextSelections } = require('../contextCommands');
+                                getAvailableContextSelections().then((updatedSelections: any[]) => {
+                                    webview.postMessage({
+                                        command: 'updateContext',
+                                        selections: updatedSelections.map(s => s.fileName)
+                                    });
+                                }).catch(() => {});
+                                vscode.window.showInformationMessage(`📚 Librarian saved context selection: ${result.savedSelection.name} (${result.savedSelection.path})`);
+                            }
 
                             webview.postMessage({
                                 command: 'librarianConsultationFinished',
@@ -8670,7 +9028,14 @@ OUTPUT RULES:
                     if (res) {
                         try {
                             const doc = await vscode.workspace.openTextDocument(res.uri);
-                            await vscode.window.showTextDocument(doc);
+                            const editor = await vscode.window.showTextDocument(doc);
+                            if (typeof message.line === 'number' && message.line > 0) {
+                                const lineNum = message.line - 1;
+                                const charNum = (typeof message.character === 'number' && message.character > 0) ? message.character - 1 : 0;
+                                const pos = new vscode.Position(lineNum, charNum);
+                                editor.selection = new vscode.Selection(pos, pos);
+                                editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+                            }
                         } catch (e: any) {
                             vscode.window.showErrorMessage(`Could not open file: ${e.message}`);
                         }
@@ -9954,6 +10319,9 @@ Task:
             case 'requestMissionBriefingUI':
                 await this.openMissionBriefingUI();
                 break;
+            case 'launchDiscussionWithSelectedFiles':
+                await vscode.commands.executeCommand('lollms-vs-coder.launchDiscussionWithSelectedFiles', message.paths);
+                break;
             case 'newDiscussionWithSameContext':
                 await vscode.commands.executeCommand('lollms-vs-coder.newDiscussionWithSameContext', this);
                 break;
@@ -10375,6 +10743,10 @@ Task:
           return { contextData: currentContext, history: historyMessages || [] };
       }
 
+      if (this._discussionCapabilities.ignoreContextSize === true) {
+          return { contextData: currentContext, history: historyMessages || [] };
+      }
+
       const maxTokens = this._currentDiscussion.lastTokenMetrics?.contextSize || 128000;
       const targetThresholdPct = this._discussionCapabilities.contextGovernorTargetThreshold ?? 70;
       const targetBudget = Math.round(maxTokens * (targetThresholdPct / 100));
@@ -10689,13 +11061,16 @@ Task:
 
       const diags = vscode.languages.getDiagnostics(resolution.uri);
       const errors = diags.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+      const warnings = diags.filter(d => d.severity === vscode.DiagnosticSeverity.Warning);
+      const allReportable = [...errors, ...warnings];
 
       const doc = await Promise.resolve(vscode.workspace.openTextDocument(resolution.uri)).catch(() => null);
 
-      const errorDetails = errors.map(e => ({
+      const errorDetails = allReportable.map(e => ({
           line: e.range.start.line + 1,
           character: e.range.start.character + 1,
           message: e.message,
+          severity: e.severity,
           source: e.source || '',
           code: typeof e.code === 'object' ? String(e.code.value) : (e.code !== undefined ? String(e.code) : ''),
           snippet: doc ? doc.lineAt(Math.min(e.range.start.line, doc.lineCount - 1)).text.trim() : ''
@@ -10708,6 +11083,8 @@ Task:
           blockIndex,
           blockId,
           errorsCount: errors.length,
+          warningsCount: warnings.length,
+          totalDiagnosticsCount: allReportable.length,
           errors: errorDetails
       });
   }
@@ -10719,7 +11096,8 @@ Task:
       clientKnownErrors: any[] = [],
       modelOverride?: string,
       temperature?: number,
-      reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'max' = 'medium'
+      reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'max' = 'none',
+      maxRoundsOverride?: number
   ) {
       if (this._isDisposed || !this._panel || !this._panel.webview) return;
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -10728,7 +11106,7 @@ Task:
       const resolution = await this._contextManager.resolveWorkspaceFromPath(filePath);
       if (!resolution) return;
 
-      const maxRounds = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('fileRepairStudioMaxRounds', 20) || 20;
+      const maxRounds = maxRoundsOverride || vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('fileRepairStudioMaxRounds', 20) || 20;
 
       if (this._activeRepairController) {
           this._activeRepairController.abort();
@@ -10736,10 +11114,11 @@ Task:
       this._activeRepairController = new AbortController();
       const signal = this._activeRepairController.signal;
 
+      let doc: vscode.TextDocument;
       let currentFileContent = "";
       let docLang = "plaintext";
       try {
-          const doc = await vscode.workspace.openTextDocument(resolution.uri);
+          doc = await vscode.workspace.openTextDocument(resolution.uri);
           currentFileContent = doc.getText();
           docLang = doc.languageId;
       } catch (err: any) {
@@ -10747,18 +11126,53 @@ Task:
           return;
       }
 
-      // Re-read latest diagnostics from VS Code
+      // Re-read latest diagnostics from VS Code, prioritizing explicitly targeted errors
       const diags = vscode.languages.getDiagnostics(resolution.uri);
       const activeErrors = diags.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
-      const targetErrors = activeErrors.length > 0 ? activeErrors : clientKnownErrors;
+      const targetErrors = (clientKnownErrors && clientKnownErrors.length > 0)
+          ? clientKnownErrors
+          : (activeErrors.length > 0 ? activeErrors : diags);
+
+      const fileName = path.basename(filePath);
+      const proc = this.processManager.register(
+          this.discussionId,
+          `Repairing ${fileName} (Round ${round}/${maxRounds}): ${targetErrors.length} error(s)...`
+      );
+      const processId = proc.id;
+      proc.controller.signal.addEventListener('abort', () => {
+          if (this._activeRepairController) {
+              this._activeRepairController.abort();
+          }
+      });
+
+      // Helper to extract surrounding context window around an error line
+      const getContextWindow = (document: vscode.TextDocument, errorLine: number, windowSize: number = 6): string => {
+          const totalLines = document.lineCount;
+          const startLine = Math.max(1, errorLine - windowSize);
+          const endLine = Math.min(totalLines, errorLine + windowSize);
+          const lines: string[] = [];
+
+          for (let l = startLine; l <= endLine; l++) {
+              const text = document.lineAt(l - 1).text;
+              const isErrorLine = (l === errorLine);
+              const prefix = isErrorLine ? '-> ' : '   ';
+              const lineNumStr = String(l).padStart(4, ' ');
+              lines.push(`${prefix}${lineNumStr} | ${text}`);
+          }
+          return lines.join('\n');
+      };
 
       const errorReportLines = targetErrors.map((e: any, idx: number) => {
           const lNum = typeof e.line === 'number' ? e.line : (e.range ? e.range.start.line + 1 : 1);
           const colNum = typeof e.character === 'number' ? e.character : (e.range ? e.range.start.character + 1 : 1);
           const msg = e.message || String(e);
           const src = e.source ? ` [${e.source}]` : '';
-          return `${idx + 1}. [Line ${lNum}:${colNum}]${src} ${msg}`;
-      }).join('\n');
+          const windowText = doc ? getContextWindow(doc, lNum, 5) : (e.snippet || '');
+          const startL = Math.max(1, lNum - 5);
+          const endL = doc ? Math.min(doc.lineCount, lNum + 5) : lNum + 5;
+
+          return `${idx + 1}. [Line ${lNum}:${colNum}]${src} (${e.criticality ? String(e.criticality).toUpperCase() : 'ERROR'}) ${msg}\n   Context around issue (lines ${startL}–${endL}):\n   \`\`\`${docLang}\n${windowText}\n   \`\`\``;
+      }).join('\n\n');
 
       const isPy = docLang === 'python';
       const langRule = isPy
@@ -10770,12 +11184,31 @@ Task:
       const aReplace = '>>>>>>>' + ' REPLACE';
 
       const systemPrompt = `You are the Senior Linter & Diagnostic Repair Architect (Guardian Protocol).
-Your task is to inspect the reported language server compiler/linter errors in the provided file and generate surgical code repairs to make the file 100% clean.
+Your task is to inspect the reported language server compiler/linter errors in \`${filePath}\` and generate surgical code repairs to make the file 100% clean.
 
 ### 🛡️ STRICT REPAIR CONSTITUTION:
-1. Fix ALL line-by-line compiler/linter errors listed in the report (missing imports, undefined variables, syntax errors, mismatched types).
+1. **SINGLE-FILE EDITING BOUNDARY (MANDATORY)**:
+   - You can ONLY modify \`${filePath}\`. You are strictly forbidden from modifying other files.
+   - All code patches must apply directly to \`${filePath}\`.
 2. ${langRule}
-3. **NEVER WRITE VERY LONG PATCHES**: Output very short, focused AIDER SEARCH/REPLACE blocks (1-5 lines of change) or targeted symbol replacements:
+3. **DO NOT COUNT LINES (CRITICAL)**:
+   - Use the code context window provided with each error to locate the code directly. Never count lines.
+4. **READ-ONLY SCOUTING OF OTHER FILES**:
+   You can scout other files to check imports, signatures, or contracts using:
+   - \`<peek_files path="path/to/other.ts" lines="30" from="top" />\`
+   - \`<grep pattern="symbolName" path="src" />\`
+   - \`<show_symbol target="path/to/other.ts:SymbolName" />\`
+   - \`<read_full_file path="path/to/other.ts" />\`
+5. **EXTERNAL ROOT-CAUSE PROTOCOL**:
+   If an error fundamentally belongs to an external file:
+   - Make a safe, clean accommodation in \`${filePath}\` if possible.
+   - Clearly state that the root cause is external and propose a ready-to-use prompt for the main discussion:
+     ### 📋 PROPOSED PROMPT FOR MAIN DISCUSSION:
+     \`\`\`markdown
+     [Prompt describing external file and needed changes]
+     \`\`\`
+6. **SURGICAL CODE DELIVERY**:
+   Output very short, focused AIDER SEARCH/REPLACE blocks (1-5 lines of change):
 \`\`\`${docLang}:${filePath}
 ${aSearch}
 [exact lines currently on disk]
@@ -10784,13 +11217,14 @@ ${aSep}
 ${aReplace}
 \`\`\`
 Or use targeted symbol replacement: <file path="${filePath}" action="update_symbol" symbol="SymbolName">...</file>
-4. If imports are missing at the top of the file, anchor a small patch near existing imports or line 1.
-5. Provide a brief 1-2 sentence explanation of what was fixed outside code blocks. No fluff.`;
+7. Provide a brief 1-2 sentence explanation of what was fixed outside code blocks.`;
 
       const userMessageText = `### 🔍 COMPILER / LINTER ERRORS DETECTED IN \`${filePath}\` (Round ${round}):
 ${errorReportLines || 'No active errors listed. Verify syntax.'}
 
 ${userPromptHint ? `### 👤 USER INSTRUCTIONS / HINTS:\n"${userPromptHint}"\n` : ''}
+> ⚠️ **NO LINE COUNTING**: Locate the code directly using the snippets and variable names above. Do NOT count lines.
+
 ### 📄 CURRENT CODE ON DISK (\`${filePath}\`):
 \`\`\`${docLang}
 ${currentFileContent}
@@ -10804,24 +11238,41 @@ Generate the surgical fix to resolve these errors.`;
       let streamBuffer = "";
 
       try {
+          let lastPostTime = 0;
+          const THROTTLE_MS = 80;
+
           const response = await this._lollmsAPI.sendChat([
               { role: 'system', content: systemPrompt },
               { role: 'user', content: userMessageText }
           ], (chunk) => {
               if (signal.aborted) return;
               streamBuffer += chunk;
-              this._panel.webview.postMessage({
-                  command: 'repairStreamChunk',
-                  round,
-                  maxRounds,
-                  chunk,
-                  fullText: streamBuffer,
-                  messageId: roundMsgId
-              });
+              const now = Date.now();
+              if (now - lastPostTime >= THROTTLE_MS) {
+                  lastPostTime = now;
+                  this._panel.webview.postMessage({
+                      command: 'repairStreamChunk',
+                      round,
+                      maxRounds,
+                      chunk,
+                      fullText: streamBuffer,
+                      messageId: roundMsgId
+                  });
+              }
           }, signal, targetModel, { 
               thinking: reasoningEffort !== 'none', 
               reasoningEffort: reasoningEffort,
               temperature: temperature
+          });
+
+          // Flush final buffer
+          this._panel.webview.postMessage({
+              command: 'repairStreamChunk',
+              round,
+              maxRounds,
+              chunk: '',
+              fullText: streamBuffer,
+              messageId: roundMsgId
           });
 
           const cleanResponse = stripThinkingTags(response).trim();
@@ -10852,6 +11303,16 @@ Generate the surgical fix to resolve these errors.`;
 
           const resolvedCount = Math.max(0, targetErrors.length - remainingErrors.length);
 
+          const updatedErrorsWithFixed = (clientKnownErrors || []).map((ke: any) => {
+              const stillPresent = remainingErrors.some(re => 
+                  re.message === ke.message || Math.abs((re.range.start.line + 1) - ke.line) <= 5
+              );
+              return {
+                  ...ke,
+                  isFixed: !stillPresent
+              };
+          });
+
           this._panel.webview.postMessage({
               command: 'fileRepairPassResult',
               filePath,
@@ -10860,7 +11321,7 @@ Generate the surgical fix to resolve these errors.`;
               patchApplied: applyRes?.success ?? true,
               patchedContent: newDiskContent,
               errorsRemaining: remainingErrors.length,
-              errors: remainingDetails,
+              errors: updatedErrorsWithFixed.length > 0 ? updatedErrorsWithFixed : remainingDetails,
               resolvedCount,
               llmExplanation: cleanResponse.replace(/```[\s\S]*?```/g, '').trim()
           });
@@ -10896,6 +11357,8 @@ Generate the surgical fix to resolve these errors.`;
               llmExplanation: `Repair pass encountered an error: ${err.message}`
           });
       } finally {
+          this.processManager.unregister(processId);
+          this.updateGeneratingState();
           this._activeRepairController = null;
       }
   }
@@ -11347,96 +11810,8 @@ ${langGuidance}
     }
 
     public async handleFixAllErrors() {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder || !this.processManager) return;
-
-        const allDiagnostics = vscode.languages.getDiagnostics();
-        const urisWithErrors: vscode.Uri[] = [];
-        for (const [uri, diagnostics] of allDiagnostics) {
-            if (diagnostics.some(d => d.severity === vscode.DiagnosticSeverity.Error)) {
-                if (uri.fsPath.startsWith(workspaceFolder.uri.fsPath)) urisWithErrors.push(uri);
-            }
-        }
-
-        if (urisWithErrors.length === 0) {
-            vscode.window.showInformationMessage("🎉 No errors found in the workspace!");
-            return;
-        }
-
-        const { id: processId, controller } = this.processManager.register(this.discussionId, `Repairing ${urisWithErrors.length} files...`);
-        const autoUI = AutomationPanel.createOrShow(this._extensionUri);
-        const sharedCache = new Map<string, string>(); // path -> content
-
-        autoUI.onDidCancel(() => {
-            this.processManager.cancel(processId);
-            autoUI.dispose();
-        });
-
-        try {
-            for (const uri of urisWithErrors) {
-                if (controller.signal.aborted) break;
-                const relPath = vscode.workspace.asRelativePath(uri);
-                const diagnostics = vscode.languages.getDiagnostics(uri).filter(d => d.severity === vscode.DiagnosticSeverity.Error);
-                
-                autoUI.updateFileProgress(relPath, 'scanning', `Starting repair: ${diagnostics.length} errors detected.`, diagnostics.length);
-
-                let hasFixed = false;
-                let retries = 0;
-                const max = this._discussionCapabilities.maxFixRetries || 3;
-
-                while (retries < max && !hasFixed) {
-                    if (controller.signal.aborted) break;
-                    retries++;
-
-                    const doc = await vscode.workspace.openTextDocument(uri);
-                    const errorLog = diagnostics.map(d => `[Line ${d.range.start.line + 1}] ${d.message}`).join('\n');
-                    
-                    // Construct surgical prompt with mutualized cache
-                    const cacheText = Array.from(sharedCache.entries()).map(([p,c]) => `--- ${p} ---\n${c}`).join('\n');
-                    const systemPrompt = await getProcessedSystemPrompt('surgical_agent');
-                    const userPrompt = `### REPAIR TASK\nFile: ${relPath}\n\nErrors:\n${errorLog}\n\nContent:\n${doc.getText()}\n\nShared Knowledge:\n${cacheText || 'No extra context cached yet.'}\n\nINSTRUCTION: Never write long patches. Output very short, focused AIDER SEARCH/REPLACE blocks (1-5 lines). If extensive changes are needed in a function/class, use symbol replacement.`;
-                    
-                    autoUI.updateFileProgress(relPath, 'fixing', `Agent Decision (Attempt ${retries}/${max})...`);
-                    const response = await this._lollmsAPI.sendChat([
-                        { role: 'system', content: systemPrompt },
-                        { role: 'user', content: userPrompt }
-                    ], null, controller.signal, this._currentDiscussion?.model);
-
-                    const cleanResponse = stripThinkingTags(response);
-
-                    // 1. Check for Context Expansion (Decision)
-                    if (cleanResponse.includes('"tool"')) {
-                        try {
-                            const action = JSON.parse(cleanResponse.match(/\{[\s\S]*\}/)![0]);
-                            if (action.tool === 'read_files') {
-                                for(const p of ((action.params.paths || []) as string[])) {
-                                    autoUI.updateFileProgress(relPath, 'scanning', `Reading dependency: ${p}`);
-                                    const content = await this._contextManager.readSpecificFiles([p]);
-                                    sharedCache.set(p, content);
-                                }
-                                continue; // Retry fixing with new context
-                            }
-                        } catch(e) {}
-                    }
-
-                    // 2. Apply Aider Patch
-                    autoUI.updateFileProgress(relPath, 'fixing', `Applying surgical patch...`);
-                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relPath, cleanResponse, this, undefined, { silent: true, autoSave: true });
-                    
-                    // 3. Verify
-                    await new Promise(r => setTimeout(r, 2000));
-                    const currentDiags = vscode.languages.getDiagnostics(uri).filter(d => d.severity === vscode.DiagnosticSeverity.Error);
-                    if (currentDiags.length === 0) {
-                        autoUI.updateFileProgress(relPath, 'success', `Fixed all errors successfully!`);
-                        hasFixed = true;
-                    } else {
-                        autoUI.updateFileProgress(relPath, 'fixing', `Reduced to ${currentDiags.length} errors.`);
-                    }
-                }
-            }
-        } finally {
-            this.processManager.unregister(processId);
-        }
+        const { FileRepairStudioPanel } = require('../../panels/fileRepairStudioPanel');
+        await FileRepairStudioPanel.createOrShowWorkspaceRepair(this._extensionUri, this._services);
     }
 
 }

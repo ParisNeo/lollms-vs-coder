@@ -230,6 +230,7 @@ export interface DiscussionCapabilities {
     contextGovernorPermanentPruning?: boolean; // New key
     enableSymbolMode?: boolean; // New key
     fastMode?: boolean; // Combine Phase 2 (Plan) and Phase 3 (Code) in a single run
+    ignoreContextSize?: boolean; // Ignore context size limit in Context Librarian (keep all task files loaded)
     userPreferences?: string; // Custom user preferences and coding guidelines injected into system prompt
     userPreferenceProfileId?: string; // Selected user preference profile ID
     isExport?: boolean; // True when exporting context & prompt for external clipboard use
@@ -1466,6 +1467,85 @@ export interface AiderHunk {
     replacePart: string;
     startIndex: number;
     endIndex: number;
+}
+
+/**
+ * Project-wide search for a failing or misplaced Aider search block.
+ * Detects when the LLM outputs a patch targeting File A, but the code actually belongs to File B.
+ */
+export async function findHunkInWorkspace(
+    searchPart: string,
+    currentFilePath: string,
+    contextManager: any,
+    signal?: AbortSignal
+): Promise<{ filePath: string; line: number; documentContent: string; snippet: string } | null> {
+    if (!searchPart || !contextManager) return null;
+    const cleanSearch = sanitizeAiderMarkers(searchPart).trim();
+    if (cleanSearch.length < 5) return null;
+
+    const rawLines = cleanSearch.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 4 && !/^[{}()[\];,\s]+$/.test(l));
+    if (rawLines.length === 0) return null;
+
+    // Pick up to 3 most distinctive, non-trivial lines
+    const sortedDistinctive = [...rawLines].sort((a, b) => b.length - a.length).slice(0, 3);
+    const normCurrent = currentFilePath.replace(/\\/g, '/').toLowerCase().trim();
+
+    for (const queryLine of sortedDistinctive) {
+        if (signal?.aborted) break;
+        try {
+            const hits = await contextManager.searchWorkspaceContent(
+                queryLine,
+                { matchCase: false, wholeWord: false, literal: true, bypassGate: true },
+                signal
+            );
+
+            for (const hit of hits) {
+                if (!hit.path || hit.path.startsWith('Security Notice')) continue;
+                const hitNorm = hit.path.replace(/\\/g, '/').toLowerCase().trim();
+                if (hitNorm === normCurrent || hitNorm.endsWith('/' + normCurrent) || normCurrent.endsWith('/' + hitNorm)) {
+                    continue; // Skip the file that already failed
+                }
+
+                // Verify match against actual disk content of candidate file
+                const res = await contextManager.resolveWorkspaceFromPath(hit.path);
+                if (res) {
+                    try {
+                        const fileBytes = await vscode.workspace.fs.readFile(res.uri);
+                        const fileText = Buffer.from(fileBytes).toString('utf8');
+
+                        const normalizedFileText = fileText.replace(/\r\n/g, '\n');
+                        const normalizedSearch = cleanSearch.replace(/\r\n/g, '\n');
+
+                        // Exact substring match
+                        if (normalizedFileText.includes(normalizedSearch)) {
+                            const lineNum = parseInt(hit.line || '1', 10) || 1;
+                            return { filePath: res.relativePath, line: lineNum, documentContent: fileText, snippet: hit.snippet };
+                        }
+
+                        // Flexible trimmed lines match
+                        const fLines = normalizedFileText.split('\n').map(l => l.trim());
+                        const sLines = normalizedSearch.split('\n').map(l => l.trim()).filter(Boolean);
+
+                        if (sLines.length > 0) {
+                            for (let startIdx = 0; startIdx <= fLines.length - sLines.length; startIdx++) {
+                                let matchCount = 0;
+                                for (let k = 0; k < sLines.length; k++) {
+                                    if (fLines[startIdx + k] === sLines[k]) {
+                                        matchCount++;
+                                    }
+                                }
+                                if (matchCount === sLines.length) {
+                                    return { filePath: res.relativePath, line: startIdx + 1, documentContent: fileText, snippet: hit.snippet };
+                                }
+                            }
+                        }
+                    } catch {}
+                }
+            }
+        } catch {}
+    }
+
+    return null;
 }
 
 /**

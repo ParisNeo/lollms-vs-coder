@@ -236,6 +236,7 @@ export class ContextLibrarian {
         customCapacity?: number;
         targetPercent?: number;
         reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max';
+        ignoreContextSize?: boolean;
         pruneMsgId?: string;
         projectMemoryManager?: any;
         onStatusUpdate?: (status: string) => void;
@@ -258,6 +259,7 @@ export class ContextLibrarian {
         maxRounds: number;
         multiPartPlan?: MultiPartPlan;
         hydratedMemories?: string;
+        savedSelection?: { fileName: string; name: string; description: string; path: string };
     }> {
         const { lollmsAPI, contextManager, targetModel, prompt, signal, candidateFiles, onStatusUpdate, onRoundProgress, onStreamChunk, onDiscoveryAction } = options;
 
@@ -365,10 +367,12 @@ export class ContextLibrarian {
             ? options.customCapacity
             : modelMaxTokens;
 
+        const isIgnoreContext = options.ignoreContextSize ?? (options.currentDiscussion?.capabilities?.ignoreContextSize === true);
+
         const targetPercent = (typeof options.targetPercent === 'number' && options.targetPercent > 0)
             ? options.targetPercent
             : (options.currentDiscussion?.capabilities?.contextGovernorTargetThreshold || 70);
-        const targetBudget = Math.round(maxTokens * (targetPercent / 100));
+        const targetBudget = isIgnoreContext ? 100000000 : Math.round(maxTokens * (targetPercent / 100));
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const configuredRounds = options.currentDiscussion?.capabilities?.contextGovernorMaxRounds;
@@ -435,6 +439,7 @@ export class ContextLibrarian {
             maxRounds,
             currentDiscussion: options.currentDiscussion,
             sparqlEnabled: options.currentDiscussion?.capabilities?.sparqlEnabled !== false,
+            ignoreContextSize: isIgnoreContext,
             pruneMsgId: options.pruneMsgId,
             projectMemoryManager: memManager,
             optionsUpdateMessage: options.onUpdateMessage,
@@ -453,8 +458,11 @@ export class ContextLibrarian {
 
         const hasEditFiles = fileCandidates.some(c => c.role === 'edit');
         for (const candidate of fileCandidates) {
-            // Mandate: Only load files that are needed for patching exactly. Reference files are compressed into the report and kept muted.
-            const keep = candidate.role === 'edit' || candidate.keep === true || (!hasEditFiles && candidate.role === 'context' && decision?.status === 'fit_all');
+            // In Ignore Context Size mode, keep all task-relevant candidate files active
+            const keep = isIgnoreContext
+                ? (candidate.role === 'edit' || candidate.role === 'context' || candidate.keep === true || (!hasEditFiles && candidate.relevanceScore > 0))
+                : (candidate.role === 'edit' || candidate.keep === true || (!hasEditFiles && candidate.role === 'context' && decision?.status === 'fit_all'));
+
             if (keep) {
                 keptFiles.push(candidate.path);
                 totalTokens += candidate.tokens;
@@ -527,6 +535,20 @@ export class ContextLibrarian {
             memManager
         );
 
+        // 📁 AUTOMATIC SELECTION FILE CREATION (.lollms/selection/*.lollms-ctx)
+        let savedSelection: { fileName: string; name: string; description: string; path: string } | undefined = undefined;
+        if (keptFiles.length > 0) {
+            const saved = await this.saveLibrarianSelectionFile({
+                prompt: options.userPrompt || prompt,
+                keptFiles,
+                rationale: findingsBody,
+                advice: workerAdvice
+            });
+            if (saved) {
+                savedSelection = saved;
+            }
+        }
+
         return {
             keptFiles,
             mutedFiles,
@@ -541,7 +563,8 @@ export class ContextLibrarian {
             roundsUsed: negotiationResult.roundsUsed || 1,
             maxRounds,
             multiPartPlan,
-            hydratedMemories: undefined
+            hydratedMemories: undefined,
+            savedSelection
         };
     }
 
@@ -732,6 +755,18 @@ export class ContextLibrarian {
         const totalCandidateTokens = fileCandidates.reduce((sum, c) => sum + c.tokens, 0);
         const activeContextLoad = fixedLoad + currentUnmutedTokens;
 
+        if (capabilities.ignoreContextSize === true) {
+            this.updateDiscussionMetrics(
+                currentDiscussion, discussionManager, activeContextLoad, maxTokens,
+                systemTokens, briefingTokens, treeTokens, skillsTokens, currentUnmutedTokens, historyTokens
+            );
+
+            return this.buildPassingResult(
+                contextData, baseInstructions, history, currentPromptMessage, activeContextLoad, maxTokens,
+                systemTokens, briefingTokens, treeTokens, skillsTokens, capabilities, briefingContent, userPromptText
+            );
+        }
+
         // Hard cap safeguard: if active context exceeds capacity (100%), we MUST balance budget even without explicit directives
         const isContextOverBudget = activeContextLoad > triggerThreshold || activeContextLoad > maxTokens;
 
@@ -807,6 +842,7 @@ export class ContextLibrarian {
         governorDirectives?: string[];
         currentDiscussion?: Discussion;
         sparqlEnabled?: boolean;
+        ignoreContextSize?: boolean;
         pruneMsgId?: string;
         projectMemoryManager?: any;
         onStatusUpdate?: (status: string) => void;
@@ -1030,7 +1066,8 @@ export class ContextLibrarian {
             objectiveThreshold,
             objectiveThresholdPercent,
             maxRounds,
-            isSparqlActive
+            isSparqlActive,
+            options.ignoreContextSize === true
         );
 
         const safeUserPromptText = (options.userPromptText || '')
@@ -1685,7 +1722,15 @@ Analyze the requirements. If you lack information on contracts or implementation
 
             let multiPartPlan: MultiPartPlan | undefined = parsedMultiStepsPlan;
 
-            if (multiPartPlan && multiPartPlan.parts.length > 0) {
+            if (options.ignoreContextSize) {
+                decisionStatus = 'fit_all';
+                multiPartPlan = undefined;
+                fileCandidates.forEach(c => {
+                    if (c.role === 'edit' || c.role === 'context') {
+                        c.keep = true;
+                    }
+                });
+            } else if (multiPartPlan && multiPartPlan.parts.length > 0) {
                 decisionStatus = 'split_multi_part';
                 const phase1Files = new Set(multiPartPlan.parts[0].editFiles.map(f => f.toLowerCase().trim()));
                 fileCandidates.forEach(c => {
@@ -1831,6 +1876,16 @@ Apply the required modifications for this phase.`;
         triggerThreshold: number,
         currentMuted: string[] = []
     ): any {
+        if (canAvoidEvictingCurrentPrompt && overflow <= 0) {
+            candidates.forEach(c => { c.keep = true; });
+            return {
+                status: 'fit_all',
+                rationale: "All candidate files kept active.",
+                keep: candidates.map(b => ({ path: b.path, justification: "Active file." })),
+                evict: []
+            };
+        }
+
         const evictList: any[] = [];
         let liberated = 0;
         const analysisParagraph = "The Librarian evaluated the codebase candidates against the objective budget. Priority files were kept active with full content, while supplementary files were set to reference mode.";
@@ -2302,6 +2357,70 @@ Produce a concise, technical architectural directive for the Coder addressing "$
 
         // Findings are saved strictly to permanent Neural Memory & Knowledge Graph.
         // Doctrine and discussion_data_zone remain completely untouched.
+    }
+
+    /**
+     * Creates a reusable context selection file (.lollms/selection/*.lollms-ctx) with a descriptive
+     * summary of what the selection is good for, enabling instant fast-mode loading in future sessions.
+     */
+    public static async saveLibrarianSelectionFile(options: {
+        prompt: string;
+        keptFiles: string[];
+        rationale?: string;
+        advice?: string;
+    }): Promise<{ fileName: string; name: string; description: string; path: string } | null> {
+        const folders = vscode.workspace.workspaceFolders || [];
+        if (folders.length === 0 || !options.keptFiles || options.keptFiles.length === 0) {
+            return null;
+        }
+
+        try {
+            const selectionDir = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'selection');
+            await vscode.workspace.fs.createDirectory(selectionDir);
+
+            const rawPrompt = options.prompt || "Task Selection";
+            const cleanPrompt = rawPrompt.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+            const displayName = cleanPrompt.length > 50 ? cleanPrompt.substring(0, 47) + '...' : cleanPrompt;
+
+            const slug = cleanPrompt
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '_')
+                .replace(/^_+|_+$/g, '')
+                .substring(0, 32) || 'librarian_selection';
+
+            const fileName = `lib_${slug}.lollms-ctx`;
+            const fileUri = vscode.Uri.joinPath(selectionDir, fileName);
+
+            let description = (options.advice || options.rationale || '').trim();
+            description = description.replace(/^#+\s*/gm, '').replace(/```[\s\S]*?```/g, '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+            if (description.length > 180) {
+                description = description.substring(0, 177) + '...';
+            }
+            if (!description) {
+                description = `Context selection optimized by Lead Librarian for: ${displayName}`;
+            }
+
+            const payload = {
+                name: displayName,
+                description,
+                files: options.keptFiles,
+                created: Date.now(),
+                createdBy: "Librarian"
+            };
+
+            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(JSON.stringify(payload, null, 2), 'utf8'));
+            Logger.info(`[Librarian] Saved context selection file: .lollms/selection/${fileName}`);
+
+            return {
+                fileName,
+                name: displayName,
+                description,
+                path: `.lollms/selection/${fileName}`
+            };
+        } catch (err: any) {
+            Logger.warn(`[Librarian] Failed to save selection file: ${err.message}`);
+            return null;
+        }
     }
 
     private static updateTreeWithKeptFiles(tree: string, keptPaths: string[], mutedPaths: string[] = []): string {

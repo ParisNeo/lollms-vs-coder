@@ -25,6 +25,43 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
         vscode.window.showInformationMessage(`✅ Breakpoint set at ${resolution.relativePath}:${line}`);
     }));
 
+    function extractDiagnosticData(diagnostic: any, uri: vscode.Uri, doc?: vscode.TextDocument) {
+        let line = 1;
+        let char = 1;
+
+        if (typeof diagnostic.line === 'number') {
+            line = diagnostic.line;
+            char = typeof diagnostic.character === 'number' ? diagnostic.character : 1;
+        } else if (diagnostic.range) {
+            if (diagnostic.range.start && typeof diagnostic.range.start.line === 'number') {
+                line = diagnostic.range.start.line + 1;
+                char = (diagnostic.range.start.character || 0) + 1;
+            } else if (Array.isArray(diagnostic.range) && diagnostic.range.length > 0 && diagnostic.range[0] && typeof diagnostic.range[0].line === 'number') {
+                line = diagnostic.range[0].line + 1;
+                char = (diagnostic.range[0].character || 0) + 1;
+            }
+        }
+
+        const message = (diagnostic.message || (typeof diagnostic === 'string' ? diagnostic : '')).trim();
+        const source = diagnostic.source || '';
+        const code = typeof diagnostic.code === 'object' ? String(diagnostic.code.value || '') : (diagnostic.code !== undefined ? String(diagnostic.code) : '');
+
+        let snippet = diagnostic.snippet || '';
+        if (!snippet && doc && line <= doc.lineCount) {
+            snippet = doc.lineAt(line - 1).text.trim();
+        }
+
+        return {
+            line,
+            character: char,
+            message,
+            source,
+            code,
+            severity: diagnostic.severity !== undefined ? diagnostic.severity : vscode.DiagnosticSeverity.Error,
+            snippet
+        };
+    }
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixDiagnosticAtPosition', async (pos?: vscode.Position) => {
         const editor = vscode.window.activeTextEditor;
         if (!editor) return;
@@ -32,58 +69,50 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
         // Use the passed position (from hover) or fallback to current cursor
         const position = pos ? new vscode.Position(pos.line, pos.character) : editor.selection.active;
         const diagnostics = vscode.languages.getDiagnostics(editor.document.uri);
-        
-        // Find the diagnostic at the specified position
-        const diagnostic = diagnostics.find(d => d.range.contains(position));
+        const diagnostic = diagnostics.find(d => d.range && typeof d.range.contains === 'function' && d.range.contains(position)) || (diagnostics.length > 0 ? diagnostics[0] : undefined);
         
         if (diagnostic) {
-            await vscode.commands.executeCommand('lollms-vs-coder.fixDiagnostic', editor.document.uri, diagnostic);
+            const diagData = extractDiagnosticData(diagnostic, editor.document.uri, editor.document);
+            await vscode.commands.executeCommand('lollms-vs-coder.openFileRepairStudio', editor.document.uri, [diagData]);
         } else {
-            vscode.window.showInformationMessage("No code issue found at the current cursor position.");
+            await vscode.commands.executeCommand('lollms-vs-coder.openFileRepairStudio', editor.document.uri);
         }
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixDiagnostic', async (uri: vscode.Uri, diagnostic: vscode.Diagnostic) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixDiagnostic', async (uriOrTarget?: any, diagnostic?: any) => {
         try {
-            const document = await vscode.workspace.openTextDocument(uri);
-            const range = diagnostic.range;
-            const errorLine = range.start.line + 1;
-            
-            // 1. Build a visual code snippet with pointers and line numbers
-            const startLine = Math.max(0, range.start.line - 10);
-            const endLine = Math.min(document.lineCount - 1, range.end.line + 10);
-            
-            let codeSnippet = "";
-            for (let i = startLine; i <= endLine; i++) {
-                const lineText = document.lineAt(i).text;
-                const lineNum = i + 1;
-                // Highlight the line if it falls within the diagnostic range
-                const isTarget = (i >= range.start.line && i <= range.end.line);
-                codeSnippet += `${isTarget ? ' -> ' : '    '}${lineNum.toString().padStart(4)} | ${lineText}\n`;
+            let targetUri: vscode.Uri | undefined;
+            if (uriOrTarget instanceof vscode.Uri) {
+                targetUri = uriOrTarget;
+            } else if (typeof uriOrTarget === 'string') {
+                targetUri = vscode.Uri.file(uriOrTarget);
+            } else if (uriOrTarget && uriOrTarget.uri instanceof vscode.Uri) {
+                targetUri = uriOrTarget.uri;
+                if (!diagnostic && uriOrTarget.diagnostic) {
+                    diagnostic = uriOrTarget.diagnostic;
+                }
+            } else if (vscode.window.activeTextEditor) {
+                targetUri = vscode.window.activeTextEditor.document.uri;
             }
 
-            const relativePath = vscode.workspace.asRelativePath(uri);
-            const severityLabel = diagnostic.severity === vscode.DiagnosticSeverity.Error ? 'ERROR' : 'WARNING';
-
-            let prompt = `### ⚠️ CODE ${severityLabel} DETECTED\n\n`;
-            prompt += `**File:** \`${relativePath}\`\n`;
-            prompt += `**Message:** \`${diagnostic.message}\`\n\n`;
-            prompt += `#### 🔍 CODE CONTEXT (Line ${errorLine})\n`;
-            prompt += `\`\`\`${document.languageId}\n${codeSnippet}\`\`\`\n\n`;
-            prompt += `**TASK:**\n`;
-            prompt += `1. Identify the cause of the ${severityLabel.toLowerCase()} at the highlighted line(s).\n`;
-            prompt += `2. Suggest a concise fix using the **SEARCH/REPLACE (AIDER)** format if possible.\n`;
-
-            const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
-            if (workspaceFolder) {
-                 await startDiscussionWithInitialPrompt(services, prompt, workspaceFolder, true, 'user');
-            } else if (getActiveWorkspace()) {
-                 await startDiscussionWithInitialPrompt(services, prompt, getActiveWorkspace()!, true, 'user');
-            } else {
-                vscode.window.showErrorMessage("No workspace folder found for this file.");
+            if (!targetUri) {
+                vscode.window.showErrorMessage("No target file selected for diagnostic fix.");
+                return;
             }
+
+            let diags: any[] | undefined = undefined;
+            if (diagnostic) {
+                let doc: vscode.TextDocument | undefined = undefined;
+                try {
+                    doc = await vscode.workspace.openTextDocument(targetUri);
+                } catch {}
+
+                const singleDiag = Array.isArray(diagnostic) ? diagnostic[0] : diagnostic;
+                diags = [extractDiagnosticData(singleDiag, targetUri, doc)];
+            }
+            await vscode.commands.executeCommand('lollms-vs-coder.openFileRepairStudio', targetUri, diags);
         } catch (e: any) {
-            vscode.window.showErrorMessage(`Failed to open file for diagnostic fix: ${e.message}`);
+            vscode.window.showErrorMessage(`Failed to open Repair Studio for diagnostic fix: ${e.message}`);
         }
     }));
 
@@ -208,49 +237,10 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixFileErrors', async (uri?: vscode.Uri) => {
         const targetUri = uri || vscode.window.activeTextEditor?.document.uri;
-        if (!targetUri) {
-            vscode.window.showErrorMessage("No file selected.");
-            return;
-        }
-
-        const diagnostics = vscode.languages.getDiagnostics(targetUri);
-        const issues = diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Error || d.severity === vscode.DiagnosticSeverity.Warning);
-
-        if (issues.length === 0) {
-            vscode.window.showInformationMessage("No errors or warnings found in this file.");
-            return;
-        }
-
         try {
-            const document = await vscode.workspace.openTextDocument(targetUri);
-            const fileContent = document.getText();
-            const relativePath = vscode.workspace.asRelativePath(targetUri);
-
-            let prompt = `I have ${issues.length} issue(s) (errors/warnings) in \`${relativePath}\`.\n\n`;
-            
-            prompt += `**Issues:**\n`;
-            issues.forEach((issue, index) => {
-                const line = issue.range.start.line + 1;
-                const severity = issue.severity === vscode.DiagnosticSeverity.Error ? 'Error' : 'Warning';
-                prompt += `${index + 1}. [Line ${line}] ${severity}: ${issue.message} (${issue.source || 'unknown'})\n`;
-            });
-
-            prompt += `\n**File Content:**\n\`\`\`${document.languageId}\n${fileContent}\n\`\`\`\n\n`;
-            prompt += `Please analyze these issues and provide the corrected code.`;
-
-            const workspaceFolder = vscode.workspace.getWorkspaceFolder(targetUri) || getActiveWorkspace();
-            
-            if (workspaceFolder) {
-                // Automatically add the file to context so AI has full awareness
-                await vscode.commands.executeCommand('lollms-vs-coder.setContextIncluded', targetUri, [targetUri]);
-                
-                await startDiscussionWithInitialPrompt(services, prompt, workspaceFolder, true, 'user');
-            } else {
-                vscode.window.showErrorMessage("No workspace folder found for this file.");
-            }
-
+            await vscode.commands.executeCommand('lollms-vs-coder.openFileRepairStudio', targetUri);
         } catch (e: any) {
-            vscode.window.showErrorMessage(`Failed to process file: ${e.message}`);
+            vscode.window.showErrorMessage(`Failed to open Repair Studio: ${e.message}`);
         }
     }));
 

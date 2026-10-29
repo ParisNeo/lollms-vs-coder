@@ -80,9 +80,9 @@ export interface DiscussionCapabilities {
     autoBranch: boolean;
     maxFixRetries: number;
     autoApply: boolean;
-    autoSkillMode: boolean;
-    autoToolMode: boolean;
-    disableProjectContext: boolean;
+    autoSkillMode?: boolean;
+    autoToolMode?: boolean;
+    disableProjectContext?: boolean;
     ttftTimeout: number;
     interTokenTimeout: number;
     contextGovernorThreshold: number;
@@ -107,6 +107,16 @@ export interface DiscussionCapabilities {
     userPreferences?: string;
     userPreferenceProfileId?: string;
     isExport?: boolean;
+    forceFullCode?: boolean;
+    addPedagogicalInstruction?: boolean;
+    forceFullCodePath?: boolean;
+    useImageModeForDocs?: boolean;
+    herdPreAnswerCount?: number;
+    herdPostAnswerCount?: number;
+    gitAutoWorkflow?: boolean;
+    tokenEconomyMode?: boolean;
+    fastMode?: boolean;
+    ignoreContextSize?: boolean;
     guiState?: {
         agentBadge: boolean;
         debugBadge: boolean;
@@ -115,6 +125,7 @@ export interface DiscussionCapabilities {
         webSearchBadge?: boolean;
         autoSkillBadge?: boolean;
     };
+    [key: string]: any;
 }
 
 export const state: {
@@ -409,6 +420,8 @@ export const dom = {
     get govMutedCount() { return document.getElementById('gov-muted-count') as HTMLSpanElement; },
     get govTokenLoadLabel() { return document.getElementById('gov-token-load-label') as HTMLSpanElement; },
     get govTopStats() { return document.getElementById('gov-top-stats') as HTMLSpanElement; },
+    get govIgnoreContextSize() { return document.getElementById('gov-ignore-context-size') as HTMLInputElement; },
+    get capIgnoreContextSize() { return document.getElementById('cap-ignoreContextSize') as HTMLInputElement; },
     get govFooterSummary() { return document.getElementById('gov-footer-summary') as HTMLSpanElement; },
     get govClearChatBtn() { return document.getElementById('gov-clear-chat-btn') as HTMLButtonElement; },
     get govSaveCurrentPresetBtn() { return document.getElementById('gov-save-current-preset-btn') as HTMLButtonElement; },
@@ -500,5 +513,7 @@ export const dom = {
     get wizardGovernorStatusText() { return document.getElementById('wizard-governor-status-text') as HTMLSpanElement; },
     get wizardGovernorClearBtn() { return document.getElementById('wizard-governor-clear-btn') as HTMLButtonElement; },
     get wizardCancelBtn() { return document.getElementById('wizard-cancel-btn') as HTMLButtonElement; },
-    get wizardSubmitBtn() { return document.getElementById('wizard-submit-btn') as HTMLButtonElement; }
-    };
+    get wizardSubmitBtn() { return document.getElementById('wizard-submit-btn') as HTMLButtonElement; },
+    get wizardReasoningEffort() { return document.getElementById('wizard-reasoning-effort') as HTMLSelectElement; },
+    get wizardFastMode() { return document.getElementById('wizard-fast-mode') as HTMLInputElement; }
+};

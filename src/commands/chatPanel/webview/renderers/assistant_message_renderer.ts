@@ -150,16 +150,19 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
                 previewPill.style.marginLeft = '8px';
 
                 // --- QUICK-ACTION BUTTONS ON COLLAPSED BAR ---
-                // 1. Apply All / Undo All
+                // 1. Apply All / Apply All Steps / Undo All
                 const applyAllBtn = wrapper.querySelector('.apply-all-btn') as HTMLButtonElement;
                 if (applyAllBtn) {
                     const isUndo = applyAllBtn.classList.contains('undo-all-btn');
+                    const isMultiSteps = applyAllBtn.classList.contains('apply-all-steps-btn');
                     const quickApply = document.createElement('button');
                     quickApply.className = `code-action-btn ${isUndo ? 'secondary-btn' : 'apply-btn'} collapsed-quick-apply`;
                     quickApply.style.cssText = 'height: 20px; font-size: 9.5px; padding: 0 8px; font-weight: bold; margin-left: 4px;';
-                    quickApply.innerHTML = isUndo 
-                        ? '<i class="codicon codicon-discard"></i> Undo All' 
-                        : '<i class="codicon codicon-check-all"></i> Apply All';
+                    if (isUndo) {
+                        quickApply.innerHTML = isMultiSteps ? '<i class="codicon codicon-discard"></i> Undo All Steps' : '<i class="codicon codicon-discard"></i> Undo All';
+                    } else {
+                        quickApply.innerHTML = isMultiSteps ? '<i class="codicon codicon-check-all"></i> Apply All Steps' : '<i class="codicon codicon-check-all"></i> Apply All';
+                    }
                     quickApply.onclick = (e) => {
                         e.stopPropagation();
                         applyAllBtn.click();
@@ -211,7 +214,20 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
                     };
                     previewPill.appendChild(quickAdd);
                 }
-
+                // 4.5. Blame Librarian Button (from collapsed bar)
+                const blameLibrarianBtn = wrapper.querySelector('.blame-librarian-btn:not([disabled])') as HTMLButtonElement;
+                if (blameLibrarianBtn) {
+                    const quickBlame = document.createElement('button');
+                    quickBlame.className = 'code-action-btn apply-btn collapsed-quick-blame';
+                    quickBlame.style.cssText = 'height: 20px; font-size: 9.5px; padding: 0 8px; font-weight: bold; margin-left: 2px; background: var(--vscode-charts-red) !important; color: white !important;';
+                    quickBlame.innerHTML = '<i class="codicon codicon-warning"></i> Blame Librarian';
+                    quickBlame.title = "Blame Librarian for omitted context files and recall";
+                    quickBlame.onclick = (e) => {
+                        e.stopPropagation();
+                        blameLibrarianBtn.click();
+                    };
+                    previewPill.appendChild(quickBlame);
+                }
                 // 5. Unmute Files
                 const unmuteBtn = wrapper.querySelector('.unmute-files-block .unmute-btn:not(.applied), [data-action-type="unmute"] .unmute-btn:not(.applied)') as HTMLButtonElement;
                 if (unmuteBtn && !unmuteBtn.disabled && !wrapper.querySelector('.collapsed-quick-exec')) {

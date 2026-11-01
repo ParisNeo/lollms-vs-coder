@@ -75,6 +75,22 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
                         }
                     }
 
+                    // 4. Also notify CompanionPanel if open
+                    try {
+                        const { CompanionPanel } = require('./commands/companionPanel');
+                        if (CompanionPanel.currentPanel) {
+                            const relativeSavedPath = vscode.workspace.asRelativePath(originalUri);
+                            const meta = this.generatedToMetadata.get(fsPath);
+                            CompanionPanel.currentPanel._panel.webview.postMessage({
+                                command: 'applyAllResult',
+                                filePath: relativeSavedPath,
+                                blockId: (meta as any)?.blockId,
+                                alreadyApplied: true,
+                                success: true
+                            });
+                        }
+                    } catch {}
+
                     await this.cleanup(doc.uri);
                 }
             }
@@ -173,7 +189,11 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         }
     }
 
-    public async openDiff(originalUri: vscode.Uri, newContent: string, discussionId?: string, metadata?: { messageId?: string, blockIndex?: number, hunkIndex?: number }) {
+    public getMetadata(generatedUri: vscode.Uri): { messageId?: string, blockIndex?: number, hunkIndex?: number, filePath?: string, blockId?: string } | undefined {
+        return this.generatedToMetadata.get(generatedUri.fsPath) as any;
+    }
+
+    public async openDiff(originalUri: vscode.Uri, newContent: string, discussionId?: string, metadata?: { messageId?: string, blockIndex?: number, hunkIndex?: number, filePath?: string, blockId?: string }) {
         const activeEditor = vscode.window.activeTextEditor;
         if (activeEditor && activeEditor.document.uri.toString() === originalUri.toString()) {
             this.lastPositions.set(originalUri.toString(), {
@@ -217,23 +237,23 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
             this.generatedToDiscussionId.set(generatedUri.fsPath, discussionId);
         }
         if (metadata) {
-            this.generatedToMetadata.set(generatedUri.fsPath, metadata);
+            this.generatedToMetadata.set(generatedUri.fsPath, metadata as any);
         }
         this.saveState();
 
         const title = `${fileName} (Disk) ↔ ${fileName} (Edit Right & Save to Apply)`;
 
         try {
-            // Determine the column. If we know this diff belongs to an active companion session,
-            // we must target the editor column (non-companion column) so the companion UI stays visible.
+            // Determine the column. If the companion panel is open, place the diff in the other column.
             let targetColumn = vscode.ViewColumn.One;
-            const activeEditor = vscode.window.activeTextEditor;
+            const { CompanionPanel } = require('./commands/companionPanel');
+            const companion = CompanionPanel.currentPanel;
 
-            // If the active editor is the companion (or we are on Column Two/Three), force diff to Column One
-            if (activeEditor && activeEditor.viewColumn && activeEditor.viewColumn !== vscode.ViewColumn.One) {
+            if (companion && companion._panel.viewColumn === vscode.ViewColumn.One) {
+                targetColumn = vscode.ViewColumn.Two;
+            } else if (companion) {
                 targetColumn = vscode.ViewColumn.One;
-            } else if (discussionId && discussionId.startsWith('remote-') === false) {
-                // If there's an active companion, force to Column One
+            } else if (activeEditor && activeEditor.viewColumn && activeEditor.viewColumn !== vscode.ViewColumn.One) {
                 targetColumn = vscode.ViewColumn.One;
             }
 
@@ -243,7 +263,8 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
                 title,
                 {
                     viewColumn: targetColumn,
-                    preserveFocus: true
+                    preserveFocus: false,
+                    preview: false
                 }
             );
         } catch (e: any) {

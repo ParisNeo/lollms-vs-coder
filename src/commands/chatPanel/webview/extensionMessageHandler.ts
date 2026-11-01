@@ -1,6 +1,6 @@
 import { dom, vscode, state } from './dom.js';
 import DOMPurify from 'dompurify';
-import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender, checkAndSyncMessageAppliedState } from './messageRenderer.js';
+import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender, checkAndSyncMessageAppliedState, collapseAllLibrarianMessages } from './messageRenderer.js';
 import { collapseBlockWithScrollPreservation, isScrolledToBottom } from './utils.js';
 import { 
     setCalculatingTokens,
@@ -190,6 +190,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     // Final single sync pass for all context expansion blocks
                     import('./ui.js').then(ui => ui.syncExpansionBlocks());
+
+                    // Automatically collapse any active Librarian messages at the end of message generation
+                    collapseAllLibrarianMessages();
 
                     // HAL9000: Speak the result only if enabled in capabilities
                     if (state.capabilities?.enableTTS && typeof (window as any).halSpeak === 'function') {
@@ -573,6 +576,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         ui.appendRepairStreamMessage('assistant', `${statusText}\n\n${message.llmExplanation || ''}`);
                     });
                 }
+                break;
+            case 'collapseLibrarianMessages':
+                collapseAllLibrarianMessages();
                 break;
             case 'updateMessage':
                 {
@@ -1162,6 +1168,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             if (dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
                         }, 200);
                     }
+                    setTimeout(() => {
+                        collapseAllLibrarianMessages();
+                    }, 150);
                     }
                     break;
 

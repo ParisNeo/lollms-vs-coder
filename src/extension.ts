@@ -109,9 +109,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
     const toolManager = new ToolManager(); // Clean instantiation
     const notebookManager = new NotebookManager(lollmsAPI);
     const inlineDiffProvider = new InlineDiffProvider(lollmsAPI);
-    const quickEditManager = new QuickEditManager(lollmsAPI, inlineDiffProvider, contextManager, memoryManager);
     const diffManager = new DiffManager();
     const herdManager = new HerdManager(lollmsAPI, contextManager, personalityManager);
+
+    // Discussion Manager requires process manager
+    const discussionManager = new DiscussionManager(lollmsAPI, processManager, context);
+
+    const quickEditManager = new QuickEditManager(
+        lollmsAPI,
+        inlineDiffProvider,
+        contextManager,
+        memoryManager,
+        context.extensionUri,
+        discussionManager
+    );
     
     // Initialize RLM Database Manager
     const rlmDb = new RLMDatabaseManager(context);
@@ -133,9 +144,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
 
     // SETUP DIFF MANAGER
     diffManager.setup(context);
-    
-    // Discussion Manager requires process manager
-    const discussionManager = new DiscussionManager(lollmsAPI, processManager, context);
 
     // Services Container - Added rlmDb here so commands can access it
     const services: LollmsServices = {

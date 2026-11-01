@@ -612,6 +612,98 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         };
     }
 
+    // --- TIER 3.5: NON-BLANK LINE SEQUENCE MATCHING (TOLERATES INTERIOR BLANK LINE DRIFT) ---
+    if (candidateMatches.length === 0) {
+        const nonBlankSearch = searchLines.filter(l => l.trim().length > 0);
+        if (nonBlankSearch.length > 0) {
+            for (let i = 0; i < contentLines.length; i++) {
+                if (contentLines[i].trim() === nonBlankSearch[0].trim()) {
+                    let cIdx = i;
+                    let sIdx = 0;
+                    let allMatched = true;
+
+                    while (sIdx < nonBlankSearch.length && cIdx < contentLines.length) {
+                        const cTrim = contentLines[cIdx].trim();
+                        if (cTrim.length === 0) {
+                            cIdx++;
+                            continue;
+                        }
+                        if (cTrim === nonBlankSearch[sIdx].trim()) {
+                            sIdx++;
+                            cIdx++;
+                        } else {
+                            allMatched = false;
+                            break;
+                        }
+                    }
+
+                    if (allMatched && sIdx === nonBlankSearch.length) {
+                        const matchedFileIndent = contentLines[i].match(/^\s*/)?.[0] || "";
+                        const matchedAiIndent = nonBlankSearch[0].match(/^\s*/)?.[0] || "";
+                        const indentDelta = matchedFileIndent.length - matchedAiIndent.length;
+
+                        const adjustedReplace = replaceLines.map(line => {
+                            if (line.trim().length === 0) return "";
+                            const curIndent = line.match(/^\s*/)?.[0] || "";
+                            const newLen = Math.max(0, curIndent.length + indentDelta);
+                            return " ".repeat(newLen) + line.trimStart();
+                        });
+
+                        const before = contentLines.slice(0, i);
+                        const after = contentLines.slice(cIdx);
+                        const finalResult = [...before, ...adjustedReplace, ...after].join('\n');
+
+                        return {
+                            success: true,
+                            result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult,
+                            strategy: 'non_blank_sequence'
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    // --- TIER 3.8: ELLIPSIS / WILDCARD TOLERANT MATCHING ---
+    const isEllipsisLine = (l: string) => /^\s*(?:\.{3,}|#\s*\.{3,}|(?:\/\/|--|;)\s*\.{3,}|(?:\/\/|#)\s*\.\.\.\s*existing\s*code\b)/i.test(l.trim());
+    if (searchLines.some(isEllipsisLine)) {
+        const cleanedSearchLines = searchLines.filter(l => !isEllipsisLine(l));
+        if (cleanedSearchLines.length > 0) {
+            for (let i = 0; i <= contentLines.length - cleanedSearchLines.length; i++) {
+                let match = true;
+                for (let j = 0; j < cleanedSearchLines.length; j++) {
+                    if (contentLines[i + j].trim() !== cleanedSearchLines[j].trim()) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    const matchedFileIndent = contentLines[i].match(/^\s*/)?.[0] || "";
+                    const matchedAiIndent = cleanedSearchLines[0].match(/^\s*/)?.[0] || "";
+                    const indentDelta = matchedFileIndent.length - matchedAiIndent.length;
+
+                    const cleanReplaceLines = replaceLines.filter(l => !isEllipsisLine(l));
+                    const adjustedReplace = cleanReplaceLines.map(line => {
+                        if (line.trim().length === 0) return "";
+                        const curIndent = line.match(/^\s*/)?.[0] || "";
+                        const newLen = Math.max(0, curIndent.length + indentDelta);
+                        return " ".repeat(newLen) + line.trimStart();
+                    });
+
+                    const before = contentLines.slice(0, i);
+                    const after = contentLines.slice(i + cleanedSearchLines.length);
+                    const finalResult = [...before, ...adjustedReplace, ...after].join('\n');
+
+                    return {
+                        success: true,
+                        result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult,
+                        strategy: 'ellipsis_wildcard_matched'
+                    };
+                }
+            }
+        }
+    }
+
     // --- TIER 4: ANCHOR-BASED FLEXIBLE MATCHING (TOLERATES INTERIOR BLANK LINES / WHITESPACE DRIFT) ---
     // If search block has 3+ lines, match non-empty first and last lines, checking interior similarity
     if (searchLines.length >= 3) {
@@ -677,6 +769,124 @@ export function applySearchReplace(content: string, searchBlock: string, replace
                     strategy: 'anchor_similarity'
                 };
             }
+        }
+    }
+
+    // --- TIER 4.5: SLIDING WINDOW FUZZY LINE SIMILARITY ---
+    if (searchLines.length >= 2 && contentLines.length >= searchLines.length) {
+        let bestSim = 0;
+        let bestIdx = -1;
+
+        for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+            let totalSim = 0;
+            for (let j = 0; j < searchLines.length; j++) {
+                totalSim += calculateLineSimilarity(contentLines[i + j], searchLines[j]);
+            }
+            const avgSim = totalSim / searchLines.length;
+            if (avgSim > bestSim) {
+                bestSim = avgSim;
+                bestIdx = i;
+            }
+        }
+
+        if (bestSim >= 0.82 && bestIdx !== -1) {
+            const matchedFileIndent = contentLines[bestIdx].match(/^\s*/)?.[0] || "";
+            const matchedAiIndent = searchLines[0].match(/^\s*/)?.[0] || "";
+            const indentDelta = matchedFileIndent.length - matchedAiIndent.length;
+
+            const adjustedReplace = replaceLines.map(line => {
+                if (line.trim().length === 0) return "";
+                const curIndent = line.match(/^\s*/)?.[0] || "";
+                const newLen = Math.max(0, curIndent.length + indentDelta);
+                return " ".repeat(newLen) + line.trimStart();
+            });
+
+            const before = contentLines.slice(0, bestIdx);
+            const after = contentLines.slice(bestIdx + searchLines.length);
+            const finalResult = [...before, ...adjustedReplace, ...after].join('\n');
+
+            return {
+                success: true,
+                result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult,
+                strategy: 'fuzzy_similarity'
+            };
+        }
+    }
+
+    // --- TIER 5: DEEP FUNCTION / SYMBOL DECLARATION SCANNER & DOCSTRING INSERTER ---
+    let targetSymbolName = "";
+    let targetSymbolIsClass = false;
+    for (const line of searchLines) {
+        const m = line.match(/^\s*(?:async\s+)?(?:def|class|function)\s+([a-zA-Z0-9_]+)/);
+        if (m) {
+            targetSymbolName = m[1];
+            targetSymbolIsClass = line.includes('class ');
+            break;
+        }
+    }
+    if (!targetSymbolName) {
+        for (const line of replaceLines) {
+            const m = line.match(/^\s*(?:async\s+)?(?:def|class|function)\s+([a-zA-Z0-9_]+)/);
+            if (m) {
+                targetSymbolName = m[1];
+                targetSymbolIsClass = line.includes('class ');
+                break;
+            }
+        }
+    }
+
+    if (targetSymbolName) {
+        const symbolRegex = new RegExp(`^\\s*(?:async\\s+)?(?:def|class|function)\\s+${targetSymbolName}\\b`);
+        const matchedLineIdx = contentLines.findIndex(l => symbolRegex.test(l));
+
+        if (matchedLineIdx !== -1) {
+            const baseIndent = contentLines[matchedLineIdx].match(/^\s*/)?.[0] || "";
+            const isPy = targetSymbolIsClass || contentLines[matchedLineIdx].includes('def ');
+
+            let endLineIdx = matchedLineIdx + 1;
+            if (isPy) {
+                for (let k = matchedLineIdx + 1; k < contentLines.length; k++) {
+                    const curIndent = contentLines[k].match(/^\s*/)?.[0].length || 0;
+                    if (contentLines[k].trim().length > 0 && curIndent <= baseIndent.length && !contentLines[k].trim().startsWith('#')) {
+                        break;
+                    }
+                    endLineIdx = k + 1;
+                }
+            } else {
+                let braceCount = 0;
+                let foundBrace = false;
+                for (let k = matchedLineIdx; k < contentLines.length; k++) {
+                    for (const ch of contentLines[k]) {
+                        if (ch === '{') { braceCount++; foundBrace = true; }
+                        else if (ch === '}') { braceCount--; }
+                    }
+                    endLineIdx = k + 1;
+                    if (foundBrace && braceCount <= 0) break;
+                }
+            }
+
+            const cleanReplaceLines = replaceLines.filter(l => !isEllipsisLine(l));
+            const firstReplaceNonEmpty = cleanReplaceLines.find(l => l.trim().length > 0);
+            const firstReplaceIndent = firstReplaceNonEmpty ? (firstReplaceNonEmpty.match(/^\s*/)?.[0] || "") : "";
+            const indentDelta = baseIndent.length - firstReplaceIndent.length;
+
+            const adjustedReplace = cleanReplaceLines.map(line => {
+                if (line.trim().length === 0) return "";
+                const curIndent = line.match(/^\s*/)?.[0] || "";
+                const newLen = Math.max(0, curIndent.length + indentDelta);
+                return " ".repeat(newLen) + line.trimStart();
+            });
+
+            // If the model gave a full replacement for the function or docstring insertion
+            const before = contentLines.slice(0, matchedLineIdx);
+            const after = contentLines.slice(endLineIdx);
+            const finalResult = [...before, ...adjustedReplace, ...after].join('\n');
+
+            return {
+                success: true,
+                result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult,
+                strategy: 'function_decl_anchor_deep'
+            };
         }
     }
 
@@ -1101,7 +1311,7 @@ const sparqlDynamicRule = isSparqlActive ? `
 
         for (const line of lines) {
             const lower = line.toLowerCase().trim();
-            if (lower.match(/^#+\s*(?:muted\s+files|active\s+files|files\s+kept|files\s+to\s+edit|priority\s+edit\s+files|evicted\s+files|token\s+budget|governor\s+selection|session\s+events)/i)) {
+            if (lower.match(/^#+\s*(?:muted\s+files|active\s+files|files\s+kept|files\s+to\s+edit|priority\s+edit\s+files|evicted\s+files|token\s+budget|governor\s+selection|session\s+events|.*verified\s+findings|.*previous\s+task|.*task\s+archive)/i)) {
                 skippingMuteSection = true;
                 continue;
             }
@@ -1110,7 +1320,7 @@ const sparqlDynamicRule = isSparqlActive ? `
             }
             if (skippingMuteSection) continue;
 
-            if (lower.match(/^(?:-\s*)?(?:i(?:'ll| will)\s+keep\s+.*(?:muted|active)|priority\s+edit\s+files|files?\s+kept\s+active|muted\s+files?|total\s+budget:|budget\s+remaining:)/i)) {
+            if (lower.match(/^(?:-\s*)?(?:i(?:'ll| will)\s+keep\s+.*(?:muted|active)|priority\s+edit\s+files|files?\s+kept\s+active|muted\s+files?|total\s+budget:|budget\s+remaining:|\*\*task\*\*:)/i)) {
                 continue;
             }
             if (lower.includes('kept with structure') || lower.includes('muted with structure') || lower.includes('keep active or reference')) {

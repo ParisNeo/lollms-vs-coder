@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.76",
+  "version": "1.0.77",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -2013,14 +2013,24 @@
       ],
       "editor/title": [
         {
+          "command": "lollms-vs-coder.acceptDiff",
+          "when": "isInDiffEditor",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lollms-vs-coder.rejectDiff",
+          "when": "isInDiffEditor",
+          "group": "navigation@2"
+        },
+        {
           "command": "lollms-vs-coder.debugErrorWithAI",
           "when": "debugState == 'stopped' && lollms:hasDebugError",
-          "group": "navigation@1"
+          "group": "navigation@3"
         },
         {
           "command": "lollms-vs-coder.convertNotebookToScript",
           "when": "resourceExtname == .ipynb",
-          "group": "navigation"
+          "group": "navigation@4"
         }
       ],
       "view/title": [
@@ -2369,7 +2379,7 @@
   "scripts": {
     "vscode:prepublish": "npm run esbuild-package",
     "build-webview": "npm run copy-assets && esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts",
-    "minify-webview": "npm run copy-assets && esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts",
+    "minify-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts",
     "compile-tests": "esbuild ./src/test/runTest.ts --bundle --outfile=out/test/runTest.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap && esbuild ./src/test/suite/index.ts --bundle --outfile=out/test/suite/index.js --external:vscode --external:mocha --external:glob --format=cjs --platform=node --target=es2020 --sourcemap && esbuild ./src/test/suite/extension.test.ts --bundle --outfile=out/test/suite/extension.test.js --external:vscode --external:mocha --external:glob --format=cjs --platform=node --target=es2020 --sourcemap",
     "compile": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap && npm run compile-tests",
     "watch": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap --watch",
@@ -2377,9 +2387,9 @@
     "copy-assets": "cpx \"src/commands/chatPanel/webview/*.{css,html}\" out/webview && cpx \"src/commands/companion/*.html\" out/webview && cpx \"src/webview/*.js\" out/webview && cpx \"media/**\" out/media && cpx \"node_modules/@vscode/codicons/dist/codicon.{css,ttf}\" out/styles && cpx \"node_modules/prismjs/themes/prism-tomorrow.css\" out/styles && cpx \"src/skills/**/*\" out/skills && cpx \"l10n/*.json\" out/l10n && cpx \"l10n/*.json\" l10n && cpx \"package.nls*.json\" out",
     "audit": "npm audit --audit-level moderate",
     "audit-fix": "npm audit fix --audit-level=moderate || echo 'Audit fix finished with remaining issues.'",
-    "package": "npx @vscode/vsce package",
+    "package": "vsce package",
     "optimize-icon": "powershell -ExecutionPolicy Bypass -File scripts/optimize_icon.ps1",
-    "build-and-package": "npm run optimize-icon && npx @vscode/vsce package",
+    "build-and-package": "npm run optimize-icon && vsce package",
     "pretest": "npm run compile && npm audit --audit-level=moderate",
     "test": "node ./out/test/runTest.js",
     "security-audit": "npm audit --audit-level moderate",
@@ -2398,7 +2408,7 @@
     "@types/prismjs": "^1.26.4",
     "@types/vscode": "1.74.0",
     "@vscode/test-electron": "^2.3.9",
-    "@vscode/vsce": "^4.0.0",
+    "@vscode/vsce": "^4.1.0",
     "cpx2": "^4.2.0",
     "esbuild": "^0.28.1",
     "glob": "^8.1.0",

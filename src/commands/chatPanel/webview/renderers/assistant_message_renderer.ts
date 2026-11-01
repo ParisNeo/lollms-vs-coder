@@ -11,14 +11,15 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
     const bodyDiv = wrapper.querySelector('.message-body') as HTMLElement;
     if (!bodyDiv) return;
 
-    // Detect message role accurately
-    const isUser = safeMessageId.startsWith('user_') || wrapper.querySelector('.message')?.classList.contains('user-message');
-    const isLibrarianReport = (typeof rawContent === 'string' && rawContent.startsWith('Librarian agent report:')) || safeMessageId.startsWith('lib_report_');
-    const isContextShield = safeMessageId.startsWith('verification_notice_') || (typeof rawContent === 'string' && rawContent.startsWith('Librarian Verification Notice:')) || wrapper.dataset.personalityName?.includes('Context Shield');
-    const isLibrarian = !isContextShield && (isLibrarianReport || safeMessageId.startsWith('governor_') || safeMessageId.startsWith('librarian_') || wrapper.dataset.personalityName?.includes('Governor') || wrapper.dataset.personalityName?.includes('Librarian'));
-    const isSystem = !isLibrarian && !isContextShield && (safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message'));
-
     const msgDiv = wrapper.querySelector('.message') as HTMLElement;
+    const isUser = safeMessageId.startsWith('user_') || 
+                   msgDiv?.classList.contains('user-message') || 
+                   wrapper.getAttribute('data-role') === 'user';
+    const rawContentStr = typeof rawContent === 'string' ? rawContent : (Array.isArray(rawContent) ? rawContent.filter(p => p && p.type === 'text').map(p => p.text).join('\n') : '');
+    const isLibrarianReport = rawContentStr.startsWith('Librarian agent report:') || rawContentStr.startsWith('Librarian Master Directive:') || rawContentStr.includes('### 📚 **Lead Librarian') || safeMessageId.startsWith('lib_report_');
+    const isContextShield = safeMessageId.startsWith('verification_notice_') || rawContentStr.startsWith('Librarian Verification Notice:') || wrapper.dataset.personalityName?.includes('Context Shield');
+    const isLibrarian = !isContextShield && (isLibrarianReport || safeMessageId.startsWith('governor_') || safeMessageId.startsWith('librarian_') || safeMessageId.startsWith('lib_') || wrapper.dataset.personalityName?.includes('Governor') || wrapper.dataset.personalityName?.includes('Librarian'));
+    const isSystem = !isLibrarian && !isContextShield && (safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message'));
 
     // Update avatar icon and color theme for Librarian or Context Shield
     if (isContextShield) {
@@ -32,6 +33,7 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
             msgDiv.style.borderLeftColor = 'var(--vscode-charts-blue)';
         }
     } else if (isLibrarian) {
+        wrapper.dataset.isLibrarian = 'true';
         const avatarDiv = wrapper.querySelector('.message-avatar') as HTMLElement;
         if (avatarDiv) {
             avatarDiv.innerHTML = '<span class="codicon codicon-library" style="color:var(--vscode-charts-orange)"></span>';

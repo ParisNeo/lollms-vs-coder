@@ -5341,7 +5341,7 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
         wizardSortSelect.value = savedSortOrder;
     }
 
-    const initialMuted = state.wizardMutedFiles || state.mutedFiles || [];
+    const initialMuted = state.wizardMutedFiles || [];
     wizardMutedSet = new Set(initialMuted.map(m => m.replace(/\\/g, '/').toLowerCase().trim()));
     state.wizardMutedFiles = Array.from(wizardMutedSet);
 

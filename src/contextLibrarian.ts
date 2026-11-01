@@ -113,13 +113,14 @@ export class ContextLibrarian {
             const rootKnowledge = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'KNOWLEDGE.md');
             const bytes = await vscode.workspace.fs.readFile(rootKnowledge);
             const text = Buffer.from(bytes).toString('utf8');
-            if (text.trim()) return text;
+            const cleaned = this.cleanStructureContent(text);
+            if (cleaned.trim()) return cleaned;
         } catch {}
 
         try {
             const structUri = vscode.Uri.joinPath(folders[0].uri, '.lollms', 'structure.md');
             const bytes = await vscode.workspace.fs.readFile(structUri);
-            return Buffer.from(bytes).toString('utf8');
+            return this.cleanStructureContent(Buffer.from(bytes).toString('utf8'));
         } catch {
             return "";
         }
@@ -133,7 +134,7 @@ export class ContextLibrarian {
 
         for (const line of lines) {
             const lower = line.toLowerCase().trim();
-            if (lower.match(/^#+\s*(?:muted\s+files|active\s+files|files\s+kept|files\s+to\s+edit|priority\s+edit\s+files|evicted\s+files|token\s+budget|governor\s+selection|librarian\s+selection|session\s+events)/i)) {
+            if (lower.match(/^#+\s*(?:muted\s+files|active\s+files|files\s+kept|files\s+to\s+edit|priority\s+edit\s+files|evicted\s+files|token\s+budget|governor\s+selection|librarian\s+selection|session\s+events|.*verified\s+findings|.*previous\s+task|.*task\s+archive)/i)) {
                 skippingMuteSection = true;
                 continue;
             }
@@ -142,7 +143,7 @@ export class ContextLibrarian {
             }
             if (skippingMuteSection) continue;
 
-            if (lower.match(/^(?:-\s*)?(?:i(?:'ll| will)\s+keep\s+.*(?:muted|active)|priority\s+edit\s+files|files?\s+kept\s+active|muted\s+files?|total\s+budget:|budget\s+remaining:)/i)) {
+            if (lower.match(/^(?:-\s*)?(?:i(?:'ll| will)\s+keep\s+.*(?:muted|active)|priority\s+edit\s+files|files?\s+kept\s+active|muted\s+files?|total\s+budget:|budget\s+remaining:|\*\*task\*\*:)/i)) {
                 continue;
             }
             if (lower.includes('kept with structure') || lower.includes('muted with structure') || lower.includes('keep active or reference')) {
@@ -388,7 +389,7 @@ export class ContextLibrarian {
         let recalledMemories = "";
         if (memManager && typeof memManager.getFormattedMemoryBlock === 'function') {
             try {
-                recalledMemories = await memManager.getFormattedMemoryBlock(options.userPrompt || prompt);
+                recalledMemories = await memManager.getFormattedMemoryBlock(options.userPrompt || prompt, undefined, options.currentDiscussion?.id);
             } catch (memErr) {
                 Logger.warn(`[Librarian] Memory hydration warning: ${memErr}`);
             }
@@ -1054,7 +1055,7 @@ export class ContextLibrarian {
         const memMgr = options.projectMemoryManager || (options.contextManager as any)?.agentManager?.projectMemoryManager;
         if (memMgr && typeof memMgr.getFormattedMemoryBlock === 'function') {
             try {
-                recalledMemories = await memMgr.getFormattedMemoryBlock(options.userPrompt || prompt);
+                recalledMemories = await memMgr.getFormattedMemoryBlock(options.userPrompt || prompt, undefined, options.currentDiscussion?.id);
             } catch (memErr) {
                 Logger.warn(`[Librarian] Memory hydration warning: ${memErr}`);
             }
@@ -1165,6 +1166,8 @@ Analyze the requirements. If you lack information on contracts or implementation
             { role: 'user', content: initialUserPrompt }
         ];
 
+        let currentThoughts = "";
+
         while (currentRound < maxRounds) {
             if (signal.aborted) break;
             currentRound++;
@@ -1238,7 +1241,7 @@ Analyze the requirements. If you lack information on contracts or implementation
                 throw new Error(`Librarian could not communicate with LLM: ${err.message}`);
             }
 
-            const currentThoughts = cleanActionTagsFromText(cleanResponse) || cleanResponse;
+            currentThoughts = cleanActionTagsFromText(cleanResponse) || cleanResponse;
 
             // Track any tested SPARQL queries executed during this round to include in findings
             const sparqlInRound = cleanResponse.match(/<sparql\b[^>]*query=["']([\s\S]*?)["'][^>]*\/>/i) ||
@@ -2311,52 +2314,9 @@ Produce a concise, technical architectural directive for the Coder addressing "$
             Logger.warn(`[Librarian] Failed to persist insight to Knowledge Graph: ${err.message}`);
         }
 
-        // 2. Ingest into Project Memory (Permanent Neural Engrams with Timestamps & Tags for Dream Reconciliation)
-        try {
-            const { ChatPanel } = require('./commands/chatPanel/chatPanel');
-            const projectMemoryManager = passedMemoryManager ||
-                                          ((discussionManager as any).context)?.projectMemoryManager || 
-                                          (discussionManager as any)?.services?.projectMemoryManager ||
-                                          (ChatPanel.currentPanel as any)?.projectMemoryManager;
-
-            if (projectMemoryManager) {
-                const nowIso = new Date().toISOString();
-                const engramId = `librarian_${cleanTopic.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 30)}`;
-                const engramContent = `## 🏛️ TASK ARCHITECTURE & CONTRACTS: "${prompt}" (${nowIso})\n\n${findings.slice(0, 4000)}\n\n### 📂 TARGET FILES:\n${relevantFiles.map(f => `- \`${f}\``).join('\n')}`;
-
-                if (typeof projectMemoryManager.updateMemory === 'function') {
-                    await projectMemoryManager.updateMemory(
-                        'add',
-                        engramId,
-                        `Librarian: ${cleanTopic}`,
-                        engramContent,
-                        'architecture',
-                        95,
-                        [
-                            ...relevantFiles.map(f => ({ verb: 'explains', targetId: f })),
-                            { verb: 'has_tag', targetId: 'architecture' },
-                            { verb: 'has_tag', targetId: 'task' },
-                            { verb: 'recorded_at', targetId: nowIso }
-                        ]
-                    );
-                } else if (typeof projectMemoryManager.addMemory === 'function') {
-                    await projectMemoryManager.addMemory({
-                        id: engramId,
-                        title: `Librarian: ${cleanTopic}`,
-                        content: engramContent,
-                        category: 'architecture',
-                        importance: 95,
-                        tags: ['architecture', 'task', ...relevantFiles]
-                    });
-                }
-                Logger.info(`[Librarian] Ingested dated engram '${engramId}' into Project Memory for future use.`);
-            }
-        } catch (memErr: any) {
-            Logger.warn(`[Librarian] Failed to record engram to Project Memory: ${memErr.message}`);
-        }
-
-        // Findings are saved strictly to permanent Neural Memory & Knowledge Graph.
-        // Doctrine and discussion_data_zone remain completely untouched.
+        // Findings are routed strictly to the unified Knowledge Graph (.lollms/knowledge.ttl).
+        // Ephemeral prompt-specific findings are NEVER persisted as high-importance global engrams in project_memory.json,
+        // which prevents cross-session memory contamination and hallucinations in future discussions.
     }
 
     /**

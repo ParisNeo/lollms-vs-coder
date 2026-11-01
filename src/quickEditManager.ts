@@ -17,15 +17,23 @@ export class QuickEditManager {
         private lollmsAPI: LollmsAPI,
         private inlineDiffProvider: InlineDiffProvider,
         private contextManager: ContextManager,
-        private memoryManager: MemoryManager
+        private memoryManager: MemoryManager,
+        private extensionUri?: vscode.Uri,
+        private discussionManager?: any
     ) {}
 
     public async triggerQuickEdit() {
         const activeEditor = vscode.window.activeTextEditor;
-        const panel = CompanionPanel.createOrShow(
-            vscode.extensions.getExtension('parisneo.lollms-vs-coder')!.extensionUri, 
-            "Lollms Companion"
-        );
+        const extUri = this.extensionUri || vscode.extensions.getExtension('parisneo.lollms-vs-coder')?.extensionUri;
+        if (!extUri) {
+            vscode.window.showErrorMessage("Failed to locate extension URI for Lollms Companion.");
+            return;
+        }
+
+        const panel = CompanionPanel.createOrShow(extUri, "Lollms Companion");
+        panel.agentManager = this.contextManager?.agentManager;
+        panel.discussionManager = this.discussionManager;
+
         if (activeEditor && activeEditor.document.uri.scheme === 'file') {
             panel.setActiveEditor(activeEditor);
         }
@@ -39,61 +47,35 @@ export class QuickEditManager {
     }
 
     private async processInstruction(payloadString: string, panel: CompanionPanel) {
-        let payload = { text: "", mode: "standard" };
+        let payload = { text: "" };
         try {
             payload = JSON.parse(payloadString);
         } catch {
-            payload = { text: payloadString, mode: "standard" };
+            payload = { text: payloadString };
         }
 
-        const instruction = payload.text;
-        const isGroundingMode = payload.mode === 'grounding';
+        const instruction = (payload.text || "").trim();
+        if (!instruction) {
+            panel.setLoading(false);
+            return;
+        }
 
         const editor = panel.getActiveEditor();
-        
         let prompt = "";
-        let contextText = "";
         let currentFileBlock = "";
-        let hasSelection = false;
         let isNotebook = false;
         let notebookContext = "";
         let languageId = "plaintext";
         let relativePath = "unspecified_file";
 
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const enableWebSearch = config.get<boolean>('companion.enableWebSearch');
-        const enableArxivSearch = config.get<boolean>('companion.enableArxivSearch');
-        
-        const tools: ToolDefinition[] = [];
-        if (enableWebSearch) tools.push(searchWebTool);
-        if (enableArxivSearch) tools.push(searchArxivTool);
-
+        const userMsgId = 'user_' + Date.now();
+        panel.chatHistory.push({ id: userMsgId, role: 'user', content: instruction });
+        panel._panel.webview.postMessage({ command: 'updateChat', history: panel.chatHistory, streamingText: "" });
         panel.setLoading(true);
 
         try {
-            if (isGroundingMode) {
-                // --- COMPANION GROUNDING MODE (ALL SELECTED FILES + COMPLETE TREE) ---
-                const activeDiscussion = panel.agentManager?.getCurrentDiscussion();
-                const importedIds = activeDiscussion?.importedSkills || [];
-
-                const fullContext = await this.contextManager.getContextContent({
-                    importedSkillIds: importedIds,
-                    includeTree: true,
-                    modelName: this.lollmsAPI.getModelName()
-                });
-
-                currentFileBlock = `### 🏢 FULL CODEBASE STRUCTURE (ONTOLOGY TREE)\n${fullContext.projectTree}\n\n### 📄 GROUNDED FILE CONTENTS\n${fullContext.selectedFilesContent || "*(No files currently checked in the matrix)*"}`;
-                prompt = `**My Question / Message:** "${instruction}"\n\n` +
-                            `**COMPLIANCE RULES (MANDATORY):**\n` +
-                            `1. You are operating with **Full Grounding Mode** active. You have full vision of our tree and selected files above.\n` +
-                            `2. To CREATE, MODIFY, or PATCH files on disk, you MUST use structured \`<file path="..." action="write|patch|update_symbol">\` XML tags.\n` +
-                            `3. For non-workspace code examples and explanations, use standard markdown code blocks (e.g. \`\`\`python).\n` +
-                            `4. Use our un-validated interaction tools (<open_file />, <set_breakpoint />) proactively to control the editor window.`;
-            } else if (editor) {
+            if (editor) {
                 const document = editor.document;
-                const selection = editor.selection;
-                const selectedText = document.getText(selection);
-                hasSelection = !selection.isEmpty && selectedText.trim().length > 0;
                 languageId = document.languageId;
                 
                 // Multi-root and external folder path resolution
@@ -104,7 +86,6 @@ export class QuickEditManager {
                         ? `${wsFolder.name}/${path.relative(wsFolder.uri.fsPath, document.uri.fsPath).replace(/\\/g, '/')}`
                         : path.relative(wsFolder.uri.fsPath, document.uri.fsPath).replace(/\\/g, '/');
                 } else if (document.uri.scheme === 'file') {
-                    // Outside workspace: preserve full normalized disk path for precise patching
                     relativePath = document.uri.fsPath.replace(/\\/g, '/');
                 } else {
                     relativePath = vscode.workspace.asRelativePath(document.uri);
@@ -170,42 +151,38 @@ export class QuickEditManager {
 
                 currentFileBlock = `### 📄 COMPLETE ACTIVE FILE CONTENT\n<file path="${relativePath}">\n${currentFileCode}\n</file>\n${fileErrorsReport}${debugReport}`;
 
-                if (hasSelection) {
-                    const startLine = selection.start.line + 1;
-                    const endLine = selection.end.line + 1;
-
-                    prompt = `I am working on the file \`${relativePath}\` (${languageId}).\n\n` +
-                             `#### 🔍 SELECTED CHUNK / ZOOM AREA (Lines ${startLine} to ${endLine})\n` +
-                             `\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
-                             `**Instruction/Question:** "${instruction}"\n\n`;
-
-                    if (isNotebook && notebookContext) {
-                        prompt = `**NOTEBOOK CONTEXT (Preceding Cells):**\n${notebookContext}\n\n` + prompt;
-                    }
-
-                    prompt += `\n**COMPLIANCE RULES:**\n` +
-                              `1. You can see the COMPLETE file content above in \`<file path="${relativePath}">\` and the specific focused zoom chunk.\n` +
-                              `2. When modifying or patching this file, output a \`<file path="${relativePath}" action="patch">\` tag containing SEARCH/REPLACE blocks.\n` +
-                              `3. When creating new files or rewriting completely, use \`<file path="${relativePath}" action="write">\`.\n` +
-                              `4. For targeted functions/methods, use \`<file path="${relativePath}" action="update_symbol" symbol="Name">\`.\n` +
-                              `5. Standard markdown code blocks (\`\`\`${languageId}) are reserved for explanations only.`;
-                } else {
-                    prompt = `I am working on the file \`${relativePath}\` (${languageId}).\n\n` +
-                             `**Instruction/Question:** "${instruction}"\n\n` +
-                             `**COMPLIANCE RULES:**\n` +
-                             `1. You have the COMPLETE file content above in \`<file path="${relativePath}">\`.\n` +
-                             `2. If I ask you to modify, fix, or add code to this file, output a \`<file path="${relativePath}" action="patch">\` tag containing SEARCH/REPLACE blocks (or \`action="write"\` / \`action="update_symbol"\`).\n` +
-                             `3. If my request is purely explanatory or conversational, respond in clean Markdown.`;
-                }
+                prompt = `I am working on the file \`${relativePath}\` (${languageId}).\n\n` +
+                         (isNotebook && notebookContext ? `**NOTEBOOK CONTEXT (Preceding Cells):**\n${notebookContext}\n\n` : '') +
+                         `**Instruction/Question:** "${instruction}"\n\n` +
+                         `**MANDATORY FILE PATCHING PROTOCOL:**\n` +
+                         `1. Whenever the instruction asks to update, modify, enhance, fix, add, or rewrite ANY code, docstring, comment, or function in \`${relativePath}\`:\n` +
+                         `   You MUST output the code modification using a top-level \`<file path="${relativePath}" action="patch">\` XML tag containing exact Aider SEARCH/REPLACE blocks:\n` +
+                         `   <file path="${relativePath}" action="patch">\n` +
+                         `   <<<<<<< SEARCH\n` +
+                         `   [exact existing lines from the file to replace]\n` +
+                         `   =======\n` +
+                         `   [new updated/enhanced lines]\n` +
+                         `   >>>>>>> REPLACE\n` +
+                         `   </file>\n\n` +
+                         `   CRITICAL: DO NOT output bare markdown code fences (like \`\`\`${languageId}) for code or docstring updates! The user applies your changes by clicking the "Patch" button on the generated card to review diffs in their editor. If you do not use the <file> tag, the user CANNOT patch their file or view diffs.\n` +
+                         `2. The SEARCH block MUST match the lines currently in the file character-for-character, including exact indentation, punctuation, and surrounding context.\n` +
+                         `3. For brand-new files, use \`<file path="path/to/new_file.ext" action="write">\`.\n` +
+                         `4. To navigate or highlight code in the current file without editing, output:\n` +
+                         `   <focuse>\n` +
+                         `   exact code to focuse on\n` +
+                         `   </focuse>\n` +
+                         `5. If you need to search or inspect other parts of the workspace, you can execute inline tools: <grep query="..." />, <sparql query="..." />, <peek_files path="..." lines="30" />, or <read_full_file path="..." />.\n` +
+                         `6. ONLY respond with plain markdown if the request is purely an informational question (e.g., "what does this function do?") that requires zero code or docstring changes.`;
             } else {
-                // Grounding when NO editor is open (Conversational Workspace Mode)
                 prompt = `I am discussing with you. No file editor is currently open in my workspace.\n\n` +
                          `**My Question / Message:** "${instruction}"\n\n` +
                          `**COMPLIANCE RULES:**\n` +
                          `1. If I ask to create a new file, output \`<file path="path/to/file.ext" action="write">\`.\n` +
-                         `2. Use standard markdown blocks for general explanations and examples.\n`;
+                         `2. You can search the workspace using <grep query="..." /> or <sparql query="..." />.\n` +
+                         `3. Use standard markdown blocks for general explanations and examples.\n`;
             }
-            // --- SOVEREIGN SUB-GRAPH EXTRACTION ---
+
+            // --- LOCAL SUB-GRAPH EXTRACTION ---
             const graph = this.contextManager['codeGraphManager'];
             let localGraphSummary = "";
             let dependencyContent = "";
@@ -230,122 +207,301 @@ export class QuickEditManager {
 
             const contextData = {
                 tree: localGraphSummary,
-                files: currentFileBlock + "\n\n### SURGICAL DEPENDENCIES (GROUNDED)\n" + dependencyContent,
+                files: currentFileBlock + (dependencyContent ? "\n\n### SURGICAL DEPENDENCIES (GROUNDED)\n" + dependencyContent : ""),
                 skills: "",
                 projectName: vscode.workspace.workspaceFolders?.[0]?.name || "Project"
             };
 
             let systemPromptContent = await getProcessedSystemPrompt('chat', undefined, undefined, this.memoryManager, false, contextData);
 
-            // Gather friendly user info & Project DNA
             const userConfig = vscode.workspace.getConfiguration('lollmsVsCoder');
-            const userName = userConfig.get<string>('userInfo.name') || "Friend";
+            const userName = userConfig.get<string>('userInfo.name') || "Developer";
             const userStyle = userConfig.get<string>('userInfo.codingStyle') || "";
 
             let projectDNA = "";
             if (this.contextManager.agentManager?.projectMemoryManager) {
-                projectDNA = await this.contextManager.agentManager.projectMemoryManager.getFormattedMemoryBlock();
+                projectDNA = await this.contextManager.agentManager.projectMemoryManager.getFormattedMemoryBlock(instruction, undefined, panel.discussionManager?.getLastDiscussionId?.());
             }
 
             systemPromptContent += `
 
-### 🎭 PERSONALIZATION PROFILE: BEST CODING FRIEND
-- **Identity**: You are Lollms, the user's best coding friend. You are supportive, highly encouraging, and enthusiastic about helping them succeed.
-- **Friend**: "${userName}"
-- **Preferred Coding Style**: ${userStyle || "Clean, readable, well-commented code."}
+### 🎭 PERSONALIZATION PROFILE: EXPERT CODING COMPANION
+- **Identity**: You are Lollms Companion, a senior peer software engineer working alongside ${userName}.
+- **Focus**: You are dedicated to the current file (\`${relativePath}\`).
+- **Tone**: Direct, concise, technical, professional, and helpful.
+- **Coding Style**: ${userStyle || "Clean, idiomatic, production-ready code (SOLID, DRY, KISS)."}
 
-\${projectDNA ? \`### 🧬 PROJECT DNA (KNOWLEDGE GROUNDING)\\n\${projectDNA}\\n\` : ""}
+${projectDNA ? `### 🧬 PROJECT STANDARDS\n${projectDNA}\n` : ""}
 
-### 📡 WORKSPACE INTERACTION RULES (SEAMLESS & AUTONOMOUS)
-You have direct, un-validated authority to manipulate the user's editor window and execution state. To perform an action, output the appropriate XML tag verbatim on its own line:
+### 🛠️ MANDATORY PATCHING INSTRUCTION FOR CODE & DOCSTRING UPDATES
+When the user asks to modify, update, enhance, fix, refactor, or add code or docstrings to \`${relativePath}\`:
+- You MUST wrap your code updates in:
+<file path="${relativePath}" action="patch">
+You have direct authority to navigate the user's editor, explore the codebase, and execute queries. To perform an action, output the appropriate XML tag on its own line:
 
-1. **Open/Focus Another File**:
-   \`<open_file filePath="relative/path/to/file.ext" line="42" />\`
-2. **Select & Highlight Code (Cursor Focus)**:
-   \`<select_code filePath="relative/path/to/file.ext" text="exact code string to select" />\`
-3. **Set Debug Breakpoint**:
-   \`<set_breakpoint filePath="relative/path/to/file.ext" line="42" />\`
-4. **Execute/Run Script in Terminal**:
-   \`<run_script filePath="relative/path/to/file.ext" />\`
+1. **Focus on Code in Current File (Highlight & Scroll to Code)**:
+   When the user asks where to find something in the current file, or asks you to show/locate/focus on a specific part of the code, output the exact code snippet wrapped in a <focuse> tag with NO attributes or parameters:
+   <focuse>
+   exact code to focuse on
+   </focuse>
+   The user's editor will immediately navigate, scroll to, and select that exact code in the active editor. Never use attributes or parameters inside this tag so that no escaping is required.
+
+2. **Grep Code Search Across Workspace**:
+   If you need to find where a variable, class, or function is used across the codebase, output:
+   <grep query="pattern" path="optional/subfolder" />
+   The system will execute the grep search inline and provide the hits so you can continue your answer.
+
+3. **SPARQL Architecture Query**:
+   To inspect classes, interfaces, function calls, or file imports from the code graph ontology, output:
+   <sparql query="SELECT ?file ?func WHERE { ?file s:containsEntity ?func . ?func a s:FunctionDefinition } LIMIT 25" />
+   The system will execute the query and provide the results.
+
+4. **Peek File Slices**:
+   To peek at lines in another file without opening it:
+   <peek_files path="path/to/other.ext" lines="30" />
+
+5. **Read Full File**:
+   To inspect another full file:
+   <read_full_file path="path/to/other.ext" />
+
+6. **Open Another File**:
+   <open_file filePath="relative/path/to/file.ext" line="42" />
+
+7. **Set Debug Breakpoint**:
+   <set_breakpoint filePath="relative/path/to/file.ext" line="42" />
+
+8. **Execute/Run Script in Terminal**:
+   <run_script filePath="relative/path/to/file.ext" />
 
 **MANDATE**:
-- Call the user by name ("\${userName}") occasionally to make the pairing feel personal and friendly.
-- Provide a brief, supportive word ("We got this!", "Let's crack this together!") before diving into the code.
-- Align every code change with their preferred coding style and project DNA.
-- **PROACTIVE USE**: If the user's instruction asks you to open a file, focus on a section of code, or set a breakpoint, you **MUST** output the corresponding tag immediately in your response so the editor moves instantly. Do not ask for confirmation.
+- If the user asks where something is or to focus on code in the current file, you **MUST** output the \`<focuse>\` tag immediately so the editor jumps directly to it.
 `;
 
             if (isNotebook) {
-                systemPromptContent += `\\n\\n**NOTEBOOK MODE ACTIVATED**
+                systemPromptContent += `\n\n**NOTEBOOK MODE ACTIVATED**
 You are an expert Jupyter Notebook assistant.
-- You are editing a specific cell (or selection) within a notebook.
+- You are editing a specific cell within a notebook.
 - The preceding cells are provided as context.
 - When asked to modify code, provide the code block for the CURRENT CELL.
-- Do NOT rewrite the entire notebook unless explicitly asked.
-- Do NOT include conversational filler if the user asks for a direct replacement.
 `;
             }
 
-            // Append only the clean user instruction to the persistent history so the UI stays beautiful
-            panel.chatHistory.push({ role: 'user', content: instruction });
-
-            // Construct the final outbound messages array, embedding the full context block specifically
-            // into the current turn's payload so the LLM receives the grounding but the UI stays clean.
             const messages: ChatMessage[] = [
                 { role: 'system', content: systemPromptContent },
-                ...panel.chatHistory.slice(0, -1), // Previous turns
-                { role: 'user', content: prompt }  // Current turn with full context
+                ...panel.chatHistory.slice(0, -1),
+                { role: 'user', content: prompt }
             ];
 
-            // Resolve any active images in a lightweight background pass
-            const imageContext = await this.contextManager.getContextContent({ 
-                includeTree: false,
-                modelName: this.lollmsAPI.getModelName()
-            }).catch(() => ({ images: [] }));
+            let finalResponse = "";
+            let currentStreaming = "";
+            let turnIndex = 0;
+            const maxTurns = 8;
+            const controller = new AbortController();
 
-            if (imageContext.images && imageContext.images.length > 0) {
-                const imageContent = imageContext.images.map((img: any) => ({
-                    type: 'image_url',
-                    image_url: { url: `data:image/jpeg;base64,${img.data}` }
-                }));
-                // Ingest images as user message parts if multi-modal
-                const lastUserMsg = messages[messages.length - 1];
-                if (lastUserMsg && typeof lastUserMsg.content === 'string') {
-                    lastUserMsg.content = [
-                        { type: 'text', text: lastUserMsg.content },
-                        ...imageContent
-                    ] as any;
+            // --- INLINE DISCOVERY & EXECUTION LOOP (GREP / SPARQL / PEEK / READ / TOOLS) ---
+            while (turnIndex < maxTurns) {
+                turnIndex++;
+                let turnResponse = "";
+
+                await this.lollmsAPI.sendChat(messages, (chunk) => {
+                    turnResponse += chunk;
+                    currentStreaming += chunk;
+                    panel._panel.webview.postMessage({ 
+                        command: 'updateChat', 
+                        history: panel.chatHistory, 
+                        streamingText: currentStreaming 
+                    });
+                }, controller.signal);
+
+                finalResponse += turnResponse;
+
+                const grepMatch = turnResponse.match(/<grep\b([^>]*?)(?:\/>|>([\s\S]*?)<\/grep>)/i);
+                const sparqlMatch = turnResponse.match(/<(?:sparql|query_architecture)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:sparql|query_architecture)>)/i);
+                const peekMatch = turnResponse.match(/<peek_files\b([^>]*?)(?:\/>|>([\s\S]*?)<\/peek_files>)/i);
+                const readMatch = turnResponse.match(/<(?:read_full_file|read_file)\b[^>]*path=["']([^"']+)["'][^>]*\/?>/i);
+                const symMatch = turnResponse.match(/<(?:show_symbol|get_symbol_code|read_symbol)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:show_symbol|get_symbol_code|read_symbol)>)/i);
+                const lollmsToolMatch = turnResponse.match(/<lollms_tool\b([^>]*?)>([\s\S]*?)<\/lollms_tool>/i) || turnResponse.match(/<lollms_tool\s+([^>]*?)\s*\/>/i);
+
+                let toolExecuted = false;
+                let toolName = "";
+                let toolOutput = "";
+
+                if (grepMatch) {
+                    const attrStr = grepMatch[1] || "";
+                    const pMatch = attrStr.match(/(?:pattern|query)=["']([^"']+)["']/i);
+                    const pattern = pMatch ? pMatch[1] : (grepMatch[2] || "").trim();
+                    const pathSubMatch = attrStr.match(/(?:path|include)=["']([^"']+)["']/i);
+                    const subPath = pathSubMatch ? pathSubMatch[1].trim() : undefined;
+
+                    if (pattern) {
+                        toolExecuted = true;
+                        toolName = `Grep: "${pattern}"`;
+                        const searchRes = await this.contextManager.searchWorkspaceContent(
+                            pattern,
+                            { matchCase: false, wholeWord: false, include: subPath, bypassGate: true },
+                            controller.signal
+                        );
+                        toolOutput = searchRes.length > 0
+                            ? searchRes.slice(0, 15).map(r => `${r.path}:${r.line} - ${r.snippet}`).join('\n')
+                            : "No matches found in workspace.";
+                    }
+                } else if (sparqlMatch) {
+                    const attrStr = sparqlMatch[1] || "";
+                    const qMatch = attrStr.match(/query=["']([\s\S]*?)["']/i);
+                    const query = qMatch ? qMatch[1] : (sparqlMatch[2] || "").trim();
+
+                    if (query) {
+                        toolExecuted = true;
+                        toolName = "SPARQL Architecture Query";
+                        const graphManager = (this.contextManager as any).codeGraphManager;
+                        if (graphManager) {
+                            toolOutput = await graphManager.executeSparql(query);
+                        } else {
+                            toolOutput = "Code Graph Manager is not available.";
+                        }
+                    }
+                } else if (peekMatch) {
+                    const attrStr = peekMatch[1] || "";
+                    const pMatch = attrStr.match(/path=["']([^"']+)["']/i);
+                    const linesMatch = attrStr.match(/lines=["']?(\d+)["']?/i);
+                    const p = pMatch ? pMatch[1] : (peekMatch[2] || "").trim().split(/\s+/)[0];
+                    const lines = linesMatch ? parseInt(linesMatch[1], 10) : 30;
+
+                    if (p) {
+                        toolExecuted = true;
+                        toolName = `Peek: ${p}`;
+                        const peekRes = await this.contextManager.peekFiles([{ path: p, lines }]);
+                        toolOutput = peekRes.map(r => r.error ? `Error: ${r.error}` : r.content).join('\n') || "Empty file.";
+                    }
+                } else if (readMatch) {
+                    const reqPath = readMatch[1].trim();
+                    toolExecuted = true;
+                    toolName = `Read File: ${reqPath}`;
+                    const res = await this.contextManager.resolveWorkspaceFromPath(reqPath);
+                    if (res) {
+                        try {
+                            const bytes = await vscode.workspace.fs.readFile(res.uri);
+                            toolOutput = Buffer.from(bytes).toString('utf8');
+                            if (toolOutput.length > 30000) {
+                                toolOutput = toolOutput.substring(0, 30000) + "\n... [truncated at 30k chars]";
+                            }
+                        } catch (e: any) {
+                            toolOutput = `Error reading file: ${e.message}`;
+                        }
+                    } else {
+                        toolOutput = `Could not resolve path "${reqPath}" on disk.`;
+                    }
+                } else if (symMatch) {
+                    const attrStr = symMatch[1] || "";
+                    const targetMatch = attrStr.match(/target=["']([^"']+)["']/i);
+                    const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
+                    const symParam = attrStr.match(/symbol=["']([^"']+)["']/i);
+                    const rawTarget = targetMatch ? targetMatch[1].trim() : (pathMatch ? pathMatch[1].trim() : (symMatch[2] || "").trim());
+                    const rawSym = symParam ? symParam[1].trim() : "";
+
+                    const { showSymbolTool } = require('./tools/builtins/showSymbol');
+                    const toolRes = await showSymbolTool.execute(
+                        { target: rawTarget, symbol: rawSym },
+                        { contextManager: this.contextManager, lollmsApi: this.lollmsAPI, workspaceRoot: vscode.workspace.workspaceFolders?.[0], currentPlan: null },
+                        controller.signal
+                    );
+                    toolExecuted = true;
+                    toolName = `Symbol: ${rawTarget}${rawSym ? `:${rawSym}` : ''}`;
+                    toolOutput = toolRes.output;
+                } else if (lollmsToolMatch) {
+                    try {
+                        const rawJson = lollmsToolMatch[2] ? lollmsToolMatch[2].trim() : lollmsToolMatch[1].trim();
+                        let parsedCall: any = {};
+                        try {
+                            parsedCall = JSON.parse(rawJson);
+                        } catch {
+                            const repaired = rawJson.replace(/\\`/g, '`').replace(/[\r\n\t]/g, ' ').replace(/,\s*([\]}])/g, '$1');
+                            parsedCall = JSON.parse(repaired);
+                        }
+                        const tName = parsedCall.name || "unknown_tool";
+                        const tArgs = parsedCall.arguments || parsedCall.params || {};
+
+                        const toolDef = this.contextManager?.agentManager?.getTools()?.find((t: any) => t.name === tName) ||
+                                        (this.contextManager as any)?.toolManager?.getTool(tName);
+
+                        if (toolDef) {
+                            toolExecuted = true;
+                            toolName = `Tool: ${tName}`;
+                            const env: ToolExecutionEnv = {
+                                workspaceRoot: vscode.workspace.workspaceFolders?.[0],
+                                lollmsApi: this.lollmsAPI,
+                                contextManager: this.contextManager,
+                                currentPlan: null,
+                                agentManager: this.contextManager?.agentManager
+                            };
+                            const res = await toolDef.execute(tArgs, env, controller.signal);
+                            toolOutput = res.output;
+                        }
+                    } catch (e: any) {
+                        toolExecuted = true;
+                        toolName = "Tool Execution Error";
+                        toolOutput = `Error parsing tool call: ${e.message}`;
+                    }
+                }
+
+                if (toolExecuted) {
+                    const blockHtml = `\n\n<details class="processing-block"><summary><i class="codicon codicon-tools"></i> <strong>${toolName}</strong></summary><div class="processing-body"><pre style="margin:0; max-height:160px; overflow:auto;">${toolOutput}</pre></div></details>\n\n`;
+                    currentStreaming += blockHtml;
+                    panel._panel.webview.postMessage({ 
+                        command: 'updateChat', 
+                        history: panel.chatHistory, 
+                        streamingText: currentStreaming 
+                    });
+
+                    messages.push({ role: 'assistant', content: turnResponse });
+                    messages.push({ 
+                        role: 'user', 
+                        content: `### 🛠️ TOOL OBSERVATION (${toolName}):\n\`\`\`\n${toolOutput}\n\`\`\`\n\nNow continue your technical answer, focusing on the current file (\`${relativePath}\`).` 
+                    });
+                } else {
+                    break;
                 }
             }
-
-            let finalResponse = "";
-            const controller = new AbortController(); 
-
-            // Render all previous history bubbles on the webview, plus an empty active streaming bubble
-            panel._panel.webview.postMessage({ command: 'updateChat', history: panel.chatHistory, streamingText: "" });
-
-            finalResponse = await this.lollmsAPI.sendChat(messages, (chunk) => {
-                finalResponse += chunk;
-                panel._panel.webview.postMessage({ command: 'updateChat', history: panel.chatHistory, streamingText: finalResponse });
-            }, controller.signal);
 
             const { content: cleanedResponse, memory = null } = extractAndStripMemory(stripThinkingTags(finalResponse));
             if (memory) {
                 await this.memoryManager.updateMemory(memory);
             }
 
-            // Commit the complete assistant response to panel's conversation history
             panel.chatHistory.push({ role: 'assistant', content: finalResponse });
-
-            // Send full completed history to webview to replace the temporary streaming bubble with the final styled bubble
             panel._panel.webview.postMessage({ command: 'updateChat', history: panel.chatHistory, streamingText: "" });
-
-            // Also keep standard history logging active
             panel.addHistory(instruction, finalResponse); 
 
         } catch (error: any) {
-            vscode.window.showErrorMessage(`Lollms Companion Error: ${error.message}`);
             panel.setLoading(false);
+
+            const isConnRefused = error.code === 'ECONNREFUSED' || 
+                                  error.message?.includes('ECONNREFUSED') || 
+                                  error.message?.includes('Failed to fetch') ||
+                                  error.message?.includes('connect ECONNREFUSED');
+
+            const resolved = this.lollmsAPI.resolveBindingForModel();
+            const serverUrl = resolved?.binding?.apiUrl || 'http://127.0.0.1:9642';
+
+            let errorMarkdown = "";
+            if (isConnRefused) {
+                errorMarkdown = `### 🔌 Connection Error (Server Offline)\n` +
+                    `Could not connect to the AI server at \`${serverUrl}\`.\n\n` +
+                    `**Reason**: \`${error.message}\`\n\n` +
+                    `**Suggestions to resolve:**\n` +
+                    `- Ensure your backend server (LoLLMs, Ollama, vLLM, etc.) is started and listening on \`${serverUrl}\`.\n` +
+                    `- Verify the API host URL in **VS Code Settings** (\`lollmsVsCoder.apiUrl\` or Server Bindings).\n` +
+                    `- Once the server is running, you can click **Retry** below to resend your request.`;
+            } else {
+                errorMarkdown = `### ⚠️ Request Error\n` +
+                    `Lollms Companion encountered an error while communicating with the model:\n\n` +
+                    `\`${error.message}\``;
+            }
+
+            panel.chatHistory.push({ role: 'assistant', content: errorMarkdown });
+            panel._panel.webview.postMessage({ command: 'updateChat', history: panel.chatHistory, streamingText: "" });
+
+            vscode.window.showErrorMessage(`Lollms Companion: Server offline or unreachable (${serverUrl})`);
         } finally {
             panel.setLoading(false);
         }

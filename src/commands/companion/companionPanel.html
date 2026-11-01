@@ -32,34 +32,22 @@
 
     <style>
         /* ============================================================
-           TOKENS — Lollms Companion "Living Circuit" identity
-           Two agent colors: violet core (#9b59b6) + magenta pulse (#ff2e88),
-           laid over the host VS Code theme so it never fights the editor.
-           ============================================================ */
+           PROFESSIONAL VS CODE THEME INTEGRATION
+           Clean, elegant, non-distracting UI matching the active theme.
         :root {
             --code-bg: var(--vscode-editor-background);
-            --code-header-bg: var(--vscode-keybindingTable-headerBackground);
+            --code-header-bg: var(--vscode-editorWidget-background);
             --code-border: var(--vscode-widget-border);
 
-            --agent-core: #9b59b6;
-            --agent-pulse: #ff2e88;
-            --agent-calm: #00d9b5;
-            --agent-warm: #ffb454;
-            --agent-warm-2: #ff7a59;
-            --user-accent: var(--vscode-charts-blue, #3b82f6);
+            --accent: var(--vscode-textLink-foreground, #3794ff);
+            --accent-hover: var(--vscode-textLink-activeForeground, #1e88e5);
 
-            --success-fg: var(--vscode-charts-green);
-            --error-fg: var(--vscode-charts-red);
+            --success-fg: var(--vscode-charts-green, #388e3c);
+            --error-fg: var(--vscode-charts-red, #e51400);
 
-            --bubble-radius: 16px;
-            --shadow-soft: 0 3px 14px rgba(0, 0, 0, 0.28);
-            --shadow-lift: 0 6px 22px rgba(0, 0, 0, 0.34);
-
-            /* Bond state — JS tunes these two as the Symbiosis score moves,
-               so the avatar's heartbeat literally speeds up and warms in
-               color as the friendship with the user deepens. */
-            --heartbeat-speed: 2.2s;
-            --bond-color: var(--agent-core);
+            --bubble-radius: 8px;
+            --shadow-soft: 0 1px 4px rgba(0, 0, 0, 0.15);
+            --shadow-lift: 0 4px 14px rgba(0, 0, 0, 0.22);
         }
 
         * { box-sizing: border-box; }
@@ -81,9 +69,11 @@
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb {
-            background: linear-gradient(var(--agent-core), var(--agent-pulse));
-            border-radius: 8px;
-            opacity: 0.5;
+            background: var(--vscode-scrollbarSlider-background);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--vscode-scrollbarSlider-hoverBackground);
         }
 
         /* --- COMPANION COMPACT SPACE SAVING OVERRIDES --- */
@@ -107,61 +97,18 @@
         .processing-header { padding: 6px 8px !important; font-size: 10px !important; }
         .processing-body { padding: 8px !important; font-size: 10px !important; max-height: 120px !important; }
 
-        /* ============================================================
-           AGENT AVATAR — the signature element.
-           A small reactive "core" with an orbiting ring instead of a
-           static icon. States: idle (slow breathing), thinking (ring
-           spins + core throbs), speaking (waveform bars replace eyes).
-           ============================================================ */
-        .friend-avatar-container {
+        /* Clean Companion Avatar Badge */
+        .companion-avatar {
+            width: 26px;
+            height: 26px;
+            border-radius: 6px;
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
             display: flex;
             align-items: center;
             justify-content: center;
-            width: 34px;
-            height: 34px;
-            border-radius: 50%;
-            position: relative;
+            font-size: 13px;
             flex-shrink: 0;
-        }
-
-        .avatar-orbit {
-            position: absolute;
-            inset: -3px;
-            border-radius: 50%;
-            border: 1.5px solid transparent;
-            border-top-color: var(--bond-color);
-            border-right-color: var(--agent-pulse);
-            opacity: 0.55;
-            animation: orbit-spin 3.6s linear infinite;
-            transition: border-top-color 0.6s ease;
-        }
-
-        /* The friendship "heartbeat" — a soft double-thump glow behind the
-           face. Speed and warmth are driven by --heartbeat-speed and
-           --bond-color, both nudged by updateTrustScore() as the Symbiosis
-           score changes, so the bond is something you can feel, not just read. */
-        .friend-avatar-container::before {
-            content: '';
-            position: absolute;
-            inset: -6px;
-            border-radius: 50%;
-            background: radial-gradient(circle, var(--bond-color) 0%, transparent 70%);
-            opacity: 0;
-            animation: heartbeat var(--heartbeat-speed) ease-in-out infinite;
-            pointer-events: none;
-            z-index: -1;
-        }
-
-        @keyframes heartbeat {
-            0%   { opacity: 0.35; transform: scale(0.85); }
-            14%  { opacity: 0.05; transform: scale(1.05); }
-            28%  { opacity: 0.30; transform: scale(0.9); }
-            42%  { opacity: 0;    transform: scale(1); }
-            100% { opacity: 0;    transform: scale(1); }
-        }
-
-        @keyframes orbit-spin {
-            to { transform: rotate(360deg); }
         }
 
         .robot-face {
@@ -498,8 +445,7 @@
         }
 
         .input-area:focus-within {
-            border-color: var(--agent-core);
-            box-shadow: 0 0 0 3px rgba(155, 89, 182, 0.15);
+            border-color: var(--vscode-focusBorder);
         }
 
         .input-row { display: flex; gap: 8px; align-items: flex-end; width: 100%; }
@@ -544,10 +490,14 @@
         .control-buttons button:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
 
         #send-btn {
-            background: linear-gradient(135deg, var(--agent-core), var(--agent-pulse)) !important;
-            color: white !important;
+            background: var(--vscode-button-background) !important;
+            color: var(--vscode-button-foreground) !important;
+            border-radius: 4px !important;
         }
-        #send-btn:hover { transform: scale(1.08) rotate(6deg); }
+        #send-btn:hover {
+            background: var(--vscode-button-hoverBackground) !important;
+            transform: none !important;
+        }
         #send-btn:disabled { opacity: 0.5; transform: none; }
 
         textarea {
@@ -652,6 +602,11 @@
         .title { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
         .actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+        #attach-btn.attached {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+        }
 
         button {
             background-color: var(--vscode-button-background);
@@ -852,19 +807,38 @@
             position: relative;
         }
 
+        .msg-avatar {
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--vscode-badge-background);
+            color: var(--vscode-badge-foreground);
+            font-size: 12px;
+            flex-shrink: 0;
+            margin-bottom: 2px;
+        }
+
+        .msg-avatar.assistant {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+        }
+
         .user-message {
-            background: linear-gradient(135deg, var(--user-accent), #2456b8);
-            color: #f5f8ff;
-            border-bottom-right-radius: 4px;
+            background-color: var(--vscode-editor-inactiveSelectionBackground);
+            color: var(--vscode-editor-foreground);
+            border: 1px solid var(--vscode-widget-border);
+            border-bottom-right-radius: 2px;
             margin-left: auto;
         }
 
         .assistant-message {
-            background-color: var(--vscode-editor-background);
+            background-color: var(--vscode-editorWidget-background);
             border: 1px solid var(--vscode-widget-border);
-            border-left: 3px solid var(--bond-color);
-            border-bottom-left-radius: 4px;
-            transition: border-left-color 0.6s ease;
+            border-left: 3px solid var(--vscode-textLink-foreground, #3794ff);
+            border-bottom-left-radius: 2px;
         }
 
         .message-header {
@@ -878,8 +852,8 @@
         }
 
         .message-header .msg-label { display: flex; align-items: center; gap: 5px; }
-        .user-message .message-header { color: rgba(255, 255, 255, 0.85); }
-        .assistant-message .message-header { color: var(--agent-core); }
+        .user-message .message-header { color: var(--vscode-descriptionForeground); }
+        .assistant-message .message-header { color: var(--vscode-textLink-foreground, #3794ff); }
 
         .message-actions { display: flex; gap: 4px; opacity: 0; transition: opacity 0.15s ease; }
         .message-wrapper:hover .message-actions { opacity: 0.85; }
@@ -892,6 +866,10 @@
             color: inherit !important;
         }
         .msg-action-btn:hover { background: rgba(0, 0, 0, 0.45) !important; }
+        .msg-action-btn.delete-msg-btn:hover {
+            background: rgba(231, 76, 60, 0.4) !important;
+            color: var(--vscode-errorForeground, #ff6b6b) !important;
+        }
 
         .message-content {
             font-size: 13px;
@@ -1033,16 +1011,16 @@
         }
 
         .plan-scratchpad {
-            border-left: 3px solid var(--agent-core);
-            background: rgba(155, 89, 182, 0.04);
-            margin-bottom: 10px;
-            border-radius: 6px;
+            border-left: 3px solid var(--vscode-textLink-foreground, #3794ff);
+            background: rgba(0, 0, 0, 0.15);
+            margin-bottom: 8px;
+            border-radius: 4px;
         }
 
         .scratchpad-header {
             padding: 6px 12px;
             font-weight: bold;
-            color: var(--agent-core);
+            color: var(--vscode-textLink-foreground, #3794ff);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -1073,13 +1051,8 @@
                 <button class="secondary" onclick="toggleHistory()" title="Show History">
                     <span class="codicon codicon-history"></span>
                 </button>
-                <div class="friend-avatar-container" title="Lollms - Your best pair-programming companion">
-                    <div class="avatar-orbit"></div>
-                    <div class="robot-face" id="friend-face">
-                        <div class="robot-eye"></div>
-                        <div class="robot-eye"></div>
-                        <div class="robot-mouth"></div>
-                    </div>
+                <div class="companion-avatar" title="Lollms Companion">
+                    <i class="codicon codicon-sparkle"></i>
                 </div>
                 <span class="title">Lollms Companion</span>
                 <div class="integrity-badge" title="Operates with zero telemetry, protecting your IP.">
@@ -1087,50 +1060,21 @@
                 </div>
             </div>
             <div class="actions" style="display:flex; gap:8px;">
-                <button class="secondary danger" onclick="clearResponse()" title="Wipe Memory (Start Over)"><span class="codicon codicon-trash"></span> Wipe</button>
+                <button class="secondary" id="attach-btn" onclick="toggleAttach()" title="Pin / Unpin to current active editor context">
+                    <span class="codicon codicon-pin"></span>
+                </button>
+                <button class="secondary danger" onclick="clearResponse()" title="Clear Discussion"><span class="codicon codicon-trash"></span> Clear</button>
                 <button class="secondary" onclick="copyFullResponse()" title="Copy Markdown"><span class="codicon codicon-copy"></span></button>
             </div>
         </div>
 
-        <div class="affective-matrix">
-            <div class="matrix-header">
-                <span>Symbiosis State: <span id="matrix-label-text">Symbiotic</span></span>
-                <span id="matrix-score-val">75%</span>
-            </div>
-            <div class="matrix-bar">
-                <div class="matrix-bar-fill" id="matrix-bar-fill"></div>
-            </div>
-        </div>
-
-        <div class="friendship-hud">
-            <details open>
-                <summary class="hud-header">
-                    <span><i class="codicon codicon-chip"></i> Friendship Scratchpad (Short Term Memory)</span>
-                </summary>
-                <div class="hud-scroll-container" id="hud-scratchpad-body">
-                    Standing by. Ready to pair-program with you!
-                </div>
-            </details>
-        </div>
-
         <div class="content" id="markdown-content"></div>
         <div class="input-area-wrapper">
-            <div class="input-area-container">
-                <div class="cognitive-toolbar" style="display: flex; gap: 6px; margin: 0 16px 10px 16px; justify-content: center;">
-                    <div class="cognitive-pill active" id="pill-standard" onclick="setCognitiveMode('standard')">
-                        <span class="codicon codicon-workspace-trusted"></span> Focused Co-Pilot
-                    </div>
-                    <div class="cognitive-pill" id="pill-grounding" onclick="setCognitiveMode('grounding')">
-                        <span class="codicon codicon-layers"></span> Grounding Mode
-                    </div>
-                    <div class="cognitive-pill" id="pill-move37" onclick="setCognitiveMode('move37')">
-                        <span class="codicon codicon-sparkle"></span> Move 37
-                    </div>
-                </div>
+            <div class="input-area-container" id="input-container">
                 <div class="input-area">
-                    <div class="context-info" style="margin-bottom: 8px; font-size: 11px; display: flex; align-items: center; gap: 6px; color: var(--vscode-descriptionForeground);">
-                        <span class="codicon codicon-target"></span>
-                        <span id="context-info-text">Syncing...</span>
+                    <div class="context-info" style="margin-bottom: 6px; font-size: 11px; display: flex; align-items: center; gap: 6px; color: var(--vscode-descriptionForeground);">
+                        <span class="codicon codicon-file-code" style="color: var(--vscode-textLink-foreground);"></span>
+                        <span id="context-info-text">Connecting to editor...</span>
                     </div>
                     <div class="rich-input-toolbar" style="border: none; border-radius: 0; background: transparent; padding: 2px 0; margin-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
                         <button class="toolbar-tool" onclick="wrapText('python')" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
@@ -1165,30 +1109,47 @@
 
         let activeContentBuffer = "";
         let activePrompt = "";
-        let activeMood = 'idle';
-        let activeMode = 'standard';
-        let isMove37Active = false;
 
-        // Small inline SVG-free "mini face" markup reused for every assistant bubble avatar.
-        function miniFaceHtml(mood) {
-            mood = mood || 'idle';
-            return '<div class="mini-face"><div class="robot-face ' + mood + '">' +
-                   '<div class="robot-eye"></div><div class="robot-eye"></div><div class="robot-mouth"></div>' +
-                   '</div></div>';
+        // Safe no-ops for deprecated animation handlers to prevent any runtime ReferenceError
+        function setMood(mood) {}
+        function setFaceMood(mood) {}
+        function updateTrustScore(score) {}
+        function setCognitiveMode(mode) {}
+        window.setMood = setMood;
+        window.setFaceMood = setFaceMood;
+        window.updateTrustScore = updateTrustScore;
+        window.setCognitiveMode = setCognitiveMode;
+
+        function escapeHtml(str) {
+            return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         }
 
         function submitPrompt() {
             const text = promptInput.value.trim();
             if (text) {
+                // Optimistic instant render: add the user bubble and typing indicator immediately
+                renderUserBubble(text, 'user_' + Date.now());
+                renderStreamingBubble('');
+                container.scrollTop = container.scrollHeight;
+
                 vscode.postMessage({
                     command: 'submitPrompt',
-                    text: text,
-                    mode: activeMode
+                    text: text
                 });
                 promptInput.value = '';
                 promptInput.style.height = 'auto';
             }
         }
+
+        function retryLastUserPrompt() {
+            const lastUserWrapper = Array.from(document.querySelectorAll('.user-msg-wrapper')).pop();
+            const text = lastUserWrapper ? lastUserWrapper.querySelector('.message-content')?.textContent?.trim() : '';
+            if (text) {
+                promptInput.value = text;
+                submitPrompt();
+            }
+        }
+        window.retryLastUserPrompt = retryLastUserPrompt;
 
         if (promptInput) {
             promptInput.addEventListener('keydown', (e) => {
@@ -1199,6 +1160,27 @@
             });
         }
 
+        function deleteMessage(id) {
+            const wrapper = document.querySelector('.message-wrapper[data-message-id="' + id + '"]');
+            if (wrapper) {
+                wrapper.remove();
+            }
+            const remainingWrappers = document.querySelectorAll('.message-wrapper');
+            if (remainingWrappers.length === 0) {
+                if (container) {
+                    container.innerHTML = '<div class="empty-state">' +
+                        '<div style="font-size: 26px; opacity: 0.7; margin-bottom: 8px;"><i class="codicon codicon-sparkle"></i></div>' +
+                        '<h3>Lollms Companion</h3>' +
+                        '<p>Ask questions, request code changes, or ask where something is defined in the current file.</p>' +
+                        '</div>';
+                }
+                _chatHistorySig = "";
+                _chatStreamingEl = null;
+            }
+            vscode.postMessage({ command: 'deleteMessage', messageId: id });
+        }
+        window.deleteMessage = deleteMessage;
+
         function clearResponse() {
             activeContentBuffer = "";
             activePrompt = "";
@@ -1207,72 +1189,12 @@
             _respPromptRendered = null;
             _chatHistorySig = null;
             _chatStreamingEl = null;
-            const scratchpad = document.getElementById('hud-scratchpad-body');
-            if (scratchpad) scratchpad.textContent = 'Standing by. Ready to pair-program with you!';
+            window._lastAutoFocusedCode = null;
             vscode.postMessage({ command: 'clearActiveChat' });
         }
 
         function toggleAttach() {
             vscode.postMessage({ command: 'toggleAttach' });
-        }
-
-        function setMood(mood) {
-            setFaceMood(mood);
-        }
-
-        function setFaceMood(mood) {
-            activeMood = mood;
-            const face = document.getElementById('friend-face');
-            if (face) {
-                face.className = 'robot-face ' + mood;
-            }
-            // Reflect the same mood on every avatar currently in the stream.
-            document.querySelectorAll('.msg-avatar-slot .robot-face').forEach(f => {
-                f.className = 'robot-face ' + mood;
-            });
-
-            if (mood === 'success') {
-                celebrate();
-            }
-        }
-
-        // A quick warm ring-pulse on every visible avatar — a friend's smile
-        // of approval when a patch lands, rather than a silent status change.
-        function celebrate() {
-            document.querySelectorAll('.friend-avatar-container, .msg-avatar-slot .mini-face').forEach(el => {
-                el.classList.remove('celebrate');
-                // Force reflow so the animation can replay if triggered twice in a row.
-                void el.offsetWidth;
-                el.classList.add('celebrate');
-                setTimeout(() => el.classList.remove('celebrate'), 750);
-            });
-        }
-
-        // Drives the Symbiosis meter AND the avatar's heartbeat: as the score
-        // climbs, the bond literally beats faster and warms from violet toward
-        // amber. Low trust reads cool and calm; deep trust reads warm and quick.
-        function updateTrustScore(score) {
-            const pct = Math.max(0, Math.min(100, Number(score) || 0));
-
-            const fill = document.getElementById('matrix-bar-fill');
-            if (fill) fill.style.width = pct + '%';
-
-            const scoreVal = document.getElementById('matrix-score-val');
-            if (scoreVal) scoreVal.textContent = Math.round(pct) + '%';
-
-            const labelEl = document.getElementById('matrix-label-text');
-            let label = 'Building Trust';
-            let bondColor = 'var(--agent-core)';
-            if (pct >= 90) { label = 'Inseparable'; bondColor = 'var(--agent-warm-2)'; }
-            else if (pct >= 70) { label = 'Symbiotic'; bondColor = 'var(--agent-warm)'; }
-            else if (pct >= 40) { label = 'Aligned'; bondColor = 'var(--agent-core)'; }
-            else { label = 'Building Trust'; bondColor = 'var(--agent-calm)'; }
-            if (labelEl) labelEl.textContent = label;
-
-            // Heartbeat speeds up from ~2.6s (distant) to ~1.1s (close) as trust grows.
-            const speed = (2.6 - (pct / 100) * 1.5).toFixed(2) + 's';
-            document.documentElement.style.setProperty('--heartbeat-speed', speed);
-            document.documentElement.style.setProperty('--bond-color', bondColor);
         }
 
         function buildMessageDOM(role, id, rawContent) {
@@ -1286,8 +1208,8 @@
             const avatarSlot = document.createElement('div');
             avatarSlot.className = 'msg-avatar-slot';
             avatarSlot.innerHTML = role === 'user'
-                ? '<div class="mini-face" style="background:rgba(59,130,246,0.15); border-color: var(--user-accent);"><i class="codicon codicon-account" style="font-size:13px; color: var(--user-accent);"></i></div>'
-                : miniFaceHtml('idle');
+                ? '<div class="msg-avatar"><i class="codicon codicon-account"></i></div>'
+                : '<div class="msg-avatar assistant"><i class="codicon codicon-sparkle"></i></div>';
 
             const message = document.createElement('div');
             message.className = 'message ' + (role === 'user' ? 'user-message' : 'assistant-message');
@@ -1301,7 +1223,8 @@
                 : '<span class="codicon codicon-sparkle"></span><span>Lollms</span>';
             const actions = document.createElement('div');
             actions.className = 'message-actions';
-            actions.innerHTML = '<button class="msg-action-btn edit-msg-btn" onclick="event.stopPropagation(); startEdit(this.closest(\'.message-wrapper\'), \'' + id + '\', \'' + role + '\')"><i class="codicon codicon-edit"></i></button>';
+            actions.innerHTML = '<button class="msg-action-btn edit-msg-btn" title="Edit message" onclick="event.stopPropagation(); startEdit(this.closest(\'.message-wrapper\'), \'' + id + '\', \'' + role + '\')"><i class="codicon codicon-edit"></i></button>' +
+                '<button class="msg-action-btn delete-msg-btn" title="Delete message" onclick="event.stopPropagation(); deleteMessage(\'' + id + '\')"><i class="codicon codicon-trash"></i></button>';
             header.appendChild(label);
             header.appendChild(actions);
 
@@ -1331,9 +1254,25 @@
         function renderChat(history, streamingText) {
             if (!container) return;
 
-            // Only rebuild the finished history bubbles when the history itself
-            // actually changed. Streaming chunks don't touch `history`, so this
-            // skip is what stops every token from re-rendering the whole thread.
+            if ((!history || history.length === 0) && !streamingText) {
+                container.innerHTML = '<div class="empty-state">' +
+                    '<div style="font-size: 26px; opacity: 0.7; margin-bottom: 8px;"><i class="codicon codicon-sparkle"></i></div>' +
+                    '<h3>Lollms Companion</h3>' +
+                    '<p>Ask questions, request code changes, or ask where something is defined in the current file.</p>' +
+                    '</div>';
+                _chatHistorySig = "";
+                _chatStreamingEl = null;
+                return;
+            }
+
+            // Keep full content buffer synced for clipboard copy
+            if (history && history.length > 0) {
+                activeContentBuffer = history.map(m => (m.role === 'user' ? '### User:\n' : '### Assistant:\n') + m.content).join('\n\n');
+            }
+            if (streamingText) {
+                activeContentBuffer = streamingText;
+            }
+
             const historySig = JSON.stringify((history || []).map(m => [m.role, m.content.length]));
             if (historySig !== _chatHistorySig) {
                 container.innerHTML = "";
@@ -1440,6 +1379,30 @@
             }
 
             return hunks;
+        }
+
+        function normalizeCompanionFileBlocks(text, defaultPath) {
+            if (!text || typeof text !== 'string') return '';
+            let result = text;
+            const target = defaultPath || (window.activeFilePath || 'current_file');
+
+            // If contains Aider markers without <file> tag, wrap into <file path="..." action="patch">
+            if (result.includes('<<<<<<< SEARCH') && result.includes('>>>>>>> REPLACE') && !result.includes('<file')) {
+                const fenceRegex = /```(?:[a-zA-Z0-9_\-]+)?(?::([^\r\n\s]+))?\r?\n(<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE)\r?\n```/g;
+                if (fenceRegex.test(result)) {
+                    result = result.replace(fenceRegex, (match, p, body) => {
+                        const fPath = p || target;
+                        return '\n\n<file path="' + fPath + '" action="patch">\n' + body.trim() + '\n</file>\n\n';
+                    });
+                } else {
+                    const aiderRegex = /(<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE)/g;
+                    result = result.replace(aiderRegex, (match) => {
+                        return '\n\n<file path="' + target + '" action="patch">\n' + match.trim() + '\n</file>\n\n';
+                    });
+                }
+            }
+
+            return result;
         }
 
         function extractFileBlocks(text) {
@@ -1557,14 +1520,19 @@
                         });
                     }
 
-                    let finalMarkdown = parsed.processedContent;
+                    let finalMarkdown = normalizeCompanionFileBlocks(parsed.processedContent, window.activeFilePath);
 
                     // 1. Render Structured XML <file> Mutation Cards (supports nested <file> tags)
                     const fileBlocks = extractFileBlocks(finalMarkdown);
                     for (let i = fileBlocks.length - 1; i >= 0; i--) {
                         const fb = fileBlocks[i];
-                        const cardHtml = renderFileMutationCard(fb.attrStr, fb.rawContent);
+                        const cardHtml = renderFileMutationCard(fb.attrStr, fb.rawContent, i);
                         finalMarkdown = finalMarkdown.substring(0, fb.start) + cardHtml + finalMarkdown.substring(fb.end);
+                    }
+
+                    // Insert Apply All banner at the bottom if there are multiple patch/write blocks
+                    if (fileBlocks.length > 1) {
+                        finalMarkdown = finalMarkdown + '\n\n' + renderCompanionApplyAllBanner(fileBlocks.length, idx);
                     }
 
                     // 2. Render SPARQL Widgets
@@ -1574,10 +1542,38 @@
                         return renderSparqlWidget(blockId, query.trim());
                     });
 
+                    // 3. Render <focuse> or <focus> blocks
+                    const focusRegex = /<(?:focuse|focus)>([\s\S]*?)<\/(?:focuse|focus)>/gi;
+                    finalMarkdown = finalMarkdown.replace(focusRegex, (match, codeSnippet) => {
+                        const trimmedCode = codeSnippet.replace(/^\r?\n/, '').replace(/\r?\n$/, '');
+                        const encoded = encodeURIComponent(trimmedCode);
+                        const firstLine = trimmedCode.trim().split('\n')[0] || '';
+                        const preview = firstLine.length > 55 ? firstLine.substring(0, 52) + '...' : firstLine;
+
+                        return '\n\n<div class="apply-row focus-code-row" style="background: rgba(0, 217, 181, 0.08); border-left: 3px solid var(--agent-calm, #00d9b5); border-radius: 6px; margin: 8px 0; padding: 6px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">\n' +
+                               '  <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;">\n' +
+                               '    <span class="status-icon"><i class="codicon codicon-target" style="color: var(--agent-calm, #00d9b5)"></i></span>\n' +
+                               '    <span style="font-size: 11px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Focus: <code style="font-size: 10.5px; opacity: 0.9;">' + escapeHtml(preview) + '</code></span>\n' +
+                               '  </div>\n' +
+                               '  <button class="code-action-btn apply-btn" onclick="event.stopPropagation(); focusCompanionCode(this)" data-code="' + encoded + '" style="height: 20px; font-size: 9.5px; padding: 0 8px; background: var(--agent-calm, #00d9b5) !important; color: #06222a !important; font-weight: bold; flex-shrink: 0;">\n' +
+                               '    <i class="codicon codicon-selection"></i> Focus Code\n' +
+                               '  </button>\n' +
+                               '</div>\n\n';
+                    });
+
                     let parsedHtml = thoughtsHtml + DOMPurify.sanitize(marked.parse(finalMarkdown), {
                         ADD_TAGS: ['div', 'pre', 'button', 'span', 'i', 'a', 'details', 'summary', 'code'],
                         ADD_ATTR: ['class', 'style', 'data-query', 'data-block-id', 'data-path', 'data-action', 'data-symbol', 'data-raw-code', 'onclick', 'open']
                     });
+
+                    // Add a convenient Retry button if the message is a connection error
+                    if (finalMarkdown.includes('Connection Error (Server Offline)')) {
+                        parsedHtml += '<div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--vscode-widget-border);">' +
+                            '<button class="btn secondary" onclick="retryLastUserPrompt()" style="height: 24px; font-size: 10.5px;">' +
+                            '<i class="codicon codicon-sync"></i> Retry' +
+                            '</button>' +
+                            '</div>';
+                    }
 
                     const actRegex = /<(open_file|select_code|set_breakpoint|run_script)\s+([^>]*?)\s*\/>/gi;
                     parsedHtml = parsedHtml.replace(actRegex, (match, action, attrStr) => {
@@ -1683,9 +1679,9 @@
             activeContentBuffer = text;
             if (!text) {
                 container.innerHTML = '<div class="empty-state">' +
-                    '<div class="empty-state-face">' + miniFaceHtml('idle') + '</div>' +
-                    '<h3>Hey, I\'m here.</h3>' +
-                    '<p>Ask me anything about this project — I\'ll stick with you through the messy parts too.</p>' +
+                    '<div style="font-size: 26px; opacity: 0.7; margin-bottom: 8px;"><i class="codicon codicon-sparkle"></i></div>' +
+                    '<h3>Lollms Companion</h3>' +
+                    '<p>Ask questions, request code changes, or ask where something is defined in the current file.</p>' +
                     '</div>';
                 _respAssistantEl = null;
                 _respPromptRendered = null;
@@ -1718,14 +1714,18 @@
                 });
             }
 
-            let finalMarkdown = parsed.processedContent;
+            let finalMarkdown = normalizeCompanionFileBlocks(parsed.processedContent, window.activeFilePath);
 
             // 1. Render Structured XML <file> Mutation Cards (supports nested <file> tags)
             const fileBlocks = extractFileBlocks(finalMarkdown);
             for (let i = fileBlocks.length - 1; i >= 0; i--) {
                 const fb = fileBlocks[i];
-                const cardHtml = renderFileMutationCard(fb.attrStr, fb.rawContent);
+                const cardHtml = renderFileMutationCard(fb.attrStr, fb.rawContent, i);
                 finalMarkdown = finalMarkdown.substring(0, fb.start) + cardHtml + finalMarkdown.substring(fb.end);
+            }
+
+            if (fileBlocks.length > 1) {
+                finalMarkdown = finalMarkdown + '\n\n' + renderCompanionApplyAllBanner(fileBlocks.length, 'latest');
             }
 
             // 2. Render SPARQL Widgets
@@ -1733,6 +1733,25 @@
             finalMarkdown = finalMarkdown.replace(sparqlRegex, (match, query) => {
                 const blockId = 'sparql-companion-' + Date.now();
                 return renderSparqlWidget(blockId, query.trim());
+            });
+
+            // 3. Render <focuse> or <focus> blocks
+            const focusRegex = /<(?:focuse|focus)>([\s\S]*?)<\/(?:focuse|focus)>/gi;
+            finalMarkdown = finalMarkdown.replace(focusRegex, (match, codeSnippet) => {
+                const trimmedCode = codeSnippet.replace(/^\r?\n/, '').replace(/\r?\n$/, '');
+                const encoded = encodeURIComponent(trimmedCode);
+                const firstLine = trimmedCode.trim().split('\n')[0] || '';
+                const preview = firstLine.length > 55 ? firstLine.substring(0, 52) + '...' : firstLine;
+
+                return '\n\n<div class="apply-row focus-code-row" style="background: rgba(0, 217, 181, 0.08); border-left: 3px solid var(--agent-calm, #00d9b5); border-radius: 6px; margin: 8px 0; padding: 6px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">\n' +
+                       '  <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;">\n' +
+                       '    <span class="status-icon"><i class="codicon codicon-target" style="color: var(--agent-calm, #00d9b5)"></i></span>\n' +
+                       '    <span style="font-size: 11px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Focus: <code style="font-size: 10.5px; opacity: 0.9;">' + escapeHtml(preview) + '</code></span>\n' +
+                       '  </div>\n' +
+                       '  <button class="code-action-btn apply-btn" onclick="event.stopPropagation(); focusCompanionCode(this)" data-code="' + encoded + '" style="height: 20px; font-size: 9.5px; padding: 0 8px; background: var(--agent-calm, #00d9b5) !important; color: #06222a !important; font-weight: bold; flex-shrink: 0;">\n' +
+                       '    <i class="codicon codicon-selection"></i> Focus Code\n' +
+                       '  </button>\n' +
+                       '</div>\n\n';
             });
 
             if (container) {
@@ -1787,6 +1806,17 @@
                 } else {
                     Prism.highlightAllUnder(responseBody);
                 }
+
+                if (isFinal) {
+                    const focusMatch = text.match(/<(?:focuse|focus)>([\s\S]*?)<\/(?:focuse|focus)>/i);
+                    if (focusMatch && focusMatch[1]) {
+                        const codeSnippet = focusMatch[1].replace(/^\r?\n/, '').replace(/\r?\n$/, '').trim();
+                        if (codeSnippet && codeSnippet !== window._lastAutoFocusedCode) {
+                            window._lastAutoFocusedCode = codeSnippet;
+                            vscode.postMessage({ command: 'focusCode', code: codeSnippet });
+                        }
+                    }
+                }
                 container.scrollTop = container.scrollHeight;
             }
         }
@@ -1797,16 +1827,24 @@
                 case 'updateContextInfo':
                     const ctxText = document.getElementById('context-info-text');
                     if (ctxText) ctxText.textContent = message.text;
+                    if (message.filePath) {
+                        window.activeFilePath = message.filePath;
+                    } else if (message.text && message.text !== 'No active editor') {
+                        window.activeFilePath = message.text.split(' (')[0].trim();
+                    }
                     break;
                 case 'updateAttachState':
                     const btn = document.getElementById('attach-btn');
                     if (btn) {
+                        const icon = btn.querySelector('.codicon');
                         if (message.isAttached) {
                             btn.classList.add('attached');
-                            btn.title = "Detach from context";
+                            btn.title = "Pinned to context (Click to unpin)";
+                            if (icon) icon.className = 'codicon codicon-pinned';
                         } else {
                             btn.classList.remove('attached');
-                            btn.title = "Attach to current context";
+                            btn.title = "Unpinned (Click to pin to active file)";
+                            if (icon) icon.className = 'codicon codicon-pin';
                         }
                     }
                     break;
@@ -1816,20 +1854,12 @@
                         if (message.isLoading) {
                             sendBtn.disabled = true;
                             sendBtn.innerHTML = '<span class="codicon codicon-sync spin"></span>';
-                            setFaceMood('thinking');
                         } else {
                             sendBtn.disabled = false;
                             sendBtn.innerHTML = '<span class="codicon codicon-send"></span>';
                             if (promptInput) promptInput.focus();
-                            setFaceMood('idle');
                         }
                     }
-                    break;
-                case 'updateTrustScore':
-                    updateTrustScore(message.score);
-                    break;
-                case 'setMood':
-                    setMood(message.mood);
                     break;
                 case 'appendChunk':
                     const w = document.getElementById('companion-waiting-placeholder');
@@ -1843,13 +1873,11 @@
                         activePrompt = message.prompt;
                     }
                     renderResponse(message.text, message.prompt, message.isFinal);
-                    setFaceMood('idle');
                     break;
                 case 'updateChat':
                     const waitPh2 = document.getElementById('companion-waiting-placeholder');
                     if (waitPh2) waitPh2.remove();
                     renderChat(message.history, message.streamingText);
-                    setFaceMood('idle');
                     break;
                 case 'clearResponse':
                     if (container) container.innerHTML = "";
@@ -1906,20 +1934,71 @@
                             }
                             card.open = false; // Auto-collapse on successful apply
                             setMood('success');
+                        }
+
+                        // Clean up existing review rows or error banners
+                        const existingReview = card.querySelector('.review-actions-row');
+                        if (existingReview) existingReview.remove();
+                        const existingErrBanner = card.querySelector('.apply-failed-banner');
+                        if (existingErrBanner) existingErrBanner.remove();
+
+                        if (message.rejected) {
+                            if (applyBtn) {
+                                applyBtn.disabled = false;
+                                applyBtn.classList.remove('applied');
+                                applyBtn.innerHTML = '<i class="codicon codicon-arrow-swap"></i> Patch';
+                                applyBtn.title = 'Review Diff & Patch File';
+                            }
                         } else if (message.reviewingDiff) {
                             if (applyBtn) {
                                 applyBtn.disabled = false;
                                 applyBtn.classList.remove('applied');
-                                applyBtn.innerHTML = '<i class="codicon codicon-diff"></i>';
-                                applyBtn.title = 'Reviewing diff in editor. Accept diff to complete.';
+                                applyBtn.innerHTML = '<i class="codicon codicon-diff"></i> Reviewing';
+                                applyBtn.title = 'Reviewing diff in editor. Validate or reject changes below.';
                             }
+
+                            // Show prominent interactive review bar on the card!
+                            const reviewRow = document.createElement('div');
+                            reviewRow.className = 'review-actions-row';
+                            reviewRow.id = 'review-row-' + message.blockId;
+                            reviewRow.style.cssText = 'display: flex; gap: 8px; padding: 8px 12px; background: rgba(0, 122, 204, 0.12); border-top: 1px solid var(--vscode-widget-border); align-items: center; justify-content: space-between;';
+                            reviewRow.innerHTML = '<div style="display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: bold; color: var(--vscode-textLink-foreground);">' +
+                                '<i class="codicon codicon-diff"></i>' +
+                                '<span>Reviewing diff in editor &mdash; Validate changes?</span>' +
+                                '</div>' +
+                                '<div style="display: flex; gap: 6px;">' +
+                                '<button type="button" class="code-action-btn review-btn-accept" onclick="event.stopPropagation(); validateCompanionDiff(\'' + message.blockId + '\', true, \'' + (message.filePath || '') + '\')" style="background: var(--vscode-charts-green, #2ecc71) !important; color: white !important; font-weight: bold; height: 24px; padding: 0 10px;" title="Accept and save changes to disk">' +
+                                '<i class="codicon codicon-check"></i> Validate (Accept)' +
+                                '</button>' +
+                                '<button type="button" class="code-action-btn review-btn-reject" onclick="event.stopPropagation(); validateCompanionDiff(\'' + message.blockId + '\', false, \'' + (message.filePath || '') + '\')" style="background: var(--vscode-charts-red, #e74c3c) !important; color: white !important; font-weight: bold; height: 24px; padding: 0 10px;" title="Reject changes and close diff">' +
+                                '<i class="codicon codicon-close"></i> Reject (No)' +
+                                '</button>' +
+                                '</div>';
+
+                            card.appendChild(reviewRow);
+                            card.open = true;
                         } else if (!message.success) {
                             if (applyBtn) {
                                 applyBtn.disabled = false;
                                 applyBtn.classList.remove('applied');
-                                applyBtn.innerHTML = '<i class="codicon codicon-error"></i>';
+                                applyBtn.innerHTML = '<i class="codicon codicon-error"></i> Failed';
                                 applyBtn.title = message.error || 'Failed to apply';
                             }
+                            // Show helpful error banner with Fix with AI button
+                            const errBanner = document.createElement('div');
+                            errBanner.className = 'apply-failed-banner';
+                            errBanner.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(231, 76, 60, 0.12); border-top: 1px solid var(--vscode-charts-red); font-size: 11px; color: var(--vscode-charts-red); gap: 8px;';
+                            errBanner.innerHTML = '<div style="display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' +
+                                '<i class="codicon codicon-error"></i>' +
+                                '<span title="' + escapeHtml(message.error || '') + '">Match failure: ' + escapeHtml(message.error || 'Lines not found on disk') + '</span>' +
+                                '</div>' +
+                                '<div style="display: flex; gap: 6px; flex-shrink: 0;">' +
+                                '<button type="button" class="code-action-btn apply-btn" onclick="event.stopPropagation(); retryCompanionRepair(\'' + message.blockId + '\', \'' + (message.filePath || '') + '\')" style="height: 22px; font-size: 10px; padding: 0 8px; background: var(--vscode-charts-purple) !important; color: white !important;">' +
+                                '<i class="codicon codicon-sparkle"></i> Fix with AI' +
+                                '</button>' +
+                                '</div>';
+                            card.appendChild(errBanner);
+                            card.open = true;
                             setMood('error');
                         }
                     }
@@ -1927,26 +2006,7 @@
             }
         });
 
-        function setCognitiveMode(mode) {
-            activeMode = mode;
-            isMove37Active = (mode === 'move37');
-            document.getElementById('pill-standard')?.classList.toggle('active', mode === 'standard');
-            document.getElementById('pill-grounding')?.classList.toggle('active', mode === 'grounding');
-            document.getElementById('pill-move37')?.classList.toggle('active', mode === 'move37');
-            document.getElementById('input-container')?.classList.toggle('move37-active', isMove37Active);
 
-            if (isMove37Active) {
-                promptInput.placeholder = 'Unleash a lateral leap... Propose an unexpected, elegant shortcut.';
-                setMood('thinking');
-                vscode.postMessage({ command: 'adjustTrustScore', delta: 2 });
-            } else if (mode === 'grounding') {
-                promptInput.placeholder = 'Query the entire project with full context...';
-                setMood('idle');
-            } else {
-                promptInput.placeholder = 'Ask a question or request a change...';
-                setMood('idle');
-            }
-        }
 
         function toggleHistory() {
             document.getElementById('sidebar')?.classList.toggle('visible');
@@ -2040,23 +2100,82 @@
             }).join('');
         }
 
-        function renderFileMutationCard(attrStr, rawBody) {
+        function renderCompanionApplyAllBanner(count, groupKey) {
+            return '<div class="apply-all-companion-wrapper" id="apply-all-banner-' + groupKey + '" style="margin-top: 14px; margin-bottom: 4px; padding: 10px 14px; background: rgba(55, 148, 255, 0.08); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">' +
+                   '  <div style="display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: bold; color: var(--vscode-textLink-foreground);">' +
+                   '    <i class="codicon codicon-check-all" style="font-size: 16px; color: var(--vscode-charts-blue);"></i>' +
+                   '    <span>Ready to Apply: ' + count + ' Patches</span>' +
+                   '  </div>' +
+                   '  <div style="display: flex; gap: 6px;">' +
+                   '    <button class="code-action-btn delete-btn undo-all-companion-btn" onclick="event.stopPropagation(); applyAllCompanionPatches(\'' + groupKey + '\', true)" style="display:none; height: 26px; font-size: 11px; padding: 0 10px;"><i class="codicon codicon-discard"></i> Undo All</button>' +
+                   '    <button class="code-action-btn apply-btn apply-all-companion-btn" onclick="event.stopPropagation(); applyAllCompanionPatches(\'' + groupKey + '\', false)" style="height: 26px; font-size: 11px; padding: 0 12px; font-weight: bold;"><i class="codicon codicon-check-all"></i> Apply All (' + count + ')</button>' +
+                   '  </div>' +
+                   '</div>';
+        }
+
+        function applyAllCompanionPatches(groupKey, isUndo) {
+            const banner = document.getElementById('apply-all-banner-' + groupKey);
+            const wrapper = banner ? banner.closest('.message-wrapper') : document;
+            const cards = Array.from((wrapper || document).querySelectorAll('.file-mutation-card'));
+            if (cards.length === 0) return;
+
+            const btn = banner ? banner.querySelector(isUndo ? '.undo-all-companion-btn' : '.apply-all-companion-btn') : null;
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="codicon codicon-sync spin"></span> ' + (isUndo ? 'Undoing All...' : 'Applying All...');
+            }
+
+            cards.forEach(card => {
+                const applyBtn = card.querySelector('.apply-mutation-btn, .apply-btn');
+                if (applyBtn) {
+                    applyBtn.disabled = true;
+                    applyBtn.innerHTML = '<div class="spinner"></div>';
+                }
+            });
+
+            const changes = cards.map((card, idx) => ({
+                path: card.dataset.path,
+                action: card.dataset.action || 'patch',
+                type: (card.dataset.action === 'write' ? 'file' : 'replace'),
+                content: decodeURIComponent(card.dataset.rawCode || ''),
+                blockId: card.id,
+                blockIndex: idx
+            }));
+
+            vscode.postMessage({
+                command: 'applyAllChanges',
+                changes: changes,
+                undo: isUndo
+            });
+
+            setTimeout(() => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = isUndo ? '<i class="codicon codicon-discard"></i> Undo All' : '<i class="codicon codicon-check-all"></i> Apply All (' + cards.length + ')';
+                }
+                if (banner && !isUndo) {
+                    const undoBtn = banner.querySelector('.undo-all-companion-btn');
+                    if (undoBtn) undoBtn.style.display = 'inline-flex';
+                }
+            }, 1000);
+        }
+        window.applyAllCompanionPatches = applyAllCompanionPatches;
+
+        function renderFileMutationCard(attrStr, rawBody, cardIndex) {
             rawBody = (rawBody || "").trim();
             const pathRegex = /(?:^|\s+)(?:path|file_path|filepath|file|target|name|filename)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i;
             const pathMatch = attrStr.match(pathRegex) || attrStr.match(/^(?:["']([^"']+)["']|([^\s=>"']+\.[a-zA-Z0-9_\-]+))/);
-            const filePath = pathMatch ? (pathMatch[1] || pathMatch[2] || "").replace(/^['"]|['"]$/g, '').trim() : "unspecified_file";
+            let filePath = pathMatch ? (pathMatch[1] || pathMatch[2] || "").replace(/^['"]|['"]$/g, '').trim() : (window.activeFilePath || "current_file");
             const actionMatch = attrStr.match(/(?:action|type|mode)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i);
             const symbolMatch = attrStr.match(/(?:symbol|function|method|class)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i);
 
             const action = (actionMatch ? (actionMatch[1] || actionMatch[2]) : (rawBody.includes('<<<<<<< SEARCH') ? 'patch' : 'write')).toLowerCase();
             const symbol = symbolMatch ? (symbolMatch[1] || symbolMatch[2]).trim() : "";
-            
 
             const isPatch = action === 'patch' || rawBody.includes('<<<<<<< SEARCH');
-            const blockId = 'comp-block-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+            const blockId = 'comp-block-' + Date.now() + '-' + (cardIndex !== undefined ? cardIndex : Math.random().toString(36).substring(2, 7));
             const actionLabel = isPatch ? 'SURGICAL PATCH' : (symbol ? 'SYMBOL: ' + symbol : 'WRITE FILE');
             const actionIcon = isPatch ? 'codicon-diff-modified' : (symbol ? 'codicon-symbol-method' : 'codicon-file-code');
-            const applyIcon = isPatch ? 'codicon-arrow-swap' : 'codicon-tools';
             const ext = filePath.split('.').pop() || 'plaintext';
 
             let bodyHtml = "";
@@ -2093,7 +2212,7 @@
                                     '<div class="aider-hunk-header" style="border-top: 1px solid var(--vscode-widget-border); border-bottom: none;">' +
                                         '<div style="font-size: 10px; opacity:0.7;">Hunk ' + (hIdx + 1) + ' of ' + hunks.length + '</div>' +
                                         '<div class="aider-hunk-actions">' +
-                                            '<button class="code-action-btn apply-btn" onclick="event.stopPropagation(); applyCompanionHunk(\'' + blockId + '\', ' + hIdx + ')" title="Apply this hunk"><i class="codicon codicon-arrow-swap"></i> Apply Hunk</button>' +
+                                            '<button class="code-action-btn apply-btn" onclick="event.stopPropagation(); applyCompanionHunk(\'' + blockId + '\', ' + hIdx + ')" title="Review Diff & Patch this hunk"><i class="codicon codicon-arrow-swap"></i> Patch Hunk</button>' +
                                         '</div>' +
                                     '</div>' +
                                 '</div>' +
@@ -2150,8 +2269,9 @@
                 '    </div>\n' +
                 '    <div class="code-actions">\n' +
                 '      <button class="code-action-btn" onclick="event.stopPropagation(); vscode.postMessage({command:\'copyToClipboard\', text: decodeURIComponent(\'' + encodedRaw + '\')})" title="Copy Code"><i class="codicon codicon-copy"></i></button>\n' +
-                (isPatch ? '      <button class="code-action-btn delete-btn undo-mutation-btn" style="display:none;" onclick="event.stopPropagation(); applyCompanionMutation(\'' + blockId + '\', true)" title="Undo patch"><i class="codicon codicon-discard"></i></button>\n' : '') +
-                '      <button class="code-action-btn apply-btn apply-mutation-btn" onclick="event.stopPropagation(); applyCompanionMutation(\'' + blockId + '\', false)" title="' + (isPatch ? 'Review Diff & Apply Patch' : 'Apply File Content') + '"><i class="codicon ' + applyIcon + '"></i> Apply</button>\n' +
+                '      <button class="code-action-btn secondary-btn review-diff-mutation-btn" onclick="event.stopPropagation(); reviewCompanionDiff(\'' + blockId + '\')" title="Review proposed changes in interactive diff editor"><i class="codicon codicon-diff"></i> Diff</button>\n' +
+                (isPatch ? '      <button class="code-action-btn delete-btn undo-mutation-btn" style="display:none;" onclick="event.stopPropagation(); applyCompanionMutation(\'' + blockId + '\', true)" title="Undo patch"><i class="codicon codicon-discard"></i> Undo</button>\n' : '') +
+                '      <button class="code-action-btn apply-btn apply-mutation-btn" onclick="event.stopPropagation(); applyCompanionMutation(\'' + blockId + '\', false)" title="Apply directly to disk and save"><i class="codicon codicon-check"></i> Apply</button>\n' +
                 '    </div>\n' +
                 '  </summary>\n' +
                 bodyHtml +
@@ -2195,13 +2315,13 @@
                     options: { undo: true, silent: true, autoSave: true, blockId: blockId }
                 });
             } else {
-                if (applyBtn) { applyBtn.disabled = true; applyBtn.innerHTML = '<div class="spinner"></div> Reviewing...'; }
+                if (applyBtn) { applyBtn.disabled = true; applyBtn.innerHTML = '<div class="spinner"></div> Applying...'; }
                 if (action === 'patch' || rawContent.includes('<<<<<<< SEARCH')) {
                     vscode.postMessage({
                         command: 'replaceCode',
                         filePath: filePath,
                         content: rawContent,
-                        options: { silent: false, autoSave: false, blockId: blockId }
+                        options: { silent: true, autoSave: true, blockId: blockId }
                     });
                 } else {
                     const targetPath = symbol ? `${filePath}:${symbol}` : filePath;
@@ -2209,11 +2329,52 @@
                         command: 'applyFileContent',
                         filePath: targetPath,
                         content: rawContent,
-                        options: { silent: false, autoSave: false, blockId: blockId }
+                        options: { silent: true, autoSave: true, blockId: blockId }
                     });
                 }
             }
         }
+
+        function reviewCompanionDiff(blockId) {
+            const card = document.getElementById(blockId);
+            if (!card) return;
+
+            const filePath = card.dataset.path;
+            const action = card.dataset.action;
+            const symbol = card.dataset.symbol;
+            const rawContent = decodeURIComponent(card.dataset.rawCode || "");
+            const diffBtn = card.querySelector('.review-diff-mutation-btn');
+
+            if (diffBtn) {
+                diffBtn.disabled = true;
+                diffBtn.innerHTML = '<div class="spinner"></div> Opening...';
+            }
+
+            if (action === 'patch' || rawContent.includes('<<<<<<< SEARCH')) {
+                vscode.postMessage({
+                    command: 'replaceCode',
+                    filePath: filePath,
+                    content: rawContent,
+                    options: { silent: false, autoSave: false, blockId: blockId }
+                });
+            } else {
+                const targetPath = symbol ? `${filePath}:${symbol}` : filePath;
+                vscode.postMessage({
+                    command: 'applyFileContent',
+                    filePath: targetPath,
+                    content: rawContent,
+                    options: { silent: false, autoSave: false, blockId: blockId }
+                });
+            }
+
+            setTimeout(() => {
+                if (diffBtn) {
+                    diffBtn.disabled = false;
+                    diffBtn.innerHTML = '<i class="codicon codicon-diff"></i> Diff';
+                }
+            }, 1200);
+        }
+        window.reviewCompanionDiff = reviewCompanionDiff;
 
         function renderSparqlWidget(blockId, queryText) {
             const escapedQuery = queryText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -2327,17 +2488,50 @@
                     const newVal = textarea.value.trim();
                     if (newVal) {
                         wrapper.dataset.originalContent = newVal;
+                        body.textContent = newVal;
+
+                        // Truncate any subsequent messages in the DOM so the stream cleanly restarts
+                        let next = wrapper.nextElementSibling;
+                        while (next) {
+                            const toRemove = next;
+                            next = next.nextElementSibling;
+                            toRemove.remove();
+                        }
+
+                        renderStreamingBubble('');
+                        container.scrollTop = container.scrollHeight;
+
                         vscode.postMessage({
-                            command: 'submitPrompt',
-                            text: newVal,
-                            mode: activeMode
+                            command: 'saveAndAsk',
+                            messageId: id,
+                            text: newVal
                         });
                     }
                     editOverlay.remove();
                     actions.style.display = 'flex';
                 };
+
+                textarea.onkeydown = (e) => {
+                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey || !e.shiftKey)) {
+                        e.preventDefault();
+                        resubmitBtn.click();
+                    } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        cancelBtn.click();
+                    }
+                };
+
                 buttons.append(cancelBtn, saveBtn, resubmitBtn);
             } else {
+                textarea.onkeydown = (e) => {
+                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                        e.preventDefault();
+                        saveBtn.click();
+                    } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        cancelBtn.click();
+                    }
+                };
                 buttons.append(cancelBtn, saveBtn);
             }
 
@@ -2422,6 +2616,97 @@
             });
         }
 
+        function reviewDecision(blockId, decision, filePath) {
+            vscode.postMessage({
+                command: 'reviewDecision',
+                blockId: blockId,
+                decision: decision,
+                filePath: filePath
+            });
+            const card = document.getElementById(blockId);
+            if (card) {
+                const reviewBox = card.querySelector('.review-card, .review-actions-row');
+                if (reviewBox) reviewBox.remove();
+            }
+        }
+
+        function applyCompanionHunk(blockId, hIdx) {
+            const card = document.getElementById(blockId);
+            if (!card) return;
+
+            const filePath = card.dataset.path;
+            const rawContent = decodeURIComponent(card.dataset.rawCode || "");
+            const hunks = parseAiderHunks(rawContent);
+
+            if (hIdx >= 0 && hIdx < hunks.length) {
+                const hunk = hunks[hIdx];
+                const hunkBtn = card.querySelector('.hunk-pane-' + hIdx + ' .apply-btn');
+                if (hunkBtn) {
+                    hunkBtn.disabled = true;
+                    hunkBtn.innerHTML = '<div class="spinner"></div>';
+                }
+
+                vscode.postMessage({
+                    command: 'replaceCode',
+                    filePath: filePath,
+                    content: hunk.fullMatch,
+                    options: {
+                        silent: false,
+                        autoSave: false,
+                        blockId: blockId,
+                        hunkIndex: hIdx
+                    }
+                });
+            }
+        }
+
+        function wrapText(type) {
+            const textarea = document.getElementById('prompt-input');
+            if (!textarea) return;
+
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            const selectedText = textarea.value.substring(start, end);
+
+            let prefix = '';
+            let suffix = '';
+
+            switch (type) {
+                case 'python':
+                    prefix = '```python\n';
+                    suffix = '\n```';
+                    break;
+                case 'code':
+                    prefix = '```\n';
+                    suffix = '\n```';
+                    break;
+                case 'h1':
+                    prefix = '# ';
+                    break;
+                case 'h2':
+                    prefix = '## ';
+                    break;
+                case 'h3':
+                    prefix = '### ';
+                    break;
+                case 'list':
+                    prefix = '- ';
+                    break;
+                case 'bold':
+                    prefix = '**';
+                    suffix = '**';
+                    break;
+                case 'italic':
+                    prefix = '*';
+                    suffix = '*';
+                    break;
+            }
+
+            const replacement = prefix + (selectedText || (type.startsWith('h') ? 'Heading' : 'text')) + suffix;
+            textarea.setRangeText(replacement, start, end, 'select');
+            textarea.focus();
+        }
+
         // Sync the avatar's heartbeat speed/color with the Symbiosis value
         // already shown in the markup, so the very first frame is consistent.
         updateTrustScore(75);
@@ -2431,12 +2716,62 @@
         window.toggleAttach = toggleAttach;
         window.clearHistory = () => vscode.postMessage({ command: 'clearHistory' });
         window.submitPrompt = submitPrompt;
-        window.setCognitiveMode = setCognitiveMode;
+
         window.copyFullResponse = () => vscode.postMessage({ command: 'copyToClipboard', text: activeContentBuffer });
         window.clearResponse = clearResponse;
         window.startEdit = startEdit;
         window.enhanceCodeBlocks = enhanceCodeBlocks;
         window.reviewDecision = reviewDecision;
+        window.applyCompanionHunk = applyCompanionHunk;
+        window.applyCompanionMutation = applyCompanionMutation;
+        window.switchCompanionTab = switchCompanionTab;
+        window.wrapText = wrapText;
+        window.renderCompanionApplyAllBanner = renderCompanionApplyAllBanner;
+        window.reviewCompanionDiff = reviewCompanionDiff;
+
+        function validateCompanionDiff(blockId, isAccept, filePath) {
+            const card = document.getElementById(blockId);
+            const reviewRow = document.getElementById('review-row-' + blockId);
+            if (reviewRow) reviewRow.remove();
+
+            if (isAccept) {
+                vscode.postMessage({
+                    command: 'acceptDiff',
+                    blockId: blockId,
+                    filePath: filePath
+                });
+            } else {
+                vscode.postMessage({
+                    command: 'rejectDiff',
+                    blockId: blockId,
+                    filePath: filePath
+                });
+            }
+        }
+        window.validateCompanionDiff = validateCompanionDiff;
+
+        function retryCompanionRepair(blockId, filePath) {
+            const card = document.getElementById(blockId);
+            if (!card) return;
+            const errBanner = card.querySelector('.apply-failed-banner');
+            if (errBanner) errBanner.remove();
+
+            const applyBtn = card.querySelector('.apply-mutation-btn, .apply-btn');
+            if (applyBtn) {
+                applyBtn.disabled = true;
+                applyBtn.innerHTML = '<div class="spinner"></div> Repairing...';
+            }
+
+            const rawContent = decodeURIComponent(card.dataset.rawCode || "");
+
+            vscode.postMessage({
+                command: 'replaceCode',
+                filePath: filePath || card.dataset.path,
+                content: 'REPAIR_REQUESTED',
+                options: { blockId: blockId, silent: true, autoSave: true, failingPatch: rawContent }
+            });
+        }
+        window.retryCompanionRepair = retryCompanionRepair;
         window.loadHistory = (id) => {
             vscode.postMessage({ command: 'loadHistory', id: id });
             toggleHistory();
@@ -2445,6 +2780,18 @@
             e.stopPropagation();
             vscode.postMessage({ command: 'deleteHistory', id: id });
         };
+
+        function focusCompanionCode(btn) {
+            const raw = btn.getAttribute('data-code');
+            if (raw) {
+                const code = decodeURIComponent(raw);
+                vscode.postMessage({ command: 'focusCode', code: code });
+            }
+        }
+        window.focusCompanionCode = focusCompanionCode;
+
+        // Notify extension that the webview is ready to receive state
+        vscode.postMessage({ command: 'webview-ready' });
     </script>
 </body>
 </html>

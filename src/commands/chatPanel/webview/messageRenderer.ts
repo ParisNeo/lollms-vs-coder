@@ -755,6 +755,10 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     const actionsDiv = messageDiv.querySelector('.message-actions') as HTMLElement;
     if (!contentDiv || !actionsDiv) return;
 
+    if (!textContent && contentDiv) {
+        textContent = (contentDiv.innerText || contentDiv.textContent || "").trim();
+    }
+
     const editOverlay = document.createElement('div');
     editOverlay.className = 'edit-overlay';
 
@@ -913,20 +917,29 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
 
     saveAndSendBtn.onclick = () => {
         const finalContent = getFinalContentFromEditor();
+        const textCheck = typeof finalContent === 'string' 
+            ? finalContent.trim() 
+            : (Array.isArray(finalContent) ? finalContent.map((p: any) => p.text || '').join('').trim() : '');
+
+        if (!textCheck && localImages.length === 0) {
+            return;
+        }
 
         saveAndSendBtn.disabled = true;
         saveAndSendBtn.innerHTML = '<div class="spinner" style="width:12px; height:12px; border-width:2px; margin-right:4px;"></div> Sending...';
 
         messageDiv.dataset.originalContent = JSON.stringify(finalContent);
+        renderMessageContent(messageId, finalContent, true);
+
+        actionsDiv.style.opacity = '';
+        actionsDiv.style.pointerEvents = '';
+
         vscode.postMessage({
             command: 'saveAndSendMessage',
             messageId: messageId,
             newContent: finalContent,
             role: role
         });
-
-        actionsDiv.style.opacity = '';
-        actionsDiv.style.pointerEvents = '';
     };
 
     // Handle Image additions in editor
@@ -8041,15 +8054,16 @@ export function detectMultiStepsInContent(content: string): MultiStepsDetectionR
         stepsMap.set(stepNum, { number: stepNum, title, files });
     }
 
-    // 2. Detect Markdown Step / Phase / Subtask / Part headers if not already detected via XML
+    // 2. Detect Markdown Step / Phase / Task / Stage / Part headers or numbered sections
     if (stepsMap.size < 2) {
-        const headerRegex = /(?:^|\n)[ \t]*(?:(#{1,4})\s+|\*{2}|\b)(?:Step|Phase|Part|Subtask|Étape|Paso|Schritt)\s*(\d+)[:\.\s\-–—*]+([^\n\r*]+)/gi;
+        const headerRegex = /(?:^|\n)[ \t]*(?:(?:#{1,4}\s+|\*{2}|\b)(?:(?:\d+[\.\)]\s+)?(?:Step|Phase|Part|Subtask|Task|Stage|Étape|Etape|Paso|Schritt|Fase|Tâche|Tache|Tarea|Aufgabe)\s*(\d+)(?:\/\d+)?[:\.\s\-–—*]*([^\n\r]*)|(?:#{1,4}\s+)(\d+)[\.\)]\s+([^\n\r]+)))/gi;
         let hMatch: RegExpExecArray | null;
         const matches: { number: number; title: string; index: number }[] = [];
 
         while ((hMatch = headerRegex.exec(content)) !== null) {
-            const num = parseInt(hMatch[2], 10);
-            let title = (hMatch[3] || "").replace(/[*_#`:]/g, '').trim();
+            const num = parseInt(hMatch[1] || hMatch[3], 10);
+            let rawTitle = (hMatch[2] || hMatch[4] || '').trim();
+            let title = rawTitle.replace(/^[*_`:\s\-–—]+|[*_`:\s\-–—]+$/g, '').trim();
             if (!title) title = `Step ${num}`;
             matches.push({ number: num, title, index: hMatch.index });
         }
@@ -8062,17 +8076,25 @@ export function detectMultiStepsInContent(content: string): MultiStepsDetectionR
                 const sectionText = content.substring(cur.index, next ? next.index : content.length);
 
                 const files: string[] = [];
-                const fileTags = sectionText.match(/<file\s+([^>]*?)>/gi) || [];
-                fileTags.forEach(ft => {
-                    const attrs = parseFileTagAttributes(ft);
-                    if (attrs?.path && !files.includes(attrs.path)) files.push(attrs.path);
+                const fileBlocks = extractFileBlocks(normalizePseudoFileBlocks(sectionText));
+                fileBlocks.forEach(fb => {
+                    const attrs = parseFileTagAttributes(fb.attrStr, fb.rawContent);
+                    if (attrs?.path && !files.includes(attrs.path)) {
+                        files.push(attrs.path);
+                    }
                 });
 
-                // Also check fenced code blocks with file names in this section
                 const fenceMatches = sectionText.match(/```(?:language:|lang:)?(?:\w+)?:([^\n\r\s]+)/g) || [];
                 fenceMatches.forEach(fm => {
                     const p = fm.split(':').pop()?.trim();
                     if (p && isValidFilePath(p) && !files.includes(p)) files.push(p);
+                });
+
+                const backticked = [...sectionText.matchAll(/`([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9_\-]+)`/g)].map(m => m[1].trim());
+                backticked.forEach(bp => {
+                    if (isValidFilePath(bp) && !files.includes(bp) && (sectionText.includes('<<<<<<<') || sectionText.includes('```') || sectionText.includes('<file'))) {
+                        files.push(bp);
+                    }
                 });
 
                 stepsMap.set(cur.number, { number: cur.number, title: cur.title, files });
@@ -8106,11 +8128,13 @@ export function detectMultiStepsInContent(content: string): MultiStepsDetectionR
     const sortedSteps = Array.from(stepsMap.values()).sort((a, b) => a.number - b.number);
 
     // If step files were missing, populate from all file mutation tags in the document distributed across steps
-    const allFileTags = content.match(/<file\s+([^>]*?)>/gi) || [];
     const allDiscoveredFiles: string[] = [];
-    allFileTags.forEach(ft => {
-        const attrs = parseFileTagAttributes(ft);
-        if (attrs?.path && !allDiscoveredFiles.includes(attrs.path)) allDiscoveredFiles.push(attrs.path);
+    const allBlocks = extractFileBlocks(normalizePseudoFileBlocks(content));
+    allBlocks.forEach(b => {
+        const attrs = parseFileTagAttributes(b.attrStr, b.rawContent);
+        if (attrs?.path && !allDiscoveredFiles.includes(attrs.path)) {
+            allDiscoveredFiles.push(attrs.path);
+        }
     });
 
     const anyStepHasFiles = sortedSteps.some(s => s.files.length > 0);
@@ -8127,6 +8151,67 @@ export function detectMultiStepsInContent(content: string): MultiStepsDetectionR
         steps: sortedSteps
     };
 }
+
+export function collapseAllLibrarianMessages() {
+    const wrappers = Array.from(document.querySelectorAll('.message-wrapper')) as HTMLElement[];
+    wrappers.forEach((wrapper: any) => {
+        const msgDiv = wrapper.querySelector('.message') as HTMLElement;
+        const roleName = wrapper.querySelector('.role-name')?.textContent || '';
+        const msgId = String(wrapper.dataset.messageId || '');
+        const personality = String(wrapper.dataset.personalityName || '');
+
+        let originalContent = '';
+        if (wrapper.dataset.originalContent) {
+            try {
+                const parsed = JSON.parse(wrapper.dataset.originalContent);
+                originalContent = typeof parsed === 'string' ? parsed : (Array.isArray(parsed) ? parsed.map((p: any) => p.text || '').join('\n') : String(parsed));
+            } catch {
+                originalContent = String(wrapper.dataset.originalContent);
+            }
+        }
+        if (!originalContent) {
+            originalContent = wrapper.querySelector('.message-content')?.textContent || '';
+        }
+
+        const isContextShield = msgId.startsWith('verification_notice_') ||
+            originalContent.startsWith('Librarian Verification Notice:') ||
+            personality.includes('Context Shield');
+
+        const isLibrarian = !isContextShield && (
+            wrapper.dataset.isLibrarian === 'true' ||
+            msgDiv?.classList.contains('librarian-message') ||
+            msgId.startsWith('librarian_') ||
+            msgId.startsWith('lib_report_') ||
+            msgId.startsWith('lib_') ||
+            msgId.startsWith('governor_') ||
+            personality.includes('Librarian') ||
+            personality.includes('Governor') ||
+            roleName.includes('Librarian') ||
+            originalContent.startsWith('Librarian agent report:') ||
+            originalContent.startsWith('Librarian Master Directive:') ||
+            originalContent.includes('### 📚 **Lead Librarian')
+        );
+
+        if (isLibrarian) {
+            if (typeof wrapper.toggleCollapse === 'function') {
+                wrapper.toggleCollapse(true, false);
+            } else if (!wrapper.classList.contains('collapsed-message')) {
+                const collapseBtn = wrapper.querySelector('.msg-collapse-btn') as HTMLElement;
+                if (collapseBtn) {
+                    collapseBtn.click();
+                } else {
+                    wrapper.classList.add('collapsed-message');
+                    const previewPill = wrapper.querySelector('.collapsed-msg-preview') as HTMLElement;
+                    if (previewPill) {
+                        previewPill.innerHTML = '<span class="collapsed-badge lib" style="background:rgba(214,122,13,0.18); color:var(--vscode-charts-orange); border:1px solid rgba(214,122,13,0.35); padding:1px 6px; border-radius:10px; font-size:10px;"><i class="codicon codicon-library"></i> Librarian Report</span>';
+                        previewPill.style.display = 'inline-flex';
+                    }
+                }
+            }
+        }
+    });
+}
+(window as any).collapseAllLibrarianMessages = collapseAllLibrarianMessages;
 
 function formatPlanForCopy(plan: any): string {
     let log = `# AGENT EXPERIENCE LOG\n\n`;

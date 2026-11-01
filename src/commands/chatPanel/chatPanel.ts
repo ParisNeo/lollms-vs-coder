@@ -66,7 +66,7 @@ export class ChatPanel {
   public herdManager?: HerdManager;
   private _executionLogs: string[] = [];
   private processManager!: ProcessManager;
-  private readonly discussionId: string;
+  private discussionId: string;
   private _isWebviewReady = false;
   private _isLoadPending = false;
   private _inputResolver: ((value: string) => void) | null = null;
@@ -1486,6 +1486,10 @@ Now that you possess these files, please deliver the verified code modifications
           if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
               let discussion: Discussion | null;
               if (this.discussionId.startsWith('temp-')) {
+                  if (this._currentDiscussion && Array.isArray(this._currentDiscussion.messages) && this._currentDiscussion.messages.length > 0) {
+                      discussion = this._currentDiscussion;
+                      discussion.id = this.discussionId;
+                  } else {
                   const preciseTokenization = vscode.workspace.getConfiguration('lollmsVsCoder').get<boolean>('preciseTokenization', false);
                   const inheritedMuted = this._discussionManager.getLastMutedFiles();
                   const globalIncluded = this._contextManager?.getContextStateProvider()?.getIncludedFiles() || [];
@@ -1508,6 +1512,7 @@ Now that you possess these files, please deliver the verified code modifications
                       mutedFiles: [...inheritedMuted]
                   };
                   (discussion as any).includedFiles = JSON.parse(JSON.stringify(globalIncluded));
+                  }
               } else {
                   discussion = await this._discussionManager.getDiscussion(this.discussionId);
               }
@@ -1603,11 +1608,16 @@ Now that you possess these files, please deliver the verified code modifications
 
         // --- PHASE 1: IMMEDIATE DISCUSSION MATERIALIZATION (NO BLOCKING I/O) ---
         const currentP = this._personalityManager?.getPersonality(this._currentDiscussion.personalityId || 'default_coder');
-        const safeMessages = (this._currentDiscussion.messages || []).map(m => ({
-            ...m,
-            id: m.id || 'msg_' + Math.random().toString(36).substring(2, 9),
-            personalityName: m.role === 'assistant' ? (m.personalityName || currentP?.name || 'Lollms') : undefined
-        }));
+        const safeMessages = (this._currentDiscussion.messages || []).map(m => {
+            if (!m.id) {
+                m.id = 'msg_' + Date.now() + Math.random().toString(36).substring(2, 9);
+            }
+            return {
+                ...m,
+                id: m.id,
+                personalityName: m.role === 'assistant' ? (m.personalityName || currentP?.name || 'Lollms') : undefined
+            };
+        });
 
         const workspaceFolders = (vscode.workspace.workspaceFolders ||[]).map(f => ({
             name: f?.name || "Workspace",
@@ -2014,6 +2024,328 @@ Now that you possess these files, please deliver the verified code modifications
         this.log(`Unexpected error in _fetchAndSetModels: ${e.message}`, 'ERROR');
     }
   }
+
+public detectMultiStepsInText(content: string): { isMultiSteps: boolean; steps: Array<{ number: number; title: string; files: string[] }> } {
+    if (!content || typeof content !== 'string') {
+        return { isMultiSteps: false, steps: [] };
+    }
+
+    const stepsMap = new Map<number, { number: number; title: string; files: string[] }>();
+    const { parseFileTagAttributes, isValidFilePath, extractFileBlocks, normalizePseudoFileBlocks } = require('../../utils');
+
+    // 1. XML <step number="N"> or <step> blocks
+    const xmlStepRegex = /<step\b([^>]*)>([\s\S]*?)<\/step>/gi;
+    let sMatch: RegExpExecArray | null;
+    let stepCounter = 1;
+
+    while ((sMatch = xmlStepRegex.exec(content)) !== null) {
+        const attrStr = sMatch[1] || "";
+        const body = sMatch[2] || "";
+
+        const numMatch = attrStr.match(/number=["']?(\d+)["']?/i) || body.match(/<number>(\d+)<\/number>/i);
+        const stepNum = numMatch ? parseInt(numMatch[1], 10) : stepCounter++;
+
+        const titleMatch = attrStr.match(/(?:title|name)=["']([^"']+)["']/i) || body.match(/<(?:title|name|summary)>([^<]+)<\//i);
+        let title = titleMatch ? titleMatch[1].trim() : "";
+        if (!title) {
+            const instMatch = body.match(/<instructions>([\s\S]*?)<\/instructions>/i);
+            if (instMatch) {
+                title = instMatch[1].trim().split('\n')[0].replace(/<[^>]+>/g, '').trim().slice(0, 60);
+            }
+        }
+        if (!title) {
+            const firstLine = body.split('\n').map(l => l.replace(/<[^>]+>/g, '').trim()).find(l => l.length > 2);
+            title = firstLine ? firstLine.slice(0, 60) : `Step ${stepNum}`;
+        }
+
+        const files: string[] = [];
+        const filesMatch = body.match(/<(?:target_files|edit_files|files)>([\s\S]*?)<\/(?:target_files|edit_files|files)>/i);
+        if (filesMatch) {
+            filesMatch[1].split(/[\r\n,]+/).map(f => f.trim().replace(/^['"`]|['"`]$/g, '')).filter(Boolean).forEach(f => {
+                if (!files.includes(f) && isValidFilePath(f)) files.push(f);
+            });
+        }
+        const fileTags = body.match(/<file\s+([^>]*?)>/gi) || [];
+        fileTags.forEach(ft => {
+            const attrs = parseFileTagAttributes(ft);
+            if (attrs?.path && !files.includes(attrs.path)) files.push(attrs.path);
+        });
+
+        stepsMap.set(stepNum, { number: stepNum, title, files });
+    }
+
+    // 2. Markdown Step / Phase / Task / Stage / Part headers or numbered sections
+    if (stepsMap.size < 2) {
+        const headerRegex = /(?:^|\n)[ \t]*(?:(?:#{1,4}\s+|\*{2}|\b)(?:(?:\d+[\.\)]\s+)?(?:Step|Phase|Part|Subtask|Task|Stage|Étape|Etape|Paso|Schritt|Fase|Tâche|Tache|Tarea|Aufgabe)\s*(\d+)(?:\/\d+)?[:\.\s\-–—*]*([^\n\r]*)|(?:#{1,4}\s+)(\d+)[\.\)]\s+([^\n\r]+)))/gi;
+        let hMatch: RegExpExecArray | null;
+        const matches: { number: number; title: string; index: number }[] = [];
+
+        while ((hMatch = headerRegex.exec(content)) !== null) {
+            const num = parseInt(hMatch[1] || hMatch[3], 10);
+            let rawTitle = (hMatch[2] || hMatch[4] || '').trim();
+            let title = rawTitle.replace(/^[*_`:\s\-–—]+|[*_`:\s\-–—]+$/g, '').trim();
+            if (!title) title = `Step ${num}`;
+            matches.push({ number: num, title, index: hMatch.index });
+        }
+
+        if (matches.length >= 2) {
+            stepsMap.clear();
+            for (let i = 0; i < matches.length; i++) {
+                const cur = matches[i];
+                const next = matches[i + 1];
+                const sectionText = content.substring(cur.index, next ? next.index : content.length);
+
+                const files: string[] = [];
+                const fileTags = sectionText.match(/<file\s+([^>]*?)>/gi) || [];
+                fileTags.forEach(ft => {
+                    const attrs = parseFileTagAttributes(ft);
+                    if (attrs?.path && !files.includes(attrs.path)) files.push(attrs.path);
+                });
+
+                const fenceMatches = sectionText.match(/```(?:language:|lang:)?(?:\w+)?:([^\n\r\s]+)/g) || [];
+                fenceMatches.forEach(fm => {
+                    const p = fm.split(':').pop()?.trim();
+                    if (p && isValidFilePath(p) && !files.includes(p)) files.push(p);
+                });
+
+                const backticked = [...sectionText.matchAll(/`([a-zA-Z0-9_\-\.\/]+\.[a-zA-Z0-9_\-]+)`/g)].map(m => m[1].trim());
+                backticked.forEach(bp => {
+                    if (isValidFilePath(bp) && !files.includes(bp) && (sectionText.includes('<<<<<<<') || sectionText.includes('```') || sectionText.includes('<file'))) {
+                        files.push(bp);
+                    }
+                });
+
+                stepsMap.set(cur.number, { number: cur.number, title: cur.title, files });
+            }
+        }
+    }
+
+    // 3. Fallback: Check for <MultiSteps_TASK nb_steps="N">
+    if (stepsMap.size < 2) {
+        const multiTaskMatch = content.match(/<MultiSteps_TASK\b[^>]*nb_steps=["']?(\d+)["']?[^>]*>([\s\S]*?)<\/MultiSteps_TASK>/i);
+        if (multiTaskMatch) {
+            const inner = multiTaskMatch[2];
+            const subRegex = /<step\b[^>]*number=["']?(\d+)["']?[^>]*>([\s\S]*?)<\/step>/gi;
+            let sm: RegExpExecArray | null;
+            while ((sm = subRegex.exec(inner)) !== null) {
+                const num = parseInt(sm[1], 10);
+                const body = sm[2];
+                const filesMatch = body.match(/<(?:target_files|edit_files)>([\s\S]*?)<\/(?:target_files|edit_files)>/i);
+                const files = filesMatch ? filesMatch[1].split(/[\r\n,]+/).map(f => f.trim().replace(/^['"`]|['"`]$/g, '')).filter(Boolean) : [];
+                const instMatch = body.match(/<instructions>([\s\S]*?)<\/instructions>/i);
+                const title = instMatch ? instMatch[1].trim().split('\n')[0].slice(0, 60) : `Step ${num}`;
+                stepsMap.set(num, { number: num, title, files });
+            }
+        }
+    }
+
+    if (stepsMap.size < 2) {
+        return { isMultiSteps: false, steps: [] };
+    }
+
+    const sortedSteps = Array.from(stepsMap.values()).sort((a, b) => a.number - b.number);
+
+    const allDiscoveredFiles: string[] = [];
+    const allBlocks = extractFileBlocks(normalizePseudoFileBlocks(content));
+    allBlocks.forEach(b => {
+        const attrs = parseFileTagAttributes(b.attrStr, b.rawContent);
+        if (attrs?.path && !allDiscoveredFiles.includes(attrs.path)) {
+            allDiscoveredFiles.push(attrs.path);
+        }
+    });
+
+    const anyStepHasFiles = sortedSteps.some(s => s.files.length > 0);
+    if (!anyStepHasFiles && allDiscoveredFiles.length > 0) {
+        allDiscoveredFiles.forEach((f, idx) => {
+            const targetStep = sortedSteps[idx % sortedSteps.length];
+            targetStep.files.push(f);
+        });
+    }
+
+    return {
+        isMultiSteps: true,
+        steps: sortedSteps
+    };
+}
+
+public async placeMultiStepsSummaryMessage(
+    steps: Array<{ number: number; title: string; files: string[] }>,
+    fullContent: string,
+    sourceMessageId: string,
+    model: string
+): Promise<void> {
+    if (this._isDisposed || !this._currentDiscussion) return;
+
+    const { extractFileBlocks, normalizePseudoFileBlocks, parseFileTagAttributes } = require('../../utils');
+    const normalized = normalizePseudoFileBlocks(fullContent);
+    const fileBlocks = extractFileBlocks(normalized);
+
+    const fileBlocksByPath = new Map<string, string>();
+    for (const fb of fileBlocks) {
+        const attrs = parseFileTagAttributes(fb.attrStr, fb.rawContent);
+        if (attrs?.path) {
+            const cleanP = attrs.path.includes(':') && !/^[a-zA-Z]:[\\/]/.test(attrs.path) ? attrs.path.split(':')[0] : attrs.path;
+            fileBlocksByPath.set(cleanP.toLowerCase(), fb.fullMatch);
+        }
+    }
+
+    if (fileBlocksByPath.size === 0) {
+        const blockRegex = /```[\t ]*(?:language:|lang:)?(\w+)[\t ]*:[\t ]*([^\n\r\s]+)[\t ]*[\r\n]+([\s\S]+?)[\r\n]+```/g;
+        let m: RegExpExecArray | null;
+        while ((m = blockRegex.exec(normalized)) !== null) {
+            let fPath = m[2];
+            if (fPath.includes(':')) {
+                const parts = fPath.split(':');
+                fPath = parts.slice(1).join(':');
+            }
+            const isAider = m[3].includes('<<<<<<< SEARCH');
+            const action = isAider ? 'patch' : 'write';
+            const fileXml = `<file path="${fPath}" action="${action}">\n${m[3]}\n</file>
+
+`;
+            fileBlocksByPath.set(fPath.toLowerCase(), fileXml);
+        }
+    }
+
+    const allFilesSet = new Set<string>();
+    steps.forEach(s => s.files.forEach(f => allFilesSet.add(f)));
+
+    const compiledBlocks: string[] = [];
+    const includedPaths = new Set<string>();
+
+    for (const [pathKey, blockMatch] of fileBlocksByPath.entries()) {
+        if (!includedPaths.has(pathKey)) {
+            compiledBlocks.push(blockMatch);
+            includedPaths.add(pathKey);
+        }
+    }
+
+    const stepsListMd = steps.map(s => {
+        const filesMd = s.files.length > 0
+            ? s.files.map(f => `\`${f}\``).join(', ')
+            : '*(No specific file)*';
+        return `#### Step ${s.number}: ${s.title}\n- **Target Files**: ${filesMd}`;
+    }).join('\n\n');
+
+    const totalFilesCount = fileBlocksByPath.size || allFilesSet.size;
+    const fileWord = totalFilesCount === 1 ? 'file' : 'files';
+
+    const summaryContent = `
+<MultiSteps_TASK nb_steps="${steps.length}">
+${steps.map(s => `
+<step number="${s.number}">
+<title>${s.title}</title>
+<target_files>
+${s.files.join('\n')}
+</target_files>
+</step>
+`).join('')}
+</MultiSteps_TASK>
+
+### 📋 Multi-Step Implementation Summary — Ready to Apply All Steps
+All updates from **${steps.length} steps** (${totalFilesCount} ${fileWord}) have been detected and compiled below. You can apply all updates across all steps at once with the button below:
+
+${stepsListMd}
+
+---
+### 🛠️ Compiled Updates for All Steps (${totalFilesCount} ${fileWord}):
+${compiledBlocks.join('\n\n')}
+`.trim();
+
+    const summaryMsgId = `multisteps_summary_${Date.now()}`;
+    await this.addMessageToDiscussion({
+        id: summaryMsgId,
+        role: 'assistant',
+        personalityName: '📋 Multi-Step Summary',
+        content: summaryContent,
+        model: model || this._currentDiscussion.model || this._lollmsAPI.getModelName(),
+        timestamp: Date.now()
+    });
+
+    this.log(`[Multi-Step Summary] Placed summary apply message (${steps.length} steps, ${totalFilesCount} files).`);
+}
+
+public async placeMultiStepsTaskSummaryMessage(
+    plan: any | undefined,
+    model: string
+): Promise<void> {
+    if (this._isDisposed || !this._currentDiscussion || !plan || !Array.isArray(plan.parts)) return;
+
+    const { extractFileBlocks, normalizePseudoFileBlocks, parseFileTagAttributes } = require('../../utils');
+
+    const fileBlocksByPath = new Map<string, string>();
+    const msgs = this._currentDiscussion.messages || [];
+
+    for (const m of msgs) {
+        if (m.role !== 'assistant') continue;
+        const text = typeof m.content === 'string' 
+            ? m.content 
+            : (Array.isArray(m.content) ? m.content.map((p: any) => p.text || '').join('\n') : '');
+        if (!text || text.includes('Multi-Step Implementation Summary')) continue;
+
+        const normalized = normalizePseudoFileBlocks(text);
+        const blocks = extractFileBlocks(normalized);
+        for (const b of blocks) {
+            const attrs = parseFileTagAttributes(b.attrStr, b.rawContent);
+            if (attrs?.path) {
+                const cleanP = attrs.path.includes(':') && !/^[a-zA-Z]:[\\/]/.test(attrs.path) ? attrs.path.split(':')[0] : attrs.path;
+                fileBlocksByPath.set(cleanP.toLowerCase(), b.fullMatch);
+            }
+        }
+    }
+
+    const steps = plan.parts.map((p: any, idx: number) => ({
+        number: idx + 1,
+        title: (p.partInstruction || `Step ${idx + 1}`).split('\n')[0].replace(/#+\s*/g, '').slice(0, 60),
+        files: Array.isArray(p.editFiles) ? p.editFiles : []
+    }));
+
+    const stepsListMd = steps.map((s: any) => {
+        const filesMd = s.files.length > 0
+            ? s.files.map((f: string) => `\`${f}\``).join(', ')
+            : '*(No specific file)*';
+        return `#### Step ${s.number}: ${s.title}\n- **Target Files**: ${filesMd}`;
+    }).join('\n\n');
+
+    const compiledBlocks = Array.from(fileBlocksByPath.values());
+    const totalFilesCount = fileBlocksByPath.size;
+    const fileWord = totalFilesCount === 1 ? 'file' : 'files';
+
+    const summaryContent = `
+<MultiSteps_TASK nb_steps="${steps.length}">
+${steps.map((s: any) => `
+<step number="${s.number}">
+<title>${s.title}</title>
+<target_files>
+${s.files.join('\n')}
+</target_files>
+</step>
+`).join('')}
+</MultiSteps_TASK>
+
+### 📋 Multi-Step Task Completed — Apply All Steps
+All **${steps.length} steps** of this multi-step task have finished generating (${totalFilesCount} ${fileWord}).
+All updates across all steps are compiled below so you can review and apply them all at once:
+
+${stepsListMd}
+
+---
+### 🛠️ Compiled Updates for All Steps (${totalFilesCount} ${fileWord}):
+${compiledBlocks.join('\n\n')}
+`.trim();
+
+    const summaryMsgId = `multisteps_summary_${Date.now()}`;
+    await this.addMessageToDiscussion({
+        id: summaryMsgId,
+        role: 'assistant',
+        personalityName: '📋 Multi-Step Summary',
+        content: summaryContent,
+        model: model || this._currentDiscussion.model || this._lollmsAPI.getModelName(),
+        timestamp: Date.now()
+    });
+
+    this.log(`[Multi-Step Task] Placed multi-step task summary apply message (${steps.length} steps, ${totalFilesCount} files).`);
+}
 
 public async addFilesToDiscussionContext(paths: string[], state: any = 'included'): Promise<string[]> {
     if (!this._currentDiscussion || !paths || paths.length === 0) return [];
@@ -3575,7 +3907,6 @@ ${filesSection}
       this.processManager.cancelForDiscussion(this.discussionId);
       ChatPanel.activeGenerations.delete(this.discussionId);
 
-      // Cancel any pending debounced background token calculations before regenerating
       if ((this as any)._tokenDebounceTimeout) {
           clearTimeout((this as any)._tokenDebounceTimeout);
           (this as any)._tokenDebounceTimeout = undefined;
@@ -3585,6 +3916,15 @@ ${filesSection}
           this._tokenAbortController = null;
       }
 
+      let waitCount = 0;
+      while (this._isSendingMessage && waitCount < 10) {
+          await new Promise(r => setTimeout(r, 50));
+          waitCount++;
+      }
+      this._isSendingMessage = false;
+
+      this.ensurePersistentDiscussionId();
+
       this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index);
 
       if (!this._currentDiscussion.id.startsWith('temp-')) {
@@ -3593,7 +3933,6 @@ ${filesSection}
 
       await this.loadDiscussion();
 
-      // Clear new message ID so it doesn't collide with cached IDs
       messageToResend.id = 'user_' + Date.now() + Math.random().toString(36).substring(2);
 
       await this.sendMessage(messageToResend);
@@ -3617,9 +3956,7 @@ ${filesSection}
       } else {
           this._currentDiscussion.messages.push(newMessage);
       }
-      if (this._currentDiscussion.id.startsWith('temp-')) {
-          this._currentDiscussion.id = 'disc-' + Date.now().toString() + Math.random().toString(36).substring(2);
-      }
+      this.ensurePersistentDiscussionId();
       this._shouldOpenWizardOnLoad = false;
       await this._discussionManager.saveDiscussion(this._currentDiscussion);
       await this.loadDiscussion();
@@ -3636,19 +3973,45 @@ ${filesSection}
       }
   }
 
+  public ensurePersistentDiscussionId(): void {
+      if (!this._currentDiscussion) return;
+      if (this._currentDiscussion.id.startsWith('temp-') || this.discussionId.startsWith('temp-')) {
+          const oldId = this.discussionId;
+          const newId = 'disc-' + Date.now().toString() + Math.random().toString(36).substring(2);
+          ChatPanel.panels.delete(oldId);
+          ChatPanel.activeGenerations.delete(oldId);
+          if (ChatPanel.activeAgents.has(oldId)) {
+              const agent = ChatPanel.activeAgents.get(oldId)!;
+              ChatPanel.activeAgents.delete(oldId);
+              ChatPanel.activeAgents.set(newId, agent);
+          }
+          this.discussionId = newId;
+          this._currentDiscussion.id = newId;
+          if (this._currentDiscussion.capabilities) {
+              (this._currentDiscussion.capabilities as any).discussionId = newId;
+          }
+          ChatPanel.panels.set(newId, this);
+      }
+  }
+
   private async handleSaveAndSendMessage(messageId: string, newContent: any, role: string) {
       if (!this._currentDiscussion) return;
 
-      // Verify all open documents are saved before regenerating
       try {
           await vscode.workspace.saveAll(false);
       } catch {}
 
-      const index = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
+      let index = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
+      if (index === -1 && this._currentDiscussion.messages.length > 0) {
+          index = this._currentDiscussion.messages.findIndex(m => {
+              const text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.find((p: any) => p.type === 'text')?.text : '');
+              return text && typeof newContent === 'string' && (text === newContent || newContent.startsWith(text.substring(0, 30)));
+          });
+      }
+
       if (index === -1) {
-          // If message was not found in array, add as new user turn
           await this.sendMessage({
-              id: 'user_' + Date.now(),
+              id: 'user_' + Date.now() + Math.random().toString(36).substring(2),
               role: 'user',
               content: newContent,
               timestamp: Date.now()
@@ -3656,7 +4019,6 @@ ${filesSection}
           return;
       }
 
-      // Stop any existing background execution or generation
       this.processManager.cancelForDiscussion(this.discussionId);
       ChatPanel.activeGenerations.delete(this.discussionId);
 
@@ -3669,37 +4031,56 @@ ${filesSection}
           this._tokenAbortController = null;
       }
 
-      this._shouldOpenWizardOnLoad = false;
-      if (this._currentDiscussion.id.startsWith('temp-')) {
-          this._currentDiscussion.id = 'disc-' + Date.now().toString() + Math.random().toString(36).substring(2);
+      let waitCount = 0;
+      while (this._isSendingMessage && waitCount < 10) {
+          await new Promise(r => setTimeout(r, 50));
+          waitCount++;
       }
-      if (role === 'user') {
-          // Truncate conversation history to this user message and regenerate from here
-          this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index);
+      this._isSendingMessage = false;
+
+      this.ensurePersistentDiscussionId();
+      this._shouldOpenWizardOnLoad = false;
+
+      const targetMsg = this._currentDiscussion.messages[index];
+      const isUser = (role === 'user') || (targetMsg && targetMsg.role === 'user');
+
+      if (isUser) {
+          targetMsg.content = newContent;
+          targetMsg.timestamp = Date.now();
+
+          this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index + 1);
 
           await this._discussionManager.saveDiscussion(this._currentDiscussion);
-
           await this.loadDiscussion();
 
           const messageToSend: ChatMessage = {
-              id: 'user_' + Date.now() + Math.random().toString(36).substring(2),
+              id: targetMsg.id || ('user_' + Date.now() + Math.random().toString(36).substring(2)),
               role: 'user',
               content: newContent,
-              timestamp: Date.now()
+              timestamp: targetMsg.timestamp
           };
+          this._currentDiscussion.messages.pop();
 
-          await this.sendMessage(messageToSend);
-      } else {
-          // For assistant messages: update the content in-place and prompt the AI to continue from it
-          this._currentDiscussion.messages[index].content = newContent;
-
-          if (!this._currentDiscussion.id.startsWith('temp-')) {
-              await this._discussionManager.saveDiscussion(this._currentDiscussion);
+          try {
+              await this.sendMessage(messageToSend);
+          } catch (sendErr: any) {
+              this.log(`Error resending edited message: ${sendErr.message}`, 'ERROR');
+              if (!this._currentDiscussion.messages.some(m => m.id === messageToSend.id)) {
+                  this._currentDiscussion.messages.push(messageToSend);
+                  await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                  await this.loadDiscussion();
+              }
+              vscode.window.showErrorMessage(`Failed to send edited message: ${sendErr.message}`);
           }
+      } else {
+          targetMsg.content = newContent;
+          targetMsg.timestamp = Date.now();
 
+          this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index + 1);
+
+          await this._discussionManager.saveDiscussion(this._currentDiscussion);
           await this.loadDiscussion();
 
-          // Trigger next turn to let AI continue from the corrected assistant response
           await this.sendMessage({
               id: 'user_continue_' + Date.now(),
               role: 'user',
@@ -5211,6 +5592,7 @@ Review the actual code under 'LOADED FILE CONTENTS' and deliver your code implem
                         id: assistantMessageId, 
                         fullContent: currentFullResponseBuffer 
                     });
+                    this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
                 }
                 return;
             }
@@ -5748,11 +6130,16 @@ Do NOT repeat the verbal summary. Output the code tags now.`
                         id: assistantMessageId, 
                         fullContent: currentFullResponseBuffer 
                     });
+                    this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
                 }
             }
         };
 
         await runTurn();
+
+        if (!this._isDisposed && this._panel.webview) {
+            this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
+        }
 
         if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
             await this._discussionManager.saveDiscussion(this._currentDiscussion);
@@ -5802,7 +6189,18 @@ Do NOT repeat the verbal summary. Output the code tags now.`
                 return;
             } else {
                 this.log(`[MultiSteps_TASK] All steps completed successfully.`);
+                const completedPlan = this._activeMultiPartPlan;
                 this._activeMultiPartPlan = undefined;
+                await this.placeMultiStepsTaskSummaryMessage(completedPlan, targetModel);
+            }
+        } else if (!controller?.signal.aborted && !assistantMessageId.startsWith('multisteps_summary_')) {
+            const multiStepInfo = this.detectMultiStepsInText(normalizedBuffer);
+            if (multiStepInfo.isMultiSteps && multiStepInfo.steps.length >= 2) {
+                const totalFilesAcrossSteps = multiStepInfo.steps.reduce((acc, s) => acc + s.files.length, 0);
+                if (totalFilesAcrossSteps > 0 || hasCodeBlocks) {
+                    this.log(`[Multi-Step Detector] Detected multi-step response with ${multiStepInfo.steps.length} steps. Placing summary apply message...`);
+                    await this.placeMultiStepsSummaryMessage(multiStepInfo.steps, normalizedBuffer, assistantMessageId, targetModel);
+                }
             }
         }
 
@@ -5859,6 +6257,7 @@ Do NOT repeat the verbal summary. Output the code tags now.`
                         fullContent: stoppedText,
                         personalityName: personaName
                     });
+                    this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
                 }
             } else {
                 await this.loadDiscussion();
@@ -5901,6 +6300,7 @@ Lollms could not complete the request to \`${(this._lollmsAPI as any).config.api
                 count: 0,
                 reset: true
             });
+            this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
         }
 
         this.commitDiscussionFilesToGlobal().catch(() => {});
@@ -7036,6 +7436,7 @@ ${res.output || '(No output recorded)'}
                     tps: finalTps,
                     personalityName: personaName
                 });
+                this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
             }
 
             // --- PHASE 6: DEBUGGER (THE ITERATIVE LOOP) ---
@@ -9318,6 +9719,7 @@ Task:
                             fullContent: stoppedBuffer
                         });
                         this.updateMessageContent(activeGen.messageId, stoppedBuffer);
+                        this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
                     }
 
                     // 1. Clear active generations and cancel current processes

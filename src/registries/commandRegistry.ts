@@ -12,6 +12,7 @@ import { registerTitleAllDiscussions } from '../commands/titleAllDiscussions';
 import { registerGitCommands } from './gitCommands';
 import { registerPersonalityCommands } from './personalityCommands';
 import { registerSkillsCommands } from './skillsCommands';
+import { ChatPanel } from '../commands/chatPanel/chatPanel';
 
 export async function registerCommands(
     context: vscode.ExtensionContext,

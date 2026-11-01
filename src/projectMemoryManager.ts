@@ -252,6 +252,10 @@ export class ProjectMemoryManager {
             if (id.startsWith('concept_template_') || id.startsWith('schema_triplet_')) {
                 return false; 
             }
+            // Purge legacy contaminated task-finding engrams from previous sessions
+            if (id.startsWith('librarian_') || (m.content && m.content.includes('TASK ARCHITECTURE & CONTRACTS'))) {
+                return false;
+            }
             if (id.startsWith('tag_')) {
                 const tagLabel = id.substring(4);
                 return isValidSemanticTag(tagLabel);
@@ -877,7 +881,7 @@ export class ProjectMemoryManager {
      * Zero background LLM queries: runs in microseconds.
      * Returns a formatted block packaged inside a collapsible details tag (collapsed by default).
      */
-    public async getFormattedMemoryBlock(userPrompt?: string, _skillsManager?: any): Promise<string> {
+    public async getFormattedMemoryBlock(userPrompt?: string, _skillsManager?: any, currentDiscussionId?: string): Promise<string> {
         const engrams = await this.getMemories();
         if (engrams.length === 0) return "";
 
@@ -903,6 +907,16 @@ export class ProjectMemoryManager {
         // Fast TF-IDF / hashtag heuristic score per engram
         const scored = engrams.map(e => {
             if (e.category === 'concept' && e.id.startsWith('concept_template_')) {
+                return { engram: e, score: 0 };
+            }
+
+            // Prevent task-specific librarian dumps from contaminating discussions
+            if (e.id.startsWith('librarian_') || (e.content && e.content.includes('TASK ARCHITECTURE & CONTRACTS'))) {
+                return { engram: e, score: 0 };
+            }
+
+            // Isolate session-specific engrams to their own discussion
+            if (e.discussionId && currentDiscussionId && e.discussionId !== currentDiscussionId && e.category !== 'standards' && e.category !== 'rules') {
                 return { engram: e, score: 0 };
             }
 
@@ -942,11 +956,17 @@ export class ProjectMemoryManager {
             return { engram: e, score };
         });
 
-        // Retain matching engrams or high-importance permanent standards (>= 90)
+        // Retain only true standards/rules without keyword matches, or strongly relevant memories (score >= 40)
+        const hasPrompt = promptWords.size > 0 || promptTags.size > 0;
         const matched = scored
-            .filter(s => s.score >= 25 || s.engram.importance >= 90)
+            .filter(s => {
+                const isTrueStandard = (s.engram.category === 'standards' || s.engram.category === 'rules') && s.engram.importance >= 90;
+                if (isTrueStandard) return true;
+                if (!hasPrompt) return false;
+                return s.score >= 40;
+            })
             .sort((a, b) => b.score - a.score)
-            .slice(0, 8) // Limit to top 8 most relevant engrams to prevent context bloat
+            .slice(0, 6)
             .map(s => s.engram);
 
         if (matched.length === 0) return "";

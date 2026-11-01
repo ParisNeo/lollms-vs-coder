@@ -5,6 +5,7 @@ import { applyDiff, applySearchReplace, stripThinkingTags, normalizeAiderContent
 import { normalizeToDocument } from '../utils/promptUtils';
 import { Logger } from '../logger';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
+import { CompanionPanel } from '../commands/companionPanel';
 
 import { FileRepairStudioPanel } from '../panels/fileRepairStudioPanel';
 
@@ -831,13 +832,43 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             return;
         }
 
-        let generatedUri = arg;
-        if (!generatedUri) {
-            const activeEditor = vscode.window.activeTextEditor;
-            if (activeEditor && services.diffManager.isLollmsDiff(activeEditor.document.uri)) {
-                generatedUri = activeEditor.document.uri;
+        let generatedUri = arg instanceof vscode.Uri ? arg : undefined;
+
+        if (typeof arg === 'string') {
+            const resolution = await services.contextManager.resolveWorkspaceFromPath(arg);
+            if (resolution) {
+                generatedUri = services.diffManager.getGeneratedFileFor(resolution.uri);
             }
         }
+
+
+        if (typeof arg === 'string') {
+            const res = await services.contextManager.resolveWorkspaceFromPath(arg);
+            if (res) {
+                generatedUri = services.diffManager.getGeneratedFileFor(res.uri);
+            }
+        }
+
+        if (!generatedUri) {
+            const activeEditor = vscode.window.activeTextEditor;
+            if (activeEditor) {
+                if (services.diffManager.isLollmsDiff(activeEditor.document.uri)) {
+                    generatedUri = activeEditor.document.uri;
+                } else {
+                    generatedUri = services.diffManager.getGeneratedFileFor(activeEditor.document.uri);
+                }
+            }
+        }
+
+        if (!generatedUri) {
+            for (const editor of vscode.window.visibleTextEditors) {
+                if (services.diffManager.isLollmsDiff(editor.document.uri)) {
+                    generatedUri = editor.document.uri;
+                    break;
+                }
+            }
+        }
+        
 
         if (generatedUri && services.diffManager.isLollmsDiff(generatedUri)) {
             const originalUri = services.diffManager.getOriginalUri(generatedUri);
@@ -892,6 +923,16 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                         });
                     }
 
+                    if (CompanionPanel.currentPanel) {
+                        CompanionPanel.currentPanel._panel.webview.postMessage({
+                            command: 'applyAllResult',
+                            filePath: relPath,
+                            blockId: metadata?.blockId,
+                            alreadyApplied: true,
+                            success: true
+                        });
+                    }
+
                     // Close the diff tab
                     if (vscode.window.activeTextEditor?.document.uri.toString() === generatedUri.toString()) {
                         await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
@@ -914,17 +955,52 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             return;
         }
 
-        let generatedUri = arg;
+        let generatedUri = arg instanceof vscode.Uri ? arg : undefined;
+
+        if (typeof arg === 'string') {
+            const resolution = await services.contextManager.resolveWorkspaceFromPath(arg);
+            if (resolution) {
+                generatedUri = services.diffManager.getGeneratedFileFor(resolution.uri);
+            }
+        }
+
         if (!generatedUri) {
             const activeEditor = vscode.window.activeTextEditor;
-            if (activeEditor && services.diffManager.isLollmsDiff(activeEditor.document.uri)) {
-                generatedUri = activeEditor.document.uri;
+            if (activeEditor) {
+                if (services.diffManager.isLollmsDiff(activeEditor.document.uri)) {
+                    generatedUri = activeEditor.document.uri;
+                } else {
+                    generatedUri = services.diffManager.getGeneratedFileFor(activeEditor.document.uri);
+                }
+            }
+        }
+
+        if (!generatedUri) {
+            for (const editor of vscode.window.visibleTextEditors) {
+                if (services.diffManager.isLollmsDiff(editor.document.uri)) {
+                    generatedUri = editor.document.uri;
+                    break;
+                }
             }
         }
         
         if (generatedUri && services.diffManager.isLollmsDiff(generatedUri)) {
+            const metadata = (services.diffManager as any).getMetadata?.(generatedUri) || (generatedUri as any)._lollmsMeta;
             services.diffManager.cleanup(generatedUri);
             await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+
+            if (CompanionPanel.currentPanel) {
+                CompanionPanel.currentPanel._panel.webview.postMessage({
+                    command: 'applyAllResult',
+                    filePath: metadata?.filePath,
+                    blockId: metadata?.blockId,
+                    alreadyApplied: false,
+                    reviewingDiff: false,
+                    success: true,
+                    rejected: true
+                });
+            }
+
             vscode.window.showInformationMessage("Changes rejected.");
         }
     }));
@@ -975,26 +1051,21 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         // Handle "REPAIR_REQUESTED" signal from UI
         if (content === "REPAIR_REQUESTED") {
             const activePanel = panel || ChatPanel.currentPanel || (messageId ? ChatPanel.panels.get(messageId) : undefined);
-            if (!activePanel || !messageId) {
-                Logger.warn("ReplaceCode called with REPAIR signal but missing active panel or messageId.");
-                return { success: false, error: "Invalid repair context" };
-            }
-            const discussion = activePanel.getCurrentDiscussion();
-            if (!discussion) {
-                Logger.warn("ReplaceCode called with REPAIR signal but discussion not found.");
-                return { success: false, error: "Discussion not found" };
-            }
-            const message = discussion.messages.find((m: any) => m.id === messageId);
-            if (!message) {
-                Logger.warn("ReplaceCode called with REPAIR signal but message not found.");
-                return { success: false, error: "Message not found" };
-            }
+            const activeApi = activePanel?._lollmsAPI || services.lollmsAPI;
+            const discussion = activePanel?.getCurrentDiscussion?.();
+            const message = discussion?.messages?.find((m: any) => m.id === messageId);
 
             let messageText = "";
-            if (typeof message.content === 'string') {
+            if (message && typeof message.content === 'string') {
                 messageText = message.content;
-            } else if (Array.isArray(message.content)) {
+            } else if (message && Array.isArray(message.content)) {
                 messageText = message.content.map((c: any) => c.type === 'text' ? c.text : '').join('\n');
+            } else if (CompanionPanel.currentPanel?.chatHistory && CompanionPanel.currentPanel.chatHistory.length > 0) {
+                const compMsg = CompanionPanel.currentPanel.chatHistory.find((m: any) => m.id === messageId) ||
+                                [...CompanionPanel.currentPanel.chatHistory].reverse().find((m: any) => m.role === 'assistant');
+                if (compMsg && typeof compMsg.content === 'string') {
+                    messageText = compMsg.content;
+                }
             }
 
             // Universal Block Extractor: Extracts both XML <file> tags and fenced ``` code blocks
@@ -1023,24 +1094,27 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 });
             }
 
-            let targetBlock = extractedBlocks.find(b => b.path === sanitizedFilePath || (b.path && b.path.endsWith('/' + sanitizedFilePath)));
-            if (!targetBlock && options?.blockIndex !== undefined && extractedBlocks[options.blockIndex]) {
-                targetBlock = extractedBlocks[options.blockIndex];
-            }
-            if (!targetBlock && extractedBlocks.length > 0) {
-                targetBlock = extractedBlocks[0];
+            let originalBlockContent = (options as any)?.failingPatch || "";
+            if (!originalBlockContent) {
+                let targetBlock = extractedBlocks.find(b => b.path === sanitizedFilePath || (b.path && b.path.endsWith('/' + sanitizedFilePath)));
+                if (!targetBlock && options?.blockIndex !== undefined && extractedBlocks[options.blockIndex]) {
+                    targetBlock = extractedBlocks[options.blockIndex];
+                }
+                if (!targetBlock && extractedBlocks.length > 0) {
+                    targetBlock = extractedBlocks[0];
+                }
+                originalBlockContent = targetBlock?.content || "";
             }
 
-            if (!targetBlock) {
-                Logger.warn(`ReplaceCode: Code block could not be extracted from message ${messageId}.`);
+            if (!originalBlockContent) {
+                Logger.warn(`ReplaceCode: Code block could not be extracted.`);
                 return { success: false, error: "Code block not found" };
             }
 
-            const originalBlockContent = targetBlock.content;
             const hunks = parseAiderHunks(normalizeAiderContent(originalBlockContent));
             const matches = hunks.map((h: any) => [h.fullMatch, h.searchPart, h.replacePart]);
 
-            let failingHunk = originalBlockContent;
+            let failingHunk = (options as any)?.failingPatch || originalBlockContent;
             if (options?.hunkIndex !== undefined && matches[options.hunkIndex]) {
                 failingHunk = matches[options.hunkIndex][0];
             }
@@ -1116,8 +1190,8 @@ ${originalFileContent}
 `;
 
                 try {
-                    const model = discussion.model || services.lollmsAPI.getModelName();
-                    const response = await activePanel._lollmsAPI.sendChat([
+                    const model = discussion?.model || services.lollmsAPI.getModelName();
+                    const response = await activeApi.sendChat([
                         { role: 'system', content: "You are a surgical code repair engine. Output ONLY a valid Aider-style Search/Replace block." },
                         { role: 'user', content: repairPrompt }
                     ], null, abortController.signal, model, { thinking: false });
@@ -1145,33 +1219,42 @@ ${originalFileContent}
 
                     if (fixedBlock && fixedBlock.includes("<<<<<<< SEARCH")) {
                         // Update the message content in persistent discussion memory
-                        if (discussion) {
+                        if (discussion && activePanel) {
                             const msg = discussion.messages.find((m: any) => m.id === messageId);
                             if (msg && typeof msg.content === 'string') {
                                 const updatedContent = msg.content.replace(failingHunk, fixedBlock);
                                 await activePanel.updateMessageContent(messageId, updatedContent);
+                            }
+                        } else if (CompanionPanel.currentPanel?.chatHistory) {
+                            const compMsg = [...CompanionPanel.currentPanel.chatHistory].reverse().find((m: any) => m.role === 'assistant');
+                            if (compMsg && typeof compMsg.content === 'string') {
+                                compMsg.content = compMsg.content.replace(failingHunk, fixedBlock);
+                                CompanionPanel.currentPanel.updateContent(compMsg.content, "");
                             }
                         }
 
                         vscode.window.showInformationMessage("Block repaired. Applying corrected patch...");
                         const applyResult = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', sanitizedFilePath, fixedBlock, activePanel, messageId, { 
                             ...options, 
-                            silent: true,
+                            silent: options?.silent ?? false,
+                            autoSave: options?.autoSave ?? false,
                             undo: false 
                         }) as any;
 
                         // Ensure UI updates to clear spinners
-                        activePanel._panel.webview.postMessage({
-                            command: 'applyAllResult',
-                            messageId: messageId,
-                            filePath: sanitizedFilePath,
-                            blockIndex: options?.blockIndex,
-                            hunkIndex: options?.hunkIndex,
-                            blockId: options?.blockId,
-                            success: applyResult?.success ?? false,
-                            alreadyApplied: applyResult?.success ?? false,
-                            error: applyResult?.error
-                        });
+                        if (activePanel?._panel?.webview) {
+                            activePanel._panel.webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: messageId,
+                                filePath: sanitizedFilePath,
+                                blockIndex: options?.blockIndex,
+                                hunkIndex: options?.hunkIndex,
+                                blockId: options?.blockId,
+                                success: applyResult?.success ?? false,
+                                alreadyApplied: applyResult?.success ?? false,
+                                error: applyResult?.error
+                            });
+                        }
 
                         return applyResult;
                     } else {

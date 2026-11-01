@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { DiscussionManager, Discussion } from '../discussionManager';
 import { Logger } from '../logger';
+import { ChatPanel } from './chatPanel/chatPanel';
 
 /**
  * Registers the **titleAllDiscussions** command.

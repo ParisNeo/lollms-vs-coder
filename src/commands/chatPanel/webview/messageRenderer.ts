@@ -2441,8 +2441,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                 const durationHtml = `<span class="think-duration ${isLive ? 'live-thinking' : ''}" style="font-size: 10px; ${isLive ? 'color: var(--thinking-color); font-weight: bold; animation: lollms-pulse 1.5s infinite;' : 'opacity: 0.6; font-weight: normal;'} margin-left: auto; padding-right: 12px;">${durationText}</span>`;
 
+                // 💭 Reasoning blocks start COLLAPSED by default so they don't overwhelm the chat.
+                // The user can expand by clicking the summary header. Live streaming status is
+                // still shown via the "thinking..." label + spinner in the header, so no info is lost.
                 scratchpad.innerHTML = `
-                    <details open style="border: none; background: transparent; margin: 0; box-shadow: none;">
+                    <details style="border: none; background: transparent; margin: 0; box-shadow: none;">
                         <summary class="scratchpad-header" style="color: var(--thinking-color); display: flex; align-items: center; justify-content: space-between; width: 100%; box-sizing: border-box; padding: 6px 12px; list-style: none; cursor: pointer;">
                             <div style="display: flex; align-items: center; gap: 6px;">
                                 ${iconHtml}

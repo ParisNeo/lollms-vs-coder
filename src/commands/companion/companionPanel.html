@@ -1017,16 +1017,209 @@
             border-radius: 4px;
         }
 
-        .scratchpad-header {
-            padding: 6px 12px;
-            font-weight: bold;
-            color: var(--vscode-textLink-foreground, #3794ff);
-            cursor: pointer;
+        /* ============================================================
+           MULTI-STEP APPLY ALL BAR & STEP CARDS
+           Emitted when the LLM chains <add_files_to_context> /
+           <deselect_context_files> / unmute calls in one turn (fast mode).
+        .companion-step-card {
+            margin: 6px 0;
+            border: 1px solid var(--vscode-widget-border);
+            border-left: 3px solid var(--agent-calm, #00d9b5);
+            border-radius: 6px;
+            background: rgba(0, 217, 181, 0.06);
+            padding: 6px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            font-size: 11.5px;
+        }
+
+        .companion-step-header {
             display: flex;
             align-items: center;
             gap: 6px;
+            font-weight: 700;
+            color: var(--agent-calm, #00d9b5);
             font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
         }
+
+        .companion-step-header .step-index {
+            background: var(--agent-calm, #00d9b5);
+            color: #06222a;
+            border-radius: 10px;
+            padding: 0 6px;
+            font-size: 9.5px;
+            font-weight: 800;
+        }
+
+        .companion-step-body {
+            font-family: var(--vscode-editor-font-family);
+            font-size: 10.5px;
+            opacity: 0.9;
+            word-break: break-word;
+            white-space: pre-wrap;
+        }
+
+        .companion-step-body code {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 1px 4px;
+            border-radius: 3px;
+        }
+
+        .apply-all-steps-bar {
+            margin-top: 14px;
+            margin-bottom: 4px;
+            padding: 10px 14px;
+            background: rgba(0, 217, 181, 0.08);
+            border: 1.5px solid var(--agent-calm, #00d9b5);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+        }
+
+        .apply-all-steps-bar .steps-bar-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: bold;
+            color: var(--agent-calm, #00d9b5);
+        }
+
+        .apply-all-steps-bar .steps-bar-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+            /* Multi-step apply bar + per-step state (MultiSteps_TASK orchestration) */
+            .apply-multisteps-bar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 10px;
+                padding: 10px 14px;
+                margin: 10px 0;
+                border: 1.5px solid var(--agent-calm, #00d9b5);
+                border-radius: 8px;
+                background: rgba(0, 217, 181, .08);
+                box-shadow: 0 2px 8px rgba(0, 0, 0, .15);
+            }
+
+            .apply-multisteps-bar .ms-label {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 12px;
+                font-weight: bold;
+                color: var(--agent-calm, #00d9b5);
+            }
+
+            .apply-multisteps-bar .ms-progress {
+                font-size: 11px;
+                opacity: .9;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+            }
+
+            .apply-multisteps-bar .ms-actions {
+                display: flex;
+                gap: 6px;
+            }
+
+            .apply-multisteps-btn {
+                height: 26px;
+                font-size: 11px;
+                padding: 0 10px;
+            }
+
+            .apply-multisteps-btn:disabled {
+                opacity: .4;
+                cursor: not-allowed;
+            }
+
+            .companion-step-card[data-step-state="running"] {
+                border-left-color: var(--vscode-charts-blue, #3794ff);
+            }
+
+            .companion-step-card[data-step-state="ok"] {
+                border-left-color: var(--vscode-charts-green, #2ecc71);
+                background: rgba(46, 204, 113, .06);
+            }
+
+            .companion-step-card[data-step-state="error"] {
+                border-left-color: var(--vscode-charts-red, #e74c3c);
+                background: rgba(231, 76, 60, .06);
+            }
+
+            .multisteps-banner {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 8px 12px;
+                margin: 10px 0 6px 0;
+                background: rgba(0, 217, 181, .08);
+                border: 1px solid var(--agent-calm, #00d9b5);
+                border-radius: 8px;
+                font-size: 11px;
+                font-weight: 700;
+                color: var(--agent-calm, #00d9b5);
+                text-transform: uppercase;
+                letter-spacing: .3px;
+            }
+
+            .multisteps-banner .ms-warn {
+                color: var(--vscode-charts-orange, #e67e22);
+                font-weight: 600;
+                margin-left: auto;
+                text-transform: none;
+                letter-spacing: 0;
+            }
+
+            .scratchpad-header {
+                padding: 6px 12px;
+                font-weight: bold;
+                color: var(--vscode-textLink-foreground, #3794ff);
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                font-size: 11px;
+            }
+
+            /* Implicit multi-step turn: appended once per turn at the end */
+            .turn-multisteps-section {
+                margin-top: 10px;
+                padding: 10px 12px;
+                border: 1px solid var(--vscode-widget-border);
+                border-left: 3px solid var(--agent-calm, #00d9b5);
+                border-radius: 8px;
+                background: rgba(0, 217, 181, .04);
+            }
+
+            .turn-multisteps-section .turn-ms-title {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                font-size: 11.5px;
+                font-weight: 700;
+                color: var(--agent-calm, #00d9b5);
+                margin-bottom: 8px;
+                text-transform: uppercase;
+                letter-spacing: .3px;
+            }
+
+            .turn-multisteps-section .turn-ms-steps {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                margin-bottom: 8px;
+            }
 
         .scratchpad-content { padding: 10px 15px; font-size: 11px; opacity: 0.9; background: rgba(0, 0, 0, 0.05); }
 
@@ -1405,6 +1598,331 @@
             return result;
         }
 
+        function extractContextStepTags(text) {
+            const steps = [];
+            if (!text || typeof text !== 'string') return steps;
+
+            const patterns = [
+                { tag: 'add_files_to_context', icon: 'add', label: 'Unmute · Add Files to Context', group: 1 },
+                { tag: 'deselect_context_files', icon: 'remove', label: 'Mute · Deselect Context Files', group: 1 },
+                { tag: 'unmute_files', icon: 'unmute', label: 'Unmute Files', group: 1 },
+                { tag: 'mute_files', icon: 'mute', label: 'Mute Files', group: 1 }
+            ];
+
+            for (const p of patterns) {
+                const re = new RegExp('<' + p.tag + '\\b[^>]*>([\\s\\S]*?)<\\/' + p.tag + '>', 'gi');
+                let m;
+                while ((m = re.exec(text)) !== null) {
+                    const rawInner = (m[1] || '').trim();
+                    if (!rawInner) continue;
+                    steps.push({
+                        tag: p.tag,
+                        icon: p.icon,
+                        label: p.label,
+                        rawInner,
+                        start: m.index,
+                        end: m.index + m[0].length
+                    });
+                }
+            }
+
+            steps.sort((a, b) => a.start - b.start);
+            return steps;
+        }
+
+        function renderCompanionStepCard(stepInfo, index) {
+            const lines = stepInfo.rawInner
+                .split(/\r?\n/)
+                .map(l => l.replace(/^[-*+\d.\s]+/, '').trim())
+                .filter(Boolean);
+
+            const iconMap = {
+                add: 'codicon-add',
+                remove: 'codicon-remove',
+                unmute: 'codicon-unmute',
+                mute: 'codicon-mute'
+            };
+            const icon = iconMap[stepInfo.icon] || 'codicon-zap';
+
+            const bodyHtml = lines.length > 0
+                ? lines.map(l => '<code>' + escapeHtml(l) + '</code>').join(' ')
+                : '<em style="opacity:0.7;">(no explicit files - model expanded the current selection)</em>';
+
+            return '\n\n<div class="companion-step-card" data-step-tag="' + escapeHtml(stepInfo.tag) + '" data-step-index="' + index + '">' +
+                '<div class="companion-step-header">' +
+                    '<span class="step-index">STEP ' + (index + 1) + '</span>' +
+                    '<i class="codicon ' + icon + '"></i>' +
+                    '<span>' + escapeHtml(stepInfo.label) + '</span>' +
+                '</div>' +
+                '<div class="companion-step-body">' + bodyHtml + '</div>' +
+            '</div>\n\n';
+        }
+
+        // --------------------------------------------------------------------
+        // MULTI-STEP TASK (MultiSteps_TASK) parsing + rendering + apply bar
+        // --------------------------------------------------------------------
+        window.__multiStepsRegistry = window.__multiStepsRegistry || {};
+
+        function extractMultiStepsBlocks(text) {
+            const blocks = [];
+            if (!text || typeof text !== 'string') return blocks;
+
+            const outerRe = /<MultiSteps_TASK\b([^>]*)>([\s\S]*?)<\/MultiSteps_TASK>/gi;
+            let om;
+            while ((om = outerRe.exec(text)) !== null) {
+                const attrStr = om[1] || '';
+                const body = om[2] || '';
+                const nbMatch = attrStr.match(/nb_steps\s*=\s*"(\d+)"/i) || attrStr.match(/nb_steps\s*=\s*'(\d+)'/i);
+                const nbSteps = nbMatch ? parseInt(nbMatch[1], 10) : 0;
+
+                const stepRe = /<step\b([^>]*)>([\s\S]*?)<\/step>/gi;
+                const steps = [];
+                let sm;
+                let implicitIdx = 0;
+                while ((sm = stepRe.exec(body)) !== null) {
+                    implicitIdx++;
+                    const stepAttrs = sm[1] || '';
+                    const stepBody = sm[2] || '';
+                    const numMatch = stepAttrs.match(/number\s*=\s*"(\d+)"/i) || stepAttrs.match(/number\s*=\s*'(\d+)'/i);
+                    const number = numMatch ? parseInt(numMatch[1], 10) : implicitIdx;
+
+                    const tfMatch = stepBody.match(/<target_files>([\s\S]*?)<\/target_files>/i);
+                    const targets = tfMatch
+                        ? tfMatch[1].split(/[\n,;]+/).map(s => s.trim()).filter(Boolean)
+                        : [];
+
+                    const insMatch = stepBody.match(/<instructions>([\s\S]*?)<\/instructions>/i);
+                    const instructions = insMatch ? insMatch[1].trim() : stepBody.trim();
+
+                    steps.push({
+                        number,
+                        targets,
+                        instructions,
+                        raw: stepAttrs + '\n' + stepBody
+                    });
+                }
+
+                let malformed = false;
+                if (steps.length === 0) {
+                    malformed = true;
+                    steps.push({ number: 1, targets: [], instructions: body.trim(), raw: body });
+                }
+
+                steps.sort((a, b) => a.number - b.number);
+                const duplicates = steps.some((s, i) => i > 0 && s.number === steps[i - 1].number);
+                const incomplete = nbSteps > 0 && steps.length < nbSteps;
+
+                blocks.push({
+                    index: om.index,
+                    end: om.index + om[0].length,
+                    nbSteps: nbSteps || steps.length,
+                    steps,
+                    duplicates,
+                    incomplete,
+                    malformed
+                });
+            }
+            return blocks;
+        }
+
+        function renderMultiStepsBlock(groupId, parsed) {
+            const bannerWarnings = [];
+            if (parsed.duplicates) bannerWarnings.push('<span class="ms-warn">⚠ duplicate step numbers — Apply disabled</span>');
+            if (parsed.incomplete) bannerWarnings.push('<span class="ms-warn">⚠ incomplete (' + parsed.steps.length + '/' + parsed.nbSteps + ')</span>');
+            if (parsed.malformed) bannerWarnings.push('<span class="ms-warn">⚠ no &lt;step&gt; children — treated as single step</span>');
+
+            const header = '<div class="multisteps-banner">' +
+                '<i class="codicon codicon-layers"></i>' +
+                '<span>Multi-Step Task · ' + parsed.steps.length + '/' + parsed.nbSteps + ' steps · ordered by number</span>' +
+                bannerWarnings.join('') +
+            '</div>';
+
+            const stepCards = parsed.steps.map((s, i) => {
+                const targetChips = s.targets.length > 0
+                    ? s.targets.map(t => '<code>' + escapeHtml(t) + '</code>').join(' ')
+                    : '<em style="opacity:.7;">(targets inferred from instructions)</em>';
+
+                const lines = s.instructions.split(/\r?\n/);
+                const preview = lines.slice(0, 3).join('\n');
+                const hasMore = lines.length > 3;
+                const instructionHtml = hasMore
+                    ? '<div class="companion-step-body">' + escapeHtml(preview) + '…</div>' +
+                      '<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:10px;opacity:.75;">show full instructions</summary><div class="companion-step-body" style="margin-top:4px;white-space:pre-wrap;">' + escapeHtml(s.instructions) + '</div></details>'
+                    : '<div class="companion-step-body">' + escapeHtml(preview) + '</div>';
+
+                return '<div class="companion-step-card" data-step-number="' + s.number + '" data-multisteps-group="' + escapeHtml(groupId) + '" data-step-state="pending">' +
+                    '<div class="companion-step-header">' +
+                        '<span class="step-index">STEP ' + s.number + '</span>' +
+                        '<i class="codicon codicon-symbol-event"></i>' +
+                        '<span>' + (s.targets.length || 0) + ' target' + ((s.targets.length === 1) ? '' : 's') + '</span>' +
+                    '</div>' +
+                    '<div class="companion-step-body" style="margin-bottom:2px;">' + targetChips + '</div>' +
+                    instructionHtml +
+                '</div>';
+            }).join('');
+
+            const disabled = parsed.duplicates ? ' disabled' : '';
+            const footer = '<div class="apply-multisteps-bar" data-ms-group="' + escapeHtml(groupId) + '">' +
+                '<div class="ms-label"><i class="codicon codicon-layers" style="font-size:14px;"></i><span>' + parsed.steps.length + ' step' + (parsed.steps.length === 1 ? '' : 's') + ' ready</span></div>' +
+                '<span class="ms-progress"></span>' +
+                '<div class="ms-actions">' +
+                    '<button class="apply-multisteps-btn primary-btn" data-ms-action="apply-all" data-ms-group="' + escapeHtml(groupId) + '"' + disabled + '>' +
+                        '<i class="codicon codicon-check-all"></i> ' + (parsed.duplicates ? '⚠ Apply All Steps' : 'Apply All Steps (' + parsed.steps.length + ')') +
+                    '</button>' +
+                    '<button class="apply-multisteps-btn secondary-btn" data-ms-action="run-sequential" data-ms-group="' + escapeHtml(groupId) + '"' + disabled + '>' +
+                        '<i class="codicon codicon-debug-start"></i> Run Sequentially' +
+                    '</button>' +
+                '</div>' +
+            '</div>';
+
+            return '\n\n' + header + stepCards + footer + '\n\n';
+        }
+
+        /**
+         * Implicit multi-step turn grouping.
+         * Rule: if >= 2 assistant messages in the SAME turn each contain at
+         * least one <file> block, we treat the whole turn as a multi-step
+         * turn and append ONE Apply-All-Steps bar at the END of the turn
+         * (inside the last assistant message bubble — never per message).
+         */
+        function buildImplicitTurnSteps(turnMessages) {
+            const messages = Array.isArray(turnMessages) ? turnMessages : [];
+            const perMessageBlocks = messages.map(m => extractFileBlocks(typeof m?.text === 'string' ? m.text : ''));
+            const messageCountWithFiles = perMessageBlocks.filter(b => b.length > 0).length;
+            if (messageCountWithFiles < 2) return null;
+
+            const steps = [];
+            let counter = 0;
+            perMessageBlocks.forEach((blocks, msgIdx) => {
+                if (blocks.length === 0) return;
+                counter += 1;
+                const raw = blocks.map(b => '<file ' + b.attrStr + '>' + b.rawContent + '</file>
+
+').join('\n');
+                const targets = blocks.map(b => {
+                    const pm = (b.attrStr || '').match(/(?:path|file_path|filepath|file|target|name|filename)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i);
+                    return pm ? (pm[1] || pm[2] || '').trim() : '';
+                }).filter(Boolean);
+                steps.push({
+                    number: counter,
+                    targets,
+                    instructions: 'From assistant message #' + (msgIdx + 1) + ' (' + blocks.length + ' file block' + (blocks.length === 1 ? '' : 's') + ')',
+                    raw
+                });
+            });
+            return steps.length >= 2 ? steps : null;
+        }
+
+        function renderImplicitTurnBar(groupId, steps) {
+            const stepCards = steps.map(s => {
+                const chips = s.targets.length > 0
+                    ? s.targets.map(t => '<code>' + escapeHtml(t) + '</code>').join(' ')
+                    : '<em style="opacity:.7;">(no explicit path)</em>';
+                return '<div class="companion-step-card" data-step-number="' + s.number + '" data-multisteps-group="' + escapeHtml(groupId) + '" data-step-state="pending">' +
+                    '<div class="companion-step-header">' +
+                        '<span class="step-index">STEP ' + s.number + '</span>' +
+                        '<i class="codicon codicon-file-code"></i>' +
+                        '<span>' + s.targets.length + ' file' + (s.targets.length === 1 ? '' : 's') + '</span>' +
+                    '</div>' +
+                    '<div class="companion-step-body">' + chips + '</div>' +
+                '</div>';
+            }).join('');
+
+            return '\n\n<div class="turn-multisteps-section" data-ms-turn-group="' + escapeHtml(groupId) + '">' +
+                '<div class="turn-ms-title"><i class="codicon codicon-layers"></i> Multi-Step Turn · ' + steps.length + ' message' + (steps.length === 1 ? '' : 's') + ' with file changes</div>' +
+                '<div class="turn-ms-steps">' + stepCards + '</div>' +
+                '<div class="apply-multisteps-bar" data-ms-group="' + escapeHtml(groupId) + '">' +
+                    '<div class="ms-label"><i class="codicon codicon-layers" style="font-size:14px;"></i><span>' + steps.length + ' step' + (steps.length === 1 ? '' : 's') + ' ready</span></div>' +
+                    '<span class="ms-progress"></span>' +
+                    '<div class="ms-actions">' +
+                        '<button class="apply-multisteps-btn primary-btn" data-ms-action="apply-all" data-ms-group="' + escapeHtml(groupId) + '">' +
+                            '<i class="codicon codicon-check-all"></i> Apply All Steps (' + steps.length + ')' +
+                        '</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>\n\n';
+        }
+
+        function applyImplicitTurnGrouping(turnMessages, turnId) {
+            if (!container) return false;
+            const steps = buildImplicitTurnSteps(turnMessages);
+            if (!steps) return false;
+
+            const groupId = 'turn_' + turnId;
+            window.__multiStepsRegistry[groupId] = { steps, duplicates: false, incomplete: false };
+
+            // Find the LAST assistant bubble currently in the DOM.
+            const assistantWrappers = container.querySelectorAll('.assistant-msg-wrapper');
+            if (assistantWrappers.length === 0) return false;
+            const lastWrapper = assistantWrappers[assistantWrappers.length - 1];
+            const body = lastWrapper.querySelector('.message-content');
+            if (!body) return false;
+
+            // Guard: never double-append the same turn.
+            if (body.querySelector('.turn-multisteps-section[data-ms-turn-group="' + groupId + '"]')) return true;
+
+            const appendEl = document.createElement('div');
+            appendEl.innerHTML = DOMPurify.sanitize(renderImplicitTurnBar(groupId, steps), {
+                ADD_TAGS: ['div', 'button', 'span', 'i', 'code'],
+                ADD_ATTR: ['class', 'style', 'data-ms-group', 'data-ms-turn-group', 'data-multisteps-group', 'data-step-number', 'data-step-state', 'data-ms-action']
+            });
+            body.appendChild(appendEl.firstElementChild);
+            return true;
+        }
+
+        function applyMultiStepsReplacements(text, groupIdPrefix) {
+            if (!text || typeof text !== 'string') return text;
+            if (!/<MultiSteps_TASK/i.test(text)) return text;
+
+            const blocks = extractMultiStepsBlocks(text);
+            if (blocks.length === 0) return text;
+
+            let processed = text;
+            for (let i = blocks.length - 1; i >= 0; i--) {
+                const b = blocks[i];
+                const groupId = groupIdPrefix + '_b' + i;
+                window.__multiStepsRegistry[groupId] = {
+                    steps: b.steps,
+                    duplicates: b.duplicates,
+                    incomplete: b.incomplete
+                };
+                processed = processed.substring(0, b.index) + renderMultiStepsBlock(groupId, b) + processed.substring(b.end);
+            }
+            return processed;
+        }
+
+        function renderCompanionStepsSummary(stepCount, groupKey) {
+            return '<div class="apply-all-steps-bar" id="apply-all-steps-' + groupKey + '">' +
+                '<div class="steps-bar-label">' +
+                    '<i class="codicon codicon-layers" style="font-size: 16px;"></i>' +
+                    '<span>Multi-Step Turn: ' + stepCount + ' context operation' + (stepCount === 1 ? '' : 's') + ' executed</span>' +
+                '</div>' +
+                '<div class="steps-bar-actions">' +
+                    '<button class="code-action-btn secondary-btn" onclick="event.stopPropagation(); vscode.postMessage({command:\'requestApplyAllSteps\', groupKey:\'' + groupKey + '\'})" style="height: 26px; font-size: 11px; padding: 0 10px;" title="Re-run the follow-up prompt with the accumulated context">' +
+                        '<i class="codicon codicon-debug-restart"></i> Re-Prompt with Context' +
+                    '</button>' +
+                '</div>' +
+            '</div>';
+        }
+
+        function applyContextStepReplacements(text, groupKey) {
+            if (!text || typeof text !== 'string') return { processed: text || '', stepCount: 0 };
+            const steps = extractContextStepTags(text);
+            if (steps.length === 0) return { processed: text, stepCount: 0 };
+
+            let processed = text;
+            for (let i = steps.length - 1; i >= 0; i--) {
+                const s = steps[i];
+                const card = renderCompanionStepCard(s, i);
+                processed = processed.substring(0, s.start) + card + processed.substring(s.end);
+            }
+
+            // Append the multi-step summary banner once at the bottom
+            processed += '\n\n' + renderCompanionStepsSummary(steps.length, groupKey);
+
+            return { processed, stepCount: steps.length };
+        }
+
         function extractFileBlocks(text) {
             const blocks = [];
             if (!text || typeof text !== 'string') return blocks;
@@ -1534,6 +2052,12 @@
                     if (fileBlocks.length > 1) {
                         finalMarkdown = finalMarkdown + '\n\n' + renderCompanionApplyAllBanner(fileBlocks.length, idx);
                     }
+
+                    // 1b. Render MultiSteps_TASK blocks (apply-all orchestration)
+                    finalMarkdown = applyMultiStepsReplacements(finalMarkdown, 'h' + idx);
+
+                    // 1c. Render Multi-Step Context Operation Cards (add_files_to_context / mute)
+                    finalMarkdown = applyContextStepReplacements(finalMarkdown, idx).processed;
 
                     // 2. Render SPARQL Widgets
                     const sparqlRegex = /<query_architecture>([\s\S]*?)<\/query_architecture>/gi;
@@ -1728,6 +2252,12 @@
                 finalMarkdown = finalMarkdown + '\n\n' + renderCompanionApplyAllBanner(fileBlocks.length, 'latest');
             }
 
+            // 1b. Render MultiSteps_TASK blocks (apply-all orchestration)
+            finalMarkdown = applyMultiStepsReplacements(finalMarkdown, 'latest');
+
+            // 1c. Render Multi-Step Context Operation Cards (add_files_to_context / mute)
+            finalMarkdown = applyContextStepReplacements(finalMarkdown, 'latest').processed;
+
             // 2. Render SPARQL Widgets
             const sparqlRegex = /<query_architecture>([\s\S]*?)<\/query_architecture>/gi;
             finalMarkdown = finalMarkdown.replace(sparqlRegex, (match, query) => {
@@ -1821,9 +2351,76 @@
             }
         }
 
+        // MultiSteps: delegated click handler for Apply All / Run Sequentially / Retry from
+        document.addEventListener('click', (e) => {
+            const btn = e.target && e.target.closest ? e.target.closest('[data-ms-action]') : null;
+            if (!btn || btn.disabled) return;
+            e.stopPropagation();
+            const action = btn.dataset.msAction;
+            const groupId = btn.dataset.msGroup;
+            const entry = window.__multiStepsRegistry && window.__multiStepsRegistry[groupId];
+            if (!entry || !entry.steps || entry.steps.length === 0) {
+                btn.disabled = true;
+                btn.textContent = 'No steps available';
+                return;
+            }
+            const mode = action === 'run-sequential' ? 'sequential-reprompt' : 'patches';
+            const fromIndex = action === 'retry-from' ? parseInt(btn.dataset.msFromIndex || '0', 10) : 0;
+
+            // Freeze bar buttons synchronously to prevent double-fires
+            document.querySelectorAll('.apply-multisteps-btn[data-ms-group="' + groupId + '"]').forEach(b => { b.disabled = true; });
+
+            vscode.postMessage({
+                command: 'applyAllSteps',
+                groupId,
+                mode,
+                steps: entry.steps,
+                fromIndex
+            });
+        });
+
         window.addEventListener('message', event => {
             const message = event.data;
             switch (message.command) {
+                case 'multiStepsProgress': {
+                    const groupId = message.groupId;
+                    const bar = document.querySelector('.apply-multisteps-bar[data-ms-group="' + groupId + '"]');
+                    const progressEl = bar ? bar.querySelector('.ms-progress') : null;
+                    const findCard = (k) => document.querySelector('.companion-step-card[data-multisteps-group="' + groupId + '"][data-step-number="' + k + '"]');
+
+                    if (message.status === 'running') {
+                        const c = findCard(message.current);
+                        if (c) c.dataset.stepState = 'running';
+                        if (progressEl) progressEl.innerHTML = '<span class="spinner" style="width:10px;height:10px;border-width:1.5px;"></span> Applying step ' + message.current + '/' + message.total + '…';
+                    } else if (message.status === 'step-ok') {
+                        const c = findCard(message.current);
+                        if (c) c.dataset.stepState = 'ok';
+                        if (progressEl) progressEl.textContent = message.current + '/' + message.total + ' applied';
+                    } else if (message.status === 'error') {
+                        const c = findCard(message.current);
+                        if (c) c.dataset.stepState = 'error';
+                        if (progressEl) {
+                            const fromIdx = message.fromIndex || 0;
+                            progressEl.innerHTML = '<i class="codicon codicon-error" style="color:var(--vscode-charts-red)"></i> ' +
+                                escapeHtml(message.error || 'Failed') +
+                                ' · <button class="apply-multisteps-btn secondary-btn" data-ms-action="retry-from" data-ms-group="' + groupId + '" data-ms-from-index="' + fromIdx + '" style="height:22px;font-size:10px;padding:0 8px;">Retry from step ' + (fromIdx + 1) + '</button>';
+                        }
+                        // Re-enable the top bar buttons so the user can also re-trigger manually
+                        if (bar) bar.querySelectorAll('.apply-multisteps-btn').forEach(b => { if (b.dataset.msAction !== 'retry-from') b.disabled = false; });
+                    } else if (message.status === 'done') {
+                        if (bar) bar.querySelectorAll('.apply-multisteps-btn').forEach(b => { b.disabled = true; });
+                        if (progressEl) progressEl.innerHTML = '<i class="codicon codicon-pass-filled" style="color:var(--vscode-charts-green)"></i> All ' + message.total + ' steps applied ✓';
+                    }
+                    break;
+                }
+                case 'turnEnded': {
+                    try {
+                        applyImplicitTurnGrouping(message.turnMessages, message.turnId);
+                    } catch (e) {
+                        console.warn('[Companion] turnEnded grouping failed:', e);
+                    }
+                    break;
+                }
                 case 'updateContextInfo':
                     const ctxText = document.getElementById('context-info-text');
                     if (ctxText) ctxText.textContent = message.text;
@@ -1905,7 +2502,9 @@
                     }
                     break;
                 case 'applyAllResult':
-                    const card = document.getElementById(message.blockId) || (message.filePath ? document.querySelector('.file-mutation-card[data-path="' + message.filePath + '"]') : null);
+                    const resultPathJson = JSON.stringify(message.filePath || '').replace(/"/g, '&quot;');
+                    const escapedAttrPath = String(message.filePath || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+                    const card = document.getElementById(message.blockId) || (message.filePath ? document.querySelector('.file-mutation-card[data-path="' + escapedAttrPath + '"]') : null);
                     if (card) {
                         const applyBtn = card.querySelector('.apply-mutation-btn, .apply-btn');
                         const undoBtn = card.querySelector('.undo-mutation-btn, .undo-btn');
@@ -1967,10 +2566,10 @@
                                 '<span>Reviewing diff in editor &mdash; Validate changes?</span>' +
                                 '</div>' +
                                 '<div style="display: flex; gap: 6px;">' +
-                                '<button type="button" class="code-action-btn review-btn-accept" onclick="event.stopPropagation(); validateCompanionDiff(\'' + message.blockId + '\', true, \'' + (message.filePath || '') + '\')" style="background: var(--vscode-charts-green, #2ecc71) !important; color: white !important; font-weight: bold; height: 24px; padding: 0 10px;" title="Accept and save changes to disk">' +
+                                '<button type="button" class="code-action-btn review-btn-accept" onclick="event.stopPropagation(); validateCompanionDiff(\'' + message.blockId + '\', true, ' + resultPathJson + ')" style="background: var(--vscode-charts-green, #2ecc71) !important; color: white !important; font-weight: bold; height: 24px; padding: 0 10px;" title="Accept and save changes to disk">' +
                                 '<i class="codicon codicon-check"></i> Validate (Accept)' +
                                 '</button>' +
-                                '<button type="button" class="code-action-btn review-btn-reject" onclick="event.stopPropagation(); validateCompanionDiff(\'' + message.blockId + '\', false, \'' + (message.filePath || '') + '\')" style="background: var(--vscode-charts-red, #e74c3c) !important; color: white !important; font-weight: bold; height: 24px; padding: 0 10px;" title="Reject changes and close diff">' +
+                                '<button type="button" class="code-action-btn review-btn-reject" onclick="event.stopPropagation(); validateCompanionDiff(\'' + message.blockId + '\', false, ' + resultPathJson + ')" style="background: var(--vscode-charts-red, #e74c3c) !important; color: white !important; font-weight: bold; height: 24px; padding: 0 10px;" title="Reject changes and close diff">' +
                                 '<i class="codicon codicon-close"></i> Reject (No)' +
                                 '</button>' +
                                 '</div>';
@@ -1993,7 +2592,7 @@
                                 '<span title="' + escapeHtml(message.error || '') + '">Match failure: ' + escapeHtml(message.error || 'Lines not found on disk') + '</span>' +
                                 '</div>' +
                                 '<div style="display: flex; gap: 6px; flex-shrink: 0;">' +
-                                '<button type="button" class="code-action-btn apply-btn" onclick="event.stopPropagation(); retryCompanionRepair(\'' + message.blockId + '\', \'' + (message.filePath || '') + '\')" style="height: 22px; font-size: 10px; padding: 0 8px; background: var(--vscode-charts-purple) !important; color: white !important;">' +
+                                '<button type="button" class="code-action-btn apply-btn" onclick="event.stopPropagation(); retryCompanionRepair(\'' + message.blockId + '\', ' + resultPathJson + ')" style="height: 22px; font-size: 10px; padding: 0 8px; background: var(--vscode-charts-purple) !important; color: white !important;">' +
                                 '<i class="codicon codicon-sparkle"></i> Fix with AI' +
                                 '</button>' +
                                 '</div>';
@@ -2265,10 +2864,10 @@
                 '        <i class="codicon ' + actionIcon + '"></i> ' + filePath + (symbol ? ' (' + symbol + ')' : '') + '\n' +
                 '      </span>\n' +
                 '      <span class="mode-badge active" style="font-size: 9px; padding: 1px 6px; margin-left: 6px;">' + actionLabel + '</span>\n' +
-                '      <button class="code-action-btn goto-file-btn" onclick="event.stopPropagation(); vscode.postMessage({command:\'workspaceAction\', action:\'openFile\', params:{filePath:\'' + filePath + '\'}})" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto file">Goto</button>\n' +
+                '      <button class="code-action-btn goto-file-btn" onclick="event.stopPropagation(); vscode.postMessage({command:\'workspaceAction\', action:\'openFile\', params:{filePath:' + JSON.stringify(filePath).replace(/"/g, '&quot;') + '}})" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Goto file">Goto</button>\n' +
                 '    </div>\n' +
                 '    <div class="code-actions">\n' +
-                '      <button class="code-action-btn" onclick="event.stopPropagation(); vscode.postMessage({command:\'copyToClipboard\', text: decodeURIComponent(\'' + encodedRaw + '\')})" title="Copy Code"><i class="codicon codicon-copy"></i></button>\n' +
+                '      <button class="code-action-btn" onclick="event.stopPropagation(); vscode.postMessage({command:\'copyToClipboard\', text: decodeURIComponent(this.closest(\'.file-mutation-card\').dataset.rawCode)})" title="Copy Code"><i class="codicon codicon-copy"></i></button>\n' +
                 '      <button class="code-action-btn secondary-btn review-diff-mutation-btn" onclick="event.stopPropagation(); reviewCompanionDiff(\'' + blockId + '\')" title="Review proposed changes in interactive diff editor"><i class="codicon codicon-diff"></i> Diff</button>\n' +
                 (isPatch ? '      <button class="code-action-btn delete-btn undo-mutation-btn" style="display:none;" onclick="event.stopPropagation(); applyCompanionMutation(\'' + blockId + '\', true)" title="Undo patch"><i class="codicon codicon-discard"></i> Undo</button>\n' : '') +
                 '      <button class="code-action-btn apply-btn apply-mutation-btn" onclick="event.stopPropagation(); applyCompanionMutation(\'' + blockId + '\', false)" title="Apply directly to disk and save"><i class="codicon codicon-check"></i> Apply</button>\n' +

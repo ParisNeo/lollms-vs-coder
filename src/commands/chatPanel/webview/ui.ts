@@ -4234,7 +4234,7 @@ export function streamRepairChunk(round: number, maxRounds: number, chunk: strin
         if (thinkResult.thoughts.length > 0) {
             htmlOut += thinkResult.thoughts.map((t: any) => `
                 <div class="plan-scratchpad" style="margin: 4px 0 8px 0; border-left: 3px solid var(--thinking-color);">
-                    <details open>
+                    <details>
                         <summary class="scratchpad-header" style="color: var(--thinking-color); font-size: 10px; font-weight: bold;">
                             <span class="spinner" style="width:9px; height:9px; border-width:1.5px; margin-right:4px;"></span> Reasoning...
                         </summary>
@@ -4562,7 +4562,7 @@ export function streamGovernorChunk(round: number, maxRounds: number, chunk: str
         if (thinkResult.thoughts.length > 0) {
             htmlOut += thinkResult.thoughts.map((t: any) => `
                 <div class="plan-scratchpad" style="margin: 4px 0 8px 0; border-left: 3px solid var(--thinking-color);">
-                    <details open>
+                    <details>
                         <summary class="scratchpad-header" style="color: var(--thinking-color); font-size: 10px; font-weight: bold;">
                             <span class="spinner" style="width:9px; height:9px; border-width:1.5px; margin-right:4px;"></span> Thinking...
                         </summary>

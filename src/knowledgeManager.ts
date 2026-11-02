@@ -723,15 +723,56 @@ export class KnowledgeManager {
         const limitMatch = cleanQuery.match(/\bLIMIT\s+(\d+)\b/i);
         const limit = limitMatch ? parseInt(limitMatch[1], 10) : 50;
 
-        const selectMatch = cleanQuery.match(/SELECT\s+(DISTINCT\s+)?([\?\*\w\s]+)\s+WHERE\s*\{([\s\S]+?)\}/i);
-        const constructMatch = cleanQuery.match(/CONSTRUCT\s*\{([\s\S]+?)\}\s*WHERE\s*\{([\s\S]+?)\}/i);
-        const askMatch = cleanQuery.match(/ASK\s+WHERE\s*\{([\s\S]+?)\}/i);
+        const extractBalancedClause = (source: string, openBraceIndex: number): { clause: string; closeIndex: number } => {
+            let depth = 0;
+            for (let i = openBraceIndex; i < source.length; i++) {
+                if (source[i] === '{') depth++;
+                else if (source[i] === '}') {
+                    depth--;
+                    if (depth === 0) {
+                        return { clause: source.substring(openBraceIndex + 1, i), closeIndex: i };
+                    }
+                }
+            }
+            return { clause: source.substring(openBraceIndex + 1), closeIndex: source.length };
+        };
+
+        const selectMatch = cleanQuery.match(/SELECT\s+(DISTINCT\s+)?([\?\*\w\s]+)\s+WHERE\s*\{/i);
+        const constructMatch = cleanQuery.match(/CONSTRUCT\s*\{/i);
+        const askMatch = cleanQuery.match(/ASK\s+WHERE\s*\{/i);
 
         if (!selectMatch && !askMatch && !constructMatch) {
             return `### ❌ SPARQL Query Error\nSupported syntax:\n- \`SELECT ?var WHERE { ?s ?p ?o . }\`\n- \`CONSTRUCT { ?s ?p ?o . } WHERE { ... }\`\n- \`ASK WHERE { ... }\`\n\nQuery:\n\`\`\`sparql\n${query}\n\`\`\``;
         }
 
-        const whereClause = selectMatch ? selectMatch[3].trim() : (constructMatch ? constructMatch[2].trim() : askMatch![1].trim());
+        let templateClause = '';
+        let whereClause = '';
+        let hasValidWhere = false;
+
+        if (constructMatch) {
+            const templateOpen = constructMatch.index! + constructMatch[0].length - 1;
+            const template = extractBalancedClause(cleanQuery, templateOpen);
+            templateClause = template.clause.trim();
+            const whereMatch = cleanQuery.substring(template.closeIndex + 1).match(/WHERE\s*\{/i);
+            if (whereMatch) {
+                const whereOpen = template.closeIndex + 1 + whereMatch.index! + whereMatch[0].length - 1;
+                whereClause = extractBalancedClause(cleanQuery, whereOpen).clause.trim();
+                hasValidWhere = true;
+            }
+        } else if (selectMatch) {
+            const whereOpen = selectMatch.index! + selectMatch[0].length - 1;
+            whereClause = extractBalancedClause(cleanQuery, whereOpen).clause.trim();
+            hasValidWhere = true;
+        } else if (askMatch) {
+            const whereOpen = askMatch.index! + askMatch[0].length - 1;
+            whereClause = extractBalancedClause(cleanQuery, whereOpen).clause.trim();
+            hasValidWhere = true;
+        }
+
+        if (!hasValidWhere) {
+            return `### ❌ SPARQL Query Error\nSupported syntax:\n- \`SELECT ?var WHERE { ?s ?p ?o . }\`\n- \`CONSTRUCT { ?s ?p ?o . } WHERE { ... }\`\n- \`ASK WHERE { ... }\`\n\nQuery:\n\`\`\`sparql\n${query}\n\`\`\``;
+        }
+
         const { triplePatterns, filters } = this.parseSparqlWhereClause(whereClause);
 
         const normPred = (raw: string): string => {
@@ -865,6 +906,10 @@ export class KnowledgeManager {
             });
         }
 
+        if (solutions.length > limit) {
+            solutions = solutions.slice(0, limit);
+        }
+
         if (askMatch) {
             return `### 🔍 SPARQL ASK Verdict: \`${solutions.length > 0 ? 'true' : 'false'}\``;
         }
@@ -874,7 +919,6 @@ export class KnowledgeManager {
         // ─────────────────────────────────────────────────────────────
         if (constructMatch) {
             this.lastConstructedGraph = null;
-            const templateClause = constructMatch[1].trim();
             const { triplePatterns: templatePatterns } = this.parseSparqlWhereClause(templateClause);
 
             const constructedTriples: GraphTriple[] = [];
@@ -958,7 +1002,7 @@ export class KnowledgeManager {
             let output = `### 🎨 SPARQL CONSTRUCT Query Result (${constructedTriples.length} triples, ${graphData.nodes.length} nodes)\n\n`;
             output += `| Subject | Predicate | Object |\n`;
             output += `| --- | --- | --- |\n`;
-            for (const ct of constructedTriples.slice(0, 50)) {
+            for (const ct of constructedTriples.slice(0, limit)) {
                 const sName = nodeLabelMap.get(ct.s) || ct.s.replace(/^s:/, '');
                 const oName = nodeLabelMap.get(ct.o) || ct.o.replace(/^s:/, '');
                 output += `| \`${sName}\` | \`${ct.p.replace(/^s:/, '')}\` | \`${oName}\` |\n`;
@@ -1000,7 +1044,7 @@ export class KnowledgeManager {
         table += `| ${vars.map(v => `**${v}**`).join(' | ')} |\n`;
         table += `| ${vars.map(() => '---').join(' | ')} |\n`;
 
-        for (const sol of uniqueSolutions.slice(0, 50)) {
+        for (const sol of uniqueSolutions.slice(0, limit)) {
             const row = vars.map(v => {
                 const val = sol[v] || '(null)';
                 const cleanVal = val.replace(/^"|"$/g, '');

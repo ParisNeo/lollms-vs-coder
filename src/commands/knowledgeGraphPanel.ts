@@ -382,6 +382,7 @@ ${topology}`;
     <link href="${codiconsUri}" rel="stylesheet" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.5/purify.min.js"></script>
     <style>
         body {
             font-family: var(--vscode-font-family);
@@ -1457,6 +1458,8 @@ LIMIT 25</textarea>
             const content = document.getElementById('inspectorContent');
             if (!inspector || !content) return;
 
+            const pathJson = JSON.stringify(n.filePath || '').replace(/"/g, '&quot;');
+
             const formatBadge = n.hasDoc 
                 ? \`<span class="doc-badge has-doc">\${escapeHtml(n.docFormat || 'Documented')}</span>\`
                 : \`<span class="doc-badge no-doc">No Documentation</span>\`;
@@ -1482,7 +1485,7 @@ LIMIT 25</textarea>
                         <div style="font-size:10px; font-weight:bold; opacity:0.7; text-transform:uppercase;">Location:</div>
                         <div style="font-size:11px; font-family:monospace; margin-top:2px; display:flex; align-items:center; gap:6px;">
                             <i class="codicon codicon-file"></i>
-                            <a href="#" style="color:var(--vscode-textLink-foreground);" onclick="vscode.postMessage({command:'openFile', path:'\${escapeHtml(n.filePath)}', line:\${n.startLine || 0}}); return false;">
+                            <a href="#" style="color:var(--vscode-textLink-foreground);" onclick="vscode.postMessage({command:'openFile', path:\${pathJson}, line:\${n.startLine || 0}}); return false;">
                                 \${escapeHtml(n.filePath)}\${n.startLine ? \`:\${n.startLine}\` : ''}
                             </a>
                         </div>
@@ -1499,7 +1502,7 @@ LIMIT 25</textarea>
                 </div>
 
                 <div style="display:flex; gap:6px; margin-top:6px;">
-                    \${n.filePath ? \`<button class="btn" onclick="vscode.postMessage({command:'openFile', path:'\${escapeHtml(n.filePath)}', line:\${n.startLine || 0}})" style="flex:1; justify-content:center;"><i class="codicon codicon-go-to-file"></i> Go to Source</button>\` : ''}
+                    \${n.filePath ? \`<button class="btn" onclick="vscode.postMessage({command:'openFile', path:\${pathJson}, line:\${n.startLine || 0}})" style="flex:1; justify-content:center;"><i class="codicon codicon-go-to-file"></i> Go to Source</button>\` : ''}
                 </div>
             \`;
 
@@ -1528,7 +1531,7 @@ LIMIT 25</textarea>
                 case 'initData':
                     latestElements = msg.elements || { nodes: [], edges: [] };
                     if (msg.topologyReport) {
-                        document.getElementById('sideTopologySummary').innerHTML = marked.parse(msg.topologyReport);
+                        document.getElementById('sideTopologySummary').innerHTML = DOMPurify.sanitize(marked.parse(msg.topologyReport));
                     }
                     if (msg.workspaceName) {
                         document.getElementById('headerSubtitle').textContent = \`\${msg.workspaceName} · .lollms/knowledge.ttl ontology · \${(msg.elements.nodes || []).length} nodes\`;
@@ -1552,12 +1555,11 @@ LIMIT 25</textarea>
                     }
                     alert("ABox Rebuild Error: " + msg.error);
                     break;
-                    break;
                 case 'rebuildComplete':
                     document.getElementById('btnRebuildABox').innerHTML = '<i class="codicon codicon-sync"></i> Rebuild ABox';
                     latestElements = msg.elements || { nodes: [], edges: [] };
                     if (msg.topologyReport) {
-                        document.getElementById('sideTopologySummary').innerHTML = marked.parse(msg.topologyReport);
+                        document.getElementById('sideTopologySummary').innerHTML = DOMPurify.sanitize(marked.parse(msg.topologyReport));
                     }
                     renderCytoscape(latestElements);
                     break;
@@ -1570,7 +1572,7 @@ LIMIT 25</textarea>
                     renderCytoscape(latestElements);
                     break;
                 case 'sparqlResult':
-                    let htmlRes = marked.parse(msg.result || 'No matches found.');
+                    let htmlRes = DOMPurify.sanitize(marked.parse(msg.result || 'No matches found.'));
                     if (msg.constructedGraph && msg.constructedGraph.nodes && msg.constructedGraph.nodes.length > 0) {
                         latestConstructedElements = msg.constructedGraph;
                         const constructPill = document.getElementById('viewConstructBtn');
@@ -1623,7 +1625,7 @@ LIMIT 25</textarea>
                                 <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;">
                                     \${msg.queries.map((q, idx) => \`
                                         <div class="query-inspection-card">
-                                            <div><strong>Query \${idx + 1}</strong> (\${q.thought || 'Inspecting'} &middot; \${q.matchesCount} hits):</div>
+                                            <div><strong>Query \${idx + 1}</strong> (\${escapeHtml(q.thought || 'Inspecting')} &middot; \${q.matchesCount} hits):</div>
                                             <pre style="margin: 3px 0 0 0; padding: 4px; overflow-x: auto; background: var(--vscode-editor-background); border-radius: 3px;">\${escapeHtml(q.query)}</pre>
                                         </div>
                                     \`).join('')}
@@ -1644,7 +1646,7 @@ LIMIT 25</textarea>
                         </div>
                         \${queriesHtml}
                         <div class="markdown-body" style="font-size: 12px; line-height: 1.5; margin-top: 4px;">
-                            \${marked.parse(msg.answer)}
+                            \${DOMPurify.sanitize(marked.parse(msg.answer))}
                         </div>
                     \`;
 

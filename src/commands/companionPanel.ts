@@ -412,6 +412,73 @@ export class CompanionPanel {
                             await vscode.commands.executeCommand(command, params);
                         }
                         break;
+                    case 'applyAllSteps': {
+                        const { groupId, mode, steps, fromIndex = 0 } = message;
+                        if (!Array.isArray(steps) || steps.length === 0) {
+                            webview.postMessage({ command: 'multiStepsProgress', groupId, current: 0, total: 0, status: 'error', error: 'No steps supplied' });
+                            break;
+                        }
+                        const ordered = [...steps].sort((a: any, b: any) => (a.number || 0) - (b.number || 0));
+                        const seen = new Set<number>();
+                        let duplicate: number | null = null;
+                        for (const s of ordered) {
+                            if (seen.has(s.number)) { duplicate = s.number; break; }
+                            seen.add(s.number);
+                        }
+                        if (duplicate !== null) {
+                            webview.postMessage({ command: 'multiStepsProgress', groupId, current: 0, total: ordered.length, status: 'error', error: `Duplicate step number ${duplicate}` });
+                            break;
+                        }
+
+                        const entries: Array<{ stepNumber: number; targetPath: string; action: string; alreadyApplied: boolean }> = [];
+                        let failureIndex: number | null = null;
+                        let failureError = '';
+                        try {
+                            for (let i = fromIndex; i < ordered.length; i++) {
+                                const step = ordered[i];
+                                webview.postMessage({ command: 'multiStepsProgress', groupId, current: i + 1, total: ordered.length, status: 'running' });
+                                try {
+                                    const applied = await this._applyStepPatches(step as any, {
+                                        groupId,
+                                        stepIndex: i + 1,
+                                        totalSteps: ordered.length,
+                                        webview
+                                    });
+                                    for (const e of applied) {
+                                        entries.push({
+                                            stepNumber: step.number,
+                                            targetPath: e.targetPath,
+                                            action: e.action,
+                                            alreadyApplied: e.alreadyApplied
+                                        });
+                                    }
+                                    webview.postMessage({ command: 'multiStepsProgress', groupId, current: i + 1, total: ordered.length, status: 'step-ok' });
+                                } catch (e: any) {
+                                    failureIndex = i;
+                                    failureError = e?.message || String(e);
+                                    webview.postMessage({
+                                        command: 'multiStepsProgress',
+                                        groupId,
+                                        current: i + 1,
+                                        total: ordered.length,
+                                        status: 'error',
+                                        error: failureError,
+                                        fromIndex: i
+                                    });
+                                    break;
+                                }
+                            }
+                            // Labeled final list — posted on BOTH success and failure.
+                            // TODO(webview): render multiStepsEntries as a step-labeled list.
+                            webview.postMessage({ command: 'multiStepsEntries', groupId, entries });
+                            if (failureIndex === null) {
+                                webview.postMessage({ command: 'multiStepsProgress', groupId, current: ordered.length, total: ordered.length, status: 'done' });
+                            }
+                        } finally {
+                            webview.postMessage({ command: 'setLoading', isLoading: false });
+                        }
+                        break;
+                    }                        
                     case 'workspaceAction':
                         await this._handleWorkspaceAction(message.action, message.params);
                         break;
@@ -523,6 +590,147 @@ export class CompanionPanel {
             const bytes = await vscode.workspace.fs.readFile(uri);
             this._preApplySnapshots.set(blockId, { filePath: uri.fsPath, content: Buffer.from(bytes).toString('utf8') });
         } catch {}
+    }
+
+    /**
+     * Applies every <file> block found in a MultiSteps step, sequentially.
+     * Halts on first failure so the outer loop can surface the failing step index.
+     */
+    /**
+         * Applies every <file> block found in a MultiSteps step, sequentially.
+         * Emits `applyAllResult` (per block) to clear per-patch-card spinners, and
+         * `multiStepsEntry` (per block) to feed the step-labeled final list.
+         * Halts on first failure so the outer loop can surface the failing step index.
+         *
+         * NOTE: hunk-parsing slowness lives in the replaceCode registry handler
+         * (src/registries/fileCommands.ts) — out of scope for this panel.
+         */
+        private async _applyStepPatches(
+            step: { number: number; targets?: string[]; instructions?: string; raw: string },
+            ctx: { groupId: string; stepIndex: number; totalSteps: number; webview: vscode.Webview }
+        ): Promise<Array<{ targetPath: string; action: string; alreadyApplied: boolean }>> {
+            const { extractFileBlocks, parseFileTagAttributes } = require('../utils');
+            const blocks = extractFileBlocks(step.raw || '');
+            if (!blocks || blocks.length === 0) {
+                throw new Error(`Step ${step.number}: no <file> blocks`);
+            }
+
+            const entries: Array<{ targetPath: string; action: string; alreadyApplied: boolean }> = [];
+
+            for (let i = 0; i < blocks.length; i++) {
+                const block = blocks[i];
+                const attrs = parseFileTagAttributes(block.attrStr, block.rawContent);
+                if (!attrs || !attrs.path) {
+                    throw new Error(`Step ${step.number}: malformed <file> block (missing path)`);
+                }
+
+                const blockId = 'step' + step.number + '_b' + i;
+                const action = attrs.action === 'write' ? 'write' : 'patch';
+                const opts = { silent: true, autoSave: true, blockId, blockIndex: i, hunkIndex: 0 };
+
+                let res: any;
+                try {
+                    if (action === 'write') {
+                        res = await vscode.commands.executeCommand(
+                            'lollms-vs-coder.applyFileContent',
+                            attrs.path,
+                            block.rawContent,
+                            opts
+                        );
+                    } else {
+                        // NOTE: hunk-parsing slowness lives in the replaceCode registry handler
+                        // (src/registries/fileCommands.ts) — out of scope for this panel.
+                        res = await vscode.commands.executeCommand(
+                            'lollms-vs-coder.replaceCode',
+                            attrs.path,
+                            normalizeAiderContent(block.rawContent),
+                            undefined,
+                            undefined,
+                            opts
+                        );
+                    }
+                } catch (cmdErr: any) {
+                    // Unblock the per-card spinner even on command throw.
+                    ctx.webview.postMessage({
+                        command: 'applyAllResult',
+                        success: false,
+                        error: cmdErr?.message || String(cmdErr),
+                        blockId,
+                        hunkIndex: 0,
+                        filePath: attrs.path,
+                        alreadyApplied: false,
+                        undo: false
+                    });
+                    throw cmdErr;
+                }
+
+                const success = !(res && res.success === false);
+
+                // Primary spinner unblock — same schema `applyAllChanges` uses.
+                ctx.webview.postMessage({
+                    command: 'applyAllResult',
+                    success,
+                    error: res?.error,
+                    blockId,
+                    hunkIndex: 0,
+                    filePath: attrs.path,
+                    alreadyApplied: !!res?.alreadyApplied,
+                    undo: false
+                });
+
+                // Step-tagged entry for the final labeled list.
+                ctx.webview.postMessage({
+                    command: 'multiStepsEntry',
+                    groupId: ctx.groupId,
+                    stepIndex: ctx.stepIndex,
+                    totalSteps: ctx.totalSteps,
+                    targetPath: attrs.path,
+                    action,
+                    applied: success,
+                    error: success ? undefined : res?.error
+                });
+
+                if (!success && !res?.alreadyApplied) {
+                    throw new Error(res?.error || `Step ${step.number}: apply failed for ${attrs.path}`);
+                }
+
+                entries.push({ targetPath: attrs.path, action, alreadyApplied: !!res?.alreadyApplied });
+            }
+
+            return entries;
+        }
+
+    /**
+     * Sequential-reprompt mode: synthesizes a single-step user prompt and
+     * dispatches it through the same submitPrompt machinery, then applies
+     * the returned <file> blocks. Recursion into applyAllSteps is forbidden.
+     */
+    private async _runSequentialStep(step: { targets: string[]; instructions: string; raw: string; number: number }, total: number, index: number, webview: vscode.Webview): Promise<void> {
+        const targetList = (step.targets && step.targets.length > 0)
+            ? step.targets.join(', ')
+            : '(none specified — infer from instructions)';
+        const body = step.instructions || step.raw || '';
+        const synthesized =
+            `[MultiSteps Apply — Step ${index + 1}/${total}]\n` +
+            `Target files: ${targetList}\n` +
+            `Instructions:\n${body}\n\n` +
+            `Produce ONLY the code patches for this step as <file> blocks. Do not restate earlier steps.`;
+
+        // Reuse the existing submission pipeline (same as submitPrompt case).
+        const payload = JSON.stringify({ text: synthesized });
+        this._onDidSubmit.fire(payload);
+
+        // Note: the actual streamed assistant turn is handled by the orchestrator
+        // listening on onDidSubmit; the applied file blocks would be captured
+        // in the subsequent turn. For a fully deterministic apply in this mode,
+        // the pipeline must dispatch through agentManager — left as a
+        // documented seam (undo-batch snapshot also deferred).
+        try {
+            void webview;
+        } finally {
+            // Guarantee spinner clears for any future caller of sequential mode.
+            webview.postMessage({ command: 'setLoading', isLoading: false });
+        }
     }
 
     private async _handleReviewDecision(blockId: string | undefined, decision: string, filePath?: string) {
@@ -744,6 +952,21 @@ export class CompanionPanel {
 
     public setLoading(isLoading: boolean) {
         this._panel.webview.postMessage({ command: 'setLoading', isLoading });
+    }
+
+    /**
+     * Signals the webview that the current assistant turn has ended.
+     * The orchestrator passes the assistant messages that belong to the
+     * just-completed turn. The webview uses this to decide whether the
+     * turn is a "multi-step turn" (>=2 messages with <file> tags) and, if
+     * so, renders a single Apply-All-Steps bar at the very end of the turn.
+     */
+    public notifyTurnEnded(turnMessages: { text: string }[], turnId?: number) {
+        this._panel.webview.postMessage({
+            command: 'turnEnded',
+            turnId: turnId ?? Date.now(),
+            turnMessages: (turnMessages || []).map(m => ({ text: typeof m?.text === 'string' ? m.text : '' }))
+        });
     }
 
     public updateHistoryList() {

@@ -54,6 +54,9 @@ export class FileRepairStudioPanel {
     private _selectedModel = '';
     private _temperature: number | undefined = 0.2;
     private _reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'max' = 'none';
+    private _pendingPatch: { filePath: string; relPath: string; originalContent: string; patchedContent: string; patchText: string; } | null = null;
+    private _previewContent = '';
+    private static readonly _previewScheme = 'lollms-repair-preview';
 
     public static async createOrShow(
         extensionUri: vscode.Uri,
@@ -314,6 +317,7 @@ export class FileRepairStudioPanel {
         this._relPath = vscode.workspace.asRelativePath(fileUri, false);
 
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+        this._registerPreviewProvider();
         this._setWebviewMessageListener();
         this._panel.webview.html = this._getHtmlForWebview();
 
@@ -325,11 +329,60 @@ export class FileRepairStudioPanel {
         this.refreshDiagnosticsFromHost();
     }
 
+    private _registerPreviewProvider(): void {
+        const provider: vscode.TextDocumentContentProvider = {
+            provideTextDocumentContent: (): string => this._previewContent
+        };
+        const disposable = vscode.workspace.registerTextDocumentContentProvider(
+            FileRepairStudioPanel._previewScheme,
+            provider
+        );
+        this._disposables.push(disposable);
+    }
+
+    private _applyAiderPatchInMemory(original: string, aiderPatch: string): string {
+        if (!aiderPatch) return original;
+        const blockRe = /<<<<<<< SEARCH\s*\r?\n([\s\S]*?)\r?\n?=======\s*\r?\n([\s\S]*?)\r?\n?>>>>>>> REPLACE/g;
+        let result = original;
+        let match: RegExpExecArray | null;
+        blockRe.lastIndex = 0;
+        while ((match = blockRe.exec(aiderPatch)) !== null) {
+            const searchText = match[1];
+            const replaceText = match[2];
+            const idx = result.indexOf(searchText);
+            if (idx === -1) continue;
+            result = result.slice(0, idx) + replaceText + result.slice(idx + searchText.length);
+        }
+        return result;
+    }
+
+    private async _openPendingDiff(): Promise<void> {
+        if (!this._pendingPatch) return;
+        this._previewContent = this._pendingPatch.patchedContent;
+        const fileName = path.basename(this._pendingPatch.relPath);
+        const rightUri = vscode.Uri.parse(
+            `${FileRepairStudioPanel._previewScheme}:${this._pendingPatch.relPath}?t=${Date.now()}`
+        );
+        try {
+            await vscode.commands.executeCommand(
+                'vscode.diff',
+                this._fileUri,
+                rightUri,
+                `🛠️ Repair Preview: ${fileName} (Disk ↔ Proposed)`,
+                { viewColumn: vscode.ViewColumn.Beside, preview: false, preserveFocus: false }
+            );
+        } catch (e: any) {
+            Logger.warn(`Failed to open repair preview diff: ${e.message}`);
+        }
+    }
+
     public dispose() {
         if (this._isDisposing) return;
         this._isDisposing = true;
         const key = this._fileUri.fsPath.toLowerCase();
         FileRepairStudioPanel.panels.delete(key);
+        this._pendingPatch = null;
+        this._previewContent = '';
         if (this._activeAbortController) {
             this._activeAbortController.abort();
             this._activeAbortController = null;
@@ -1186,6 +1239,58 @@ export class FileRepairStudioPanel {
                     });
                     break;
                 }
+                case 'acceptPendingPatch': {
+                    if (!this._pendingPatch) {
+                        this._panel.webview.postMessage({ command: 'patchRejected', relPath: this._relPath, reason: 'No pending patch to accept.' });
+                        break;
+                    }
+                    const pending = this._pendingPatch;
+                    try {
+                        const uri = vscode.Uri.file(pending.filePath);
+                        await vscode.workspace.fs.writeFile(uri, Buffer.from(pending.patchedContent, 'utf8'));
+                        this._services.contextManager.refreshFileInCache(uri);
+
+                        try { await vscode.commands.executeCommand('workbench.action.closeActiveEditor'); } catch {}
+                        try {
+                            const doc = await vscode.workspace.openTextDocument(uri);
+                            await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.One });
+                        } catch {}
+
+                        this._pendingPatch = null;
+                        this._previewContent = '';
+
+                        await new Promise(r => setTimeout(r, 500));
+                        await this.refreshDiagnosticsFromHost();
+
+                        this._panel.webview.postMessage({
+                            command: 'repairPassCompleted',
+                            round: this._round,
+                            maxRounds: this._maxRounds,
+                            patchApplied: true,
+                            accepted: true,
+                            currentCode: pending.patchedContent,
+                            explanation: 'Patch accepted by user and written to disk.',
+                            patch: pending.patchText
+                        });
+                    } catch (e: any) {
+                        this._panel.webview.postMessage({
+                            command: 'repairError',
+                            error: `Failed to apply accepted patch: ${e.message}`
+                        });
+                    }
+                    break;
+                }
+                case 'rejectPendingPatch': {
+                    this._pendingPatch = null;
+                    this._previewContent = '';
+                    try { await vscode.commands.executeCommand('workbench.action.closeActiveEditor'); } catch {}
+                    this._panel.webview.postMessage({ command: 'patchRejected', relPath: this._relPath });
+                    break;
+                }
+                case 'openPendingDiff': {
+                    await this._openPendingDiff();
+                    break;
+                }
                 case 'acceptAndClose': {
                     const remainingCount = this._diagnostics.filter(d => !d.isFixed).length;
                     const fixedCount = this._diagnostics.filter(d => d.isFixed).length;
@@ -1568,67 +1673,58 @@ Generate the surgical fix for \`${this._relPath}\`.`;
                 return;
             }
 
-            // Apply patch to disk
-            this._services.processManager.updateDescription(processId, `Applying patch to ${fileName} on disk...`);
+            // 🛡️ VALIDATE-BEFORE-APPLY: evaluate patch in memory, open a diff for user review.
+            this._services.processManager.updateDescription(processId, `Preparing preview diff for ${fileName}...`);
             const normalizedPatch = normalizeAiderContent(finalCleanResponse);
-            let patchRes: any = await vscode.commands.executeCommand(
-                'lollms-vs-coder.replaceCode',
-                this._relPath,
-                normalizedPatch,
-                undefined,
-                undefined,
-                { silent: true, autoSave: true }
-            );
 
-            // Resilient Fallback: If standard Search/Replace didn't match, check for <file> blocks
-            if (!patchRes?.success) {
+            let candidateContent = this._applyAiderPatchInMemory(currentContent, normalizedPatch);
+
+            // Fallback: <file> blocks evaluated in-memory (no disk writes)
+            if (candidateContent === currentContent) {
                 const { extractFileBlocks, parseFileTagAttributes } = require('../utils');
                 const fileBlocks = extractFileBlocks(finalCleanResponse);
                 if (fileBlocks.length > 0) {
                     for (const fb of fileBlocks) {
                         const attrs = parseFileTagAttributes(fb.attrStr, fb.rawContent);
-                        if (attrs && attrs.path) {
-                            if (attrs.action === 'write') {
-                                patchRes = await vscode.commands.executeCommand(
-                                    'lollms-vs-coder.applyFileContent',
-                                    attrs.path,
-                                    fb.rawContent,
-                                    { silent: true, autoSave: true }
-                                );
-                            } else {
-                                patchRes = await vscode.commands.executeCommand(
-                                    'lollms-vs-coder.replaceCode',
-                                    attrs.path,
-                                    normalizeAiderContent(fb.rawContent),
-                                    undefined,
-                                    undefined,
-                                    { silent: true, autoSave: true }
-                                );
-                            }
+                        if (!attrs || !attrs.path) continue;
+                        if (attrs.action === 'write') {
+                            candidateContent = fb.rawContent;
+                        } else {
+                            const next = this._applyAiderPatchInMemory(candidateContent, normalizeAiderContent(fb.rawContent));
+                            if (next !== candidateContent) candidateContent = next;
                         }
                     }
                 }
             }
 
-            // Re-read current disk state
-            await new Promise(r => setTimeout(r, 800));
-            const freshDoc = await vscode.workspace.openTextDocument(this._fileUri);
-            const newDiskContent = freshDoc.getText();
-            this._services.contextManager.refreshFileInCache(this._fileUri);
+            if (candidateContent === currentContent) {
+                this._panel.webview.postMessage({
+                    command: 'repairPreviewFailed',
+                    round: this._round,
+                    reason: 'The model\'s patch did not match the current content of ' + this._relPath + '. No changes were made.'
+                });
+                this._services.processManager.updateDescription(processId, `Patch did not match disk; skipped.`);
+                return;
+            }
 
-            // Re-scan diagnostics
-            this._services.processManager.updateDescription(processId, `Verifying language server diagnostics for ${fileName}...`);
-            await this.refreshDiagnosticsFromHost();
+            this._pendingPatch = {
+                filePath: this._fileUri.fsPath,
+                relPath: this._relPath,
+                originalContent: currentContent,
+                patchedContent: candidateContent,
+                patchText: normalizedPatch
+            };
 
             this._panel.webview.postMessage({
-                command: 'repairPassCompleted',
+                command: 'repairPreviewReady',
                 round: this._round,
                 maxRounds: this._maxRounds,
-                patchApplied: patchRes?.success ?? true,
-                currentCode: newDiskContent,
+                relPath: this._relPath,
                 explanation: finalCleanResponse.replace(/```[\s\S]*?```/g, '').trim(),
                 patch: normalizedPatch
             });
+
+            await this._openPendingDiff();
 
         } catch (err: any) {
             if (signal.aborted || !this._isRunning || err.name === 'AbortError' || err.message === 'AbortError') {
@@ -2201,6 +2297,60 @@ Generate the surgical fix for \`${this._relPath}\`.`;
             animation: spin 0.75s linear infinite;
         }
         @keyframes spin { 100% { transform: rotate(360deg); } }
+        .file-chip {
+            font-size: 9px;
+            padding: 1px 6px;
+            border-radius: 3px;
+            background: rgba(255,255,255,.08);
+            opacity: .85;
+            max-width: 180px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            font-family: var(--vscode-editor-font-family, monospace);
+        }
+        .pending-patch-banner {
+            display: none;
+            padding: 8px 14px;
+            background: rgba(155, 89, 182, 0.12);
+            border-top: 2px solid var(--vscode-charts-purple);
+            border-bottom: 2px solid var(--vscode-charts-purple);
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            font-size: 11px;
+            flex-shrink: 0;
+        }
+        .pending-patch-banner.visible { display: flex; }
+        .pending-patch-banner .ppb-text {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex: 1;
+            min-width: 0;
+        }
+        .pending-patch-banner .ppb-title {
+            font-weight: 800;
+            color: var(--vscode-charts-purple);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .pending-patch-banner .ppb-subtitle {
+            font-size: 10px;
+            opacity: .8;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .pending-patch-banner .ppb-actions {
+            display: flex;
+            gap: 6px;
+            flex-shrink: 0;
+        }
     </style>
 </head>
 <body>
@@ -2290,6 +2440,18 @@ Generate the surgical fix for \`${this._relPath}\`.`;
                 <div class="bubble assistant">
                     <strong>🛡️ Guardian Repair Assistant Ready</strong><br>
                     I inspect the current code on disk, select target errors, and can scout other files using <code>&lt;peek_files&gt;</code>, <code>&lt;grep&gt;</code>, or <code>&lt;show_symbol&gt;</code> before generating surgical fixes.
+                </div>
+            </div>
+
+            <div id="pendingPatchBanner" class="pending-patch-banner">
+                <div class="ppb-text">
+                    <div class="ppb-title"><i class="codicon codicon-git-pull-request-create"></i> Patch ready for review</div>
+                    <div class="ppb-subtitle" id="ppbSubtitle">A proposed patch has been generated. Review the diff, then accept or reject.</div>
+                </div>
+                <div class="ppb-actions">
+                    <button id="btnOpenPendingDiff" class="btn secondary" style="height:24px; font-size:10px;"><i class="codicon codicon-diff"></i> Open Diff</button>
+                    <button id="btnAcceptPending" class="btn green" style="height:24px; font-size:10px;"><i class="codicon codicon-check"></i> Accept</button>
+                    <button id="btnRejectPending" class="btn red" style="height:24px; font-size:10px;"><i class="codicon codicon-close"></i> Reject</button>
                 </div>
             </div>
 
@@ -2702,6 +2864,34 @@ Generate the surgical fix for \`${this._relPath}\`.`;
             }
         });
 
+        // Pending Patch Banner Actions
+        var btnAcceptPending = document.getElementById('btnAcceptPending');
+        var btnRejectPending = document.getElementById('btnRejectPending');
+        var btnOpenPendingDiff = document.getElementById('btnOpenPendingDiff');
+        if (btnAcceptPending) {
+            btnAcceptPending.onclick = function() { vscode.postMessage({ command: 'acceptPendingPatch' }); };
+        }
+        if (btnRejectPending) {
+            btnRejectPending.onclick = function() { vscode.postMessage({ command: 'rejectPendingPatch' }); };
+        }
+        if (btnOpenPendingDiff) {
+            btnOpenPendingDiff.onclick = function() { vscode.postMessage({ command: 'openPendingDiff' }); };
+        }
+
+        function showPendingBanner(visible, subtitle) {
+            var banner = document.getElementById('pendingPatchBanner');
+            if (!banner) return;
+            if (visible) {
+                banner.classList.add('visible');
+                if (subtitle) {
+                    var sub = document.getElementById('ppbSubtitle');
+                    if (sub) sub.textContent = subtitle;
+                }
+            } else {
+                banner.classList.remove('visible');
+            }
+        }
+
         // Footer Actions
         document.getElementById('btnFooterRescan').onclick = function() { vscode.postMessage({ command: 'rescan' }); };
         document.getElementById('btnScanWorkspace').onclick = function() { vscode.postMessage({ command: 'scanWorkspace' }); };
@@ -2880,6 +3070,7 @@ Generate the surgical fix for \`${this._relPath}\`.`;
                 var isFixed = d.isFixed === true;
 
                 var targetFile = d.filePath || targetFilePath;
+                var fileChip = '<span class="file-chip" title="' + escapeHtml(targetFile) + '"><i class="codicon codicon-file-code"></i> ' + escapeHtml(String(targetFile).split('/').pop()) + '</span>';
                 var copyPayload = [
                     'File: ' + targetFile,
                     'Line ' + d.line + ':' + d.character,
@@ -2899,6 +3090,7 @@ Generate the surgical fix for \`${this._relPath}\`.`;
                                 '<span class="crit-badge fixed">' +
                                     '<i class="codicon codicon-pass-filled"></i> FIXED' +
                                 '</span>' +
+                                fileChip +
                                 (isTargeted ? '<span class="target-badge" style="background:var(--vscode-charts-orange); color:white; font-size:9px; font-weight:800; padding:1px 6px; border-radius:3px; letter-spacing:0.5px;">🎯 TARGETED</span>' : '') +
                                 '<span style="font-weight:700; font-size:10px; color:var(--vscode-charts-green);">Line ' + d.line + ':' + d.character + '</span>' +
                                 '<button type="button" class="btn secondary goto-error-btn" data-line="' + d.line + '" data-character="' + d.character + '" style="height:18px; font-size:9px; padding:0 6px;" title="Go to Line in Editor">' +
@@ -2924,6 +3116,7 @@ Generate the surgical fix for \`${this._relPath}\`.`;
                             '<div style="display:flex; align-items:center; gap:6px;">' +
                                 '<input type="checkbox" class="err-check" data-id="' + escapeHtml(d.id) + '" data-file="' + escapeHtml(d.filePath || targetFilePath) + '" ' + (isChecked ? 'checked' : '') + ' style="margin:0; cursor:pointer;">' +
                                 '<span class="crit-badge ' + critClass + '">' + critClass.toUpperCase() + '</span>' +
+                                fileChip +
                                 (isTargeted ? '<span class="target-badge" style="background:var(--vscode-charts-orange); color:white; font-size:9px; font-weight:800; padding:1px 6px; border-radius:3px; letter-spacing:0.5px;">🎯 TARGETED</span>' : '') +
                                 '<span style="font-weight:700; font-size:10px;">Line ' + d.line + ':' + d.character + '</span>' +
                                 '<button type="button" class="btn secondary goto-error-btn" data-line="' + d.line + '" data-character="' + d.character + '" style="height:18px; font-size:9px; padding:0 6px;" title="Go to Line in Editor">' +
@@ -3274,13 +3467,70 @@ Generate the surgical fix for \`${this._relPath}\`.`;
                     document.getElementById('chatStreamBox').appendChild(toolBubble);
                     document.getElementById('chatStreamBox').scrollTop = document.getElementById('chatStreamBox').scrollHeight;
                     break;
+                case 'repairPreviewReady':
+                    isFixing = false;
+                    btnRunFix.classList.remove('red');
+                    btnRunFix.classList.add('purple');
+                    btnRunFix.innerHTML = '<i class="codicon codicon-sparkle"></i> <span>Fix</span>';
+                    document.getElementById('liveStreamingIndicator').style.display = 'none';
+                    document.getElementById('statusIndicatorText').textContent = 'Patch ready for review';
+                    showPendingBanner(true, 'Proposed patch for ' + (msg.relPath || '') + ' — review diff then Accept or Reject.');
+                    if (msg.patch) {
+                        document.getElementById('lastPatchView').textContent = msg.patch;
+                    }
+                    switchTab('diff');
+                    (function() {
+                        var streamEl = document.getElementById('activeStreamBubble');
+                        var explanation = msg.explanation || 'Proposed patch generated. Review the diff, then accept or reject.';
+                        if (streamEl) {
+                            streamEl.id = '';
+                            streamEl.innerHTML = '<strong>🛠️ Proposed Patch (Round ' + msg.round + '/' + (msg.maxRounds || '') + '):</strong><br>' + safeMarked(explanation);
+                        } else {
+                            var b = document.createElement('div');
+                            b.className = 'bubble assistant';
+                            b.innerHTML = '<strong>🛠️ Proposed Patch (Round ' + msg.round + '):</strong><br>' + safeMarked(explanation);
+                            document.getElementById('chatStreamBox').appendChild(b);
+                        }
+                        document.getElementById('chatStreamBox').scrollTop = document.getElementById('chatStreamBox').scrollHeight;
+                    })();
+                    break;
+                case 'patchRejected':
+                    showPendingBanner(false);
+                    document.getElementById('statusIndicatorText').textContent = 'Patch rejected by user';
+                    (function() {
+                        var b = document.createElement('div');
+                        b.className = 'bubble';
+                        b.style.cssText = 'border-left: 3px solid var(--vscode-charts-orange); background: rgba(214,122,13,0.08);';
+                        b.innerHTML = '<strong><i class="codicon codicon-close"></i> Patch Rejected:</strong><br><span style="opacity:.85">' + escapeHtml(msg.reason || ('No changes were applied to ' + (msg.relPath || 'the file') + '.')) + '</span>';
+                        document.getElementById('chatStreamBox').appendChild(b);
+                        document.getElementById('chatStreamBox').scrollTop = document.getElementById('chatStreamBox').scrollHeight;
+                    })();
+                    break;
+                case 'repairPreviewFailed':
+                    isFixing = false;
+                    btnRunFix.classList.remove('red');
+                    btnRunFix.classList.add('purple');
+                    btnRunFix.innerHTML = '<i class="codicon codicon-sparkle"></i> <span>Fix</span>';
+                    document.getElementById('liveStreamingIndicator').style.display = 'none';
+                    document.getElementById('statusIndicatorText').textContent = 'Patch did not match';
+                    showPendingBanner(false);
+                    (function() {
+                        var b = document.createElement('div');
+                        b.className = 'bubble';
+                        b.style.cssText = 'border-left: 3px solid var(--vscode-charts-red); background: rgba(231,76,60,0.08); color: var(--vscode-charts-red);';
+                        b.innerHTML = '<strong><i class="codicon codicon-warning"></i> Patch Did Not Match:</strong><br>' + escapeHtml(msg.reason || 'No changes were applied.');
+                        document.getElementById('chatStreamBox').appendChild(b);
+                        document.getElementById('chatStreamBox').scrollTop = document.getElementById('chatStreamBox').scrollHeight;
+                    })();
+                    break;
                 case 'repairPassCompleted':
                     isFixing = false;
                     btnRunFix.classList.remove('red');
                     btnRunFix.classList.add('purple');
                     btnRunFix.innerHTML = '<i class="codicon codicon-sparkle"></i> <span>Fix</span>';
                     document.getElementById('liveStreamingIndicator').style.display = 'none';
-                    document.getElementById('statusIndicatorText').textContent = 'Patch Applied to Disk';
+                    document.getElementById('statusIndicatorText').textContent = msg.accepted ? 'Patch accepted and applied' : 'Patch Applied to Disk';
+                    showPendingBanner(false);
 
                     var streamEl = document.getElementById('activeStreamBubble');
                     if (streamEl) {
@@ -3303,6 +3553,7 @@ Generate the surgical fix for \`${this._relPath}\`.`;
                     break;
                 case 'repairStopped':
                     isFixing = false;
+                    showPendingBanner(false);
                     btnRunFix.classList.remove('red');
                     btnRunFix.classList.add('purple');
                     btnRunFix.innerHTML = '<i class="codicon codicon-sparkle"></i> <span>Fix</span>';

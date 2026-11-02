@@ -4,6 +4,12 @@ import { marked } from 'marked';
 
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 
+const escapeAttr = (value: string): string => String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
 export const loadKnowledgePlugin: TagPlugin = {
     id: 'load_knowledge',
     tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<load_knowledge\b[^>]*?>([\s\S]*?)<\/load_knowledge>/gim,
@@ -24,7 +30,7 @@ export const loadKnowledgePlugin: TagPlugin = {
                 <div style="font-family: var(--vscode-editor-font-family); font-size: 11px; font-weight: 600;">
                     <code>${sanitizer.sanitize(sectionPath)}</code>
                 </div>
-                <button type="button" class="code-action-btn apply-btn btn-trigger-load-knowledge" data-path="${sanitizer.sanitize(sectionPath)}" style="height: 24px; font-size: 10px; padding: 0 8px;">
+                <button type="button" class="code-action-btn apply-btn btn-trigger-load-knowledge" data-path="${escapeAttr(sectionPath)}" style="height: 24px; font-size: 10px; padding: 0 8px;">
                     <i class="codicon codicon-folder-opened"></i> Load Section
                 </button>
             </div>
@@ -51,7 +57,7 @@ export const updateKnowledgePlugin: TagPlugin = {
     id: 'update_knowledge',
     extractBlocks: (content: string, context: PluginContext) => {
         const results: { match: any, start: number, end: number, html: string }[] = [];
-        const regex = /^[ \t]*<update_knowledge\b([^>]*?)>([\s\S]*?)(?:<\/update_knowledge>|$)/gim;
+        const regex = /^[ \t]*<update_knowledge\b([^>]*?)>([\s\S]*?)(?:<\/update_knowledge>|(?![\s\S]))/gim;
         let match;
         while ((match = regex.exec(content)) !== null) {
             const fullMatch = match[0];
@@ -103,7 +109,7 @@ export const updateKnowledgePlugin: TagPlugin = {
                     <button type="button" class="code-action-btn secondary-btn btn-copy-kn" data-content="${encodedContent}" style="height: 22px; font-size: 10px; padding: 0 8px;">
                         <i class="codicon codicon-copy"></i> Copy
                     </button>
-                    <button type="button" class="code-action-btn secondary-btn btn-open-kn" data-path="${sanitizer.sanitize(sectionPath)}" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                    <button type="button" class="code-action-btn secondary-btn btn-open-kn" data-path="${escapeAttr(sectionPath)}" style="height: 22px; font-size: 10px; padding: 0 8px;">
                         <i class="codicon codicon-file"></i> Open KNOWLEDGE.md
                     </button>
                 </div>

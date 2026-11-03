@@ -4,7 +4,10 @@ import * as os from 'os';
 import { MemoryManager } from './memoryManager';
 import { execSync } from 'child_process';
 import { PromptTemplates } from './promptTemplates';
+import { stripLibrarianReferences } from './system_prompts/workerPrompt';
 import * as crypto from 'crypto';
+
+export { stripLibrarianReferences } from './system_prompts/workerPrompt';
 
 
 /**
@@ -1083,7 +1086,8 @@ export async function getProcessedSystemPrompt(
         finalPersona = config.get<string>(key) || "You are an expert software engineer.";
     }
 
-    if (workingMemory) {
+    const isFastMode = capabilities?.fastMode === true;
+    if (workingMemory && !isFastMode) {
         finalPersona = `### 🧠 LIBRARIAN'S CONTEXT ANALYSIS\n${workingMemory}\n\n${finalPersona}`;
     }
 
@@ -1137,7 +1141,7 @@ You are STRICTLY FORBIDDEN from using colon-delimited markdown backticks (like \
         capabilities, 
         forceFullCode, 
         context
-    ) + "\n" + fileMutationProtocol;
+    ) + (isFastMode || isExport ? "" : ("\n" + fileMutationProtocol));
 
     // --- WORKER BASE PROMPT INITIALIZATION ---
     let finalizedBasePrompt = basePrompt;
@@ -1187,7 +1191,13 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
 
     let operationalMandate = "";
 
-    if (isExport) {
+    if (isFastMode) {
+        operationalMandate = `
+    ### 🛡️ FAST MODE: DIRECT IMPLEMENTATION
+    - You must deliver the implementation directly in <file> tags.
+    - You can only use <unmute_files> and <add_files_to_context> to request files. No other tools or sub-agents are available.
+    `;
+    } else if (isExport) {
         operationalMandate = `
     ### 🛡️ EXTERNAL LLM OPERATIONAL PROTOCOL (TAGS EXCLUSIVE - NO TOOLS)
     You are an external assistant. Tool calling is completely deactivated. You do NOT have access to tools or \`<lollms_tool>\`.
@@ -1293,7 +1303,7 @@ const sparqlDynamicRule = isSparqlActive ? `
     }
 
     // --- GOVERNOR'S CODEBASE ARCHITECTURE & WORKINGS REPORT ---
-    const isReportSuppressed = (context as any)?.suppressLibrarianReport === true;
+    const isReportSuppressed = (context as any)?.suppressLibrarianReport === true || isFastMode;
     let governorReport = isReportSuppressed ? '' : ((context as any)?.governorReport || '');
     if (!governorReport && !isReportSuppressed && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
         try {
@@ -1335,7 +1345,8 @@ const sparqlDynamicRule = isSparqlActive ? `
         }
     }
 
-    return finalizedBasePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness + librarianReportSection;
+    const combinedSystemPrompt = finalizedBasePrompt + destinyDirectives + "\n" + operationalMandate + "\n" + envAwareness + librarianReportSection;
+    return isFastMode ? stripLibrarianReferences(combinedSystemPrompt) : combinedSystemPrompt;
 }
 
 /**

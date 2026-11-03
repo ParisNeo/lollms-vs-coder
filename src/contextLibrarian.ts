@@ -3,7 +3,7 @@ import * as path from 'path';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { ContextManager, ContextResult } from './contextManager';
 import { DiscussionManager, Discussion } from './discussionManager';
-import { DiscussionCapabilities, stripThinkingTags, extractFileBlocks, parseFileTagAttributes, applySearchReplace, normalizeAiderContent, parseAiderHunks } from './utils';
+import { DiscussionCapabilities, stripThinkingTags, stripLibrarianReferences, extractFileBlocks, parseFileTagAttributes, applySearchReplace, normalizeAiderContent, parseAiderHunks } from './utils';
 import { Logger } from './logger';
 import { LibrarianPromptBuilder } from './system_prompts/librarianPrompt';
 
@@ -74,12 +74,17 @@ interface ParsedFileCandidate {
 }
 
 export class ContextLibrarian {
-    private static readonly STOP_WORDS = new Set([
+    public static readonly STOP_WORDS = new Set([
         'the', 'and', 'for', 'with', 'this', 'that', 'from', 'your', 'will', 'have', 'been', 'should',
         'what', 'when', 'where', 'which', 'who', 'how', 'why', 'can', 'could', 'would', 'file', 'files',
         'code', 'function', 'class', 'const', 'let', 'var', 'import', 'export', 'return', 'true', 'false',
         'null', 'undefined', 'async', 'await', 'type', 'interface', 'please', 'help', 'need', 'want', 'like',
-        'main', 'fix', 'update', 'change', 'check', 'make', 'look', 'view', 'edit', 'using', 'into'
+        'main', 'fix', 'update', 'change', 'check', 'make', 'look', 'view', 'edit', 'using', 'into',
+        'system', 'screen', 'panel', 'copy', 'folder', 'itryed', 'tried', 'trying', 'says', 'said', 'think',
+        'still', 'used', 'using', 'also', 'just', 'done', 'does', 'show', 'shows', 'very', 'much', 'well',
+        'new', 'via', 'get', 'set', 'out', 'all', 'any', 'both', 'each', 'few', 'more', 'most', 'other',
+        'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'now', 'did', 'didn',
+        'but', 'because', 'until', 'while', 'about', 'then', 'them', 'they', 'their', 'there'
     ]);
 
     public static isBroadOrStructuralQuery(prompt: string): boolean {
@@ -276,46 +281,114 @@ export class ContextLibrarian {
         const isStructural = this.isBroadOrStructuralQuery(prompt);
         const keywords = this.extractQueryKeywords(prompt, []);
 
-        // ── 🎯 PROACTIVE WORKSPACE DISCOVERY FOR TASK-SPECIFIC FILES ──
-        // Deeply search the workspace for files matching the task domain (e.g. dark mode, indigo classic vibe -> CSS/themes/UI)
-        const relevantKeywords = keywords.filter(k => k.length > 2 && !['file', 'files', 'code', 'please', 'main'].includes(k));
+        // ── 🎯 FAST IN-MEMORY PATH DISCOVERY (ZERO BLOCKING GREP LOOPS) ──
+        const cleanWords = prompt.replace(/[^a-zA-Z0-9_\s-]/g, ' ').split(/\s+/).filter(Boolean);
+        const specificDomainWords = cleanWords
+            .map(w => w.toLowerCase())
+            .filter(w => w.length >= 4 && !ContextLibrarian.STOP_WORDS.has(w) && !LibrarianPromptBuilder.isGenericWord(w));
+
         const discoveredWorkspacePaths: string[] = [];
+        const contentMatchReports: string[] = [];
+        const liveActionSteps: { type: string; label: string; detail?: string }[] = [];
+
+        const emitLiveProgress = async (currentStatus: string) => {
+            if (!options.onUpdateMessage || !options.pruneMsgId) return;
+            const stepsHtml = liveActionSteps.map(s => `
+<div style="display:flex; align-items:center; gap:6px; padding:3px 8px; background:rgba(0,0,0,0.18); border-radius:4px; font-family:var(--vscode-editor-font-family, monospace); font-size:10.5px; border:1px solid rgba(255,255,255,0.05);">
+    <i class="codicon ${s.type === 'grep' ? 'codicon-search' : (s.type === 'read' ? 'codicon-file' : (s.type === 'match' ? 'codicon-check' : 'codicon-tools'))}" style="color:var(--vscode-charts-orange); font-size:11px;"></i>
+    <span><strong>${s.label}</strong></span>${s.detail ? `<span style="opacity:0.75;">: ${s.detail}</span>` : ''}
+</div>`).join('\n');
+
+            const liveBox = `### 📚 **Lead Librarian: Evaluating Task & Scouting Codebase**
+
+<div style="display:flex; align-items:center; gap:8px; margin: 8px 0; color:var(--vscode-charts-orange); font-weight:600; font-size:11.5px;">
+    <div class="spinner" style="width:12px; height:12px; border-width:2px;"></div>
+    <span>${currentStatus}</span>
+</div>
+${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-top:6px;">${stepsHtml}</div>` : ''}`;
+            await options.onUpdateMessage(options.pruneMsgId, liveBox);
+        };
 
         try {
+            await emitLiveProgress(`Scanning workspace filenames for domain targets...`);
             const allWorkspaceFiles = await contextManager.getWorkspaceFilePaths();
+
             for (const f of allWorkspaceFiles) {
                 const cleanF = f.replace(/\\/g, '/').toLowerCase();
                 if (this.isClutterOrCosmeticFile(f)) continue;
 
-                const matchesKeywordInPath = relevantKeywords.some(kw => cleanF.includes(kw));
-                if (matchesKeywordInPath && !discoveredWorkspacePaths.includes(f)) {
+                const matchesDomain = specificDomainWords.some(w => cleanF.includes(w));
+                if (matchesDomain && !discoveredWorkspacePaths.includes(f)) {
                     discoveredWorkspacePaths.push(f);
                 }
             }
 
-            // High-priority content grep for exact domain terms (e.g. "indigo", "classic", "vibe", "dark")
-            const specificTerms = relevantKeywords.filter(k => k.length >= 3 && !['mode'].includes(k));
-            if (specificTerms.length > 0 && discoveredWorkspacePaths.length < 10) {
-                for (const term of specificTerms.slice(0, 3)) {
-                    const hits = await contextManager.searchWorkspaceContent(term, { matchCase: false, wholeWord: false, bypassGate: true }, signal);
-                    for (const hit of hits.slice(0, 8)) {
-                        if (hit.path && !discoveredWorkspacePaths.includes(hit.path) && !this.isClutterOrCosmeticFile(hit.path)) {
-                            discoveredWorkspacePaths.push(hit.path);
+            // Quick, bounded targeted search for exact unique technical identifiers (timeout-protected to prevent hanging)
+            const rareTerms = specificDomainWords.filter(t => t.length >= 5 && !['install', 'create', 'update', 'delete', 'system', 'admin'].includes(t));
+            if (rareTerms.length > 0) {
+                for (const term of rareTerms.slice(0, 2)) {
+                    if (signal.aborted) break;
+                    await emitLiveProgress(`Checking locations of key term "${term}"...`);
+
+                    try {
+                        const timeoutCtrl = new AbortController();
+                        const timer = setTimeout(() => timeoutCtrl.abort(), 1800); // 1.8s safety deadline
+                        const hits = await contextManager.searchWorkspaceContent(term, { matchCase: false, wholeWord: false, bypassGate: true }, timeoutCtrl.signal);
+                        clearTimeout(timer);
+
+                        if (hits && hits.length > 0) {
+                            const validHits = hits.filter(h => h.path && !this.isClutterOrCosmeticFile(h.path));
+                            validHits.slice(0, 4).forEach(h => {
+                                if (!discoveredWorkspacePaths.includes(h.path)) {
+                                    discoveredWorkspacePaths.push(h.path);
+                                }
+                                const snippet = h.snippet ? h.snippet.trim().slice(0, 100) : '';
+                                contentMatchReports.push(`- Term "${term}" in \`${h.path}\` (line ${h.line}): \`${snippet}\``);
+                            });
+
+                            liveActionSteps.push({
+                                type: 'grep',
+                                label: `Grep "${term}"`,
+                                detail: `${validHits.length} location(s) in codebase`
+                            });
                         }
-                    }
+                    } catch {}
                 }
             }
+
+            if (discoveredWorkspacePaths.length > 0) {
+                // Prioritize top most relevant files to avoid bloated 60+ candidate lists
+                const topPicks = discoveredWorkspacePaths.slice(0, 12);
+                liveActionSteps.push({
+                    type: 'match',
+                    label: 'Matched Code Modules',
+                    detail: `${topPicks.map(p => path.basename(p)).slice(0, 4).join(', ')}${topPicks.length > 4 ? ` (+${topPicks.length - 4} more)` : ''}`
+                });
+            }
+
+            await emitLiveProgress(`Grep & scan complete. Formulating architectural analysis with LLM...`);
         } catch (e) {
-            Logger.warn(`[Librarian] Task file discovery warning: ${e}`);
+            Logger.warn(`[Librarian] Fast path discovery warning: ${e}`);
         }
 
         const newlyAddedFiles: string[] = [];
-        for (const df of discoveredWorkspacePaths) {
+        // Cap discovered files to top 12 to maintain instant speed and prevent prompt bloating
+        const prioritizedDiscovered = discoveredWorkspacePaths.slice(0, 12);
+        for (const df of prioritizedDiscovered) {
             if (!rawIncluded.some(inc => this.pathsMatch(inc.path, df))) {
                 rawIncluded.push({ path: df, state: 'included' as any });
                 newlyAddedFiles.push(df);
             }
         }
+
+        // Ensure newly identified workspace candidate files are sorted by domain relevance
+        rawIncluded.sort((a, b) => {
+            const cleanA = a.path.toLowerCase();
+            const cleanB = b.path.toLowerCase();
+            const matchA = specificDomainWords.filter(w => cleanA.includes(w)).length;
+            const matchB = specificDomainWords.filter(w => cleanB.includes(w)).length;
+            return matchB - matchA;
+        });
 
         if (onStatusUpdate) onStatusUpdate("Librarian: Evaluating task domain & candidate files...");
 
@@ -348,12 +421,20 @@ export class ContextLibrarian {
             if (isStructural) {
                 const lowerPath = f.path.toLowerCase();
                 const isCoreSourceCode = lowerPath.endsWith('.js') || lowerPath.endsWith('.ts') ||
-                                         lowerPath.endsWith('.py') || lowerPath.endsWith('.html') ||
-                                         lowerPath.endsWith('.json') || lowerPath.endsWith('.md');
+                                         lowerPath.endsWith('.py') || lowerPath.endsWith('.html');
                 if (isCoreSourceCode && !this.isClutterOrCosmeticFile(f.path)) {
                     candidate.relevanceScore += 1000;
                     candidate.isCoreOrInterface = true;
                 }
+            }
+
+            // High boost if file matches content grep hits for the specific prompt terms
+            const cleanPath = f.path.replace(/\\/g, '/').toLowerCase();
+            const hasDirectContentMatch = contentMatchReports.some(r => r.toLowerCase().includes(cleanPath));
+            if (hasDirectContentMatch) {
+                candidate.relevanceScore += 30000;
+                candidate.role = 'edit';
+                candidate.keep = true;
             }
 
             fileCandidates.push(candidate);
@@ -378,8 +459,7 @@ export class ContextLibrarian {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const configuredRounds = options.currentDiscussion?.capabilities?.contextGovernorMaxRounds;
         const fallbackConfigRounds = config.get<number>('contextGovernorMaxRounds');
-        // Optimized for in-chat scouting: 2 rounds (max 3) prevents long waiting loops while ensuring accuracy
-        const effectiveRounds = (configuredRounds && configuredRounds >= 1) ? Math.min(3, configuredRounds) : (fallbackConfigRounds ? Math.min(3, fallbackConfigRounds) : 2);
+        const effectiveRounds = (configuredRounds && configuredRounds >= 1) ? configuredRounds : (fallbackConfigRounds && fallbackConfigRounds >= 1 ? fallbackConfigRounds : 10);
         const maxRounds = Math.max(1, effectiveRounds);
 
         const memManager = options.projectMemoryManager || 
@@ -441,11 +521,13 @@ export class ContextLibrarian {
             currentDiscussion: options.currentDiscussion,
             sparqlEnabled: options.currentDiscussion?.capabilities?.sparqlEnabled !== false,
             ignoreContextSize: isIgnoreContext,
+            contentMatchReports,
             pruneMsgId: options.pruneMsgId,
             projectMemoryManager: memManager,
             optionsUpdateMessage: options.onUpdateMessage,
             onStatusUpdate,
             onStreamChunk,
+            initialLiveSteps: liveActionSteps,
             onDiscoveryAction,
             onRoundProgress
         });
@@ -486,8 +568,6 @@ export class ContextLibrarian {
         }
 
         // ── TASK-FOCUSED SIGNATURE EXTRACTION ──
-        // Only extract signatures for keptFiles that are actual code files.
-        // NEVER dump arbitrary muted files or rumbling lists of unrelated backend functions!
         let signatures = (rawSignatures || "").trim();
         const isNonCode = (p: string) => /\.(css|scss|sass|less|json|md|txt|html|svg|png|jpg|yml|yaml|xml|toml)$/i.test(p);
         const codeFilesForSignatures = keptFiles.filter(f => !isNonCode(f));
@@ -501,7 +581,6 @@ export class ContextLibrarian {
             signatures = "";
         }
 
-        // Synthesize rich architectural findings if model gave empty or generic status string
         let findingsBody = (governorReport || workerAdvice || '').trim();
         const isGenericFallback = !findingsBody || 
             findingsBody.includes('status fit_all') || 
@@ -521,7 +600,6 @@ export class ContextLibrarian {
             );
         }
 
-        // Clean any redundant prefix nesting
         findingsBody = findingsBody.replace(/^(?:Librarian agent report:\s*)+/gi, '').trim();
 
         // 🧠 AUTOMATIC PERSISTENCE & MEMORY REHYDRATION
@@ -607,8 +685,7 @@ export class ContextLibrarian {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const configuredRounds = options.currentDiscussion?.capabilities?.contextGovernorMaxRounds;
         const fallbackConfigRounds = config.get<number>('contextGovernorMaxRounds');
-        // Tight 2-round budget (maximum 3) so discovery concludes fast with direct instructions
-        const effectiveRounds = (configuredRounds && configuredRounds >= 1) ? Math.min(3, configuredRounds) : (fallbackConfigRounds ? Math.min(3, fallbackConfigRounds) : 2);
+        const effectiveRounds = (configuredRounds && configuredRounds >= 1) ? configuredRounds : (fallbackConfigRounds && fallbackConfigRounds >= 1 ? fallbackConfigRounds : 10);
         const maxRounds = Math.max(1, effectiveRounds);
 
         const getCleanHistoryText = (msgs: ChatMessage[]) => msgs
@@ -851,6 +928,8 @@ export class ContextLibrarian {
         onStreamChunk?: (data: { round: number; maxRounds: number; chunk: string; fullText: string; messageId: string }) => void;
         onDiscoveryAction?: (data: { type: string; label: string; detail?: string; output?: string }) => void;
         onAddMessage?: (message: ChatMessage) => Promise<void>;
+        contentMatchReports?: string[];
+        initialLiveSteps?: { type: string; label: string; detail?: string }[];
         optionsUpdateMessage?: (messageId: string, content: string) => Promise<void>;
         onRoundUsed?: (rounds: number) => void;
     }): Promise<{
@@ -896,7 +975,7 @@ export class ContextLibrarian {
         let extractedAdvice = "";
         let extractedSignatures = "";
         const newlyAddedFiles: string[] = [];
-        const discoverySteps: { type: string; label: string; detail?: string }[] = [];
+        const discoverySteps: { type: string; label: string; detail?: string }[] = options.initialLiveSteps ? [...options.initialLiveSteps] : [];
 
         const cleanActionTagsFromText = (text: string) => {
             let cleaned = text
@@ -956,8 +1035,18 @@ export class ContextLibrarian {
         };
 
         const formatAccumulatedRoundsMarkdown = (liveRoundIndex?: number, liveStreamContent?: string) => {
-            let md = `### 📚 **Lead Librarian Investigation & Live Activity**\n`;
-            md += `*Pool: ~${safeLoc(totalCandidateTokens)} tok &middot; Unmuted: ~${safeLoc(currentUnmutedTokens)} tok &middot; Target: ~${safeLoc(objectiveThreshold)} tok (${safeNum(objectiveThresholdPercent)}%)*\n\n`;
+            let md = `### 📚 **Lead Librarian: Scouting & Architecture**\n\n`;
+
+            const getToolIcon = (actionText: string): string => {
+                const lower = actionText.toLowerCase();
+                if (lower.includes('grep')) return 'codicon-search';
+                if (lower.includes('sparql')) return 'codicon-graph';
+                if (lower.includes('peek')) return 'codicon-eye';
+                if (lower.includes('read')) return 'codicon-file';
+                if (lower.includes('symbol')) return 'codicon-symbol-misc';
+                if (lower.includes('structure')) return 'codicon-book';
+                return 'codicon-tools';
+            };
 
             if (completedRounds.length > 0) {
                 md += completedRounds.map(r => {
@@ -966,35 +1055,14 @@ export class ContextLibrarian {
                     if (r.toolAction) {
                         const safeObs = escapeHtml(r.toolObservation || '(No output recorded)');
                         const safeAction = escapeHtml(r.toolAction);
-                        block += `\n\n<details open class="processing-block"><summary><i class="codicon codicon-tools"></i> <strong>Action Executed</strong>: <code>${safeAction}</code></summary><div class="processing-body"><pre style="margin:0; padding:10px; max-height:250px; overflow:auto; background:rgba(0,0,0,0.2); font-family:var(--vscode-editor-font-family, monospace); font-size:11px; white-space:pre-wrap;">${safeObs}</pre></div></details>`;
+                        const icon = getToolIcon(r.toolAction);
+                        block += `\n\n<details open class="processing-block" style="margin: 6px 0;"><summary><i class="codicon ${icon}"></i> <strong>${safeAction}</strong></summary><div class="processing-body"><pre style="margin:0; padding:10px; max-height:220px; overflow:auto; background:rgba(0,0,0,0.2); font-family:var(--vscode-editor-font-family, monospace); font-size:11px; white-space:pre-wrap;">${safeObs}</pre></div></details>`;
                     }
                     return block;
                 }).join('\n\n---\n\n') + '\n\n---\n\n';
             }
 
             if (liveRoundIndex !== undefined && liveStreamContent !== undefined) {
-                const liveActions: string[] = [];
-                const readMatches = [...liveStreamContent.matchAll(/<(?:read_full_file|read_file)\b[^>]*path=["']([^"']+)["'][^>]*\/?>/gi)];
-                const grepMatches = [...liveStreamContent.matchAll(/<grep\b[^>]*(?:query|pattern)=["']([^"']+)["'][^>]*\/?>/gi)];
-                const peekMatches = [...liveStreamContent.matchAll(/<peek_files\b[^>]*path=["']([^"']+)["'][^>]*\/?>/gi)];
-                const sparqlMatches = [...liveStreamContent.matchAll(/<sparql\b[^>]*query=["']([\s\S]*?)["'][^>]*\/?>/gi)];
-                const addMatches = [...liveStreamContent.matchAll(/<add_files_to_context\b[^>]*>([\s\S]*?)<\/add_files_to_context>/gi)];
-                const structMatches = [...liveStreamContent.matchAll(/<structure\b([^>]*?)>([\s\S]*?)<\/structure>/gi)];
-
-                const symbolMatches = [...liveStreamContent.matchAll(/<(?:show_symbol|get_symbol_code|read_symbol)\b[^>]*(?:target|path)=["']([^"']+)["'][^>]*\/?>/gi)];
-                symbolMatches.forEach(m => liveActions.push(`- **[SHOW SYMBOL]** \`${m[1]}\``));
-                readMatches.forEach(m => liveActions.push(`- **[FILE READ]** \`${m[1]}\``));
-                grepMatches.forEach(m => liveActions.push(`- **[GREP SEARCH]** Pattern: \`"${m[1]}"\``));
-                peekMatches.forEach(m => liveActions.push(`- **[FILE PEEK]** Slice: \`${m[1]}\``));
-                sparqlMatches.forEach(m => liveActions.push(`- **[SPARQL QUERY]** \`${m[1].replace(/\s+/g, ' ').slice(0, 70)}...\``));
-                addMatches.forEach(m => liveActions.push(`- **[ADD CONTEXT]** \`${m[1].trim()}\``));
-                structMatches.forEach(m => liveActions.push(`- **[STRUCTURE UPDATE]** Updating .lollms/structure.md`));
-
-                const actionsBlock = liveActions.length > 0 
-                    ? `\n\n##### 🛠️ Active Operations Detected in Stream:\n${liveActions.join('\n')}\n` 
-                    : "";
-
-                // Extract thinking blocks locally so they render inline with Round N rather than being stripped or hoisted out of view
                 let liveThoughtContent = "";
                 let liveMainContent = liveStreamContent;
 
@@ -1010,7 +1078,6 @@ export class ContextLibrarian {
                     }
                 }
 
-                // Clean out raw think tags so message-level thought parser doesn't extract and hide them from Round N
                 liveMainContent = stripThinkingTags(liveMainContent).trim();
 
                 let thoughtBoxHtml = "";
@@ -1019,8 +1086,8 @@ export class ContextLibrarian {
                     thoughtBoxHtml = `\n\n<details open class="processing-block" style="border-left: 3px solid var(--thinking-color, #9b59b6); background: rgba(155, 89, 182, 0.05); margin: 8px 0;"><summary style="color: var(--thinking-color, #9b59b6); font-weight: bold; font-size: 11px; cursor: pointer;"><span class="spinner" style="width: 10px; height: 10px; border-width: 1.5px; display: ${isClosed ? 'none' : 'inline-block'}; margin-right: 4px;"></span> 🧠 <span>Librarian Reasoning (Round ${liveRoundIndex}${isClosed ? '' : ' - Live'})...</span></summary><div class="processing-body" style="padding: 8px 12px; font-size: 11px; opacity: 0.95; line-height: 1.45; white-space: pre-wrap;">${escapeHtml(liveThoughtContent)}</div></details>\n`;
                 }
 
-                const streamDisplay = liveMainContent || (liveThoughtContent ? '' : '*(Analyzing codebase & streaming reasoning...)*');
-                md += `#### 📚 **Round ${liveRoundIndex}/${maxRounds} (Evaluating live)**${thoughtBoxHtml}\n\n${streamDisplay}${actionsBlock}`;
+                const streamDisplay = liveMainContent || (liveThoughtContent ? '' : '<div class="waiting-animation" style="display:flex; align-items:center; gap:8px; opacity:0.85; padding:6px 0;"><div class="spinner"></div> <span>Analyzing codebase &amp; streaming reasoning...</span></div>');
+                md += `#### 📚 **Round ${liveRoundIndex}/${maxRounds} (Evaluating live)**${thoughtBoxHtml}\n\n${streamDisplay}`;
             }
 
             return md;
@@ -1029,13 +1096,17 @@ export class ContextLibrarian {
         const compactCatalog = this.buildCompactCatalog(fileCandidates, options.currentMuted);
         const existingStructure = await this.getStructureGuide();
 
-        // Hydrate actual unmuted file contents for Round 1 only (capped to target threshold)
+        // Hydrate actual unmuted file contents for Round 1 only (capped to a safe 6,000 tokens to ensure rapid response)
         let round1HydratedCode = "";
         let round1HydratedTokens = 0;
-        const maxHydrationBudget = Math.max(1000, objectiveThreshold - 6000);
+        const maxHydrationBudget = Math.min(6000, Math.max(1000, objectiveThreshold - 4000));
 
-        const unmutedCandidates = fileCandidates.filter(c => !options.currentMuted.some(m => this.pathsMatch(m, c.path)));
-        for (const cand of unmutedCandidates) {
+        // Prioritize only top high-relevance candidates
+        const sortedUnmuted = fileCandidates
+            .filter(c => !options.currentMuted.some(m => this.pathsMatch(m, c.path)))
+            .sort((a, b) => b.relevanceScore - a.relevanceScore);
+
+        for (const cand of sortedUnmuted.slice(0, 4)) {
             if (round1HydratedTokens + cand.tokens <= maxHydrationBudget) {
                 const body = (cand as any).body || "";
                 if (body.trim().length > 0) {
@@ -1123,7 +1194,14 @@ The user/worker explicitly named these files.
             ? `### ❓ WORKER'S SCOUTING QUERY & HYPOTHESIS:\n"${safeLibrarianQuery}"\n\n### 🎯 USER'S ORIGINAL OBJECTIVE:\n"${safeUserPromptText}"\n\n`
             : `### 🎯 USER OBJECTIVE:\n"${safeUserPromptText}"\n\n`;
 
-        const initialUserPrompt = `${queryHeader}${historySection}${requestedSection}
+        const contentMatchesSection = (options.contentMatchReports && options.contentMatchReports.length > 0)
+            ? `### 🔍 WORKSPACE CONTENT MATCHES FOR SPECIFIC PROMPT TERMS:
+${options.contentMatchReports.slice(0, 10).join('\n')}
+
+> 🎯 **MANDATORY VERIFICATION**: The files above contain the EXACT identifiers mentioned in the prompt. Prioritize them for inspection and modification over generic files!\n\n`
+            : '';
+
+        const initialUserPrompt = `${queryHeader}${historySection}${contentMatchesSection}${requestedSection}
 ### 📊 REAL-TIME TOKEN AUDIT & BUDGET OBJECTIVE:
 - Total Candidates Pool (Muted + Unmuted): ~${safeLoc(totalCandidateTokens)} tokens (${fileCandidates.length} files)
 - Current Unmuted Files Load: ~${safeLoc(currentUnmutedTokens)} tokens
@@ -1141,8 +1219,9 @@ ${round1HydratedCode ? `### 📄 ROUND 1 HYDRATED UNMUTED CODE CONTENTS (~${safe
 > 1. **Immediate Finalization**: If this code is sufficient to address the task, declare your target files in \`<edit_files>\` and conclude immediately in Round 1!
 > 2. **Subsequent Rounds Invariant**: If you decide further scouting is needed, you MUST state what you learned from this code and record contracts into \`<structure>\` now, as you will not see raw unmuted code in subsequent rounds.\n\n${round1HydratedCode}` : ''}
 
-Analyze the requirements. If you lack information on contracts or implementations, execute discovery tools (<read_full_file>, <peek_files>, <grep>, <sparql>). When ready, output your <librarian_decision>.`;
+Analyze the requirements. Use your discovery tools (<read_definitions>, <show_symbol>, <grep>, <sparql>, <search_memory>, <peek_files>) to quickly understand the structure, locate exact symbols and invariants, and then output your <librarian_decision>.
 
+**EARLY CONVERGENCE (STOP WHEN CONFIDENT)**: You have up to ${maxRounds} rounds of exploration, but you are NOT required to use all of them. As soon as you possess sufficient information to confidently identify all target files and architecture contracts, stop exploring and conclude immediately with your <librarian_decision>!`;
         const executedToolSignatures = new Set<string>();
 
         const buildCumulativeLedgerBlock = () => {
@@ -1208,12 +1287,22 @@ Analyze the requirements. If you lack information on contracts or implementation
             let turnStreamBuffer = "";
             let cleanResponse = "";
             let lastUiStreamTime = 0;
+            let firstChunkReceived = false;
+
+            // Notify UI before starting LLM inference so user knows LLM is processing
+            if (options.optionsUpdateMessage && options.pruneMsgId) {
+                options.optionsUpdateMessage(options.pruneMsgId, formatAccumulatedRoundsMarkdown(currentRound, "")).catch(() => {});
+            }
 
             try {
                 const response = await lollmsAPI.sendChat(
                     conversation,
                     (chunk) => {
                         if (signal.aborted) return;
+                        if (!firstChunkReceived) {
+                            firstChunkReceived = true;
+                            if (onStatusUpdate) onStatusUpdate(`Librarian: Streaming architectural synthesis (Round ${currentRound}/${maxRounds})...`);
+                        }
                         turnStreamBuffer += chunk;
                         const now = Date.now();
                         if (onStreamChunk) {
@@ -1277,6 +1366,108 @@ Analyze the requirements. If you lack information on contracts or implementation
                 if (options.optionsUpdateMessage && options.pruneMsgId) {
                     options.optionsUpdateMessage(options.pruneMsgId, formatAccumulatedRoundsMarkdown()).catch(() => {});
                 }
+            }
+
+            // --- READ DEFINITIONS / GET AST TOOL EXECUTION ---
+            const readDefsMatch = cleanResponse.match(/<(?:read_definitions|get_ast|extract_definitions)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:read_definitions|get_ast|extract_definitions)>)/i);
+            if (readDefsMatch) {
+                const attrStr = readDefsMatch[1] || "";
+                const inner = (readDefsMatch[2] || "").trim();
+                const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
+                const reqPath = pathMatch ? pathMatch[1].trim() : (inner.split(/\s+/)[0] || "");
+
+                const toolSig = `defs:${reqPath.toLowerCase()}`;
+                if (executedToolSignatures.has(toolSig)) {
+                    conversation.push({ role: 'assistant', content: cleanResponse });
+                    conversation.push({
+                        role: 'user',
+                        content: `🛑 **DUPLICATE AST REQUEST**: You already extracted definitions for \`${reqPath}\`. Review your prior observations above and conclude with <librarian_decision>.`
+                    });
+                    continue;
+                }
+                executedToolSignatures.add(toolSig);
+
+                let defsOutput = "";
+                const res = await contextManager.resolveWorkspaceFromPath(reqPath);
+                if (res) {
+                    try {
+                        defsOutput = await (contextManager as any).extractDefinitions(res.uri);
+                    } catch (e: any) {
+                        defsOutput = `Error extracting definitions: ${e.message}`;
+                    }
+                } else {
+                    defsOutput = `Could not resolve path "${reqPath}" in workspace.`;
+                }
+
+                const step = { type: 'symbol', label: `AST Definitions: ${path.basename(reqPath)}`, detail: `${defsOutput.split('\n').length} definitions extracted` };
+                discoverySteps.push(step);
+                if (onDiscoveryAction) onDiscoveryAction(step);
+
+                completedRounds.push({
+                    round: currentRound,
+                    thoughts: currentThoughts,
+                    toolAction: `AST Definitions: ${reqPath}`,
+                    toolObservation: defsOutput.slice(0, 400) + (defsOutput.length > 400 ? '...' : '')
+                });
+
+                if (options.optionsUpdateMessage && options.pruneMsgId) {
+                    options.optionsUpdateMessage(options.pruneMsgId, formatAccumulatedRoundsMarkdown()).catch(() => {});
+                }
+
+                const remaining = maxRounds - currentRound;
+                conversation.push({ role: 'assistant', content: cleanResponse });
+                conversation.push({
+                    role: 'user',
+                    content: `### 🌲 AST & SYMBOL DEFINITIONS: \`${reqPath}\`\n\`\`\`\n${defsOutput}\n\`\`\`\n\n⏳ **BUDGET NOTICE**: You have **${remaining} round${remaining === 1 ? '' : 's'} remaining**. Determine target files and output <librarian_decision>.`
+                });
+                continue;
+            }
+
+            // --- SEARCH MEMORY / READ MEMORY TOOL EXECUTION ---
+            const searchMemMatch = cleanResponse.match(/<(?:search_memory|query_memory|read_memory)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:search_memory|query_memory|read_memory)>)/i);
+            if (searchMemMatch) {
+                const attrStr = searchMemMatch[1] || "";
+                const inner = (searchMemMatch[2] || "").trim();
+                const qMatch = attrStr.match(/query=["']([^"']+)["']/i);
+                const memQuery = qMatch ? qMatch[1].trim() : (inner || options.userPromptText || "");
+
+                const memManager = options.projectMemoryManager || (contextManager as any)?.agentManager?.projectMemoryManager;
+                let memOutput = "(No project memory manager available)";
+
+                if (memManager && typeof memManager.getFormattedMemoryBlock === 'function') {
+                    try {
+                        memOutput = await memManager.getFormattedMemoryBlock(memQuery, undefined, options.currentDiscussion?.id);
+                    } catch (e: any) {
+                        memOutput = `Error reading memory: ${e.message}`;
+                    }
+                }
+
+                if (!memOutput || memOutput.trim().length === 0) {
+                    memOutput = "No relevant memory engrams found for this query.";
+                }
+
+                const step = { type: 'memory', label: `Project Memory: "${memQuery.slice(0, 30)}"`, detail: `Engrams queried` };
+                discoverySteps.push(step);
+                if (onDiscoveryAction) onDiscoveryAction(step);
+
+                completedRounds.push({
+                    round: currentRound,
+                    thoughts: currentThoughts,
+                    toolAction: `Memory Query: "${memQuery}"`,
+                    toolObservation: memOutput.slice(0, 350) + (memOutput.length > 350 ? '...' : '')
+                });
+
+                if (options.optionsUpdateMessage && options.pruneMsgId) {
+                    options.optionsUpdateMessage(options.pruneMsgId, formatAccumulatedRoundsMarkdown()).catch(() => {});
+                }
+
+                const remaining = maxRounds - currentRound;
+                conversation.push({ role: 'assistant', content: cleanResponse });
+                conversation.push({
+                    role: 'user',
+                    content: `### 🧠 PROJECT MEMORY ENGRAMS:\n${memOutput}\n\n⏳ **BUDGET NOTICE**: You have **${remaining} round${remaining === 1 ? '' : 's'} remaining**. Now evaluate requirements and finalize with <librarian_decision>.`
+                });
+                continue;
             }
 
             // --- SHOW SYMBOL TOOL EXECUTION ---
@@ -1986,12 +2177,14 @@ Apply the required modifications for this phase.`;
         let score = 0;
         if (isCurrentPromptFile) score += 10000;
 
-        // Heavy boost for exact keyword matches in file path or content
+        // Differentiated scoring: rare domain terms outweigh generic path tokens by orders of magnitude
         for (const kw of keywords) {
+            const isGeneric = LibrarianPromptBuilder.isGenericWord(kw);
             if (cleanPath.includes(kw)) {
-                score += 5000;
-            } else if (body.toLowerCase().includes(kw)) {
-                score += 500;
+                score += isGeneric ? 200 : 8000;
+            }
+            if (body.toLowerCase().includes(kw)) {
+                score += isGeneric ? 100 : 15000;
             }
         }
 
@@ -2463,7 +2656,8 @@ Produce a concise, technical architectural directive for the Coder addressing "$
         governorReport?: string,
         overrideSelectedFilesContent?: string
     ): GovernorArbitrationResult {
-        const briefingText = briefingContent !== undefined ? briefingContent : "";
+        const isFastMode = capabilities?.fastMode === true;
+        const briefingText = isFastMode ? "" : (briefingContent !== undefined ? briefingContent : "");
         const finalTree = (contextData.projectTree && contextData.projectTree.trim()) 
             ? contextData.projectTree 
             : "```text\n./: [Workspace root]\n```";
@@ -2515,9 +2709,32 @@ ${filesContent ? `#### 📄 FILE CONTENTS\n${filesContent}` : "*(No files curren
             content: singleUserContent
         };
 
+        const sanitizedHistory = isFastMode
+            ? history.filter(m => {
+                if (m.skipInPrompt) return false;
+                const pName = (m.personalityName || '').toLowerCase();
+                const id = m.id || '';
+                if (pName.includes('librarian') || pName.includes('governor')) return false;
+                if (id.startsWith('librarian_') || id.startsWith('lib_') || id.startsWith('governor_')) return false;
+                return true;
+            }).map(m => {
+                let content = m.content;
+                if (typeof content === 'string') {
+                    content = stripLibrarianReferences(content);
+                } else if (Array.isArray(content)) {
+                    content = content.map((p: any) => p && p.type === 'text' && typeof p.text === 'string' ? { ...p, text: stripLibrarianReferences(p.text) } : p);
+                }
+                return { ...m, content };
+            }).filter(m => {
+                if (typeof m.content === 'string') return m.content.trim().length > 0;
+                if (Array.isArray(m.content)) return m.content.some((p: any) => p && (p.type !== 'text' || (p.text && p.text.trim().length > 0)));
+                return true;
+            })
+            : history.filter(m => !m.skipInPrompt);
+
         const rawMessages: ChatMessage[] = [
-            { role: 'system', content: baseInstructions },
-            ...history.filter(m => !m.skipInPrompt),
+            { role: 'system', content: isFastMode ? stripLibrarianReferences(baseInstructions) : baseInstructions },
+            ...sanitizedHistory,
             singleUserMessage
         ];
 

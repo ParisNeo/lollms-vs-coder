@@ -144,19 +144,32 @@ The previous findings in .lollms/structure.md are provided in your prompt.
   </structure>
 
 ### 🔍 DISCOVERY TOOLS AVAILABLE TO LIBRARIAN:
-1. **Full File Inspection**:
-   \`<read_full_file path="path/to/file.ext" />\`
-2. **File Slice Peeking**:
+1. **AST & Structural Definitions Inspection (Fast & Token-Efficient)**:
+   Extract all classes, methods, functions, signatures, and contracts from a file without loading raw implementation code:
+   \`<read_definitions path="path/to/file.ext" />\`
+   or \`<get_ast path="path/to/file.ext" />\`
+2. **Targeted Symbol Extraction**:
+   Inspect the exact implementation of a specific class, function, or method:
+   \`<show_symbol target="path/to/file.ext:SymbolName" />\`
+3. **File Slice Peeking**:
    \`<peek_files path="path/to/file.ext" lines="30" from="top" />\`
-3. **Grep Code Search**:
+4. **Full File Inspection**:
+   \`<read_full_file path="path/to/file.ext" />\`
+5. **Grep Code Search**:
    \`<grep query="pattern" path="optional/subfolder" />\`
+6. **Project Memory & Architectural Engrams Search**:
+   Search stored project conventions, past architectural decisions, and coding standards:
+   \`<search_memory query="concept or component name" />\`
+   or inspect all engrams: \`<read_memory />\`
 ${sparqlSection}
-4. **Add Workspace File to Pool**:
-   \`<add_files_to_context>\\npath/to/file.ext\\n</add_files_to_context>\`
+7. **Add Workspace File to Pool**:
+   \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>\`
 
-### 🛑 MANDATORY TARGET FILES FOR EDIT/FIX TASKS:
-- When the user asks to fix, patch, edit, or modify code, **<edit_files> MUST CONTAIN THE ACTUAL FILES TO MODIFY**!
-- If the files currently in context belong to the wrong subsystem (e.g. backend Python files when asked for frontend dark mode/CSS), use \`<grep query="..." />\` or \`<read_full_file path="..." />\` to locate the actual target files and put them in \`<edit_files>\`!
+### 🛑 MANDATORY TARGET FILES FOR EDIT/FIX TASKS (NO GUESSING):
+- When the user asks to fix, patch, edit, or modify code, **<edit_files> MUST CONTAIN THE ACTUAL GROUND-TRUTH FILES TO MODIFY**!
+- **NEVER GUESS GENERIC FILES**: Never assign generic system files (like \`system_management.py\`, \`admin.py\`, \`app.py\`) when a domain-specific module exists (like \`personalities_zoo.py\`, \`auth_service.py\`, etc.)!
+- **INSPECT WORKSPACE CONTENT MATCHES**: Check the \`### 🔍 WORKSPACE CONTENT MATCHES\` section in your prompt. If specific terms from the user's prompt (like 'handbag', 'personality', 'zoo', 'theme') were found in a file, that file is your primary target.
+- If you are uncertain of a function or endpoint's location, use \`<grep query="functionName" />\` or \`<read_full_file path="..." />\` to verify the function/endpoint actually exists in the file before declaring it in \`<edit_files>\`.
 
 ### ⚖️ HANDLING BLAME DIRECTIVES:
 When you receive a \`BLAME DIRECTIVE\` stating that the Coder attempted to modify files that were NOT in its active context [C]:
@@ -213,6 +226,22 @@ ${transcript}`;
     /**
      * Builds the prompt for synthesizing architectural findings when fallback is needed.
      */
+    public static isGenericWord(w: string): boolean {
+        const generic = new Set([
+            'the', 'and', 'for', 'with', 'this', 'that', 'from', 'your', 'will', 'have', 'been', 'should',
+            'what', 'when', 'where', 'which', 'who', 'how', 'why', 'can', 'could', 'would', 'into', 'onto',
+            'about', 'than', 'then', 'them', 'they', 'their', 'there', 'some', 'any', 'all', 'both', 'each',
+            'more', 'most', 'other', 'such', 'only', 'own', 'same', 'so', 'too', 'very', 'just', 'but',
+            'because', 'until', 'while', 'out', 'off', 'over', 'under', 'again', 'further', 'once', 'here',
+            'few', 'nor', 'not', 'now', 'did', 'didn', 'tried', 'trying', 'says', 'said', 'screen',
+            'panel', 'copy', 'folder', 'itryed', 'think', 'still', 'used', 'using', 'also', 'done',
+            'does', 'show', 'shows', 'well', 'file', 'files', 'code', 'please', 'help', 'need', 'want',
+            'like', 'main', 'fix', 'update', 'change', 'check', 'make', 'look', 'view', 'edit', 'backed',
+            'creation', 'legacy', 'system', 'new', 'via', 'get', 'set', 'let', 'var', 'const', 'true', 'false'
+        ]);
+        return generic.has(w.toLowerCase().trim());
+    }
+
     public static getFindingsSynthesisPrompt(
         prompt: string,
         targetFiles: string[],

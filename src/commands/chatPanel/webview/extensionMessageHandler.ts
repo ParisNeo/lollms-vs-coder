@@ -580,6 +580,17 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'collapseLibrarianMessages':
                 collapseAllLibrarianMessages();
                 break;
+            case 'syncStreamBuffer':
+                {
+                    const text = typeof message.buffer === 'string' ? message.buffer : JSON.stringify(message.buffer);
+                    if (state.streamingMessages[message.id]) {
+                        state.streamingMessages[message.id].buffer = text;
+                    } else {
+                        state.streamingMessages[message.id] = { buffer: text, timer: null };
+                    }
+                    renderMessageContent(message.id, text, false);
+                }
+                break;
             case 'updateMessage':
                 {
                     if (typeof message.newContent === 'string' && message.newContent.startsWith('LOG_UPDATE:')) {
@@ -593,7 +604,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 logContainer.appendChild(entry);
                             }
                         } catch (e) {}
-                        return; // Don't render log updates as chat messages
+                        return;
+                    }
+
+                    if (state.streamingMessages[message.messageId]) {
+                        state.streamingMessages[message.messageId].buffer = typeof message.newContent === 'string'
+                            ? message.newContent
+                            : (Array.isArray(message.newContent) ? message.newContent.map((p: any) => p.text || '').join('\n') : JSON.stringify(message.newContent));
                     }
 
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
@@ -1511,7 +1528,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     const govRoundsInput = document.getElementById('modal-governor-max-rounds') as HTMLInputElement;
                     if (govRoundsInput) {
-                        govRoundsInput.value = (caps.contextGovernorMaxRounds || 15).toString();
+                        govRoundsInput.value = (caps.contextGovernorMaxRounds || 10).toString();
                     }
 
                     const debateTurnsInput = document.getElementById('modal-librarian-debate-turns') as HTMLInputElement;

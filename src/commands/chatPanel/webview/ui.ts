@@ -1309,7 +1309,13 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
             stopBtn.style.setProperty('display', isGenerating ? 'inline-flex' : 'none', 'important');
             const btnLabel = stopBtn.querySelector('span');
             if (btnLabel) {
-                btnLabel.textContent = buttonLabel ? buttonLabel : (state.capabilities?.agentMode ? "Stop Agent" : "Stop Generation");
+                if (buttonLabel) {
+                    btnLabel.textContent = buttonLabel;
+                } else if (statusText && (statusText.toLowerCase().includes('batch') || statusText.toLowerCase().includes('applying batch'))) {
+                    btnLabel.textContent = "Stop Batch Application";
+                } else {
+                    btnLabel.textContent = state.capabilities?.agentMode ? "Stop Agent" : "Stop Generation";
+                }
             }
         }
 
@@ -2251,7 +2257,7 @@ export function updateBadges() {
             interTokenTimeout: 10000,
             contextGovernorThreshold: 95,
             contextGovernorTargetThreshold: 70,
-            contextGovernorMaxRounds: 20
+            contextGovernorMaxRounds: 10
         };
     }
 

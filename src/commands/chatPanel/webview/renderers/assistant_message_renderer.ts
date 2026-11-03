@@ -16,9 +16,21 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
                    msgDiv?.classList.contains('user-message') || 
                    wrapper.getAttribute('data-role') === 'user';
     const rawContentStr = typeof rawContent === 'string' ? rawContent : (Array.isArray(rawContent) ? rawContent.filter(p => p && p.type === 'text').map(p => p.text).join('\n') : '');
-    const isLibrarianReport = rawContentStr.startsWith('Librarian agent report:') || rawContentStr.startsWith('Librarian Master Directive:') || rawContentStr.includes('### 📚 **Lead Librarian') || safeMessageId.startsWith('lib_report_');
+    const isPastedOrCoder = safeMessageId.startsWith('assistant_') || 
+                            wrapper.dataset.pastedAsAi === 'true' ||
+                            (wrapper as any)._isPastedAsAi === true ||
+                            wrapper.dataset.personalityName?.includes('Coder') ||
+                            wrapper.dataset.personalityName?.includes('Default');
+
     const isContextShield = safeMessageId.startsWith('verification_notice_') || rawContentStr.startsWith('Librarian Verification Notice:') || wrapper.dataset.personalityName?.includes('Context Shield');
-    const isLibrarian = !isContextShield && (isLibrarianReport || safeMessageId.startsWith('governor_') || safeMessageId.startsWith('librarian_') || safeMessageId.startsWith('lib_') || wrapper.dataset.personalityName?.includes('Governor') || wrapper.dataset.personalityName?.includes('Librarian'));
+
+    // Pasted AI content and coder outputs are NEVER treated as Librarian
+    const isLibrarian = !isUser && !isContextShield && !isPastedOrCoder && (
+        safeMessageId.startsWith('governor_') || 
+        safeMessageId.startsWith('librarian_') || 
+        safeMessageId.startsWith('lib_') || 
+        (wrapper.dataset.personalityName?.includes('Librarian') && !wrapper.dataset.personalityName?.includes('Coder'))
+    );
     const isSystem = !isLibrarian && !isContextShield && (safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message'));
 
     // Update avatar icon and color theme for Librarian or Context Shield
@@ -83,7 +95,7 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
             roleSpan.style.color = 'var(--vscode-charts-blue)';
             roleSpan.style.fontWeight = 'bold';
         } else if (isLibrarian) {
-            roleSpan.textContent = '📚 Lead Librarian (Scout Report)';
+            roleSpan.textContent = '📚 Lead Librarian';
             roleSpan.style.color = 'var(--vscode-charts-orange)';
             roleSpan.style.fontWeight = 'bold';
         } else if (isUser) {
@@ -131,7 +143,7 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
                     pillHtml += `<span class="collapsed-badge files" style="background:rgba(0,122,204,0.18); color:var(--vscode-charts-blue); border:1px solid rgba(0,122,204,0.35); padding:1px 6px; border-radius:10px; font-size:10px;"><i class="codicon codicon-file-code"></i> ${fileCount} file${fileCount > 1 ? 's' : ''} ${isAllApplied ? '(Applied)' : '(Pending)'}</span>`;
                 }
                 if (isLibrarian) {
-                    pillHtml += `<span class="collapsed-badge lib" style="background:rgba(214,122,13,0.18); color:var(--vscode-charts-orange); border:1px solid rgba(214,122,13,0.35); padding:1px 6px; border-radius:10px; font-size:10px;"><i class="codicon codicon-library"></i> Librarian Report</span>`;
+                    pillHtml += `<span class="collapsed-badge lib" style="background:rgba(214,122,13,0.18); color:var(--vscode-charts-orange); border:1px solid rgba(214,122,13,0.35); padding:1px 6px; border-radius:10px; font-size:10px;"><i class="codicon codicon-library"></i> Librarian Directive (Findings &amp; Instructions)</span>`;
                 }
 
                 let textSnippet = "";
@@ -156,14 +168,13 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
                 const applyAllBtn = wrapper.querySelector('.apply-all-btn') as HTMLButtonElement;
                 if (applyAllBtn) {
                     const isUndo = applyAllBtn.classList.contains('undo-all-btn');
-                    const isMultiSteps = applyAllBtn.classList.contains('apply-all-steps-btn');
                     const quickApply = document.createElement('button');
                     quickApply.className = `code-action-btn ${isUndo ? 'secondary-btn' : 'apply-btn'} collapsed-quick-apply`;
                     quickApply.style.cssText = 'height: 20px; font-size: 9.5px; padding: 0 8px; font-weight: bold; margin-left: 4px;';
                     if (isUndo) {
-                        quickApply.innerHTML = isMultiSteps ? '<i class="codicon codicon-discard"></i> Undo All Steps' : '<i class="codicon codicon-discard"></i> Undo All';
+                        quickApply.innerHTML = '<i class="codicon codicon-discard"></i> Undo All';
                     } else {
-                        quickApply.innerHTML = isMultiSteps ? '<i class="codicon codicon-check-all"></i> Apply All Steps' : '<i class="codicon codicon-check-all"></i> Apply All';
+                        quickApply.innerHTML = '<i class="codicon codicon-check-all"></i> Apply All';
                     }
                     quickApply.onclick = (e) => {
                         e.stopPropagation();
@@ -272,6 +283,10 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
             if ((e.target as HTMLElement).closest('button')) return;
             updateCollapseState();
         };
+
+        if (isLibrarian) {
+            updateCollapseState(true, false);
+        }
 
         // Bind events
         actions.querySelector('.edit-msg-btn')?.addEventListener('click', () => {

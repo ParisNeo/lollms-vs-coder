@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.78",
+  "version": "1.0.80",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1544,8 +1544,8 @@
         },
         "lollmsVsCoder.contextGovernorMaxRounds": {
           "type": "number",
-          "default": 15,
-          "description": "Maximum internal tool rounds the Librarian may execute in sequence (grep, read_full_file, sparql) during each consultation turn (default is 15)."
+          "default": 10,
+          "description": "Maximum internal tool rounds the Librarian may execute in sequence (grep, read_full_file, sparql, read_definitions) during each consultation turn (default is 10)."
         },
         "lollmsVsCoder.fileRepairStudioMaxRounds": {
           "type": "number",

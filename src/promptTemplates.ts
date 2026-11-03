@@ -4,7 +4,7 @@ import { DiscussionCapabilities } from './utils';
 import { CoderPromptBuilder, WorkerPromptBuilder } from './system_prompts/workerPrompt';
 import { OrchestratorPromptBuilder } from './system_prompts/orchestratorPrompt';
 
-export { CoderPromptBuilder, WorkerPromptBuilder } from './system_prompts/workerPrompt';
+export { CoderPromptBuilder, WorkerPromptBuilder, stripLibrarianReferences } from './system_prompts/workerPrompt';
 export { LibrarianPromptBuilder } from './system_prompts/librarianPrompt';
 export { OrchestratorPromptBuilder } from './system_prompts/orchestratorPrompt';
 

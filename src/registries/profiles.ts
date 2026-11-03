@@ -36,14 +36,19 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
   * The Librarian executes all SPARQL, file reads, and grep searches in the background, unrolls edit files, and returns verified contracts.
   * On handover, emit <librarian_off> and deliver the architectural explanation and verified <file> tags in that same response.
 - **Mandatory File Tags**: Output <file path="..." action="write|patch|update_symbol"> for every file changed.
-- **Inline Self-Assessment**: Audit imports, syntax, and SOLID principles at the conclusion of your response.`,
+- **Inline Self-Assessment**: At the conclusion of your response after all code blocks, provide:
+  ### 📋 Summary of Changes
+  - **Problem Restatement**: concise statement of the problem being solved
+  - **Files Modified**: exact list of target files
+  - **What Was Done**: key accomplishments and logic implemented
+  - **Verification & Edge Cases**: audit of imports, syntax, and SOLID principles.`,
         "prefix": ""
     },
     {
         "id": "minimalist",
         "name": "Silent (Code Only)",
         "description": "Output only code blocks followed by a brief summary.",
-        "systemPrompt": "### RESPONSE STYLE: SILENT (CODE ONLY WITH BRIEF SUMMARY)\n- **Content**: Output ONLY the requested code block or <file> mutation tags.\n- **Summary**: Immediately following the code, provide a brief bulleted list stating what was implemented.",
+        "systemPrompt": "### RESPONSE STYLE: SILENT (CODE ONLY WITH BRIEF SUMMARY)\n- **Content**: Output ONLY the requested code block or <file> mutation tags.\n- **Summary**: Immediately following the code, provide:\n### 📋 Summary of Changes\n- **Problem Restatement**: concise statement of the problem\n- **Files Modified**: exact list of target files\n- **What Was Done**: brief summary of what was implemented",
         "prefix": ""
     },
     {
@@ -57,7 +62,7 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
         "id": "chain_of_thought",
         "name": "Chain of Thought",
         "description": "Explicit step-by-step reasoning followed by implementation and summary.",
-        "systemPrompt": "### RESPONSE STYLE: CHAIN OF THOUGHT\n- **Explicit Step-by-Step Logic**: Trace requirements, assumptions, and edge cases.\n- **Implementation**: Production-ready code updates using proper <file> tags.\n- **Summary of Changes**: Itemized summary stating what was done and what changed.",
+        "systemPrompt": "### RESPONSE STYLE: CHAIN OF THOUGHT\n- **Explicit Step-by-Step Logic**: Trace requirements, assumptions, and edge cases.\n- **Implementation**: Production-ready code updates using proper <file> tags.\n- **Summary of Changes**:\n### 📋 Summary of Changes\n- **Problem Restatement**: concise statement of the problem being solved\n- **Files Modified**: exact list of target files\n- **What Was Done**: itemized summary stating what was done and what changed.",
         "prefix": ""
     },
     {

@@ -23,6 +23,20 @@ export interface CoderPromptOptions {
 
 export type WorkerPromptOptions = CoderPromptOptions;
 
+export function stripLibrarianReferences(text: string): string {
+    if (!text || typeof text !== 'string') return '';
+    return text
+        .split('\n')
+        .filter(line => !/\b(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)\b/i.test(line))
+        .join('\n')
+        .replace(/<details\b[^>]*class=["'][^"']*librarian[^"']*["'][\s\S]*?<\/details>/gi, '')
+        .replace(/<(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)\b[^>]*>[\s\S]*?<\/(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)>/gi, '')
+        .replace(/<librarian_off\b[^>]*>[\s\S]*?<\/librarian_off>/gi, '')
+        .replace(/<librarian_decision\b[^>]*>[\s\S]*?<\/librarian_decision>/gi, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
 export class CoderPromptBuilder {
 
     public static buildFileMutationProtocol(capabilities?: DiscussionCapabilities): string {
@@ -101,8 +115,13 @@ ${activeProfile.systemPrompt ? `\n${activeProfile.systemPrompt}\n` : ''}
      <unmute_files>
      path/to/muted/file.ext
      </unmute_files>
-4. **IMMEDIATE CODE DELIVERY**:
+4. **IMMEDIATE CODE DELIVERY & CONCLUDING SUMMARY**:
    - Output your solution and \`<file>\` tags immediately. Zero conversational stalling. Zero placeholders.
+   - At the end of coding after emitting all \`<file>\` tags, conclude with:
+     ### 📋 Summary of Changes
+     - **Problem Restatement**: concise statement of the core problem being solved
+     - **Files Modified**: exact list of target files
+     - **What Was Done**: key accomplishments and logic implemented
 
 ${mutationProtocol}
 ${context?.skills ? `\n### 📖 ACTIVE SKILLS\n${context.skills}\n` : ''}
@@ -123,7 +142,16 @@ You are an expert AI software engineer operating on an exported project snapshot
    - The ONLY exception is creating a **brand-new file** that does not exist on disk using \`<file path="..." action="write">\`.
 2. **REQUESTING MISSING FILES**:
    - To unmute a muted file [M]: \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\`
-   - To request a hidden file: \`<add_files_to_context>\\npath/to/file.ext\\n</add_files_to_context>\`
+   - To request a hidden file: \`<add_files_to_context>\\npath/to/file.ext\\n</add_files_to_context>
+
+\`
+3. **CONCLUDING SUMMARY**:
+   - At the end of coding after emitting all code blocks, conclude with:
+     ### 📋 Summary of Changes
+     - **Problem Restatement**: concise statement of the core problem being solved
+     - **Files Modified**: exact list of target files
+     - **What Was Done**: key accomplishments and logic implemented
+     - **Verification & Edge Cases**: self-assessment of error handling and test compatibility
 
 ${mutationProtocol}
 `;
@@ -157,19 +185,20 @@ ${activeProfile.systemPrompt ? `\n${activeProfile.systemPrompt}\n` : ''}
 3. **SELF-ASSESSMENT & WHAT WAS DONE (AT THE END)**:
    - After emitting all <file> code tags, conclude with a clear, concise self-assessment and summary of what was done:
      ### 📋 Summary of Changes
+     - **Problem Restatement**: concise 1-sentence statement of the core issue being addressed
      - **Files Modified**: exact list of target files
      - **What Was Done**: key accomplishments and logic implemented
      - **Verification & Edge Cases**: self-assessment of error handling and test compatibility
-3. **CODE DIRECTLY FROM THE LIBRARIAN'S FULL PLAN**:
+4. **CODE DIRECTLY FROM THE LIBRARIAN'S FULL PLAN**:
    - The Lead Librarian has already completed the architectural diagnosis and selected the unmuted target files in [C].
    - Your sole responsibility is to write the code that implements the plan.
-4. **RESTRICTION ON CALLING THE LIBRARIAN**:
+5. **RESTRICTION ON CALLING THE LIBRARIAN**:
    - Do NOT call the Librarian unless you discover an undeniable missing file or contradictory contract that makes writing code impossible.
    - Do NOT debate or restate findings. Implement the code.
-5. **SUBTASK DISCIPLINE IN MULTI-STEP TASKS**:
+6. **SUBTASK DISCIPLINE IN MULTI-STEP TASKS**:
    - If a multi-step task is active, focus strictly on the current step's files loaded in [C].
    - Deliver the \`<file>\` blocks immediately.
-6. **FORBIDDEN TO WRITE TO FILES YOU DO NOT SEE**:
+7. **FORBIDDEN TO WRITE TO FILES YOU DO NOT SEE**:
    - You may ONLY modify files loaded under 'LOADED FILE CONTENTS' [C] (or create brand-new files with \`action="write"\`).
 
 ${mutationProtocol}

@@ -39,6 +39,7 @@ import { planStatusPlugin } from './plugins/planStatusPlugin.js';
 import { toolPlugin } from './plugins/toolPlugin.js';
 import { sparqlPlugin } from './plugins/sparqlPlugin.js';
 import { missionBriefingPlugin } from './plugins/missionBriefingPlugin.js';
+import { thinkPlugin } from './plugins/thinkPlugin.js';
 import { librarianPlugin, librarianOffPlugin, multiStepsTaskPlugin } from './plugins/librarianPlugin.js';
 import { loadKnowledgePlugin, updateKnowledgePlugin } from './plugins/knowledgePlugin.js';
 import { insightPlugin } from './plugins/insightPlugin.js';
@@ -49,6 +50,7 @@ export function ensurePluginsInitialized() {
     if (pluginsInitialized && pluginRegistry.length > 0) return;
     pluginRegistry.length = 0;
     const allPlugins = [
+        thinkPlugin,
         loadKnowledgePlugin,
         updateKnowledgePlugin,
         contextExpansionPlugin,
@@ -988,19 +990,26 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
 (window as any).startEdit = startEdit;
 
 function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean, start: number, end: number, fenceLength?: number })[] {
-    const cleanContent = (window as any).processThinkTags ? (window as any).processThinkTags(content).processedContent : content;
-    const fileBlocks = extractFileBlocks(cleanContent);
+    const fileBlocks = extractFileBlocks(content);
     const fileRanges = fileBlocks.map(b => ({ start: b.start, end: b.end }));
 
-    const isInsideFileBlock = (offset: number) => {
-        return fileRanges.some(r => offset >= r.start && offset < r.end);
+    const thinkRanges: { start: number, end: number }[] = [];
+    const thinkRegex = /<(?:think|thinking|thought|analysis|reasoning)\b[^>]*>[\s\S]*?(?:<\/(?:think|thinking|thought|analysis|reasoning)>|$)/gi;
+    let tm: RegExpExecArray | null;
+    while ((tm = thinkRegex.exec(content)) !== null) {
+        thinkRanges.push({ start: tm.index, end: tm.index + tm[0].length });
+    }
+
+    const isProtectedOffset = (offset: number) => {
+        return fileRanges.some(r => offset >= r.start && offset < r.end) ||
+               thinkRanges.some(r => offset >= r.start && offset < r.end);
     };
 
     const isSearchMarker = (l: string) => /^<{7}\s*search\b/i.test(l.trim());
     const isReplaceMarker = (l: string) => /^>{7}\s*replace\b/i.test(l.trim());
 
     const infos: any[] = [];
-    const lines = cleanContent.split('\n');
+    const lines = content.split('\n');
     let inBlock = false;
     let fenceLength = 0;
     let depth = 0;
@@ -1013,7 +1022,7 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
         const line = lineText.trim();
         const match = lineText.match(/^(\s*)(`{3,})/);
 
-        if (isInsideFileBlock(currentOffset)) {
+        if (isProtectedOffset(currentOffset)) {
             currentOffset += lineWithNewline.length;
             continue;
         }
@@ -1675,7 +1684,10 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             parent.replaceChild(details, pre);
             details.appendChild(pre);
 
-            Prism.highlightElement(code);
+            if (!code.hasAttribute('data-prism-highlighted')) {
+                Prism.highlightElement(code);
+                code.setAttribute('data-prism-highlighted', 'true');
+            }
         }
 
         // Restore details toggled state
@@ -2366,135 +2378,30 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         } catch {}
     }
 
-    // 1. EXTRACT AND PACKAGE COHERENT REASONING BLOCKS (THOUGHTS)
-    const thinkResult = processThinkTags(sourceText);
-    let mainProcessedContent = normalizePseudoFileBlocks(thinkResult.processedContent);
-
-    // 🛡️ SANITIZE RESILIENCE: Automatically separate glued text/headers from closing tags
-    // e.g. '</add_files_to_context>### 1. Header' -> '</add_files_to_context>\n\n### 1. Header'
+    // 1. RETAIN IN-PLACE SEQUENTIAL CONTENT (Thoughts are parsed in-place as chronological segments)
+    let mainProcessedContent = normalizePseudoFileBlocks(sourceText);
     mainProcessedContent = mainProcessedContent.replace(
         /(<\/(?:add_files_to_context|remove_files_from_context|unpack_directory|peek_files|file|project_memory|skill)>)([^\r\n\s<])/gi,
         '$1\n\n$2'
     );
 
-    // Partition zones in contentDiv to ensure DOM elements (like the animated spinner) are preserved in-place
+    // Partition zones in contentDiv to ensure DOM elements are preserved in-place
     let thoughtsZone = contentDiv.querySelector(':scope > .message-thoughts-zone') as HTMLElement;
     let imagesZone = contentDiv.querySelector(':scope > .message-images-zone') as HTMLElement;
     let bodyZone = contentDiv.querySelector(':scope > .message-body-zone') as HTMLElement;
 
-    if (!thoughtsZone || !imagesZone || !bodyZone) {
+    if (!imagesZone || !bodyZone) {
         contentDiv.innerHTML = `
-            <div class="message-thoughts-zone"></div>
             <div class="message-images-zone"></div>
             <div class="message-body-zone"></div>
         `;
-        thoughtsZone = contentDiv.querySelector('.message-thoughts-zone') as HTMLElement;
         imagesZone = contentDiv.querySelector('.message-images-zone') as HTMLElement;
         bodyZone = contentDiv.querySelector('.message-body-zone') as HTMLElement;
     }
 
-    if (thinkResult.thoughts.length === 0) {
+    if (thoughtsZone) {
         thoughtsZone.innerHTML = "";
-    } else {
-        // Prune any excess thought elements if count changed
-        const existingCards = thoughtsZone.querySelectorAll('.plan-scratchpad');
-        if (existingCards.length > thinkResult.thoughts.length) {
-            for (let i = thinkResult.thoughts.length; i < existingCards.length; i++) {
-                existingCards[i].remove();
-            }
-        }
-
-        thinkResult.thoughts.forEach((t, idx) => {
-            const isClosed = t.closed || isFinal;
-            let scratchpad = thoughtsZone.querySelector(`.plan-scratchpad[data-idx="${idx}"]`) as HTMLElement;
-
-            // Calculate thinking duration
-            const tStart = wrapper.getAttribute('data-think-start-time');
-            const tEnd = wrapper.getAttribute('data-think-end-time');
-            let durationText = "";
-            let isLive = false;
-
-            if (tStart && tEnd) {
-                const elapsed = ((parseInt(tEnd, 10) - parseInt(tStart, 10)) / 1000).toFixed(1);
-                durationText = `thought for ${elapsed}s`;
-            } else if (tStart && !isClosed) {
-                isLive = true;
-                const elapsedLive = ((Date.now() - parseInt(tStart, 10)) / 1000).toFixed(1);
-                durationText = `thinking... (${elapsedLive}s)`;
-            } else if (!isClosed) {
-                durationText = `thinking...`;
-            }
-
-            const parsedMarkdown = DOMPurify.sanitize(marked.parse(t.content || "*AI is contemplating...*"));
-
-            if (!scratchpad) {
-                // First initialization of this thought block
-                scratchpad = document.createElement('div');
-                scratchpad.className = 'plan-scratchpad';
-                scratchpad.dataset.idx = String(idx);
-                scratchpad.dataset.closed = isClosed ? 'true' : 'false';
-                scratchpad.style.cssText = 'margin-top:0; margin-bottom: 12px; border-left: 3px solid var(--thinking-color); box-sizing: border-box;';
-
-                const iconHtml = isClosed 
-                    ? '<span class="codicon codicon-circuit-board thought-status-icon"></span>' 
-                    : '<span class="spinner thought-status-icon" style="width:10px; height:10px; border-width:2px; margin-right:6px; color: var(--thinking-color); display: inline-block;"></span>';
-
-                const durationHtml = `<span class="think-duration ${isLive ? 'live-thinking' : ''}" style="font-size: 10px; ${isLive ? 'color: var(--thinking-color); font-weight: bold; animation: lollms-pulse 1.5s infinite;' : 'opacity: 0.6; font-weight: normal;'} margin-left: auto; padding-right: 12px;">${durationText}</span>`;
-
-                // 💭 Reasoning blocks start COLLAPSED by default so they don't overwhelm the chat.
-                // The user can expand by clicking the summary header. Live streaming status is
-                // still shown via the "thinking..." label + spinner in the header, so no info is lost.
-                scratchpad.innerHTML = `
-                    <details style="border: none; background: transparent; margin: 0; box-shadow: none;">
-                        <summary class="scratchpad-header" style="color: var(--thinking-color); display: flex; align-items: center; justify-content: space-between; width: 100%; box-sizing: border-box; padding: 6px 12px; list-style: none; cursor: pointer;">
-                            <div style="display: flex; align-items: center; gap: 6px;">
-                                ${iconHtml}
-                                <span style="font-weight: bold;" class="thought-title-label">🧠 Thought &amp; Reasoning${!isClosed ? ' (Live)...' : ''}</span>
-                            </div>
-                            ${durationHtml}
-                        </summary>
-                        <div class="scratchpad-content markdown-body" style="padding: 10px 15px; font-size:11.5px; opacity:0.95; line-height: 1.5; background:rgba(0,0,0,0.08); border-radius:0 0 6px 6px;">
-                            ${parsedMarkdown}
-                        </div>
-                    </details>
-                `;
-                thoughtsZone.appendChild(scratchpad);
-            } else {
-                // DOM node ALREADY exists: perform in-place updates so the spinner DOM element is never destroyed/reset
-                const wasClosed = scratchpad.dataset.closed === 'true';
-
-                if (!wasClosed && isClosed) {
-                    scratchpad.dataset.closed = 'true';
-                    const iconEl = scratchpad.querySelector('.thought-status-icon');
-                    if (iconEl) {
-                        iconEl.outerHTML = '<span class="codicon codicon-circuit-board thought-status-icon"></span>';
-                    }
-                    const titleLabel = scratchpad.querySelector('.thought-title-label');
-                    if (titleLabel) {
-                        titleLabel.textContent = 'Thought (Reasoning)';
-                    }
-                }
-
-                // Update duration text in-place
-                const durationEl = scratchpad.querySelector('.think-duration');
-                if (durationEl) {
-                    durationEl.textContent = durationText;
-                    if (isClosed) {
-                        durationEl.className = 'think-duration';
-                        (durationEl as HTMLElement).style.color = '';
-                        (durationEl as HTMLElement).style.fontWeight = 'normal';
-                        (durationEl as HTMLElement).style.opacity = '0.6';
-                        (durationEl as HTMLElement).style.animation = 'none';
-                    }
-                }
-
-                // Update text content in-place without resetting scroll or summary
-                const contentEl = scratchpad.querySelector('.scratchpad-content');
-                if (contentEl) {
-                    contentEl.innerHTML = parsedMarkdown;
-                }
-            }
-        });
+        thoughtsZone.style.display = "none";
     }
 
     // 2. EXTRACT VALID LINE-START XML TAG PLUGINS (FIRST-CLASS MUTATIONS & WIDGETS)
@@ -2822,91 +2729,33 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
         const filePillsHtml = Array.from(touchedFilesMap.values()).map(renderPill).join('');
 
-        // ── 🐾 MULTI-STEP RESPONSE DETECTION & DEDICATED "APPLY ALL STEPS" BLOCK ──
-        if (detectedMultiSteps.isMultiSteps) {
-            const stepsCount = detectedMultiSteps.steps.length;
-            const stepsHtml = detectedMultiSteps.steps.map(step => {
-                const stepFiles = step.files.map(filePath => {
-                    const existing = touchedFilesMap.get(filePath);
-                    return existing || { path: filePath, action: 'patch' };
-                });
-                const stepPills = stepFiles.map(renderPill).join('');
-                const encodedFiles = encodeURIComponent(JSON.stringify(step.files));
-
-                return `
-                <div class="multistep-card-item" data-step="${step.number}" style="padding: 10px 12px; margin-bottom: 8px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-left: 3.5px solid var(--vscode-charts-purple, #9b59b6); border-radius: 6px; display: flex; flex-direction: column; gap: 6px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
-                        <div style="display:flex; align-items:center; gap:8px;">
-                            <span class="step-badge" style="background:var(--vscode-charts-purple, #9b59b6); color:white; font-size:10px; font-weight:800; padding:2px 8px; border-radius:4px; letter-spacing:0.5px;">Step ${step.number}</span>
-                            <span style="font-weight:700; font-size:12px; color:var(--vscode-foreground);">${escapeHtml(step.title)}</span>
-                        </div>
-                        <div style="display:flex; align-items:center; gap:6px;">
-                            <span style="font-size:10.5px; opacity:0.8;">${step.files.length} file${step.files.length === 1 ? '' : 's'}</span>
-                            <button type="button" class="code-action-btn secondary-btn apply-single-step-btn" data-message-id="${messageId}" data-step="${step.number}" data-files="${encodedFiles}" style="height:24px; font-size:10px; padding:0 10px; font-weight:bold;" title="Apply only patches belonging to Step ${step.number}">
-                                <i class="codicon codicon-play"></i> Apply Step ${step.number}
-                            </button>
-                        </div>
-                    </div>
-                    <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:2px;">
-                        ${stepPills || '<span style="font-size:10px; opacity:0.6;">(No specific file identified)</span>'}
-                    </div>
-                </div>`;
-            }).join('');
-
-            finalHtml += `
-            <div class="generation-summary-card multisteps-summary-card" id="summary-card-${messageId}" data-multisteps="true" style="margin-top: 18px; padding: 14px 16px; background: rgba(155, 89, 182, 0.08); border: 1.5px solid var(--vscode-charts-purple, #9b59b6); border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.2);">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                    <div style="font-weight:800; font-size:12.5px; color:var(--vscode-charts-purple, #9b59b6); display:flex; align-items:center; gap:8px;">
-                        <i class="codicon codicon-layers" style="font-size:16px;"></i>
-                        <span>Multi-Step Updates: Apply All Steps (${stepsCount} Steps &middot; ${fileCountText})</span>
-                    </div>
-                    <span class="mode-badge active" style="font-size:9.5px; padding:2px 8px; background:var(--vscode-charts-purple, #9b59b6); color:white;">Multi-Step Execution</span>
+        // Standard Unified Summary Card with Apply All Changes
+        const applyText = totalActionableCount === 1 ? 'Apply Changes' : 'Apply All Changes';
+        finalHtml += `
+        <div class="generation-summary-card" id="summary-card-${messageId}" style="margin-top: 18px; padding: 12px 14px; background: rgba(0, 122, 204, 0.08); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <div style="font-weight:800; font-size:12px; color:var(--vscode-textLink-foreground); display:flex; align-items:center; gap:6px;">
+                    <i class="codicon codicon-checklist" style="color:var(--vscode-charts-green); font-size:14px;"></i>
+                    <span>Summary of What Was Done (${fileCountText})</span>
                 </div>
-                <div class="multisteps-timeline" style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;">
-                    ${stepsHtml}
+                <span class="mode-badge active" style="font-size:9.5px; padding:2px 8px; background:var(--vscode-charts-green); color:white;">Implementation Ready</span>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;">
+                ${filePillsHtml}
+            </div>
+            <div class="apply-all-wrapper" style="margin-top: 10px; padding: 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <button class="apply-all-btn" id="apply-all-${messageId}" style="flex:1; min-width:200px;">
+                    <span class="codicon codicon-check-all"></span> ${applyText} (${fileCountText})
+                </button>
+                <button class="code-action-btn secondary-btn collapse-msg-bottom-btn" data-message-id="${messageId}" style="height:34px; padding:0 14px; font-size:11px; font-weight:600; display:inline-flex; align-items:center; gap:6px;" title="Collapse this message into a single-line summary bar (Scrolls to collapsed header)">
+                    <i class="codicon codicon-chevron-up"></i> Collapse Message
+                </button>
+                <div class="apply-progress-container" id="progress-container-${messageId}" style="width:100%; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden;">
+                    <div class="apply-progress-bar" id="progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-blue); transition: width 0.3s ease;"></div>
                 </div>
-                <div class="apply-all-wrapper" style="margin-top: 10px; padding: 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                    <button class="apply-all-btn apply-all-steps-btn" id="apply-all-${messageId}" style="flex:1; min-width:220px; background:var(--vscode-charts-purple, #9b59b6) !important; color:white !important; font-weight:bold; height:34px;">
-                        <span class="codicon codicon-check-all"></span> Apply All Steps (${stepsCount} Steps &middot; ${fileCountText})
-                    </button>
-                    <button class="code-action-btn secondary-btn collapse-msg-bottom-btn" data-message-id="${messageId}" style="height:34px; padding:0 14px; font-size:11px; font-weight:600; display:inline-flex; align-items:center; gap:6px;" title="Collapse this message into a single-line summary bar (Scrolls to collapsed header)">
-                        <i class="codicon codicon-chevron-up"></i> Collapse Message
-                    </button>
-                    <div class="apply-progress-container" id="progress-container-${messageId}" style="width:100%; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden;">
-                        <div class="apply-progress-bar" id="progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-purple, #9b59b6); transition: width 0.3s ease;"></div>
-                    </div>
-                    <div class="apply-results-list" id="results-${messageId}" style="width:100%; margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
-                </div>
-            </div>`;
-        } else {
-            // Standard Single-Run Summary Card
-            const applyText = totalActionableCount === 1 ? 'Apply Changes' : 'Apply All Changes';
-            finalHtml += `
-            <div class="generation-summary-card" id="summary-card-${messageId}" style="margin-top: 18px; padding: 12px 14px; background: rgba(0, 122, 204, 0.08); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                    <div style="font-weight:800; font-size:12px; color:var(--vscode-textLink-foreground); display:flex; align-items:center; gap:6px;">
-                        <i class="codicon codicon-checklist" style="color:var(--vscode-charts-green); font-size:14px;"></i>
-                        <span>Summary of What Was Done (${fileCountText})</span>
-                    </div>
-                    <span class="mode-badge active" style="font-size:9.5px; padding:2px 8px; background:var(--vscode-charts-green); color:white;">Implementation Ready</span>
-                </div>
-                <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;">
-                    ${filePillsHtml}
-                </div>
-                <div class="apply-all-wrapper" style="margin-top: 10px; padding: 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                    <button class="apply-all-btn" id="apply-all-${messageId}" style="flex:1; min-width:200px;">
-                        <span class="codicon codicon-check-all"></span> ${applyText} (${fileCountText})
-                    </button>
-                    <button class="code-action-btn secondary-btn collapse-msg-bottom-btn" data-message-id="${messageId}" style="height:34px; padding:0 14px; font-size:11px; font-weight:600; display:inline-flex; align-items:center; gap:6px;" title="Collapse this message into a single-line summary bar (Scrolls to collapsed header)">
-                        <i class="codicon codicon-chevron-up"></i> Collapse Message
-                    </button>
-                    <div class="apply-progress-container" id="progress-container-${messageId}" style="width:100%; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden;">
-                        <div class="apply-progress-bar" id="progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-blue); transition: width 0.3s ease;"></div>
-                    </div>
-                    <div class="apply-results-list" id="results-${messageId}" style="width:100%; margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
-                </div>
-            </div>`;
-        }
+                <div class="apply-results-list" id="results-${messageId}" style="width:100%; margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
+            </div>
+        </div>`;
     } else if (isFinal && totalActionableCount === 0) {
         // Subtle collapse from bottom button for long text responses / librarian reports
         finalHtml += `
@@ -2925,73 +2774,102 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     if (bodyZone) {
         const sanitized = DOMPurify.sanitize(finalHtml, SANITIZE_CONFIG);
 
+        // Skip DOM work entirely if rendered content is unchanged
+        if (bodyZone.getAttribute('data-last-rendered-html') === sanitized) {
+            return;
+        }
+
+        // Preserve toggle open/closed states of any active details elements across re-renders
+        const preservedOpenStates = new Map<string, boolean>();
+        bodyZone.querySelectorAll('details[id], .plan-scratchpad[id] details, .librarian-compressed-directive').forEach((d: any) => {
+            const id = d.id || d.closest('[id]')?.id;
+            if (id) preservedOpenStates.set(id, d.open);
+        });
+
         if (!isFinal && bodyZone.children.length > 0) {
-            const tempContainer = document.createElement('div');
-            tempContainer.innerHTML = sanitized;
+            // High-Performance Flicker-Free Reconciler
+            const temp = document.createElement('div');
+            temp.innerHTML = sanitized;
 
-            const newNodes = Array.from(tempContainer.childNodes);
-            let canReconcileInPlace = true;
+            // Map existing enhanced code blocks and interactive cards so they are NEVER destroyed during streaming
+            const existingEnhanced = new Map<string, HTMLElement>();
+            bodyZone.querySelectorAll('.code-collapsible[id], .file-mutation-card[id], .plan-scratchpad[id], .librarian-compressed-directive').forEach((el: any) => {
+                const key = el.id || el.getAttribute('data-block-id');
+                if (key) existingEnhanced.set(key, el);
+            });
 
-            // Stream Stabilization: Reconcile matching cards in-place WITHOUT detaching them from the document.
-            // This ensures CSS rotation animations are never interrupted or reset to 0deg.
-            if (newNodes.length === bodyZone.childNodes.length) {
-                for (let i = 0; i < newNodes.length; i++) {
-                    const oldNode = bodyZone.childNodes[i] as HTMLElement;
-                    const newNode = newNodes[i] as HTMLElement;
-
-                    if (oldNode.nodeType === Node.ELEMENT_NODE && newNode.nodeType === Node.ELEMENT_NODE) {
-                        if (oldNode.id && newNode.id && oldNode.id === newNode.id) {
-                            if (oldNode.classList.contains('file-mutation-card')) {
-                                oldNode.dataset.rawCode = newNode.dataset.rawCode;
-
-                                // Update card body (lines/code) only; leave the summary and running spinners intact
-                                while (oldNode.children.length > 1) {
-                                    oldNode.removeChild(oldNode.lastChild!);
-                                }
-                                const newChildren = Array.from(newNode.children).slice(1);
-                                newChildren.forEach(child => oldNode.appendChild(child));
-                                continue;
-                            }
-                        } else if (oldNode.classList.contains('markdown-body') && newNode.classList.contains('markdown-body')) {
-                            oldNode.innerHTML = newNode.innerHTML;
-                            continue;
-                        }
+            // Substitute placeholders in temp with existing enhanced blocks to prevent flash-to-pre
+            temp.querySelectorAll('.lollms-placeholder').forEach((pre: any) => {
+                const bIdx = pre.getAttribute('data-block-index');
+                const targetId = `block-${messageId}-${bIdx}`;
+                const existing = existingEnhanced.get(targetId);
+                if (existing) {
+                    const existingCode = existing.getAttribute('data-raw-code') || existing.dataset.rawCode || '';
+                    const newCode = pre.querySelector('code')?.textContent || '';
+                    if (existingCode === newCode) {
+                        pre.replaceWith(existing);
                     }
-                    canReconcileInPlace = false;
-                    break;
                 }
-            } else {
-                canReconcileInPlace = false;
+            });
+
+            // Reconcile child nodes in-place
+            const newNodes = Array.from(temp.childNodes);
+            const oldNodes = Array.from(bodyZone.childNodes);
+
+            let idx = 0;
+            while (idx < newNodes.length && idx < oldNodes.length) {
+                const nNode = newNodes[idx];
+                const oNode = oldNodes[idx];
+
+                if (nNode === oNode) {
+                    idx++;
+                    continue;
+                }
+
+                if (nNode.nodeType === Node.ELEMENT_NODE && oNode.nodeType === Node.ELEMENT_NODE) {
+                    const nEl = nNode as HTMLElement;
+                    const oEl = oNode as HTMLElement;
+
+                    if (nEl.id && oEl.id && nEl.id === oEl.id) {
+                        if (nEl.innerHTML !== oEl.innerHTML) {
+                            oEl.innerHTML = nEl.innerHTML;
+                        }
+                        idx++;
+                        continue;
+                    }
+
+                    if (nEl.classList.contains('markdown-body') && oEl.classList.contains('markdown-body')) {
+                        if (nEl.innerHTML !== oEl.innerHTML) {
+                            oEl.innerHTML = nEl.innerHTML;
+                        }
+                        idx++;
+                        continue;
+                    }
+                }
+
+                bodyZone.replaceChild(nNode, oNode);
+                idx++;
             }
 
-            if (!canReconcileInPlace) {
-                const existingCardsMap = new Map<string, HTMLDetailsElement>();
-                bodyZone.querySelectorAll('.file-mutation-card[id]').forEach((c: any) => {
-                    existingCardsMap.set(c.id, c);
-                });
+            while (idx < newNodes.length) {
+                bodyZone.appendChild(newNodes[idx]);
+                idx++;
+            }
 
-                const fragment = document.createDocumentFragment();
-                newNodes.forEach((node: any) => {
-                    if (node.nodeType === Node.ELEMENT_NODE && node.id && existingCardsMap.has(node.id)) {
-                        const existingCard = existingCardsMap.get(node.id)!;
-                        existingCard.dataset.rawCode = node.dataset.rawCode;
-
-                        while (existingCard.children.length > 1) {
-                            existingCard.removeChild(existingCard.lastChild!);
-                        }
-                        const newChildren = Array.from(node.children).slice(1);
-                        newChildren.forEach((child: any) => existingCard.appendChild(child));
-                        fragment.appendChild(existingCard);
-                    } else {
-                        fragment.appendChild(node);
-                    }
-                });
-
-                bodyZone.replaceChildren(fragment);
+            while (bodyZone.childNodes.length > newNodes.length) {
+                bodyZone.removeChild(bodyZone.lastChild!);
             }
         } else {
             bodyZone.innerHTML = sanitized;
         }
+
+        bodyZone.setAttribute('data-last-rendered-html', sanitized);
+
+        // Restore preserved open states for user-toggled details
+        preservedOpenStates.forEach((isOpen, id) => {
+            const target = bodyZone.querySelector(`[id="${id}"] details, details[id="${id}"]`) as HTMLDetailsElement;
+            if (target) target.open = isOpen;
+        });
     }
 
     // Secure Auto-render invocation for Math expressions in Chat Messages
@@ -3011,9 +2889,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         }
     }
 
-    // Highlight any raw code blocks inside thoughts or live streaming file mutation cards
-    contentDiv.querySelectorAll('.plan-scratchpad pre code, .file-mutation-card pre code, .code-collapsible pre code').forEach(block => {
+    // Highlight only code blocks that have NOT yet been highlighted by Prism
+    contentDiv.querySelectorAll('.plan-scratchpad pre code:not([data-prism-highlighted]), .file-mutation-card pre code:not([data-prism-highlighted]), .code-collapsible pre code:not([data-prism-highlighted])').forEach(block => {
         Prism.highlightElement(block);
+        block.setAttribute('data-prism-highlighted', 'true');
     });
 
     enhanceCodeBlocks(bodyZone, messageId, rawContent, isFinal);
@@ -3152,12 +3031,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             }
 
             const isUndo = applyAllBtn.classList.contains('undo-all-btn');
-            const isMultiSteps = applyAllBtn.classList.contains('apply-all-steps-btn');
             const changes = gatherChangesFromBlocks(messageId, isUndo);
 
             if (changes.length > 0) {
                 applyAllBtn.disabled = true;
-                const batchLabel = isMultiSteps ? 'All Steps' : 'Batch';
+                const batchLabel = changes.length === 1 ? 'Change' : 'All Changes';
                 applyAllBtn.innerHTML = isUndo 
                     ? `<span class="codicon codicon-sync spin"></span> Undoing ${batchLabel}...` 
                     : `<span class="codicon codicon-sync spin"></span> Applying ${batchLabel}...`;
@@ -3186,45 +3064,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         };
     }
 
-    // Attach listeners for individual Apply Step buttons in multi-step cards
-    contentDiv.querySelectorAll('.apply-single-step-btn').forEach((stepBtn: any) => {
-        stepBtn.onclick = (e: MouseEvent) => {
-            e.stopPropagation();
-            const stepNum = parseInt(stepBtn.dataset.step, 10);
-            const stepFilesRaw = stepBtn.dataset.files;
-            let stepFiles: string[] = [];
-            try {
-                stepFiles = JSON.parse(decodeURIComponent(stepFilesRaw || '[]'));
-            } catch {}
 
-            const normStepFiles = new Set(stepFiles.map(f => f.replace(/\\/g, '/').toLowerCase().trim()));
-            const allChanges = gatherChangesFromBlocks(messageId, false);
-            const stepChanges = allChanges.filter(c => {
-                const normC = c.path.replace(/\\/g, '/').toLowerCase().trim();
-                return normStepFiles.has(normC) || stepFiles.some(sf => {
-                    const normSf = sf.replace(/\\/g, '/').toLowerCase().trim();
-                    return normC === normSf || normC.endsWith('/' + normSf) || normSf.endsWith('/' + normC);
-                });
-            });
-
-            if (stepChanges.length === 0) {
-                stepBtn.disabled = true;
-                stepBtn.classList.add('applied');
-                stepBtn.innerHTML = `<i class="codicon codicon-check"></i> Step ${stepNum} Already Applied`;
-                return;
-            }
-
-            stepBtn.disabled = true;
-            stepBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Applying Step ${stepNum}...`;
-
-            const resList = document.getElementById(`results-${messageId}`);
-            const progressContainer = document.getElementById(`progress-container-${messageId}`);
-            if (resList) resList.style.display = 'block';
-            if (progressContainer) progressContainer.style.display = 'block';
-
-            vscode.postMessage({ command: 'applyAllChanges', changes: stepChanges, messageId, undo: false });
-        };
-    });
 
     finalSegments.forEach(seg => {
             if (seg.type === 'plugin' && seg.plugin?.initialize) {
@@ -3594,6 +3434,9 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
     const messageWrapper = document.createElement('div');
     messageWrapper.className = 'message-wrapper';
     messageWrapper.dataset.messageId = id;
+    if (message.isPastedAsAi || (role === 'assistant' && !personalityName?.includes('Librarian'))) {
+        messageWrapper.dataset.pastedAsAi = 'true';
+    }
     if (startTime) messageWrapper.dataset.startTime = startTime;
     if (model) messageWrapper.dataset.model = model;
     if (personalityName) messageWrapper.dataset.personalityName = personalityName;
@@ -7693,11 +7536,16 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
                     command: 'insertMessage',
                     afterMessageId: lastMessage?.dataset.messageId || null,
                     role: role,
-                    content: newContent
+                    content: newContent,
+                    isPastedAsAi: role === 'assistant'
                 });
             }
             editorWrapper.remove();
         });
+    }
+
+    if (role === 'assistant' && textarea) {
+        textarea.placeholder = "Paste AI response / code here. It will be treated as Coder output with full patch application support...";
     }
 
     const cancelBtn = editorWrapper.querySelector('.edit-cancel-btn');
@@ -7897,7 +7745,6 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
     const totalCount = patches.length;
     if (totalCount === 0) return;
 
-    const isMultiSteps = applyAllBtn.classList.contains('apply-all-steps-btn');
     const excludedSet = state.excludedPatches?.[messageId] || new Set<string>();
     const validatedCount = patches.filter(p => p.isApplied).length;
     const pendingPatches = patches.filter(p => !p.isApplied);
@@ -7911,27 +7758,16 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
         applyAllBtn.style.removeProperty('color');
 
         if (includedPending.length === 0) {
-            // All pending patches are excluded
             applyAllBtn.disabled = true;
             applyAllBtn.innerHTML = `<span class="codicon codicon-circle-slash"></span> All Pending Changes Excluded (${excludedPendingCount})`;
         } else {
             applyAllBtn.disabled = false;
-            if (isMultiSteps) {
-                if (excludedPendingCount > 0) {
-                    applyAllBtn.innerHTML = `<span class="codicon codicon-check"></span> Apply Selected Steps (${includedPending.length} of ${pendingPatches.length})`;
-                } else if (validatedCount > 0) {
-                    applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Steps (${includedPending.length} of ${totalCount})`;
-                } else {
-                    applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply All Steps (${totalCount} ${fileWord})`;
-                }
+            if (excludedPendingCount > 0) {
+                applyAllBtn.innerHTML = `<span class="codicon codicon-check"></span> Apply Selected Changes (${includedPending.length} of ${pendingPatches.length})`;
+            } else if (validatedCount > 0) {
+                applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Changes (${includedPending.length} of ${totalCount})`;
             } else {
-                if (excludedPendingCount > 0) {
-                    applyAllBtn.innerHTML = `<span class="codicon codicon-check"></span> Apply Selected Changes (${includedPending.length} of ${pendingPatches.length})`;
-                } else if (validatedCount > 0) {
-                    applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply Remaining Changes (${includedPending.length} of ${totalCount})`;
-                } else {
-                    applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply ${totalCount === 1 ? 'Changes' : 'All Changes'} (${totalCount} ${fileWord})`;
-                }
+                applyAllBtn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply ${totalCount === 1 ? 'Changes' : 'All Changes'} (${totalCount} ${fileWord})`;
             }
         }
     } else {
@@ -7940,46 +7776,7 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
         applyAllBtn.disabled = false;
         applyAllBtn.style.removeProperty('background-color');
         applyAllBtn.style.removeProperty('color');
-        if (isMultiSteps) {
-            applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo All Steps (${totalCount} ${fileWord})`;
-        } else {
-            applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo ${totalCount === 1 ? 'Changes' : 'All Changes'} (${totalCount} ${fileWord})`;
-        }
-    }
-
-    // Update individual step buttons in the multi-step card
-    if (isMultiSteps) {
-        wrapper.querySelectorAll('.multistep-card-item').forEach((stepItem: any) => {
-            const stepBtn = stepItem.querySelector('.apply-single-step-btn') as HTMLButtonElement;
-            if (stepBtn) {
-                const stepFilesRaw = stepBtn.dataset.files;
-                let stepFiles: string[] = [];
-                try {
-                    stepFiles = JSON.parse(decodeURIComponent(stepFilesRaw || '[]'));
-                } catch {}
-                const normStepFiles = new Set(stepFiles.map(f => f.replace(/\\/g, '/').toLowerCase().trim()));
-                const stepPatches = patches.filter(p => {
-                    const normP = p.path.replace(/\\/g, '/').toLowerCase().trim();
-                    return normStepFiles.has(normP) || stepFiles.some(sf => {
-                        const normSf = sf.replace(/\\/g, '/').toLowerCase().trim();
-                        return normP === normSf || normP.endsWith('/' + normSf) || normSf.endsWith('/' + normP);
-                    });
-                });
-                const stepNum = stepBtn.dataset.step || '1';
-                const allStepDone = stepPatches.length > 0 && stepPatches.every(p => p.isApplied);
-                if (allStepDone) {
-                    stepBtn.classList.remove('secondary-btn');
-                    stepBtn.classList.add('applied');
-                    stepBtn.disabled = true;
-                    stepBtn.innerHTML = `<i class="codicon codicon-check"></i> Step ${stepNum} Applied`;
-                } else {
-                    stepBtn.classList.remove('applied');
-                    stepBtn.classList.add('secondary-btn');
-                    stepBtn.disabled = false;
-                    stepBtn.innerHTML = `<i class="codicon codicon-play"></i> Apply Step ${stepNum}`;
-                }
-            }
-        });
+        applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo ${totalCount === 1 ? 'Changes' : 'All Changes'} (${totalCount} ${fileWord})`;
     }
 }
 
@@ -8180,19 +7977,20 @@ export function collapseAllLibrarianMessages() {
             originalContent.startsWith('Librarian Verification Notice:') ||
             personality.includes('Context Shield');
 
-        const isLibrarian = !isContextShield && (
+        const isPastedOrCoder = msgId.startsWith('assistant_') || 
+                                wrapper.dataset.pastedAsAi === 'true' || 
+                                personality.includes('Coder') || 
+                                personality.includes('Default');
+
+        const isLibrarian = !isContextShield && !isPastedOrCoder && (
             wrapper.dataset.isLibrarian === 'true' ||
             msgDiv?.classList.contains('librarian-message') ||
             msgId.startsWith('librarian_') ||
             msgId.startsWith('lib_report_') ||
             msgId.startsWith('lib_') ||
             msgId.startsWith('governor_') ||
-            personality.includes('Librarian') ||
-            personality.includes('Governor') ||
-            roleName.includes('Librarian') ||
-            originalContent.startsWith('Librarian agent report:') ||
-            originalContent.startsWith('Librarian Master Directive:') ||
-            originalContent.includes('### 📚 **Lead Librarian')
+            (personality.includes('Librarian') && !personality.includes('Coder')) ||
+            (roleName.includes('Librarian') && !roleName.includes('Coder'))
         );
 
         if (isLibrarian) {

@@ -51,8 +51,23 @@ export const thinkPlugin: TagPlugin = {
             }
 
             if (closeIdx === -1) {
-                isClosed = context.isFinal;
-                blockEnd = text.length;
+                const remainingText = text.substring(contentStart);
+                const fileMatch = remainingText.search(/(?:^|\n)[ \t]*<file\b/i);
+                const nextFileIdx = fileMatch !== -1 ? contentStart + fileMatch : -1;
+                const nextFenceIdx = text.indexOf('```', contentStart);
+
+                let resumeAt = -1;
+                if (nextFileIdx !== -1 && nextFenceIdx !== -1) resumeAt = Math.min(nextFileIdx, nextFenceIdx);
+                else if (nextFileIdx !== -1) resumeAt = nextFileIdx;
+                else if (nextFenceIdx !== -1) resumeAt = nextFenceIdx;
+
+                if (resumeAt !== -1 && resumeAt > earliestOpenIdx) {
+                    isClosed = true;
+                    blockEnd = resumeAt;
+                } else {
+                    isClosed = context.isFinal;
+                    blockEnd = text.length;
+                }
             }
 
             const rawThought = (closeIdx !== -1 ? text.substring(contentStart, closeIdx) : text.substring(contentStart)).trim();

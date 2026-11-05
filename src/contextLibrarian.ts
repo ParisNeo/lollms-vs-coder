@@ -281,21 +281,20 @@ export class ContextLibrarian {
         const isStructural = this.isBroadOrStructuralQuery(prompt);
         const keywords = this.extractQueryKeywords(prompt, []);
 
-        // ── 🎯 FAST IN-MEMORY PATH DISCOVERY (ZERO BLOCKING GREP LOOPS) ──
+        // ── 🎯 FAST IN-MEMORY PATH DISCOVERY (NO BLIND GREP) ──
         const cleanWords = prompt.replace(/[^a-zA-Z0-9_\s-]/g, ' ').split(/\s+/).filter(Boolean);
         const specificDomainWords = cleanWords
             .map(w => w.toLowerCase())
             .filter(w => w.length >= 4 && !ContextLibrarian.STOP_WORDS.has(w) && !LibrarianPromptBuilder.isGenericWord(w));
 
         const discoveredWorkspacePaths: string[] = [];
-        const contentMatchReports: string[] = [];
         const liveActionSteps: { type: string; label: string; detail?: string }[] = [];
 
         const emitLiveProgress = async (currentStatus: string) => {
             if (!options.onUpdateMessage || !options.pruneMsgId) return;
             const stepsHtml = liveActionSteps.map(s => `
 <div style="display:flex; align-items:center; gap:6px; padding:3px 8px; background:rgba(0,0,0,0.18); border-radius:4px; font-family:var(--vscode-editor-font-family, monospace); font-size:10.5px; border:1px solid rgba(255,255,255,0.05);">
-    <i class="codicon ${s.type === 'grep' ? 'codicon-search' : (s.type === 'read' ? 'codicon-file' : (s.type === 'match' ? 'codicon-check' : 'codicon-tools'))}" style="color:var(--vscode-charts-orange); font-size:11px;"></i>
+    <i class="codicon ${s.type === 'sparql' ? 'codicon-graph' : (s.type === 'read' ? 'codicon-file' : (s.type === 'match' ? 'codicon-check' : 'codicon-tools'))}" style="color:var(--vscode-charts-orange); font-size:11px;"></i>
     <span><strong>${s.label}</strong></span>${s.detail ? `<span style="opacity:0.75;">: ${s.detail}</span>` : ''}
 </div>`).join('\n');
 
@@ -310,7 +309,7 @@ ${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-
         };
 
         try {
-            await emitLiveProgress(`Scanning workspace filenames for domain targets...`);
+            await emitLiveProgress(`Evaluating task and identifying candidate modules...`);
             const allWorkspaceFiles = await contextManager.getWorkspaceFilePaths();
 
             for (const f of allWorkspaceFiles) {
@@ -323,50 +322,16 @@ ${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-
                 }
             }
 
-            // Quick, bounded targeted search for exact unique technical identifiers (timeout-protected to prevent hanging)
-            const rareTerms = specificDomainWords.filter(t => t.length >= 5 && !['install', 'create', 'update', 'delete', 'system', 'admin'].includes(t));
-            if (rareTerms.length > 0) {
-                for (const term of rareTerms.slice(0, 2)) {
-                    if (signal.aborted) break;
-                    await emitLiveProgress(`Checking locations of key term "${term}"...`);
-
-                    try {
-                        const timeoutCtrl = new AbortController();
-                        const timer = setTimeout(() => timeoutCtrl.abort(), 1800); // 1.8s safety deadline
-                        const hits = await contextManager.searchWorkspaceContent(term, { matchCase: false, wholeWord: false, bypassGate: true }, timeoutCtrl.signal);
-                        clearTimeout(timer);
-
-                        if (hits && hits.length > 0) {
-                            const validHits = hits.filter(h => h.path && !this.isClutterOrCosmeticFile(h.path));
-                            validHits.slice(0, 4).forEach(h => {
-                                if (!discoveredWorkspacePaths.includes(h.path)) {
-                                    discoveredWorkspacePaths.push(h.path);
-                                }
-                                const snippet = h.snippet ? h.snippet.trim().slice(0, 100) : '';
-                                contentMatchReports.push(`- Term "${term}" in \`${h.path}\` (line ${h.line}): \`${snippet}\``);
-                            });
-
-                            liveActionSteps.push({
-                                type: 'grep',
-                                label: `Grep "${term}"`,
-                                detail: `${validHits.length} location(s) in codebase`
-                            });
-                        }
-                    } catch {}
-                }
-            }
-
             if (discoveredWorkspacePaths.length > 0) {
-                // Prioritize top most relevant files to avoid bloated 60+ candidate lists
                 const topPicks = discoveredWorkspacePaths.slice(0, 12);
                 liveActionSteps.push({
                     type: 'match',
-                    label: 'Matched Code Modules',
+                    label: 'Candidate Modules Located',
                     detail: `${topPicks.map(p => path.basename(p)).slice(0, 4).join(', ')}${topPicks.length > 4 ? ` (+${topPicks.length - 4} more)` : ''}`
                 });
             }
 
-            await emitLiveProgress(`Grep & scan complete. Formulating architectural analysis with LLM...`);
+            await emitLiveProgress(`Engaging Librarian reasoning loop...`);
         } catch (e) {
             Logger.warn(`[Librarian] Fast path discovery warning: ${e}`);
         }
@@ -426,15 +391,6 @@ ${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-
                     candidate.relevanceScore += 1000;
                     candidate.isCoreOrInterface = true;
                 }
-            }
-
-            // High boost if file matches content grep hits for the specific prompt terms
-            const cleanPath = f.path.replace(/\\/g, '/').toLowerCase();
-            const hasDirectContentMatch = contentMatchReports.some(r => r.toLowerCase().includes(cleanPath));
-            if (hasDirectContentMatch) {
-                candidate.relevanceScore += 30000;
-                candidate.role = 'edit';
-                candidate.keep = true;
             }
 
             fileCandidates.push(candidate);
@@ -521,7 +477,6 @@ ${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-
             currentDiscussion: options.currentDiscussion,
             sparqlEnabled: options.currentDiscussion?.capabilities?.sparqlEnabled !== false,
             ignoreContextSize: isIgnoreContext,
-            contentMatchReports,
             pruneMsgId: options.pruneMsgId,
             projectMemoryManager: memManager,
             optionsUpdateMessage: options.onUpdateMessage,
@@ -928,7 +883,6 @@ ${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-
         onStreamChunk?: (data: { round: number; maxRounds: number; chunk: string; fullText: string; messageId: string }) => void;
         onDiscoveryAction?: (data: { type: string; label: string; detail?: string; output?: string }) => void;
         onAddMessage?: (message: ChatMessage) => Promise<void>;
-        contentMatchReports?: string[];
         initialLiveSteps?: { type: string; label: string; detail?: string }[];
         optionsUpdateMessage?: (messageId: string, content: string) => Promise<void>;
         onRoundUsed?: (rounds: number) => void;
@@ -1194,14 +1148,7 @@ The user/worker explicitly named these files.
             ? `### ❓ WORKER'S SCOUTING QUERY & HYPOTHESIS:\n"${safeLibrarianQuery}"\n\n### 🎯 USER'S ORIGINAL OBJECTIVE:\n"${safeUserPromptText}"\n\n`
             : `### 🎯 USER OBJECTIVE:\n"${safeUserPromptText}"\n\n`;
 
-        const contentMatchesSection = (options.contentMatchReports && options.contentMatchReports.length > 0)
-            ? `### 🔍 WORKSPACE CONTENT MATCHES FOR SPECIFIC PROMPT TERMS:
-${options.contentMatchReports.slice(0, 10).join('\n')}
-
-> 🎯 **MANDATORY VERIFICATION**: The files above contain the EXACT identifiers mentioned in the prompt. Prioritize them for inspection and modification over generic files!\n\n`
-            : '';
-
-        const initialUserPrompt = `${queryHeader}${historySection}${contentMatchesSection}${requestedSection}
+        const initialUserPrompt = `${queryHeader}${historySection}${requestedSection}
 ### 📊 REAL-TIME TOKEN AUDIT & BUDGET OBJECTIVE:
 - Total Candidates Pool (Muted + Unmuted): ~${safeLoc(totalCandidateTokens)} tokens (${fileCandidates.length} files)
 - Current Unmuted Files Load: ~${safeLoc(currentUnmutedTokens)} tokens

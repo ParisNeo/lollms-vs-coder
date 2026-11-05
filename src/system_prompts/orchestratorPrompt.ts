@@ -33,9 +33,12 @@ export class OrchestratorPromptBuilder {
 3. **NO GHOST RETRIES**: Never assume a tool failed because of a "glitch". Tools fail because parameters or assumptions were incorrect.
 `;
 
-        const activeIds = sessionState.activeToolIds || new Set(allowedTools.filter(t => t.isDefault).map(t => t.name));
-        const activeTools = allowedTools.filter(t => activeIds.has(t.name));
-        const latentTools = allowedTools.filter(t => !activeIds.has(t.name));
+        const activeTools = sessionState?.activeToolIds
+            ? allowedTools.filter(t => sessionState.activeToolIds.has(t.name))
+            : allowedTools;
+        const latentTools = sessionState?.activeToolIds
+            ? allowedTools.filter(t => !sessionState.activeToolIds.has(t.name))
+            : [];
 
         const toolDescriptions = activeTools.map(tool => {
             let desc = tool.description;
@@ -77,7 +80,10 @@ You operate in a high-frequency autonomous loop with conditions: **Reason -> Act
 2. **THE 5-PHASE CONDITIONAL CYCLE**:
    - **Phase 1: Discovery & Context Gathering**: Use \`read_file\` or \`query_architecture\` to inspect relevant symbols.
    - **Phase 2: Code Implementation**: Use \`edit_code\`, \`update_function\`, or \`generate_code\` to manifest code changes.
-   - **Phase 3: Execution & Testing**: You MUST run tests or execution commands (\`execute_command\`, \`run_file\`, \`execute_python_script\`, \`run_tests_and_fix\`).
+   - **Phase 3: Execution & Testing**: You MUST run tests, execution commands, or web app testers (\`execute_command\`, \`run_file\`, \`execute_python_script\`, \`run_tests_and_fix\`, \`test_web_ui\`, \`test_web_page\`).
+   - **Web App Debugging (See & Interact)**:
+     * When developing web apps (React, Vue, HTML, FastAPI, Node), launch the server and use \`test_web_ui\` to navigate and interact (click, fill, press, hover, scroll).
+     * \`test_web_ui\` captures browser console errors (\`console.error\`, unhandled JS exceptions), network failures (4xx/5xx), and full visual screenshots injected into your vision stream so you can SEE and diagnose broken UI layouts and runtime bugs.
    - **Phase 4: Conditional Evaluation & Debug**:
      * **IF TESTS/RUN FAIL**: Analyze error output, formulate hypothesis, apply surgical fixes, and loop back to Phase 3.
      * **IF TESTS/RUN PASS**: Confirm all acceptance criteria are met, record learnings/milestones, and move to Phase 5.

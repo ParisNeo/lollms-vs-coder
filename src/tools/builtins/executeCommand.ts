@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
+import { Logger } from '../../logger';
 
 export const executeCommandTool: ToolDefinition = {
     name: "execute_command",

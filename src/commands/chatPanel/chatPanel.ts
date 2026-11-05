@@ -70,6 +70,9 @@ export class ChatPanel {
   private _isWebviewReady = false;
   private _isLoadPending = false;
   private _inputResolver: ((value: string) => void) | null = null;
+  // Embedded agent mode: single answer block accumulation state
+  private _activeAgentAnswerId?: string;
+  private _pendingAgentQuestion?: { resolve: (v: string) => void; reject: (e: Error) => void; messageId: string; question: string; options?: any };
   private _skillsManager: SkillsManager;
   private _personalityManager?: PersonalityManager;
   private _isDisposed = false;
@@ -243,7 +246,7 @@ export class ChatPanel {
         let blockIndex = 0; // Initialize precise index tracker
 
         // 0. Process Mute & Unmute Files Tags (Unmute and add_files_to_context authorized in Fast Mode)
-        const isFastMode = this._discussionCapabilities.fastMode === true;
+        const isFastMode = this._discussionCapabilities.fastMode !== false;
 
         const muteRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<mute_files\b[^>]*?>([\s\S]*?)<\/mute_files>/gim;
         let muteMatch;
@@ -289,16 +292,9 @@ export class ChatPanel {
             const libQuery = (libMatch[2] || "").trim();
             if (libQuery) {
                 const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-                const libLiveMsgId = 'librarian_live_' + Date.now();
                 try {
-                    await this.addMessageToDiscussion({
-                        id: libLiveMsgId,
-                        role: 'assistant',
-                        personalityName: '📚 Lead Librarian',
-                        content: `### 📚 **Librarian Scouting (Live Reasoning)**\n\n<div class="waiting-animation"><span class="spinner"></span> <span>Analyzing dependencies and contracts for: "${libQuery.substring(0, 80)}..."</span></div>`,
-                        model: targetModel,
-                        timestamp: Date.now()
-                    });
+                    // Embedded: librarian live scouting is a transient status (no standalone bubble).
+                    this.processManager.updateDescription(processId, `📚 Librarian: Analyzing dependencies for: "${libQuery.substring(0, 80)}..."`);
 
                     const libRes = await ContextLibrarian.filterFilesByPrompt({
                         lollmsAPI: this._lollmsAPI,
@@ -308,12 +304,8 @@ export class ChatPanel {
                         targetModel,
                         prompt: libQuery,
                         signal,
-                        pruneMsgId: libLiveMsgId,
                         projectMemoryManager: this.projectMemoryManager,
                         ignoreContextSize: this._discussionCapabilities.ignoreContextSize === true,
-                        onUpdateMessage: async (msgId, updated) => {
-                            await this.updateMessageContent(msgId, updated, false);
-                        },
                         onStatusUpdate: (st) => {
                             this.processManager.updateDescription(processId, st);
                             this.updateGeneratingState();
@@ -369,11 +361,12 @@ ${memoriesBlock}
 - **Tokens Liberated**: ~${safeTokensLiberated} tokens (reference files preserved at 0 tokens [M] in tree)${selectionNotice}
 - **Neural Memory**: Recorded to Project Memory Vault & \`.lollms/knowledge.ttl\``;
 
-                    await this.updateMessageContent(libLiveMsgId, finalReport);
-                    this.log(`Automated Librarian consultation applied (${libRes.keptFiles.length} edit files loaded, ${libRes.mutedFiles.length} reference files muted).`);
+                    // Embedded: final librarian findings accumulate as a round inside the caller's answer block
+                    await this.updateMessageContent(messageId, 'APPEND_TAG:<agent_round type="tool" title="Librarian Scouting" status="done">\n' + finalReport + '\n</agent_round>');
+                    this.log(`Automated Librarian consultation applied (${libRes.keptFiles.length} edit files loaded, ${(libRes.mutedFiles || []).length} reference files muted).`);
                 } catch (libErr: any) {
                     this.log(`Automated Librarian consultation failed: ${libErr.message}`, 'WARN');
-                    await this.updateMessageContent(libLiveMsgId, `⚠️ **Librarian Scouting Error**: ${libErr.message}`);
+                    await this.updateMessageContent(messageId, 'APPEND_TAG:<agent_round type="tool" title="Librarian Scouting" status="failed">\n⚠️ **Librarian Scouting Error**: ${libErr.message}\n</agent_round>');
                 }
             }
         }
@@ -740,15 +733,19 @@ Perform a cold, critical audit of the current state of these files on disk. Look
                 return;
             }
 
-            // If the Guardian found issues, provide them as a new assistant bubble
-            const verifierMsgId = 'guardian_fix_' + Date.now();
-            await this.addMessageToDiscussion({
-                id: verifierMsgId,
-                role: 'assistant',
-                content: `**🛡️ Guardian Audit: Structural Issues Detected**\n\nI've identified indentation or dependency issues in the applied files. Here are the surgical repairs:\n\n${cleanResponse}`,
-                model: model,
-                personalityName: '🛡️ Guardian'
-            });
+            // If the Guardian found issues: embedded round during an active agent turn; sibling message otherwise
+            const verifierMsgId = this._activeAgentAnswerId || ('guardian_fix_' + Date.now());
+            if (this._activeAgentAnswerId) {
+                await this.updateMessageContent(verifierMsgId, 'APPEND_TAG:<agent_round type="verify" title="Guardian Audit: Structural Issues Detected" status="done">\n' + cleanResponse + '\n</agent_round>');
+            } else {
+                await this.addMessageToDiscussion({
+                    id: verifierMsgId,
+                    role: 'assistant',
+                    content: `**🛡️ Guardian Audit: Structural Issues Detected**\n\nI've identified indentation or dependency issues in the applied files. Here are the surgical repairs:\n\n${cleanResponse}`,
+                    model: model,
+                    personalityName: '🛡️ Guardian'
+                });
+            }
 
             // If auto-apply is on, we go one step deeper and apply the guardian's own fixes
             if (this._discussionCapabilities.autoApply) {
@@ -997,6 +994,12 @@ MANDATORY ACTIONS:
       originalMessageId: string
   ): Promise<void> {
       if (this._isDisposed || failedItems.length === 0) return;
+
+      // In Assistant mode, do not trigger automated repair turns
+      if (!this._discussionCapabilities.agentMode) {
+          this.log(`[Batch Repair] Automated retry skipped in assistant mode.`, 'INFO');
+          return;
+      }
 
       const currentAttempts = this._batchRepairAttempts.get(originalMessageId) || 0;
       const MAX_BATCH_REPAIR_ATTEMPTS = 2;
@@ -1356,9 +1359,22 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
   }
   public async updateMessageContent(messageId: string, newContent: string, persist: boolean = true) {
       if (!this._currentDiscussion) return;
-      const msg = this._currentDiscussion.messages.find(m => m.id === messageId);
+
+      const isAgentStep = !!(this._activeAgentAnswerId && (messageId.startsWith('agent_task_') || messageId.startsWith('agent_step_')));
+      const targetId = isAgentStep ? this._activeAgentAnswerId! : messageId;
+
+      const msg = this._currentDiscussion.messages.find(m => m.id === targetId);
       if (msg) {
-          if (typeof newContent === 'string' && newContent.startsWith('APPEND_TAG:')) {
+          if (isAgentStep) {
+              const status = newContent.includes('❌') || newContent.includes('Failure') ? 'failed' : 'done';
+              const type = newContent.includes('Test Worker') ? 'exec' : (newContent.includes('Audit Worker') ? 'verify' : 'tool');
+              const titleMatch = newContent.match(/Step \d+:\s*(?:\[[^\]]*\]\s*)?`?([^`\n(]+)`?/);
+              const title = titleMatch ? titleMatch[1].trim() : `Step ${messageId.replace(/agent_(task|step)_/, '')}`;
+              const roundTag = `<agent_round type="${type}" title="${title}" status="${status}">\n${newContent}\n</agent_round>`;
+              if (typeof msg.content === 'string') {
+                  msg.content = msg.content ? `${msg.content}\n\n${roundTag}` : roundTag;
+              }
+          } else if (typeof newContent === 'string' && newContent.startsWith('APPEND_TAG:')) {
               const tag = newContent.substring(11);
               if (typeof msg.content === 'string' && !msg.content.includes(tag)) {
                   msg.content = msg.content + "\n" + tag;
@@ -1370,10 +1386,62 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
           if (persist && !this._currentDiscussion.id.startsWith('temp-')) {
               await this._discussionManager.saveDiscussion(this._currentDiscussion);
           }
+      } else if (messageId) {
+          // Materialize the agent round as a new message so it renders in the same chat panel
+          const isRoundId = messageId.startsWith('agent_') || messageId.startsWith('verifier_') || messageId.startsWith('debug_') || messageId.startsWith('lib_');
+          if (isRoundId) {
+              const roundMessage: ChatMessage = {
+                  id: messageId,
+                  role: 'assistant',
+                  content: newContent,
+                  model: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
+                  personalityName: '🤖 Agent Round',
+                  timestamp: Date.now()
+              };
+              this._currentDiscussion.messages.push(roundMessage);
+              if (!this._currentDiscussion.id.startsWith('temp-')) {
+                  await this._discussionManager.saveDiscussion(this._currentDiscussion);
+              }
+          }
       }
       if (this._panel.webview && !this._isDisposed) {
-          this._panel.webview.postMessage({ command: 'updateMessage', messageId, newContent, isFinal: persist });
+          this._panel.webview.postMessage({ command: 'updateMessage', messageId: targetId, newContent: msg ? msg.content : newContent, isFinal: persist });
       }
+  }
+
+  /**
+   * Appends an <agent_round> block into the active agent answer message (embedded single-block contract).
+   * Falls back to the explicitly provided target id. No-op when no agent turn is active.
+   */
+  private appendAgentRound(roundBlock: string, targetMessageId?: string): string | undefined {
+      const targetId = targetMessageId || this._activeAgentAnswerId;
+      if (!targetId) return undefined;
+      void this.updateMessageContent(targetId, 'APPEND_TAG:' + roundBlock);
+      return targetId;
+  }
+
+  /** Resolves a pending inline agent question and records the Q&A as a round in the same answer block. */
+  private resolvePendingAgentQuestion(answer: string): void {
+      const pending = this._pendingAgentQuestion;
+      if (!pending) return;
+      this._pendingAgentQuestion = undefined;
+      const safeTitle = pending.question.replace(/[\r\n]+/g, ' ').slice(0, 120);
+      const roundBlock = `<agent_round type="question" title="${safeTitle}" status="done">\n**Q:** ${pending.question}\n\n**A:** ${answer}\n</agent_round>`;
+      this.appendAgentRound(roundBlock, pending.messageId);
+      pending.resolve(answer);
+      this.updateGeneratingState();
+  }
+
+  /** Rejects a pending inline agent question (user stop / abort) and unlocks the webview composer. */
+  private cancelPendingAgentQuestion(reason: string): void {
+      const pending = this._pendingAgentQuestion;
+      if (!pending) return;
+      this._pendingAgentQuestion = undefined;
+      if (this._panel.webview && !this._isDisposed) {
+          this._panel.webview.postMessage({ command: 'agentQuestion', messageId: pending.messageId, canceled: true });
+      }
+      pending.reject(new Error(reason));
+      this.updateGeneratingState();
   }
   public async updateAppliedState(messageId: string, blockIdx: number, hunkIdx?: number, isUndo: boolean = false) {
       if (!this._currentDiscussion || !messageId) return;
@@ -1440,6 +1508,7 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
                           ...this._discussionCapabilities, 
                           agentMode: false, 
                           preciseTokenization, 
+                          fastMode: this._discussionCapabilities.fastMode !== false,
                           mutedFiles: [...inheritedMuted],
                           includedFiles: JSON.parse(JSON.stringify(globalIncluded))
                       } as any, 
@@ -3964,7 +4033,7 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
 
     await this.addMessageToDiscussion(userMessage);
 
-    const isFastModeEarly = this._discussionCapabilities.fastMode === true;
+    const isFastModeEarly = this._discussionCapabilities.fastMode !== false;
     this.processManager.updateDescription(processId, isFastModeEarly ? "Coding..." : "Preparing workspace context...");
     this.updateGeneratingState();
 
@@ -4005,12 +4074,56 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
             this.processManager.unregister(processId);
         }
 
+        // EMBEDDED AGENT MODE: bind this turn to ONE assistant answer block in the same transcript.
+        // All agent rounds (plan → tool → exec → verify → question) accumulate inside this block.
+        const agentAnswerId = 'assistant_agent_' + Date.now().toString() + Math.random().toString(36).substring(2);
+        this._activeAgentAnswerId = agentAnswerId;
+        const currentPersona = this.getCurrentPersona();
+        await this.addMessageToDiscussion({
+            id: agentAnswerId,
+            role: 'assistant',
+            content: '',
+            startTime: Date.now(),
+            model: targetModel,
+            personalityName: currentPersona?.name || 'Lollms',
+            timestamp: Date.now()
+        }, true);
+
         setImmediate(async () => {
-            await this.agentManager.handleUserMessage(
-                objectiveText,
-                this._currentDiscussion,
-                folders[0]
-            );
+            try {
+                await this.agentManager.handleUserMessage(
+                    objectiveText,
+                    this._currentDiscussion,
+                    folders[0]
+                );
+            } catch (agentErr: any) {
+                this.log(`Agent execution error: ${agentErr?.message || agentErr}`, 'ERROR');
+                if (this._activeAgentAnswerId) {
+                    await this.updateMessageContent(this._activeAgentAnswerId, `❌ **Agent Execution Error:** ${agentErr?.message || agentErr}`);
+                }
+            } finally {
+                const targetId = agentAnswerId;
+                if (this._activeAgentAnswerId === agentAnswerId) {
+                    this._activeAgentAnswerId = undefined;
+                }
+                const targetMsg = this._currentDiscussion?.messages.find(m => m.id === targetId);
+                if (targetMsg) {
+                    if (!targetMsg.content || (typeof targetMsg.content === 'string' && targetMsg.content.trim() === '')) {
+                        const idx = this._currentDiscussion!.messages.findIndex(m => m.id === targetId);
+                        if (idx !== -1) {
+                            this._currentDiscussion!.messages.splice(idx, 1);
+                        }
+                        if (this._panel.webview && !this._isDisposed) {
+                            this._panel.webview.postMessage({ command: 'removeMessage', messageId: targetId });
+                        }
+                    } else {
+                        if (this._panel.webview && !this._isDisposed) {
+                            this._panel.webview.postMessage({ command: 'finalizeMessage', id: targetId, fullContent: targetMsg.content });
+                        }
+                    }
+                }
+                this.updateGeneratingState();
+            }
         });
         return;
     }
@@ -4299,7 +4412,7 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
         await this.addMessageToDiscussion(initialAssistantMessage, true);
 
         // ── STEP 1: FAST MODE vs. LIBRARIAN MASTER ARCHITECTURAL DIRECTIVE ──
-        const isFastMode = this._discussionCapabilities.fastMode === true;
+        const isFastMode = this._discussionCapabilities.fastMode !== false;
         const isMultiPartCont = !!(message as any).isMultiPartContinuation || !!userMessage.isMultiPartContinuation;
 
         const isGreetingOnly = /^(?:hi|hello|hey|greetings|good\s+(?:morning|afternoon|evening)|thanks|thank\s+you)\b/i.test(rawUserPromptText.trim()) && rawUserPromptText.trim().split(/\s+/).length <= 4;
@@ -5123,11 +5236,13 @@ Review the actual code under 'LOADED FILE CONTENTS' and deliver your code implem
                 }
 
                 if (!this._isDisposed) {
-                    this._panel.webview.postMessage({ 
-                        command: 'finalizeMessage', 
-                        id: assistantMessageId, 
-                        fullContent: currentFullResponseBuffer 
-                    });
+                    if (!this._activeMultiPartPlan) {
+                        this._panel.webview.postMessage({ 
+                            command: 'finalizeMessage', 
+                            id: assistantMessageId, 
+                            fullContent: currentFullResponseBuffer 
+                        });
+                    }
                     this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
                 }
                 return;
@@ -5617,11 +5732,13 @@ Do NOT repeat the verbal summary. Output the code tags now.`
                 }
 
                 if (!this._isDisposed) {
-                    this._panel.webview.postMessage({ 
-                        command: 'finalizeMessage', 
-                        id: assistantMessageId, 
-                        fullContent: currentFullResponseBuffer 
-                    });
+                    if (!this._activeMultiPartPlan) {
+                        this._panel.webview.postMessage({ 
+                            command: 'finalizeMessage', 
+                            id: assistantMessageId, 
+                            fullContent: currentFullResponseBuffer 
+                        });
+                    }
                     this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
                 }
             }
@@ -5708,15 +5825,10 @@ Objective: ${nextPhase.partInstruction || rawUserPromptText}`;
                             history: history,
                             signal: controller.signal,
                             currentMutedFiles: this._currentDiscussion?.mutedFiles || [],
-                            pruneMsgId: assistantMessageId,
                             projectMemoryManager: this.projectMemoryManager,
                             ignoreContextSize: this._discussionCapabilities.ignoreContextSize === true,
-                            onUpdateMessage: async (_msgId, liveContent) => {
-                                const livePhaseContent = `\n\n---\n### 🐾 Phase ${nextPartIdx + 1} of ${totalParts}\n\n${liveContent}`;
-                                await this.updateMessageContent(assistantMessageId, bufferBeforeScout + livePhaseContent, false);
-                            },
                             onStatusUpdate: (st) => {
-                                this.processManager.updateDescription(processId, st);
+                                this.processManager.updateDescription(processId, `Phase ${nextPartIdx + 1}/${totalParts}: ${st}`);
                                 this.updateGeneratingState();
                             }
                         });
@@ -6592,8 +6704,13 @@ Please review the output to verify if the application state behaved as expected 
           initialTestCmd = detected.command;
       }
 
+      const isAgent = this._discussionCapabilities.agentMode === true;
+      const promptLabel = isAgent
+          ? `Confirm test command for ${workspaceFolder.name} (🤖 Agent Mode: will loop test/code/auto-apply until tests pass):`
+          : `Confirm or customize the test command for ${workspaceFolder.name}:`;
+
       const commandInput = await vscode.window.showInputBox({
-          prompt: `Confirm or customize the test command for ${workspaceFolder.name}:`,
+          prompt: promptLabel,
           value: initialTestCmd,
           placeHolder: "e.g. python -m pytest tests -v, npm test, cargo test"
       });
@@ -6615,6 +6732,58 @@ Please review the output to verify if the application state behaved as expected 
       } catch (err) {
           this.log(`Failed to save last test command: ${err}`, 'WARN');
       }
+
+      // In Agent Mode: Execute autonomous looping test-driven development (TDD) until tests succeed
+      if (isAgent && this.agentManager) {
+          const { id: procId, controller } = this.processManager.register(this.discussionId, `TDD Loop: ${finalCmd}...`);
+          this.updateGeneratingState();
+
+          await this.addMessageToDiscussion({
+              id: 'test_loop_launch_' + Date.now(),
+              role: 'system',
+              content: `🧪 **Autonomous TDD Loop Engaged (Agent Mode)**
+- **Command**: \`${finalCmd}\`
+- **Protocol**: \`Test -> Code -> Auto-Apply -> Test -> ...\` until all tests pass.
+- *Running test suite and beginning autonomous resolution...*`,
+              skipInPrompt: true
+          });
+
+          try {
+              const loopResult = await this.agentManager.runTestDrivenLoop(finalCmd, controller.signal);
+              if (loopResult.success) {
+                  await this.addMessageToDiscussion({
+                      id: 'test_loop_success_' + Date.now(),
+                      role: 'assistant',
+                      content: `🎉 **All Tests Passed Successfully!** (Resolved in ${loopResult.iterations} round${loopResult.iterations === 1 ? '' : 's'})
+
+**Test Command**: \`${finalCmd}\`
+**Final Test Output**:
+\`\`\`
+${loopResult.output.substring(0, 2000)}
+\`\`\`
+All code modifications have been verified and applied to disk.`
+                  });
+              } else {
+                  await this.addMessageToDiscussion({
+                      id: 'test_loop_fail_' + Date.now(),
+                      role: 'assistant',
+                      content: `🛑 **Test Loop Concluded with Failures** (Reached ${loopResult.iterations} round${loopResult.iterations === 1 ? '' : 's'})
+
+**Last Test Output**:
+\`\`\`
+${loopResult.output.substring(0, 2000)}
+\`\`\`
+Please inspect the remaining failures above or adjust your test command.`
+                  });
+              }
+          } finally {
+              this.processManager.unregister(procId);
+              this.updateGeneratingState();
+              this.updateContextAndTokens({ isBackgroundSync: false });
+          }
+          return;
+      }
+
       const { id: procId, controller } = this.processManager.register(this.discussionId, `Running tests: ${finalCmd}...`);
       this.updateGeneratingState();
 
@@ -7097,6 +7266,26 @@ ${res.output || '(No output recorded)'}
               this.log(`Duplicate message ignored: ${message.id}`, 'WARN');
               return;
           }
+
+          // If an active embedded agent answer block is waiting, fold final assistant responses directly into it!
+          if (this._activeAgentAnswerId && message.role === 'assistant' && message.id !== this._activeAgentAnswerId) {
+              const activeMsg = this._currentDiscussion.messages.find(m => m.id === this._activeAgentAnswerId);
+              if (activeMsg) {
+                  const text = typeof message.content === 'string' 
+                      ? message.content 
+                      : (Array.isArray(message.content) ? message.content.map((p: any) => p.text || '').join('\n') : '');
+                  activeMsg.content = activeMsg.content ? `${activeMsg.content}\n\n${text}` : text;
+                  if (!this._currentDiscussion.id.startsWith('temp-')) {
+                      await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                  }
+                  if (updateWebview && this._panel.webview && !this._isDisposed) {
+                      this._panel.webview.postMessage({ command: 'updateMessage', messageId: this._activeAgentAnswerId, newContent: activeMsg.content, isFinal: true });
+                      this._panel.webview.postMessage({ command: 'finalizeMessage', id: this._activeAgentAnswerId, fullContent: activeMsg.content });
+                  }
+                  return;
+              }
+          }
+
           this._currentDiscussion.messages.push(message);
           if (!this._currentDiscussion.id.startsWith('temp-')) {
               await this._discussionManager.saveDiscussion(this._currentDiscussion);
@@ -7438,9 +7627,13 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         this.updateContextAndTokens({ isBackgroundSync: true });
 
                         // 🛑 AUTOMATED AI BATCH REPAIR DISPATCH
-                        // If one or more updates failed to apply, automatically assemble all failed files with fresh disk states and resend to the LLM
-                        if (failedBatchItems.length > 0 && !isUndoMode && !applyCtrl.signal.aborted) {
+                        // Only trigger autonomous batch repair in Agent Mode with autoFix enabled.
+                        // In Assistant Mode, do not automatically retry; the user retains manual control.
+                        const isAutonomousAgent = this._discussionCapabilities.agentMode === true;
+                        if (isAutonomousAgent && this._discussionCapabilities.autoFix && failedBatchItems.length > 0 && !isUndoMode && !applyCtrl.signal.aborted) {
                             await this.handleBatchApplyFailures(failedBatchItems, messageId);
+                        } else if (failedBatchItems.length > 0) {
+                            this.log(`[Batch Apply] ${failedBatchItems.length} update(s) failed to apply. Skipping automatic retry in assistant mode.`, 'INFO');
                         }
                     };
 
@@ -9357,6 +9550,27 @@ Task:
                     ChatPanel.activeGenerations.delete(this.discussionId);
                     this.processManager.cancelForDiscussion(this.discussionId);
 
+                    // 1.5 Embedded agent mode: reject any pending inline question and release the answer binding
+                    if (this._pendingAgentQuestion) {
+                        this.cancelPendingAgentQuestion('Generation stopped by user.');
+                    }
+                    if (this._activeAgentAnswerId) {
+                        const targetId = this._activeAgentAnswerId;
+                        this._activeAgentAnswerId = undefined;
+                        const targetMsg = this._currentDiscussion?.messages.find(m => m.id === targetId);
+                        if (targetMsg) {
+                            if (!targetMsg.content || (typeof targetMsg.content === 'string' && targetMsg.content.trim() === '')) {
+                                const idx = this._currentDiscussion!.messages.findIndex(m => m.id === targetId);
+                                if (idx !== -1) {
+                                    this._currentDiscussion!.messages.splice(idx, 1);
+                                }
+                                this._panel.webview.postMessage({ command: 'removeMessage', messageId: targetId });
+                            } else {
+                                this._panel.webview.postMessage({ command: 'finalizeMessage', id: targetId, fullContent: targetMsg.content });
+                            }
+                        }
+                    }
+
                     // 2. State management for Agent
                     if (this.agentManager) {
                         const plan = (this.agentManager as any).currentPlan;
@@ -9405,6 +9619,30 @@ Task:
                 this._discussionCapabilities.agentMode = this.agentManager.getIsActive();
                 this.saveCapabilities();
                 this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
+                break;
+            case 'setAgentMode':
+                {
+                    const isActive = !!message.isActive;
+                    this._discussionCapabilities.agentMode = isActive;
+                    if (this.agentManager) {
+                        (this.agentManager as any).isActive = isActive;
+                    }
+                    await this.saveCapabilities();
+                    this.updateAgentMode(isActive);
+                    ChatPanel.panels.forEach(p => {
+                        if (!p._isDisposed && p._panel && p._panel.webview) {
+                            p._panel.webview.postMessage({ command: 'setAgentMode', isActive });
+                            p._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: p._discussionCapabilities });
+                        }
+                    });
+                }
+                break;
+            case 'answerAgentQuestion':
+                {
+                    // Inline agent question answered from the chat stream (same answer block)
+                    const answerText = typeof message.answer === 'string' ? message.answer : String(message.answer || '');
+                    this.resolvePendingAgentQuestion(answerText);
+                }
                 break;
             case 'runAgent':
                 if (!this._currentDiscussion) return;

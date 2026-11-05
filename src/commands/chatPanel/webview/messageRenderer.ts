@@ -87,6 +87,7 @@ export function ensurePluginsInitialized() {
 
 // Initial eager attempt
 ensurePluginsInitialized();
+installAgentUiListener();
 (window as any).renderCytoscapeDiagram = renderCytoscapeDiagram;
 
 export function stripThinkingTags(text: string): string {
@@ -2113,6 +2114,95 @@ function renderAiderDiff(pre: HTMLElement, rawCode: string, filePath: string, me
 }
 
 
+// ─── EMBEDDED AGENT MODE: round fences (<agent_round>) render inside the SAME answer block ───
+const AGENT_ROUND_RE = /<agent_round\b([^>]*)>([\s\S]*?)<\/agent_round>/gi;
+
+export interface AgentRoundAttrs {
+    type: 'plan' | 'tool' | 'exec' | 'verify' | 'question';
+    title: string;
+    status: 'running' | 'done' | 'failed';
+}
+
+/** Tolerant attribute parser: order-agnostic, unknown attrs ignored, safe defaults. */
+export function parseAgentRoundAttrs(attrStr: string): AgentRoundAttrs {
+    const attrs: AgentRoundAttrs = { type: 'tool', title: '', status: 'done' };
+    if (!attrStr) return attrs;
+
+    const typeMatch = attrStr.match(/type\s*=\s*["']([^"']*)["']/i);
+    if (typeMatch && ['plan', 'tool', 'exec', 'verify', 'question'].includes(typeMatch[1].toLowerCase())) {
+        attrs.type = typeMatch[1].toLowerCase() as AgentRoundAttrs['type'];
+    }
+    const titleMatch = attrStr.match(/title\s*=\s*"([^"]*)"|title\s*=\s*'([^']*)'/i);
+    if (titleMatch) {
+        const raw = (titleMatch[1] ?? titleMatch[2] ?? '').replace(/&(lt|gt|amp|apos|quot);/g, (m, e) => {
+            const map: { [k: string]: string } = { lt: '<', gt: '>', amp: '&', apos: "'", quot: '"' };
+            return map[e] || m;
+        });
+        attrs.title = raw;
+    }
+    const statusMatch = attrStr.match(/status\s*=\s*["']([^"']*)["']/i);
+    if (statusMatch && ['running', 'done', 'failed'].includes(statusMatch[1].toLowerCase())) {
+        attrs.status = statusMatch[1].toLowerCase() as AgentRoundAttrs['status'];
+    }
+    return attrs;
+}
+
+/** Explicit user toggle overrides keyed `agent-round:{messageId}:{idx}` (survive re-renders). */
+const agentRoundUserToggles = new Map<string, boolean>();
+
+const AGENT_ROUND_ICONS: Record<AgentRoundAttrs['type'], string> = {
+    plan: '🗂',
+    tool: '🛠',
+    exec: '⚡',
+    verify: '🛡',
+    question: '❓'
+};
+
+/**
+ * Renders one <agent_round> fence as a collapsible section INSIDE the single answer block.
+ * Mirrors renderFileOpBlock/renderFormBlock conventions: details + summary + inline styling.
+ */
+export function renderAgentRoundSection(messageId: string, idx: number, attrs: AgentRoundAttrs, innerContent: string): string {
+    const roundKey = `agent-round:${messageId}:${idx}`;
+    const userOverride = agentRoundUserToggles.get(roundKey);
+    const isOpen = userOverride !== undefined ? userOverride : attrs.status === 'running';
+    const openAttr = isOpen ? 'open' : '';
+
+    let statusChip: string;
+    if (attrs.status === 'running') {
+        statusChip = `<span class="agent-round-status" style="font-size:9.5px; font-weight:700; color:var(--vscode-charts-blue); display:inline-flex; align-items:center; gap:4px;"><span style="display:inline-block; width:9px; height:9px; border:1.5px solid var(--vscode-charts-blue); border-top-color:transparent; border-radius:50%; animation:agentRoundSpin 0.75s linear infinite;"></span>⟳ running</span>`;
+    } else if (attrs.status === 'failed') {
+        statusChip = `<span class="agent-round-status" style="font-size:9.5px; font-weight:700; color:var(--vscode-charts-red);">✗ failed</span>`;
+    } else {
+        statusChip = `<span class="agent-round-status" style="font-size:9.5px; font-weight:700; color:var(--vscode-charts-green);">✓ done</span>`;
+    }
+
+    let bodyHtml = '';
+    const inner = (innerContent || '').trim();
+    if (inner) {
+        try {
+            bodyHtml = sanitizer.sanitize(marked.parse(inner) as string, SANITIZE_CONFIG);
+        } catch {
+            bodyHtml = `<pre style="white-space:pre-wrap;">${escapeHtml(inner)}</pre>`;
+        }
+    }
+
+    return `
+<details class="agent-round" id="agent-round-${escapeHtml(messageId)}-${idx}" data-agent-round-key="${escapeHtml(roundKey)}" data-round-type="${escapeHtml(attrs.type)}" data-round-status="${escapeHtml(attrs.status)}" ${openAttr} style="margin: 8px 0; border: 1px solid var(--vscode-widget-border); border-left: 3px solid var(--vscode-charts-blue); border-radius: 6px; background: var(--vscode-editor-inactiveSelectionBackground); overflow: hidden;">
+    <summary class="agent-round-summary" style="padding: 6px 12px; cursor: pointer; font-weight: 600; font-size: 11.5px; display: flex; align-items: center; gap: 8px; background: var(--vscode-sideBarSectionHeader-background); user-select: none;">
+        <span style="display:inline-flex; align-items:center; gap:6px; flex:1; min-width:0;">
+            <span>${AGENT_ROUND_ICONS[attrs.type]}</span>
+            <span style="text-transform:uppercase; letter-spacing:0.5px; font-size:9.5px; opacity:0.85;">${escapeHtml(attrs.type)}</span>
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(attrs.title)}">${escapeHtml(attrs.title || '')}</span>
+        </span>
+        ${statusChip}
+    </summary>
+    <div class="agent-round-body markdown-body" style="padding: 8px 14px; font-size: 11.5px; line-height: 1.5;">
+        ${bodyHtml}
+    </div>
+</details>`;
+}
+
 export function renderFileOpBlock(type: 'delete' | 'move' | 'copy' | 'prune', params: any, messageId: string): string {
     const blockId = `file-op-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
     let title = "";
@@ -2489,6 +2579,28 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         }
     });
 
+    // 2.5 EXTRACT EMBEDDED AGENT ROUND FENCES (same answer block; never sibling messages)
+    let agentRoundIdx = 0;
+    let agentRoundMatch: RegExpExecArray | null;
+    AGENT_ROUND_RE.lastIndex = 0;
+    while ((agentRoundMatch = AGENT_ROUND_RE.exec(mainProcessedContent)) !== null) {
+        const roundStart = agentRoundMatch.index;
+        const roundEnd = roundStart + agentRoundMatch[0].length;
+        // Bidirectional overlap check against already-segmented plugins
+        const isOverlapping = segments.some(s => roundStart < s.end && roundEnd > s.start);
+        if (isOverlapping) continue;
+        const roundAttrs = parseAgentRoundAttrs(agentRoundMatch[1]);
+        const roundHtml = renderAgentRoundSection(messageId, agentRoundIdx++, roundAttrs, agentRoundMatch[2]);
+        if (roundHtml) {
+            segments.push({
+                type: 'plugin',
+                content: roundHtml,
+                start: roundStart,
+                end: roundEnd
+            });
+        }
+    }
+
     // 3. EXTRACT FENCED CODE BLOCKS OUTSIDE OF PLUGINS
     const codeBlocks = extractFilePaths(mainProcessedContent);
     codeBlocks.forEach((block, idx) => {
@@ -2831,6 +2943,15 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     const oEl = oNode as HTMLElement;
 
                     if (nEl.id && oEl.id && nEl.id === oEl.id) {
+                        // Prevent flickering: If code card is already enhanced and code has not changed, do not wipe innerHTML
+                        if (oEl.classList.contains('code-collapsible') || oEl.classList.contains('file-mutation-card')) {
+                            const nCode = nEl.getAttribute('data-raw-code') || nEl.dataset.rawCode || '';
+                            const oCode = oEl.getAttribute('data-raw-code') || oEl.dataset.rawCode || '';
+                            if (nCode && oCode && nCode === oCode) {
+                                idx++;
+                                continue;
+                            }
+                        }
                         if (nEl.innerHTML !== oEl.innerHTML) {
                             oEl.innerHTML = nEl.innerHTML;
                         }
@@ -3292,8 +3413,10 @@ export function gatherChangesFromBlocks(messageId: string, isUndo: boolean = fal
  */
 function sanitizeForTTS(text: string): string {
     if (typeof text !== 'string') return "";
+    // 0. Remove agent round fences entirely — rounds are UI chrome, not speech
+    let clean = text.replace(/<agent_round\b[^>]*>([\s\S]*?)<\/agent_round>/gi, (_m, inner) => ' ');
     // 1. Remove triple backtick code blocks entirely
-    let clean = text.replace(/```[\s\S]*?```/g, ' [code block] ');
+    clean = clean.replace(/```[\s\S]*?```/g, ' [code block] ');
     // 2. Remove inline code backticks
     clean = clean.replace(/`[^`]+`/g, '');
     // 3. Remove markdown formatting characters
@@ -3442,7 +3565,7 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
     if (personalityName) messageWrapper.dataset.personalityName = personalityName;
 
     const caps = state.capabilities || { agentMode: false, dynamicMode: false };
-    const isAgent = state.capabilities?.agentMode && role === 'assistant';
+    const isAgent = caps.agentMode === true;
     const isDynamic = caps.dynamicMode === true && !isAgent;
     const isAssistant = !isAgent && !isDynamic;
 
@@ -8051,4 +8174,167 @@ function formatPlanForCopy(plan: any): string {
     });
 
     return log;
+}
+
+// ─── EMBEDDED AGENT MODE: inline question card + state chip + inbound mini-listener ───
+
+/** CSS-attribute-safe escape for selector values (CSS.escape fallback). */
+function agentSafeAttrValue(v: string): string {
+    return String(v ?? '').replace(/["\\\[\](){}:>#~,.\s]/g, c => '\\' + c);
+}
+
+/**
+ * Renders the agent question card INLINE inside the same answer bubble (composer stays in HUD).
+ * Idempotent: skipped if a card for this messageId already exists (Phase-4 double-wire safe).
+ */
+export function renderAgentQuestionCard(messageId: string, question: string, options: string[], isAgentZone: boolean): void {
+    try {
+        if (!messageId) return;
+        const wrapper = document.querySelector(`.message-wrapper[data-message-id='${agentSafeAttrValue(messageId)}']`) as HTMLElement;
+        if (!wrapper) return;
+        const contentDiv = wrapper.querySelector('.message-content') as HTMLElement;
+        if (!contentDiv) return;
+        if (contentDiv.querySelector(`[data-agent-question-for='${agentSafeAttrValue(messageId)}']`)) return; // idempotency guard
+
+        const card = document.createElement('div');
+        card.className = 'agent-question-card';
+        card.setAttribute('data-agent-question-for', messageId);
+        card.style.cssText = 'margin: 10px 0; padding: 10px 14px; border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; background: rgba(0,122,204,0.08);';
+
+        const header = document.createElement('div');
+        header.style.cssText = 'font-weight:700; font-size:12px; margin-bottom:8px; display:flex; align-items:center; gap:6px; color:var(--vscode-charts-blue);';
+        header.innerHTML = `<span class="codicon codicon-lightbulb"></span> <span>Agent Question${isAgentZone ? '' : ''}</span>`;
+        card.appendChild(header);
+
+        const questionEl = document.createElement('div');
+        questionEl.style.cssText = 'font-size:12px; margin-bottom:10px;';
+        questionEl.textContent = question || '';
+        card.appendChild(questionEl);
+
+        const controls = document.createElement('div');
+        controls.style.cssText = 'display:flex; flex-direction:column; gap:6px;';
+        card.appendChild(controls);
+
+        const lockCard = (answer: string) => {
+            card.setAttribute('data-agent-answered', 'true');
+            controls.innerHTML = '';
+            const answeredEl = document.createElement('div');
+            answeredEl.style.cssText = 'font-size:11.5px; color:var(--vscode-charts-green); display:flex; align-items:center; gap:6px;';
+            answeredEl.innerHTML = `<span class="codicon codicon-check"></span> <span></span>`;
+            (answeredEl.querySelector('span:last-child') as HTMLElement).textContent = answer;
+            controls.appendChild(answeredEl);
+        };
+
+        const submitAnswer = (answer: string) => {
+            const trimmed = (answer || '').trim();
+            if (!trimmed) return;
+            vscode.postMessage({ command: 'answerAgentQuestion', messageId, answer: trimmed });
+            lockCard(trimmed);
+        };
+
+        (options || []).forEach(opt => {
+            const btn = document.createElement('button');
+            btn.className = 'code-action-btn apply-btn agent-question-option-btn';
+            btn.style.cssText = 'justify-content:flex-start; height:28px; font-size:11.5px;';
+            btn.textContent = opt;
+            btn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                submitAnswer(opt);
+            };
+            controls.appendChild(btn);
+        });
+
+        const inputRow = document.createElement('div');
+        inputRow.style.cssText = 'display:flex; gap:8px;';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'agent-question-input';
+        input.placeholder = 'Type your answer...';
+        input.style.cssText = 'flex:1; background:var(--vscode-input-background); color:var(--vscode-input-foreground); border:1px solid var(--vscode-input-border); border-radius:4px; padding:6px 10px; font-size:11.5px; outline:none;';
+        const sendBtn = document.createElement('button');
+        sendBtn.className = 'code-action-btn apply-btn agent-question-send-btn';
+        sendBtn.innerHTML = '<span class="codicon codicon-send"></span> Send';
+        sendBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            submitAnswer(input.value);
+        };
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                submitAnswer(input.value);
+            }
+        };
+        inputRow.appendChild(input);
+        inputRow.appendChild(sendBtn);
+        controls.appendChild(inputRow);
+
+        contentDiv.appendChild(card);
+        setTimeout(() => input.focus(), 50);
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch (e) {
+        console.warn('[agentQuestion] failed to render inline card:', e);
+    }
+}
+(window as any).renderAgentQuestionCard = renderAgentQuestionCard;
+
+/** Non-fatal agent-mode chip sync: flags containers so Phase-4 chip/CSS can react. */
+export function syncAgentModeChip(isActive: boolean): void {
+    try {
+        if (document.body) {
+            document.body.classList.toggle('agent-mode-active', isActive === true);
+            document.body.setAttribute('data-agent-active', isActive ? 'true' : 'false');
+        }
+        const container = document.getElementById('chat-messages-container');
+        if (container) {
+            container.setAttribute('data-agent-active', isActive ? 'true' : 'false');
+        }
+        const chip = document.getElementById('agent-mode-chip');
+        if (chip) {
+            chip.setAttribute('data-agent-active', isActive ? 'true' : 'false');
+        }
+    } catch {
+        // Chip sync must never break rendering.
+    }
+}
+(window as any).syncAgentModeChip = syncAgentModeChip;
+
+/** Once-guarded inbound mini-listener (Phase-4 double-wire safe) + round toggle overrides. */
+let __agentUiListenerInstalled = false;
+function installAgentUiListener(): void {
+    if (__agentUiListenerInstalled) return;
+    __agentUiListenerInstalled = true;
+
+    window.addEventListener('message', (event) => {
+        const msg = (event as any)?.data;
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.command === 'agentQuestion') {
+            renderAgentQuestionCard(msg.messageId, msg.question, msg.options || [], !!msg.isAgentZone);
+        } else if (msg.command === 'setAgentMode') {
+            if (state?.capabilities) state.capabilities.agentMode = !!msg.isActive;
+            syncAgentModeChip(!!msg.isActive);
+        } else if (msg.command === 'agentQuestionCanceled') {
+            // Host aborted the question: lock any rendered card as canceled.
+            try {
+                const card = document.querySelector(`[data-agent-question-for='${agentSafeAttrValue(String(msg.messageId || ''))}']`) as HTMLElement;
+                if (card && !card.hasAttribute('data-agent-answered')) {
+                    card.setAttribute('data-agent-answered', 'true');
+                    const controls = card.querySelector('.agent-question-card > div:last-child') as HTMLElement;
+                    if (controls) {
+                        controls.innerHTML = '<div style="font-size:11px; opacity:0.7; font-style:italic;">Question canceled.</div>';
+                    }
+                }
+            } catch {}
+        }
+    });
+
+    // Record explicit user toggles of agent-round collapsibles so re-renders honor them
+    document.addEventListener('toggle', (event) => {
+        const target = event.target as HTMLElement;
+        if (!target || !target.classList || !target.classList.contains('agent-round')) return;
+        const key = target.getAttribute('data-agent-round-key');
+        if (!key) return;
+        agentRoundUserToggles.set(key, target.hasAttribute('open'));
+    }, true);
 }

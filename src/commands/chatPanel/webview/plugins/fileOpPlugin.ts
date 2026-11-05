@@ -787,10 +787,13 @@ export const peekFilesPlugin: TagPlugin = {
         if (regexMatch) peekOptions.regex = regexMatch[1];
 
         const blockId = `peek-block-${context.messageId}-${Date.now().toString(36)}`;
-        const isAssistantMode = !context.capabilities?.agentMode && !context.capabilities?.dynamicMode;
+        // Phase-5 unified rendering: agent mode is 100% embedded in assistant mode, so it
+        // renders the IDENTICAL inline fallback card as assistant mode. Only dynamic mode
+        // retains a divergent rendering path. The gate is therefore keyed on dynamicMode only.
+        const isUnifiedInlineMode = !context.capabilities?.dynamicMode;
 
-        // In Assistant mode, peek_files is disabled. Present clean fallback options to Add to Context or Unmute
-        if (isAssistantMode) {
+        // In Assistant/Agent (embedded) modes, peek_files presents clean fallback options to Add to Context or Unmute
+        if (isUnifiedInlineMode) {
             return `
             <div class="file-operation-block" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-orange); border-radius: 8px; margin: 12px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
                 <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border);">

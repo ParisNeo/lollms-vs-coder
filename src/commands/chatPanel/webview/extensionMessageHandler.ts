@@ -613,7 +613,18 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             : (Array.isArray(message.newContent) ? message.newContent.map((p: any) => p.text || '').join('\n') : JSON.stringify(message.newContent));
                     }
 
-                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                    let wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`) as HTMLElement | null;
+                    if (!wrapper && message.newContent) {
+                        // Agent round materialization: create the wrapper so the round renders inline
+                        const { addMessage } = await import('./messageRenderer.js');
+                        addMessage({
+                            id: message.messageId,
+                            role: 'assistant',
+                            content: message.newContent,
+                            personalityName: '🤖 Agent Round'
+                        }, message.isFinal !== false);
+                        wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                    }
                     if (wrapper) {
                         const msgDiv = wrapper.querySelector('.message') as HTMLElement;
                         if (msgDiv) {
@@ -1109,6 +1120,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (message.agentMode !== undefined && state.capabilities) {
                         state.capabilities.agentMode = message.agentMode;
                         updateBadges(); // This refreshes the HUD and applies theme classes
+                        import('./ui.js').then((ui: any) => {
+                            try { ui.syncAgentModeUI?.(message.agentMode); } catch { /* best-effort */ }
+                        });
                     }
 
                     let hasChatContent = false;
@@ -1562,6 +1576,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     updateBadges();
                     renderProfilesInModal();
 
+                    // Phase-5: keep the agent chip in sync with modal-driven capability changes.
+                    import('./ui.js').then((ui: any) => {
+                        try { ui.syncAgentModeUI?.(caps.agentMode === true); } catch { /* best-effort */ }
+                    });
+
                     // RE-RENDER Context Bubble border/buttons if context data exists
                     if (state.lastContextData) {
                         import('./messageRenderer.js').then(module => {
@@ -1827,16 +1846,34 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     console.error("[Lollms Debug:Token] CRITICAL: Label container #token-count-label was null in the DOM!");
                 }
                 break;
-            case 'updateAgentMode':
+            case 'agentQuestion':
+                // Phase-5: canonical dispatcher delegation to the Phase-3 inline-card renderer.
+                // The messageRenderer module-level mini-listener also handles this message;
+                // renderAgentQuestionCard is idempotent (data-agent-question-for guard), so
+                // double-wiring is safe. Optional-chained dynamic call = no-op if absent.
+                import('./messageRenderer.js').then((m: any) => {
+                    try {
+                        m.renderAgentQuestionCard?.(message.messageId, message.question, message.options, message.isAgentZone);
+                    } catch { /* mini-listener remains the fallback owner */ }
+                });
+                break;
+            case 'setAgentMode':
+            case 'updateAgentMode': {
+                // Embedded agent mode: capability flag + chip sync only. ZERO chrome changes.
+                const isActive: boolean = message.isActive ?? message.agentMode ?? false;
                 if (state.capabilities) {
-                    state.capabilities.agentMode = message.isActive;
+                    state.capabilities.agentMode = isActive;
                 }
                 updateBadges();
-                
-                if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = message.isActive;
-                
-                if (!message.isActive) setGeneratingState(false);
+                if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = isActive;
+                // Phase-5: refresh the agent-active chip (Phase-4 ui.ts export).
+                // Best-effort + idempotent: dynamic import keeps this safe.
+                import('./ui.js').then((ui: any) => {
+                    try { ui.syncAgentModeUI?.(isActive); } catch { /* chip refresh is best-effort */ }
+                });
+                if (!isActive) setGeneratingState(false);
                 break;
+            }
             case 'error':
                 setGeneratingState(false);
                 // Clear all active spinners in buttons

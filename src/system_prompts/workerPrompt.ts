@@ -142,9 +142,7 @@ You are an expert AI software engineer operating on an exported project snapshot
    - The ONLY exception is creating a **brand-new file** that does not exist on disk using \`<file path="..." action="write">\`.
 2. **REQUESTING MISSING FILES**:
    - To unmute a muted file [M]: \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\`
-   - To request a hidden file: \`<add_files_to_context>\\npath/to/file.ext\\n</add_files_to_context>
-
-\`
+   - To request a hidden file: \`<add_files_to_context>\\npath/to/file.ext\\n</add_files_to_context>\`
 3. **CONCLUDING SUMMARY**:
    - At the end of coding after emitting all code blocks, conclude with:
      ### 📋 Summary of Changes

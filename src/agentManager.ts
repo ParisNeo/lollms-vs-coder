@@ -4,10 +4,11 @@ import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
 import { InfoPanel } from './commands/infoPanel';
 import { PlanParser } from './planParser';
-import { stripThinkingTags, getProcessedSystemPrompt } from './utils';
+import { stripThinkingTags, getProcessedSystemPrompt, stripAnsiCodes } from './utils';
 import { ProcessManager } from './processManager';
 import { DiscussionManager, Discussion } from './discussionManager';
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import { ToolManager } from './tools/toolManager';
 import { ToolExecutionEnv, ToolDefinition, Plan, ToolPermissionGroup } from './tools/tool';
@@ -663,7 +664,14 @@ const isEquipped = allEquipped.has(t.name);
 
         this.currentWorkspaceFolder = workspaceFolder;
         this.currentDiscussion = discussion;
-        this.chatHistory = discussion.messages.filter(m => !m.skipInPrompt);
+        this.chatHistory = discussion.messages.filter(m => {
+            if (m.skipInPrompt) return false;
+            if (!m.content) return false;
+            if (typeof m.content === 'string' && m.content.trim().length === 0) return false;
+            if (Array.isArray(m.content) && m.content.length === 0) return false;
+            if ((this.ui as any)?._activeAgentAnswerId && m.id === (this.ui as any)._activeAgentAnswerId) return false;
+            return true;
+        });
         this.currentUserPermissions = permissions;
 
         const currentVersion = vscode.extensions.getExtension('parisneo.lollms-vs-coder')?.packageJSON.version || "0.0.0";
@@ -825,7 +833,7 @@ Please commit or stash your work before starting an iterative debug session to e
     ) {
         if (!this.currentDiscussion) return;
 
-        if (!this.currentPlan) {
+        if (!this.currentPlan || this.currentPlan.objective === "Initializing Safety Protocols...") {
             this.currentPlan = {
                 objective: objective,
                 current_sub_goal: "Discovery & Planning",
@@ -1009,7 +1017,10 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
 
                 const toolCall = this.planParser.extractJson(cleanResponse);
                 if (!toolCall) {
-                    if (cleanResponse.includes('```')) {
+                    const hasCode = cleanResponse.includes('```') || 
+                                    cleanResponse.includes('<file') || 
+                                    cleanResponse.includes('<<<<<<< SEARCH');
+                    if (hasCode) {
                         this.processManager?.updateDescription(processId, `Agentic Loop: Applying code updates...`);
 
                         const codingTask: Task = {
@@ -1034,9 +1045,9 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                         continue;
                     }
 
-                    if (cleanResponse.length < 1000) {
+                    if (cleanResponse.trim().length > 0) {
                         this.completedActionsHistory.push(`[CONVERSATIONAL RESPONSE]\n- CONTENT: ${cleanResponse.substring(0, 200)}...`);
-                        this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
+                        await this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
                         break; 
                     }
                     continue; 
@@ -1216,10 +1227,10 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                 targetFiles: files
             };
         }
-        if (['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'secure_run'].includes(action)) {
+        if (['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'test_web_ui', 'test_web_page', 'interactive_ui_test', 'secure_run'].includes(action)) {
             return {
                 role: 'tester',
-                focus: 'Runtime Execution & Testing',
+                focus: 'Runtime Execution, Web UI & Testing',
                 targetFiles: params?.file ? [params.file] : []
             };
         }
@@ -1685,7 +1696,7 @@ Please provide a clear, concise final response to the user summarizing the outco
             const isStuck = recentFailures.length >= 3 && recentFailures.every(t => t.action === task.action);
 
             const isWriteAction = ['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'markdown_coding'].includes(task.action);
-            const isVerifyAction = ['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'test_web_page', 'secure_run'].includes(task.action);
+            const isVerifyAction = ['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'test_web_page', 'test_web_ui', 'interactive_ui_test', 'secure_run'].includes(task.action);
             const targetFile = resolvedParams.file_path || resolvedParams.path || "";
 
             if (task.action === 'generate_code' && resolvedParams.file_path) {
@@ -2247,7 +2258,7 @@ Please provide a clear, concise final response to the user summarizing the outco
     }
 
     private async executeTask(action: string, params: any, signal: AbortSignal, overrideEnv?: ToolExecutionEnv, taskModel?: string, taskPersona?: string, taskSkills?: string[], taskFiles?: string[]): Promise<{ success: boolean, output: string }> {
-        const tool = this.toolManager.getTool(action);
+        const tool = this.toolManager.getTool(action) || this.toolManager.getAllTools().find(t => t.name === action);
         if (!tool) return { success: false, output: `Unknown action: ${action}` };
 
         const perm = this.checkGlobalPermission(tool, params);
@@ -2653,6 +2664,151 @@ I will be creating a sandbox branch and applying surgical patches. To ensure you
         }
         
         return "Complete";
+    }
+
+    /**
+     * Autonomous TDD Loop:
+     * test -> code -> auto-apply -> test -> code -> ... until all tests pass or max iterations reached.
+     */
+    public async runTestDrivenLoop(
+        testCommand: string,
+        signal: AbortSignal,
+        maxIterations: number = 8
+    ): Promise<{ success: boolean; output: string; iterations: number }> {
+        const workspaceFolder = this.currentWorkspaceFolder || vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) {
+            return { success: false, output: "No active workspace folder.", iterations: 0 };
+        }
+
+        const model = this.currentDiscussion?.model || this.lollmsApi.getModelName();
+        let currentIteration = 0;
+        let lastOutput = "";
+        let isAllPassing = false;
+
+        this.isActive = true;
+        this.ui.updateAgentMode(true);
+
+        const logRelPath = path.join('.lollms', 'last_test_log.log').replace(/\\/g, '/');
+        const logUri = vscode.Uri.joinPath(workspaceFolder.uri, logRelPath);
+
+        while (currentIteration < maxIterations) {
+            if (signal.aborted) break;
+            currentIteration++;
+
+            const proc = this.processManager?.getForDiscussion(this.currentDiscussion?.id || "");
+            if (proc) {
+                this.processManager?.updateDescription(proc.id, `🧪 TDD Loop [${currentIteration}/${maxIterations}]: Running \`${testCommand}\`...`);
+            }
+            this.ui.updateGeneratingState();
+
+            // 1. RUN TEST
+            const runRes = await this.runCommand(testCommand, signal, { timeoutMs: 180000 });
+            const cleanOutput = stripAnsiCodes(runRes.output || '').trim();
+            lastOutput = cleanOutput;
+
+            // Check if test passed
+            const hasExplicitFailure = cleanOutput.toLowerCase().includes('failed,') ||
+                cleanOutput.toLowerCase().includes('failures=') ||
+                cleanOutput.toLowerCase().includes('errors=') ||
+                cleanOutput.toLowerCase().includes('failing') ||
+                cleanOutput.toLowerCase().includes('err!') ||
+                cleanOutput.toLowerCase().includes('traceback');
+
+            const isPassed = runRes.success && !hasExplicitFailure;
+
+            // Save test log on disk and sync to context
+            try {
+                await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(workspaceFolder.uri, '.lollms')).then(undefined, () => {});
+                await vscode.workspace.fs.writeFile(logUri, Buffer.from(cleanOutput || '(No output recorded)', 'utf8'));
+                await this.contextManager.getContextStateProvider()?.addFilesToContext([logRelPath]);
+                this.contextManager.refreshFileInCache(logUri);
+            } catch {}
+
+            if (isPassed) {
+                isAllPassing = true;
+                const successMsg = `✅ **TDD Victory (Round ${currentIteration}/${maxIterations})**: All tests passed clean!\nCommand: \`${testCommand}\`\nOutput saved to \`${logRelPath}\`.`;
+                this.completedActionsHistory.push(`[TDD SUCCESS] ${successMsg}`);
+                await this.ui.addMessageToDiscussion({ role: 'system', content: successMsg });
+                break;
+            }
+
+            // 2. TESTS FAILED -> DRAFT FIX
+            const failNotice = `⚠️ **TDD Failure (Round ${currentIteration}/${maxIterations})** on \`${testCommand}\`.\nAnalyzing traceback, locating broken code, and auto-applying fixes...`;
+            this.completedActionsHistory.push(`[TDD FAILURE] Round ${currentIteration}: ${cleanOutput.substring(0, 300)}`);
+            await this.ui.addMessageToDiscussion({ role: 'system', content: failNotice });
+
+            if (proc) {
+                this.processManager?.updateDescription(proc.id, `🛠️ TDD Loop [${currentIteration}/${maxIterations}]: Drafting code fix...`);
+            }
+            this.ui.updateGeneratingState();
+
+            // Read context files with ground-truth disk contents
+            const contextData = await this.contextManager.getContextContent({
+                includeTree: true,
+                modelName: model,
+                signal
+            });
+
+            const tddRepairPrompt = `### 🧪 AUTONOMOUS TDD REPAIR MISSION (ROUND ${currentIteration} of ${maxIterations})
+Test Command: \`${testCommand}\`
+Status: FAILED (Exit Code: ${runRes.success ? 0 : 1})
+
+**TEST LOG / TRACEBACK (${logRelPath}):**
+\`\`\`text
+${cleanOutput.substring(0, 4000) || '(No test output captured)'}
+\`\`\`
+
+**ACTIVE GROUND-TRUTH CODE ON DISK:**
+${contextData.selectedFilesContent || '(Inspect files from the tree)'}
+
+---
+### 🛠️ MANDATORY TDD REPAIR INSTRUCTIONS:
+1. **ANALYZE ROOT CAUSE**: Examine the assertion failure, missing import, or error in the test output above.
+2. **DELIVER IMMEDIATE CODE**: Output the necessary code modifications to make the tests pass.
+3. **FORMAT**: Output code updates inside standard XML \`<file path="..." action="write|patch|update_symbol">\` tags.
+4. **KEEP PATCHES SHORT**: Use short SEARCH/REPLACE blocks (1-5 lines) or targeted symbol replacements. Do not write unnecessary prose.`;
+
+            const systemPrompt = `You are an expert autonomous Test-Driven Development (TDD) engineer. Your goal is to make all tests pass by providing verified, surgical code modifications inside <file path="..." action="..."> tags.`;
+
+            let fixResponse = "";
+            try {
+                fixResponse = await this.lollmsApi.sendChat([
+                    { role: 'system', content: systemPrompt },
+                    ...this.chatHistory.slice(-2),
+                    { role: 'user', content: tddRepairPrompt }
+                ], (chunk) => {
+                    if (this.currentPlan) {
+                        this.currentPlan.scratchpad = (this.currentPlan.scratchpad || '') + chunk;
+                    }
+                }, signal, model);
+            } catch (err: any) {
+                if (err.name === 'AbortError' || signal.aborted) break;
+                Logger.error(`TDD repair LLM generation error: ${err.message}`);
+                break;
+            }
+
+            const cleanFix = stripThinkingTags(fixResponse).trim();
+
+            // 3. AUTO-APPLY CODE UPDATES TO DISK
+            if (proc) {
+                this.processManager?.updateDescription(proc.id, `⚡ TDD Loop [${currentIteration}/${maxIterations}]: Auto-applying patches...`);
+            }
+            this.ui.updateGeneratingState();
+
+            const stepId = `agent_tdd_${Date.now()}_${currentIteration}`;
+            await this.ui.executeAutomationPipeline(cleanFix, stepId, signal, proc?.id || 'tdd_loop');
+
+            this.completedActionsHistory.push(`[TDD APPLIED] Round ${currentIteration}: Patches applied to disk.`);
+
+            // Brief pause for file system I/O and text documents to settle
+            await new Promise(r => setTimeout(r, 800));
+        }
+
+        return {
+            success: isAllPassing,
+            output: lastOutput,
+            iterations: currentIteration
+        };
     }
 
     public async runDebuggerAgent(objective: string, signal: AbortSignal): Promise<string> {

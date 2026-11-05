@@ -33,7 +33,17 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
     );
     const isSystem = !isLibrarian && !isContextShield && (safeMessageId.startsWith('error_') || safeMessageId.startsWith('system_') || wrapper.querySelector('.message')?.classList.contains('system-message'));
 
-    // Update avatar icon and color theme for Librarian or Context Shield
+    const isAgent = !isUser && !isSystem && !isLibrarian && !isContextShield && (
+        state.capabilities?.agentMode === true ||
+        document.body.classList.contains('agent-mode-active') ||
+        document.body.getAttribute('data-agent-active') === 'true' ||
+        wrapper.dataset.role === 'agent' ||
+        wrapper.dataset.isAgent === 'true' ||
+        safeMessageId.startsWith('agent_') ||
+        safeMessageId.startsWith('assistant_agent_')
+    );
+
+    // Update avatar icon and color theme for Librarian, Context Shield, or Agent
     if (isContextShield) {
         const avatarDiv = wrapper.querySelector('.message-avatar') as HTMLElement;
         if (avatarDiv) {
@@ -56,6 +66,18 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
             msgDiv.classList.add('librarian-message');
             msgDiv.style.borderLeftColor = 'var(--vscode-charts-orange)';
         }
+    } else if (isAgent) {
+        wrapper.dataset.isAgent = 'true';
+        const avatarDiv = wrapper.querySelector('.message-avatar') as HTMLElement;
+        if (avatarDiv) {
+            avatarDiv.innerHTML = '<span class="codicon codicon-robot" style="color:var(--vscode-charts-red)"></span>';
+            avatarDiv.style.backgroundColor = 'rgba(231, 76, 60, 0.15)';
+            avatarDiv.style.border = '1px solid var(--vscode-charts-red)';
+        }
+        if (msgDiv) {
+            msgDiv.classList.add('agent-message');
+            msgDiv.style.borderLeftColor = 'var(--vscode-charts-red)';
+        }
     }
 
     // Check if we need to initialize the layout
@@ -71,7 +93,7 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
 
         const middleButton = isUser 
             ? `<button class="msg-action-btn regenerate-msg-btn" title="Regenerate Response"><i class="codicon codicon-sync"></i></button>`
-            : ((isSystem || isLibrarian) ? '' : `<button class="msg-action-btn run-monitor-btn" title="Run App & Monitor Logs"><i class="codicon codicon-play"></i></button>`);
+            : ((isSystem || isLibrarian || isAgent) ? '' : `<button class="msg-action-btn run-monitor-btn" title="Run App & Monitor Logs"><i class="codicon codicon-play"></i></button>`);
 
         // Floating Message Actions HUD
         const actions = document.createElement('div');
@@ -102,6 +124,11 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
             roleSpan.textContent = 'You';
         } else if (isSystem) {
             roleSpan.textContent = 'System Alert';
+            roleSpan.style.color = 'var(--vscode-charts-red)';
+            roleSpan.style.fontWeight = 'bold';
+        } else if (isAgent) {
+            const personaLabel = wrapper.dataset.personalityName || 'Lollms Agent';
+            roleSpan.textContent = `${personaLabel} (Agent)`;
             roleSpan.style.color = 'var(--vscode-charts-red)';
             roleSpan.style.fontWeight = 'bold';
         } else {
@@ -329,6 +356,22 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
         actions.querySelector('.delete-msg-btn')?.addEventListener('click', () => {
             vscode.postMessage({ command: 'requestDeleteMessage', messageId });
         });
+    } else {
+        // If layout was already initialized, sync roleSpan dynamically
+        const existingRoleSpan = bodyDiv.querySelector('.role-name') as HTMLElement;
+        if (existingRoleSpan && !isUser && !isSystem && !isLibrarian && !isContextShield) {
+            if (isAgent) {
+                const personaLabel = wrapper.dataset.personalityName || 'Lollms Agent';
+                existingRoleSpan.textContent = `${personaLabel} (Agent)`;
+                existingRoleSpan.style.color = 'var(--vscode-charts-red)';
+                existingRoleSpan.style.fontWeight = 'bold';
+            } else {
+                const personaLabel = wrapper.dataset.personalityName || 'Lollms Coder';
+                existingRoleSpan.textContent = `${personaLabel} (Assistant)`;
+                existingRoleSpan.style.color = '';
+                existingRoleSpan.style.fontWeight = '';
+            }
+        }
     }
 
     renderMessageContent(messageId, rawContent, isFinal);

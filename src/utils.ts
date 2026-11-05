@@ -1632,24 +1632,27 @@ export function stripThinkingTags(responseText: string): string {
     let working = responseText;
 
     // --- HEURISTIC: DANGLING CLOSURE STRIPPER ---
+    // Strip only the dangling closure tag itself without truncating preceding content
     const closeTags = ['</think>', '</thinking>', '</thought>', '</analysis>', '</reasoning>'];
     for (const closeTag of closeTags) {
-        const closeIdx = working.indexOf(closeTag);
-        if (closeIdx !== -1) {
-            const isProtected = matches.some(range => closeIdx >= range.start && closeIdx < range.end);
+        let cIdx = working.indexOf(closeTag);
+        while (cIdx !== -1) {
+            const isProtected = matches.some(range => cIdx >= range.start && cIdx < range.end);
             if (!isProtected) {
-                const beforeClose = working.substring(0, closeIdx);
+                const beforeClose = working.substring(0, cIdx);
                 const openTag = closeTag.replace('/', '');
                 if (!beforeClose.includes(openTag)) {
-                    working = working.substring(closeIdx + closeTag.length);
-                    break;
+                    working = working.substring(0, cIdx) + working.substring(cIdx + closeTag.length);
+                    cIdx = working.indexOf(closeTag, cIdx);
+                    continue;
                 }
             }
+            cIdx = working.indexOf(closeTag, cIdx + closeTag.length);
         }
     }
 
     // --- 🛡️ UNCLOSED THINKING SAFEGUARD ---
-    // If a thinking tag is opened but NEVER closed, strip it to the next code fence or end of text.
+    // If a thinking tag is opened but NEVER closed, strip it to the next code block (<file or ```) or end of text.
     const openTags = ['<think>', '<thinking>', '<thought>', '<analysis>', '<reasoning>'];
     for (const openTag of openTags) {
         const openIdx = working.indexOf(openTag);
@@ -1659,8 +1662,16 @@ export function stripThinkingTags(responseText: string): string {
             
             if (closeIdx === -1) {
                 const nextCodeFence = working.indexOf('```', openIdx);
-                if (nextCodeFence !== -1) {
-                    working = working.substring(0, openIdx) + working.substring(nextCodeFence);
+                const fileMatch = working.substring(openIdx).search(/(?:^|\n)[ \t]*<file\b/i);
+                const nextFileTag = fileMatch !== -1 ? openIdx + fileMatch : -1;
+
+                let resumeIdx = -1;
+                if (nextCodeFence !== -1 && nextFileTag !== -1) resumeIdx = Math.min(nextCodeFence, nextFileTag);
+                else if (nextCodeFence !== -1) resumeIdx = nextCodeFence;
+                else if (nextFileTag !== -1) resumeIdx = nextFileTag;
+
+                if (resumeIdx !== -1 && resumeIdx > openIdx) {
+                    working = working.substring(0, openIdx) + working.substring(resumeIdx);
                 } else {
                     working = working.substring(0, openIdx);
                 }

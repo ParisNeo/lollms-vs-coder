@@ -105,10 +105,7 @@ export class ToolManager {
     }
 
     getTool(name: string): ToolDefinition | undefined {
-        if (this.enabledTools.has(name)) {
-            return this.tools.get(name);
-        }
-        return undefined;
+        return this.tools.get(name);
     }
 
     getAllTools(): ToolDefinition[] {

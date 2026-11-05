@@ -148,7 +148,7 @@ export class DiscussionManager {
             antiPromptInjection: config.get<boolean>('antiPromptInjection') ?? true,
             searchInCacheFirst: config.get<boolean>('searchInCacheFirst') ?? true,
             clipboardInsertRole: config.get<string>('clipboardInsertRole') as 'user' | 'assistant' || 'user',
-            fastMode: config.get<boolean>('fastMode') ?? false,
+            fastMode: config.get<boolean>('fastMode') ?? true,
             searchSources: {
                 google: true,
                 arxiv: true,

@@ -58,7 +58,14 @@ export function renderAgentMessage(messageId: string, rawContent: any, isFinal: 
     const textContent = typeof rawContent === 'string' ? rawContent : '';
     
     // Check if the message content contains structured agentic task tags
-    const containsAgentTask = textContent.includes('<agent_task') || textContent.includes('<builder_report') || textContent.includes('<milestone') || textContent.includes('### [🔍 Scout Worker]') || textContent.includes('### [🛠️ Coder Worker]') || textContent.includes('### [🧪 Test Worker]') || textContent.includes('### [🛡️ Audit Worker]');
+    const containsAgentTask = textContent.includes('<agent_task') || 
+        textContent.includes('<builder_report') || 
+        textContent.includes('<milestone') || 
+        textContent.includes('[🔍 Scout Worker]') || 
+        textContent.includes('[🛠️ Coder Worker]') || 
+        textContent.includes('[🧪 Test Worker]') || 
+        textContent.includes('[🛡️ Audit Worker]') ||
+        textContent.includes('<agent_round');
     if (containsAgentTask) {
         // Render as structured progress cards matching the plan/timeline styles
         let processedHtml = textContent;

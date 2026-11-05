@@ -277,24 +277,32 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         });
     });
 
-    const toggleFastModeHandler = (e: Event) => {
+    const toggleLibrarianModeHandler = (e: Event) => {
         e.preventDefault();
         e.stopPropagation();
-        const current = !!state.capabilities?.fastMode;
-        const newFast = !current;
+        // Fast Mode is default (fastMode: true). Clicking activates/deactivates Librarian backed mode.
+        const currentFast = state.capabilities?.fastMode !== false;
+        const newFast = !currentFast;
+        const isLibrarian = !newFast;
+
         if (state.capabilities) {
             state.capabilities.fastMode = newFast;
         }
 
-        const topBtn = document.getElementById('toggleFastModeBtn');
-        if (topBtn) topBtn.classList.toggle('active', newFast);
+        const topBtn = document.getElementById('toggleLibrarianModeBtn') || document.getElementById('toggleFastModeBtn');
+        if (topBtn) {
+            topBtn.classList.toggle('active', isLibrarian);
+            topBtn.setAttribute('title', isLibrarian
+                ? "Librarian Mode: ACTIVE (Evaluates dependencies and plans before coding). Click to switch back to Fast Mode (default)."
+                : "Librarian Mode: Inactive (Fast Mode is default). Click to activate Librarian backed mode.");
+        }
 
-        const inputBtn = document.getElementById('fastModeInputBtn');
+        const inputBtn = document.getElementById('librarianModeInputBtn') || document.getElementById('fastModeInputBtn');
         if (inputBtn) {
-            inputBtn.classList.toggle('active', newFast);
-            inputBtn.setAttribute('title', newFast
-                ? "Fast Mode: ACTIVE (Direct Coder only on visible files. Adds/unmutes files as needed without Librarian). Click to deactivate."
-                : "Fast Mode: INACTIVE. Click to activate (Direct Coder only on visible files without Librarian).");
+            inputBtn.classList.toggle('active', isLibrarian);
+            inputBtn.setAttribute('title', isLibrarian
+                ? "Librarian Mode: ACTIVE (Evaluates dependencies and plans before coding). Click to switch back to Fast Mode (default)."
+                : "Librarian Mode: Inactive (Fast Mode is default). Click to activate Librarian backed mode.");
         }
 
         vscode.postMessage({
@@ -303,14 +311,14 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         });
     };
 
-    const fastModeBtn = document.getElementById('toggleFastModeBtn');
-    if (fastModeBtn) {
-        fastModeBtn.addEventListener('click', toggleFastModeHandler);
+    const libTopBtn = document.getElementById('toggleLibrarianModeBtn') || document.getElementById('toggleFastModeBtn');
+    if (libTopBtn) {
+        libTopBtn.addEventListener('click', toggleLibrarianModeHandler);
     }
 
-    const fastModeInputBtn = document.getElementById('fastModeInputBtn');
-    if (fastModeInputBtn) {
-        fastModeInputBtn.addEventListener('click', toggleFastModeHandler);
+    const libInputBtn = document.getElementById('librarianModeInputBtn') || document.getElementById('fastModeInputBtn');
+    if (libInputBtn) {
+        libInputBtn.addEventListener('click', toggleLibrarianModeHandler);
     }
 
     // --- GLOBAL DRAG & DROP HANDLERS ---
@@ -1436,7 +1444,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 },
                 gitWorkflow: dom.capGitWorkflow?.checked ?? false,
                 includeGitInfo: dom.capIncludeGitInfo?.checked ?? false,
-                fastMode: state.capabilities?.fastMode ?? false,
+                fastMode: state.capabilities?.fastMode !== false,
                 enableTTS: (document.getElementById('cap-enableTTS') as HTMLInputElement)?.checked ?? true,
                 enableSTT: (document.getElementById('cap-enableSTT') as HTMLInputElement)?.checked ?? true,
                 herdMode: dom.capHerdMode?.checked ?? false,

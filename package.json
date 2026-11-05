@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.80",
+  "version": "1.0.81",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1044,7 +1044,7 @@
             "filesystemRead": true,
             "internetAccess": true,
             "screenCapture": false,
-            "webTesting": false
+            "webTesting": true
           },
           "description": "Global permissions for the AI Agent tools.",
           "properties": {
@@ -1564,8 +1564,8 @@
         },
         "lollmsVsCoder.fastMode": {
           "type": "boolean",
-          "default": false,
-          "description": "Fast Mode: Combine Phase 2 (Plan) and Phase 3 (Code) into a single run without waiting for user confirmation."
+          "default": true,
+          "description": "Fast Mode (Default): Direct coder execution on active files. When disabled, Librarian Mode evaluates dependencies and plans before coding."
         },
         "lollmsVsCoder.ignoreContextSize": {
           "type": "boolean",

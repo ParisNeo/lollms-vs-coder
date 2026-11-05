@@ -1979,6 +1979,7 @@ export class BadgesBinder {
 
         const optionsList = [
             { label: '🧠 Thinking Mode', icon: 'codicon-circuit-board', key: 'thinkingMode' },
+            { label: '📚 Librarian Mode', icon: 'codicon-library', key: 'librarianMode' },
             { label: '📊 SPARQL Engine', icon: 'codicon-graph', key: 'sparqlEnabled' },
             { label: '🔍 GREP Indexer', icon: 'codicon-search', key: 'grepEnabled' },
             { label: '🌍 Web Research', icon: 'codicon-globe', key: 'webSearch' },
@@ -1994,7 +1995,8 @@ export class BadgesBinder {
         ];
 
         menu.innerHTML = optionsList.map(opt => {
-            const checked = opt.key === 'sparqlEnabled' ? caps.sparqlEnabled !== false :
+            const checked = opt.key === 'librarianMode' ? caps.fastMode === false :
+                            opt.key === 'sparqlEnabled' ? caps.sparqlEnabled !== false :
                             opt.key === 'grepEnabled' ? caps.grepEnabled !== false :
                             opt.key === 'projectMemoryEnabled' ? caps.projectMemoryEnabled !== false :
                             !!(caps as any)[opt.key];
@@ -2033,6 +2035,19 @@ export class BadgesBinder {
                 e.stopPropagation();
                 const key = cb.dataset.key;
                 const isChecked = cb.checked;
+
+                if (key === 'librarianMode') {
+                    const newFast = !isChecked;
+                    if (state.capabilities) {
+                        state.capabilities.fastMode = newFast;
+                    }
+                    vscode.postMessage({
+                        command: 'updateDiscussionCapabilitiesPartial',
+                        partial: { fastMode: newFast }
+                    });
+                    updateBadges();
+                    return;
+                }
 
                 if (state.capabilities) {
                     (state.capabilities as any)[key] = isChecked;
@@ -2267,9 +2282,12 @@ export function updateBadges() {
     const isAgentActive = caps.agentMode === true;
     document.body.classList.toggle('agent-mode-active', isAgentActive);
 
+    // EMBEDDED AGENT MODE: the HUD is NEVER hidden in any mode.
+    // Agent mode is a behavioral capability flag only — the fused context dashboard,
+    // composer, and all HUD chrome stay visible and identical.
     const chatHud = document.getElementById('fused-context-dashboard');
     if (chatHud) {
-        chatHud.style.display = isAgentActive ? 'none' : 'block';
+        chatHud.style.display = 'block';
     }
 
     // --- INFRASTRUCTURE BADGE GROUP ---
@@ -2296,8 +2314,8 @@ export function updateBadges() {
         infraGroup.appendChild(badgeWrapper);
     });
 
-    // Render & Bind Personality
-    if (!caps.agentMode && state.personalities && state.personalities.length > 0) {
+    // Render & Bind Personality (visible in ALL modes: agent mode keeps the identical HUD)
+    if (state.personalities && state.personalities.length > 0) {
         const currentP = state.personalities.find(p => p && p.id === state.currentPersonalityId);
         if (currentP) {
             const div = document.createElement('div');
@@ -2311,7 +2329,7 @@ export function updateBadges() {
     // Render & Bind Response Style Mode (Balanced/Structured/Minimalist)
     const currentProfileId = caps.responseProfileId || 'balanced';
     const currentProfile = state.profiles.find(p => p.id === currentProfileId) || state.profiles[0];
-    if (currentProfile && !caps.agentMode) {
+    if (currentProfile) {
         const div = document.createElement('div');
         div.innerHTML = BadgesPresenter.renderResponseProfileBadge(currentProfile.name, currentProfile.description);
         const badgeWrapper = div.firstElementChild as HTMLElement;
@@ -2359,6 +2377,7 @@ export function updateBadges() {
 
     const activeIcons: string[] = [];
     if (caps.thinkingMode) activeIcons.push('🧠');
+    if (caps.fastMode === false) activeIcons.push('📚');
     if (caps.sparqlEnabled !== false) activeIcons.push('📊');
     if (caps.grepEnabled !== false) activeIcons.push('🔍');
     if (caps.webSearch === true) activeIcons.push('🌍');
@@ -2398,18 +2417,21 @@ export function updateBadges() {
     if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds?.toString() || '2';
     if (dom.capProjectMemory) dom.capProjectMemory.checked = caps.projectMemoryEnabled !== false;
 
-    const isFast = !!caps.fastMode;
-    const fastModeBtn = document.getElementById('toggleFastModeBtn');
-    if (fastModeBtn) {
-        fastModeBtn.classList.toggle('active', isFast);
+    const isLibrarian = caps.fastMode === false;
+    const topLibBtn = document.getElementById('toggleLibrarianModeBtn') || document.getElementById('toggleFastModeBtn');
+    if (topLibBtn) {
+        topLibBtn.classList.toggle('active', isLibrarian);
+        topLibBtn.setAttribute('title', isLibrarian
+            ? "Librarian Mode: ACTIVE (Evaluates dependencies and plans before coding). Click to switch back to Fast Mode (default)."
+            : "Librarian Mode: Inactive (Fast Mode is default). Click to activate Librarian backed mode.");
     }
 
-    const fastModeInputBtn = document.getElementById('fastModeInputBtn');
-    if (fastModeInputBtn) {
-        fastModeInputBtn.classList.toggle('active', isFast);
-        fastModeInputBtn.setAttribute('title', isFast
-            ? "Fast Mode: ACTIVE (Direct Coder only on visible files. Adds/unmutes files as needed without Librarian). Click to deactivate."
-            : "Fast Mode: INACTIVE. Click to activate (Direct Coder only on visible files without Librarian).");
+    const inputLibBtn = document.getElementById('librarianModeInputBtn') || document.getElementById('fastModeInputBtn');
+    if (inputLibBtn) {
+        inputLibBtn.classList.toggle('active', isLibrarian);
+        inputLibBtn.setAttribute('title', isLibrarian
+            ? "Librarian Mode: ACTIVE (Evaluates dependencies and plans before coding). Click to switch back to Fast Mode (default)."
+            : "Librarian Mode: Inactive (Fast Mode is default). Click to activate Librarian backed mode.");
     }
 }
 // Global exposure for events.ts
@@ -5508,7 +5530,7 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
 
     const wizardFastModeCheck = document.getElementById('wizard-fast-mode') as HTMLInputElement;
     if (wizardFastModeCheck) {
-        wizardFastModeCheck.checked = state.capabilities?.fastMode === true;
+        wizardFastModeCheck.checked = state.capabilities?.fastMode !== false;
     }
 
     // 6. Clear prior governor states for wizard

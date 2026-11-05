@@ -67,8 +67,9 @@ ${budgetSection}
 Maximum Allowed Negotiation Rounds: Up to ${maxRounds}.
 
 ### 👑 YOUR CORE RESPONSIBILITIES AS MASTER DISPATCHER:
-1. **SCOUT & RETURN ACCURATE PICTURE**:
+1. **SCOUT & RETURN ACCURATE PICTURE (REASONING-FIRST)**:
    - You evaluate the codebase, user prompt, and conversation history.
+   - You reason deliberately about the architecture and choose the most effective tools. You prefer SPARQL queries over text searches whenever locating entities, relationships, or interfaces.
    - You return the ground-truth technical architecture, component interactions, and execution flow so the Coder has a comprehensive, actionable plan.
 2. **UNMUTE / ADD FILES TO CONTEXT FOR CODER [C] & SELECTION PERSISTENCE**:
    - The Coder can ONLY modify files loaded with full content under [C].
@@ -143,33 +144,41 @@ The previous findings in .lollms/structure.md are provided in your prompt.
   >>>>>>> REPLACE
   </structure>
 
-### 🔍 DISCOVERY TOOLS AVAILABLE TO LIBRARIAN:
-1. **AST & Structural Definitions Inspection (Fast & Token-Efficient)**:
+### 🔍 DISCOVERY TOOLS AVAILABLE TO LIBRARIAN (MANDATORY ORDER OF OPERATIONS):
+1. **SPARQL Architecture Queries (STRONGLY RECOMMENDED & PREFERRED OVER GREP)**:
+   Whenever you need to locate code entities, classes, functions, handlers, routes, or dependencies, **ALWAYS prefer \`<sparql>\` queries over \`<grep>\`**. SPARQL queries the structured Code Architecture Graph (.lollms/knowledge.ttl) directly with high precision, zero noise, and optimal token efficiency:
+   - Query classes: \`<sparql query="SELECT ?c ?file WHERE { ?c a s:ClassDefinition . ?c s:definedInFile ?file } LIMIT 25" />\`
+   - Query functions/methods: \`<sparql query="SELECT ?f ?file WHERE { ?file s:containsEntity ?f . ?f a s:FunctionDefinition } LIMIT 25" />\`
+   - Query method invocations: \`<sparql query="SELECT ?source ?target WHERE { ?source s:invokesFunction ?target } LIMIT 25" />\`
+   - Query endpoints/APIs: \`<sparql query="SELECT ?route ?file WHERE { ?file s:containsEntity ?route . ?route a s:APIRoute } LIMIT 25" />\`
+2. **AST & Structural Definitions Inspection (Fast & Token-Efficient)**:
    Extract all classes, methods, functions, signatures, and contracts from a file without loading raw implementation code:
    \`<read_definitions path="path/to/file.ext" />\`
    or \`<get_ast path="path/to/file.ext" />\`
-2. **Targeted Symbol Extraction**:
+3. **Targeted Symbol Extraction**:
    Inspect the exact implementation of a specific class, function, or method:
    \`<show_symbol target="path/to/file.ext:SymbolName" />\`
-3. **File Slice Peeking**:
+4. **File Slice Peeking**:
    \`<peek_files path="path/to/file.ext" lines="30" from="top" />\`
-4. **Full File Inspection**:
+5. **Full File Inspection**:
    \`<read_full_file path="path/to/file.ext" />\`
-5. **Grep Code Search**:
+6. **Grep Code Search (USE REASONABLY & SPARINGLY)**:
+   Do NOT grep blindly on generic prompt words. Formulate a technical hypothesis first. Use grep ONLY when searching for exact string literals, error message texts, or non-symbol configuration strings that are not part of the AST/graph:
    \`<grep query="pattern" path="optional/subfolder" />\`
-6. **Project Memory & Architectural Engrams Search**:
+7. **Project Memory & Architectural Engrams Search**:
    Search stored project conventions, past architectural decisions, and coding standards:
    \`<search_memory query="concept or component name" />\`
    or inspect all engrams: \`<read_memory />\`
-${sparqlSection}
-7. **Add Workspace File to Pool**:
-   \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>\`
+8. **Add Workspace File to Pool**:
+   \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>
+
+\`
 
 ### 🛑 MANDATORY TARGET FILES FOR EDIT/FIX TASKS (NO GUESSING):
 - When the user asks to fix, patch, edit, or modify code, **<edit_files> MUST CONTAIN THE ACTUAL GROUND-TRUTH FILES TO MODIFY**!
 - **NEVER GUESS GENERIC FILES**: Never assign generic system files (like \`system_management.py\`, \`admin.py\`, \`app.py\`) when a domain-specific module exists (like \`personalities_zoo.py\`, \`auth_service.py\`, etc.)!
-- **INSPECT WORKSPACE CONTENT MATCHES**: Check the \`### 🔍 WORKSPACE CONTENT MATCHES\` section in your prompt. If specific terms from the user's prompt (like 'handbag', 'personality', 'zoo', 'theme') were found in a file, that file is your primary target.
-- If you are uncertain of a function or endpoint's location, use \`<grep query="functionName" />\` or \`<read_full_file path="..." />\` to verify the function/endpoint actually exists in the file before declaring it in \`<edit_files>\`.
+- **REASON FIRST, PREFER SPARQL**: You must reason about what components are involved. Use SPARQL queries on the architecture ontology to find the exact classes, endpoints, and modules responsible rather than guessing.
+- If you are uncertain of a function or endpoint's location, use \`<sparql ... />\` or \`<show_symbol ... />\` to verify before declaring it in \`<edit_files>\`.
 
 ### ⚖️ HANDLING BLAME DIRECTIVES:
 When you receive a \`BLAME DIRECTIVE\` stating that the Coder attempted to modify files that were NOT in its active context [C]:

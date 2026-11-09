@@ -29,7 +29,7 @@ import { contextExpansionPlugin } from './plugins/contextExpansionPlugin.js';
 import { projectMemoryPlugin } from './plugins/projectMemoryPlugin.js';
 import { milestonePlugin } from './plugins/milestonePlugin.js';
 import { processingPlugin } from './plugins/processingPlugin.js';
-import { formPlugin } from './plugins/formPlugin.js';
+import { formPlugin, parseAndRenderFormContent } from './plugins/formPlugin.js';
 import { fileOpPlugin, fileMutationPlugin, unpackDirectoryPlugin, peekFilesPlugin, loadStructurePlugin, showSymbolPlugin } from './plugins/fileOpPlugin.js';
 import { breakpointPlugin } from './plugins/breakpointPlugin.js';
 import { imageAssetPlugin } from './plugins/imageAssetPlugin.js';
@@ -2308,76 +2308,9 @@ export function renderFileOpBlock(type: 'delete' | 'move' | 'copy' | 'prune', pa
 }
 
 function renderFormBlock(xmlContent: string, messageId: string): string {
-    const titleMatch = xmlContent.match(/title=["'](.*?)["']/);
-    const idMatch = xmlContent.match(/id=["'](.*?)["']/);
-    const title = titleMatch ? titleMatch[1] : "Decision Required";
-    const formId = idMatch ? idMatch[1] : "generic-form";
-
-    const descMatch = xmlContent.match(/<description>([\s\S]*?)<\/description>/i) ||
-                      xmlContent.match(/<p\b[^>]*>([\s\S]*?)<\/p>/i);
-    const descHtml = descMatch ? `<div class="form-description" style="font-size:11px; opacity:0.85; margin-bottom:10px;">${descMatch[1]}</div>` : '';
-
-    // Parse nested input elements supporting both self-closing and standard tags
-    const inputRegex = /<input\s+([^>]*?)\s*\/?>/gi;
-    let inputsHtml = "";
-    let match;
-    const radioGroups: Record<string, string[]> = {};
-
-    while ((match = inputRegex.exec(xmlContent)) !== null) {
-        const attrStr = match[1];
-        const attrs: any = {};
-        const attrRegex = /(\w+)=["']([^"']*)["']/g;
-        let m;
-        while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
-
-        if (attrs.type === 'radio') {
-            if (!radioGroups[attrs.name]) radioGroups[attrs.name] = [];
-            radioGroups[attrs.name].push(`
-                <label class="radio-option">
-                    <input type="radio" name="${attrs.name}" value="${attrs.value}" ${attrs.checked === 'true' ? 'checked' : ''}>
-                    <span>${sanitizer.sanitize(attrs.label)}</span>
-                </label>
-            `);
-        } else {
-            inputsHtml += `
-                <div class="form-field">
-                    <label>${sanitizer.sanitize(attrs.label)}</label>
-                    <input type="${attrs.type}" name="${attrs.name}" value="${attrs.value || ''}" 
-                           placeholder="${attrs.placeholder || ''}" 
-                           style="width:100%; padding:6px; border:1px solid var(--vscode-input-border); background:var(--vscode-input-background); color:var(--vscode-input-foreground); border-radius:4px;" />
-                </div>
-            `;
-        }
-    }
-
-    // Add radio groups to body
-    for (const name in radioGroups) {
-        inputsHtml += `<div class="radio-group">${radioGroups[name].join('')}</div>`;
-    }
-
-    const submitMatch = xmlContent.match(/<submit\s+label=["'](.*?)["']\s*\/>/i);
-    const submitLabel = submitMatch ? submitMatch[1] : "Validate Choice";
-
-    const safeMsgId = messageId || "agent_plan";
-    return `
-    <div class="lollms-form-block" data-form-id="${formId}" id="form-${formId}">
-        <div class="lollms-form-header">
-            <span class="codicon codicon-question"></span>
-            <span>${sanitizer.sanitize(title)}</span>
-        </div>
-        <div class="lollms-form-body">
-            ${descHtml}
-            ${inputsHtml}
-        </div>
-        <div class="lollms-form-footer">
-            <button class="code-action-btn apply-btn lollms-form-submit-btn" 
-                    id="btn-submit-${formId}"
-                    data-form-id="${formId}" 
-                    data-message-id="${safeMsgId}">
-                <span class="codicon codicon-check"></span> <span>${sanitizer.sanitize(submitLabel)}</span>
-            </button>
-        </div>
-    </div>`;
+    const innerMatch = xmlContent.match(/<(?:lollms_form|form)\b[^>]*>([\s\S]*?)<\/(?:lollms_form|form)>/i);
+    const inner = innerMatch ? innerMatch[1] : xmlContent;
+    return parseAndRenderFormContent(xmlContent, inner, messageId);
 }
 
 function renderMilestoneCard(attrs: any): string {
@@ -2475,7 +2408,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     // 1. RETAIN IN-PLACE SEQUENTIAL CONTENT (Thoughts are parsed in-place as chronological segments)
     let mainProcessedContent = normalizePseudoFileBlocks(sourceText);
     mainProcessedContent = mainProcessedContent.replace(
-        /(<\/(?:add_files_to_context|remove_files_from_context|unpack_directory|peek_files|file|project_memory|skill)>)([^\r\n\s<])/gi,
+        /(<\/(?:add_files_to_context|remove_files_from_context|unpack_directory|peek_files|file|project_memory|skill|load_structure|read_definitions|show_symbol)>)([^\r\n\s<])/gi,
         '$1\n\n$2'
     );
 
@@ -2758,12 +2691,14 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     // Detect Multi-Step updates structure in the current response
     const detectedMultiSteps = detectMultiStepsInContent(sourceText);
 
-    // Detect actionable interactive items (Peek, Context Add, Unmute Files, Tools)
+    // Detect actionable interactive items (Peek, Context Add, Unmute Files, Structure, Symbols, Tools)
     const peekCount = (mainProcessedContent.match(/<peek_files\b/gi) || []).length;
     const addContextCount = (mainProcessedContent.match(/<add_files_to_context\b/gi) || []).length;
     const unmuteCount = (mainProcessedContent.match(/<unmute_files\b/gi) || []).length;
+    const structCount = (mainProcessedContent.match(/<(?:load_structure|read_definitions)\b/gi) || []).length;
+    const symCount = (mainProcessedContent.match(/<(?:show_symbol|read_symbol|get_symbol_code)\b/gi) || []).length;
     const toolCallCount = (mainProcessedContent.match(/<lollms_tool\b/gi) || []).length;
-    const totalExecutableActionsCount = peekCount + addContextCount + unmuteCount + toolCallCount;
+    const totalExecutableActionsCount = peekCount + addContextCount + unmuteCount + structCount + symCount + toolCallCount;
 
     // Collect all unique files requested to be added to context across the entire turn
     const turnContextFiles: string[] = [];
@@ -2792,7 +2727,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             <div class="execute-all-actions-wrapper" style="margin-top: 14px; padding: 0 12px; display: flex; gap: 10px; flex-wrap: wrap;">
                 ${hasActions ? `
                 <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="flex: 1; min-width: 220px; height: 34px; font-weight: bold; justify-content: center; background: var(--vscode-charts-purple, #9b59b6) !important; color: white !important;">
-                    <i class="codicon codicon-play"></i> Execute All Actions (${totalExecutableActionsCount} operations: Peeks/Context/Unmutes/Tools)
+                    <i class="codicon codicon-play"></i> Execute All Actions (${totalExecutableActionsCount} operations: Peeks/Context/Unmutes/Structure/Symbols/Tools)
                 </button>` : ''}
                 ${hasTurnFiles ? `
                 <button class="code-action-btn secondary-btn copy-all-turn-context-btn" id="copy-all-turn-context-${messageId}" data-files="${encodedTurnFiles}" style="height: 34px; font-weight: bold; justify-content: center; padding: 0 16px; border: 1px solid var(--vscode-charts-blue); color: var(--vscode-textLink-foreground); display: inline-flex; align-items: center; gap: 6px;" title="Copy the content of all files requested in this turn to clipboard">
@@ -3070,6 +3005,55 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     unmuteBtn.disabled = true;
                     unmuteBtn.classList.add('applied');
                     unmuteBtn.innerHTML = '<i class="codicon codicon-check"></i> Files Unmuted';
+                }
+            });
+
+            // 2.6. Gather load_structure actions for bulk application
+            contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="load_structure"]').forEach((card: any) => {
+                try {
+                    const raw = card.dataset.files || card.dataset.paths || card.dataset.payload;
+                    const files = raw ? JSON.parse(decodeURIComponent(raw)) : (card.dataset.path ? [card.dataset.path] : []);
+                    if (Array.isArray(files) && files.length > 0) {
+                        actions.push({ type: 'load_structure', payload: files });
+                    }
+                } catch {}
+                const structBtns = card.querySelectorAll('.load-structure-btn, .load-structure-reprompt-btn');
+                structBtns.forEach((btn: any) => {
+                    btn.disabled = true;
+                    btn.classList.remove('apply-btn');
+                    btn.classList.add('applied');
+                    btn.innerHTML = '<i class="codicon codicon-check"></i> Structure Loaded';
+                });
+            });
+
+            // 2.7. Gather show_symbol actions for bulk application
+            contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="show_symbol"]').forEach((card: any) => {
+                try {
+                    const btn = card.querySelector('.execute-sym-btn');
+                    const target = btn?.dataset.target || card.dataset.target;
+                    const rawSymbols = btn?.dataset.symbols || card.dataset.symbols;
+                    let symbolsList: string[] = [];
+                    if (rawSymbols) {
+                        try { symbolsList = JSON.parse(decodeURIComponent(rawSymbols)); } catch { symbolsList = [rawSymbols]; }
+                    }
+                    const symbol = btn?.dataset.symbol || card.dataset.symbol || '';
+                    if (target) {
+                        actions.push({ 
+                            type: 'show_symbol', 
+                            payload: { 
+                                target, 
+                                symbol: symbol || (symbolsList.length === 1 ? symbolsList[0] : undefined),
+                                symbols: symbolsList.length > 0 ? symbolsList : undefined
+                            } 
+                        });
+                    }
+                } catch {}
+                const symBtn = card.querySelector('.execute-sym-btn') as HTMLButtonElement;
+                if (symBtn) {
+                    symBtn.disabled = true;
+                    symBtn.classList.remove('apply-btn');
+                    symBtn.classList.add('applied');
+                    symBtn.innerHTML = '<i class="codicon codicon-check"></i> Symbol Inspected';
                 }
             });
 
@@ -3808,7 +3792,7 @@ export class ContextPresenter {
                     <button class="toggle-mute-file-btn ${muteClass}" data-path="${f}" title="${muteTitle}">
                         <span class="codicon ${muteIcon}"></span>
                     </button>
-                    <button class="toggle-structure-file-btn ${isDefOnly ? 'is-active' : ''}" data-path="${f}" data-state="${isDefOnly ? 'included' : 'definitions-only'}" title="${defTitle}" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; color: ${isDefOnly ? 'var(--vscode-charts-blue)' : 'var(--vscode-foreground)'}; opacity: ${isDefOnly ? '1' : '0.6'};">
+                    <button class="toggle-structure-file-btn ${isDefOnly ? 'is-active' : ''}" data-path="${f}" data-state="${isDefOnly ? 'included' : 'definitions-only'}" title="${defTitle}" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; color: ${isDefOnly ? 'var(--vscode-charts-blue)' : 'var(--vscode-foreground)'}; opacity: ${isDefOnly ? '1' : '0.6'}; transition: all 0.15s ease; flex-shrink: 0;">
                         <span class="codicon codicon-symbol-class"></span>
                     </button>
                     <div class="file-row-main" data-path="${f}" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; cursor: pointer;" title="${f}">
@@ -5365,20 +5349,48 @@ export class ContextBinder {
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const p = (btn as HTMLElement).dataset.path;
-                const targetState = (btn as HTMLElement).dataset.state;
-                if (p) {
-                    const cmd = targetState === 'definitions-only'
-                        ? 'lollms-vs-coder.setContextDefinitionsOnly'
-                        : 'lollms-vs-coder.setContextIncluded';
-                    vscode.postMessage({
-                        command: 'executeLollmsCommand',
-                        details: {
-                            command: cmd,
-                            params: [null, [{ path: p, scheme: 'file' }]]
+                const btnEl = btn as HTMLElement;
+                const p = btnEl.dataset.path;
+                const targetState = btnEl.dataset.state || 'definitions-only';
+                if (!p) return;
+
+                // Immediate responsive optimistic UI feedback
+                const isNowDefOnly = targetState === 'definitions-only';
+                btnEl.classList.toggle('is-active', isNowDefOnly);
+                btnEl.dataset.state = isNowDefOnly ? 'included' : 'definitions-only';
+                btnEl.style.color = isNowDefOnly ? 'var(--vscode-charts-blue)' : 'var(--vscode-foreground)';
+                btnEl.style.opacity = isNowDefOnly ? '1' : '0.6';
+                btnEl.title = isNowDefOnly 
+                    ? 'Currently in Structure Only mode (Click to load full content)' 
+                    : 'Half-Mute: Include Structure / Definitions Only (save tokens)';
+
+                // Update row styling and badge in-place
+                const row = btnEl.closest('.context-item');
+                if (row) {
+                    row.classList.toggle('file-def-only', isNowDefOnly);
+                    const badge = row.querySelector('.file-token-badge:not(.file-mtime-badge)') as HTMLElement;
+                    if (badge) {
+                        if (isNowDefOnly) {
+                            badge.className = 'file-token-badge weight-medium';
+                            badge.style.borderColor = 'var(--vscode-charts-blue)';
+                            badge.style.color = 'var(--vscode-charts-blue)';
+                            if (!badge.textContent?.includes('[STRUCTURE]')) {
+                                badge.textContent = `[STRUCTURE] ${badge.textContent}`;
+                            }
+                        } else {
+                            badge.style.borderColor = '';
+                            badge.style.color = '';
+                            badge.textContent = badge.textContent?.replace(/\[STRUCTURE\]\s*/g, '') || '';
                         }
-                    });
+                    }
                 }
+
+                // Post dedicated command to extension host
+                vscode.postMessage({
+                    command: 'toggleFileStructure',
+                    path: p,
+                    targetState: targetState
+                });
             });
         });
 
@@ -5483,13 +5495,10 @@ export class ContextBinder {
                         vscode.postMessage({ command: 'showWarning', message: 'No files selected.' });
                         return;
                     }
-                    const targetUris = paths.map(p => ({ path: p, scheme: 'file' }));
                     vscode.postMessage({
-                        command: 'executeLollmsCommand',
-                        details: {
-                            command: 'lollms-vs-coder.setContextDefinitionsOnly',
-                            params: [null, targetUris]
-                        }
+                        command: 'bulkSetFilesStructure',
+                        paths: paths,
+                        targetState: 'definitions-only'
                     });
                 };
             }

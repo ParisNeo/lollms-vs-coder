@@ -4,6 +4,10 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-11-09 12:09]
+
+- `Bump version and optimize chat panel UI interactions, message rendering, and file operations plugin`
+
 ## [2026-11-03 01:53]
 
 - `Fix version bump and update related chat panel components for consistency`

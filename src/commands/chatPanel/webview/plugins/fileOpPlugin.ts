@@ -58,6 +58,54 @@ export function normalizePseudoFileBlocks(text: string): string {
     return result;
 }
 
+export function getFileContextStatus(filePath: string): 'muted' | 'structure_only' | 'full_content' | 'not_in_context' {
+    if (!filePath) return 'not_in_context';
+    const cleanP = filePath.replace(/\\/g, '/').toLowerCase().trim();
+
+    const activeState = state || (window as any).state;
+    const currentMuted = (activeState as any)?.mutedFiles || (window as any).state?.mutedFiles || activeState?.lastContextData?.mutedFiles || [];
+
+    const isMuted = currentMuted.some((m: string) => {
+        const cleanM = (typeof m === 'string' ? m : (m as any)?.path || '').replace(/\\/g, '/').toLowerCase().trim();
+        return cleanM === cleanP || cleanP.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanP);
+    });
+    if (isMuted) return 'muted';
+
+    const filesList: any[] = activeState?.lastContextData?.files || (window as any).state?.lastContextData?.files || [];
+    const registry: Map<string, any> = (window as any).lazyFilesRegistry;
+
+    let fileEntry: any = null;
+    if (registry && typeof registry.entries === 'function') {
+        for (const [k, v] of registry.entries()) {
+            const cleanK = k.replace(/\\/g, '/').toLowerCase().trim();
+            if (cleanK === cleanP || cleanP.endsWith('/' + cleanK) || cleanK.endsWith('/' + cleanP)) {
+                fileEntry = v;
+                break;
+            }
+        }
+    }
+
+    if (!fileEntry && Array.isArray(filesList) && filesList.length > 0) {
+        fileEntry = filesList.find((f: any) => {
+            const pathStr = typeof f === 'string' ? f : (f?.path || '');
+            const cleanF = pathStr.replace(/\\/g, '/').toLowerCase().trim();
+            return cleanF === cleanP || cleanP.endsWith('/' + cleanF) || cleanF.endsWith('/' + cleanP);
+        });
+    }
+
+    if (!fileEntry) {
+        return 'not_in_context';
+    }
+
+    const fileState = typeof fileEntry === 'object' ? fileEntry.state : undefined;
+    if (fileState === 'definitions-only' || fileState === 'structure' || fileState === 'symbols') {
+        return 'structure_only';
+    }
+
+    return 'full_content';
+}
+(window as any).getFileContextStatus = getFileContextStatus;
+
 export function extractFileBlocks(text: string): ExtractedFileBlock[] {
     const blocks: ExtractedFileBlock[] = [];
     if (!text || typeof text !== 'string') return blocks;
@@ -569,53 +617,104 @@ export const fileOpPlugin: TagPlugin = {
             icon = "codicon-eye";
             command = "bulkUnmuteFiles";
 
-            const currentMuted = (state as any)?.mutedFiles || (window as any).state?.mutedFiles || [];
-            const isPathMuted = (p: string) => {
-                const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
-                return currentMuted.some((m: string) => {
-                    const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
-                    return cleanM === cleanP || cleanP.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanP);
-                });
-            };
+            const linesStatus = lines.map(p => ({
+                path: p,
+                status: getFileContextStatus(p)
+            }));
 
-            const mutedLines = lines.filter(isPathMuted);
-            const alreadyActiveLines = lines.filter(p => !isPathMuted(p));
-            const stillMutedCount = mutedLines.length;
-            const allAlreadyActive = stillMutedCount === 0;
+            const mutedLines = linesStatus.filter(x => x.status === 'muted').map(x => x.path);
+            const structureOnlyLines = linesStatus.filter(x => x.status === 'structure_only').map(x => x.path);
+            const notInContextLines = linesStatus.filter(x => x.status === 'not_in_context').map(x => x.path);
+            const fullyActiveLines = linesStatus.filter(x => x.status === 'full_content').map(x => x.path);
 
-            btnText = allAlreadyActive ? 'All Files Already Active [C]' : `Unmute Muted Files (${stillMutedCount})`;
+            const needsActivationLines = [...mutedLines, ...structureOnlyLines, ...notInContextLines];
+            const allFullyActive = needsActivationLines.length === 0;
+
+            let btnText = "Activate Full Content";
+            if (allFullyActive) {
+                btnText = "All Files Fully Active [C]";
+            } else if (structureOnlyLines.length > 0 && mutedLines.length === 0) {
+                btnText = `Upgrade to Full Content (${structureOnlyLines.length})`;
+            } else if (mutedLines.length > 0) {
+                btnText = `Unmute to Full Content (${needsActivationLines.length})`;
+            } else {
+                btnText = `Activate Full Content (${needsActivationLines.length})`;
+            }
 
             let infoBannerHtml = "";
-            if (allAlreadyActive) {
+            if (allFullyActive) {
                 infoBannerHtml = `
                 <div style="padding: 6px 10px; background: rgba(56, 142, 60, 0.1); border: 1px solid var(--vscode-charts-green); border-radius: 4px; font-size: 11px; margin-bottom: 8px; color: var(--vscode-charts-green); display: flex; align-items: center; gap: 6px;">
                     <i class="codicon codicon-check"></i> All requested files are ALREADY active in context [C] with full source code loaded.
                 </div>`;
-            } else if (alreadyActiveLines.length > 0) {
+            } else if (structureOnlyLines.length > 0) {
+                infoBannerHtml = `
+                <div style="padding: 6px 10px; background: rgba(0, 122, 204, 0.1); border: 1px solid var(--vscode-charts-blue); border-radius: 4px; font-size: 11px; margin-bottom: 8px; color: var(--vscode-charts-blue); display: flex; align-items: center; gap: 6px;">
+                    <i class="codicon codicon-symbol-class"></i> ${structureOnlyLines.length} file(s) are currently loaded as <strong>Structure Only [D]</strong>. Click below to upgrade to full source code [C].
+                </div>`;
+            } else if (fullyActiveLines.length > 0) {
                 infoBannerHtml = `
                 <div style="padding: 6px 10px; background: rgba(0, 122, 204, 0.08); border: 1px solid var(--vscode-charts-blue); border-radius: 4px; font-size: 11px; margin-bottom: 8px; color: var(--vscode-foreground); display: flex; align-items: center; gap: 6px;">
-                    <i class="codicon codicon-info"></i> ${alreadyActiveLines.length} file(s) are already active in context [C]. Unmuting ${stillMutedCount} muted file(s).
+                    <i class="codicon codicon-info"></i> ${fullyActiveLines.length} file(s) are already fully active [C]. Activating remaining ${needsActivationLines.length} file(s).
                 </div>`;
             }
 
-            detailsHtml = infoBannerHtml + lines.map(p => {
-                const muted = isPathMuted(p);
+            detailsHtml = infoBannerHtml + linesStatus.map(item => {
+                const p = item.path;
+                const status = item.status;
                 const encodedSingle = JSON.stringify([p]).replace(/"/g, '&quot;');
+
+                let badgeHtml = '';
+                let statusClass = 'status-in-context';
+                let iconName = 'codicon-check';
+                let iconColor = 'var(--vscode-charts-green, #4caf50)';
+                let rowBg = '';
+                let rowBorder = '';
+
+                if (status === 'structure_only') {
+                    statusClass = 'status-structure-only';
+                    iconName = 'codicon-symbol-class';
+                    iconColor = 'var(--vscode-charts-blue, #007acc)';
+                    rowBg = 'background: rgba(0, 122, 204, 0.1);';
+                    rowBorder = 'border-left: 4px solid var(--vscode-charts-blue, #007acc); border-color: rgba(0, 122, 204, 0.35);';
+                    badgeHtml = `<span class="file-token-badge weight-medium" style="border-color: var(--vscode-charts-blue); color: var(--vscode-charts-blue); background: rgba(0, 122, 204, 0.15); font-weight: bold;">[STRUCTURE ONLY - [D]]</span>`;
+                } else if (status === 'muted') {
+                    statusClass = 'status-not-in-context';
+                    iconName = 'codicon-eye-closed';
+                    iconColor = 'var(--vscode-charts-orange, #ff9800)';
+                    rowBg = 'background: rgba(255, 152, 0, 0.08);';
+                    rowBorder = 'border-left: 4px solid var(--vscode-charts-orange, #ff9800);';
+                    badgeHtml = `<span class="file-token-badge weight-muted" style="border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);">[MUTED - WILL UNMUTE]</span>`;
+                } else if (status === 'not_in_context') {
+                    statusClass = 'status-not-exist';
+                    iconName = 'codicon-file-add';
+                    iconColor = 'var(--vscode-charts-orange, #ff9800)';
+                    rowBorder = 'border-left: 4px solid var(--vscode-charts-orange, #ff9800);';
+                    badgeHtml = `<span class="file-token-badge weight-light" style="border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);">[NOT IN CONTEXT - WILL LOAD]</span>`;
+                } else {
+                    statusClass = 'status-in-context';
+                    iconName = 'codicon-check';
+                    iconColor = 'var(--vscode-charts-green, #4caf50)';
+                    rowBg = 'background: rgba(15, 157, 88, 0.08);';
+                    rowBorder = 'border-left: 4px solid var(--vscode-charts-green, #4caf50);';
+                    badgeHtml = `<span class="file-token-badge weight-light" style="border-color: var(--vscode-charts-green); color: var(--vscode-charts-green);">[FULL CONTENT - [C]]</span>`;
+                }
+
                 return `
-                <div class="expansion-file-item ${muted ? 'status-not-in-context' : 'status-in-context'}" data-path="${p}" style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
+                <div class="expansion-file-item ${statusClass}" data-path="${p}" style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px; ${rowBg} ${rowBorder}">
                     <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
-                        <span class="codicon ${muted ? 'codicon-eye-closed' : 'codicon-check'}" style="color: ${muted ? 'var(--vscode-charts-orange, #ff9800)' : 'var(--vscode-charts-green, #4caf50)'};"></span>
+                        <span class="codicon ${iconName}" style="color: ${iconColor};"></span>
                         <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p}</span>
                     </div>
                     <div style="display: flex; align-items: center; gap: 6px; margin-left: 8px;">
-                        <span class="file-token-badge ${muted ? 'weight-muted' : 'weight-light'}">${muted ? '[MUTED - WILL UNMUTE]' : '[ALREADY ACTIVE - [C]]'}</span>
+                        ${badgeHtml}
                         <button class="code-action-btn secondary-btn copy-unmute-files-btn copy-files-to-clipboard-btn" data-files="${encodedSingle}" title="Copy this file as a <file> block into clipboard" style="height: 18px; font-size: 9px; padding: 0 5px;">
                             <span class="codicon codicon-copy"></span>
                         </button>
                     </div>
                 </div>`;
             }).join('');
-            payload = { paths: mutedLines.length > 0 ? mutedLines : lines };
+            payload = { paths: needsActivationLines.length > 0 ? needsActivationLines : lines };
         } else if (type === 'delete_files') {
             title = "File Deletion Proposed";
             icon = "codicon-trash";
@@ -655,7 +754,7 @@ export const fileOpPlugin: TagPlugin = {
         const encodedPaths = encodeURIComponent(JSON.stringify(lines));
         const encodedFilesJson = JSON.stringify(lines).replace(/"/g, '&quot;');
 
-        const isUnmuteDisabled = isUnmuteType && (btnText.includes('Already Active') || btnText.includes('Unmuted'));
+        const isUnmuteDisabled = isUnmuteType && allFullyActive;
         const actionButtonsHtml = isUnmuteType ? `
             <button class="code-action-btn secondary-btn copy-unmute-files-btn copy-files-to-clipboard-btn" data-files="${encodedFilesJson}" data-block-id="${blockId}" title="Copy content of these files as <file> blocks into clipboard">
                 <span class="codicon codicon-copy"></span> Copy to Clipboard
@@ -663,8 +762,8 @@ export const fileOpPlugin: TagPlugin = {
             <button class="code-action-btn ${isUnmuteDisabled ? 'applied' : 'apply-btn'} file-op-btn unmute-btn" ${isUnmuteDisabled ? 'disabled' : ''} data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: payload.paths || lines, reprompt: false })}' data-block-id="${blockId}">
                 <span class="codicon ${isUnmuteDisabled ? 'codicon-check' : 'codicon-eye'}"></span> ${btnText}
             </button>
-            <button class="code-action-btn apply-btn unmute-reprompt-btn" ${isUnmuteDisabled ? 'disabled style="opacity:0.6;"' : ''} data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: payload.paths || lines, reprompt: true })}' data-block-id="${blockId}" style="background: var(--vscode-charts-green) !important; color: white !important; font-weight: bold;" title="Unmute these files and immediately ask AI to proceed">
-                <span class="codicon codicon-play"></span> ${btnText.includes('Unmuted') ? 'Reprompt AI' : 'Unmute & Reprompt'}
+            <button class="code-action-btn apply-btn unmute-reprompt-btn" ${isUnmuteDisabled ? 'disabled style="opacity:0.6;"' : ''} data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: payload.paths || lines, reprompt: true })}' data-block-id="${blockId}" style="background: var(--vscode-charts-green) !important; color: white !important; font-weight: bold;" title="Activate full source code and immediately ask AI to proceed">
+                <span class="codicon codicon-play"></span> ${allFullyActive ? 'Reprompt AI' : 'Activate & Reprompt'}
             </button>
         ` : `
             <button class="code-action-btn apply-btn file-op-btn" data-command="${command}" data-payload='${JSON.stringify(payload)}'>
@@ -764,35 +863,98 @@ export const unpackDirectoryPlugin: TagPlugin = {
     }
 };
 
+export function extractStructurePaths(attrStr: string, inner: string): string[] {
+    const paths: string[] = [];
+    const addPath = (raw: string) => {
+        if (!raw) return;
+        const clean = raw.trim().replace(/^['"`]|['"`]$/g, '').replace(/^-\s*/, '').trim();
+        if (clean && isValidFilePath(clean) && !paths.includes(clean)) {
+            paths.push(clean);
+        }
+    };
+
+    const attrRegex = /(?:path|paths|files|target)=["']([^"']+)["']/gi;
+    let aMatch: RegExpExecArray | null;
+    while ((aMatch = attrRegex.exec(attrStr)) !== null) {
+        const val = aMatch[1].trim();
+        if (val.startsWith('[') && val.endsWith(']')) {
+            try {
+                const parsed = JSON.parse(val.replace(/'/g, '"'));
+                if (Array.isArray(parsed)) {
+                    parsed.forEach(p => addPath(String(p)));
+                }
+            } catch {
+                val.slice(1, -1).split(/[\r\n,]+/).forEach(addPath);
+            }
+        } else {
+            val.split(/[\r\n,;\s]+/).forEach(addPath);
+        }
+    }
+
+    if (inner && inner.trim()) {
+        const lines = inner.split(/[\r\n,;]+/);
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('<')) continue;
+            trimmed.split(/\s+/).forEach(addPath);
+        }
+    }
+
+    return paths;
+}
+
 export const loadStructurePlugin: TagPlugin = {
     id: 'load_structure',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?/gim,
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?)/gim,
     render: (match, context) => {
         const attrStr = match[1] || "";
         const inner = (match[2] || "").trim();
-        const pMatch = attrStr.match(/path=["']([^"']+)["']/i);
-        const rawPath = pMatch ? pMatch[1].trim() : inner.split(/[\s\r\n,]+/)[0];
-        if (!rawPath || !isValidFilePath(rawPath)) return null;
+        const paths = extractStructurePaths(attrStr, inner);
+        if (paths.length === 0) return null;
 
-        const blockId = `struct-req-${Date.now().toString(36)}`;
+        const blockId = `struct-req-${Date.now().toString(36)}-${Math.random().toString(36).substring(7)}`;
+        const encodedFiles = encodeURIComponent(JSON.stringify(paths));
+        const titleText = paths.length === 1 
+            ? `Structure &amp; Signatures Request: <code>${paths[0]}</code>`
+            : `Structure &amp; Signatures Request: (${paths.length} files)`;
+
+        const filesListHtml = paths.length > 1 ? `
+            <div class="expansion-file-list" style="margin: 6px 0 10px 0; max-height: 180px; overflow-y: auto;">
+                ${paths.map(f => `
+                    <div class="expansion-file-item" style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
+                        <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                            <span class="codicon codicon-symbol-class" style="color: var(--vscode-charts-blue);"></span>
+                            <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${f}</span>
+                        </div>
+                        <button class="code-action-btn secondary-btn peek-file-open-btn" data-path="${f}" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Open file in editor">
+                            <span class="codicon codicon-file"></span>
+                        </button>
+                    </div>
+                `).join('')}
+            </div>` : '';
+
         return `
-        <div class="file-operation-block assistant-executable-card" id="${blockId}" data-action-type="load_structure" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; margin: 10px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
-            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border);">
-                <div style="display: flex; align-items: center; gap: 8px;">
+        <div class="file-operation-block assistant-executable-card load-structure-card" id="${blockId}" data-action-type="load_structure" data-files="${encodedFiles}" data-paths="${encodedFiles}" data-payload="${encodedFiles}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; margin: 10px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border); flex-wrap: wrap; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
                     <span class="codicon codicon-symbol-class" style="color: var(--vscode-charts-blue);"></span>
-                    <span>Structure &amp; Signatures Request: <code>${rawPath}</code></span>
+                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${titleText}</span>
                 </div>
-                <div style="display: flex; gap: 6px;">
-                    <button class="code-action-btn apply-btn load-structure-btn" data-path="${rawPath}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold;">
-                        <i class="codicon codicon-symbol-class"></i> Load Structure (Tokens Saved)
+                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                    <button class="code-action-btn apply-btn load-structure-btn" data-files="${encodedFiles}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold;">
+                        <i class="codicon codicon-symbol-class"></i> Load Structure (${paths.length > 1 ? `${paths.length} Files &middot; ` : ''}Tokens Saved)
                     </button>
-                    <button class="code-action-btn secondary-btn load-full-file-btn" data-path="${rawPath}" style="height: 22px; font-size: 10px; padding: 0 8px;">
-                        <i class="codicon codicon-file"></i> Load Full File
+                    <button class="code-action-btn apply-btn load-structure-reprompt-btn" data-files="${encodedFiles}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 8px; font-weight: bold; background: var(--vscode-charts-green) !important; color: white !important;" title="Load structure into context and immediately reprompt AI">
+                        <i class="codicon codicon-play"></i> Load &amp; Reprompt
+                    </button>
+                    <button class="code-action-btn secondary-btn load-full-file-btn" data-files="${encodedFiles}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                        <i class="codicon codicon-file"></i> Load Full File${paths.length > 1 ? 's' : ''}
                     </button>
                 </div>
             </div>
             <div class="expansion-body" style="padding: 8px 12px; font-size: 11px; opacity: 0.85;">
-                The AI requested the architectural structure and typed signatures for <strong>${rawPath}</strong> without loading full file bodies to conserve context budget.
+                ${filesListHtml}
+                <div>The AI requested the architectural structure and typed signatures for <strong>${paths.length === 1 ? paths[0] : `${paths.length} files`}</strong> without loading full file bodies to conserve context budget.</div>
             </div>
         </div>`;
     },
@@ -800,16 +962,49 @@ export const loadStructurePlugin: TagPlugin = {
         container.querySelectorAll('.load-structure-btn').forEach(btn => {
             (btn as HTMLElement).onclick = (e: MouseEvent) => {
                 e.stopPropagation();
-                const p = (btn as HTMLElement).dataset.path;
-                if (!p) return;
-                (btn as HTMLButtonElement).disabled = true;
-                btn.innerHTML = '<div class="spinner"></div> Loading Structure...';
+                const btnEl = btn as HTMLButtonElement;
+                const raw = btnEl.dataset.files;
+                let files: string[] = [];
+                try {
+                    files = JSON.parse(decodeURIComponent(raw || '[]'));
+                } catch {
+                    if (btnEl.dataset.path) files = [btnEl.dataset.path];
+                }
+                if (files.length === 0) return;
+
+                btnEl.disabled = true;
+                btnEl.innerHTML = `<div class="spinner"></div> Loading Structure (${files.length})...`;
+
                 context.vscode.postMessage({
-                    command: 'executeLollmsCommand',
-                    details: {
-                        command: 'lollms-vs-coder.setContextDefinitionsOnly',
-                        params: [null, [{ path: p, scheme: 'file' }]]
-                    }
+                    command: 'loadFilesStructure',
+                    files,
+                    blockId: btnEl.dataset.blockId || btnEl.closest('.file-operation-block')?.id,
+                    reprompt: false
+                });
+            };
+        });
+
+        container.querySelectorAll('.load-structure-reprompt-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const raw = btnEl.dataset.files;
+                let files: string[] = [];
+                try {
+                    files = JSON.parse(decodeURIComponent(raw || '[]'));
+                } catch {
+                    if (btnEl.dataset.path) files = [btnEl.dataset.path];
+                }
+                if (files.length === 0) return;
+
+                btnEl.disabled = true;
+                btnEl.innerHTML = `<div class="spinner"></div> Loading &amp; Answering...`;
+
+                context.vscode.postMessage({
+                    command: 'loadFilesStructure',
+                    files,
+                    blockId: btnEl.dataset.blockId || btnEl.closest('.file-operation-block')?.id,
+                    reprompt: true
                 });
             };
         });
@@ -817,53 +1012,146 @@ export const loadStructurePlugin: TagPlugin = {
         container.querySelectorAll('.load-full-file-btn').forEach(btn => {
             (btn as HTMLElement).onclick = (e: MouseEvent) => {
                 e.stopPropagation();
-                const p = (btn as HTMLElement).dataset.path;
-                if (!p) return;
-                (btn as HTMLButtonElement).disabled = true;
-                btn.innerHTML = '<div class="spinner"></div> Loading Full File...';
+                const btnEl = btn as HTMLButtonElement;
+                const raw = btnEl.dataset.files;
+                let files: string[] = [];
+                try {
+                    files = JSON.parse(decodeURIComponent(raw || '[]'));
+                } catch {
+                    if (btnEl.dataset.path) files = [btnEl.dataset.path];
+                }
+                if (files.length === 0) return;
+
+                btnEl.disabled = true;
+                btnEl.innerHTML = `<div class="spinner"></div> Loading Full File${files.length > 1 ? 's' : ''}...`;
+
                 context.vscode.postMessage({
                     command: 'bulkUnmuteFiles',
-                    paths: [p],
+                    paths: files,
                     reprompt: true
                 });
+            };
+        });
+
+        container.querySelectorAll('.load-structure-card .peek-file-open-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const filePath = (btn as HTMLElement).dataset.path;
+                if (filePath) {
+                    context.vscode.postMessage({ command: 'openFile', path: filePath });
+                }
             };
         });
     }
 };
 
+export function extractSymbolRequests(attrStr: string, inner: string): { filePath: string; symbols: string[] } | null {
+    let filePath = "";
+    const symbols: string[] = [];
+
+    const addSymbol = (s: string) => {
+        if (!s) return;
+        const clean = s.trim().replace(/^['"`]|['"`]$/g, '').replace(/^-\s*/, '').trim();
+        if (clean && !symbols.includes(clean)) {
+            symbols.push(clean);
+        }
+    };
+
+    // 1. Check path / file attribute
+    const pathMatch = attrStr.match(/(?:path|file)=["']([^"']+)["']/i);
+    if (pathMatch) {
+        filePath = pathMatch[1].trim();
+    }
+
+    // 2. Check target attribute
+    const targetMatch = attrStr.match(/target=["']([^"']+)["']/i);
+    if (targetMatch) {
+        const rawTarget = targetMatch[1].trim();
+        if (rawTarget.includes(':') && !/^[a-zA-Z]:[\\/]/.test(rawTarget)) {
+            const colonIdx = rawTarget.indexOf(':');
+            if (!filePath) filePath = rawTarget.substring(0, colonIdx).trim();
+            const afterColon = rawTarget.substring(colonIdx + 1).trim();
+            afterColon.split(/[\r\n,;]+/).forEach(addSymbol);
+        } else if (!filePath) {
+            filePath = rawTarget;
+        }
+    }
+
+    // 3. Check symbol / symbols attributes
+    const symRegex = /(?:symbol|symbols)=["']([^"']+)["']/gi;
+    let sm: RegExpExecArray | null;
+    while ((sm = symRegex.exec(attrStr)) !== null) {
+        sm[1].split(/[\r\n,;]+/).forEach(addSymbol);
+    }
+
+    // 4. Check inner content
+    if (inner && inner.trim()) {
+        const lines = inner.split(/[\r\n,;]+/);
+        for (const line of lines) {
+            const trimmed = line.trim().replace(/^-\s*/, '').trim();
+            if (!trimmed || trimmed.startsWith('<')) continue;
+            if (!filePath && isValidFilePath(trimmed)) {
+                filePath = trimmed;
+            } else if (trimmed.includes(':') && !filePath && !/^[a-zA-Z]:[\\/]/.test(trimmed)) {
+                const colonIdx = trimmed.indexOf(':');
+                filePath = trimmed.substring(0, colonIdx).trim();
+                trimmed.substring(colonIdx + 1).split(/[\r\n,;]+/).forEach(addSymbol);
+            } else {
+                trimmed.split(/[\r\n,;]+/).forEach(addSymbol);
+            }
+        }
+    }
+
+    if (!filePath || symbols.length === 0) return null;
+    return { filePath, symbols };
+}
+
 export const showSymbolPlugin: TagPlugin = {
     id: 'show_symbol',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:show_symbol|read_symbol|get_symbol_code)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:show_symbol|read_symbol|get_symbol_code)>)/gim,
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:show_symbol|read_symbol|get_symbol_code)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:show_symbol|read_symbol|get_symbol_code)>)?)/gim,
     render: (match, context) => {
         const attrStr = match[1] || "";
         const inner = (match[2] || "").trim();
+        const parsed = extractSymbolRequests(attrStr, inner);
+        if (!parsed) return null;
 
-        const targetMatch = attrStr.match(/target=["']([^"']+)["']/i);
-        const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
-        const symMatch = attrStr.match(/symbol=["']([^"']+)["']/i);
+        const { filePath, symbols } = parsed;
+        const blockId = `sym-req-${Date.now().toString(36)}-${Math.random().toString(36).substring(7)}`;
+        const encodedSymbols = encodeURIComponent(JSON.stringify(symbols));
 
-        const rawTarget = targetMatch ? targetMatch[1].trim() : (pathMatch ? pathMatch[1].trim() : inner);
-        const rawSymbol = symMatch ? symMatch[1].trim() : "";
+        const displayLabel = symbols.length === 1 
+            ? `<code>${filePath} &rsaquo; ${symbols[0]}</code>`
+            : `<code>${filePath}</code> (${symbols.length} symbols)`;
 
-        if (!rawTarget) return null;
-        const blockId = `sym-req-${Date.now().toString(36)}`;
-        const displayLabel = rawSymbol ? `${rawTarget} › ${rawSymbol}` : rawTarget;
+        const symbolsListHtml = symbols.length > 1 ? `
+            <div class="expansion-file-list" style="margin: 6px 0 10px 0; max-height: 180px; overflow-y: auto;">
+                ${symbols.map(s => `
+                    <div class="expansion-file-item" style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
+                        <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                            <span class="codicon codicon-symbol-method" style="color: var(--vscode-charts-orange);"></span>
+                            <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600;">${s}</span>
+                        </div>
+                        <span class="file-token-badge weight-light" style="font-size: 9px; border-color: rgba(255, 152, 0, 0.4); color: var(--vscode-charts-orange);">Symbol</span>
+                    </div>
+                `).join('')}
+            </div>` : '';
 
         return `
-        <div class="file-operation-block assistant-executable-card" id="${blockId}" data-action-type="show_symbol" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-orange); border-radius: 8px; margin: 10px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
-            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border);">
-                <div style="display: flex; align-items: center; gap: 8px;">
+        <div class="file-operation-block assistant-executable-card show-symbol-card" id="${blockId}" data-action-type="show_symbol" data-target="${filePath}" data-symbols="${encodedSymbols}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-orange); border-radius: 8px; margin: 10px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border); flex-wrap: wrap; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
                     <span class="codicon codicon-symbol-method" style="color: var(--vscode-charts-orange);"></span>
-                    <span>Symbol Code Request: <code>${displayLabel}</code></span>
+                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Symbol Code Request: ${displayLabel}</span>
                 </div>
                 <div style="display: flex; gap: 6px;">
-                    <button class="code-action-btn apply-btn execute-sym-btn" data-target="${rawTarget}" data-symbol="${rawSymbol}" data-message-id="${context.messageId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold; background: var(--vscode-charts-orange) !important; color: white !important;">
-                        <i class="codicon codicon-play"></i> Inspect &amp; Reprompt
+                    <button class="code-action-btn apply-btn execute-sym-btn" data-target="${filePath}" data-symbols="${encodedSymbols}" data-message-id="${context.messageId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold; background: var(--vscode-charts-orange) !important; color: white !important;">
+                        <i class="codicon codicon-play"></i> Inspect &amp; Reprompt (${symbols.length > 1 ? `${symbols.length} Symbols` : 'Symbol'})
                     </button>
                 </div>
             </div>
             <div class="expansion-body" style="padding: 8px 12px; font-size: 11px; opacity: 0.85;">
-                The AI requested the implementation code of <strong>${displayLabel}</strong> without loading the entire file. Click to retrieve the symbol code and send it to the AI.
+                ${symbolsListHtml}
+                <div>The AI requested the implementation code of <strong>${symbols.length === 1 ? symbols[0] : `${symbols.length} symbols`}</strong> from <code>${filePath}</code> without loading the entire file. Click to retrieve the symbol code and send it to the AI.</div>
             </div>
         </div>`;
     },
@@ -871,18 +1159,25 @@ export const showSymbolPlugin: TagPlugin = {
         container.querySelectorAll('.execute-sym-btn').forEach(btn => {
             (btn as HTMLElement).onclick = (e: MouseEvent) => {
                 e.stopPropagation();
-                const target = (btn as HTMLElement).dataset.target;
-                const symbol = (btn as HTMLElement).dataset.symbol;
-                const messageId = (btn as HTMLElement).dataset.messageId;
+                const btnEl = btn as HTMLButtonElement;
+                const target = btnEl.dataset.target;
+                const rawSymbols = btnEl.dataset.symbols;
+                const messageId = btnEl.dataset.messageId;
                 if (!target) return;
 
-                (btn as HTMLButtonElement).disabled = true;
-                btn.innerHTML = '<div class="spinner"></div> Retrieving Symbol...';
+                let symbols: string[] = [];
+                if (rawSymbols) {
+                    try { symbols = JSON.parse(decodeURIComponent(rawSymbols)); } catch { symbols = [rawSymbols]; }
+                }
+
+                btnEl.disabled = true;
+                btnEl.innerHTML = `<div class="spinner"></div> Retrieving ${symbols.length > 1 ? `${symbols.length} Symbols` : 'Symbol'}...`;
 
                 context.vscode.postMessage({
                     command: 'executeShowSymbol',
                     target,
-                    symbol,
+                    symbols: symbols.length > 0 ? symbols : undefined,
+                    symbol: symbols.length === 1 ? symbols[0] : undefined,
                     messageId,
                     reprompt: true
                 });

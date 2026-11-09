@@ -22,6 +22,7 @@ import {
     updateContextFileUsage,
     renderAdvancedToolsList,
     renderWorkspaceMatrix,
+    renderWizardMatrix,
     openNewDiscussionWizard,
     syncExpansionBlocks
 } from './ui.js';
@@ -1254,8 +1255,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     (state as any).workspaceFolders = message.workspaceFolders;
                 }
                 // Dynamic refresh of Wizard folders list if open
-                if (dom.wizardModal.classList.contains('visible')) {
-                    renderWizardMatrix();
+                if (dom.wizardModal?.classList?.contains('visible')) {
+                    if (typeof renderWizardMatrix === 'function') {
+                        renderWizardMatrix();
+                    }
                 }
                 if (caps) {
                     const oldSettings = JSON.stringify(state.capabilities?.folderSettings || {});
@@ -2248,6 +2251,32 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             }
                         }
                     }
+                }
+                break;
+            }
+            case 'structureLoaded': {
+                const { blockId, files, success, error } = message;
+                const blockEl = blockId ? document.getElementById(blockId) : null;
+                const buttons = blockEl 
+                    ? blockEl.querySelectorAll('.load-structure-btn, .load-structure-reprompt-btn')
+                    : document.querySelectorAll('.load-structure-btn, .load-structure-reprompt-btn');
+
+                buttons.forEach((btn: any) => {
+                    btn.disabled = success;
+                    if (success) {
+                        btn.classList.remove('apply-btn');
+                        btn.classList.add('applied');
+                        btn.innerHTML = '<span class="codicon codicon-check"></span> Structure Loaded';
+                        btn.title = "Structure & signatures loaded in active context";
+                    } else {
+                        btn.innerHTML = '<span class="codicon codicon-error"></span> Load Failed';
+                        btn.title = error || "Failed to load structure";
+                        btn.disabled = false;
+                    }
+                });
+
+                if (blockEl && success) {
+                    blockEl.classList.add('status-completed');
                 }
                 break;
             }

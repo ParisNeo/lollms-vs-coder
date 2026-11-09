@@ -1655,37 +1655,101 @@ export function syncExpansionBlocks() {
 
     // 2. Synchronize .unmute-files-block status
     document.querySelectorAll('.unmute-files-block').forEach((block: any) => {
-        let allUnmuted = true;
+        let allFullyActive = true;
+        let hasStructureOnly = false;
+        const fnGetStatus = (window as any).getFileContextStatus;
+
         block.querySelectorAll('.expansion-file-item').forEach((item: any) => {
             const p = item.dataset.path;
             if (!p) return;
-            const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
-            const isMuted = currentMuted.some((m: string) => {
-                const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
-                return cleanM === cleanP || cleanP.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanP);
-            });
-            if (isMuted) allUnmuted = false;
+            const status = typeof fnGetStatus === 'function' ? fnGetStatus(p) : 'not_in_context';
 
-            item.classList.toggle('status-in-context', !isMuted);
-            item.classList.toggle('status-not-in-context', isMuted);
+            item.classList.remove('status-in-context', 'status-not-in-context', 'status-structure-only');
             const icon = item.querySelector('.codicon');
-            if (icon) {
-                icon.className = `codicon ${isMuted ? 'codicon-eye-closed' : 'codicon-check'}`;
-                icon.style.color = isMuted ? 'var(--vscode-charts-orange, #ff9800)' : 'var(--vscode-charts-green, #4caf50)';
-            }
             const badge = item.querySelector('.file-token-badge');
-            if (badge) {
-                badge.className = `file-token-badge ${isMuted ? 'weight-muted' : 'weight-light'}`;
-                badge.textContent = isMuted ? '[MUTED]' : '[ACTIVE]';
+
+            if (status === 'structure_only') {
+                allFullyActive = false;
+                hasStructureOnly = true;
+                item.classList.add('status-structure-only');
+                item.style.background = 'rgba(0, 122, 204, 0.1)';
+                item.style.borderLeft = '4px solid var(--vscode-charts-blue, #007acc)';
+                item.style.borderColor = 'rgba(0, 122, 204, 0.35)';
+                if (icon) {
+                    icon.className = 'codicon codicon-symbol-class';
+                    icon.style.color = 'var(--vscode-charts-blue, #007acc)';
+                }
+                if (badge) {
+                    badge.className = 'file-token-badge weight-medium';
+                    badge.style.borderColor = 'var(--vscode-charts-blue)';
+                    badge.style.color = 'var(--vscode-charts-blue)';
+                    badge.style.background = 'rgba(0, 122, 204, 0.15)';
+                    badge.textContent = '[STRUCTURE ONLY - [D]]';
+                }
+            } else if (status === 'muted') {
+                allFullyActive = false;
+                item.classList.add('status-not-in-context');
+                item.style.background = 'rgba(255, 152, 0, 0.08)';
+                item.style.borderLeft = '4px solid var(--vscode-charts-orange, #ff9800)';
+                if (icon) {
+                    icon.className = 'codicon codicon-eye-closed';
+                    icon.style.color = 'var(--vscode-charts-orange, #ff9800)';
+                }
+                if (badge) {
+                    badge.className = 'file-token-badge weight-muted';
+                    badge.style.borderColor = 'var(--vscode-charts-orange)';
+                    badge.style.color = 'var(--vscode-charts-orange)';
+                    badge.style.background = 'rgba(255, 152, 0, 0.1)';
+                    badge.textContent = '[MUTED]';
+                }
+            } else if (status === 'not_in_context') {
+                allFullyActive = false;
+                item.classList.add('status-not-in-context');
+                item.style.background = '';
+                item.style.borderLeft = '4px solid var(--vscode-charts-orange, #ff9800)';
+                if (icon) {
+                    icon.className = 'codicon codicon-file-add';
+                    icon.style.color = 'var(--vscode-charts-orange, #ff9800)';
+                }
+                if (badge) {
+                    badge.className = 'file-token-badge weight-light';
+                    badge.style.borderColor = 'var(--vscode-charts-orange)';
+                    badge.style.color = 'var(--vscode-charts-orange)';
+                    badge.style.background = '';
+                    badge.textContent = '[NOT IN CONTEXT]';
+                }
+            } else {
+                item.classList.add('status-in-context');
+                item.style.background = 'rgba(15, 157, 88, 0.08)';
+                item.style.borderLeft = '4px solid var(--vscode-charts-green, #4caf50)';
+                if (icon) {
+                    icon.className = 'codicon codicon-check';
+                    icon.style.color = 'var(--vscode-charts-green, #4caf50)';
+                }
+                if (badge) {
+                    badge.className = 'file-token-badge weight-light';
+                    badge.style.borderColor = 'var(--vscode-charts-green)';
+                    badge.style.color = 'var(--vscode-charts-green)';
+                    badge.style.background = '';
+                    badge.textContent = '[FULL CONTENT - [C]]';
+                }
             }
         });
 
         const unmuteBtn = block.querySelector('.unmute-btn') as HTMLButtonElement;
+        const repromptBtn = block.querySelector('.unmute-reprompt-btn') as HTMLButtonElement;
         if (unmuteBtn) {
-            unmuteBtn.disabled = allUnmuted;
-            unmuteBtn.classList.toggle('applied', allUnmuted);
-            unmuteBtn.classList.toggle('apply-btn', !allUnmuted);
-            unmuteBtn.innerHTML = `<span class="codicon ${allUnmuted ? 'codicon-check' : 'codicon-eye'}"></span> ${allUnmuted ? 'Files Unmuted' : 'Unmute Files'}`;
+            unmuteBtn.disabled = allFullyActive;
+            unmuteBtn.classList.toggle('applied', allFullyActive);
+            unmuteBtn.classList.toggle('apply-btn', !allFullyActive);
+            const labelText = allFullyActive 
+                ? 'Full Content Active [C]' 
+                : (hasStructureOnly ? 'Upgrade to Full Content [C]' : 'Activate Full Content');
+            unmuteBtn.innerHTML = `<span class="codicon ${allFullyActive ? 'codicon-check' : 'codicon-eye'}"></span> ${labelText}`;
+        }
+        if (repromptBtn) {
+            repromptBtn.disabled = allFullyActive;
+            repromptBtn.style.opacity = allFullyActive ? '0.6' : '1';
         }
     });
 

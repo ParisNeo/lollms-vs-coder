@@ -263,17 +263,44 @@ export class ChatPanel {
         // 0. Process Mute, Unmute, and Granular Structure/Definitions Tags
         const isFastMode = this._discussionCapabilities.fastMode !== false;
 
-        const structRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?/gim;
+        const structRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?)/gim;
         let structMatch;
         while ((structMatch = structRegex.exec(content)) !== null) {
             if (signal.aborted) break;
             const attrStr = structMatch[1] || "";
             const inner = (structMatch[2] || "").trim();
-            const pMatch = attrStr.match(/path=["']([^"']+)["']/i);
-            const targetPaths = pMatch ? [pMatch[1].trim()] : inner.split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+            const targetPaths: string[] = [];
+            const addTarget = (p: string) => {
+                const clean = p.trim().replace(/^['"`]|['"`]$/g, '').replace(/^-\s*/, '').trim();
+                if (clean && !targetPaths.includes(clean)) targetPaths.push(clean);
+            };
+
+            const attrRegex = /(?:path|paths|files|target)=["']([^"']+)["']/gi;
+            let am: RegExpExecArray | null;
+            while ((am = attrRegex.exec(attrStr)) !== null) {
+                am[1].split(/[\r\n,;\s]+/).forEach(addTarget);
+            }
+            if (inner) {
+                inner.split(/[\r\n,;]+/).forEach(l => l.trim().split(/\s+/).forEach(addTarget));
+            }
+
             if (targetPaths.length > 0) {
                 await this.unmuteFiles(targetPaths);
                 await this.addFilesToDiscussionContext(targetPaths, 'definitions-only');
+                const provider = this._contextManager.getContextStateProvider();
+                if (provider) {
+                    const urisToSet: vscode.Uri[] = [];
+                    for (const tp of targetPaths) {
+                        const res = await this._contextManager.resolveWorkspaceFromPath(tp);
+                        if (res) {
+                            urisToSet.push(res.uri);
+                            this._contextManager.refreshFileInCache(res.uri);
+                        }
+                    }
+                    if (urisToSet.length > 0) {
+                        await provider.setStateForUris(urisToSet, 'definitions-only');
+                    }
+                }
                 this.recordCurrentPromptFiles(targetPaths);
             }
         }
@@ -5002,6 +5029,7 @@ The user has CONFIRMED and VALIDATED your plan.
                 { tag: 'load_knowledge', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<load_knowledge\b([^>]*?)>([\s\S]*?)<\/load_knowledge>/gim },
                 { tag: 'update_knowledge', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<update_knowledge\b([^>]*?)>([\s\S]*?)<\/update_knowledge>/gim },
                 { tag: 'unpack_directory', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<unpack_directory\b([^>]*?)>([\s\S]*?)<\/unpack_directory>/gim },
+                { tag: 'load_structure', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?)/gim },
                 { tag: 'show_symbol', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:show_symbol|get_symbol_code|read_symbol)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:show_symbol|get_symbol_code|read_symbol)>)/gim },
                 { tag: 'peek_files', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/gim },
                 { tag: 'read_full_file', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:read_full_file|read_file)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:read_full_file|read_file)>)/gim },
@@ -5112,6 +5140,56 @@ The user has CONFIRMED and VALIDATED your plan.
                                 toolResult = "Notice: No file paths specified in mute tag.";
                                 isSuccess = true;
                             }
+                        } else if (action.tag === 'load_structure') {
+                            const rawAttr = action.attrStr || "";
+                            const rawParams = action.params || "";
+                            const targetFiles: string[] = [];
+                            const addF = (p: string) => {
+                                const clean = p.trim().replace(/^['"`]|['"`]$/g, '').replace(/^-\s*/, '').trim();
+                                if (clean && !targetFiles.includes(clean)) targetFiles.push(clean);
+                            };
+
+                            const attrRegex = /(?:path|paths|files|target)=["']([^"']+)["']/gi;
+                            let am: RegExpExecArray | null;
+                            while ((am = attrRegex.exec(rawAttr + " " + rawParams)) !== null) {
+                                am[1].split(/[\r\n,;\s]+/).forEach(addF);
+                            }
+                            rawParams.split(/[\r\n,;]+/).forEach(l => l.trim().split(/\s+/).forEach(addF));
+
+                            if (targetFiles.length > 0) {
+                                await this.unmuteFiles(targetFiles);
+                                await this.addFilesToDiscussionContext(targetFiles, 'definitions-only');
+                                const provider = this._contextManager.getContextStateProvider();
+                                if (provider) {
+                                    const urisToSet: vscode.Uri[] = [];
+                                    for (const tf of targetFiles) {
+                                        const res = await this._contextManager.resolveWorkspaceFromPath(tf);
+                                        if (res) {
+                                            urisToSet.push(res.uri);
+                                            this._contextManager.refreshFileInCache(res.uri);
+                                        }
+                                    }
+                                    if (urisToSet.length > 0) {
+                                        await provider.setStateForUris(urisToSet, 'definitions-only');
+                                    }
+                                }
+                                this.recordCurrentPromptFiles(targetFiles);
+
+                                const defsLog: string[] = [];
+                                for (const tf of targetFiles) {
+                                    const res = await this._contextManager.resolveWorkspaceFromPath(tf);
+                                    if (res) {
+                                        const defs = await this._contextManager.extractDefinitions(res.uri);
+                                        defsLog.push(`### 📋 Definitions & Signatures for \`${tf}\`:\n\`\`\`typescript\n${defs}\n\`\`\``);
+                                    }
+                                }
+                                toolResult = `Success: Loaded structure & signatures into context for [${targetFiles.join(', ')}].\n\n${defsLog.join('\n\n')}`;
+                                isSuccess = true;
+                                completedDynamicActions.push(`Loaded structure for ${targetFiles.length} file(s).`);
+                            } else {
+                                toolResult = "Notice: No valid file paths found in <load_structure>.";
+                                isSuccess = false;
+                            }
                         } else if (action.tag === 'unpack_directory') {
                             const rawDirs = action.params.split(/[\s\r\n,]+/).map((d: string) => d.trim().replace(/^['"]|['"]$/g, '')).filter((d: string) => d && !d.startsWith('<'));
                             if (rawDirs.length === 0) {
@@ -5152,12 +5230,47 @@ The user has CONFIRMED and VALIDATED your plan.
                                 completedDynamicActions.push(`Peeked at ${rawPaths.length} file(s).`);
                             }
                         } else if (action.tag === 'show_symbol') {
-                            const attrStr = action.params || "";
+                            const attrStr = (action as any).attrStr || action.params || "";
+                            const rawContent = action.params || "";
+
                             const targetMatch = attrStr.match(/target=["']([^"']+)["']/i);
-                            const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
-                            const symMatch = attrStr.match(/symbol=["']([^"']+)["']/i);
-                            const rawTarget = targetMatch ? targetMatch[1].trim() : (pathMatch ? pathMatch[1].trim() : attrStr.split(/\s+/)[0]);
-                            const rawSym = symMatch ? symMatch[1].trim() : "";
+                            const pathMatch = attrStr.match(/(?:path|file)=["']([^"']+)["']/i);
+                            const symMatch = attrStr.match(/(?:symbol|symbols)=["']([^"']+)["']/i);
+
+                            let filePath = pathMatch ? pathMatch[1].trim() : "";
+                            const symbolsList: string[] = [];
+
+                            if (targetMatch) {
+                                const rawT = targetMatch[1].trim();
+                                if (rawT.includes(':') && !/^[a-zA-Z]:[\\/]/.test(rawT)) {
+                                    const col = rawT.indexOf(':');
+                                    if (!filePath) filePath = rawT.substring(0, col).trim();
+                                    rawT.substring(col + 1).split(/[\r\n,;]+/).forEach(s => {
+                                        const c = s.trim(); if (c && !symbolsList.includes(c)) symbolsList.push(c);
+                                    });
+                                } else if (!filePath) {
+                                    filePath = rawT;
+                                }
+                            }
+
+                            if (symMatch) {
+                                symMatch[1].split(/[\r\n,;]+/).forEach(s => {
+                                    const c = s.trim(); if (c && !symbolsList.includes(c)) symbolsList.push(c);
+                                });
+                            }
+
+                            if (rawContent && rawContent.trim()) {
+                                rawContent.split(/[\r\n,;]+/).forEach(s => {
+                                    const c = s.trim().replace(/^-\s*/, '').trim();
+                                    if (c && !c.startsWith('<') && !symbolsList.includes(c)) symbolsList.push(c);
+                                });
+                            }
+
+                            if (!filePath && symbolsList.length > 0 && symbolsList[0].includes(':')) {
+                                const col = symbolsList[0].indexOf(':');
+                                filePath = symbolsList[0].substring(0, col).trim();
+                                symbolsList[0] = symbolsList[0].substring(col + 1).trim();
+                            }
 
                             const { showSymbolTool } = require('../../tools/builtins/showSymbol');
                             const env = {
@@ -5166,10 +5279,14 @@ The user has CONFIRMED and VALIDATED your plan.
                                 workspaceRoot: folders?.[0],
                                 currentPlan: null
                             };
-                            const symRes = await showSymbolTool.execute({ target: rawTarget, symbol: rawSym }, env as any, controller.signal);
+                            const symRes = await showSymbolTool.execute({
+                                target: filePath,
+                                symbols: symbolsList
+                            }, env as any, controller.signal);
+
                             toolResult = symRes.output;
                             isSuccess = symRes.success;
-                            completedDynamicActions.push(`Showed symbol: ${rawTarget}${rawSym ? `:${rawSym}` : ''}`);
+                            completedDynamicActions.push(`Showed symbols for ${filePath}: [${symbolsList.join(', ')}]`);
                         } else if (action.tag === 'read_full_file') {
                             const attrStr = action.params || "";
                             const pMatch = attrStr.match(/path=["']([^"']+)["']/i);
@@ -5331,6 +5448,8 @@ The user has CONFIRMED and VALIDATED your plan.
                     } else if (action.tag === 'remove_files_from_context') {
                         const filesToRemove = action.params.split(/[\s\r\n,]+/).map(f => f.trim()).filter(f => f);
                         blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-trash' : 'codicon-error'}"></i> ${isSuccess ? 'Pruned Files Context' : 'Pruning Failed'}: ${filesToRemove.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
+                    } else if (action.tag === 'load_structure') {
+                        blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-symbol-class' : 'codicon-error'}"></i> ${isSuccess ? 'Structure &amp; Signatures Loaded' : 'Structure Request Failed'}: ${action.params.substring(0, 60)}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
                     } else if (action.tag === 'unpack_directory') {
                         const dirs = action.params.split(/[\s\r\n,]+/).map((f: string) => f.trim()).filter((f: string) => f);
                         blockWidgetHtml = `\n\n<details open class="processing-block"><summary style="${summaryColor}"><i class="codicon ${isSuccess ? 'codicon-folder-opened' : 'codicon-error'}"></i> ${isSuccess ? 'Unpacked Directory' : 'Directory Unpack Notice'}: ${dirs.join(', ')}</summary><div class="processing-body">${toolResult}</div></details>\n\n`;
@@ -5366,6 +5485,7 @@ The user has CONFIRMED and VALIDATED your plan.
                         a.tag === 'add_files_to_context' || 
                         a.tag === 'unmute_files' || 
                         a.tag === 'remove_files_from_context' || 
+                        a.tag === 'load_structure' ||
                         a.tag === 'mute_files' ||
                         a.tag === 'unpack_directory'
                     );
@@ -7615,7 +7735,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 break;
             case 'executeShowSymbol':
                 {
-                    const { target, symbol, path: filePath, reprompt } = message;
+                    const { target, symbol, symbols, path: filePath, reprompt } = message;
                     const { showSymbolTool } = require('../../tools/builtins/showSymbol');
                     const env = {
                         contextManager: this._contextManager,
@@ -7623,7 +7743,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         workspaceRoot: vscode.workspace.workspaceFolders?.[0],
                         currentPlan: null
                     };
-                    const res = await showSymbolTool.execute({ target, symbol, path: filePath }, env as any, new AbortController().signal);
+                    const res = await showSymbolTool.execute({ target, symbol, symbols, path: filePath }, env as any, new AbortController().signal);
                     if (reprompt) {
                         await this.sendMessage({
                             role: 'user',
@@ -7676,6 +7796,70 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     }
                 }
                 break;
+            case 'loadFilesStructure':
+                {
+                    const { files, blockId, reprompt } = message;
+                    const filesToLoad: string[] = Array.isArray(files) ? files : (message.path ? [message.path] : []);
+                    if (filesToLoad.length === 0) break;
+
+                    try {
+                        await this.unmuteFiles(filesToLoad);
+                        await this.addFilesToDiscussionContext(filesToLoad, 'definitions-only');
+
+                        const provider = this._contextManager.getContextStateProvider();
+                        if (provider) {
+                            const urisToSet: vscode.Uri[] = [];
+                            for (const p of filesToLoad) {
+                                const res = await this._contextManager.resolveWorkspaceFromPath(p);
+                                if (res) {
+                                    urisToSet.push(res.uri);
+                                    this._contextManager.refreshFileInCache(res.uri);
+                                }
+                            }
+                            if (urisToSet.length > 0) {
+                                await provider.setStateForUris(urisToSet, 'definitions-only');
+                            }
+                        }
+
+                        this.recordCurrentPromptFiles(filesToLoad);
+                        await this.updateContextAndTokens({ isBackgroundSync: false });
+
+                        webview.postMessage({
+                            command: 'structureLoaded',
+                            blockId: blockId,
+                            files: filesToLoad,
+                            success: true
+                        });
+
+                        vscode.window.showInformationMessage(`Loaded structure & signatures for ${filesToLoad.length} file(s) into context.`);
+
+                        if (reprompt) {
+                            const defsLog: string[] = [];
+                            for (const p of filesToLoad) {
+                                const res = await this._contextManager.resolveWorkspaceFromPath(p);
+                                if (res) {
+                                    const defs = await this._contextManager.extractDefinitions(res.uri);
+                                    defsLog.push(`### 📋 Definitions & Signatures for \`${p}\`:\n\`\`\`typescript\n${defs}\n\`\`\``);
+                                }
+                            }
+                            await this.sendMessage({
+                                role: 'user',
+                                content: `Here is the requested structure and typed signatures:\n\n${defsLog.join('\n\n')}\n\nPlease proceed with your task.`
+                            });
+                        }
+                    } catch (err: any) {
+                        Logger.error(`loadFilesStructure failed: ${err.message}`);
+                        webview.postMessage({
+                            command: 'structureLoaded',
+                            blockId: blockId,
+                            files: filesToLoad,
+                            success: false,
+                            error: err.message
+                        });
+                        vscode.window.showErrorMessage(`Failed to load structure: ${err.message}`);
+                    }
+                }
+                break;
             case 'executeAllMessageActions':
                 {
                     const { actions } = message;
@@ -7683,6 +7867,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
 
                     const resultsLog: string[] = [];
                     const provider = this._contextManager.getContextStateProvider();
+                    const folders = vscode.workspace.workspaceFolders;
 
                     for (const action of actions) {
                         try {
@@ -7698,6 +7883,54 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             } else if (action.type === 'unmute') {
                                 const count = await this.unmuteFiles(action.payload);
                                 resultsLog.push(`#### ✅ Unmuted Files: [${action.payload.join(', ')}] (${count} files reactivated with full content)`);
+
+                            } else if (action.type === 'load_structure') {
+                                const files = Array.isArray(action.payload) ? action.payload : [action.payload];
+                                await this.unmuteFiles(files);
+                                await this.addFilesToDiscussionContext(files, 'definitions-only');
+
+                                if (provider) {
+                                    const urisToSet: vscode.Uri[] = [];
+                                    for (const p of files) {
+                                        const res = await this._contextManager.resolveWorkspaceFromPath(p);
+                                        if (res) {
+                                            urisToSet.push(res.uri);
+                                            this._contextManager.refreshFileInCache(res.uri);
+                                        }
+                                    }
+                                    if (urisToSet.length > 0) {
+                                        await provider.setStateForUris(urisToSet, 'definitions-only');
+                                    }
+                                }
+                                this.recordCurrentPromptFiles(files);
+
+                                const defsLog: string[] = [];
+                                for (const p of files) {
+                                    const res = await this._contextManager.resolveWorkspaceFromPath(p);
+                                    if (res) {
+                                        const defs = await this._contextManager.extractDefinitions(res.uri);
+                                        defsLog.push(`### 📋 Definitions & Signatures for \`${p}\`:\n\`\`\`typescript\n${defs}\n\`\`\``);
+                                    }
+                                }
+                                resultsLog.push(`#### ✅ Structure & Signatures Loaded for [${files.join(', ')}]\n${defsLog.join('\n\n')}`);
+
+                            } else if (action.type === 'show_symbol') {
+                                const { showSymbolTool } = require('../../tools/builtins/showSymbol');
+                                const env = {
+                                    contextManager: this._contextManager,
+                                    lollmsApi: this._lollmsAPI,
+                                    workspaceRoot: folders?.[0],
+                                    currentPlan: null
+                                };
+                                const symRes = await showSymbolTool.execute({
+                                    target: action.payload.target,
+                                    symbol: action.payload.symbol,
+                                    symbols: action.payload.symbols
+                                }, env as any, new AbortController().signal);
+                                const label = action.payload.symbols 
+                                    ? (Array.isArray(action.payload.symbols) ? action.payload.symbols.join(', ') : action.payload.symbols)
+                                    : (action.payload.symbol || action.payload.target);
+                                resultsLog.push(`#### ${symRes.success ? '✅' : '❌'} Symbols: ${action.payload.target || ''} [${label}]\n${symRes.output}`);
 
                             } else if (action.type === 'tool') {
                                 const toolDef = this.agentManager.getTools().find(t => t.name === action.payload.name);
@@ -8722,6 +8955,122 @@ ${reportBlock}
                     }
                 }
                 break;
+            case 'toggleFileStructure':
+                if (this._currentDiscussion && message.path) {
+                    const targetPath = message.path.replace(/\\/g, '/').trim();
+                    const res = await this._contextManager.resolveWorkspaceFromPath(targetPath);
+                    const resolvedPath = res ? res.relativePath : targetPath;
+
+                    if (!(this._currentDiscussion as any).includedFiles) {
+                        const globalIncluded = this._contextManager?.getContextStateProvider()?.getIncludedFiles() || [];
+                        (this._currentDiscussion as any).includedFiles = JSON.parse(JSON.stringify(globalIncluded));
+                    }
+                    const discFiles: any[] = (this._currentDiscussion as any).includedFiles;
+                    const { arePathsEqual } = require('../../utils');
+
+                    const existing = discFiles.find(f => {
+                        const cf = typeof f === 'string' ? f : (f.path || '');
+                        return arePathsEqual(cf, resolvedPath) || arePathsEqual(cf, targetPath);
+                    });
+
+                    const currentState = typeof existing === 'object' ? existing.state : 'included';
+                    const newState = message.targetState || (currentState === 'definitions-only' ? 'included' : 'definitions-only');
+
+                    if (existing) {
+                        if (typeof existing === 'object') {
+                            existing.state = newState;
+                        }
+                    } else {
+                        discFiles.push({ path: resolvedPath, state: newState });
+                    }
+
+                    if (this._currentDiscussion.capabilities) {
+                        (this._currentDiscussion.capabilities as any).includedFiles = discFiles;
+                    }
+
+                    const provider = this._contextManager.getContextStateProvider();
+                    if (provider && res) {
+                        await provider.setStateForUris([res.uri], newState as any);
+                    }
+
+                    // If file was muted and is now being switched to definitions-only, unmute it
+                    if (this._currentDiscussion.mutedFiles) {
+                        this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(m => !arePathsEqual(m, targetPath) && !arePathsEqual(m, resolvedPath));
+                        this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
+                    }
+
+                    if (res) {
+                        this._contextManager.refreshFileInCache(res.uri);
+                    }
+
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+
+                    await this.updateContextAndTokens({ isBackgroundSync: false });
+
+                    const label = newState === 'definitions-only' ? 'Structure Only (Definitions)' : 'Full Content';
+                    vscode.window.showInformationMessage(`Set "${path.basename(resolvedPath)}" to ${label}.`);
+                }
+                break;
+
+            case 'bulkSetFilesStructure':
+                if (this._currentDiscussion && Array.isArray(message.paths) && message.paths.length > 0) {
+                    const targetState = message.targetState || 'definitions-only';
+                    if (!(this._currentDiscussion as any).includedFiles) {
+                        const globalIncluded = this._contextManager?.getContextStateProvider()?.getIncludedFiles() || [];
+                        (this._currentDiscussion as any).includedFiles = JSON.parse(JSON.stringify(globalIncluded));
+                    }
+                    const discFiles: any[] = (this._currentDiscussion as any).includedFiles;
+                    const provider = this._contextManager.getContextStateProvider();
+                    const urisToUpdate: vscode.Uri[] = [];
+                    const { arePathsEqual } = require('../../utils');
+
+                    for (const p of message.paths) {
+                        const cleanP = p.replace(/\\/g, '/').trim();
+                        const res = await this._contextManager.resolveWorkspaceFromPath(cleanP);
+                        const resolved = res ? res.relativePath : cleanP;
+
+                        const existing = discFiles.find(f => {
+                            const cf = typeof f === 'string' ? f : (f.path || '');
+                            return arePathsEqual(cf, resolved) || arePathsEqual(cf, cleanP);
+                        });
+
+                        if (existing && typeof existing === 'object') {
+                            existing.state = targetState;
+                        } else if (!existing) {
+                            discFiles.push({ path: resolved, state: targetState });
+                        }
+
+                        if (this._currentDiscussion.mutedFiles) {
+                            this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(m => !arePathsEqual(m, cleanP) && !arePathsEqual(m, resolved));
+                        }
+
+                        if (res) {
+                            urisToUpdate.push(res.uri);
+                            this._contextManager.refreshFileInCache(res.uri);
+                        }
+                    }
+
+                    this._discussionCapabilities.mutedFiles = [...(this._currentDiscussion.mutedFiles || [])];
+
+                    if (this._currentDiscussion.capabilities) {
+                        (this._currentDiscussion.capabilities as any).includedFiles = discFiles;
+                    }
+
+                    if (provider && urisToUpdate.length > 0) {
+                        await provider.setStateForUris(urisToUpdate, targetState as any);
+                    }
+
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+
+                    await this.updateContextAndTokens({ isBackgroundSync: false });
+                    vscode.window.showInformationMessage(`Set ${message.paths.length} file(s) to ${targetState === 'definitions-only' ? 'Structure Only' : 'Full Content'}.`);
+                }
+                break;
+
             case 'toggleMuteFile':
                 if (this._currentDiscussion && message.path) {
                     const { arePathsEqual } = require('../../utils');
@@ -8812,7 +9161,15 @@ ${reportBlock}
             case 'bulkUnmuteFiles':
                 if (Array.isArray(message.paths)) {
                     await this.unmuteFiles(message.paths);
-                    vscode.window.showInformationMessage(`Reactivated content for selected file(s) for this discussion.`);
+                    await this._contextManager.getContextStateProvider()?.addFilesToContext(message.paths);
+                    await this.addFilesToDiscussionContext(message.paths, 'included');
+                    this.recordCurrentPromptFiles(message.paths);
+                    for (const p of message.paths) {
+                        const res = await this._contextManager.resolveWorkspaceFromPath(p);
+                        if (res) this._contextManager.refreshFileInCache(res.uri);
+                    }
+                    await this.updateContextAndTokens({ isBackgroundSync: false });
+                    vscode.window.showInformationMessage(`Reactivated full content for selected file(s) for this discussion.`);
                     if (message.reprompt) {
                         await this.sendMessage({
                             role: 'user',

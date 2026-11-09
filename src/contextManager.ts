@@ -65,6 +65,7 @@ export class ContextManager {
 
   private _lastContext: ContextResult | null = null;
   private _lastContextByDiscussion: Map<string, ContextResult> = new Map();
+  private _externalLinksCache: Map<string, { targetPath: string; fileName: string; addedAt: number }> | null = null;
   private static PROJECT_SKILLS_KEY = 'lollms_project_active_skills';
 
   // --- SOVEREIGN TOKEN CACHE ---
@@ -607,6 +608,24 @@ private _cachedTreeString: string | null = null;
     if (folders.length === 0) {
       const resolved = path.resolve(normalized);
       return { folder: undefined, relativePath: path.basename(resolved), uri: vscode.Uri.file(resolved) };
+    }
+
+    // Case 0: Check Registered Live External Links
+    const cleanNorm = normalized.toLowerCase();
+    for (const folder of folders) {
+      const linksMap = await this.getExternalLinks(folder);
+      for (const [linkRel, linkInfo] of linksMap.entries()) {
+        const cleanLink = linkRel.replace(/\\/g, '/').toLowerCase();
+        if (cleanLink === cleanNorm || cleanNorm.endsWith('/' + cleanLink) || cleanLink.endsWith('/' + cleanNorm)) {
+          const targetUri = vscode.Uri.file(linkInfo.targetPath);
+          try {
+            const stat = await vscode.workspace.fs.stat(targetUri);
+            if (stat) {
+              return { folder, relativePath: linkRel, uri: targetUri };
+            }
+          } catch {}
+        }
+      }
     }
 
     // Case B: Direct Relative Path Check Across Workspace Folders (Priority 1)
@@ -1387,22 +1406,37 @@ private _cachedTreeString: string | null = null;
       }
 
       // Provide an unambiguous, flat manifest of all currently active files in this project
+      const { arePathsEqual, isProjectFile } = require('./utils');
       const activeProjectFiles = contextFiles.filter(f => {
-        const isMuted = mutedFiles.some(m => {
-          const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
-          const cleanF = f.path.toLowerCase().trim();
-          return cleanM === cleanF || cleanM.endsWith('/' + cleanF) || cleanF.endsWith('/' + cleanM);
-        });
+        const isMuted = mutedFiles.some(m => arePathsEqual(m, f.path));
         return !isMuted;
       });
 
-      if (activeProjectFiles.length > 0) {
-        result.text += `### 📄 LOADED FILES MANIFEST [C] (${activeProjectFiles.length} files currently active):\n`;
-        activeProjectFiles.forEach(f => {
+      const activeCodeFiles = activeProjectFiles.filter(f => isProjectFile(f.path));
+      const activeExternalFiles = activeProjectFiles.filter(f => !isProjectFile(f.path));
+
+      if (activeCodeFiles.length > 0) {
+        result.text += `### 📄 PROJECT CODE FILES MANIFEST [C] (${activeCodeFiles.length} files active):\n`;
+        activeCodeFiles.forEach(f => {
           const headerPath = activeFolders.length > 1 ? `${folder.name}/${f.path}` : f.path;
-          result.text += `- \`${headerPath}\`\n`;
+          result.text += `- \`${headerPath}\` [Project Code File]\n`;
         });
         result.text += `\n`;
+      }
+
+      if (activeExternalFiles.length > 0) {
+        result.text += `### 📚 EXTERNAL & RESEARCH DOCUMENTATION MANIFEST [C] (${activeExternalFiles.length} files active):\n`;
+        activeExternalFiles.forEach(f => {
+          const headerPath = activeFolders.length > 1 ? `${folder.name}/${f.path}` : f.path;
+          result.text += `- \`${headerPath}\` [External Research Document - READ-ONLY GROUNDING]\n`;
+        });
+        result.text += `\n`;
+
+        result.projectTree += `\n### 📚 EXTERNAL & RESEARCH DOCUMENTS\n`;
+        activeExternalFiles.forEach(f => {
+          result.projectTree += `- \`${f.path}\` [C] (External Research Document)\n`;
+        });
+        result.projectTree += `\n`;
       }
 
       result.text += `### 📄 ${projectName.toUpperCase()} — LOADED FILE CONTENTS\n\n`;
@@ -1458,14 +1492,8 @@ private _cachedTreeString: string | null = null;
           const stat = await vscode.workspace.fs.stat(fileUri).catch(() => null);
           if (!stat || stat.type !== vscode.FileType.File) continue;
 
-          const isMuted = mutedFiles.some((m: string) => {
-            const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
-            const cleanH = headerPath.toLowerCase().trim();
-            const cleanR = relativePath.toLowerCase().trim();
-            return cleanM === cleanH || cleanM === cleanR || 
-                   cleanH.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanH) ||
-                   cleanR.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanR);
-          });
+          const { arePathsEqual } = require('./utils');
+          const isMuted = mutedFiles.some((m: string) => arePathsEqual(m, relativePath) || arePathsEqual(m, headerPath));
 
           if (isMuted) {
             continue;
@@ -1481,9 +1509,21 @@ private _cachedTreeString: string | null = null;
             continue;
           }
 
-          if (contextState === 'definitions-only' || options?.leanMode) {
+          const isDefOnly = contextState === 'definitions-only' || contextState === 'structure' || options?.leanMode;
+          const symbolsMatch = typeof contextState === 'string' && contextState.startsWith('symbols:') 
+            ? contextState.substring(8).split(',').map((s: string) => s.trim()).filter(Boolean) 
+            : (fileEntry as any).symbols;
+
+          if (symbolsMatch && symbolsMatch.length > 0) {
+            const defsAndSymbols = await this.extractDefinitionsAndSymbols(fileUri, symbolsMatch);
+            projectContentBuffer += `<file path="${headerPath}" mode="symbols" symbols="${symbolsMatch.join(', ')}">\n${defsAndSymbols}\n</file>\n\n`;
+            filesInThisFolderCount++;
+            continue;
+          }
+
+          if (isDefOnly) {
             const definitions = await this.extractDefinitions(fileUri);
-            const modeLabel = options?.leanMode ? 'deferred-contracts' : 'definitions-only';
+            const modeLabel = options?.leanMode ? 'deferred-contracts' : 'structure';
             const notice = options?.leanMode
               ? `<!-- NOTE: Stripped signatures and contracts only for Stage 1 assessment. Full source code will be hydrated in Stage 3 upon <librarian_off> -->\n`
               : '';
@@ -1551,8 +1591,8 @@ private _cachedTreeString: string | null = null;
           }
         }
 
-          if (fileContent.length < 2000000) { // Cache loaded files under 2MB
-            if (this._fileContentCache.size >= 500) {
+          if (fileContent.length < 500000) { // Cache loaded files under 500KB to prevent heap bloat
+            if (this._fileContentCache.size >= 60) { // Limit to 60 most recent files (max ~25MB RAM)
               const oldestKey = this._fileContentCache.keys().next().value;
               if (oldestKey !== undefined) {
                 this._fileContentCache.delete(oldestKey);
@@ -1567,7 +1607,10 @@ private _cachedTreeString: string | null = null;
           }
           const formattedContent = fileContent.endsWith('\n') ? fileContent : fileContent + '\n';
           const lineCount = fileContent.split('\n').length;
-          projectContentBuffer += `<!-- START FILE: ${headerPath} (${lineCount} lines) -->\n<file path="${headerPath}">\n${formattedContent}</file>\n<!-- END FILE: ${headerPath} -->\n\n`;
+          const isExternalDoc = headerPath.includes('.lollms/external_files') || !this.isProjectFile(headerPath);
+          const docTypeAttr = isExternalDoc ? ' read_only="true" mode="read-only-external-doc"' : '';
+          const noticeComment = isExternalDoc ? ' [READ-ONLY EXTERNAL RESEARCH DOCUMENT - DO NOT MODIFY]' : '';
+          projectContentBuffer += `<!-- START FILE: ${headerPath} (${lineCount} lines)${noticeComment} -->\n<file path="${headerPath}"${docTypeAttr}>\n${formattedContent}</file>\n<!-- END FILE: ${headerPath} -->\n\n`;
           filesInThisFolderCount++;
 
         } catch (error) {
@@ -1589,6 +1632,12 @@ private _cachedTreeString: string | null = null;
   result.governorReport = liveKnowledge || await this.getStructureGuide();
   this._lastContext = result;
   if (options?.discussionId) {
+    if (this._lastContextByDiscussion.size >= 3) {
+      const oldestDiscId = this._lastContextByDiscussion.keys().next().value;
+      if (oldestDiscId) {
+        this._lastContextByDiscussion.delete(oldestDiscId);
+      }
+    }
     this._lastContextByDiscussion.set(options.discussionId, result);
   }
   return result;
@@ -1630,6 +1679,41 @@ private _cachedTreeString: string | null = null;
     } catch (e) {
       return `(Error extracting definitions: ${e})`;
     }
+  }
+
+  public async extractDefinitionsAndSymbols(fileUri: vscode.Uri, requestedSymbols: string[]): Promise<string> {
+    const definitions = await this.extractDefinitions(fileUri);
+    if (!requestedSymbols || requestedSymbols.length === 0) {
+      return definitions;
+    }
+
+    let symbolCodes = "";
+    try {
+      const document = await vscode.workspace.openTextDocument(fileUri);
+      const { showSymbolTool } = require('./tools/builtins/showSymbol');
+      const env = {
+        contextManager: this,
+        lollmsApi: this.lollmsAPI,
+        workspaceRoot: vscode.workspace.workspaceFolders?.[0],
+        currentPlan: null
+      };
+
+      for (const symName of requestedSymbols) {
+        const cleanSym = symName.trim();
+        if (!cleanSym) continue;
+        const res = await showSymbolTool.execute({ file: document.uri.fsPath, symbol: cleanSym }, env as any, new AbortController().signal);
+        if (res.success) {
+          symbolCodes += `\n${res.output}\n`;
+        }
+      }
+    } catch (e: any) {
+      Logger.warn(`Failed to extract symbols: ${e.message}`);
+    }
+
+    if (symbolCodes.trim()) {
+      return `${definitions}\n\n### 🔍 IMPLEMENTATION CODE FOR SPECIFIC SYMBOLS:\n${symbolCodes.trim()}`;
+    }
+    return definitions;
   }
 
   public async getWorkspaceFilePaths(selectedFolders?: string[]): Promise<string[]> {
@@ -3656,6 +3740,65 @@ Example:
   public async removeSkillFromProject(skillId: string) {
     const current = await this.getActiveProjectSkills();
     await this.context.workspaceState.update(ContextManager.PROJECT_SKILLS_KEY, current.filter(id => id !== skillId));
+  }
+
+  public async getExternalLinks(folder?: vscode.WorkspaceFolder): Promise<Map<string, { targetPath: string; fileName: string; addedAt: number }>> {
+    const wsFolder = folder || vscode.workspace.workspaceFolders?.[0];
+    if (!wsFolder) return new Map();
+
+    if (this._externalLinksCache) return this._externalLinksCache;
+
+    const linksFileUri = vscode.Uri.joinPath(wsFolder.uri, '.lollms', 'external_links.json');
+    const result = new Map<string, { targetPath: string; fileName: string; addedAt: number }>();
+
+    try {
+      const bytes = await vscode.workspace.fs.readFile(linksFileUri);
+      const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
+      if (parsed && typeof parsed === 'object') {
+        for (const [k, v] of Object.entries(parsed)) {
+          if (v && typeof v === 'object' && (v as any).targetPath) {
+            result.set(k.replace(/\\/g, '/'), v as any);
+          }
+        }
+      }
+    } catch {}
+
+    this._externalLinksCache = result;
+    return result;
+  }
+
+  public async addExternalLink(targetUri: vscode.Uri, folder?: vscode.WorkspaceFolder): Promise<string> {
+    const wsFolder = folder || vscode.workspace.workspaceFolders?.[0];
+    if (!wsFolder) throw new Error("No workspace folder open.");
+
+    // Verify target file exists on disk
+    await vscode.workspace.fs.stat(targetUri);
+    const originalPath = targetUri.fsPath.replace(/\\/g, '/');
+    const fileName = path.basename(targetUri.fsPath);
+
+    // Track original path in external_links.json without copying any file content
+    const linksMap = await this.getExternalLinks(wsFolder);
+    linksMap.set(originalPath, {
+      targetPath: originalPath,
+      fileName,
+      addedAt: Date.now()
+    });
+
+    const linksFileUri = vscode.Uri.joinPath(wsFolder.uri, '.lollms', 'external_links.json');
+    const serialized: Record<string, any> = {};
+    linksMap.forEach((v, k) => { serialized[k] = v; });
+    await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(wsFolder.uri, '.lollms')).then(undefined, () => {});
+    await vscode.workspace.fs.writeFile(linksFileUri, Buffer.from(JSON.stringify(serialized, null, 2), 'utf8'));
+
+    // Directly register original path into context
+    await this.contextStateProvider?.addFilesToContext([originalPath]);
+    this.refreshFileInCache(targetUri);
+    return originalPath;
+  }
+
+  public isProjectFile(filePathOrItem: any): boolean {
+    const { isProjectFile } = require('./utils');
+    return isProjectFile(filePathOrItem);
   }
 
   public async getActiveProjectTools(): Promise<string[]> {

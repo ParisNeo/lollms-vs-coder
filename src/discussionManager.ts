@@ -10,6 +10,7 @@ export interface Discussion {
     id: string;
     title: string;
     messages: ChatMessage[];
+    llmHistory?: ChatMessage[];
     timestamp: number;
     groupId: string | null;
     plan?: Plan | null; 

@@ -78,6 +78,17 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
             msgDiv.classList.add('agent-message');
             msgDiv.style.borderLeftColor = 'var(--vscode-charts-red)';
         }
+    } else if (!isUser && !isSystem) {
+        const avatarDiv = wrapper.querySelector('.message-avatar') as HTMLElement;
+        if (avatarDiv) {
+            const pId = wrapper.dataset.personalityId;
+            const currentP = (window as any).state?.personalities?.find((p: any) => p && (p.id === pId || p.name === wrapper.dataset.personalityName));
+            if (currentP && currentP.icon) {
+                avatarDiv.innerHTML = `<img src="${currentP.icon}" style="width: 100%; height: 100%; border-radius: 4px; object-fit: contain;" alt="${currentP.name}" />`;
+                avatarDiv.style.backgroundColor = 'transparent';
+                avatarDiv.style.border = 'none';
+            }
+        }
     }
 
     // Check if we need to initialize the layout
@@ -169,7 +180,10 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
                     const isAllApplied = applyBtn?.classList.contains('undo-all-btn');
                     pillHtml += `<span class="collapsed-badge files" style="background:rgba(0,122,204,0.18); color:var(--vscode-charts-blue); border:1px solid rgba(0,122,204,0.35); padding:1px 6px; border-radius:10px; font-size:10px;"><i class="codicon codicon-file-code"></i> ${fileCount} file${fileCount > 1 ? 's' : ''} ${isAllApplied ? '(Applied)' : '(Pending)'}</span>`;
                 }
-                if (isLibrarian) {
+                const planBlock = wrapper.querySelector('.librarian-plan-card, details.librarian-plan-card');
+                if (planBlock) {
+                    pillHtml += `<span class="collapsed-badge plan" style="background:rgba(214,122,13,0.18); color:var(--vscode-charts-orange); border:1px solid rgba(214,122,13,0.35); padding:1px 6px; border-radius:10px; font-size:10px;"><i class="codicon codicon-checklist"></i> Librarian Plan &amp; Findings</span>`;
+                } else if (isLibrarian) {
                     pillHtml += `<span class="collapsed-badge lib" style="background:rgba(214,122,13,0.18); color:var(--vscode-charts-orange); border:1px solid rgba(214,122,13,0.35); padding:1px 6px; border-radius:10px; font-size:10px;"><i class="codicon codicon-library"></i> Librarian Directive (Findings &amp; Instructions)</span>`;
                 }
 
@@ -311,8 +325,10 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
             updateCollapseState();
         };
 
+        // Only collapse inner librarian details zones, keeping the full message wrapper uncollapsed
         if (isLibrarian) {
-            updateCollapseState(true, false);
+            const innerLibrarianZones = wrapper.querySelectorAll('details.librarian-plan-card, details.librarian-compressed-directive');
+            innerLibrarianZones.forEach((zone: any) => { zone.open = false; });
         }
 
         // Bind events

@@ -717,11 +717,13 @@ ${transcript}`;
         if (existingPanel) {
             existingPanel._panel.reveal();
             ChatPanel.currentPanel = existingPanel;
+            existingPanel.loadDiscussion();
             return;
         }
 
         if (ChatPanel.currentPanel && ChatPanel.currentPanel.getCurrentDiscussion()?.id === cleanId) {
             ChatPanel.currentPanel._panel.reveal();
+            ChatPanel.currentPanel.loadDiscussion();
             return;
         }
 

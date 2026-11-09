@@ -281,9 +281,6 @@
                             <button class="menu-item" id="copyHistoryButton"><i class="codicon codicon-history"></i><span>Copy Chat History Only</span></button>
                             <button class="menu-item" id="copySystemPromptButton"><i class="codicon codicon-shield"></i><span>Copy System Prompt Only</span></button>
                             <button class="menu-item" id="copyTreeAndContentButton"><i class="codicon codicon-clippy"></i><span>Copy Tree & Content</span></button>
-                            <button class="menu-item" id="runTestsMenuBtn"><i class="codicon codicon-beaker"></i><span>Run Tests & Report to AI</span></button>
-                            <button class="menu-item" id="runTestsMenuBtn"><i class="codicon codicon-beaker"></i><span>Run Tests & Report to AI</span></button>
-                            <button class="menu-item" id="runTestsMenuBtn"><i class="codicon codicon-beaker"></i><span>Run Tests & Report to AI</span></button>
                             <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
                             <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project Entry Point</span></button>
                             <button class="menu-item" id="debugProjectButton" title="Run entry point in background and feed stdout/stderr back to LLM"><i class="codicon codicon-debug"></i><span>Debug Project Entry Point (Auto-Audit)</span></button>
@@ -355,7 +352,8 @@
                     <div class="input-area-container">
                         <div class="rich-input-toolbar">
                             <button class="toolbar-tool" id="jump-to-context-btn" title="Jump to Project Context / Dashboard"><i class="codicon codicon-dashboard"></i><span>Context</span></button>
-                            <button class="toolbar-tool" data-wrap-type="librarian" title="Consult the Librarian for files, architecture, or codebase research"><i class="codicon codicon-library"></i><span>Librarian</span></button>
+
+                            <button class="toolbar-tool" data-wrap-type="plan" title="Librarian Plan &amp; Findings Template"><i class="codicon codicon-checklist"></i><span>Plan</span></button>
                             <button class="toolbar-tool toggle-librarian-mode-btn toggle-fast-mode-btn" id="toggleLibrarianModeBtn" title="Librarian Mode: Inactive (Fast Mode is default). Click to activate Librarian backed mode"><i class="codicon codicon-library"></i><span>Librarian Mode</span></button>
                             <div class="toolbar-separator"></div>
                             <button class="toolbar-tool" data-wrap-type="python" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
@@ -1226,6 +1224,9 @@
                             <button type="button" id="repair-select-types-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px; color: var(--vscode-charts-orange); border-color: rgba(230,126,34,0.4);" title="Select only type mismatch errors">⚡ Types</button>
                             <button type="button" id="repair-select-imports-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px; color: var(--vscode-charts-purple); border-color: rgba(155,89,182,0.4);" title="Select only unresolved import errors">📦 Imports</button>
                             <button type="button" id="repair-select-warnings-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px; color: var(--vscode-charts-yellow); border-color: rgba(241,196,15,0.4);" title="Select only warnings">⚠️ Warnings</button>
+                            <button type="button" id="repair-copy-selected-md-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 8px; color: var(--vscode-textLink-foreground); border-color: var(--vscode-charts-blue); font-weight: 600;" title="Copy all selected errors into structured Markdown grouped by file">
+                                <i class="codicon codicon-copy"></i> Copy Selected (Markdown)
+                            </button>
                         </div>
                     </div>
 
@@ -1388,8 +1389,8 @@
 
                     <div style="padding: 10px 14px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-sideBar-background); display: flex; flex-direction: column; gap: 6px;">
                         <div style="display: flex; gap: 8px; align-items: flex-end;">
-                            <textarea id="governor-filter-prompt" class="commit-textarea" style="margin: 0; flex: 1; height: 50px; min-height: 50px; max-height: 120px; font-size: 12px; resize: none; border-radius: 6px; padding: 8px 10px;" placeholder="Prompt the Librarian (e.g. 'Focus on JWT auth, locate models, and summarize reference files')..."></textarea>
-                            <button id="governor-filter-run-btn" class="code-action-btn apply-btn" style="height: 50px; width: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 6px; background: var(--vscode-charts-orange) !important; color: white !important; font-weight: bold; flex-shrink: 0;" title="Send prompt to Librarian (Enter)">
+                            <textarea id="governor-filter-prompt" class="commit-textarea" style="margin: 0; flex: 1; height: 80px; min-height: 80px; max-height: 200px; font-size: 12px; resize: vertical; border-radius: 6px; padding: 8px 10px;" placeholder="Prompt the Librarian (e.g. 'Focus on JWT auth, locate models, and summarize reference files')..."></textarea>
+                            <button id="governor-filter-run-btn" class="code-action-btn apply-btn" style="height: 80px; width: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 6px; background: var(--vscode-charts-orange) !important; color: white !important; font-weight: bold; flex-shrink: 0;" title="Send prompt to Librarian (Enter)">
                                 <i class="codicon codicon-send" id="gov-run-icon" style="font-size: 16px;"></i>
                                 <span style="font-size: 9px;">Consult</span>
                             </button>
@@ -1959,14 +1960,10 @@
                         </div>
                     </div>
 
-                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top: 10px;">
+                    <div style="display:grid; grid-template-columns: 1fr; gap:12px; margin-top: 10px;">
                         <div class="form-group" style="margin: 0;">
-                            <label for="wizard-profile">Response Style</label>
+                            <label for="wizard-profile">Response Style Profile</label>
                             <select id="wizard-profile" style="width:100%;"></select>
-                        </div>
-                        <div class="form-group" style="margin: 0;">
-                            <label for="wizard-preferences-profile">Preferences Profile</label>
-                            <select id="wizard-preferences-profile" style="width:100%;"></select>
                         </div>
                     </div>
 

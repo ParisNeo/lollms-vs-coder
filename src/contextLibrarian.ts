@@ -3,7 +3,20 @@ import * as path from 'path';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { ContextManager, ContextResult } from './contextManager';
 import { DiscussionManager, Discussion } from './discussionManager';
-import { DiscussionCapabilities, stripThinkingTags, stripLibrarianReferences, extractFileBlocks, parseFileTagAttributes, applySearchReplace, normalizeAiderContent, parseAiderHunks } from './utils';
+import { 
+    DiscussionCapabilities, 
+    stripThinkingTags, 
+    stripLibrarianReferences, 
+    extractFileBlocks, 
+    parseFileTagAttributes, 
+    applySearchReplace, 
+    normalizeAiderContent, 
+    parseAiderHunks,
+    estimateImageTokens,
+    extractGovernorDirectives,
+    ensureStrictAlternatingRoles,
+    mergeMessageContents
+} from './utils';
 import { Logger } from './logger';
 import { LibrarianPromptBuilder } from './system_prompts/librarianPrompt';
 
@@ -225,6 +238,167 @@ export class ContextLibrarian {
 
         const saved = await this.saveStructureGuide(updatedText);
         return { success: saved, content: updatedText };
+    }
+
+    /**
+     * Phase 0: Fast inspection of current context.
+     * Evaluates whether the currently loaded files in context are sufficient to address the task.
+     */
+    public static async fastInspection(options: {
+        lollmsAPI: LollmsAPI;
+        contextManager: ContextManager;
+        discussionManager: DiscussionManager;
+        currentDiscussion: Discussion;
+        targetModel: string;
+        userPrompt: string;
+        signal: AbortSignal;
+        history?: ChatMessage[];
+        recalledMemories?: string;
+    }): Promise<{ sufficient: boolean; rationale: string }> {
+        const { lollmsAPI, contextManager, targetModel, userPrompt, signal, currentDiscussion } = options;
+
+        try {
+            const provider = contextManager.getContextStateProvider();
+            const included = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
+            const mutedSet = new Set((currentDiscussion?.mutedFiles || []).map(m => m.replace(/\\/g, '/').toLowerCase().trim()));
+            const activeFiles = included.filter(f => !mutedSet.has(f.path.replace(/\\/g, '/').toLowerCase().trim()));
+
+            if (activeFiles.length === 0) {
+                return {
+                    sufficient: false,
+                    rationale: "No active files currently loaded in context [C]."
+                };
+            }
+
+            const activeFilesCatalog = activeFiles.map(f => {
+                const tok = f.tokens || Math.max(1, Math.ceil((f.bytes || 0) / 3.5));
+                return `- \`${f.path}\` (~${tok} tok)`;
+            }).join('\n');
+
+            let projectTree = "";
+            try {
+                projectTree = await contextManager.generateProjectTree(signal);
+            } catch {}
+
+            const structureGuide = await this.getStructureGuide();
+
+            const fastPrompt = LibrarianPromptBuilder.getFastInspectionPrompt(
+                userPrompt,
+                activeFilesCatalog,
+                projectTree,
+                options.recalledMemories || "",
+                structureGuide
+            );
+
+            const inspectionMessages: ChatMessage[] = [
+                { role: 'system', content: "You are the Lead Sovereign Librarian evaluating context sufficiency. Output strictly valid XML." },
+                { role: 'user', content: fastPrompt }
+            ];
+
+            const response = await lollmsAPI.sendChat(
+                inspectionMessages,
+                null,
+                signal,
+                targetModel,
+                { thinking: false, reasoningEffort: 'none' }
+            );
+
+            const cleanResponse = stripThinkingTags(response).trim();
+            const decisionMatch = cleanResponse.match(/<librarian_decision\b[^>]*sufficient=["'](true|false)["'][^>]*>([\s\S]*?)<\/librarian_decision>/i) ||
+                                  cleanResponse.match(/<librarian_decision\b[^>]*>([\s\S]*?)<\/librarian_decision>/i);
+
+            if (decisionMatch) {
+                const attrMatch = cleanResponse.match(/sufficient=["'](true|false)["']/i);
+                const isSufficient = attrMatch ? attrMatch[1].toLowerCase() === 'true' : cleanResponse.toLowerCase().includes('sufficient="true"');
+                const rationale = (decisionMatch[2] || decisionMatch[1] || '').trim();
+                return {
+                    sufficient: isSufficient,
+                    rationale: rationale || (isSufficient ? "Current active files are sufficient." : "Additional files or scouting required.")
+                };
+            }
+
+            const isAffirmative = cleanResponse.toLowerCase().includes('sufficient="true"') || 
+                                  cleanResponse.toLowerCase().includes('is sufficient');
+            return {
+                sufficient: isAffirmative,
+                rationale: cleanResponse
+            };
+        } catch (e: any) {
+            Logger.warn(`[Librarian] Fast inspection warning: ${e.message}. Defaulting to scouting.`);
+            return {
+                sufficient: false,
+                rationale: `Fast inspection encountered error: ${e.message}`
+            };
+        }
+    }
+
+    /**
+     * Phase 4: Final Check of Loaded Files before handing off to the Coder.
+     * Verifies that all target files exist, are unmuted with full content [C],
+     * and compiles the Librarian Final Check Certificate for the Coder.
+     */
+    public static async finalCheckLoadedFiles(options: {
+        contextManager: ContextManager;
+        discussionManager: DiscussionManager;
+        currentDiscussion: Discussion;
+        targetModel?: string;
+        userPrompt: string;
+        targetFiles: string[];
+        planFindings: string;
+        planPhases: any[];
+        signal?: AbortSignal;
+        onStatusUpdate?: (status: string) => void;
+    }): Promise<{
+        verifiedTargetFiles: string[];
+        finalCheckNotice: string;
+        isSufficient: boolean;
+    }> {
+        const { contextManager, targetFiles, onStatusUpdate, signal } = options;
+        if (onStatusUpdate) onStatusUpdate("Librarian: Performing final verification of loaded files...");
+
+        const verifiedTargetFiles: string[] = [];
+
+        for (const tf of targetFiles) {
+            if (signal?.aborted) break;
+            const cleanTf = tf.replace(/\\/g, '/').trim();
+            if (!cleanTf) continue;
+
+            const res = await contextManager.resolveWorkspaceFromPath(cleanTf);
+            if (res) {
+                try {
+                    const st = await vscode.workspace.fs.stat(res.uri);
+                    if (st) {
+                        const finalPath = res.relativePath || cleanTf;
+                        if (!verifiedTargetFiles.includes(finalPath)) {
+                            verifiedTargetFiles.push(finalPath);
+                        }
+                    }
+                } catch {
+                    if (!verifiedTargetFiles.includes(cleanTf)) {
+                        verifiedTargetFiles.push(cleanTf);
+                    }
+                }
+            } else {
+                if (!verifiedTargetFiles.includes(cleanTf)) {
+                    verifiedTargetFiles.push(cleanTf);
+                }
+            }
+        }
+
+        const filesCount = verifiedTargetFiles.length;
+        const fileListBullets = verifiedTargetFiles.map(f => `- \`${f}\``).join('\n>    ');
+
+        const finalCheckNotice = `> 🛡️ **LIBRARIAN FINAL CHECK CERTIFICATE (MANDATORY INVARIANTS)**:
+> 1. **Verified Loaded Files [C]**: The following ${filesCount} file(s) are locked into your active context with 100% full content:
+>    ${fileListBullets || '- (No files declared for this phase)'}
+> 2. **Boundary Contract**: You are authorized to modify ONLY files loaded under 'LOADED FILE CONTENTS' [C].
+> 3. **External Documentation**: Files under External & Research are strictly read-only references.`;
+
+        return {
+            verifiedTargetFiles,
+            finalCheckNotice,
+            isSufficient: verifiedTargetFiles.length > 0
+        };
     }
 
     public static async filterFilesByPrompt(options: {
@@ -512,9 +686,20 @@ ${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-
             }
         }
 
-        // Failsafe: If task requires fixes/edits and keptFiles is empty, auto-populate with the top discovered candidates
+        // GUARANTEE: If keptFiles is empty, ensure target files from multiPartPlan, editPaths, or top candidates are added!
+        if (keptFiles.length === 0) {
+            const planFiles = multiPartPlan?.parts?.[0]?.editFiles || [];
+            for (const pf of planFiles) {
+                const matched = (await contextManager.getWorkspaceFilePaths()).find(wf => this.pathsMatch(wf, pf)) || pf;
+                if (!keptFiles.includes(matched)) {
+                    keptFiles.push(matched);
+                    newlyAddedFiles.push(matched);
+                }
+            }
+        }
+
         if (keptFiles.length === 0 && discoveredWorkspacePaths.length > 0) {
-            for (const dp of discoveredWorkspacePaths.slice(0, 3)) {
+            for (const dp of discoveredWorkspacePaths.slice(0, 4)) {
                 if (!keptFiles.includes(dp)) {
                     keptFiles.push(dp);
                     newlyAddedFiles.push(dp);
@@ -1725,42 +1910,150 @@ Analyze the requirements. Use your discovery tools (<read_definitions>, <show_sy
                 continue;
             }
 
-            // ── PARSE MULTISTEPS_TASK DIRECTIVE ──
-            const multiStepsMatch = cleanResponse.match(/<(?:MultiSteps_TASK|multisteps_task|multi_steps_task)\b([^>]*?)>([\s\S]*?)<\/(?:MultiSteps_TASK|multisteps_task|multi_steps_task)>/i);
+            // ── PARSE PHASE 2 & 3: <plan> WITH <findings> AND <phase> ──
+            const planTagMatch = cleanResponse.match(/<plan\b[^>]*>([\s\S]*?)<\/plan>/i) ||
+                                 cleanResponse.match(/<plan\b[^>]*>([\s\S]*)$/i);
+            const planBody = planTagMatch ? planTagMatch[1] : cleanResponse;
+
+            const findingsMatch = planBody.match(/<findings\b[^>]*>([\s\S]*?)<\/findings>/i) ||
+                                  cleanResponse.match(/<findings\b[^>]*>([\s\S]*?)<\/findings>/i);
+            if (findingsMatch) {
+                extractedReport = findingsMatch[1].trim();
+                extractedAdvice = findingsMatch[1].trim();
+            }
+
             let parsedMultiStepsPlan: MultiPartPlan | undefined = undefined;
+            const structurePaths: string[] = [];
+            const symbolFiles: { path: string; symbols: string[] }[] = [];
 
-            if (multiStepsMatch) {
-                const attrStr = multiStepsMatch[1] || "";
-                const inner = multiStepsMatch[2] || "";
-                const nbMatch = attrStr.match(/nb_steps=["']?(\d+)["']?/i);
-                const totalSteps = nbMatch ? parseInt(nbMatch[1], 10) : 2;
+            // Parse explicit <viewing_strategy> tag if present
+            const strategyMatch = cleanResponse.match(/<viewing_strategy\b[^>]*>([\s\S]*?)<\/viewing_strategy>/i);
+            if (strategyMatch) {
+                const fileTags = strategyMatch[1].match(/<file\s+([^>]*?)\/?>/gi) || [];
+                fileTags.forEach(ft => {
+                    const pMatch = ft.match(/path=["']([^"']+)["']/i);
+                    const mMatch = ft.match(/mode=["']([^"']+)["']/i);
+                    const sMatch = ft.match(/symbols=["']([^"']+)["']/i);
+                    if (pMatch) {
+                        const p = pMatch[1].trim();
+                        const mode = mMatch ? mMatch[1].toLowerCase() : 'full';
+                        if (mode === 'full') {
+                            if (!editPaths.includes(p)) editPaths.push(p);
+                        } else if (mode === 'structure' || mode === 'definitions') {
+                            if (!structurePaths.includes(p)) structurePaths.push(p);
+                        } else if (mode === 'symbols') {
+                            const syms = sMatch ? sMatch[1].split(',').map(s => s.trim()).filter(Boolean) : [];
+                            symbolFiles.push({ path: p, symbols: syms });
+                        } else if (mode === 'muted') {
+                            if (!unneededPaths.includes(p)) unneededPaths.push(p);
+                        }
+                    }
+                });
+            }
 
-                const stepRegex = /<step\b[^>]*number=["']?(\d+)["']?[^>]*>([\s\S]*?)<\/step>/gi;
-                let sMatch: RegExpExecArray | null;
-                const parsedPhases: MultiPartPhase[] = [];
+            const phaseRegex = /<phase\b[^>]*(?:id|number)=["']?(\d+)["']?[^>]*>([\s\S]*?)<\/phase>/gi;
+            let pMatchLoop: RegExpExecArray | null;
+            const parsedPhasesList: MultiPartPhase[] = [];
 
-                while ((sMatch = stepRegex.exec(inner)) !== null) {
-                    const stepNum = parseInt(sMatch[1], 10);
-                    const stepBody = sMatch[2];
-                    const filesMatch = stepBody.match(/<(?:target_files|edit_files)>([\s\S]*?)<\/(?:target_files|edit_files)>/i);
-                    const stepFiles = filesMatch ? filesMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean) : [];
-                    const instMatch = stepBody.match(/<instructions>([\s\S]*?)<\/instructions>/i);
-                    const instructions = instMatch ? instMatch[1].trim() : stepBody.replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, '').trim();
+            while ((pMatchLoop = phaseRegex.exec(planBody)) !== null) {
+                const phaseNum = parseInt(pMatchLoop[1], 10);
+                const phaseBody = pMatchLoop[2];
 
-                    parsedPhases.push({
-                        partIndex: stepNum - 1,
-                        totalParts: totalSteps,
-                        editFiles: stepFiles,
-                        partInstruction: instructions
-                    });
+                const instMatch = phaseBody.match(/<(?:instruction|instructions)>([\s\S]*?)<\/(?:instruction|instructions)>/i);
+                const instructions = instMatch ? instMatch[1].trim() : phaseBody.replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, '').trim();
+
+                const filesMatch = phaseBody.match(/<(?:files_list|target_files|edit_files|files|filesList)>([\s\S]*?)<\/(?:files_list|target_files|edit_files|files|filesList)>/i);
+                const rawFilesText = filesMatch ? filesMatch[1] : phaseBody;
+                const filesList: string[] = [];
+
+                rawFilesText.split(/[\r\n,]+/).forEach(l => {
+                    const clean = l.replace(/^[\s*#\-`'"]+|[\s*#\-`'"]+$/g, '').trim();
+                    if (!clean || clean.startsWith('<')) return;
+
+                    const structureMatch = clean.match(/^([^\s()]+)\s*\((?:structure|definitions)\)/i);
+                    const symbolsMatch = clean.match(/^([^\s()]+)\s*\((?:symbols?|code):\s*([^)]+)\)/i);
+                    const fullMatch = clean.match(/^([^\s()]+)\s*\((?:full|complete)\)/i);
+
+                    if (symbolsMatch) {
+                        const p = symbolsMatch[1].trim();
+                        const syms = symbolsMatch[2].split(',').map(s => s.trim()).filter(Boolean);
+                        symbolFiles.push({ path: p, symbols: syms });
+                        if (!filesList.includes(p)) filesList.push(p);
+                    } else if (structureMatch) {
+                        const p = structureMatch[1].trim();
+                        if (!structurePaths.includes(p)) structurePaths.push(p);
+                        if (!filesList.includes(p)) filesList.push(p);
+                    } else if (fullMatch) {
+                        const p = fullMatch[1].trim();
+                        if (!editPaths.includes(p)) editPaths.push(p);
+                        if (!filesList.includes(p)) filesList.push(p);
+                    } else {
+                        const p = clean.split(/\s+/)[0];
+                        if (p && !filesList.includes(p)) filesList.push(p);
+                    }
+                });
+
+                // Also check backtick-enclosed paths in phase body
+                const backtickMatches = Array.from(phaseBody.matchAll(/`([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9_\-]+)`/g));
+                for (const m of backtickMatches) {
+                    if (m && m[1] && !filesList.includes(m[1])) {
+                        filesList.push(m[1]);
+                    }
                 }
 
-                if (parsedPhases.length > 0) {
-                    parsedMultiStepsPlan = {
-                        totalParts: Math.max(totalSteps, parsedPhases.length),
-                        currentPartIndex: 0,
-                        parts: parsedPhases
-                    };
+                parsedPhasesList.push({
+                    partIndex: phaseNum - 1,
+                    totalParts: 0,
+                    editFiles: filesList,
+                    partInstruction: instructions
+                });
+            }
+
+            if (parsedPhasesList.length > 0) {
+                parsedPhasesList.forEach(p => p.totalParts = parsedPhasesList.length);
+                parsedMultiStepsPlan = {
+                    totalParts: parsedPhasesList.length,
+                    currentPartIndex: 0,
+                    parts: parsedPhasesList
+                };
+            }
+
+            // Fallback for legacy <MultiSteps_TASK>
+            if (!parsedMultiStepsPlan) {
+                const multiStepsMatch = cleanResponse.match(/<(?:MultiSteps_TASK|multisteps_task|multi_steps_task)\b([^>]*?)>([\s\S]*?)<\/(?:MultiSteps_TASK|multisteps_task|multi_steps_task)>/i);
+                if (multiStepsMatch) {
+                    const attrStr = multiStepsMatch[1] || "";
+                    const inner = multiStepsMatch[2] || "";
+                    const nbMatch = attrStr.match(/nb_steps=["']?(\d+)["']?/i);
+                    const totalSteps = nbMatch ? parseInt(nbMatch[1], 10) : 2;
+
+                    const stepRegex = /<step\b[^>]*number=["']?(\d+)["']?[^>]*>([\s\S]*?)<\/step>/gi;
+                    let sMatch: RegExpExecArray | null;
+                    const parsedPhases: MultiPartPhase[] = [];
+
+                    while ((sMatch = stepRegex.exec(inner)) !== null) {
+                        const stepNum = parseInt(sMatch[1], 10);
+                        const stepBody = sMatch[2];
+                        const filesMatch = stepBody.match(/<(?:target_files|edit_files|files_list)>([\s\S]*?)<\/(?:target_files|edit_files|files_list)>/i);
+                        const stepFiles = filesMatch ? filesMatch[1].split(/[\r\n,]+/).map(p => p.trim().replace(/^['"`]|['"`]$/g, '')).filter(Boolean) : [];
+                        const instMatch = stepBody.match(/<instructions>([\s\S]*?)<\/instructions>/i);
+                        const instructions = instMatch ? instMatch[1].trim() : stepBody.replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, '').trim();
+
+                        parsedPhases.push({
+                            partIndex: stepNum - 1,
+                            totalParts: totalSteps,
+                            editFiles: stepFiles,
+                            partInstruction: instructions
+                        });
+                    }
+
+                    if (parsedPhases.length > 0) {
+                        parsedMultiStepsPlan = {
+                            totalParts: Math.max(totalSteps, parsedPhases.length),
+                            currentPartIndex: 0,
+                            parts: parsedPhases
+                        };
+                    }
                 }
             }
 
@@ -1823,109 +2116,157 @@ Analyze the requirements. Use your discovery tools (<read_definitions>, <show_sy
                 requestedCandidates.forEach(rc => editPaths.push(rc.path));
             }
 
-            // Ensure any file mentioned in editPaths is registered into candidate pool
-            for (const ep of editPaths) {
-                const normEp = ep.replace(/\\/g, '/');
-                if (!fileCandidates.some(c => this.pathsMatch(c.path, normEp))) {
-                    const resolution = await contextManager.resolveWorkspaceFromPath(normEp);
-                    if (resolution) {
-                        try {
-                            const stat = await vscode.workspace.fs.stat(resolution.uri);
-                            const fileBytes = await vscode.workspace.fs.readFile(resolution.uri);
-                            const text = Buffer.from(fileBytes).toString('utf8');
-                            const tok = Math.max(1, Math.ceil(stat.size / 3.5));
-                            const cand = this.buildCandidate(`<file path="${normEp}">\n${text}\n</file>\n\n`, normEp, text, tok, new Set([normEp.toLowerCase()]), options.keywords, contextManager);
-                            cand.bytes = stat.size;
-                            cand.linesCount = text.split('\n').length;
-                            fileCandidates.push(cand);
-                            newlyAddedFiles.push(normEp);
-                        } catch {}
+            // Fallback: Check for candidate files mentioned in cleanResponse
+            if (editPaths.length === 0 && contextPaths.length === 0) {
+                const backtickMatches = Array.from(cleanResponse.matchAll(/`([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9_\-]+)`/g));
+                const candidatesNames = new Set(fileCandidates.map(c => path.basename(c.path.toLowerCase())));
+                for (const bm of backtickMatches) {
+                    const bp = bm[1].replace(/\\/g, '/');
+                    const base = path.basename(bp.toLowerCase());
+                    if (candidatesNames.has(base) && !editPaths.includes(bp)) {
+                        editPaths.push(bp);
                     }
                 }
             }
 
-            fileCandidates.forEach(c => {
-                if (editPaths.some(ep => this.pathsMatch(ep, c.path))) {
-                    c.role = 'edit';
-                    c.keep = true;
-                } else if (contextPaths.some(cp => this.pathsMatch(cp, c.path))) {
-                    c.role = 'context';
-                    c.keep = false;
-                } else {
-                    c.role = 'unneeded';
-                    c.keep = false;
+            const hasDecision = decisionTagMatch || parsedMultiStepsPlan || editPaths.length > 0 || isLastRound;
+
+            if (hasDecision) {
+                // Resolve files against workspace paths with fuzzy fallback
+                const allWorkspaceFiles = await contextManager.getWorkspaceFilePaths();
+
+                const resolvedEditPaths: string[] = [];
+                for (const ep of editPaths) {
+                    const normEp = ep.replace(/\\/g, '/').replace(/^['"`]|['"`]$/g, '').trim();
+                    const matchedWsPath = allWorkspaceFiles.find(wf => this.pathsMatch(wf, normEp));
+                    const targetToLoad = matchedWsPath || normEp;
+                    resolvedEditPaths.push(targetToLoad);
+
+                    if (!fileCandidates.some(c => this.pathsMatch(c.path, targetToLoad))) {
+                        const resolution = await contextManager.resolveWorkspaceFromPath(targetToLoad);
+                        if (resolution) {
+                            try {
+                                const stat = await vscode.workspace.fs.stat(resolution.uri);
+                                const fileBytes = await vscode.workspace.fs.readFile(resolution.uri);
+                                const text = Buffer.from(fileBytes).toString('utf8');
+                                const tok = Math.max(1, Math.ceil(stat.size / 3.5));
+                                const cand = this.buildCandidate(`<file path="${resolution.relativePath}">\n${text}\n</file>
+
+\n\n`, resolution.relativePath, text, tok, new Set([resolution.relativePath.toLowerCase()]), options.keywords, contextManager);
+                                cand.bytes = stat.size;
+                                cand.linesCount = text.split('\n').length;
+                                cand.role = 'edit';
+                                cand.keep = true;
+                                fileCandidates.push(cand);
+                                newlyAddedFiles.push(resolution.relativePath);
+                            } catch {}
+                        }
+                    }
                 }
-            });
 
-            const editTokens = fileCandidates.filter(c => c.role === 'edit').reduce((sum, c) => sum + c.tokens, 0);
-            const contextTokens = fileCandidates.filter(c => c.role === 'context').reduce((sum, c) => sum + c.tokens, 0);
-            const availableBudget = objectiveThreshold;
+                // Resolve context paths
+                const resolvedContextPaths: string[] = [];
+                for (const cp of contextPaths) {
+                    const normCp = cp.replace(/\\/g, '/').replace(/^['"`]|['"`]$/g, '').trim();
+                    const matchedWsPath = allWorkspaceFiles.find(wf => this.pathsMatch(wf, normCp));
+                    const targetToLoad = matchedWsPath || normCp;
+                    resolvedContextPaths.push(targetToLoad);
+                }
 
-            let multiPartPlan: MultiPartPlan | undefined = parsedMultiStepsPlan;
+                // Sync resolved paths back to multiPartPlan parts
+                if (parsedMultiStepsPlan && parsedMultiStepsPlan.parts.length > 0) {
+                    for (const part of parsedMultiStepsPlan.parts) {
+                        part.editFiles = part.editFiles.map(f => {
+                            const matched = allWorkspaceFiles.find(wf => this.pathsMatch(wf, f));
+                            return matched || f;
+                        });
+                    }
+                }
 
-            if (options.ignoreContextSize) {
-                decisionStatus = 'fit_all';
-                multiPartPlan = undefined;
                 fileCandidates.forEach(c => {
-                    if (c.role === 'edit' || c.role === 'context') {
+                    if (resolvedEditPaths.some(ep => this.pathsMatch(ep, c.path))) {
+                        c.role = 'edit';
                         c.keep = true;
+                    } else if (resolvedContextPaths.some(cp => this.pathsMatch(cp, c.path))) {
+                        c.role = 'context';
+                        c.keep = false;
+                    } else {
+                        c.role = 'unneeded';
+                        c.keep = false;
                     }
                 });
-            } else if (multiPartPlan && multiPartPlan.parts.length > 0) {
-                decisionStatus = 'split_multi_part';
-                const phase1Files = new Set(multiPartPlan.parts[0].editFiles.map(f => f.toLowerCase().trim()));
-                fileCandidates.forEach(c => {
-                    c.keep = phase1Files.has(c.path.toLowerCase().trim());
-                });
-            } else if (editTokens > 0 && editTokens <= availableBudget) {
-                decisionStatus = 'fit_edits_only';
-                fileCandidates.forEach(c => {
-                    c.keep = (c.role === 'edit');
-                });
-            } else if (editTokens === 0 && contextTokens <= availableBudget) {
-                decisionStatus = 'fit_all';
-                fileCandidates.forEach(c => {
-                    c.keep = (c.role === 'context');
-                });
-            } else if (editTokens <= availableBudget) {
-                decisionStatus = 'fit_edits_only';
-                fileCandidates.forEach(c => {
-                    c.keep = (c.role === 'edit');
-                });
-            } else {
-                decisionStatus = 'split_multi_part';
-                multiPartPlan = this.partitionEditFilesIntoPhases(
-                    fileCandidates.filter(c => c.role === 'edit'),
-                    availableBudget,
-                    userPromptText
-                );
-                if (multiPartPlan && multiPartPlan.parts.length > 0) {
-                    const phase1Files = new Set(multiPartPlan.parts[0].editFiles.map(f => f.toLowerCase().trim()));
+
+                const editTokens = fileCandidates.filter(c => c.role === 'edit').reduce((sum, c) => sum + c.tokens, 0);
+                const contextTokens = fileCandidates.filter(c => c.role === 'context').reduce((sum, c) => sum + c.tokens, 0);
+                const availableBudget = objectiveThreshold;
+
+                let multiPartPlan: MultiPartPlan | undefined = parsedMultiStepsPlan;
+
+                if (options.ignoreContextSize) {
+                    decisionStatus = 'fit_all';
+                    multiPartPlan = undefined;
                     fileCandidates.forEach(c => {
-                        c.keep = phase1Files.has(c.path.toLowerCase().trim());
+                        if (c.role === 'edit' || c.role === 'context') {
+                            c.keep = true;
+                        }
                     });
+                } else if (multiPartPlan && multiPartPlan.parts.length > 0) {
+                    decisionStatus = 'split_multi_part';
+                    const phase1Files = multiPartPlan.parts[0].editFiles;
+                    fileCandidates.forEach(c => {
+                        c.keep = phase1Files.some(f => this.pathsMatch(f, c.path));
+                        if (c.keep) c.role = 'edit';
+                    });
+                } else if (editTokens > 0 && editTokens <= availableBudget) {
+                    decisionStatus = 'fit_edits_only';
+                    fileCandidates.forEach(c => {
+                        c.keep = (c.role === 'edit');
+                    });
+                } else if (editTokens === 0 && contextTokens <= availableBudget) {
+                    decisionStatus = 'fit_all';
+                    fileCandidates.forEach(c => {
+                        c.keep = (c.role === 'context');
+                    });
+                } else if (editTokens <= availableBudget) {
+                    decisionStatus = 'fit_edits_only';
+                    fileCandidates.forEach(c => {
+                        c.keep = (c.role === 'edit');
+                    });
+                } else {
+                    decisionStatus = 'split_multi_part';
+                    multiPartPlan = this.partitionEditFilesIntoPhases(
+                        fileCandidates.filter(c => c.role === 'edit'),
+                        availableBudget,
+                        userPromptText
+                    );
+                    if (multiPartPlan && multiPartPlan.parts.length > 0) {
+                        const phase1Files = multiPartPlan.parts[0].editFiles;
+                        fileCandidates.forEach(c => {
+                            c.keep = phase1Files.some(f => this.pathsMatch(f, c.path));
+                            if (c.keep) c.role = 'edit';
+                        });
+                    }
                 }
+
+                lastDecision = {
+                    status: decisionStatus,
+                    rationale: extractedAdvice || `Librarian arbitrated context: status ${decisionStatus}.`,
+                    editFiles: fileCandidates.filter(c => c.role === 'edit').map(c => c.path),
+                    contextFiles: fileCandidates.filter(c => c.role === 'context').map(c => c.path),
+                    unneededFiles: fileCandidates.filter(c => c.role === 'unneeded').map(c => c.path)
+                };
+
+                return {
+                    decision: lastDecision,
+                    workerAdvice: extractedAdvice,
+                    signatures: extractedSignatures,
+                    governorReport: extractedReport || extractedSignatures,
+                    discoverySteps,
+                    addedFiles: newlyAddedFiles,
+                    multiPartPlan,
+                    roundsUsed: currentRound
+                };
             }
-
-            lastDecision = {
-                status: decisionStatus,
-                rationale: extractedAdvice || `Librarian arbitrated context: status ${decisionStatus}.`,
-                editFiles: fileCandidates.filter(c => c.role === 'edit').map(c => c.path),
-                contextFiles: fileCandidates.filter(c => c.role === 'context').map(c => c.path),
-                unneededFiles: fileCandidates.filter(c => c.role === 'unneeded').map(c => c.path)
-            };
-
-            return {
-                decision: lastDecision,
-                workerAdvice: extractedAdvice,
-                signatures: extractedSignatures,
-                governorReport: extractedReport || extractedSignatures,
-                discoverySteps,
-                addedFiles: newlyAddedFiles,
-                multiPartPlan,
-                roundsUsed: currentRound
-            };
-        }
 
         if (currentThoughts && !completedRounds.some(r => r.round === currentRound)) {
             completedRounds.push({
@@ -1945,7 +2286,7 @@ Analyze the requirements. Use your discovery tools (<read_definitions>, <show_sy
             roundsUsed: currentRound
         };
     }
-
+}
     private static partitionEditFilesIntoPhases(
         editCandidates: ParsedFileCandidate[],
         budget: number,
@@ -2261,7 +2602,9 @@ Apply the required modifications for this phase.`;
         };
 
         const newHistory = [summaryUserMsg, summaryAssistantMsg, ...recentHistory];
-        currentDiscussion.messages = newHistory;
+        // Dual-version preservation: Keep compressed history in llmHistory for LLM queries,
+        // while preserving full original messages in currentDiscussion.messages for user view.
+        currentDiscussion.llmHistory = newHistory;
 
         const newHistoryTokens = Math.ceil(getCleanHistoryText(newHistory).length / 3.5);
         const liberatedTokens = Math.max(0, olderTokens - Math.ceil((summaryUserMsg.content.length + summaryAssistantMsg.content.length) / 3.5));

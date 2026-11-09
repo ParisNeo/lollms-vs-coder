@@ -764,6 +764,133 @@ export const unpackDirectoryPlugin: TagPlugin = {
     }
 };
 
+export const loadStructurePlugin: TagPlugin = {
+    id: 'load_structure',
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?/gim,
+    render: (match, context) => {
+        const attrStr = match[1] || "";
+        const inner = (match[2] || "").trim();
+        const pMatch = attrStr.match(/path=["']([^"']+)["']/i);
+        const rawPath = pMatch ? pMatch[1].trim() : inner.split(/[\s\r\n,]+/)[0];
+        if (!rawPath || !isValidFilePath(rawPath)) return null;
+
+        const blockId = `struct-req-${Date.now().toString(36)}`;
+        return `
+        <div class="file-operation-block assistant-executable-card" id="${blockId}" data-action-type="load_structure" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-blue); border-radius: 8px; margin: 10px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border);">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span class="codicon codicon-symbol-class" style="color: var(--vscode-charts-blue);"></span>
+                    <span>Structure &amp; Signatures Request: <code>${rawPath}</code></span>
+                </div>
+                <div style="display: flex; gap: 6px;">
+                    <button class="code-action-btn apply-btn load-structure-btn" data-path="${rawPath}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold;">
+                        <i class="codicon codicon-symbol-class"></i> Load Structure (Tokens Saved)
+                    </button>
+                    <button class="code-action-btn secondary-btn load-full-file-btn" data-path="${rawPath}" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                        <i class="codicon codicon-file"></i> Load Full File
+                    </button>
+                </div>
+            </div>
+            <div class="expansion-body" style="padding: 8px 12px; font-size: 11px; opacity: 0.85;">
+                The AI requested the architectural structure and typed signatures for <strong>${rawPath}</strong> without loading full file bodies to conserve context budget.
+            </div>
+        </div>`;
+    },
+    initialize: (container, context) => {
+        container.querySelectorAll('.load-structure-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const p = (btn as HTMLElement).dataset.path;
+                if (!p) return;
+                (btn as HTMLButtonElement).disabled = true;
+                btn.innerHTML = '<div class="spinner"></div> Loading Structure...';
+                context.vscode.postMessage({
+                    command: 'executeLollmsCommand',
+                    details: {
+                        command: 'lollms-vs-coder.setContextDefinitionsOnly',
+                        params: [null, [{ path: p, scheme: 'file' }]]
+                    }
+                });
+            };
+        });
+
+        container.querySelectorAll('.load-full-file-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const p = (btn as HTMLElement).dataset.path;
+                if (!p) return;
+                (btn as HTMLButtonElement).disabled = true;
+                btn.innerHTML = '<div class="spinner"></div> Loading Full File...';
+                context.vscode.postMessage({
+                    command: 'bulkUnmuteFiles',
+                    paths: [p],
+                    reprompt: true
+                });
+            };
+        });
+    }
+};
+
+export const showSymbolPlugin: TagPlugin = {
+    id: 'show_symbol',
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:show_symbol|read_symbol|get_symbol_code)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:show_symbol|read_symbol|get_symbol_code)>)/gim,
+    render: (match, context) => {
+        const attrStr = match[1] || "";
+        const inner = (match[2] || "").trim();
+
+        const targetMatch = attrStr.match(/target=["']([^"']+)["']/i);
+        const pathMatch = attrStr.match(/path=["']([^"']+)["']/i);
+        const symMatch = attrStr.match(/symbol=["']([^"']+)["']/i);
+
+        const rawTarget = targetMatch ? targetMatch[1].trim() : (pathMatch ? pathMatch[1].trim() : inner);
+        const rawSymbol = symMatch ? symMatch[1].trim() : "";
+
+        if (!rawTarget) return null;
+        const blockId = `sym-req-${Date.now().toString(36)}`;
+        const displayLabel = rawSymbol ? `${rawTarget} › ${rawSymbol}` : rawTarget;
+
+        return `
+        <div class="file-operation-block assistant-executable-card" id="${blockId}" data-action-type="show_symbol" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-orange); border-radius: 8px; margin: 10px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border);">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span class="codicon codicon-symbol-method" style="color: var(--vscode-charts-orange);"></span>
+                    <span>Symbol Code Request: <code>${displayLabel}</code></span>
+                </div>
+                <div style="display: flex; gap: 6px;">
+                    <button class="code-action-btn apply-btn execute-sym-btn" data-target="${rawTarget}" data-symbol="${rawSymbol}" data-message-id="${context.messageId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold; background: var(--vscode-charts-orange) !important; color: white !important;">
+                        <i class="codicon codicon-play"></i> Inspect &amp; Reprompt
+                    </button>
+                </div>
+            </div>
+            <div class="expansion-body" style="padding: 8px 12px; font-size: 11px; opacity: 0.85;">
+                The AI requested the implementation code of <strong>${displayLabel}</strong> without loading the entire file. Click to retrieve the symbol code and send it to the AI.
+            </div>
+        </div>`;
+    },
+    initialize: (container, context) => {
+        container.querySelectorAll('.execute-sym-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const target = (btn as HTMLElement).dataset.target;
+                const symbol = (btn as HTMLElement).dataset.symbol;
+                const messageId = (btn as HTMLElement).dataset.messageId;
+                if (!target) return;
+
+                (btn as HTMLButtonElement).disabled = true;
+                btn.innerHTML = '<div class="spinner"></div> Retrieving Symbol...';
+
+                context.vscode.postMessage({
+                    command: 'executeShowSymbol',
+                    target,
+                    symbol,
+                    messageId,
+                    reprompt: true
+                });
+            };
+        });
+    }
+};
+
 export const peekFilesPlugin: TagPlugin = {
     id: 'peek_files',
     tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/gim,

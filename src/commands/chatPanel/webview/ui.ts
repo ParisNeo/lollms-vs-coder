@@ -1787,14 +1787,19 @@ export class BadgesPresenter {
         return `<span class="mode-badge model clickable" title="Current Model (Click to change)"><span class="codicon codicon-hubot"></span> <span class="badge-label">${model}</span></span>`;
     }
 
-    public static renderPersonalityBadge(currentPName: string): string {
+    public static renderPersonalityBadge(currentPName: string, icon?: string): string {
+        const iconHtml = (icon && icon.startsWith('data:image/'))
+            ? `<img src="${icon}" style="width:13px; height:13px; border-radius:2px; object-fit:contain; margin-right:4px;" alt="Avatar" />`
+            : `<span class="codicon codicon-account" style="color:var(--vscode-charts-orange); margin-right:4px;"></span>`;
+
         return `
-        <div class="badge-wrapper">
-            <span id="personality-badge" class="mode-badge personality clickable" title="Active Personality: ${currentPName}. Click to switch.">
-                <span class="codicon codicon-account" style="color:var(--vscode-charts-orange);"></span>
+        <div class="badge-wrapper" style="position: relative;">
+            <span id="personality-badge" class="mode-badge personality clickable" title="Active Personality: ${currentPName}. Click to select from Personality Zoo &amp; Library.">
+                ${iconHtml}
                 <span class="badge-label">${currentPName}</span>
+                <span class="codicon codicon-chevron-down" style="font-size: 9px; opacity: 0.8; margin-left: 3px;"></span>
             </span>
-            <div id="personality-menu" class="custom-menu hidden"></div>
+            <div id="personality-menu" class="custom-menu hidden" style="min-width: 280px; max-height: 420px; display: none; flex-direction: column;"></div>
         </div>`;
     }
 
@@ -1864,31 +1869,117 @@ export class BadgesBinder {
         const menu = wrapper.querySelector('#personality-menu') as HTMLElement;
         if (!badge || !menu) return;
 
-        // Build list elements
-        menu.innerHTML = personalities.map(p => {
-            if (!p) return '';
-            const isSel = p.id === currentId;
-            const icon = isSel ? 'codicon-check' : 'codicon-account';
-            const extraStyle = isSel ? 'style="font-weight: bold; color: var(--vscode-textLink-foreground);"' : '';
-            return `<div class="custom-menu-item p-menu-item" data-pid="${p.id}" ${extraStyle}><span class="codicon ${icon}"></span> ${p.name}</div>`;
-        }).join('');
+        const effectivePersonalities = (personalities && personalities.length > 0)
+            ? personalities
+            : [
+                { id: 'default_coder', name: 'Lollms Coder (Default)', category: 'Software Engineering', description: 'Elite Software Engineer & Architect' },
+                { id: 'senior_architect', name: 'Senior Architect', category: 'Architecture & Design', description: 'Focuses on system design and modularity' },
+                { id: 'minimalist_coder', name: 'Minimalist Coder', category: 'Software Engineering', description: 'Code-first solutions with minimal prose' }
+              ];
 
-        // Bind clicks
-        menu.querySelectorAll('.p-menu-item').forEach((item: any) => {
-            item.onclick = (e: MouseEvent) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const newPid = item.dataset.pid;
-                if (!newPid) return;
-                state.currentPersonalityId = newPid;
-                if (dom.personalitySelector) {
-                    dom.personalitySelector.value = newPid;
-                }
-                vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: newPid });
-                menu.classList.remove('visible');
-                updateBadges();
-            };
-        });
+        const renderMenu = (filter: string = '') => {
+            const cleanFilter = filter.toLowerCase().trim();
+            const filtered = cleanFilter
+                ? effectivePersonalities.filter(p => (p.name || '').toLowerCase().includes(cleanFilter) || (p.category || '').toLowerCase().includes(cleanFilter) || (p.description || '').toLowerCase().includes(cleanFilter))
+                : effectivePersonalities;
+
+            // Group by category
+            const categories = new Map<string, any[]>();
+            filtered.forEach(p => {
+                const cat = p.category || 'General';
+                if (!categories.has(cat)) categories.set(cat, []);
+                categories.get(cat)!.push(p);
+            });
+
+            let itemsHtml = `
+                <div style="padding: 6px 10px; border-bottom: 1px solid var(--vscode-menu-separatorBackground); position: sticky; top: 0; background: var(--vscode-menu-background, #252526); z-index: 5;">
+                    <input type="text" id="hud-p-search" placeholder="Search personalities..." value="${filter}" style="width: 100%; box-sizing: border-box; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 3px 6px; font-size: 11px; outline: none;">
+                </div>
+                <div class="hud-p-list" style="overflow-y: auto; max-height: 320px; display: flex; flex-direction: column;">
+            `;
+
+            if (filtered.length === 0) {
+                itemsHtml += `<div style="padding: 16px; opacity: 0.6; text-align: center; font-size: 11px;">No personalities match "${filter}"</div>`;
+            } else {
+                categories.forEach((list, catName) => {
+                    itemsHtml += `<div style="padding: 6px 12px 3px 12px; font-size: 9.5px; font-weight: 800; text-transform: uppercase; color: var(--vscode-charts-orange); opacity: 0.85; background: rgba(0,0,0,0.15); display: flex; justify-content: space-between;"><span>${catName}</span><span style="opacity:0.6;">${list.length}</span></div>`;
+                    list.forEach(p => {
+                        const isSel = p.id === currentId;
+                        const iconHtml = (p.icon && p.icon.startsWith('data:image/'))
+                            ? `<img src="${p.icon}" style="width: 14px; height: 14px; border-radius: 2px; object-fit: contain; flex-shrink: 0;" />`
+                            : `<span class="codicon ${isSel ? 'codicon-check' : 'codicon-account'}" style="color: ${isSel ? 'var(--vscode-charts-green)' : 'var(--vscode-charts-orange)'}; flex-shrink: 0;"></span>`;
+                        const authorTag = p.author ? `<span style="opacity: 0.5; font-size: 9px; margin-left: 4px;">by ${p.author}</span>` : '';
+
+                        itemsHtml += `
+                            <div class="custom-menu-item p-menu-item" data-pid="${p.id}" style="padding: 5px 12px; display: flex; align-items: flex-start; gap: 8px; cursor: pointer; ${isSel ? 'font-weight: bold; background: var(--vscode-list-activeSelectionBackground);' : ''}">
+                                ${iconHtml}
+                                <div style="flex: 1; min-width: 0;">
+                                    <div style="font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-foreground);">${p.name}${authorTag}</div>
+                                    ${p.description ? `<div style="font-size: 10px; opacity: 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.3;">${p.description}</div>` : ''}
+                                </div>
+                            </div>
+                        `;
+                    });
+                });
+            }
+
+            itemsHtml += `</div>
+                <div class="custom-menu-item manage-p-item" style="border-top: 1px solid var(--vscode-menu-separatorBackground); padding: 8px 12px; display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 11px; cursor: pointer;">
+                    <span class="codicon codicon-add"></span> <span>Create / Customize Personality...</span>
+                </div>
+            `;
+
+            menu.innerHTML = itemsHtml;
+
+            // Wire search input
+            const searchInput = menu.querySelector('#hud-p-search') as HTMLInputElement;
+            if (searchInput) {
+                searchInput.oninput = (e: Event) => {
+                    e.stopPropagation();
+                    renderMenu(searchInput.value);
+                    const freshInput = menu.querySelector('#hud-p-search') as HTMLInputElement;
+                    if (freshInput) {
+                        freshInput.focus();
+                        freshInput.setSelectionRange(freshInput.value.length, freshInput.value.length);
+                    }
+                };
+                searchInput.onclick = (e: MouseEvent) => e.stopPropagation();
+                searchInput.onkeydown = (e: KeyboardEvent) => e.stopPropagation();
+            }
+
+            // Wire item clicks
+            menu.querySelectorAll('.p-menu-item').forEach((item: any) => {
+                item.onclick = (e: MouseEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const newPid = item.dataset.pid;
+                    if (!newPid) return;
+                    state.currentPersonalityId = newPid;
+                    if (dom.personalitySelector) {
+                        dom.personalitySelector.value = newPid;
+                    }
+                    vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: newPid });
+                    menu.classList.remove('visible');
+                    updateBadges();
+                };
+            });
+
+            // Wire customize / builder item
+            const manageItem = menu.querySelector('.manage-p-item') as HTMLElement;
+            if (manageItem) {
+                manageItem.onclick = (e: MouseEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    menu.classList.remove('visible');
+                    vscode.postMessage({
+                        command: 'executeLollmsCommand',
+                        details: { command: 'lollms-vs-coder.createPersonality' }
+                    });
+                };
+            }
+        };
+
+        renderMenu();
 
         badge.onclick = (e) => {
             e.preventDefault();
@@ -1896,8 +1987,16 @@ export class BadgesBinder {
             const isOpening = !menu.classList.contains('visible');
             document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
             if (isOpening) {
-                adjustMenuPosition(badge, menu);
+                renderMenu('');
+                const adjustFn = (window as any).adjustMenuPosition || ((trig: HTMLElement, mn: HTMLElement) => {
+                    mn.style.top = '100%';
+                    mn.style.bottom = 'auto';
+                });
+                adjustFn(badge, menu);
                 menu.classList.add('visible');
+                setTimeout(() => {
+                    (menu.querySelector('#hud-p-search') as HTMLInputElement)?.focus();
+                }, 50);
             }
         };
     }
@@ -2314,16 +2413,24 @@ export function updateBadges() {
         infraGroup.appendChild(badgeWrapper);
     });
 
-    // Render & Bind Personality (visible in ALL modes: agent mode keeps the identical HUD)
-    if (state.personalities && state.personalities.length > 0) {
-        const currentP = state.personalities.find(p => p && p.id === state.currentPersonalityId);
-        if (currentP) {
-            const div = document.createElement('div');
-            div.innerHTML = BadgesPresenter.renderPersonalityBadge(currentP.name);
-            const badgeWrapper = div.firstElementChild as HTMLElement;
-            BadgesBinder.bindPersonalityMenu(badgeWrapper, state.personalities, state.currentPersonalityId);
-            infraGroup.appendChild(badgeWrapper);
-        }
+    // Render & Bind Personality (GUARANTEED VISIBILITY in top HUD bar)
+    const personaList = (state.personalities && state.personalities.length > 0)
+        ? state.personalities
+        : [
+            { id: 'default_coder', name: 'Lollms Coder (Default)', category: 'Software Engineering', description: 'Elite Software Engineer & Architect' },
+            { id: 'senior_architect', name: 'Senior Architect', category: 'Architecture & Design', description: 'Focuses on system design and modularity' },
+            { id: 'minimalist_coder', name: 'Minimalist Coder', category: 'Software Engineering', description: 'Code-first solutions with minimal prose' }
+          ];
+
+    const currentPId = state.currentPersonalityId || 'default_coder';
+    const currentP = personaList.find(p => p && p.id === currentPId) || personaList[0];
+
+    if (currentP) {
+        const div = document.createElement('div');
+        div.innerHTML = BadgesPresenter.renderPersonalityBadge(currentP.name, currentP.icon);
+        const badgeWrapper = div.firstElementChild as HTMLElement;
+        BadgesBinder.bindPersonalityMenu(badgeWrapper, personaList, currentPId);
+        infraGroup.appendChild(badgeWrapper);
     }
 
     // Render & Bind Response Style Mode (Balanced/Structured/Minimalist)
@@ -4150,6 +4257,70 @@ export function renderRepairErrorsList() {
             renderRepairErrorsList();
         };
     }
+
+    const copySelectedMdBtn = document.getElementById('repair-copy-selected-md-btn') as HTMLElement;
+    if (copySelectedMdBtn) {
+        copySelectedMdBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const selectedIndices = fileRepairStudioState.selectedErrorIndexes || new Set<number>();
+            const selectedErrors = errors.filter((_, idx) => selectedIndices.has(idx) && !(errors[idx] as any).isFixed);
+
+            if (selectedErrors.length === 0) {
+                vscode.postMessage({ command: 'showWarning', message: 'No errors are currently selected.' });
+                return;
+            }
+
+            const fileGroups = new Map<string, FileDiagnosticError[]>();
+            selectedErrors.forEach(err => {
+                const fPath = (fileRepairStudioState.filePath || 'Target File').replace(/\\/g, '/');
+                if (!fileGroups.has(fPath)) fileGroups.set(fPath, []);
+                fileGroups.get(fPath)!.push(err);
+            });
+
+            const mdLines: string[] = [];
+            mdLines.push(`# 🛠️ Diagnostic Errors Report (${selectedErrors.length} selected issues across ${fileGroups.size} file(s))\n`);
+
+            fileGroups.forEach((errorsInFile, fPath) => {
+                const ext = fPath.split('.').pop() || '';
+                let lang = ext.toLowerCase();
+                if (lang === 'ts' || lang === 'tsx') lang = 'typescript';
+                else if (lang === 'js' || lang === 'jsx') lang = 'javascript';
+                else if (lang === 'py') lang = 'python';
+
+                mdLines.push(`## File: \`${fPath}\` (${errorsInFile.length} issue${errorsInFile.length > 1 ? 's' : ''})`);
+
+                errorsInFile.forEach((d, i) => {
+                    const srcCode = (d.source || d.code) ? ` [${d.source || ''}${d.code ? ' ' + d.code : ''}]` : '';
+
+                    mdLines.push(`### ${i + 1}. Line ${d.line}:${d.character}${srcCode}`);
+                    mdLines.push(`- **Error**: \`${d.message.replace(/`/g, "'")}\``);
+                    if (d.snippet) {
+                        mdLines.push(`- **Code Snippet**:`);
+                        mdLines.push('```' + lang);
+                        mdLines.push(d.snippet);
+                        mdLines.push('```');
+                    }
+                    mdLines.push('');
+                });
+
+                mdLines.push('---\n');
+            });
+
+            const markdownText = mdLines.join('\n').trim();
+            vscode.postMessage({ command: 'copyToClipboard', text: markdownText });
+            try { navigator.clipboard.writeText(markdownText); } catch {}
+
+            const origHtml = copySelectedMdBtn.innerHTML;
+            copySelectedMdBtn.innerHTML = `<i class="codicon codicon-check"></i> Copied (${selectedErrors.length})!`;
+            copySelectedMdBtn.style.color = 'var(--vscode-charts-green)';
+            setTimeout(() => {
+                copySelectedMdBtn.innerHTML = origHtml;
+                copySelectedMdBtn.style.color = '';
+            }, 2000);
+        };
+    }
 }
 (window as any).renderRepairErrorsList = renderRepairErrorsList;
 
@@ -4745,8 +4916,8 @@ export function appendGovernorMessage(role: 'user' | 'assistant', text: string, 
                 <strong style="color: var(--vscode-charts-purple); font-size: 11px; display: flex; align-items: center; gap: 6px;">
                     <i class="codicon codicon-graph"></i> Muted Files Architecture & Signatures
                 </strong>
-                <div class="markdown-body" style="font-size: 11px; opacity: 0.9; margin-top: 4px; max-height: 250px; overflow-y: auto; line-height: 1.45;">
-                    ${(window as any).DOMPurify.sanitize((window as any).marked.parse(data.signatures))}
+                <div class="markdown-body" style="font-size: 11.5px; opacity: 0.9; margin-top: 4px; min-height: 60px; max-height: 380px; overflow-y: auto; line-height: 1.45;">
+                    ${(window as any).DOMPurify.sanitize((window as any).marked.parse(data.signatures)).trim()}
                 </div>
             </div>
         ` : '';
@@ -4794,7 +4965,9 @@ export function openGovernorFilterModal(initialPrompt?: string) {
     governorStudioState.ignoreContextSize = state.capabilities?.ignoreContextSize === true;
 
     // Collect candidate files
-    const allFiles: (string | { path: string, bytes?: number, tokens?: number })[] = state.lastContextData?.files || [];
+    const allFiles: (string | { path: string, bytes?: number, tokens?: number })[] = (isWizard && wizardCandidateFiles.length > 0)
+        ? wizardCandidateFiles
+        : (state.lastContextData?.files || []);
     governorStudioState.candidateFiles = allFiles.map((f: any) => {
         const rawPath = typeof f === 'string' ? f : (f.path || '');
         const normPath = rawPath.replace(/\\/g, '/');
@@ -5456,22 +5629,17 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
         dom.wizardPersonality.innerHTML = `<option value="default_coder">Lollms Coder (Default)</option>`;
     }
 
-    // 2. Populate Response Profiles Select
-    if (dom.wizardProfile && state.profiles && state.profiles.length > 0) {
-        const defaultProfileId = state.capabilities?.responseProfileId || 'balanced';
-        dom.wizardProfile.innerHTML = state.profiles.map(p => 
-            `<option value="${p.id}" ${p.id === defaultProfileId ? 'selected' : ''}>${p.name}</option>`
+    // 1.5. Populate Response Profiles Select
+    const currentProfileId = state.capabilities?.responseProfileId || 'balanced';
+    const wizardProfileEl = dom.wizardProfile;
+    const availableProfiles = state.profiles && state.profiles.length > 0 ? state.profiles : [{ id: 'balanced', name: 'Balanced' }];
+    if (wizardProfileEl) {
+        wizardProfileEl.innerHTML = availableProfiles.map(p =>
+            `<option value="${p.id}" ${p.id === currentProfileId ? 'selected' : ''}>${p.name}</option>`
         ).join('');
-    } else if (dom.wizardProfile) {
-        dom.wizardProfile.innerHTML = `
-            <option value="balanced" selected>Balanced (Default)</option>
-            <option value="structured">Structured (Analytical)</option>
-            <option value="minimalist">Minimalist (Surgical)</option>
-            <option value="pedagogical">Pedagogical (Teacher)</option>
-        `;
     }
 
-    // 3. Populate Context Selections Dropdown (with Clean/Empty, Current, and Saved options)
+    // 2. Populate Context Selections Dropdown (with Clean/Empty, Current, and Saved options)
     const ctxSelect = document.getElementById('wizard-context-selection') as HTMLSelectElement;
     if (ctxSelect) {
         ctxSelect.innerHTML = `
@@ -6182,7 +6350,7 @@ export function updateProgressBar(container: HTMLElement | null, current: number
     if (segments && total > 0) {
         container.innerHTML = '';
         // Ordered array for visual consistency in the bar
-        const types = ['system', 'briefing', 'tree', 'skills', 'memory', 'diagrams', 'files', 'history', 'images'];
+        const types = ['system', 'briefing', 'tree', 'skills', 'memory', 'diagrams', 'files', 'external', 'history', 'images'];
 
         types.forEach(type => {
             const count = segments[type] || 0;
@@ -6190,6 +6358,9 @@ export function updateProgressBar(container: HTMLElement | null, current: number
                 const segDiv = document.createElement('div');
                 segDiv.className = `token-bar-segment segment-${type}`;
                 segDiv.dataset.type = type;
+                if (type === 'external') {
+                    segDiv.style.backgroundColor = 'var(--vscode-charts-teal, #00b4d8)';
+                }
 
                 // Calculate percentage based on the AUTHORITATIVE total
                 // If sum of counts > total (due to race conditions), we cap at 100% 
@@ -6231,6 +6402,7 @@ export function updateProgressBar(container: HTMLElement | null, current: number
             // Clean up the label for the UI
             let label = type.charAt(0).toUpperCase() + type.slice(1);
             if (type === 'files') label = 'Code';
+            if (type === 'external') label = 'External';
             if (type === 'history') label = 'History';
 
             // High-density numeric display
@@ -6238,7 +6410,7 @@ export function updateProgressBar(container: HTMLElement | null, current: number
 
             return `
                 <div class="legend-item" data-type="${type}" title="Analyze ${label} Segment">
-                    <div class="legend-dot segment-${type}"></div>
+                    <div class="legend-dot segment-${type}" ${type === 'external' ? 'style="background: var(--vscode-charts-teal, #00b4d8);"' : ''}></div>
                     <span class="legend-label">${label}</span>
                     <span style="opacity:0.5; margin-left:2px; font-weight:bold;">${displayVal}</span>
                 </div>`;

@@ -158,7 +158,7 @@ export class PersonalityBuilderPanel {
     }
 
     private async handleSave(data: any, createAsNew: boolean = false) {
-        const { name, description, systemPrompt } = data;
+        const { name, description, systemPrompt, extraSkills, extraTools, icon } = data;
         
         if (!name || !name.trim()) {
             vscode.window.showErrorMessage("Personality name is required.");
@@ -168,22 +168,29 @@ export class PersonalityBuilderPanel {
         const shouldCreateNew = createAsNew || !this._editingId;
         const targetId = shouldCreateNew ? `custom_${Date.now()}` : this._editingId!;
         const isDefault = !shouldCreateNew && this._personalityManager.isDefaultPersonality(targetId);
+        const existing = this._personalityManager.getPersonality(targetId);
 
         const personality: Personality = {
             id: targetId,
             name: name.trim(),
             description: description?.trim() || '',
             systemPrompt: systemPrompt || '',
+            icon: icon || existing?.icon,
+            category: existing?.category || 'Custom',
+            skills: existing?.skills || [],
+            tools: existing?.tools || [],
+            extraSkills: Array.isArray(extraSkills) ? extraSkills : (existing?.extraSkills || []),
+            extraTools: Array.isArray(extraTools) ? extraTools : (existing?.extraTools || []),
             isDefault
         };
 
         if (shouldCreateNew) {
             await this._personalityManager.addPersonality(personality);
             this._editingId = personality.id;
-            vscode.window.showInformationMessage(`Personality '${personality.name}' created successfully.`);
+            vscode.window.showInformationMessage(`Personality '${personality.name}' created (saved to SOUL.md).`);
         } else {
             await this._personalityManager.updatePersonality(personality);
-            vscode.window.showInformationMessage(`Changes applied to '${personality.name}'.`);
+            vscode.window.showInformationMessage(`Changes saved to SOUL.md for '${personality.name}'.`);
         }
 
         const all = this._personalityManager.getPersonalities().map(item => ({

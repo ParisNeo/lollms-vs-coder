@@ -62,6 +62,12 @@ export class ProcessManager {
     public async cancelForDiscussion(discussionId: string): Promise<void> {
         Logger.info(`[ProcessManager] Cancelling all processes for discussion: ${discussionId}`);
         const processesToCancel = Array.from(this.processes.values()).filter(p => p.discussionId === discussionId);
+        // Abort ALL controllers immediately in parallel so underlying sockets and operations stop with zero delay
+        for (const process of processesToCancel) {
+            try {
+                process.controller.abort();
+            } catch {}
+        }
         for (const process of processesToCancel) {
             await this.cancel(process.id);
         }

@@ -4,10 +4,21 @@ import * as os from 'os';
 import { MemoryManager } from './memoryManager';
 import { execSync } from 'child_process';
 import { PromptTemplates } from './promptTemplates';
-import { stripLibrarianReferences } from './system_prompts/workerPrompt';
 import * as crypto from 'crypto';
 
-export { stripLibrarianReferences } from './system_prompts/workerPrompt';
+export function stripLibrarianReferences(text: string): string {
+    if (!text || typeof text !== 'string') return '';
+    return text
+        .split('\n')
+        .filter(line => !/\b(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)\b/i.test(line))
+        .join('\n')
+        .replace(/<details\b[^>]*class=["'][^"']*librarian[^"']*["'][\s\S]*?<\/details>/gi, '')
+        .replace(/<(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)\b[^>]*>[\s\S]*?<\/(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)>/gi, '')
+        .replace(/<librarian_off\b[^>]*>[\s\S]*?<\/librarian_off>/gi, '')
+        .replace(/<librarian_decision\b[^>]*>[\s\S]*?<\/librarian_decision>/gi, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
 
 
 /**
@@ -131,14 +142,76 @@ export interface ResponseProfile {
     isCustom?: boolean; // Flag to allow user overrides
 }
 
+export function isProjectFile(filePathOrItem: any): boolean {
+    const p = typeof filePathOrItem === 'string' ? filePathOrItem : (filePathOrItem?.path || '');
+    if (!p) return true;
+    const norm = p.replace(/\\/g, '/').toLowerCase().trim();
+    const isInternal = norm.includes('.lollms/external_files') || 
+                       norm.startsWith('.lollms/external_files') ||
+                       norm.startsWith('external/') || 
+                       norm.includes('/external/') ||
+                       norm.startsWith('http') ||
+                       norm.includes('.lollms/');
+    return !isInternal;
+}
+
+export function arePathsEqual(pathA: string, pathB: string): boolean {
+    if (!pathA || !pathB) return false;
+    const cleanA = pathA.replace(/\\/g, '/').toLowerCase().trim().replace(/^\.?\/+/, '');
+    const cleanB = pathB.replace(/\\/g, '/').toLowerCase().trim().replace(/^\.?\/+/, '');
+    if (cleanA === cleanB) return true;
+
+    // External research files must NEVER collide with project code files (e.g. .lollms/external_files/README.md vs README.md)
+    const isExtA = !isProjectFile(cleanA);
+    const isExtB = !isProjectFile(cleanB);
+    if (isExtA !== isExtB) return false;
+
+    // Multi-root folder namespace check (e.g. "workspaceName/path/file.ts" vs "path/file.ts")
+    if (cleanA.includes('/') && !cleanB.includes('/')) {
+        const partsA = cleanA.split('/');
+        return partsA[partsA.length - 1] === cleanB && partsA.slice(1).join('/') === cleanB;
+    }
+    if (cleanB.includes('/') && !cleanA.includes('/')) {
+        const partsB = cleanB.split('/');
+        return partsB[partsB.length - 1] === cleanA && partsB.slice(1).join('/') === cleanA;
+    }
+
+    return false;
+}
+
+export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
+    {
+        id: 'balanced',
+        name: 'Balanced (Standard)',
+        description: 'Standard coding assistant with balanced explanations and verified code implementation.',
+        systemPrompt: 'Be a balanced, helpful software engineering assistant. Provide clear explanations alongside verified code implementations.'
+    },
+    {
+        id: 'structured',
+        name: 'Structured (Step-by-Step)',
+        description: 'Breaks complex tasks down with structured planning, step-by-step reasoning, and phased code delivery.',
+        systemPrompt: 'Structure your answers methodically with clear planning, bulleted steps, and phased code blocks.'
+    },
+    {
+        id: 'minimalist',
+        name: 'Minimalist (Code-Only)',
+        description: 'Extremely concise with minimal conversational prose. Delivers code blocks immediately.',
+        systemPrompt: 'Be extremely concise. Minimize conversational chatter and deliver production-ready code blocks directly.'
+    },
+    {
+        id: 'code_expert',
+        name: 'Code Expert & Architecture',
+        description: 'In-depth architectural analysis, design patterns, invariant checks, and production-grade implementations.',
+        systemPrompt: 'Focus deeply on system architecture, design patterns, and defensive programming with production-grade code.'
+    }
+];
+
 /**
  * 🚀 THE SOURCE OF TRUTH (Deactivates Cache)
  * These prompts are defined in code. Even if settings.json has old versions,
  * the extension logic will use these unless the user explicitly creates a custom profile.
  */
 export { 
-    ResponseProfile, 
-    SYSTEM_RESPONSE_PROFILES, 
     UserPreferenceProfile, 
     DEFAULT_USER_PREFERENCE_PROFILES, 
     getUserPreferenceProfiles, 
@@ -1130,18 +1203,25 @@ You are STRICTLY FORBIDDEN from using colon-delimited markdown backticks (like \
 - Always specify the \`action="..."\` attribute (\`write\`, \`patch\`, or \`update_symbol\`).
 - The closing </file> tag MUST be placed on its own line after the code content.
 - Do NOT nest <file> tags inside markdown code fences.
+- **READ-ONLY EXTERNAL SECTION**: All files under the External & Research section (.lollms/external_files or linked external files) are strictly READ-ONLY. You are FORBIDDEN from modifying, patching, or rewriting them. Any patch targeting external files will be blocked.
 `;
 
     // CALL THE TEMPLATE BUILDER
-    const basePrompt = PromptTemplates.build(
-        promptType, 
-        finalPersona, 
-        memory, 
-        shells, 
-        capabilities, 
-        forceFullCode, 
-        context
-    ) + (isFastMode || isExport ? "" : ("\n" + fileMutationProtocol));
+    let basePrompt = "";
+    try {
+        basePrompt = PromptTemplates.build(
+            promptType, 
+            finalPersona, 
+            memory, 
+            shells, 
+            capabilities, 
+            forceFullCode, 
+            context
+        ) + (isFastMode || isExport ? "" : ("\n" + fileMutationProtocol));
+    } catch (buildErr: any) {
+        Logger.error(`[getProcessedSystemPrompt] PromptTemplates.build error: ${buildErr?.message || buildErr}`, buildErr);
+        basePrompt = (finalPersona || "You are an expert software engineer.") + ("\n" + fileMutationProtocol);
+    }
 
     // --- WORKER BASE PROMPT INITIALIZATION ---
     let finalizedBasePrompt = basePrompt;
@@ -1216,7 +1296,7 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
         const isSymbolModeActive = capabilities?.enableSymbolMode !== false;
         const isWebSearchActive = capabilities?.webSearch !== false;
 
-const sparqlDynamicRule = isSparqlActive ? `
+        const sparqlDynamicRule = isSparqlActive ? `
     ### 🧱 LIGHTWEIGHT ARCHITECTURAL EXPLORATION (MANDATORY ORDER OF OPERATIONS)
     - **SPARQL FIRST**: When asked to locate classes, verify imports, check method signatures, or find where a function is called, you **MUST** use the \`<query_architecture>\` tag to perform a fast, token-efficient SPARQL-lite query on the codebase map first.
     - **NO PREMATURE CONTEXT BLOAT**: Do **NOT** use \`<add_files_to_context>\` to search for definitions. Adding files with full contents uses your token budget. Use SPARQL queries to inspect the ontology nodes first, and only add files via \`<add_files_to_context>\` when you are 100% sure you need to edit or review their detailed inner logic.
@@ -1245,32 +1325,21 @@ const sparqlDynamicRule = isSparqlActive ? `
     ### 🧠 CO-ENGINEER DYNAMIC MODE (MULTI-TURN INTERACTIVE LOOP)
     You are operating under **Co-Engineer Mode (Dynamic Multi-Turn Loop)**.
 
-    **⚡ ARCHITECTURAL WORKFLOW & LIBRARIAN PROTOCOL:**
-    1. **VERIFY INGREDIENTS BEFORE CALLING LIBRARIAN**:
-       - Check if all needed files, contracts, or logic are already present in the tree, loaded files (\`[C]\`), conversation history, or hydrated memories.
-       - If you already possess the required context, DO NOT call the Librarian! Proceed directly to implement.
-       - Call the Librarian ONLY if you genuinely lack crucial information that cannot be determined from your loaded files, project tree, history, or memories.
-    2. **DELEGATE RECONNAISSANCE TO LIBRARIAN (WHEN NEEDED)**:
-       - Emit:
-         <librarian>
-         Problem: [exact technical problem].
-         Working hypothesis: [explain your deduction].
-         Dependencies to scout: [what functions, files, or contracts the Librarian must verify].
-         </librarian>
-       - The Librarian investigates with awareness of your query, the user's objective, and conversation history, loads edit files, and provides architectural contracts.
-    3. **DECISIVE CODING (FORMS ONLY FOR AMBIGUITY)**:
-       - Do NOT pause or ask the user for confirmation if the solution is clear.
-       - ONLY ask the user using \`<lollms_form>\` if multiple viable solutions exist or if there is genuine ambiguity requiring user selection.
-       - In all other cases, deliver the verified code updates using \`<file>\` tags as the final action of your turn once you are 100% sure of your understanding!
+    **⚡ IMPLEMENTATION PROTOCOL:**
+    1. **CODER ROLE**:
+       - You are the Coder. The Lead Librarian has already scouted and planned the architecture.
+       - You do NOT talk to the Librarian. Never emit \`<librarian>\` or \`<librarian_off>\` tags.
+    2. **DECISIVE CODING**:
+       - Do NOT pause or stall. Implement the code directly using \`<file path="..." action="write|patch|update_symbol">\` tags.
+       - ONLY ask the user using \`<lollms_form>\` if multiple viable choices exist requiring user decision.
 
     **AUTHORIZED WORKER TAGS:**
-    - \`<librarian>\nExplain the technical goal, hypothesis, and needed dependencies in detail...\n</librarian>\`
-    - \`<librarian_off>\npath/to/target_file.ext\n</librarian_off>\`
     - \`<lollms_form title="..." id="...">\nInteractive form inputs for the user...\n</lollms_form>\`
     - \`<mission_briefing action="write|patch">\nUpdate project doctrine...\n</mission_briefing>\`
-    - \`<file path="..." action="write|patch|update_symbol">\n(ONLY in Stage 3 after user confirms the plan)\n</file>`;
-    } else {
-        // --- DISCUSSION MODE: SCOPE-AWARE FILTERING ---
+    - \`<file path="..." action="write|patch|update_symbol">\n</file>
+
+\``;
+    }else{
         const allTools = (context as any)?.toolManager?.getEnabledTools() || [];
         const isMemoryActive = capabilities?.projectMemoryEnabled !== false;
         const isVisionActive = capabilities?.enableImages !== false;
@@ -1283,13 +1352,15 @@ const sparqlDynamicRule = isSparqlActive ? `
             'record_discovery'
         ].filter(Boolean);
 
-        const activeTools = allTools.filter((t: any) => HUD_SAFE_LIST.includes(t.name));
+        const activeTools = (allTools || []).filter((t: any) => HUD_SAFE_LIST.includes(t.name));
 
         const authorizedTags = [
-            `- \`<add_files_to_context>\`: Add files from project workspace.`,
-            isMemoryActive ? `- \`<project_memory>\`: Save an architectural fact or coding standard.` : null,
-            `- \`<lollms_tool name="tool_name" params='{...}' />\`: Request execution of other specialized tools.`
+            "- <add_files_to_context>: Add files from project workspace.",
+            isMemoryActive ? "- <project_memory>: Save an architectural fact or coding standard." : null,
+            "- <lollms_tool name=\"tool_name\" params='{...}' />: Request execution of other specialized tools."
         ].filter(Boolean).join('\n    ');
+
+        const activeToolsFormatted = activeTools.map((t: any) => '- **' + t.name + '**: <lollms_tool name="' + t.name + '" params=\'{...}\' />').join('\n    ');
 
         operationalMandate = `
     ### 🛡️ DISCUSSION MODE: ACTIONS
@@ -1298,7 +1369,7 @@ const sparqlDynamicRule = isSparqlActive ? `
     ${authorizedTags}
 
     **AUTHORIZED TAGS:**
-    ${activeTools.map((t: any) => `- **${t.name}**: \`<lollms_tool name="${t.name}" params='{...}' />\``).join('\n    ')}
+    ${activeToolsFormatted}
     `;
     }
 

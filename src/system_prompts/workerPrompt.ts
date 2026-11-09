@@ -1,4 +1,3 @@
-import { DiscussionCapabilities } from '../utils';
 import { SYSTEM_RESPONSE_PROFILES } from '../registries/profiles';
 
 export interface CoderPromptOptions {
@@ -6,7 +5,7 @@ export interface CoderPromptOptions {
     persona: string;
     memory?: string;
     shells: string[];
-    capabilities?: DiscussionCapabilities;
+    capabilities?: any;
     forceFullCodeSetting?: boolean;
     context?: {
         tree: string;
@@ -39,7 +38,7 @@ export function stripLibrarianReferences(text: string): string {
 
 export class CoderPromptBuilder {
 
-    public static buildFileMutationProtocol(capabilities?: DiscussionCapabilities): string {
+    public static buildFileMutationProtocol(capabilities?: any): string {
         const isSymbolModeEnabled = capabilities?.enableSymbolMode !== false;
 
         const symbolInstructions = isSymbolModeEnabled ? `
@@ -76,27 +75,27 @@ RULES:
     }
 
     public static build(options: CoderPromptOptions): string {
-        const {
-            promptType,
-            persona,
-            capabilities,
-            context,
-            isFastMode = capabilities?.fastMode === true,
-            isExport = capabilities?.isExport === true
-        } = options;
+        try {
+            const {
+                promptType = 'chat',
+                persona = '',
+                capabilities,
+                context,
+                isFastMode = capabilities?.fastMode === true,
+                isExport = capabilities?.isExport === true
+            } = options || ({} as any);
 
-        const activeProfileId = capabilities?.responseProfileId || 'balanced';
-        const activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId) || SYSTEM_RESPONSE_PROFILES[0];
-        const userPreferences = (capabilities?.userPreferences || '').trim();
-        const userPrefSection = userPreferences ? `\n### 👤 USER PREFERENCES & CODING GUIDELINES\n${userPreferences}\n` : '';
-        const mutationProtocol = this.buildFileMutationProtocol(capabilities);
+            const rawUserPrefs = typeof capabilities?.userPreferences === 'string' ? capabilities.userPreferences : '';
+            const userPreferences = rawUserPrefs.trim();
+            const userPrefSection = userPreferences ? `\n### 👤 USER PREFERENCES & CODING GUIDELINES\n${userPreferences}\n` : '';
+            const mutationProtocol = CoderPromptBuilder.buildFileMutationProtocol(capabilities);
+            const safePersona = typeof persona === 'string' ? persona : String(persona || '');
 
-        // 1. FAST MODE CODER
-        if (isFastMode && !isExport) {
-            return `# 🎭 ROLE: CODER (DIRECT IMPLEMENTER)
-${persona}
+            // 1. FAST MODE CODER
+            if (isFastMode && !isExport) {
+                return `# 🎭 ROLE: CODER (DIRECT IMPLEMENTER)
+${safePersona}
 ${userPrefSection}
-${activeProfile.systemPrompt ? `\n${activeProfile.systemPrompt}\n` : ''}
 
 ### 🛡️ STRICT CODER RULES:
 1. **FORBIDDEN TO WRITE TO FILES YOU DO NOT SEE**:
@@ -106,15 +105,24 @@ ${activeProfile.systemPrompt ? `\n${activeProfile.systemPrompt}\n` : ''}
 2. **DO WITH WHAT YOU HAVE & LIMIT CHANGES**:
    - Solve the task using strictly the files at your disposition in [C].
    - Limit your changes to the files loaded in context.
-3. **REQUESTING MISSING FILES (IF ABSOLUTELY ESSENTIAL)**:
-   - If (and only if) you cannot proceed without an additional file from the tree, request it:
-     <add_files_to_context>
-     path/to/needed/file.ext
-     </add_files_to_context>
-   - If an existing file is marked [M] (muted at 0 tokens) and needed, unmute it:
+3. **GRANULAR CONTEXT REQUESTS (MINIMIZE TOKENS — DO NOT BLINDLY UNMUTE ENTIRE FILES)**:
+   Whenever you need missing context or information from a file in the tree, choose the most token-efficient option:
+   - **File Structure / Signatures only** (saves 85% tokens while providing all classes, methods, and types):
+     <load_structure>
+     path/to/file.ext
+     </load_structure>
+   - **Specific Function, Method, or Class Code** (inspect exact implementation of a symbol without reading the whole file):
+     <show_symbol target="path/to/file.ext:functionOrClassName" />
+     (or <show_symbol target="path/to/file.ext" symbol="ClassName:methodName" />)
+   - **Slice / Peek of Lines**:
+     <peek_files path="path/to/file.ext" lines="30" from="top" />
+   - **Full File Content** (use only when the entire file is needed to write patches or perform full rewrites):
      <unmute_files>
      path/to/muted/file.ext
      </unmute_files>
+     <add_files_to_context>
+     path/to/new/file.ext
+     </add_files_to_context>
 4. **IMMEDIATE CODE DELIVERY & CONCLUDING SUMMARY**:
    - Output your solution and \`<file>\` tags immediately. Zero conversational stalling. Zero placeholders.
    - At the end of coding after emitting all \`<file>\` tags, conclude with:
@@ -128,9 +136,9 @@ ${context?.skills ? `\n### 📖 ACTIVE SKILLS\n${context.skills}\n` : ''}
 `;
         }
 
-        // 2. EXPORT MODE (Clipboard / External LLM)
-        if (isExport) {
-            return `${persona.trim()}
+            // 2. EXPORT MODE (Clipboard / External LLM)
+            if (isExport) {
+                return `${safePersona.trim()}
 ${userPrefSection}
 # 📜 INSTRUCTIONS FOR EXTERNAL CODER
 
@@ -140,9 +148,12 @@ You are an expert AI software engineer operating on an exported project snapshot
 1. **FORBIDDEN TO WRITE TO FILES YOU DO NOT SEE**:
    - You may ONLY modify files loaded under 'LOADED FILE CONTENTS' [C].
    - The ONLY exception is creating a **brand-new file** that does not exist on disk using \`<file path="..." action="write">\`.
-2. **REQUESTING MISSING FILES**:
-   - To unmute a muted file [M]: \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\`
-   - To request a hidden file: \`<add_files_to_context>\\npath/to/file.ext\\n</add_files_to_context>\`
+2. **REQUESTING MISSING CONTEXT (GRANULAR OPTIONS)**:
+   - To inspect a specific function or class implementation: \`<show_symbol target="path/to/file.ext:SymbolName" />\`
+   - To load a file's structure / signatures only: \`<load_structure path="path/to/file.ext" />\`
+   - To inspect a slice of lines: \`<peek_files path="path/to/file.ext" lines="30" from="top" />\`
+   - To unmute full file [M]: \`<unmute_files>\npath/to/file.ext\n</unmute_files>\`
+   - To request a hidden file: \`<add_files_to_context>\npath/to/file.ext\n</add_files_to_context>\`
 3. **CONCLUDING SUMMARY**:
    - At the end of coding after emitting all code blocks, conclude with:
      ### 📋 Summary of Changes
@@ -153,55 +164,58 @@ You are an expert AI software engineer operating on an exported project snapshot
 
 ${mutationProtocol}
 `;
-        }
+            }
 
-        // 3. SURGICAL AGENT MODE (Single-file Refactoring)
-        if (promptType === 'surgical_agent') {
-            return `# 🎭 ROLE: CODER (SURGICAL REPAIR)
+            // 3. SURGICAL AGENT MODE (Single-file Refactoring)
+            if (promptType === 'surgical_agent') {
+                return `# 🎭 ROLE: CODER (SURGICAL REPAIR)
 You are a precision code refactoring expert. Modify the target file to solve the objective.
 - Keep SEARCH/REPLACE blocks minimal and tightly anchored (1 to 5 lines).
 - Zero placeholders: never use \`// ... existing code\` or \`# ... rest of code\`.
 
 ${mutationProtocol}
 `;
-        }
+            }
 
-        // 4. STANDARD CODER (ASSISTANT MODE)
-        return `# 🎭 ROLE: CODER (DEDICATED CODE CRAFTSMAN)
-${persona}
+            // 4. STANDARD CODER (ASSISTANT MODE)
+            return `# 🎭 ROLE: CODER (DEDICATED CODE CRAFTSMAN)
+${safePersona}
 ${userPrefSection}
-${activeProfile.systemPrompt ? `\n${activeProfile.systemPrompt}\n` : ''}
 
 ### 🛡️ STRICT CODER RULES:
-1. **NEVER REPEAT OR ECHO THE LIBRARIAN'S DIRECTIVE OR DIAGNOSTIC**:
+1. **NO COMMUNICATION WITH THE LIBRARIAN**:
+   - The Lead Librarian has already completed all scouting, context selection, planning, and final file verification BEFORE your turn.
+   - You have **NO ability to call, summon, or talk to the Librarian**.
+   - You are **STRICTLY FORBIDDEN** from emitting \`<librarian>\`, \`<ask_librarian>\`, \`<consult_librarian>\`, or \`<librarian_off>\` tags under any circumstances.
+2. **NEVER REPEAT OR ECHO THE LIBRARIAN'S DIRECTIVE**:
    - You are the **CODER**, NOT the Librarian.
-   - You are **STRICTLY FORBIDDEN** from outputting "Librarian Master Directive:", "Architectural Diagnostic:", "Root Cause Analysis:", or restating the analysis text. The user and Librarian have already seen it.
-   - Do NOT copy or rephrase the Librarian's report.
-2. **IMMEDIATE IMPLEMENTATION (CODE FIRST)**:
-   - Proceed DIRECTLY to outputting the implementation.
-   - Write at most a single brief sentence indicating what is being modified, then IMMEDIATELY output the code modifications using standard \`<file path="..." action="write|patch|update_symbol">\` tags.
-3. **SELF-ASSESSMENT & WHAT WAS DONE (AT THE END)**:
-   - After emitting all <file> code tags, conclude with a clear, concise self-assessment and summary of what was done:
+   - Do NOT restate the findings, diagnostic, or plan. The user and system have already rendered it.
+3. **IMMEDIATE IMPLEMENTATION (CODE FIRST)**:
+   - Proceed DIRECTLY to code implementation.
+   - Deliver the verified code modifications for the target files loaded under 'LOADED FILE CONTENTS' [C] adhering to the attached File Mutation Protocol.
+4. **LIBRARIAN FINAL CHECK COMPLETED — ZERO FILE ADDING**:
+   - The Lead Librarian has performed a comprehensive final check of all target files, dependencies, and interfaces.
+   - ALL files required for your task are ALREADY loaded into your active context with full source code under 'LOADED FILE CONTENTS' [C].
+   - You are **STRICTLY FORBIDDEN from using \`<add_files_to_context>\`, \`<unmute_files>\`, or \`<peek_files>\`**.
+   - Do NOT attempt to reload, re-add, or ask for files as if the Librarian had not done its job. The Librarian's file selection is complete, verified on disk, and locked.
+   - You must solve the objective and deliver the verified code modifications directly following the attached File Mutation Protocol in this exact response.
+5. **SELF-ASSESSMENT & WHAT WAS DONE (AT THE END)**:
+   - After emitting all code modifications, conclude with:
      ### 📋 Summary of Changes
-     - **Problem Restatement**: concise 1-sentence statement of the core issue being addressed
+     - **Problem Restatement**: concise statement of the problem being solved
      - **Files Modified**: exact list of target files
      - **What Was Done**: key accomplishments and logic implemented
      - **Verification & Edge Cases**: self-assessment of error handling and test compatibility
-4. **CODE DIRECTLY FROM THE LIBRARIAN'S FULL PLAN**:
-   - The Lead Librarian has already completed the architectural diagnosis and selected the unmuted target files in [C].
-   - Your sole responsibility is to write the code that implements the plan.
-5. **RESTRICTION ON CALLING THE LIBRARIAN**:
-   - Do NOT call the Librarian unless you discover an undeniable missing file or contradictory contract that makes writing code impossible.
-   - Do NOT debate or restate findings. Implement the code.
-6. **SUBTASK DISCIPLINE IN MULTI-STEP TASKS**:
-   - If a multi-step task is active, focus strictly on the current step's files loaded in [C].
-   - Deliver the \`<file>\` blocks immediately.
-7. **FORBIDDEN TO WRITE TO FILES YOU DO NOT SEE**:
-   - You may ONLY modify files loaded under 'LOADED FILE CONTENTS' [C] (or create brand-new files with \`action="write"\`).
+6. **FORBIDDEN TO WRITE TO FILES YOU DO NOT SEE**:
+   - You may ONLY modify files loaded under 'LOADED FILE CONTENTS' [C] (or create brand-new files with action="write").
 
 ${mutationProtocol}
 ${context?.skills ? `\n### 📖 ACTIVE SKILLS\n${context.skills}\n` : ''}
 `;
+        } catch (err: any) {
+            console.error('[CoderPromptBuilder.build] Error generating prompt:', err);
+            return typeof options?.persona === 'string' ? options.persona : 'You are an expert AI software engineer.';
+        }
     }
 }
 

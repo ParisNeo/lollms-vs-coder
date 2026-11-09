@@ -216,7 +216,11 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             case 'governor':
                 before = "<ask_librarian>\n";
                 after = "\n</ask_librarian>";
-                if (!selected) replacement = "I need to patch [file A] and verify contracts in [file B]. Please load [file A] and summarize [file B] for reference...";
+                if (!selected) replacement = "Please inspect the codebase, verify dependencies, and generate the architectural plan...";
+                break;
+            case 'plan':
+                before = "<plan>\n<findings>\n";
+                after = "\n</findings>\n<phase id=\"1\">\n<instruction>Implement Phase 1</instruction>\n<files_list>\npath/to/file.ext\n</files_list>\n</phase>\n</plan>";
                 break;
             case 'python': before = "```python\n"; after = "\n```"; break;
             case 'code': before = "```\n"; after = "\n```"; break;
@@ -1323,6 +1327,17 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             const matched = profiles.find((p: any) => p.id === selectedId);
             if (matched && dom.capUserPreferences) {
                 dom.capUserPreferences.value = matched.preferences;
+            }
+        });
+    }
+
+    if (dom.wizardPreferencesProfile) {
+        dom.wizardPreferencesProfile.addEventListener('change', () => {
+            const selectedId = dom.wizardPreferencesProfile.value;
+            const profiles = (state as any).userPreferenceProfiles || [];
+            const matched = profiles.find((p: any) => p.id === selectedId);
+            if (matched && dom.wizardUserPreferences) {
+                dom.wizardUserPreferences.value = matched.preferences;
             }
         });
     }
@@ -2698,11 +2713,31 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
 
             if (caller === 'wizard') {
                 state.wizardMutedFiles = finalMuted;
+                import('./ui.js').then(ui => {
+                    (studioState.candidateFiles || []).forEach((sc: any) => {
+                        const norm = sc.path.replace(/\\/g, '/');
+                        const exists = ui.wizardCandidateFiles.some(cf => cf.path.toLowerCase() === norm.toLowerCase());
+                        if (!exists) {
+                            ui.wizardCandidateFiles.push({
+                                path: sc.path,
+                                fileName: sc.fileName,
+                                dirName: sc.dirName,
+                                tokens: sc.tokens || 500,
+                                bytes: sc.bytes || 1800,
+                                mtime: Date.now()
+                            });
+                        }
+                    });
+                    ui.wizardMutedSet.clear();
+                    finalMuted.forEach((m: string) => ui.wizardMutedSet.add(m.replace(/\\/g, '/').toLowerCase().trim()));
+                    ui.renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+                });
                 const statusEl = document.getElementById('wizard-governor-status');
                 const statusText = document.getElementById('wizard-governor-status-text');
                 if (statusEl && statusText) {
                     statusEl.style.display = 'flex';
-                    statusText.textContent = `Librarian applied: ${studioState.candidateFiles.length - finalMuted.length} active, ${finalMuted.length} muted.`;
+                    const activeCount = Math.max(0, (studioState.candidateFiles?.length || 0) - finalMuted.length);
+                    statusText.textContent = `Librarian applied: ${activeCount} active, ${finalMuted.length} muted.`;
                 }
             }
 
@@ -2833,12 +2868,12 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     }
 
     const handleWizardSubmit = (sendToAi: boolean) => {
-        const promptText = dom.wizardPrompt.value.trim();
+        const promptText = dom.wizardPrompt ? dom.wizardPrompt.value.trim() : '';
         const stagedImages = (window as any).wizardStagedImages || [];
 
         if (sendToAi && !promptText && stagedImages.length === 0) {
             vscode.postMessage({ command: 'showError', message: 'You must provide a prompt or attach an image to start the discussion!' });
-            dom.wizardPrompt.focus();
+            dom.wizardPrompt?.focus();
             return;
         }
 
@@ -2853,26 +2888,28 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             });
         }
 
-        const title = dom.wizardTitle.value.trim() || undefined;
-        const selectedModel = (document.getElementById('wizard-model') as HTMLSelectElement)?.value || undefined;
-        const personalityId = dom.wizardPersonality.value;
-        const profileId = dom.wizardProfile.value;
-        const effortSelect = document.getElementById('wizard-reasoning-effort') as HTMLSelectElement;
+        const title = dom.wizardTitle ? dom.wizardTitle.value.trim() || undefined : undefined;
+        const selectedModel = (document.getElementById('wizard-model') as HTMLSelectElement | null)?.value || undefined;
+        const personalityId = dom.wizardPersonality ? dom.wizardPersonality.value : (state.currentPersonalityId || 'default_coder');
+        const profileId = dom.wizardProfile?.value || state.capabilities?.responseProfileId || 'balanced';
+        const effortSelect = document.getElementById('wizard-reasoning-effort') as HTMLSelectElement | null;
         const reasoningEffort = effortSelect ? (effortSelect.value as any) : undefined;
-        const fastModeCheck = document.getElementById('wizard-fast-mode') as HTMLInputElement;
+        const fastModeCheck = document.getElementById('wizard-fast-mode') as HTMLInputElement | null;
         const fastMode = fastModeCheck ? fastModeCheck.checked : false;
-        const prefProfileId = dom.wizardPreferencesProfile?.value || 'clean_craftsman';
-        const userPreferences = (document.getElementById('wizard-user-preferences') as HTMLTextAreaElement)?.value?.trim();
-        const contextSelectEl = document.getElementById('wizard-context-selection') as HTMLSelectElement;
+        const prefProfileId = dom.wizardPreferencesProfile?.value || state.capabilities?.userPreferenceProfileId || 'clean_craftsman';
+        const userPreferences = (document.getElementById('wizard-user-preferences') as HTMLTextAreaElement | null)?.value?.trim();
+        const contextSelectEl = document.getElementById('wizard-context-selection') as HTMLSelectElement | null;
         let contextSelection = contextSelectEl ? contextSelectEl.value : 'current';
 
         const selectedFolders: string[] = [];
-        dom.wizardMatrixContainer.querySelectorAll('.ws-matrix-row').forEach((row: any) => {
-            const settings = state.capabilities?.folderSettings?.[row.dataset.uri] || { tree: true, content: true };
-            if (settings.tree || settings.content) {
-                selectedFolders.push(row.dataset.uri);
-            }
-        });
+        if (dom.wizardMatrixContainer) {
+            dom.wizardMatrixContainer.querySelectorAll('.ws-matrix-row').forEach((row: any) => {
+                const settings = state.capabilities?.folderSettings?.[row.dataset.uri] || { tree: true, content: true };
+                if (settings.tree || settings.content) {
+                    selectedFolders.push(row.dataset.uri);
+                }
+            });
+        }
 
         const finalMuted = state.wizardMutedFiles !== undefined
             ? state.wizardMutedFiles
@@ -2902,10 +2939,12 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
 
         state.wizardMutedFiles = undefined;
         state.governorCaller = 'chat';
-        dom.wizardTitle.value = '';
-        dom.wizardPrompt.value = '';
-        dom.wizardModal.style.display = 'none';
-        dom.wizardModal.classList.remove('visible');
+        if (dom.wizardTitle) dom.wizardTitle.value = '';
+        if (dom.wizardPrompt) dom.wizardPrompt.value = '';
+        if (dom.wizardModal) {
+            dom.wizardModal.style.display = 'none';
+            dom.wizardModal.classList.remove('visible');
+        }
     };
 
     if (dom.wizardSubmitBtn) {
@@ -2924,7 +2963,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             const folders = (window as any).workspaceFolders || [];
             const newSettings = { ... (state.capabilities?.folderSettings || {}) };
             folders.forEach((f: any) => newSettings[f.uri.toString()] = { tree: true, content: true });
-            state.capabilities!.folderSettings = newSettings;
+            if (state.capabilities) state.capabilities.folderSettings = newSettings;
             renderWizardMatrix();
         };
     }
@@ -2936,7 +2975,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             const folders = (window as any).workspaceFolders || [];
             const newSettings = { ... (state.capabilities?.folderSettings || {}) };
             folders.forEach((f: any) => newSettings[f.uri.toString()] = { tree: false, content: false });
-            state.capabilities!.folderSettings = newSettings;
+            if (state.capabilities) state.capabilities.folderSettings = newSettings;
             renderWizardMatrix();
         };
     }

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
-import { DiscussionCapabilities } from './utils';
+import { DiscussionCapabilities, extractFileBlocks, parseFileTagAttributes } from './utils';
 import { CoderPromptBuilder, WorkerPromptBuilder } from './system_prompts/workerPrompt';
 import { OrchestratorPromptBuilder } from './system_prompts/orchestratorPrompt';
 
@@ -38,7 +38,6 @@ export class PromptTemplates {
         isAgentMode?: boolean;
     }): string {
         const possessedFiles: string[] = [];
-        const { extractFileBlocks, parseFileTagAttributes } = require('./utils');
         const fileBlocks = extractFileBlocks(context.files);
         if (fileBlocks.length > 0) {
             fileBlocks.forEach((fb: any) => {
@@ -125,16 +124,21 @@ ${context.files || ''}
         }
 
         // Delegate to CoderPromptBuilder for chat and surgical refactoring
-        return CoderPromptBuilder.build({
-            promptType: promptType === 'surgical_agent' ? 'surgical_agent' : 'chat',
-            persona,
-            memory,
-            shells,
-            capabilities,
-            forceFullCodeSetting,
-            context,
-            isFastMode,
-            isExport
-        });
+        try {
+            return CoderPromptBuilder.build({
+                promptType: promptType === 'surgical_agent' ? 'surgical_agent' : 'chat',
+                persona,
+                memory,
+                shells,
+                capabilities,
+                forceFullCodeSetting,
+                context,
+                isFastMode,
+                isExport
+            });
+        } catch (err: any) {
+            console.error('[PromptTemplates.build] Error building system prompt:', err);
+            return persona || 'You are an expert AI software engineer.';
+        }
     }
 }

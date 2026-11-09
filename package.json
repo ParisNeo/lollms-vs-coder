@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.81",
+  "version": "1.0.82",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -739,6 +739,11 @@
       {
         "command": "lollms-vs-coder.managePersonalities",
         "title": "Manage Expert Personas"
+      },
+      {
+        "command": "lollms-vs-coder.syncPersonalitiesZoo",
+        "title": "Lollms: Sync Personalities Zoo (Git)",
+        "icon": "$(cloud-download)"
       },
       {
         "command": "lollms-vs-coder.manageEnv",

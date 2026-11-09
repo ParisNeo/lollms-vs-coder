@@ -270,10 +270,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
 
     const { isDangerousOrBlocked } = require('./commands/contextStateProvider');
 
+    const shouldIgnoreFsPath = (fsPath: string): boolean => {
+        const lower = fsPath.toLowerCase();
+        return lower.includes('/.git/') || lower.includes('\\.git\\') ||
+               lower.includes('/node_modules/') || lower.includes('\\node_modules\\') ||
+               lower.includes('/.venv/') || lower.includes('\\.venv\\') ||
+               lower.includes('/venv/') || lower.includes('\\venv\\') ||
+               lower.includes('/dist/') || lower.includes('\\dist\\') ||
+               lower.includes('/build/') || lower.includes('\\build\\') ||
+               lower.includes('/out/') || lower.includes('\\out\\') ||
+               lower.includes('/target/') || lower.includes('\\target\\') ||
+               lower.includes('/bin/') || lower.includes('\\bin\\') ||
+               lower.includes('/obj/') || lower.includes('\\obj\\') ||
+               lower.includes('/.next/') || lower.includes('\\.next\\') ||
+               lower.includes('/__pycache__/') || lower.includes('\\__pycache__\\') ||
+               lower.includes('/.pytest_cache/') || lower.includes('\\.pytest_cache\\') ||
+               lower.includes('/.lollms/assets/') || lower.includes('\\.lollms\\assets\\') ||
+               lower.includes('/.lollms/knowledge.ttl') || lower.includes('\\.lollms\\knowledge.ttl') ||
+               lower.includes('/.lollms/graph_cache.json') || lower.includes('\\.lollms\\graph_cache.json');
+    };
+
     const isIgnored = (uri: vscode.Uri) => {
         const p = uri.fsPath;
         if (p.includes(path.join('.lollms', 'skills'))) return false;
-        return isDangerousOrBlocked(p);
+        return shouldIgnoreFsPath(p) || isDangerousOrBlocked(p);
     };
 
     let watcherDebounceTimer: NodeJS.Timeout | undefined;
@@ -285,36 +305,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<vscode
         const events = Array.from(fileEventsQueue.entries());
         fileEventsQueue.clear();
 
-        Logger.info(`[Sovereign Queue] Flushing ${events.length} pending filesystem events in background.`);
-
         const caps = services.discussionManager.getLastCapabilities();
         const isSparqlActive = caps.sparqlEnabled !== false ? true : false;
 
         for (const [fsPath, type] of events) {
-            if (isDangerousOrBlocked(fsPath)) continue;
+            if (shouldIgnoreFsPath(fsPath) || isDangerousOrBlocked(fsPath)) continue;
             const uri = vscode.Uri.file(fsPath);
             const relPath = vscode.workspace.asRelativePath(uri, false);
 
             if (type === 'change') {
                 contextManager.refreshFileInCache(uri);
 
-                if (isSparqlActive && codeGraphManager.getBuildState() === 'ready') {
+                if (isSparqlActive && codeGraphManager.getBuildState() === 'ready' && contextManager.isPathInActiveContext(fsPath)) {
                     await codeGraphManager.updateFileInGraph(uri);
                 }
             } else if (type === 'create') {
                 contextStateProvider.addFileToCache(relPath);
                 contextManager.updateTreeStructure(uri, 'create');
-
-                if (isSparqlActive && codeGraphManager.getBuildState() === 'ready') {
-                    await codeGraphManager.updateFileInGraph(uri);
-                }
             } else if (type === 'delete') {
                 contextStateProvider.removeFileFromCache(relPath);
                 contextManager.refreshFileInCache(uri);
                 contextManager.updateTreeStructure(uri, 'delete');
 
                 if (isSparqlActive && codeGraphManager.getBuildState() === 'ready') {
-                    await codeGraphManager.removeFileFromGraph(uri);
+                    codeGraphManager.removeFileFromGraph(uri);
                 }
             }
         }

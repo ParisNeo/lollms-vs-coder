@@ -117,13 +117,21 @@ export class PersonalityManagerPanel {
                         <div class="grid">
                             ${catPersonas.map(p => `
                                 <div class="card" data-search="${(p.name + p.description).toLowerCase()}">
-                                    <div style="display:flex; justify-content:space-between;">
-                                        <div class="name">${p.name}</div>
-                                        ${p.isDefault ? '<span class="badge">Default</span>' : ''}
+                                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+                                        <div style="display:flex; align-items:center; gap:8px;">
+                                            ${p.icon ? `<img src="${p.icon}" style="width:24px; height:24px; border-radius:4px; object-fit:contain;" />` : `<span style="font-size:20px;">🎭</span>`}
+                                            <div class="name" style="margin:0;">${p.name}</div>
+                                        </div>
+                                        ${p.isDefault ? '<span class="badge">Default</span>' : '<span class="badge" style="background:var(--vscode-charts-blue); color:white;">SOUL.md</span>'}
                                     </div>
-                                    <div class="desc">${p.description}</div>
+                                    <div class="desc" style="margin-top:8px;">${p.description}</div>
+                                    ${((p.skills?.length || 0) + (p.extraSkills?.length || 0) > 0 || (p.tools?.length || 0) + (p.extraTools?.length || 0) > 0) ? `
+                                    <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; font-size:10px;">
+                                        ${((p.skills?.length || 0) + (p.extraSkills?.length || 0) > 0) ? `<span style="padding:1px 6px; border-radius:3px; background:rgba(0,122,204,0.15); color:var(--vscode-charts-blue); font-weight:bold;">💡 ${(p.skills?.length || 0) + (p.extraSkills?.length || 0)} Skills</span>` : ''}
+                                        ${((p.tools?.length || 0) + (p.extraTools?.length || 0) > 0) ? `<span style="padding:1px 6px; border-radius:3px; background:rgba(214,122,13,0.15); color:var(--vscode-charts-orange); font-weight:bold;">🛠️ ${(p.tools?.length || 0) + (p.extraTools?.length || 0)} Tools</span>` : ''}
+                                    </div>` : ''}
                                     <div class="actions">
-                                        <button onclick="vscode.postMessage({command:'edit', id:'${p.id}'})">Edit</button>
+                                        <button onclick="vscode.postMessage({command:'edit', id:'${p.id}'})">Edit SOUL</button>
                                         ${!p.isDefault ? `<button class="danger" onclick="vscode.postMessage({command:'delete', id:'${p.id}', name:'${p.name.replace(/'/g, "\\'")}'})">Delete</button>` : ''}
                                     </div>
                                 </div>

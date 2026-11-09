@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsServices } from '../lollmsContext';
-import { stripThinkingTags, normalizeAiderContent } from '../utils';
+import { stripThinkingTags, normalizeAiderContent, applySearchReplace, parseAiderHunks, findHunkInWorkspace, extractFileBlocks, parseFileTagAttributes } from '../utils';
 import { Logger } from '../logger';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 
@@ -342,16 +342,31 @@ export class FileRepairStudioPanel {
 
     private _applyAiderPatchInMemory(original: string, aiderPatch: string): string {
         if (!aiderPatch) return original;
-        const blockRe = /<<<<<<< SEARCH\s*\r?\n([\s\S]*?)\r?\n?=======\s*\r?\n([\s\S]*?)\r?\n?>>>>>>> REPLACE/g;
+        const normalizedPatch = normalizeAiderContent(aiderPatch);
+        const hunks = parseAiderHunks(normalizedPatch);
         let result = original;
+
+        if (hunks.length > 0) {
+            for (const hunk of hunks) {
+                const applied = applySearchReplace(result, hunk.searchPart, hunk.replacePart);
+                if (applied.success) {
+                    result = applied.result;
+                }
+            }
+            if (result !== original) {
+                return result;
+            }
+        }
+
+        // Fallback: regex search for <<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE
+        const blockRe = /<<<<<<< SEARCH\s*\r?\n([\s\S]*?)\r?\n?=======\s*\r?\n([\s\S]*?)\r?\n?>>>>>>> REPLACE/g;
         let match: RegExpExecArray | null;
         blockRe.lastIndex = 0;
-        while ((match = blockRe.exec(aiderPatch)) !== null) {
-            const searchText = match[1];
-            const replaceText = match[2];
-            const idx = result.indexOf(searchText);
-            if (idx === -1) continue;
-            result = result.slice(0, idx) + replaceText + result.slice(idx + searchText.length);
+        while ((match = blockRe.exec(normalizedPatch)) !== null) {
+            const applied = applySearchReplace(result, match[1], match[2]);
+            if (applied.success) {
+                result = applied.result;
+            }
         }
         return result;
     }
@@ -366,7 +381,7 @@ export class FileRepairStudioPanel {
         try {
             await vscode.commands.executeCommand(
                 'vscode.diff',
-                this._fileUri,
+                vscode.Uri.file(this._pendingPatch.filePath),
                 rightUri,
                 `🛠️ Repair Preview: ${fileName} (Disk ↔ Proposed)`,
                 { viewColumn: vscode.ViewColumn.Beside, preview: false, preserveFocus: false }
@@ -1396,7 +1411,7 @@ export class FileRepairStudioPanel {
 
             // Read ground-truth current file content directly from disk
             const doc = await vscode.workspace.openTextDocument(this._fileUri);
-            const currentContent = doc.getText();
+            let currentContent = doc.getText();
             const docLang = doc.languageId;
 
             const isPy = docLang === 'python';
@@ -1678,26 +1693,94 @@ Generate the surgical fix for \`${this._relPath}\`.`;
             const normalizedPatch = normalizeAiderContent(finalCleanResponse);
 
             let candidateContent = this._applyAiderPatchInMemory(currentContent, normalizedPatch);
+            let targetPatchRelPath = this._relPath;
+            let targetPatchFileUri = this._fileUri;
+            let patchApplied = candidateContent !== currentContent;
 
-            // Fallback: <file> blocks evaluated in-memory (no disk writes)
-            if (candidateContent === currentContent) {
-                const { extractFileBlocks, parseFileTagAttributes } = require('../utils');
+            // Fallback 1: <file> blocks evaluated in-memory (handles path="..." or action="write|patch")
+            if (!patchApplied) {
                 const fileBlocks = extractFileBlocks(finalCleanResponse);
                 if (fileBlocks.length > 0) {
                     for (const fb of fileBlocks) {
                         const attrs = parseFileTagAttributes(fb.attrStr, fb.rawContent);
                         if (!attrs || !attrs.path) continue;
-                        if (attrs.action === 'write') {
-                            candidateContent = fb.rawContent;
+
+                        const blockPath = attrs.path.replace(/\\/g, '/').toLowerCase();
+                        const targetPath = this._relPath.replace(/\\/g, '/').toLowerCase();
+                        const isCurrentTarget = blockPath === targetPath || blockPath.endsWith('/' + targetPath) || targetPath.endsWith('/' + blockPath);
+
+                        if (isCurrentTarget) {
+                            if (attrs.action === 'write') {
+                                candidateContent = fb.rawContent;
+                                patchApplied = true;
+                                break;
+                            } else {
+                                const next = this._applyAiderPatchInMemory(candidateContent, normalizeAiderContent(fb.rawContent));
+                                if (next !== candidateContent) {
+                                    candidateContent = next;
+                                    patchApplied = true;
+                                    break;
+                                }
+                            }
                         } else {
-                            const next = this._applyAiderPatchInMemory(candidateContent, normalizeAiderContent(fb.rawContent));
-                            if (next !== candidateContent) candidateContent = next;
+                            // Check if the block targets another valid file in the workspace (e.g. backend/db.py)
+                            const otherRes = await this._services.contextManager.resolveWorkspaceFromPath(attrs.path);
+                            if (otherRes) {
+                                try {
+                                    const otherDoc = await vscode.workspace.openTextDocument(otherRes.uri);
+                                    const otherText = otherDoc.getText();
+                                    let nextOther = otherText;
+                                    if (attrs.action === 'write') {
+                                        nextOther = fb.rawContent;
+                                    } else {
+                                        nextOther = this._applyAiderPatchInMemory(otherText, normalizeAiderContent(fb.rawContent));
+                                    }
+                                    if (nextOther !== otherText) {
+                                        targetPatchFileUri = otherRes.uri;
+                                        targetPatchRelPath = otherRes.relativePath;
+                                        currentContent = otherText;
+                                        candidateContent = nextOther;
+                                        patchApplied = true;
+                                        break;
+                                    }
+                                } catch {}
+                            }
                         }
                     }
                 }
             }
 
-            if (candidateContent === currentContent) {
+            // Fallback 2: Project-wide search for misplaced Aider hunks
+            if (!patchApplied) {
+                const hunks = parseAiderHunks(normalizedPatch);
+                if (hunks.length > 0) {
+                    const misplaced = await findHunkInWorkspace(
+                        hunks[0].searchPart,
+                        this._relPath,
+                        this._services.contextManager,
+                        signal
+                    );
+                    if (misplaced) {
+                        const otherRes = await this._services.contextManager.resolveWorkspaceFromPath(misplaced.filePath);
+                        if (otherRes) {
+                            try {
+                                const otherDoc = await vscode.workspace.openTextDocument(otherRes.uri);
+                                const otherText = otherDoc.getText();
+                                const nextOther = this._applyAiderPatchInMemory(otherText, normalizedPatch);
+                                if (nextOther !== otherText) {
+                                    targetPatchFileUri = otherRes.uri;
+                                    targetPatchRelPath = otherRes.relativePath;
+                                    currentContent = otherText;
+                                    candidateContent = nextOther;
+                                    patchApplied = true;
+                                }
+                            } catch {}
+                        }
+                    }
+                }
+            }
+
+            if (!patchApplied) {
                 this._panel.webview.postMessage({
                     command: 'repairPreviewFailed',
                     round: this._round,
@@ -1708,8 +1791,8 @@ Generate the surgical fix for \`${this._relPath}\`.`;
             }
 
             this._pendingPatch = {
-                filePath: this._fileUri.fsPath,
-                relPath: this._relPath,
+                filePath: targetPatchFileUri.fsPath,
+                relPath: targetPatchRelPath,
                 originalContent: currentContent,
                 patchedContent: candidateContent,
                 patchText: normalizedPatch
@@ -1719,7 +1802,7 @@ Generate the surgical fix for \`${this._relPath}\`.`;
                 command: 'repairPreviewReady',
                 round: this._round,
                 maxRounds: this._maxRounds,
-                relPath: this._relPath,
+                relPath: targetPatchRelPath,
                 explanation: finalCleanResponse.replace(/```[\s\S]*?```/g, '').trim(),
                 patch: normalizedPatch
             });
@@ -2519,6 +2602,9 @@ Generate the surgical fix for \`${this._relPath}\`.`;
                         <button class="btn secondary" id="btnSelectTypes" style="height:22px; font-size:10px; padding:0 6px; color:var(--vscode-charts-orange); border-color:rgba(230,126,34,0.4);" title="Select only type mismatch and property errors">⚡ Types</button>
                         <button class="btn secondary" id="btnSelectImports" style="height:22px; font-size:10px; padding:0 6px; color:var(--vscode-charts-purple); border-color:rgba(155,89,182,0.4);" title="Select only unresolved import and module errors">📦 Imports</button>
                         <button class="btn secondary" id="btnSelectWarnings" style="height:22px; font-size:10px; padding:0 6px; color:var(--vscode-charts-yellow); border-color:rgba(241,196,15,0.4);" title="Select only warnings">⚠️ Warnings</button>
+                        <button class="btn secondary" id="btnCopySelectedMarkdown" style="height:22px; font-size:10px; padding:0 8px; color:var(--vscode-textLink-foreground); border-color:var(--vscode-charts-blue); font-weight:600;" title="Copy all selected errors into structured Markdown grouped by file">
+                            <i class="codicon codicon-copy"></i> Copy Selected (Markdown)
+                        </button>
                         <button class="btn secondary" id="btnToggleAllOrTargeted" style="display:none; height:22px; font-size:10px; padding:0 8px; margin-left:4px; font-weight:700; color:var(--vscode-textLink-foreground); border-color:var(--vscode-charts-blue);"></button>
                     </div>
                 </div>
@@ -2546,36 +2632,6 @@ Generate the surgical fix for \`${this._relPath}\`.`;
         </div>
     </div>
 
-    <!-- FIRST SCRIPT: Safe global error logger and crash shield -->
-    <script>
-        window.onerror = function(msg, url, lineNo, colNo, error) {
-            console.error('[FileRepairStudio Syntax/Runtime Error]:', msg, 'line:', lineNo, 'col:', colNo, error);
-            try {
-                if (window.vscode) {
-                    window.vscode.postMessage({
-                        command: 'diagnosticLog',
-                        level: 'FATAL_SCRIPT_ERROR',
-                        message: String(msg) + ' at line ' + lineNo + ':' + colNo
-                    });
-                }
-            } catch(e) {}
-            var banner = document.getElementById('debugErrorBanner');
-            if (!banner) {
-                banner = document.createElement('div');
-                banner.id = 'debugErrorBanner';
-                banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#c0392b;color:#fff;padding:8px 14px;font-family:monospace;font-size:11px;z-index:999999;border-top:2px solid #e74c3c;';
-                document.body.appendChild(banner);
-            }
-            banner.textContent = '[Webview Script Error: line ' + lineNo + ':' + colNo + '] ' + String(msg);
-            return false;
-        };
-
-        window.addEventListener('unhandledrejection', function(event) {
-            console.error('[FileRepairStudio Unhandled Rejection]:', event.reason);
-        });
-    </script>
-
-    <!-- MAIN STUDIO SCRIPT: Zero raw backtick interpolations to guarantee 100% parse safety -->
     <!-- FIRST SCRIPT: Safe global error logger and crash shield -->
     <script>
         window.onerror = function(msg, url, lineNo, colNo, error) {
@@ -2680,6 +2736,80 @@ Generate the surgical fix for \`${this._relPath}\`.`;
         document.getElementById('btnSelectTypes').onclick = function() { vscode.postMessage({ command: 'selectOnlyTypes' }); };
         document.getElementById('btnSelectImports').onclick = function() { vscode.postMessage({ command: 'selectOnlyImports' }); };
         document.getElementById('btnSelectWarnings').onclick = function() { vscode.postMessage({ command: 'selectOnlyWarnings' }); };
+
+        // Copy Selected Errors as Structured Markdown Grouped by File
+        var btnCopySelectedMarkdown = document.getElementById('btnCopySelectedMarkdown');
+        if (btnCopySelectedMarkdown) {
+            btnCopySelectedMarkdown.onclick = function() {
+                var checkedCbs = Array.from(document.querySelectorAll('.err-check:checked'));
+                var selectedIds = new Set(checkedCbs.map(function(cb) { return cb.dataset.id; }).filter(Boolean));
+
+                var selectedErrors = diagnosticsList.filter(function(d) {
+                    return selectedIds.has(d.id) && !d.isFixed;
+                });
+
+                if (selectedErrors.length === 0) {
+                    vscode.postMessage({ command: 'copyToClipboard', text: '' });
+                    return;
+                }
+
+                // Group errors by file path
+                var fileGroups = new Map();
+                var bslash = String.fromCharCode(92);
+                var btick = String.fromCharCode(96);
+                var NL = String.fromCharCode(10);
+
+                selectedErrors.forEach(function(d) {
+                    var fPath = (d.filePath || targetFilePath || 'Unknown File').split(bslash).join('/');
+                    if (!fileGroups.has(fPath)) {
+                        fileGroups.set(fPath, []);
+                    }
+                    fileGroups.get(fPath).push(d);
+                });
+
+                var mdLines = [];
+                mdLines.push('# 🛠️ Diagnostic Errors Report (' + selectedErrors.length + ' selected issues across ' + fileGroups.size + ' file(s))' + NL);
+
+                fileGroups.forEach(function(errorsInFile, fPath) {
+                    var ext = fPath.split('.').pop() || '';
+                    var lang = ext.toLowerCase();
+                    if (lang === 'ts' || lang === 'tsx') lang = 'typescript';
+                    else if (lang === 'js' || lang === 'jsx') lang = 'javascript';
+                    else if (lang === 'py') lang = 'python';
+
+                    mdLines.push('## File: ' + btick + fPath + btick + ' (' + errorsInFile.length + ' issue' + (errorsInFile.length > 1 ? 's' : '') + ')');
+
+                    errorsInFile.forEach(function(d, i) {
+                        var critTag = (d.criticality || 'error').toUpperCase();
+                        var srcCode = (d.source || d.code) ? ' [' + (d.source || '') + (d.code ? ' ' + d.code : '') + ']' : '';
+
+                        mdLines.push('### ' + (i + 1) + '. Line ' + d.line + ':' + d.character + ' (' + critTag + ')' + srcCode);
+                        mdLines.push('- **Error**: ' + btick + d.message.split(btick).join("'") + btick);
+                        if (d.snippet) {
+                            mdLines.push('- **Code Snippet**:');
+                            mdLines.push(btick + btick + btick + lang);
+                            mdLines.push(d.snippet);
+                            mdLines.push(btick + btick + btick);
+                        }
+                        mdLines.push('');
+                    });
+
+                    mdLines.push('---' + NL);
+                });
+
+                var markdownText = mdLines.join(NL).trim();
+                vscode.postMessage({ command: 'copyToClipboard', text: markdownText });
+                try { navigator.clipboard.writeText(markdownText); } catch(err) {}
+
+                var originalHtml = btnCopySelectedMarkdown.innerHTML;
+                btnCopySelectedMarkdown.innerHTML = '<i class="codicon codicon-check"></i> Copied (' + selectedErrors.length + ')!';
+                btnCopySelectedMarkdown.style.color = 'var(--vscode-charts-green)';
+                setTimeout(function() {
+                    btnCopySelectedMarkdown.innerHTML = originalHtml;
+                    btnCopySelectedMarkdown.style.color = '';
+                }, 2000);
+            };
+        }
 
         // Sorting & Filter Handlers
         document.getElementById('orderSelect').onchange = function(e) {

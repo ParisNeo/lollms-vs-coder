@@ -4,7 +4,22 @@ import { ContextManager, ContextResult } from '../../contextManager';
 import { Discussion, DiscussionManager } from '../../discussionManager';
 import { AgentManager } from '../../agentManager';
 import { HerdManager } from '../../herdManager';
-import { getProcessedSystemPrompt, stripThinkingTags, stripLibrarianReferences, DiscussionCapabilities as BaseDiscussionCapabilities, ResponseProfile } from '../../utils';
+import { 
+    getProcessedSystemPrompt, 
+    stripThinkingTags, 
+    stripLibrarianReferences, 
+    DiscussionCapabilities as BaseDiscussionCapabilities, 
+    isModelVisionCapable,
+    isValidFilePath,
+    ensureStrictAlternatingRoles,
+    normalizePseudoFileBlocks,
+    extractFileBlocks,
+    parseFileTagAttributes,
+    estimateImageTokens,
+    getContextLimitForModel,
+    findHunkInWorkspace,
+    stripAnsiCodes
+} from '../../utils';
 
 type DiscussionCapabilities = BaseDiscussionCapabilities & {
     folderSettings?: Record<string, { tree?: boolean; content?: boolean }>;
@@ -245,8 +260,23 @@ export class ChatPanel {
         const modifiedFiles = new Set<string>();
         let blockIndex = 0; // Initialize precise index tracker
 
-        // 0. Process Mute & Unmute Files Tags (Unmute and add_files_to_context authorized in Fast Mode)
+        // 0. Process Mute, Unmute, and Granular Structure/Definitions Tags
         const isFastMode = this._discussionCapabilities.fastMode !== false;
+
+        const structRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?/gim;
+        let structMatch;
+        while ((structMatch = structRegex.exec(content)) !== null) {
+            if (signal.aborted) break;
+            const attrStr = structMatch[1] || "";
+            const inner = (structMatch[2] || "").trim();
+            const pMatch = attrStr.match(/path=["']([^"']+)["']/i);
+            const targetPaths = pMatch ? [pMatch[1].trim()] : inner.split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+            if (targetPaths.length > 0) {
+                await this.unmuteFiles(targetPaths);
+                await this.addFilesToDiscussionContext(targetPaths, 'definitions-only');
+                this.recordCurrentPromptFiles(targetPaths);
+            }
+        }
 
         const muteRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<mute_files\b[^>]*?>([\s\S]*?)<\/mute_files>/gim;
         let muteMatch;
@@ -282,94 +312,6 @@ export class ChatPanel {
             }
         }
 
-        // 0.3. Automatically execute Librarian consultations when auto-apply or agent mode is active (Bypassed in Fast Mode)
-        const libRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<(?:ask_librarian|consult_librarian|librarian|ask_governor|consult_governor|governor)\b([^>]*?)>([\s\S]*?)<\/(?:ask_librarian|consult_librarian|librarian|ask_governor|consult_governor|governor)>/gim;
-        let libMatch;
-        while ((libMatch = libRegex.exec(content)) !== null) {
-            if (signal.aborted) break;
-            if (this._discussionCapabilities.fastMode) continue;
-            if (!this._discussionCapabilities.autoApply && !this._discussionCapabilities.agentMode) continue;
-            const libQuery = (libMatch[2] || "").trim();
-            if (libQuery) {
-                const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-                try {
-                    // Embedded: librarian live scouting is a transient status (no standalone bubble).
-                    this.processManager.updateDescription(processId, `📚 Librarian: Analyzing dependencies for: "${libQuery.substring(0, 80)}..."`);
-
-                    const libRes = await ContextLibrarian.filterFilesByPrompt({
-                        lollmsAPI: this._lollmsAPI,
-                        contextManager: this._contextManager,
-                        discussionManager: this._discussionManager,
-                        currentDiscussion: this._currentDiscussion!,
-                        targetModel,
-                        prompt: libQuery,
-                        signal,
-                        projectMemoryManager: this.projectMemoryManager,
-                        ignoreContextSize: this._discussionCapabilities.ignoreContextSize === true,
-                        onStatusUpdate: (st) => {
-                            this.processManager.updateDescription(processId, st);
-                            this.updateGeneratingState();
-                        }
-                    });
-
-                    if (libRes.keptFiles?.length) {
-                        await this.unmuteFiles(libRes.keptFiles);
-                        await this._contextManager.getContextStateProvider()?.addFilesToContext(libRes.keptFiles);
-                        this.recordCurrentPromptFiles(libRes.keptFiles);
-                    }
-                    if (libRes.mutedFiles?.length) await this.muteFiles(libRes.mutedFiles);
-                    if (libRes.addedFiles?.length) await this._contextManager.getContextStateProvider()?.addFilesToContext(libRes.addedFiles);
-                    await this.upgradeLibrarianFindings(libRes, libQuery, libRes.advice || libRes.rationale || '');
-
-                    let combinedReport = (libRes.advice || "").trim();
-                    if (libRes.governorReport && !combinedReport.includes(libRes.governorReport)) {
-                        combinedReport = combinedReport ? `${combinedReport}\n\n${libRes.governorReport}` : libRes.governorReport;
-                    }
-                    if (!combinedReport && libRes.rationale) {
-                        combinedReport = libRes.rationale;
-                    }
-                    const cleanFindings = combinedReport.replace(/^(?:Librarian agent report:\s*)+/gi, '').trim();
-
-                    // Assemble action audit log from discovery steps
-                    const actionStepsLog = (libRes.discoverySteps && libRes.discoverySteps.length > 0)
-                        ? `\n### 🛠️ Librarian Action Audit Trail (${libRes.discoverySteps.length} operations)\n` +
-                          libRes.discoverySteps.map(s => `- **[${s.type.toUpperCase()}]** \`${s.label}\` ${s.detail ? `(${s.detail})` : ''}`).join('\n') + '\n'
-                        : '';
-
-                    const safeTokensLiberated = (typeof libRes.liberatedTokens === 'number' && !isNaN(libRes.liberatedTokens))
-                        ? libRes.liberatedTokens.toLocaleString()
-                        : String(Number(libRes.liberatedTokens) || 0);
-
-                    const memoriesBlock = libRes.hydratedMemories && libRes.hydratedMemories.trim().length > 0
-                        ? `\n${libRes.hydratedMemories.trim()}\n`
-                        : `\n<details class="memory-hydration-block"><summary>🧠 <b>Hydrated Neural Memories & Standards (0 engrams)</b></summary>\n*(No matching memory engrams recalled for this query)*\n</details>\n`;
-
-                    const selectionNotice = libRes.savedSelection
-                        ? `\n- **Saved Context Selection**: \`${libRes.savedSelection.path}\` (*${libRes.savedSelection.description}*)`
-                        : '';
-
-                    // Persist final comprehensive findings into this message bubble
-                    const finalReport = `Librarian agent report:
-### 🏛️ Codebase Architecture & System Mechanics
-${cleanFindings || 'Codebase dependencies analyzed.'}
-
-${libRes.signatures ? `### 📋 Reference Contracts & Signatures\n${libRes.signatures}\n` : ''}
-${actionStepsLog}
-${memoriesBlock}
-### 📂 Context Grounding & Budget
-- **Active Files for Modification [C]**: ${libRes.keptFiles.map(f => `\`${f}\``).join(', ') || 'None'}
-- **Tokens Liberated**: ~${safeTokensLiberated} tokens (reference files preserved at 0 tokens [M] in tree)${selectionNotice}
-- **Neural Memory**: Recorded to Project Memory Vault & \`.lollms/knowledge.ttl\``;
-
-                    // Embedded: final librarian findings accumulate as a round inside the caller's answer block
-                    await this.updateMessageContent(messageId, 'APPEND_TAG:<agent_round type="tool" title="Librarian Scouting" status="done">\n' + finalReport + '\n</agent_round>');
-                    this.log(`Automated Librarian consultation applied (${libRes.keptFiles.length} edit files loaded, ${(libRes.mutedFiles || []).length} reference files muted).`);
-                } catch (libErr: any) {
-                    this.log(`Automated Librarian consultation failed: ${libErr.message}`, 'WARN');
-                    await this.updateMessageContent(messageId, 'APPEND_TAG:<agent_round type="tool" title="Librarian Scouting" status="failed">\n⚠️ **Librarian Scouting Error**: ${libErr.message}\n</agent_round>');
-                }
-            }
-        }
 
         // 0.5. Process Mission Briefing Doctrine Tags (Autonomous in Agent Mode or when Auto-Apply is active)
         const isAgent = this._discussionCapabilities.agentMode === true;
@@ -494,6 +436,13 @@ ${memoriesBlock}
             const filePath = fileAttrs.path;
             const action = fileAttrs.action;
             const symbol = fileAttrs.symbol || "";
+
+            const { isProjectFile } = require('../../utils');
+            if (!isProjectFile(filePath) || filePath.includes('.lollms/external_files')) {
+                this.log(`[Automation Pipeline] Blocked attempt to modify read-only external file: ${filePath}`, 'WARN');
+                vscode.window.showWarningMessage(`Blocked modification of '${filePath}': External & Research files are read-only.`);
+                continue;
+            }
 
             const currentBlockIndex = blockIndex++;
             modifiedFiles.add(filePath);
@@ -1084,6 +1033,37 @@ ${itemizedReports}
       });
   }
 
+  /**
+   * Resolves a file path across the workspace with direct and fuzzy matching.
+   */
+  public async resolveWorkspaceFile(filePath: string): Promise<{ relativePath: string; uri: vscode.Uri } | null> {
+      if (!filePath) return null;
+      const clean = filePath.replace(/\\/g, '/').replace(/^['"`]|['"`]$/g, '').trim();
+      const direct = await this._contextManager.resolveWorkspaceFromPath(clean);
+      if (direct) {
+          try {
+              const stat = await vscode.workspace.fs.stat(direct.uri);
+              if (stat) return { relativePath: direct.relativePath, uri: direct.uri };
+          } catch {}
+      }
+
+      // Fuzzy search across all workspace files if direct resolution failed
+      const allFiles = await this._contextManager.getWorkspaceFilePaths();
+      const base = path.posix.basename(clean).toLowerCase();
+      const matched = allFiles.find(f => {
+          const normF = f.replace(/\\/g, '/').toLowerCase();
+          return normF === clean.toLowerCase() || 
+                 normF.endsWith('/' + clean.toLowerCase()) || 
+                 path.posix.basename(normF) === base;
+      });
+
+      if (matched) {
+          const res = await this._contextManager.resolveWorkspaceFromPath(matched);
+          if (res) return { relativePath: res.relativePath, uri: res.uri };
+      }
+      return null;
+  }
+
   public async handleContextVerifierFailure(
       unpossessedFiles: string[],
       isFastMode: boolean,
@@ -1238,6 +1218,12 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
           const cleanTf = tf.replace(/\\/g, '/').toLowerCase().trim();
 
           // Check if file is in included files and NOT muted
+          const { isProjectFile } = require('../../utils');
+          if (!isProjectFile(tf) || cleanTf.includes('.lollms/external_files')) {
+              unpossessedFiles.push(`${tf} (Read-only external reference document - cannot be modified)`);
+              continue;
+          }
+
           const isIncluded = rawIncluded.some(inc => inc === cleanTf || inc.endsWith('/' + cleanTf) || cleanTf.endsWith('/' + inc));
           const isMuted = currentMuted.some(m => m === cleanTf || m.endsWith('/' + cleanTf) || cleanTf.endsWith('/' + m));
 
@@ -1608,8 +1594,13 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
-        const profiles = config.get('responseProfiles') || [];
         const visibilityPresets = this._discussionManager.context.workspaceState.get<Record<string, string[]>>('lollms_saved_mute_patterns') || {};
+
+        const { SYSTEM_RESPONSE_PROFILES } = require('../../utils');
+        const systemProfiles = Array.isArray(SYSTEM_RESPONSE_PROFILES) ? SYSTEM_RESPONSE_PROFILES : [];
+        const rawProfiles = config.get<any[]>('responseProfiles') || [];
+        const userProfiles = (Array.isArray(rawProfiles) ? rawProfiles : []).filter((p: any) => p && p.id);
+        const allProfiles = [...systemProfiles, ...userProfiles.filter((p: any) => !systemProfiles.some((sp: any) => sp.id === p.id))];
 
         // --- PHASE 1: IMMEDIATE DISCUSSION MATERIALIZATION (NO BLOCKING I/O) ---
         const currentP = this._personalityManager?.getPersonality(this._currentDiscussion.personalityId || 'default_coder');
@@ -1640,12 +1631,34 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
         this._panel.webview.postMessage({
             command: 'updateDiscussionCapabilities',
             capabilities: this._discussionCapabilities,
-            userPreferenceProfiles: userPrefProfiles
+            userPreferenceProfiles: userPrefProfiles,
+            profiles: allProfiles
         });
+
+        if (this._personalityManager) {
+            const allPersonalities = this._personalityManager.getPersonalities().map(p => ({
+                id: p.id,
+                name: p.name,
+                description: p.description,
+                icon: p.icon,
+                category: p.category,
+                author: p.author,
+                version: p.version,
+                tools: this._personalityManager?.getEffectiveTools(p.id) || [],
+                skills: this._personalityManager?.getEffectiveSkills(p.id) || []
+            }));
+
+            this._panel.webview.postMessage({
+                command: 'updatePersonalities',
+                personalities: allPersonalities,
+                currentPersonalityId: this._currentDiscussion.personalityId || 'default_coder'
+            });
+        }
 
         this._panel.webview.postMessage({ 
             command: 'loadDiscussion', 
             messages: safeMessages,
+            lastTokenMetrics: this._currentDiscussion.lastTokenMetrics,
             isInspectorEnabled: isInspectorEnabled,
             agentMode: !!this._discussionCapabilities.agentMode,
             appliedState: this._currentDiscussion.appliedState || {},
@@ -1656,6 +1669,7 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
             workspaceFolders: workspaceFolders,
             agentProfiles: AGENT_MISSION_PROFILES,
             userPreferenceProfiles: userPrefProfiles,
+            profiles: allProfiles,
             visibilityPresets: visibilityPresets,
             initialPrompt: this._initialPrompt,
             initialImages: this._initialImages
@@ -1773,6 +1787,62 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
                         selections: savedSelections
                     });
                 }
+
+                // Immediate token hydration from file weights so HUD never hangs
+                let totalFileTokens = 0;
+                includedFiles.forEach((f: any) => {
+                    const isMuted = (this._currentDiscussion?.mutedFiles || []).some(m => {
+                        const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                        const cleanF = f.path.replace(/\\/g, '/').toLowerCase().trim();
+                        return cleanM === cleanF || cleanM.endsWith('/' + cleanF) || cleanF.endsWith('/' + cleanM);
+                    });
+                    if (!isMuted) {
+                        totalFileTokens += f.tokens || 0;
+                    }
+                });
+
+                const finalSize = getContextLimitForModel(this._currentDiscussion?.model || this._lollmsAPI.getModelName());
+                const { isProjectFile } = require('../../utils');
+                let initialCodeTokens = 0;
+                let initialExternalTokens = 0;
+                includedFiles.forEach((f: any) => {
+                    const isMuted = (this._currentDiscussion?.mutedFiles || []).some(m => {
+                        const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                        const cleanF = f.path.replace(/\\/g, '/').toLowerCase().trim();
+                        return cleanM === cleanF || cleanM.endsWith('/' + cleanF) || cleanF.endsWith('/' + cleanM);
+                    });
+                    if (!isMuted) {
+                        const tok = f.tokens || Math.max(1, Math.ceil((f.bytes || 100) / 3.5));
+                        if (isProjectFile(f.path)) initialCodeTokens += tok;
+                        else initialExternalTokens += tok;
+                    }
+                });
+
+                const metricsToSend = this._currentDiscussion?.lastTokenMetrics || {
+                    total: totalFileTokens + 3500,
+                    contextSize: finalSize,
+                    segments: {
+                        system: 2000,
+                        briefing: 0,
+                        tree: 1000,
+                        skills: 0,
+                        memory: 0,
+                        diagrams: 0,
+                        files: initialCodeTokens,
+                        external: initialExternalTokens,
+                        history: 500,
+                        images: 0
+                    }
+                };
+
+                this._panel.webview.postMessage({
+                    command: 'updateTokenProgress',
+                    totalTokens: metricsToSend.total,
+                    contextSize: metricsToSend.contextSize,
+                    isApproximate: true,
+                    segments: metricsToSend.segments,
+                    files: includedFiles
+                });
             }
         });
 
@@ -1830,10 +1900,6 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
             this.updateGeneratingState();
         }
 
-        const { SYSTEM_RESPONSE_PROFILES } = require('../../utils');
-        const userProfiles = (Array.isArray(profiles) ? profiles : []).filter((p: any) => p && p.id);
-        const allProfiles = [...SYSTEM_RESPONSE_PROFILES, ...userProfiles.filter((p: any) => !SYSTEM_RESPONSE_PROFILES.some((sp: any) => sp.id === p.id))];
-
         let isRepo = false;
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (workspaceFolder && this._gitIntegration) {
@@ -1846,9 +1912,19 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
         }
 
         if (this._personalityManager) {
+            const allPersonalities = this._personalityManager.getPersonalities().map(p => ({
+                id: p.id,
+                name: p.name,
+                description: p.description,
+                icon: p.icon,
+                category: p.category,
+                tools: this._personalityManager?.getEffectiveTools(p.id) || [],
+                skills: this._personalityManager?.getEffectiveSkills(p.id) || []
+            }));
+
             this._panel.webview.postMessage({
                 command: 'updatePersonalities',
-                personalities: this._personalityManager.getPersonalities(),
+                personalities: allPersonalities,
                 currentPersonalityId: this._currentDiscussion.personalityId
             });
         }
@@ -1887,32 +1963,12 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
 
         // Non-blocking deferred calculations to prevent UI render blocking
         setTimeout(async () => {
-            // --- LAZY NON-BLOCKING HYDRATION ---
-            // If we have previously cached metrics for this discussion, restore them immediately to prevent flicker
-            if (this._currentDiscussion && this._currentDiscussion.lastTokenMetrics) {
-                const m = this._currentDiscussion.lastTokenMetrics;
-                if (this._panel && this._panel.webview && !this._isDisposed) {
-                    this._panel.webview.postMessage({
-                        command: 'updateTokenProgress',
-                        totalTokens: m.total,
-                        contextSize: m.contextSize,
-                        isApproximate: false,
-                        segments: m.segments
-                    });
-                }
-            }
-
-            // Always trigger background context and token sync to ensure disk changes & applied files are fresh
+            // Always trigger context and token sync to ensure disk changes & applied files are fresh
             if (this._panel && this._panel.webview && !this._isDisposed) {
-                this.updateContextAndTokens({ isBackgroundSync: true });
-            }
-
-            if (this._panel && this._panel.webview && !this._isDisposed) {
-                this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+                this.updateContextAndTokens({ isBackgroundSync: false });
             }
             this._fetchAndSetModels(false);
-        }, 300); // 300ms cushion allows the main UI thread to finish painting completely
+        }, 150);
     }
 
   public recordCurrentPromptFiles(files: string[]) {
@@ -2047,9 +2103,10 @@ public async addFilesToDiscussionContext(paths: string[], state: any = 'included
     for (const p of paths) {
         const cleanP = p.replace(/\\/g, '/').trim();
         if (!cleanP) continue;
+        const { arePathsEqual } = require('../../utils');
         const existing = discFiles.find(f => {
-            const cf = (typeof f === 'string' ? f : f.path || '').replace(/\\/g, '/').toLowerCase();
-            return cf === cleanP.toLowerCase() || cf.endsWith('/' + cleanP.toLowerCase()) || cleanP.toLowerCase().endsWith('/' + cf);
+            const cf = typeof f === 'string' ? f : (f.path || '');
+            return arePathsEqual(cf, cleanP);
         });
         if (!existing) {
             discFiles.push({ path: cleanP, state });
@@ -2177,11 +2234,11 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                         (self._currentDiscussion as any).includedFiles = JSON.parse(JSON.stringify(rawIncluded));
                     } else {
                         const discFiles: any[] = (self._currentDiscussion as any).includedFiles;
+                        const { arePathsEqual } = require('../../utils');
                         for (const gf of rawIncluded) {
-                            const cleanG = gf.path.replace(/\\/g, '/').toLowerCase();
                             const exists = discFiles.some(f => {
-                                const cf = (typeof f === 'string' ? f : f.path || '').replace(/\\/g, '/').toLowerCase();
-                                return cf === cleanG || cf.endsWith('/' + cleanG) || cleanG.endsWith('/' + cf);
+                                const cf = typeof f === 'string' ? f : (f.path || '');
+                                return arePathsEqual(cf, gf.path);
                             });
                             if (!exists) {
                                 discFiles.push(JSON.parse(JSON.stringify(gf)));
@@ -2312,10 +2369,7 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                     briefingText = (rawBriefing.startsWith('{')) ? self._contextManager.renderBriefing(self._currentDiscussion) : rawBriefing;
 
                     const govReport = context.governorReport || await self._contextManager.getStructureGuide();
-                    const configObj = vscode.workspace.getConfiguration('lollmsVsCoder');
-                    const profId = self._discussionCapabilities.responseProfileId || 'balanced';
-                    const matchedProfile = (configObj.get<any[]>('responseProfiles') || []).find((p: any) => p && p.id === profId) || { systemPrompt: '' };
-                    const combinedPersonaPrompt = (self.getCurrentPersonaSystemPrompt() + '\n\n' + (matchedProfile.systemPrompt || '')).trim();
+                    const combinedPersonaPrompt = self.getCurrentPersonaSystemPrompt().trim();
 
                     systemText = await getProcessedSystemPrompt(
                         'chat', 
@@ -2469,6 +2523,10 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
 
                         try {
                             const res = await self._lollmsAPI.tokenize(text, modelForTokenization);
+                            if (ChatPanel._tokenCountCache.size > 250) {
+                                const oldest = ChatPanel._tokenCountCache.keys().next().value;
+                                if (oldest) ChatPanel._tokenCountCache.delete(oldest);
+                            }
                             ChatPanel._tokenCountCache.set(cacheKey, res.count);
                             return { count: res.count, isEstimation: false };
                         } catch (e) {
@@ -2690,6 +2748,21 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                         (Number(safeImageTokens) || 0)
                     );
 
+                    const { isProjectFile } = require('../../utils');
+                    let codeTokens = 0;
+                    let externalTokens = 0;
+                    for (const f of unmutedFiles) {
+                        let t = f.tokens || 0;
+                        if (t === 0 && f.bytes) t = Math.ceil(f.bytes / 3.5);
+                        if (t === 0) {
+                            const cached = (self._contextManager as any)._fileContentCache?.get(f.path);
+                            if (cached?.content) t = Math.ceil(cached.content.length / 3.5);
+                        }
+                        t = t || 100;
+                        if (isProjectFile(f.path)) codeTokens += t;
+                        else externalTokens += t;
+                    }
+
                     const segments = {
                         system: Number(systemTokens) || 0,
                         briefing: Number(briefingTokens) || 0,
@@ -2697,7 +2770,8 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                         skills: Number(skillTokens) || 0,
                         memory: Number(memoryTokens) || 0,
                         diagrams: Number(diagramTokens) || 0,
-                        files: Number(contentTokens) || 0,
+                        files: Number(codeTokens) || 0,
+                        external: Number(externalTokens) || 0,
                         history: Number(historyTokens) || 0,
                         images: Number(safeImageTokens) || 0
                     };
@@ -2812,25 +2886,25 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                             1,
                             Math.ceil((context.projectTree?.length || 0) / 3.5)
                         );
-                        const unmutedFallback = rawIncluded.filter(f => {
-                            const isFileMuted = (mutedFiles || []).some((m: string) => {
+
+                        const provider = self._contextManager.getContextStateProvider();
+                        const currentFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
+                        const currentMuted = self._currentDiscussion?.mutedFiles || [];
+                        const unmutedFallback = currentFiles.filter(f => {
+                            const cleanF = f.path.replace(/\\/g, '/').toLowerCase().trim();
+                            return !currentMuted.some(m => {
                                 const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
-                                const cleanF = f.path.replace(/\\/g, '/').toLowerCase().trim();
                                 return cleanM === cleanF || cleanM.endsWith('/' + cleanF) || cleanF.endsWith('/' + cleanM);
                             });
-                            return !isFileMuted;
                         });
+
                         const filesTokens = (unmutedFallback.length === 0 || self._discussionCapabilities.disableProjectContext)
                             ? 0
                             : Math.ceil((context.selectedFilesContent?.length || 0) / 3.5);
                         const skillsTokens = Math.ceil((context.skillsContent?.length || 0) / 3.5);
-                        const briefingTokens = Math.ceil((briefingText?.length || 0) / 3.5);
-                        const diagramTokens = Math.ceil((diagramText?.length || 0) / 3.5);
-
-                        const projectMemory = (self._discussionCapabilities.projectMemoryEnabled !== false && self.agentManager?.projectMemoryManager)
-                            ? await self.agentManager.projectMemoryManager.getFormattedMemoryBlock(historyText, self._skillsManager)
-                            : "";
-                        const memoryTokens = Math.ceil((projectMemory.length || 0) / 3.5);
+                        const briefingTokens = 0;
+                        const diagramTokens = 0;
+                        const memoryTokens = 0;
 
                         const totalTokens = systemTokens + historyTokens + treeTokens + filesTokens + skillsTokens + memoryTokens + briefingTokens + diagramTokens;
 
@@ -2885,7 +2959,7 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                 self._panel.webview.postMessage({ command: 'hideProjectLoader' });
                 resolvePromise();
             }
-        }, 400); // 400ms High-Performance debouncing interval
+        }, 100); // 100ms responsive debouncing interval
     });
   }
     /**
@@ -3561,6 +3635,9 @@ ${filesSection}
         this.log(`Deleted messages starting from index ${index}.`);
     }
 
+    // Invalidate dual LLM history cache so next turn regenerates clean context
+    this._currentDiscussion.llmHistory = undefined;
+
     // Explicitly update in-memory caches to align with the deleted state
     this.chatHistory = [...this._currentDiscussion.messages];
     if (this.agentManager) {
@@ -3614,6 +3691,7 @@ ${filesSection}
       this.ensurePersistentDiscussionId();
 
       this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index);
+      this._currentDiscussion.llmHistory = undefined;
 
       if (!this._currentDiscussion.id.startsWith('temp-')) {
           await this._discussionManager.saveDiscussion(this._currentDiscussion);
@@ -3864,6 +3942,8 @@ ${filesSection}
 
                   const relativePath = path.join('.lollms', 'external_files', safeName).replace(/\\/g, '/');
                   await this._contextManager.getContextStateProvider()?.addFilesToContext([relativePath]);
+                  await this.addFilesToDiscussionContext([relativePath]);
+                  this.recordCurrentPromptFiles([relativePath]);
               }
 
               const systemMsg: ChatMessage = {
@@ -4271,7 +4351,7 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
         const importedIds = this._currentDiscussion?.importedSkills || [];
         const isContextMuted = this._discussionCapabilities?.disableProjectContext === true;
 
-        const allMessages = (this._currentDiscussion.messages || []).filter(m => !m.skipInPrompt);
+        const allMessages = (this._currentDiscussion.llmHistory || this._currentDiscussion.messages || []).filter(m => !m.skipInPrompt);
         const lastUserIdx = [...allMessages].reverse().findIndex(m => m.role === 'user');
         const actualLastUserIdx = lastUserIdx === -1 ? -1 : (allMessages.length - 1 - lastUserIdx);
 
@@ -4399,6 +4479,11 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
         assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
         let currentFullResponseBuffer = "";
 
+        const memManager = (this as any).projectMemoryManager || this.agentManager?.projectMemoryManager;
+        const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && memManager)
+            ? await memManager.getFormattedMemoryBlock(rawUserPromptText)
+            : "";
+
         const initialAssistantMessage: ChatMessage = {
             id: assistantMessageId,
             role: 'assistant',
@@ -4417,8 +4502,10 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
 
         const isGreetingOnly = /^(?:hi|hello|hey|greetings|good\s+(?:morning|afternoon|evening)|thanks|thank\s+you)\b/i.test(rawUserPromptText.trim()) && rawUserPromptText.trim().split(/\s+/).length <= 4;
 
-        // In Standard Mode (!isFastMode), the Lead Librarian evaluates the request, scouts the codebase,
-        // unmutes/adds the target files, builds the complete plan, and directs the Coder.
+        // In Standard Mode (!isFastMode), run the 3-phase workflow:
+        // Phase 0: Fast inspection of current context
+        // If sufficient: Call Coder directly as if there were no librarian
+        // Else: Free context files (mute all), Phase 1 scouting, Phase 2 understanding, Phase 3 planning
         const shouldRunMasterLibrarian = !isFastMode &&
             !isPlanConfirmation && 
             !isMultiPartCont && 
@@ -4429,115 +4516,206 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
         let librarianMasterReport = "";
 
         if (shouldRunMasterLibrarian) {
-            this.processManager.updateDescription(processId, "📚 Librarian: Master architectural evaluation & context arbitration...");
+            this.processManager.updateDescription(processId, "📚 Librarian: Phase 0 fast inspection of context...");
             this.updateGeneratingState();
 
-            // Stream the Librarian's live process directly into the message without redundant nesting
-            const liveScoutPlaceholder = `### 📚 **Lead Librarian: Evaluating Task & Scouting Codebase**\n\n<div class="waiting-animation" style="display:flex; align-items:center; gap:8px; opacity:0.85; padding:6px 0;"><div class="spinner"></div> <span>Inspecting context, memories &amp; codebase...</span></div>`;
-            await this.updateMessageContent(assistantMessageId, liveScoutPlaceholder, false);
+            // Phase 0: Fast inspection
+            const fastInspectionRes = await ContextLibrarian.fastInspection({
+                lollmsAPI: this._lollmsAPI,
+                contextManager: this._contextManager,
+                discussionManager: this._discussionManager,
+                currentDiscussion: this._currentDiscussion!,
+                targetModel,
+                userPrompt: rawUserPromptText,
+                signal: controller.signal,
+                history: history,
+                recalledMemories: projectMemory
+            });
 
-            try {
-                const libRes = await ContextLibrarian.filterFilesByPrompt({
-                    lollmsAPI: this._lollmsAPI,
-                    contextManager: this._contextManager,
-                    discussionManager: this._discussionManager,
-                    currentDiscussion: this._currentDiscussion!,
-                    targetModel,
-                    prompt: rawUserPromptText,
-                    userPrompt: rawUserPromptText,
-                    history: history,
-                    signal: controller.signal,
-                    currentMutedFiles: this._currentDiscussion?.mutedFiles || [],
-                    pruneMsgId: assistantMessageId,
-                    projectMemoryManager: this.projectMemoryManager || this.agentManager?.projectMemoryManager,
-                    ignoreContextSize: this._discussionCapabilities.ignoreContextSize === true,
-                    onUpdateMessage: async (_msgId, liveContent) => {
-                        // Stream the live Librarian process directly into assistantMessageId (no nested details wrappers)
-                        await this.updateMessageContent(assistantMessageId, liveContent, false);
-                    },
-                    onStatusUpdate: (st) => {
-                        this.processManager.updateDescription(processId, st);
-                        this.updateGeneratingState();
+            // Capture files originally active in context before Phase 0 inspection
+            const providerAtStart = this._contextManager.getContextStateProvider();
+            const originallyIncluded = providerAtStart ? providerAtStart.getIncludedFiles().filter(f => f && f.path).map(f => f.path) : [];
+            const originallyMutedSet = new Set((this._currentDiscussion.mutedFiles || []).map(m => m.replace(/\\/g, '/').toLowerCase().trim()));
+            const originalActiveFiles = originallyIncluded.filter(f => !originallyMutedSet.has(f.replace(/\\/g, '/').toLowerCase().trim()));
+
+            if (fastInspectionRes.sufficient) {
+                // If original files in context are ok, use them directly as if there were no librarian
+                this.log(`[Librarian Phase 0] Context is sufficient: "${fastInspectionRes.rationale}". Calling Coder directly.`);
+                this.processManager.updateDescription(processId, "⚡ Context verified sufficient. Calling Coder directly...");
+                this.updateGeneratingState();
+            } else {
+                this.log(`[Librarian Phase 0] Context not sufficient: "${fastInspectionRes.rationale}". Freeing context and starting Phase 1 scouting.`);
+                
+                // Free the context from code files content (keep external research documents and tree active)
+                const { isProjectFile } = require('../../utils');
+                const projectFilesToMute = originallyIncluded.filter(p => isProjectFile(p));
+                if (projectFilesToMute.length > 0) {
+                    await this.muteFiles(projectFilesToMute);
+                }
+
+                // Phase 1 Scouting & Phase 2/3 Understanding & Planning
+                this.processManager.updateDescription(processId, "📚 Librarian: Scouting codebase & dependencies...");
+                this.updateGeneratingState();
+
+                const liveScoutPlaceholder = `### 📚 **Lead Librarian: Scouting & Architecture**\n\n<div class="waiting-animation" style="display:flex; align-items:center; gap:8px; opacity:0.85; padding:6px 0;"><div class="spinner"></div> <span>Inspecting codebase, AST &amp; dependencies...</span></div>`;
+                await this.updateMessageContent(assistantMessageId, liveScoutPlaceholder, false);
+
+                try {
+                    const libRes = await ContextLibrarian.filterFilesByPrompt({
+                        lollmsAPI: this._lollmsAPI,
+                        contextManager: this._contextManager,
+                        discussionManager: this._discussionManager,
+                        currentDiscussion: this._currentDiscussion!,
+                        targetModel,
+                        prompt: rawUserPromptText,
+                        userPrompt: rawUserPromptText,
+                        history: history,
+                        signal: controller.signal,
+                        currentMutedFiles: this._currentDiscussion?.mutedFiles || [],
+                        pruneMsgId: assistantMessageId,
+                        projectMemoryManager: this.projectMemoryManager || this.agentManager?.projectMemoryManager,
+                        ignoreContextSize: this._discussionCapabilities.ignoreContextSize === true,
+                        onUpdateMessage: async (_msgId, liveContent) => {
+                            await this.updateMessageContent(assistantMessageId, liveContent, false);
+                        },
+                        onStatusUpdate: (st) => {
+                            this.processManager.updateDescription(processId, st);
+                            this.updateGeneratingState();
+                        }
+                    });
+
+                    // GUARANTEE: The Librarian MUST ALWAYS add files to context!
+                    // Determine phase 1 target files from multiPartPlan or keptFiles
+                    let rawTargetFiles: string[] = [];
+                    if (libRes.multiPartPlan && libRes.multiPartPlan.parts.length > 0) {
+                        this._activeMultiPartPlan = libRes.multiPartPlan;
+                        rawTargetFiles = [...(libRes.multiPartPlan.parts[0].editFiles || [])];
+                    } else if (libRes.keptFiles?.length) {
+                        rawTargetFiles = [...libRes.keptFiles];
                     }
-                });
 
-                if (libRes.keptFiles?.length) {
-                    await this.unmuteFiles(libRes.keptFiles);
-                    await this._contextManager.getContextStateProvider()?.addFilesToContext(libRes.keptFiles);
-                    this.recordCurrentPromptFiles(libRes.keptFiles);
+                    // Fallback: If still empty, use any newly added files or top original files
+                    if (rawTargetFiles.length === 0 && libRes.addedFiles?.length) {
+                        rawTargetFiles = [...libRes.addedFiles];
+                    }
+                    if (rawTargetFiles.length === 0 && originalActiveFiles.length > 0) {
+                        rawTargetFiles = [...originalActiveFiles];
+                    }
+
+                    // Resolve every target file to its verified workspace relative path
+                    const resolvedTargetFiles: string[] = [];
+                    for (const rtf of rawTargetFiles) {
+                        const resolved = await this.resolveWorkspaceFile(rtf);
+                        const finalPath = resolved ? resolved.relativePath : rtf;
+                        if (!resolvedTargetFiles.includes(finalPath)) {
+                            resolvedTargetFiles.push(finalPath);
+                        }
+                        if (resolved) {
+                            this._contextManager.refreshFileInCache(resolved.uri);
+                        }
+                    }
+
+                    // Unmute and add resolved target files to active context
+                    if (resolvedTargetFiles.length > 0) {
+                        await this.unmuteFiles(resolvedTargetFiles);
+                        await this._contextManager.getContextStateProvider()?.addFilesToContext(resolvedTargetFiles);
+                        await this.addFilesToDiscussionContext(resolvedTargetFiles);
+                        this.recordCurrentPromptFiles(resolvedTargetFiles);
+
+                        // Ensure multiPartPlan part 0 targets reflect the resolved paths
+                        if (this._activeMultiPartPlan?.parts?.[0]) {
+                            this._activeMultiPartPlan.parts[0].editFiles = [...resolvedTargetFiles];
+                        }
+                    }
+
+                    if (libRes.addedFiles?.length) {
+                        await this._contextManager.getContextStateProvider()?.addFilesToContext(libRes.addedFiles);
+                    }
+                    await this.upgradeLibrarianFindings(libRes, rawUserPromptText, libRes.advice || libRes.rationale || '');
+
+                    let findingsText = (libRes.advice || libRes.rationale || "").trim();
+                    if (libRes.governorReport && !findingsText.includes(libRes.governorReport)) {
+                        findingsText = findingsText ? `${findingsText}\n\n${libRes.governorReport}` : libRes.governorReport;
+                    }
+                    findingsText = findingsText.replace(/^(?:Librarian agent report:\s*)+/gi, '').trim();
+
+                    // Generate complete plan XML tag (rendered in webview as collapsible plan with collapsible findings & phases)
+                    const parts = this._activeMultiPartPlan?.parts || [{
+                        partIndex: 0,
+                        totalParts: 1,
+                        editFiles: resolvedTargetFiles,
+                        partInstruction: "Implement the required modifications."
+                    }];
+
+                    // ── 🛡️ LIBRARIAN FINAL CHECK OF LOADED FILES BEFORE CODER START ──
+                    const finalCheckResult = typeof (ContextLibrarian as any).finalCheckLoadedFiles === 'function'
+                        ? await ContextLibrarian.finalCheckLoadedFiles({
+                            contextManager: this._contextManager,
+                            discussionManager: this._discussionManager,
+                            currentDiscussion: this._currentDiscussion!,
+                            targetModel,
+                            userPrompt: rawUserPromptText,
+                            targetFiles: resolvedTargetFiles,
+                            planFindings: findingsText,
+                            planPhases: parts,
+                            signal: controller.signal,
+                            onStatusUpdate: (st) => {
+                                this.processManager.updateDescription(processId, st);
+                                this.updateGeneratingState();
+                            }
+                        })
+                        : {
+                            verifiedTargetFiles: resolvedTargetFiles,
+                            finalCheckNotice: `> 🛡️ **LIBRARIAN FINAL CHECK**: ${resolvedTargetFiles.length} file(s) verified and locked into active context [C].`,
+                            isSufficient: resolvedTargetFiles.length > 0
+                        };
+
+                    const verifiedFiles = finalCheckResult.verifiedTargetFiles.length > 0
+                        ? finalCheckResult.verifiedTargetFiles
+                        : resolvedTargetFiles;
+
+                    this.recordCurrentPromptFiles(verifiedFiles);
+                    await this.addFilesToDiscussionContext(verifiedFiles);
+
+                    if (this._activeMultiPartPlan?.parts?.[0]) {
+                        this._activeMultiPartPlan.parts[0].editFiles = [...verifiedFiles];
+                    }
+
+                    const phasesXml = parts.map((p, idx) => {
+                        const targetList = idx === 0 && verifiedFiles.length > 0 ? verifiedFiles : (p.editFiles || []);
+                        const filesListStr = targetList.map((f: string) => `            ${f}`).join('\n');
+                        const instStr = (p.partInstruction || 'Implement the required modifications for this phase.').trim();
+                        return `    <phase id="${idx + 1}">\n        <instruction>${instStr}</instruction>\n        <files_list>\n${filesListStr}\n        </files_list>\n    </phase>`;
+                    }).join('\n');
+
+                    const planXmlBlock = `<plan>\n    <findings>\n${findingsText || 'Codebase dependencies and architecture analyzed.'}\n    </findings>\n${phasesXml}\n</plan>\n\n`;
+
+                    currentFullResponseBuffer = planXmlBlock;
+                    fullResponse = currentFullResponseBuffer;
+                    await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer, false);
+                    this._panel.webview.postMessage({
+                        command: 'syncStreamBuffer',
+                        id: assistantMessageId,
+                        buffer: currentFullResponseBuffer
+                    });
+
+                    // Inject the plan directive AND Librarian Final Check Certificate into Coder's prompt history
+                    history.push({
+                        role: 'user',
+                        content: `### 📋 ARCHITECTURAL PLAN (LEAD LIBRARIAN)\n${planXmlBlock}\n\n${finalCheckResult.finalCheckNotice}`
+                    });
+
+                    this.log(`Librarian master evaluation & final check complete (${parts.length} phase(s), ${verifiedFiles.length} file(s) verified & locked into [C]).`);
+                } catch (libErr: any) {
+                    this.log(`Librarian master evaluation warning: ${libErr.message}`, 'WARN');
+                    // Guarantee: Restore original active files on warning
+                    if (originalActiveFiles.length > 0) {
+                        await this.unmuteFiles(originalActiveFiles);
+                        await this._contextManager.getContextStateProvider()?.addFilesToContext(originalActiveFiles);
+                    }
+                    currentFullResponseBuffer = `⚠️ **Librarian Notice**: ${libErr.message}\n\n`;
+                    await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer, false);
                 }
-                if (libRes.mutedFiles?.length) await this.muteFiles(libRes.mutedFiles);
-                if (libRes.addedFiles?.length) await this._contextManager.getContextStateProvider()?.addFilesToContext(libRes.addedFiles);
-                await this.upgradeLibrarianFindings(libRes, rawUserPromptText, libRes.advice || libRes.rationale || '');
-
-                if (libRes.multiPartPlan) {
-                    this._activeMultiPartPlan = libRes.multiPartPlan;
-                }
-
-                let combinedFindings = (libRes.advice || "").trim();
-                if (libRes.governorReport && !combinedFindings.includes(libRes.governorReport)) {
-                    combinedFindings = combinedFindings ? `${combinedFindings}\n\n${libRes.governorReport}` : libRes.governorReport;
-                }
-                if (!combinedFindings && libRes.rationale) {
-                    combinedFindings = libRes.rationale;
-                }
-                const cleanFindings = combinedFindings.replace(/^(?:Librarian agent report:\s*)+/gi, '').trim();
-
-                const signaturesBlock = (libRes.signatures && libRes.signatures.trim().length > 10 && !cleanFindings.includes(libRes.signatures))
-                    ? `\n### 📋 Reference Contracts & Signatures\n${libRes.signatures}\n`
-                    : '';
-
-                const signaturesSection = signaturesBlock ? `${signaturesBlock.trim()}\n\n` : '';
-                const targetFilesSection = libRes.keptFiles.length > 0
-                    ? `### 📂 Target Files [C]\n${libRes.keptFiles.map(f => `- \`${f}\``).join('\n')}\n\n`
-                    : '';
-
-                librarianMasterReport = `### 🏛️ Architecture Findings
-${cleanFindings || 'Codebase dependencies analyzed.'}
-
-${signaturesSection}${targetFilesSection}> 🎯 **Instructions for Implementation**:
-> Implement the code modifications using \`<file path="..." action="write|patch|update_symbol">\` according to the findings above.`;
-
-                // Compress the Librarian's findings into a single collapsible card at the top of the message
-                const librarianCollapsedHtml = `
-<details class="processing-block librarian-compressed-directive" style="border-left: 3px solid var(--vscode-charts-orange); background: rgba(214, 122, 13, 0.08); margin-bottom: 12px;">
-<summary style="color: var(--vscode-charts-orange); font-weight: bold; cursor: pointer;">
-    <i class="codicon codicon-library"></i> <span>Librarian Directive (Findings &amp; Instructions)</span>
-</summary>
-<div class="processing-body" style="padding: 10px 14px; font-size: 11.5px; line-height: 1.5;">
-
-${librarianMasterReport}
-
-</div>
-</details>\n\n`;
-
-                currentFullResponseBuffer = librarianCollapsedHtml;
-                fullResponse = currentFullResponseBuffer;
-                await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer, false);
-                this._panel.webview.postMessage({
-                    command: 'syncStreamBuffer',
-                    id: assistantMessageId,
-                    buffer: currentFullResponseBuffer
-                });
-
-                const libDirectiveText = `### 📋 ARCHITECTURAL DIRECTIVE & PLAN (FROM LEAD LIBRARIAN)
-${librarianMasterReport}
-
----
-🎯 **INSTRUCTION TO CODER**:
-Proceed directly to code implementation using standard \`<file path="..." action="write|patch|update_symbol">\` tags for the target files above.`;
-
-                // Present to Coder prompt history only (without adding a separate discussion message bubble!)
-                history.push({
-                    role: 'user',
-                    content: libDirectiveText
-                });
-
-                this.log(`Librarian master evaluation complete (${libRes.keptFiles.length} edit files loaded, ${libRes.mutedFiles.length} reference files muted).`);
-            } catch (libErr: any) {
-                this.log(`Librarian master evaluation warning: ${libErr.message}`, 'WARN');
-                currentFullResponseBuffer = `⚠️ **Librarian Notice**: ${libErr.message}\n\n`;
-                await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer, false);
             }
         }
 
@@ -4574,23 +4752,20 @@ Proceed directly to code implementation using standard \`<file path="..." action
 
         // Pre-generation context reduction pipeline (bypassed in Fast Mode to prevent background LLM calls)
         if (!isFastMode) {
+            const activePhaseTargetFiles = this._activeMultiPartPlan?.parts?.[this._activeMultiPartPlan.currentPartIndex]?.editFiles || [];
             const budgetOptimization = await this.enforceContextBudgetProtection(
                 contextData,
                 rawUserPromptText,
                 targetModel,
                 controller.signal,
-                history
+                history,
+                activePhaseTargetFiles
             );
             contextData = budgetOptimization.contextData;
             history = budgetOptimization.history;
         }
 
         const isAssistantMode = !this._discussionCapabilities.agentMode && !this._discussionCapabilities.dynamicMode;
-
-        const memManager = (this as any).projectMemoryManager || this.agentManager?.projectMemoryManager;
-        const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && memManager)
-            ? await memManager.getFormattedMemoryBlock(typeof message.content === 'string' ? message.content : '')
-            : "";
 
         const baseInstructions = await getProcessedSystemPrompt(
             'chat', 
@@ -4725,13 +4900,10 @@ The user has CONFIRMED and VALIDATED your plan.
                   completedDynamicActions.map((a, i) => `${i+1}. ${a}`).join('\n')
                 : "";
 
-            const profileId = this._discussionCapabilities.responseProfileId || 'balanced';
-            const activeProfile = (config.get('responseProfiles') || []).find((p: any) => p.id === profileId) || { name: 'Balanced', systemPrompt: '' };
-
             const finalBaseInstructions = await getProcessedSystemPrompt(
                 'chat', 
                 this._discussionCapabilities, 
-                personaContent + `\n\n${activeProfile.systemPrompt}` + (scratchpadBlock ? `\n\n${scratchpadBlock}` : ''), 
+                personaContent + (scratchpadBlock ? `\n\n${scratchpadBlock}` : ''), 
                 undefined, 
                 forceFullCode, 
                 { 
@@ -4751,14 +4923,9 @@ The user has CONFIRMED and VALIDATED your plan.
             this.processManager.updateDescription(processId, isFastMode ? "Coding..." : `Assistant Turn ${currentTurnIndex}: Reasoning & Evaluating...`);
             this.updateGeneratingState();
 
-            let streamTurnController = new AbortController();
-            let abortedByLibrarianTag = false;
-            const onParentAbort = () => streamTurnController.abort();
-            controller.signal.addEventListener('abort', onParentAbort);
-
             try {
                 await this._lollmsAPI.sendChat(loopMessages, (chunk) => {
-                    if (controller?.signal.aborted || streamTurnController.signal.aborted) return;
+                    if (controller?.signal.aborted) return;
                     turnResponse += chunk;
                     currentFullResponseBuffer += chunk;
                     fullResponse = currentFullResponseBuffer;
@@ -4768,450 +4935,18 @@ The user has CONFIRMED and VALIDATED your plan.
                         id: assistantMessageId, 
                         chunk: chunk 
                     });
-
-                    if (/<\/(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)>/i.test(turnResponse)) {
-                        abortedByLibrarianTag = true;
-                        streamTurnController.abort();
-                    }
-                }, streamTurnController.signal, this._currentDiscussion!.model, {
+                }, controller.signal, this._currentDiscussion!.model, {
                     capabilities: this._discussionCapabilities,
                     temperature: this._discussionCapabilities.enableTemperature ? this._discussionCapabilities.temperature : undefined,
                     maxTokens: this._discussionCapabilities.enableMaxTokens ? this._discussionCapabilities.maxTokens : undefined
                 });
             } catch (err: any) {
-                if (err.name !== 'AbortError' && !abortedByLibrarianTag) {
+                if (err.name !== 'AbortError') {
                     throw err;
                 }
-            } finally {
-                controller.signal.removeEventListener('abort', onParentAbort);
             }
 
             if (controller?.signal.aborted) return;
-
-            // 1. Detect Librarian Session Dispatch (Ignored in Fast Mode where Worker has no concept of Librarian)
-            const libTagRegex = /<(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)\b[^>]*>([\s\S]*?)(?:<\/(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)>|$)/i;
-            const libMatch = !isFastMode ? turnResponse.match(libTagRegex) : null;
-            const isLibrarianOffMatch = !isFastMode ? turnResponse.match(/<librarian_off\b[^>]*>([\s\S]*?)<\/librarian_off>/i) : null;
-            const hasLibrarianOff = !isFastMode && Boolean(isLibrarianOffMatch || turnResponse.includes('<librarian_off/>') || turnResponse.includes('<librarian_off>'));
-
-            if (libMatch) {
-                const libQuery = (libMatch[1] || "").trim();
-
-                librarianTurnsCount++;
-                if (librarianTurnsCount > maxLibrarianTurns) {
-                    this.log(`[Assistant Workflow] Librarian debate turn limit reached (${librarianTurnsCount - 1}/${maxLibrarianTurns}). Enforcing final handover.`, 'WARN');
-                    const turnLimitNotice: ChatMessage = {
-                        id: 'turn_limit_notice_' + Date.now(),
-                        role: 'user',
-                        personalityName: '🛡️ Debate Guard',
-                        content: `Notice: You have reached the maximum allowed consultation turns with the Librarian (${maxLibrarianTurns} turns).
-You must now emit \`<librarian_off>\` specifying your target files and output your architecture plan and code implementation. Do NOT invoke \`<librarian>\` again.`,
-                        timestamp: Date.now()
-                    };
-                    loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
-                    loopMessages.push(turnLimitNotice);
-                    loopMessages = ensureStrictAlternatingRoles(loopMessages);
-
-                    await runTurn();
-                    return;
-                }
-
-                // Fast-Path Check: if requested files or current context files are already active [C], bypass directly to implementation
-                const isInvestigativeQuery = /how|why|verify|investigate|search|grep|trace|calls|imports|contracts|mechanics|dependencies|where|explain|find/i.test(libQuery);
-                const mentionedInLibQuery = [...libQuery.matchAll(/([a-zA-Z0-9_.\-\/]+\.[a-zA-Z0-9_\-]+)/g)]
-                    .map(m => m[1].trim())
-                    .filter(p => isValidFilePath(p));
-
-                const provider = this._contextManager.getContextStateProvider();
-                const includedFiles = provider ? provider.getIncludedFiles().map(f => f.path.replace(/\\/g, '/').toLowerCase()) : [];
-                const mutedFiles = (this._currentDiscussion?.mutedFiles || []).map(m => m.replace(/\\/g, '/').toLowerCase());
-
-                const areAllMentionedAlreadyLoaded = mentionedInLibQuery.length > 0 && mentionedInLibQuery.every(p => {
-                    const cleanP = p.replace(/\\/g, '/').toLowerCase();
-                    return includedFiles.some(inc => inc === cleanP || inc.endsWith('/' + cleanP) || cleanP.endsWith('/' + inc)) &&
-                           !mutedFiles.some(m => m === cleanP || m.endsWith('/' + cleanP) || cleanP.endsWith('/' + m));
-                });
-
-                const hasLoadedContextFiles = includedFiles.some(inc => !mutedFiles.includes(inc));
-
-                if (areAllMentionedAlreadyLoaded || (!isInvestigativeQuery && hasLoadedContextFiles && mentionedInLibQuery.length === 0 && libQuery.length < 250)) {
-                    this.log(`[Fast-Path] Worker called Librarian for files already active [C]. Bypassing directly to implementation.`);
-                    const fastPathNotice: ChatMessage = {
-                        id: 'fastpath_notice_' + Date.now(),
-                        role: 'user',
-                        personalityName: '🛡️ Context Shield',
-                        content: `Notice: All required code files are ALREADY loaded in your active context with full source code ([C]).
-You already have everything needed. Proceed directly with your analysis, answer, and verified code implementation now using <file path="..." action="write|patch|update_symbol"> tags!`,
-                        timestamp: Date.now()
-                    };
-                    loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
-                    loopMessages.push(fastPathNotice);
-                    loopMessages = ensureStrictAlternatingRoles(loopMessages);
-
-                    await runTurn();
-                    return;
-                }
-
-                this.log(`[Assistant Workflow] Worker dispatched Librarian session (Round 2): "${libQuery.substring(0, 80)}..."`);
-
-                this.processManager.updateDescription(processId, "📚 Librarian: Scouting codebase & knowledge (Round 2)...");
-                this.updateGeneratingState();
-
-                // Append Round 2 section and stream live scouting tasks in-place inside the message buffer
-                const bufferBeforeRound2 = currentFullResponseBuffer;
-                const round2Divider = '\n\n---\n\n';
-                const round2LiveScout = `### 📚 **Lead Librarian: In-Turn Investigation (Round 2)**\n\n<div class="waiting-animation" style="display:flex; align-items:center; gap:8px; opacity:0.85; padding:6px 0;"><div class="spinner"></div> <span>Evaluating: "${libQuery.substring(0, 70)}..."</span></div>`;
-                await this.updateMessageContent(assistantMessageId, bufferBeforeRound2 + round2Divider + round2LiveScout, false);
-
-                try {
-                    const libRes = await ContextLibrarian.filterFilesByPrompt({
-                        lollmsAPI: this._lollmsAPI,
-                        contextManager: this._contextManager,
-                        discussionManager: this._discussionManager,
-                        currentDiscussion: this._currentDiscussion!,
-                        targetModel: this._currentDiscussion?.model || this._lollmsAPI.getModelName(),
-                        prompt: libQuery || rawUserPromptText,
-                        userPrompt: rawUserPromptText,
-                        history: this._currentDiscussion?.messages || [],
-                        signal: controller.signal,
-                        currentMutedFiles: this._currentDiscussion?.mutedFiles || [],
-                        pruneMsgId: assistantMessageId,
-                        projectMemoryManager: this.projectMemoryManager,
-                        ignoreContextSize: this._discussionCapabilities.ignoreContextSize === true,
-                        onUpdateMessage: async (_msgId, liveContent) => {
-                            await this.updateMessageContent(assistantMessageId, bufferBeforeRound2 + round2Divider + liveContent, false);
-                        },
-                        onStatusUpdate: (status) => {
-                            this.processManager.updateDescription(processId, status);
-                            this.updateGeneratingState();
-                        }
-                    });
-
-                    if (libRes.keptFiles?.length) {
-                        await this.unmuteFiles(libRes.keptFiles);
-                        await this._contextManager.getContextStateProvider()?.addFilesToContext(libRes.keptFiles);
-                        this.recordCurrentPromptFiles(libRes.keptFiles);
-                    }
-                    if (libRes.mutedFiles?.length) await this.muteFiles(libRes.mutedFiles);
-                    if (libRes.addedFiles?.length) await this._contextManager.getContextStateProvider()?.addFilesToContext(libRes.addedFiles);
-                    await this.upgradeLibrarianFindings(libRes, libQuery, libRes.advice || libRes.rationale || '');
-
-                    if (libRes.multiPartPlan) {
-                        this._activeMultiPartPlan = libRes.multiPartPlan;
-                    }
-
-                    let combinedFindings = (libRes.advice || "").trim();
-                    if (libRes.governorReport && !combinedFindings.includes(libRes.governorReport)) {
-                        combinedFindings = combinedFindings ? `${combinedFindings}\n\n${libRes.governorReport}` : libRes.governorReport;
-                    }
-                    if (!combinedFindings && libRes.rationale) {
-                        combinedFindings = libRes.rationale;
-                    }
-                    const cleanFindings = combinedFindings.replace(/^(?:Librarian agent report:\s*)+/gi, '').trim();
-                    const activeKeptFiles = (libRes.keptFiles || []).map((f: string) => `\`${f}\``).join(', ') || 'None';
-
-                    let libReport = `### 🏛️ Architecture Findings (Round 2)
-${cleanFindings || 'Codebase dependencies and module interactions analyzed.'}
-
-${libRes.signatures ? `### 📋 Reference Contracts & Signatures\n${libRes.signatures}\n\n` : ''}### 📂 Target Files [C]
-${activeKeptFiles}
-
-> 🎯 **Instructions for Implementation**:
-> Deliver the verified code updates now using standard \`<file path="..." action="write|patch|update_symbol">\` tags.`;
-
-                    // Replace Round 2 live scouting with compressed findings collapsible 2
-                    const round2FindingsCard = `
-<details class="processing-block librarian-compressed-directive" style="border-left: 3px solid var(--vscode-charts-orange); background: rgba(214, 122, 13, 0.08); margin: 10px 0 14px 0;">
-<summary style="color: var(--vscode-charts-orange); font-weight: bold; cursor: pointer;">
-    <i class="codicon codicon-library"></i> <span>Librarian Directive 2 (Findings &amp; Instructions)</span>
-</summary>
-<div class="processing-body" style="padding: 10px 14px; font-size: 11.5px; line-height: 1.5;">
-
-${libReport}
-
-</div>
-</details>\n\n`;
-
-                    currentFullResponseBuffer = bufferBeforeRound2 + round2Divider + round2FindingsCard;
-                    fullResponse = currentFullResponseBuffer;
-                    await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer, false);
-                    this._panel.webview.postMessage({
-                        command: 'syncStreamBuffer',
-                        id: assistantMessageId,
-                        buffer: currentFullResponseBuffer
-                    });
-
-                    const libReportMsg: ChatMessage = {
-                        role: 'user',
-                        content: `### 📋 ARCHITECTURAL DIRECTIVE (ROUND 2)\n${libReport}\n\nProceed to implement the verified code modifications using standard \`<file path="..." action="write|patch|update_symbol">\` tags.`
-                    };
-
-                    currentContextPayload = await this._contextManager.getContextContent({
-                        importedSkillIds: importedIds,
-                        includeTree: true,
-                        leanMode: false,
-                        discussionId: this.discussionId,
-                        mutedFiles: this._currentDiscussion?.mutedFiles || [],
-                        modelName: targetModel,
-                        signal: controller.signal,
-                        capabilities: this._discussionCapabilities
-                    });
-
-                    loopMessages = buildLoopMessages(currentContextPayload, false);
-                    loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
-                    loopMessages.push(libReportMsg);
-                    loopMessages = ensureStrictAlternatingRoles(loopMessages);
-
-                    await runTurn();
-                    return;
-                } catch (libErr: any) {
-                    this.log(`Librarian consultation error: ${libErr.message}`, 'WARN');
-
-                    const mentioned = [...libQuery.matchAll(/([a-zA-Z0-9_.\-\/]+\.[a-zA-Z0-9_\-]+)/g)]
-                        .map(m => m[1].trim())
-                        .filter(p => isValidFilePath(p));
-
-                    if (mentioned.length > 0) {
-                        await this.unmuteFiles(mentioned);
-                        await this._contextManager.getContextStateProvider()?.addFilesToContext(mentioned);
-                    }
-
-                    currentContextPayload = await this._contextManager.getContextContent({
-                        importedSkillIds: importedIds,
-                        includeTree: true,
-                        leanMode: false,
-                        discussionId: this.discussionId,
-                        mutedFiles: this._currentDiscussion?.mutedFiles || [],
-                        modelName: targetModel,
-                        signal: controller.signal,
-                        capabilities: this._discussionCapabilities
-                    });
-
-                    loopMessages = buildLoopMessages(currentContextPayload, false);
-                    loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
-                    loopMessages.push({
-                        role: 'user',
-                        content: `Librarian consultation completed. All relevant files are now active with full content under 'LOADED FILE CONTENTS' [C]. Proceed directly to deliver the verified code updates using standard \`<file path="..." action="write|patch|update_symbol">\` tags now.`
-                    });
-                    loopMessages = ensureStrictAlternatingRoles(loopMessages);
-
-                    await runTurn();
-                    return;
-                }
-            }
-
-            // 2. Librarian Off target files verification & context shield
-            const isLibrarianOff = hasLibrarianOff && !libMatch;
-            if (isLibrarianOff) {
-                let plannedEditFiles: string[] = [];
-                if (isLibrarianOffMatch && isLibrarianOffMatch[1]) {
-                    plannedEditFiles = isLibrarianOffMatch[1]
-                        .split(/[\r\n,]+/)
-                        .map(f => f.trim().replace(/^['"`]|['"`]$/g, ''))
-                        .filter(f => f && !f.startsWith('<') && !f.startsWith('/'));
-                }
-
-                if (plannedEditFiles.length === 0) {
-                    const backticked = [...turnResponse.matchAll(/`([^`\n\r]+\.[a-zA-Z0-9_\-]+)`/g)]
-                        .map(m => m[1].trim())
-                        .filter(p => isValidFilePath(p));
-                    for (const bp of backticked) {
-                        if (!plannedEditFiles.includes(bp)) {
-                            plannedEditFiles.push(bp);
-                        }
-                    }
-                }
-
-                if (plannedEditFiles.length > 0) {
-                    const isFileLoadedAndUnmuted = (filePath: string) => {
-                        const clean = filePath.replace(/\\/g, '/').toLowerCase().trim();
-                        const isMuted = (this._currentDiscussion?.mutedFiles || []).some(m => {
-                            const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
-                            return cleanM === clean || clean.endsWith('/' + cleanM) || cleanM.endsWith('/' + clean);
-                        });
-                        if (isMuted) return false;
-                        const provider = this._contextManager.getContextStateProvider();
-                        const included = provider ? provider.getIncludedFiles() : [];
-                        return included.some(f => {
-                            const cleanF = f.path.replace(/\\/g, '/').toLowerCase().trim();
-                            return cleanF === clean || clean.endsWith('/' + cleanF) || cleanF.endsWith('/' + clean);
-                        });
-                    };
-
-                    const missingOrMutedFiles: string[] = [];
-                    for (const f of plannedEditFiles) {
-                        const resolution = await this._contextManager.resolveWorkspaceFromPath(f);
-                        if (resolution && !isFileLoadedAndUnmuted(resolution.relativePath)) {
-                            missingOrMutedFiles.push(resolution.relativePath);
-                        }
-                    }
-
-                    if (missingOrMutedFiles.length > 0) {
-                        this.log(`[Context Shield] Target edit files missing or muted in context: [${missingOrMutedFiles.join(', ')}]`, 'WARN');
-
-                        let missingTokens = 0;
-                        for (const mf of missingOrMutedFiles) {
-                            const cached = (this._contextManager as any)._fileContentCache?.get(mf);
-                            if (cached?.tokens) {
-                                missingTokens += cached.tokens;
-                            } else {
-                                const res = await this._contextManager.resolveWorkspaceFromPath(mf);
-                                if (res) {
-                                    try {
-                                        const stat = await vscode.workspace.fs.stat(res.uri);
-                                        missingTokens += Math.max(1, Math.ceil(stat.size / 3.5));
-                                    } catch {
-                                        missingTokens += 500;
-                                    }
-                                } else {
-                                    missingTokens += 500;
-                                }
-                            }
-                        }
-
-                        const maxTokens = this._currentDiscussion?.lastTokenMetrics?.contextSize || 128000;
-                        const targetPercent = this._discussionCapabilities.contextGovernorTargetThreshold ?? 70;
-                        const budgetThreshold = Math.round(maxTokens * (targetPercent / 100));
-                        const currentTotal = this._currentDiscussion?.lastTokenMetrics?.total || 0;
-
-                        const isUnlimitedContext = this._discussionCapabilities.ignoreContextSize === true;
-                        const wouldExceedBudget = !isUnlimitedContext && ((currentTotal + missingTokens > budgetThreshold) || (currentTotal + missingTokens > maxTokens * 0.95));
-
-                        if (wouldExceedBudget) {
-                            this.log(`[Context Shield] Adding missing files (~${missingTokens} tok) exceeds budget (${budgetThreshold} tok). Forwarding to Librarian...`, 'WARN');
-                            this.processManager.updateDescription(processId, "📚 Librarian: Resolving context budget overflow for edit files...");
-                            this.updateGeneratingState();
-
-                            const overflowQuery = `The worker intends to update: [${plannedEditFiles.join(', ')}]. However, adding the missing file(s) [${missingOrMutedFiles.join(', ')}] (~${missingTokens.toLocaleString()} tokens) crushes the context threshold budget (~${budgetThreshold.toLocaleString()} tokens).
-Please formulate a solution:
-1. Mute other non-essential reference files to make room for these edit files, OR
-2. Partition the task into sequential sub-tasks (<librarian_decision status="split_multi_part">).`;
-
-                            try {
-                                const libRes = await ContextLibrarian.filterFilesByPrompt({
-                                    lollmsAPI: this._lollmsAPI,
-                                    contextManager: this._contextManager,
-                                    discussionManager: this._discussionManager,
-                                    currentDiscussion: this._currentDiscussion!,
-                                    targetModel,
-                                    prompt: overflowQuery,
-                                    signal: controller.signal,
-                                    currentMutedFiles: this._currentDiscussion?.mutedFiles || [],
-                                    projectMemoryManager: this.projectMemoryManager,
-                                    ignoreContextSize: this._discussionCapabilities.ignoreContextSize === true,
-                                    onStatusUpdate: (status) => {
-                                        this.processManager.updateDescription(processId, status);
-                                        this.updateGeneratingState();
-                                    }
-                                });
-
-                                if (libRes.keptFiles?.length) await this.unmuteFiles(libRes.keptFiles);
-                                if (libRes.mutedFiles?.length) await this.muteFiles(libRes.mutedFiles);
-                                if (libRes.addedFiles?.length) await this._contextManager.getContextStateProvider()?.addFilesToContext(libRes.addedFiles);
-                                await this.upgradeLibrarianFindings(libRes, overflowQuery, libRes.advice || libRes.rationale || '');
-
-                                if (libRes.multiPartPlan) {
-                                    this._activeMultiPartPlan = libRes.multiPartPlan;
-                                }
-
-                                const cleanFindings = (libRes.advice || libRes.rationale || '').replace(/^(?:Librarian agent report:\s*)+/gi, '').trim();
-                                const activeKeptFiles = (libRes.keptFiles || []).map((f: string) => `\`${f}\``).join(', ') || 'None';
-                                let liberatedTokensCount = "0";
-                                try {
-                                    liberatedTokensCount = (typeof libRes.liberatedTokens === 'number' ? libRes.liberatedTokens : 0).toLocaleString();
-                                } catch {
-                                    liberatedTokensCount = String(libRes.liberatedTokens || 0);
-                                }
-
-                                let libReport = `Librarian agent report:
-### 🏛️ Codebase Architecture & System Mechanics
-${cleanFindings || 'Codebase dependencies and module interactions analyzed.'}
-
-${libRes.signatures ? `### 📋 Reference Contracts & Signatures\n${libRes.signatures}\n` : ''}
-### 📂 Context Grounding & Budget
-- **Active Files for Modification [C]**: ${activeKeptFiles}
-- **Tokens Liberated**: ~${liberatedTokensCount} tokens (reference files preserved at 0 tokens [M] in tree)
-${libRes.multiPartPlan ? `\n⚠️ **Task Partitioned (${libRes.multiPartPlan.totalParts} Phases)**: Files exceed budget. Phase 1 targets: ${libRes.multiPartPlan.parts[0].editFiles.map((f: string) => `\`${f}\``).join(', ')}.\n` : ''}
-> 💡 *Next Step*: Deliver the verified code updates using standard \`<file path="..." action="write|patch|update_symbol">\` tags now.`;
-
-                                const inTurnLibHtml = `\n\n<details class="processing-block librarian-compressed-directive" style="border-left: 3px solid var(--vscode-charts-orange); background: rgba(214, 122, 13, 0.08); margin: 8px 0;">
-<summary style="color: var(--vscode-charts-orange); font-weight: bold; cursor: pointer;">
-    <i class="codicon codicon-library"></i> <span>Librarian Directive (Findings &amp; Instructions)</span>
-</summary>
-<div class="processing-body" style="padding: 10px 14px; font-size: 11.5px; line-height: 1.5;">
-
-${libReport}
-
-</div>
-</details>\n\n`;
-
-                                currentFullResponseBuffer += inTurnLibHtml;
-                                fullResponse = currentFullResponseBuffer;
-                                await this.updateMessageContent(assistantMessageId, currentFullResponseBuffer, false);
-
-                                const libReportMsg: ChatMessage = {
-                                    role: 'user',
-                                    content: libReport
-                                };
-
-                                currentContextPayload = await this._contextManager.getContextContent({
-                                    importedSkillIds: importedIds,
-                                    includeTree: true,
-                                    leanMode: false,
-                                    discussionId: this.discussionId,
-                                    mutedFiles: this._currentDiscussion?.mutedFiles || [],
-                                    modelName: targetModel,
-                                    signal: controller.signal,
-                                    capabilities: this._discussionCapabilities
-                                });
-
-                                loopMessages = buildLoopMessages(currentContextPayload, false);
-                                loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
-                                loopMessages.push(libReportMsg);
-                                loopMessages = ensureStrictAlternatingRoles(loopMessages);
-
-                                await runTurn();
-                                return;
-                            } catch (libErr: any) {
-                                this.log(`Librarian overflow arbitration failed: ${libErr.message}`, 'WARN');
-                            }
-                        } else {
-                            this.log(`[Context Shield] Automatically unmuting and loading missing edit files: [${missingOrMutedFiles.join(', ')}]`);
-                            await this.unmuteFiles(missingOrMutedFiles);
-                            await this._contextManager.getContextStateProvider()?.addFilesToContext(missingOrMutedFiles);
-
-                            currentContextPayload = await this._contextManager.getContextContent({
-                                importedSkillIds: importedIds,
-                                includeTree: true,
-                                leanMode: false,
-                                discussionId: this.discussionId,
-                                mutedFiles: this._currentDiscussion?.mutedFiles || [],
-                                modelName: targetModel,
-                                signal: controller.signal,
-                                capabilities: this._discussionCapabilities
-                            });
-
-                            const feedbackMsg: ChatMessage = {
-                                role: 'user',
-                                content: `Librarian Verification Notice:
-The following file(s) you planned to update were missing or muted in context:
-${missingOrMutedFiles.map(f => `- \`${f}\``).join('\n')}
-
-They have been automatically loaded and unmuted with full source code ([C]).
-Review the actual code under 'LOADED FILE CONTENTS' and deliver your code implementation now.`
-                            };
-
-                            loopMessages = buildLoopMessages(currentContextPayload, false);
-                            loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
-                            loopMessages.push(feedbackMsg);
-                            loopMessages = ensureStrictAlternatingRoles(loopMessages);
-
-                            await runTurn();
-                            return;
-                        }
-                    }
-                }
-            }
 
             // 3. Post-stream parsing & execution
             // In FAST MODE: STRICT SINGLE SHOT! Do NOT execute tools or recurse.
@@ -5341,11 +5076,27 @@ Review the actual code under 'LOADED FILE CONTENTS' and deliver your code implem
                         } else if (action.tag === 'add_files_to_context' || action.tag === 'unmute_files') {
                             const filesToAdd = action.params.split(/[\s\r\n,]+/).map(f => f.trim().replace(/^['"]|['"]$/g, '')).filter(f => f && !f.startsWith('<'));
                             if (filesToAdd.length > 0) {
+                                const provider = this._contextManager.getContextStateProvider();
+                                const currentInc = provider ? provider.getIncludedFiles().map(fi => (typeof fi === 'string' ? fi : fi.path || '').replace(/\\/g, '/').toLowerCase()) : [];
+                                const currentMuted = (this._currentDiscussion?.mutedFiles || []).map(m => m.replace(/\\/g, '/').toLowerCase());
+
+                                const alreadyActive = filesToAdd.filter(f => {
+                                    const cf = f.replace(/\\/g, '/').toLowerCase();
+                                    return currentInc.some(inc => inc === cf || inc.endsWith('/' + cf)) && !currentMuted.some(m => m === cf || m.endsWith('/' + cf));
+                                });
+
                                 await this.unmuteFiles(filesToAdd);
                                 const added = await this._contextManager.getContextStateProvider()?.addFilesToContext(filesToAdd) || [];
-                                toolResult = `Success: Unmuted and loaded ${added.length} file(s) into context with full source code ([C]): [${filesToAdd.join(', ')}].`;
-                                isSuccess = true;
-                                completedDynamicActions.push(`Activated ${filesToAdd.length} files.`);
+
+                                if (alreadyActive.length === filesToAdd.length && shouldRunMasterLibrarian) {
+                                    toolResult = `⚠️ PROTOCOL REMINDER: All requested files [${filesToAdd.join(', ')}] were ALREADY verified and loaded in your active context [C] by the Lead Librarian's final check.\nDo NOT output <add_files_to_context> or <unmute_files>. Proceed DIRECTLY to code implementation using <file path="..." action="write|patch|update_symbol"> tags now.`;
+                                    isSuccess = true;
+                                    completedDynamicActions.push(`Attempted redundant file reload for [${filesToAdd.join(', ')}] (already in [C]).`);
+                                } else {
+                                    toolResult = `Success: Unmuted and loaded ${added.length} file(s) into context with full source code ([C]): [${filesToAdd.join(', ')}]. Now proceed directly to code implementation.`;
+                                    isSuccess = true;
+                                    completedDynamicActions.push(`Activated ${filesToAdd.length} files.`);
+                                }
                             } else {
                                 toolResult = "Notice: No file paths specified in unmute tag.";
                                 isSuccess = true;
@@ -5695,24 +5446,6 @@ Do NOT repeat the verbal summary. Output the code tags now.`
                     await runTurn();
                     return;
                 }
-
-                const hasLibrarianOffConcluded = isLibrarianOff || turnResponse.includes('Librarian Session Concluded');
-                const hasPendingTargetFiles = isLibrarianOffMatch && isLibrarianOffMatch[1] && isLibrarianOffMatch[1].trim().length > 0;
-
-                if (hasLibrarianOffConcluded && hasPendingTargetFiles && !turnHasCode && ghostRetriesCount < 2) {
-                    ghostRetriesCount++;
-                    this.log("[Assistant Workflow] Target files grounded via <librarian_off> but code was not emitted. Triggering automatic Stage 3 code generation pass...");
-
-                    loopMessages.push({ role: 'assistant', content: stripThinkingTags(turnResponse).trim() });
-                    loopMessages.push({
-                        role: 'user',
-                        content: `Grounding verified. Proceed immediately to Stage 3: Output the complete verified code updates using standard \`<file path="..." action="write|patch|update_symbol">\` XML tags for each target file. Do not repeat the analysis text. Emit the code blocks now.`
-                    });
-                    loopMessages = ensureStrictAlternatingRoles(loopMessages);
-
-                    await runTurn();
-                    return;
-                }
                 
                 const finalAssistantMessage: ChatMessage = {
                     id: assistantMessageId,
@@ -5787,10 +5520,7 @@ Do NOT repeat the verbal summary. Output the code tags now.`
 
                 this.log(`[MultiSteps_TASK] Concatenating Phase ${nextPartIdx + 1}/${totalParts} into message ${assistantMessageId}...`);
 
-                // 1. Context rotation
-                if (prevPhase?.editFiles?.length) {
-                    await this.muteFiles(prevPhase.editFiles);
-                }
+                // 1. Next Phase Files Selection (Load without unloading prior phase files)
                 if (nextPhase?.editFiles?.length) {
                     await this.unmuteFiles(nextPhase.editFiles);
                     await this.addFilesToDiscussionContext(nextPhase.editFiles);
@@ -5842,7 +5572,7 @@ Objective: ${nextPhase.partInstruction || rawUserPromptText}`;
                         const cleanPhaseFindings = (phaseLibRes.advice || phaseLibRes.rationale || nextPhase.partInstruction || '').trim();
                         const phaseSigs = phaseLibRes.signatures ? `\n### 📋 Reference Contracts & Signatures\n${phaseLibRes.signatures}\n\n` : '';
                         const targetFilesList = phaseLibRes.keptFiles.length > 0 ? phaseLibRes.keptFiles : (nextPhase.editFiles || []);
-                        const phaseTargets = `### 📂 Target Files [C]\n${targetFilesList.map((f: string) => `- \`${f}\``).join('\n')}\n\n`;
+                        const phaseTargets = `### 📂 Target Files [C]\n${targetFilesList.map((f: string) => '- `' + f + '`').join('\n')}\n\n`;
 
                         phaseFindings = `### 🏛️ Architecture Findings (Phase ${nextPartIdx + 1} of ${totalParts})
 ${cleanPhaseFindings}
@@ -5856,15 +5586,11 @@ ${phaseSigs}${phaseTargets}> 🎯 **Instructions for Implementation**:
 
                 // 3. Replace the live scouting block with the compressed Phase findings card
                 const phaseCardHtml = `\n\n---\n### 🐾 Phase ${nextPartIdx + 1} of ${totalParts}
-<details class="processing-block librarian-compressed-directive" style="border-left: 3px solid var(--vscode-charts-orange); background: rgba(214, 122, 13, 0.08); margin: 10px 0 14px 0;">
-<summary style="color: var(--vscode-charts-orange); font-weight: bold; cursor: pointer;">
+<details open class="processing-block librarian-compressed-directive" style="border-left: 3px solid var(--vscode-charts-orange); background: rgba(214, 122, 13, 0.08); margin: 8px 0 12px 0; border-radius: 6px;">
+<summary style="color: var(--vscode-charts-orange); font-weight: bold; cursor: pointer; padding: 6px 10px; display: flex; align-items: center; gap: 6px;">
     <i class="codicon codicon-library"></i> <span>Librarian Directive (Phase ${nextPartIdx + 1} Findings &amp; Instructions)</span>
 </summary>
-<div class="processing-body" style="padding: 10px 14px; font-size: 11.5px; line-height: 1.5;">
-
-${phaseFindings}
-
-</div>
+<div class="processing-body markdown-body" style="padding: 6px 14px 10px 14px; font-size: 11.5px; line-height: 1.5; white-space: normal; min-height: 90px; max-height: 500px; overflow-y: auto;">${phaseFindings.trim()}</div>
 </details>\n\n`;
 
                 currentFullResponseBuffer += phaseCardHtml;
@@ -5891,14 +5617,10 @@ ${phaseFindings}
                 this.processManager.updateDescription(processId, `Phase ${nextPartIdx + 1} of ${totalParts}: Implementing code...`);
                 this.updateGeneratingState();
 
+                const targetFilesJoined = (nextPhase.editFiles || []).map((f: string) => '`' + f + '`').join(', ');
                 const stepUserPrompt: ChatMessage = {
                     role: 'user',
-                    content: `### 🐾 Phase ${nextPartIdx + 1} of ${totalParts} Implementation
-Follow the Lead Librarian's instructions for this phase:
-${phaseFindings}
-
-Target files: ${nextPhase.editFiles.map(f => `\`${f}\``).join(', ')}
-Output the code modifications inside \`<file path="..." action="write|patch|update_symbol">\` tags.`
+                    content: `### 🐾 Phase ${nextPartIdx + 1} of ${totalParts} Implementation\nFollow the Lead Librarian's instructions for this phase:\n${phaseFindings}\n\nTarget files: ${targetFilesJoined}\nOutput the code modifications inside <file path="..." action="write|patch|update_symbol"> tags.`
                 };
 
                 const phaseMessages = buildLoopMessages(currentContextPayload, false);
@@ -6006,25 +5728,55 @@ Output the code modifications inside \`<file path="..." action="write|patch|upda
                 await this.loadDiscussion();
             }
         } else {
-            this.log(`Message delivery failed: ${error.message}`, 'ERROR');
+            const errorDetails = error?.stack || error?.message || String(error);
+            this.log(`Message delivery failed: ${error.message}\nStack: ${errorDetails}`, 'ERROR');
+            Logger.error(`Message delivery failed: ${error.message}`, error);
 
-            const errorMessage = `### 🔌 Connection Error
-Lollms could not complete the request to \`${(this._lollmsAPI as any).config.apiUrl}\`.
+            const stackBlock = error?.stack ? `\n\n<details class="processing-block"><summary><i class="codicon codicon-bug"></i> Diagnostic Details (Stack Trace)</summary><div class="processing-body"><pre style="margin:0; padding:8px; font-family:var(--vscode-editor-font-family); font-size:10.5px; white-space:pre-wrap;">${error.stack}</pre></div></details>` : '';
 
-**Reason:** ${error.message}
+            const isConnectionRefused = error?.code === 'ECONNREFUSED' || error?.message?.includes('ECONNREFUSED');
+            const errorTitle = isConnectionRefused ? '🔌 Connection Error' : '⚠️ Execution Error';
 
-*Please check if your server is running and try again.*`;
+            const errorMessage = `### ${errorTitle}
+${isConnectionRefused ? `Lollms could not complete the request to \`${(this._lollmsAPI as any).config.apiUrl}\`.` : `An error occurred while preparing or executing the request.`}
 
+**Reason:** ${error.message}${stackBlock}
+
+*${isConnectionRefused ? 'Please check if your server is running and try again.' : 'Check the diagnostic details above or check if your model is configured.'}*`;
+
+            // CRITICAL: Do NOT overwrite the current assistant message!
+            // If the current assistant message has content (e.g. librarian findings/plan or partial text), finalize and preserve it.
             if (assistantMessageId) {
-                await this.updateMessageContent(assistantMessageId, errorMessage);
-            } else {
-                await this.addMessageToDiscussion({ 
-                    id: 'error_' + Date.now(),
-                    role: 'system', 
-                    content: errorMessage,
-                    timestamp: Date.now()
-                });
+                const targetMsg = this._currentDiscussion?.messages.find(m => m.id === assistantMessageId);
+                const hasContent = targetMsg && typeof targetMsg.content === 'string' && targetMsg.content.trim().length > 0;
+                if (hasContent) {
+                    await this.updateMessageContent(assistantMessageId, targetMsg.content, true);
+                    if (!this._isDisposed && this._panel.webview) {
+                        this._panel.webview.postMessage({
+                            command: 'finalizeMessage',
+                            id: assistantMessageId,
+                            fullContent: targetMsg.content
+                        });
+                    }
+                } else {
+                    // Remove empty assistant placeholder from discussion and webview so it doesn't linger
+                    const idx = this._currentDiscussion?.messages.findIndex(m => m.id === assistantMessageId) ?? -1;
+                    if (idx !== -1) {
+                        this._currentDiscussion!.messages.splice(idx, 1);
+                    }
+                    if (!this._isDisposed && this._panel.webview) {
+                        this._panel.webview.postMessage({ command: 'removeMessage', messageId: assistantMessageId });
+                    }
+                }
             }
+
+            // Always add the error in a separate system message
+            await this.addMessageToDiscussion({ 
+                id: 'error_' + Date.now(),
+                role: 'system', 
+                content: errorMessage,
+                timestamp: Date.now()
+            });
         }
     } finally { 
         ChatPanel.activeGenerations.delete(this.discussionId); 
@@ -6541,6 +6293,7 @@ ${targetContent}
           initialDebugCmd = 'python -u main.py';
       }
 
+      const isFast = this._discussionCapabilities.fastMode !== false;
       const isAssistant = !this._discussionCapabilities.agentMode;
 
       const commandInput = await vscode.window.showInputBox({
@@ -7287,6 +7040,9 @@ ${res.output || '(No output recorded)'}
           }
 
           this._currentDiscussion.messages.push(message);
+          if (this._currentDiscussion.llmHistory) {
+              this._currentDiscussion.llmHistory.push(message);
+          }
           if (!this._currentDiscussion.id.startsWith('temp-')) {
               await this._discussionManager.saveDiscussion(this._currentDiscussion);
           }
@@ -7319,6 +7075,7 @@ ${res.output || '(No output recorded)'}
   
   public dispose() {
     this._isDisposed = true;
+    ChatPanel.isBatchApplying = false;
 
     // Clear any active context and token calculation timeouts immediately to prevent disposed webview crashes
     if ((this as any)._tokenDebounceTimeout) {
@@ -7330,6 +7087,11 @@ ${res.output || '(No output recorded)'}
         this._tokenAbortController = null;
     }
 
+    if (this._activeRepairController) {
+        this._activeRepairController.abort();
+        this._activeRepairController = null;
+    }
+
     this._activeMultiPartPlan = undefined;
 
     // Unregister any active background loading tasks to release the Extension Host thread instantly
@@ -7337,16 +7099,21 @@ ${res.output || '(No output recorded)'}
         this.processManager.cancelForDiscussion(this.discussionId);
     }
 
-    ChatPanel.currentPanel = undefined;
+    ChatPanel.activeGenerations.delete(this.discussionId);
     ChatPanel.panels.delete(this.discussionId);
+    if (ChatPanel.currentPanel === this) {
+        ChatPanel.currentPanel = undefined;
+    }
+
+    // Release memory buffers immediately
+    this._executionLogs = [];
+    this.chatHistory = [];
 
     if (this._panel) {
         try {
             this._panel.dispose();
         } catch (e) {}
     }
-
-    while (this._executionLogs.length) { this._executionLogs.pop(); }
   }
   
 private _setWebviewMessageListener(webview: vscode.Webview) {
@@ -7457,7 +7224,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         ChatPanel.isBatchApplying = true;
                         try {
                             for (let i = 0; i < changesBatch.length; i++) {
-                                if (applyCtrl.signal.aborted) {
+                                if (applyCtrl.signal.aborted || !ChatPanel.isBatchApplying) {
                                     this.log("Batch apply aborted by user.");
                                     break;
                                 }
@@ -7846,6 +7613,31 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     });
                 }
                 break;
+            case 'executeShowSymbol':
+                {
+                    const { target, symbol, path: filePath, reprompt } = message;
+                    const { showSymbolTool } = require('../../tools/builtins/showSymbol');
+                    const env = {
+                        contextManager: this._contextManager,
+                        lollmsApi: this._lollmsAPI,
+                        workspaceRoot: vscode.workspace.workspaceFolders?.[0],
+                        currentPlan: null
+                    };
+                    const res = await showSymbolTool.execute({ target, symbol, path: filePath }, env as any, new AbortController().signal);
+                    if (reprompt) {
+                        await this.sendMessage({
+                            role: 'user',
+                            content: `Here is the requested symbol implementation code:\n\n${res.output}\n\nPlease proceed with your task.`
+                        });
+                    } else {
+                        await this.addMessageToDiscussion({
+                            role: 'system',
+                            content: res.output,
+                            skipInPrompt: false
+                        });
+                    }
+                }
+                break;
             case 'peekFilesAndCopy':
                 {
                     const filesToPeek = Array.isArray(message.files) ? message.files : [];
@@ -7906,21 +7698,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             } else if (action.type === 'unmute') {
                                 const count = await this.unmuteFiles(action.payload);
                                 resultsLog.push(`#### ✅ Unmuted Files: [${action.payload.join(', ')}] (${count} files reactivated with full content)`);
-                            } else if (action.type === 'librarian') {
-                                const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-                                const libRes = await ContextLibrarian.filterFilesByPrompt({
-                                    lollmsAPI: this._lollmsAPI,
-                                    contextManager: this._contextManager,
-                                    discussionManager: this._discussionManager,
-                                    currentDiscussion: this._currentDiscussion!,
-                                    targetModel,
-                                    prompt: action.payload,
-                                    signal: new AbortController().signal
-                                });
-                                if (libRes.keptFiles?.length) await this.unmuteFiles(libRes.keptFiles);
-                                if (libRes.mutedFiles?.length) await this.muteFiles(libRes.mutedFiles);
-                                if (libRes.addedFiles?.length) await this._contextManager.getContextStateProvider()?.addFilesToContext(libRes.addedFiles);
-                                resultsLog.push(`#### ✅ Librarian Selection Applied\n- Loaded for patching [C]: [${libRes.keptFiles.join(', ') || 'None'}]\n- Muted for reference [M]: [${libRes.mutedFiles.join(', ') || 'None'}]\n- Findings: ${libRes.rationale}`);
+
                             } else if (action.type === 'tool') {
                                 const toolDef = this.agentManager.getTools().find(t => t.name === action.payload.name);
                                 if (toolDef) {
@@ -8041,7 +7819,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                                     // Trigger the next turn immediately with fresh context
                                     await this.sendMessage({
                                         role: 'user',
-                                        content: `I have added the requested files to context. Please proceed with the analysis.`
+                                        content: `I have added the requested files to context. Please continue.`
                                     });
                                 } else {
                                     // Silent background sync to ensure alignment with other elements (briefing, history)
@@ -8343,6 +8121,9 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
             // to ensure files are treated as discussion attachments.
             case 'requestAddExternalFile':
                 await this.handleRequestAddExternalFile();
+                break;
+            case 'requestAddExternalFileLink':
+                await this.handleRequestAddExternalFileLink();
                 break;
             case 'requestAddDiagramToContext':
                 {
@@ -8873,7 +8654,8 @@ ${reportBlock}
                     if (caller === 'wizard') {
                         webview.postMessage({
                             command: 'governorWizardSelectionApplied',
-                            mutedFiles: mutedFiles || []
+                            mutedFiles: mutedFiles || [],
+                            addedFiles: addedFiles || []
                         });
                     } else if (this._currentDiscussion) {
                         this._currentDiscussion.mutedFiles = Array.isArray(mutedFiles) ? [...mutedFiles] : [];
@@ -8942,20 +8724,13 @@ ${reportBlock}
                 break;
             case 'toggleMuteFile':
                 if (this._currentDiscussion && message.path) {
+                    const { arePathsEqual } = require('../../utils');
                     if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
                     const targetPath = message.path.replace(/\\/g, '/').trim();
-                    const isMuted = this._currentDiscussion.mutedFiles.some(p => {
-                        const cleanP = p.replace(/\\/g, '/').toLowerCase();
-                        const cleanT = targetPath.toLowerCase();
-                        return cleanP === cleanT || cleanP.endsWith('/' + cleanT) || cleanT.endsWith('/' + cleanP);
-                    });
+                    const isMuted = this._currentDiscussion.mutedFiles.some(p => arePathsEqual(p, targetPath));
 
                     if (isMuted) {
-                        this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(p => {
-                            const cleanP = p.replace(/\\/g, '/').toLowerCase();
-                            const cleanT = targetPath.toLowerCase();
-                            return !(cleanP === cleanT || cleanP.endsWith('/' + cleanT) || cleanT.endsWith('/' + cleanP));
-                        });
+                        this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(p => !arePathsEqual(p, targetPath));
                         vscode.window.showInformationMessage(`Reactivated "${path.basename(targetPath)}" for this discussion.`);
                     } else {
                         this._currentDiscussion.mutedFiles.push(targetPath);
@@ -9041,7 +8816,7 @@ ${reportBlock}
                     if (message.reprompt) {
                         await this.sendMessage({
                             role: 'user',
-                            content: `I have unmuted the requested file(s): [${message.paths.join(', ')}]. Their full contents are now active in your context. Please proceed with your analysis or code implementation.`
+                            content: `I have unmuted the requested file(s): [${message.paths.join(', ')}]. Their full contents are now active in your context. Please continue.`
                         });
                     }
                 }
@@ -9519,36 +9294,16 @@ Task:
                 if (this._currentDiscussion) {
                     const isInterruption = message.isInterruption === true;
                     this._activeMultiPartPlan = undefined;
+                    ChatPanel.isBatchApplying = false; // Immediately kill batch apply operations
 
-                    // Finalize any active generation in progress so its buffer is properly rendered
-                    const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
-                    if (activeGen && activeGen.buffer.trim()) {
-                        let stoppedBuffer = activeGen.buffer;
-                        const openFiles = (stoppedBuffer.match(/<file\b[^>]*>/gi) || []).length;
-                        const closeFiles = (stoppedBuffer.match(/<\/file>/gi) || []).length;
-                        if (openFiles > closeFiles) {
-                            if (stoppedBuffer.includes('<<<<<<< SEARCH') && !stoppedBuffer.includes('>>>>>>> REPLACE')) {
-                                if (!stoppedBuffer.includes('=======')) stoppedBuffer += '\n=======\n';
-                                stoppedBuffer += '\n>>>>>>> REPLACE';
-                            }
-                            stoppedBuffer += '\n</file>';
-                        }
-                        const fences = stoppedBuffer.match(/```/g) || [];
-                        if (fences.length % 2 !== 0) stoppedBuffer += '\n```';
-
-                        stoppedBuffer += "\n\n*(Generation stopped by user)*";
-                        this._panel.webview.postMessage({
-                            command: 'finalizeMessage',
-                            id: activeGen.messageId,
-                            fullContent: stoppedBuffer
-                        });
-                        this.updateMessageContent(activeGen.messageId, stoppedBuffer);
-                        this._panel.webview.postMessage({ command: 'collapseLibrarianMessages' });
+                    if (this._activeRepairController) {
+                        this._activeRepairController.abort();
+                        this._activeRepairController = null;
                     }
 
-                    // 1. Clear active generations and cancel current processes
-                    ChatPanel.activeGenerations.delete(this.discussionId);
+                    // 1. Clear active generations and cancel current processes immediately
                     this.processManager.cancelForDiscussion(this.discussionId);
+                    ChatPanel.activeGenerations.delete(this.discussionId);
 
                     // 1.5 Embedded agent mode: reject any pending inline question and release the answer binding
                     if (this._pendingAgentQuestion) {
@@ -9747,19 +9502,30 @@ Task:
                 break;
             }
             case 'requestDiscussionSettings': {
-                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                const profiles = config.get('responseProfiles') || [];
                 const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => ({
                     name: f.name,
                     uri: f.uri.toString()
                 }));
 
+                const { SYSTEM_RESPONSE_PROFILES } = require('../../utils');
+                const systemProfiles = Array.isArray(SYSTEM_RESPONSE_PROFILES) ? SYSTEM_RESPONSE_PROFILES : [];
+                const rawConfigProfiles = vscode.workspace.getConfiguration('lollmsVsCoder').get<any[]>('responseProfiles') || [];
+                const customProfiles = (Array.isArray(rawConfigProfiles) ? rawConfigProfiles : []).filter((p: any) => p && p.id);
+                const combinedProfiles = [...systemProfiles, ...customProfiles.filter((p: any) => !systemProfiles.some((sp: any) => sp.id === p.id))];
+
                 this._panel.webview.postMessage({ 
-                    command: 'showDiscussionSettings',
+                    command: 'showDiscussionSettings', 
                     capabilities: this._discussionCapabilities,
-                    profiles: profiles,
-                    workspaceFolders: workspaceFolders
+                    workspaceFolders: workspaceFolders,
+                    profiles: combinedProfiles
                 });
+                break;
+            }
+            case 'updateProfiles': {
+                if (Array.isArray(message.profiles)) {
+                    const customOnly = message.profiles.filter((p: any) => p && p.id && !['balanced', 'creative', 'precise', 'code_expert'].includes(p.id));
+                    await vscode.workspace.getConfiguration('lollmsVsCoder').update('responseProfiles', customOnly, vscode.ConfigurationTarget.Global);
+                }
                 break;
             }
             case 'requestLog':
@@ -10314,7 +10080,21 @@ Task:
 
                     const persona = this._personalityManager?.getPersonality(message.personalityId);
                     if (persona) {
-                        this.log(`Personality switched and persisted project-wide: ${persona.name}`);
+                        this.log(`Personality switched to: ${persona.name}`);
+
+                        // Equip personality bundled and runtime tools/skills automatically
+                        const effectiveSkills = this._personalityManager?.getEffectiveSkills(message.personalityId) || [];
+                        const effectiveTools = this._personalityManager?.getEffectiveTools(message.personalityId) || [];
+
+                        if (effectiveSkills.length > 0) {
+                            const currentSkills = this._currentDiscussion.importedSkills || [];
+                            this._currentDiscussion.importedSkills = Array.from(new Set([...currentSkills, ...effectiveSkills]));
+                        }
+
+                        if (effectiveTools.length > 0) {
+                            const currentTools = this._currentDiscussion.importedTools || [];
+                            this._currentDiscussion.importedTools = Array.from(new Set([...currentTools, ...effectiveTools]));
+                        }
                     }
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
@@ -10325,6 +10105,7 @@ Task:
                         command: 'updateDiscussionPersonality',
                         personalityId: message.personalityId
                     });
+                    this.updateContextAndTokens({ isBackgroundSync: false });
                 }
                 break;
             case 'runTool':
@@ -11008,7 +10789,8 @@ Task:
       promptText: string,
       targetModel: string,
       signal: AbortSignal,
-      historyMessages?: ChatMessage[]
+      historyMessages?: ChatMessage[],
+      protectedFiles: string[] = []
   ): Promise<{ contextData: ContextResult, history: ChatMessage[] }> {
       if (!this._currentDiscussion || !this._contextManager) {
           return { contextData: currentContext, history: historyMessages || [] };
@@ -11143,8 +10925,14 @@ Task:
 
       // Mute lowest-relevance files until code budget is satisfied
       for (const cand of candidateBlocks) {
+          const { isProjectFile } = require('../../utils');
+          const isExternalDoc = !isProjectFile(cand.path);
           const isExplicitlyRequested = cand.score >= 50000;
-          if (currentCodeTokens > maxAllowedCodeTokens && !isExplicitlyRequested) {
+          const isTargetProtected = isExternalDoc || protectedFiles.some(pf => {
+              const cleanPf = pf.replace(/\\/g, '/').toLowerCase().trim();
+              return cand.norm === cleanPf || cand.norm.endsWith('/' + cleanPf) || cleanPf.endsWith('/' + cand.norm);
+          });
+          if (currentCodeTokens > maxAllowedCodeTokens && !isExplicitlyRequested && !isTargetProtected) {
               pathsToMute.push(cand.path);
               currentCodeTokens -= cand.tokens;
           } else {
@@ -11242,6 +11030,55 @@ Task:
       });
   }
 
+  public async handleRequestAddExternalFileLink() {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) {
+          vscode.window.showErrorMessage("Active workspace required to link external files.");
+          return;
+      }
+
+      const uris = await vscode.window.showOpenDialog({
+          canSelectMany: true,
+          openLabel: 'Link as Read-Only Reference',
+          title: 'Select External File(s) to Link as Live Reference (Read-Only)',
+          filters: {
+              'Documents & Code': ['md', 'txt', 'pdf', 'docx', 'py', 'ts', 'js', 'json', 'yaml', 'yml', 'html', 'css', 'cpp', 'c', 'cs', 'java', 'rs', 'go', 'rst'],
+              'All Files': ['*']
+          }
+      });
+
+      if (!uris || uris.length === 0) return;
+
+      this._panel.webview.postMessage({
+          command: 'setGeneratingState',
+          isGenerating: true,
+          statusText: 'Linking external live reference files...'
+      });
+
+      let linkedCount = 0;
+      const relativePathsAdded: string[] = [];
+
+      for (const uri of uris) {
+          try {
+              const livePath = await this._contextManager.addExternalLink(uri, workspaceFolder);
+              relativePathsAdded.push(livePath);
+              linkedCount++;
+          } catch (err: any) {
+              vscode.window.showErrorMessage(`Failed to link ${path.basename(uri.fsPath)}: ${err.message}`);
+          }
+      }
+
+      if (relativePathsAdded.length > 0) {
+          await this.unmuteFiles(relativePathsAdded);
+          await this.addFilesToDiscussionContext(relativePathsAdded);
+          this.recordCurrentPromptFiles(relativePathsAdded);
+          vscode.window.showInformationMessage(`🔗 Linked ${linkedCount} external file(s) as live read-only reference.`);
+      }
+
+      this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+      this.updateContextAndTokens({ isBackgroundSync: false });
+  }
+
   public async handleRequestAddExternalFile() {
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) {
@@ -11317,18 +11154,19 @@ Task:
       this.updateContextAndTokens({ isBackgroundSync: false });
   }
 
-  public async auditFileDiagnostics(filePath: string, messageId?: string, blockIndex?: number, blockId?: string) {
-      if (this._isDisposed || !this._panel || !this._panel.webview) return;
+  public async auditFileDiagnostics(filePath: string, messageId?: string, blockIndex?: number, blockId?: string, signal?: AbortSignal) {
+      if (this._isDisposed || !this._panel || !this._panel.webview || signal?.aborted) return;
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) return;
 
       const resolution = await this._contextManager.resolveWorkspaceFromPath(filePath);
-      if (!resolution) return;
+      if (!resolution || signal?.aborted) return;
 
       this._diagnosticWatchUris.add(resolution.uri.fsPath);
 
       // Brief delay allows the language server compiler (tsserver, pyright, eslint) to evaluate the new disk content
-      await new Promise(r => setTimeout(r, 700));
+      await new Promise(r => setTimeout(r, 450));
+      if (signal?.aborted || !ChatPanel.isBatchApplying) return;
 
       const diags = vscode.languages.getDiagnostics(resolution.uri);
       const errors = diags.filter(d => d.severity === vscode.DiagnosticSeverity.Error);

@@ -959,25 +959,26 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         const newMuted = Array.isArray(message.mutedFiles) ? message.mutedFiles : [];
                         studioState.mutedSet = new Set(newMuted.map((m: string) => m.replace(/\\/g, '/').toLowerCase().trim()));
 
-                        // Register any newly added files into the studio candidate list
-                        if (Array.isArray(message.addedFiles)) {
-                            message.addedFiles.forEach((p: string) => {
-                                const norm = p.replace(/\\/g, '/');
+                        // Register any newly added or kept files into the studio candidate list
+                        const allDiscovered = Array.from(new Set([...(message.addedFiles || []), ...(message.keptFiles || [])]));
+                        allDiscovered.forEach((p: string) => {
+                            const norm = p.replace(/\\/g, '/');
+                            const exists = studioState.candidateFiles.some((cf: any) => cf.path.toLowerCase() === norm.toLowerCase());
+                            if (!exists) {
+                                const fileName = norm.split('/').pop() || norm;
+                                const dirName = norm.includes('/') ? norm.substring(0, norm.lastIndexOf('/')) : '';
+                                studioState.candidateFiles.push({
+                                    path: norm,
+                                    fileName,
+                                    dirName,
+                                    tokens: 500,
+                                    bytes: 1800
+                                });
+                            }
+                            if (message.addedFiles?.includes(p)) {
                                 studioState.newAddedFiles?.add(norm.toLowerCase().trim());
-                                const exists = studioState.candidateFiles.some((cf: any) => cf.path.toLowerCase() === norm.toLowerCase());
-                                if (!exists) {
-                                    const fileName = norm.split('/').pop() || norm;
-                                    const dirName = norm.includes('/') ? norm.substring(0, norm.lastIndexOf('/')) : '';
-                                    studioState.candidateFiles.push({
-                                        path: norm,
-                                        fileName,
-                                        dirName,
-                                        tokens: 500,
-                                        bytes: 1800
-                                    });
-                                }
-                            });
-                        }
+                            }
+                        });
 
                         import('./ui.js').then(ui => {
                             ui.appendGovernorMessage('assistant', message.rationale || 'Context evaluation complete.', {
@@ -1015,7 +1016,26 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'governorWizardSelectionApplied':
                 {
                     state.wizardMutedFiles = Array.isArray(message.mutedFiles) ? [...message.mutedFiles] : [];
+                    const addedList = Array.isArray(message.addedFiles) ? message.addedFiles : [];
                     import('./ui.js').then(ui => {
+                        if (addedList.length > 0) {
+                            addedList.forEach((p: string) => {
+                                const norm = p.replace(/\\/g, '/');
+                                const exists = ui.wizardCandidateFiles.some(cf => cf.path.toLowerCase() === norm.toLowerCase());
+                                if (!exists) {
+                                    const fileName = norm.split('/').pop() || norm;
+                                    const dirName = norm.includes('/') ? norm.substring(0, norm.lastIndexOf('/')) : '';
+                                    ui.wizardCandidateFiles.push({
+                                        path: norm,
+                                        fileName,
+                                        dirName,
+                                        tokens: 500,
+                                        bytes: 1800,
+                                        mtime: Date.now()
+                                    });
+                                }
+                            });
+                        }
                         ui.wizardMutedSet.clear();
                         (message.mutedFiles || []).forEach((m: string) => ui.wizardMutedSet.add(m.replace(/\\/g, '/').toLowerCase().trim()));
                         ui.renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
@@ -1024,7 +1044,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const statusText = document.getElementById('wizard-governor-status-text');
                     if (statusEl && statusText) {
                         statusEl.style.display = 'flex';
-                        statusText.textContent = `Librarian applied: ${message.mutedFiles.length} files muted.`;
+                        const totalCandidates = (window as any).governorStudioState?.candidateFiles?.length || 0;
+                        const mutedCount = (message.mutedFiles || []).length;
+                        statusText.textContent = `Librarian applied: ${Math.max(0, totalCandidates - mutedCount)} active, ${mutedCount} muted.`;
                     }
                 }
                 break;
@@ -1075,6 +1097,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (message.currentModel) {
                         state.currentModelName = message.currentModel;
                     }
+                    if (message.lastTokenMetrics) {
+                        state.lastTokenMetrics = {
+                            totalTokens: message.lastTokenMetrics.total,
+                            contextSize: message.lastTokenMetrics.contextSize,
+                            isApproximate: false,
+                            segments: message.lastTokenMetrics.segments
+                        };
+                    }
                     if (message.currentTemperature !== undefined && message.currentTemperature !== null) {
                         if (dom.tempSlider) {
                             dom.tempSlider.value = message.currentTemperature.toString();
@@ -1108,6 +1138,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                     if (message.userPreferenceProfiles) {
                         (state as any).userPreferenceProfiles = message.userPreferenceProfiles;
+                    }
+                    if (message.profiles) {
+                        state.profiles = message.profiles;
                     }
                     if (message.visibilityPresets) {
                         (state as any).visibilityPresets = message.visibilityPresets;
@@ -1213,6 +1246,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (message.userPreferenceProfiles) {
                     (state as any).userPreferenceProfiles = message.userPreferenceProfiles;
                 }
+                if (message.profiles) {
+                    state.profiles = message.profiles;
+                }
                 if (message.workspaceFolders) {
                     (window as any).workspaceFolders = message.workspaceFolders;
                     (state as any).workspaceFolders = message.workspaceFolders;
@@ -1233,12 +1269,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
                     }
                     
-                    if (message.profiles) {
-                        state.profiles = message.profiles;
-                        renderProfilesInModal(); // Refresh the list in the modal
-                    } else if (!state.profiles) {
-                        state.profiles = [];
-                    }
+
 
                     const userPrefInput = document.getElementById('cap-userPreferences') as HTMLTextAreaElement;
                     const prefProfileSelect = document.getElementById('cap-preferences-profile') as HTMLSelectElement;
@@ -2074,12 +2105,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const modal = document.getElementById(modalId);
                     console.log("[DEBUG:Handler] Attempting to show modal with ID:", modalId, !!modal);
 
-                    if (modal) {
-                        modal.classList.add('visible');
-                        modal.style.setProperty('display', 'flex', 'important');
-                        modal.style.setProperty('visibility', 'visible', 'important');
-                        modal.style.setProperty('opacity', '1', 'important');
-                        console.log("[DEBUG:Handler] Modal visibility classes/styles applied.");
+                    if (dom.discussionToolsModal) {
+                        dom.discussionToolsModal.classList.add('visible');
+                        dom.discussionToolsModal.style.setProperty('display', 'flex', 'important');
+                        dom.discussionToolsModal.style.setProperty('visibility', 'visible', 'important');
+                        dom.discussionToolsModal.style.setProperty('opacity', '1', 'important');
 
                         // 3. Refresh voices if available
                         if (typeof (window as any).refreshVoiceList === 'function') {

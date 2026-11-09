@@ -469,6 +469,66 @@ body.agent-mode-active.has-active-plan #plan-resizer {
     color: var(--vscode-charts-orange, #d67a0d) !important;
 }
 
+/* 📚 LIBRARIAN PLAN & FINDINGS CARDS (UPGRADED READABILITY & ZERO TOP SPACE) */
+.librarian-plan-card,
+.plan-findings-block,
+.plan-phase-block,
+.librarian-compressed-directive,
+.librarian-decision-card {
+    contain: layout style;
+}
+
+.librarian-plan-card > .processing-body,
+.librarian-plan-body {
+    max-height: none !important;
+    white-space: normal !important;
+    padding-top: 6px !important;
+    overflow: visible !important;
+}
+
+.plan-findings-block .processing-body,
+.plan-findings-body {
+    min-height: 100px !important;
+    max-height: 540px !important;
+    overflow-y: auto !important;
+    white-space: normal !important;
+    padding-top: 6px !important;
+    color: var(--vscode-foreground) !important;
+}
+
+.plan-phase-block .processing-body,
+.plan-phase-body {
+    min-height: 80px !important;
+    max-height: 480px !important;
+    overflow-y: auto !important;
+    white-space: normal !important;
+    padding-top: 6px !important;
+    color: var(--vscode-foreground) !important;
+}
+
+.librarian-compressed-directive .processing-body {
+    min-height: 90px !important;
+    max-height: 500px !important;
+    overflow-y: auto !important;
+    white-space: normal !important;
+    padding-top: 6px !important;
+    color: var(--vscode-foreground) !important;
+}
+
+/* Eliminate awkward gap and space at the top of each Librarian entry */
+.plan-findings-block .processing-body > :first-child,
+.plan-phase-block .processing-body > :first-child,
+.plan-findings-body > :first-child,
+.plan-phase-body > :first-child,
+.phase-instruction-body > :first-child,
+.librarian-compressed-directive .processing-body > :first-child,
+.librarian-decision-card .markdown-body > :first-child,
+.librarian-decision-body > :first-child,
+.gov-chat-bubble .markdown-body > :first-child {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+
 .message.agent-mode-message {
     border-left: 4px solid var(--vscode-charts-orange) !important;
     background-color: var(--vscode-editor-background) !important;

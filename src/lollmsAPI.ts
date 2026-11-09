@@ -4,7 +4,13 @@ import * as fs from 'fs';
 import { URL } from 'url';
 import * as vscode from 'vscode';
 import { Logger } from './logger';
-import { stripThinkingTags } from './utils';
+import { 
+    stripThinkingTags, 
+    isModelVisionCapable, 
+    ensureStrictAlternatingRoles, 
+    getContextLimitForModel,
+    estimateImageTokens
+} from './utils';
 
 export interface ServerBinding {
   id?: string;
@@ -845,7 +851,6 @@ export class LollmsAPI {
     if (!useExtensions || !modelName) {
         let heuristic = 128000;
         try {
-            const { getContextLimitForModel } = require('./utils');
             heuristic = getContextLimitForModel(modelName);
         } catch {}
 
@@ -888,7 +893,6 @@ export class LollmsAPI {
 
     let heuristicSize = 128000;
     try {
-        const { getContextLimitForModel } = require('./utils');
         heuristicSize = getContextLimitForModel(modelName);
     } catch {}
 
@@ -1139,13 +1143,11 @@ export class LollmsAPI {
     let body: any = {};
 
     const vsConfig = vscode.workspace.getConfiguration('lollmsVsCoder');
-    const { isModelVisionCapable } = require('./utils');
     const autoSuppress = vsConfig.get<boolean>('autoSuppressImagesForNonVisionModels', true);
     const visionSupported = options?.capabilities?.enableImages !== false && 
         (!autoSuppress || isModelVisionCapable(model, vsConfig));
 
-    const { ensureStrictAlternatingRoles } = require('./utils');
-    const normalizedMessages = ensureStrictAlternatingRoles(messages.filter(m => !m.skipInPrompt));
+    const normalizedMessages = ensureStrictAlternatingRoles((messages || []).filter(m => m && !m.skipInPrompt));
 
     const sanitizedMessages: { role: string; content: string | any[] }[] = normalizedMessages.map((m: any) => {
         let content = m.content;
@@ -1398,28 +1400,32 @@ export class LollmsAPI {
 
     try {
         const agent = this.getAgentForBinding(targetBinding);
+        const fetchOptions: any = {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal: controller.signal
+        };
+        if (agent) {
+            fetchOptions.agent = agent;
+        }
 
-        let response;
+        const fetchFn: any = (typeof fetch === 'function') 
+            ? fetch 
+            : ((fetch as any)?.default || (typeof globalThis.fetch === 'function' ? globalThis.fetch : fetch));
+
+        Logger.info(`[LoLLMs API] Outbound request to ${url} (model: ${model}, stream: ${stream}, backend: ${backend})`);
+
+        let response: any;
         try {
-            response = await fetch(url, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(body),
-                signal: controller.signal,
-                agent
-            });
+            response = await fetchFn(url, fetchOptions);
         } catch (fetchErr: any) {
+            Logger.warn(`[LoLLMs API] Primary fetch failed: ${fetchErr?.message || fetchErr}`);
             // IPv4 fallback for localhost when Node.js on Windows tries IPv6 ::1 first
             if (url.includes('localhost') && (fetchErr.code === 'ECONNREFUSED' || fetchErr.name === 'AbortError' || fetchErr.code === 'ETIMEDOUT')) {
                 const ipv4Url = url.replace('localhost', '127.0.0.1');
                 Logger.info(`[sendChat] Connection to localhost failed (${fetchErr.message}). Retrying with 127.0.0.1: ${ipv4Url}`);
-                response = await fetch(ipv4Url, {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify(body),
-                    signal: controller.signal,
-                    agent
-                });
+                response = await fetchFn(ipv4Url, fetchOptions);
             } else if (fetchErr.message?.includes('disposed')) {
                 throw new Error("Local VS Code extension host is unstable. Please reload window.");
             } else {
@@ -1604,7 +1610,8 @@ export class LollmsAPI {
             }
             throw error;
         }
-        Logger.error("SendChat Failed", error);
+        Logger.error(`[LoLLMs API] SendChat Failed: ${error?.message || error}`, error);
+        console.error(`[LoLLMs API] SendChat Failed:`, error?.name, error?.message, error?.stack);
         throw error;
     } finally {
       if (activeTimer) clearTimeout(activeTimer);

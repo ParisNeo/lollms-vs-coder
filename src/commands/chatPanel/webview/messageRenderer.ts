@@ -30,7 +30,7 @@ import { projectMemoryPlugin } from './plugins/projectMemoryPlugin.js';
 import { milestonePlugin } from './plugins/milestonePlugin.js';
 import { processingPlugin } from './plugins/processingPlugin.js';
 import { formPlugin } from './plugins/formPlugin.js';
-import { fileOpPlugin, fileMutationPlugin, unpackDirectoryPlugin, peekFilesPlugin } from './plugins/fileOpPlugin.js';
+import { fileOpPlugin, fileMutationPlugin, unpackDirectoryPlugin, peekFilesPlugin, loadStructurePlugin, showSymbolPlugin } from './plugins/fileOpPlugin.js';
 import { breakpointPlugin } from './plugins/breakpointPlugin.js';
 import { imageAssetPlugin } from './plugins/imageAssetPlugin.js';
 import { imageGenPlugin } from './plugins/imageGenPlugin.js';
@@ -40,7 +40,7 @@ import { toolPlugin } from './plugins/toolPlugin.js';
 import { sparqlPlugin } from './plugins/sparqlPlugin.js';
 import { missionBriefingPlugin } from './plugins/missionBriefingPlugin.js';
 import { thinkPlugin } from './plugins/thinkPlugin.js';
-import { librarianPlugin, librarianOffPlugin, multiStepsTaskPlugin } from './plugins/librarianPlugin.js';
+import { librarianPlugin, librarianOffPlugin, multiStepsTaskPlugin, librarianDecisionPlugin, librarianPlanPlugin } from './plugins/librarianPlugin.js';
 import { loadKnowledgePlugin, updateKnowledgePlugin } from './plugins/knowledgePlugin.js';
 import { insightPlugin } from './plugins/insightPlugin.js';
 
@@ -62,6 +62,8 @@ export function ensurePluginsInitialized() {
         fileMutationPlugin,
         unpackDirectoryPlugin,
         peekFilesPlugin,
+        loadStructurePlugin,
+        showSymbolPlugin,
         breakpointPlugin,
         imageAssetPlugin,
         imageGenPlugin,
@@ -70,6 +72,8 @@ export function ensurePluginsInitialized() {
         toolPlugin,
         sparqlPlugin,
         missionBriefingPlugin,
+        librarianDecisionPlugin,
+        librarianPlanPlugin,
         librarianPlugin,
         librarianOffPlugin,
         multiStepsTaskPlugin,
@@ -3041,17 +3045,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 } catch {}
             });
 
-            // 2. Gather librarian consultations
-            contentDiv.querySelectorAll('.librarian-consultation-card').forEach((card: any) => {
-                try {
-                    const query = decodeURIComponent(card.dataset.query || '');
-                    if (query) {
-                        actions.push({ type: 'librarian', payload: query });
-                    }
-                } catch {}
-            });
 
-            // 2.2. Gather add_files_to_context (legacy fallback)
+            // 2. Gather add_files_to_context (legacy fallback)
             contentDiv.querySelectorAll('.context-expansion-block').forEach((block: any) => {
                 try {
                     const files = JSON.parse(block.dataset.files || '[]');
@@ -3563,6 +3558,7 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
     if (startTime) messageWrapper.dataset.startTime = startTime;
     if (model) messageWrapper.dataset.model = model;
     if (personalityName) messageWrapper.dataset.personalityName = personalityName;
+    if (message.personalityId) messageWrapper.dataset.personalityId = message.personalityId;
 
     const caps = state.capabilities || { agentMode: false, dynamicMode: false };
     const isAgent = caps.agentMode === true;
@@ -3592,7 +3588,16 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
     } else if (isDynamic) {
         avatarDiv.innerHTML = '<span class="codicon codicon-circuit-board" style="color:var(--vscode-charts-orange)"></span>';
     } else {
-        avatarDiv.innerHTML = '<span class="codicon codicon-hubot" style="color:var(--vscode-textLink-foreground)"></span>';
+        const pId = message.personalityId || messageWrapper.dataset.personalityId;
+        const pName = personalityName || messageWrapper.dataset.personalityName;
+        const currentP = (window as any).state?.personalities?.find((p: any) => p && (p.id === pId || p.name === pName));
+        if (currentP && currentP.icon) {
+            avatarDiv.innerHTML = `<img src="${currentP.icon}" style="width: 100%; height: 100%; border-radius: 4px; object-fit: contain;" alt="${currentP.name}" />`;
+            avatarDiv.style.backgroundColor = 'transparent';
+            avatarDiv.style.border = 'none';
+        } else {
+            avatarDiv.innerHTML = '<span class="codicon codicon-hubot" style="color:var(--vscode-textLink-foreground)"></span>';
+        }
     }
 
     messageDiv.appendChild(avatarDiv);
@@ -3754,13 +3759,15 @@ export class ContextPresenter {
             return { path: rawPath, fileName, dirName, bytes, tokens, mtime, state: fileState, isMuted };
         });
 
+        const showCheckbox = !!(state as any).isInlineBulkMode;
+
         const renderFileItemRow = (item: typeof normalized[0], isTree: boolean = false): string => {
             const f = item.path;
             const isMuted = item.isMuted;
+            const isDefOnly = item.state === 'definitions-only';
             const bytes = item.bytes || 0;
             const tokens = item.tokens || (bytes > 0 ? Math.ceil(bytes / 3.5) : 0);
             const mtime = item.mtime || 0;
-            const uniqueDomId = f.replace(/[^a-zA-Z0-9]/g, '_');
             const fileName = item.fileName;
             const dirName = item.dirName;
 
@@ -3772,10 +3779,12 @@ export class ContextPresenter {
             }
 
             const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
-            const weightClass = isMuted ? 'weight-muted' : (bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light'));
+            const weightClass = isMuted ? 'weight-muted' : (isDefOnly ? 'weight-medium' : (bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light')));
             const tokenBadge = isMuted
                 ? `<span class="file-token-badge weight-muted" title="Muted: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens liberated / 0 active tokens)">${formattedBytes} [MUTED]</span>`
-                : `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`;
+                : (isDefOnly
+                    ? `<span class="file-token-badge weight-medium" style="border-color: var(--vscode-charts-blue); color: var(--vscode-charts-blue);" title="Structure Only: ${bytes.toLocaleString()} bytes (Definitions only in context)">[STRUCTURE] ${formattedBytes} (~${displayTok} tok)</span>`
+                    : `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`);
 
             const timeStr = formatTimeAgo(mtime);
             const timeBadge = (mtime > 0 && timeStr)
@@ -3788,30 +3797,35 @@ export class ContextPresenter {
                 ? 'Reactivate file content for this discussion (Unmute)' 
                 : 'Deactivate file content for this discussion (Mute / Manual Governor)';
 
+            const defTitle = isDefOnly
+                ? 'Currently in Structure Only mode (Click to load full content)'
+                : 'Half-Mute: Include Structure / Definitions Only (save tokens)';
+
             return `
-            <li class="context-item ${isMuted ? 'file-muted' : ''}" style="flex-direction: column; align-items: stretch; gap: 4px;" data-path="${f}">
-                <div style="display:flex; align-items:center; width:100%; gap: 4px;">
+            <li class="context-item ${isMuted ? 'file-muted' : ''} ${isDefOnly ? 'file-def-only' : ''}" style="flex-direction: column; align-items: stretch; gap: 4px;" data-path="${f}" title="${f}">
+                <div style="display:flex; align-items:center; width:100%; gap: 4px;" title="${f}">
+                    ${showCheckbox ? `<input type="checkbox" class="inline-file-check" data-path="${f}" style="margin: 0 4px 0 0; cursor: pointer; flex-shrink: 0;" title="Select ${fileName} for bulk action">` : ''}
                     <button class="toggle-mute-file-btn ${muteClass}" data-path="${f}" title="${muteTitle}">
                         <span class="codicon ${muteIcon}"></span>
                     </button>
-                    <details class="info-collapsible lazy-file-accordion" data-path="${f}" style="flex: 1; min-width:0; border:none; padding:0;">
-                        <summary style="padding: 2px 0; cursor: pointer; font-size: 11px; font-weight: 600; display:flex; align-items:center; gap: 6px;">
-                            <span class="codicon codicon-file"></span>
-                            <span class="path-text" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;" title="${f}">${fileName}</span>
-                            ${(!isTree && dirName) ? `<span style="font-size:9px; opacity:0.45; margin-right:4px; max-width:110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${dirName}</span>` : ''}
-                            ${timeBadge}
-                            ${tokenBadge}
-                        </summary>
-                        <div class="lazy-file-pane" id="lazy-pane-${uniqueDomId}" style="padding-top: 8px; font-size:11px; font-family:var(--vscode-editor-font-family);">
-                            <div style="display:flex; align-items:center; gap:8px; opacity:0.6;"><div class="spinner"></div> Ingesting file content from disk...</div>
-                        </div>
-                    </details>
+                    <button class="toggle-structure-file-btn ${isDefOnly ? 'is-active' : ''}" data-path="${f}" data-state="${isDefOnly ? 'included' : 'definitions-only'}" title="${defTitle}" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; color: ${isDefOnly ? 'var(--vscode-charts-blue)' : 'var(--vscode-foreground)'}; opacity: ${isDefOnly ? '1' : '0.6'};">
+                        <span class="codicon codicon-symbol-class"></span>
+                    </button>
+                    <div class="file-row-main" data-path="${f}" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; cursor: pointer;" title="${f}">
+                        <span class="codicon ${f.includes('external_files') ? 'codicon-link' : 'codicon-file'}" style="flex-shrink: 0; ${f.includes('external_files') ? 'color: var(--vscode-charts-teal, #00b4d8);' : ''}"></span>
+                        <span class="path-text file-open-link" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-weight: 600; font-size: 11px;" title="${f}">${fileName}</span>
+                        ${(!isTree && dirName) ? `<span class="dir-text" style="font-size: 9px; opacity: 0.55; margin-right: 4px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f}">${dirName}</span>` : ''}
+                        ${f.includes('external_files') ? '<span class="file-token-badge weight-light" style="font-size: 8.5px; padding: 1px 4px; color: var(--vscode-charts-teal, #00b4d8); border-color: rgba(0, 180, 216, 0.4);" title="External reference document (Read-Only)">REF</span>' : ''}
+                        ${(!isTree && dirName) ? `<span class="dir-text" style="font-size: 9px; opacity: 0.45; margin-right: 4px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f}">${dirName}</span>` : ''}
+                        ${timeBadge}
+                        ${tokenBadge}
+                    </div>
                     <div style="display:flex; gap:2px; flex-shrink:0;">
                         ${allowSummarize ? `
                         <button class="summarize-context-btn" data-value="${f}" title="Synthesize / Clean / Summarize">
                             <span class="codicon codicon-wand"></span>
                         </button>` : ''}
-                        <button class="open-context-btn" data-value="${f}" title="Inspect / Edit File">
+                        <button class="open-context-btn" data-value="${f}" title="Open File in New Editor Tab">
                             <span class="codicon codicon-edit"></span>
                         </button>
                         <button class="remove-context-btn" data-type="file" data-value="${f}" title="Remove from context across all discussions">
@@ -3896,6 +3910,7 @@ export class ContextPresenter {
                     html += `
                     <details class="context-tree-folder ${isAllMuted ? 'folder-muted' : (isSomeMuted ? 'folder-partially-muted' : '')}" open style="margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; background: rgba(0,0,0,0.06);" data-folder="${sub.fullPath}">
                         <summary style="padding: 3px 6px; cursor: pointer; font-size: 11px; font-weight: 700; display: flex; align-items: center; gap: 6px; user-select: none; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 3px;">
+                            ${showCheckbox ? `<input type="checkbox" class="inline-folder-check" data-paths="${encodedSubPaths}" style="cursor: pointer; margin: 0 2px 0 0;" title="Select/Deselect all files in ${sub.name}">` : ''}
                             <button class="toggle-mute-folder-btn ${folderMuteClass}" data-folder="${sub.fullPath}" data-paths="${encodedSubPaths}" data-action="${folderAction}" title="${folderMuteTitle}" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center;">
                                 <span class="codicon ${folderMuteIcon}"></span>
                             </button>
@@ -4131,15 +4146,13 @@ export class ContextPresenter {
                             <i class="codicon codicon-refresh" style="font-size: 12px;"></i>
                         </button>
                         <div class="token-progress-container" id="token-progress-container" style="flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.06);">
-                            <div class="token-progress-bar" id="token-progress-bar"></div>
+                            <div class="${(state as any).lastTokenMetrics && (state as any).lastTokenMetrics.totalTokens > 0 ? (((state as any).lastTokenMetrics.totalTokens / ((state as any).lastTokenMetrics.contextSize || 128000)) > 0.95 ? 'token-progress-bar range-danger' : (((state as any).lastTokenMetrics.totalTokens / ((state as any).lastTokenMetrics.contextSize || 128000)) > 0.7 ? 'token-progress-bar range-warning' : 'token-progress-bar range-safe')) : 'token-progress-bar'}" id="token-progress-bar" style="width: ${(state as any).lastTokenMetrics && (state as any).lastTokenMetrics.totalTokens > 0 ? Math.min(100, Math.round(((state as any).lastTokenMetrics.totalTokens / ((state as any).lastTokenMetrics.contextSize || 128000)) * 100)) + '%' : (finalProjectFilesCount > 0 ? '15%' : '0%')};"></div>
                         </div>
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <span id="token-count-label" style="font-size: 9px; opacity: 0.75; font-family: var(--vscode-editor-font-family);">Tokens: Initializing...</span>
+                        <span id="token-count-label" style="font-size: 9px; opacity: 0.75; font-family: var(--vscode-editor-font-family);">${(state as any).lastTokenMetrics && (state as any).lastTokenMetrics.totalTokens > 0 ? `${(state as any).lastTokenMetrics.isApproximate ? 'Est. ' : ''}Tokens: ${(state as any).lastTokenMetrics.totalTokens.toLocaleString()} / ${((state as any).lastTokenMetrics.contextSize || 128000).toLocaleString()}` : (finalProjectFilesCount > 0 ? `Tokens: Measuring (${finalProjectFilesCount} files)...` : 'Tokens: 0 / 128,000')}</span>
                         <div id="token-bar-legend" class="token-legend" style="display: none; gap: 10px;"></div>
                     </div>
-
-
                 </div>
             </div>
 
@@ -4191,6 +4204,26 @@ export class ContextPresenter {
                         </div>
                     </div>
 
+                    <!-- 🔀 STANDALONE CONTEXT & DISCUSSION OPERATIONS SECTION -->
+                    <div class="hud-context-operations-bar" style="margin-bottom: 8px; padding: 6px 10px; background: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-radius: 6px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;">
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 10px; font-weight: 700; text-transform: uppercase; opacity: 0.8; display: flex; align-items: center; gap: 4px;">
+                                <i class="codicon codicon-repo-forked" style="color: var(--vscode-charts-purple);"></i> Discussion Operations
+                            </span>
+                        </div>
+                        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                            <button id="new-discussion-same-files-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-purple); color: var(--vscode-charts-purple); font-weight: 600;" title="Start a new discussion with the exact same files and muted states">
+                                <span class="codicon codicon-repo-forked"></span> Fork Chat
+                            </button>
+                            <button id="fork-and-compress-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange); font-weight: 600;" title="Fork discussion with same files and mute states, compressing history into user summary + AI acknowledgement">
+                                <span class="codicon codicon-git-pull-request"></span> Fork &amp; Compress
+                            </button>
+                            <button id="compress-history-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange); font-weight: 600;" title="Compress current discussion history in-place to liberate tokens for code files">
+                                <span class="codicon codicon-fold"></span> Compress History
+                            </button>
+                        </div>
+                    </div>
+
                     <details class="info-collapsible briefing-details" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-purple);">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
@@ -4236,18 +4269,23 @@ export class ContextPresenter {
                                     <button id="sort-files-btn" class="section-bulk-btn" title="Cycle Organization Mode" style="padding: 2px 5px;">
                                         <span class="codicon ${state.fileSortOrder === 'tree' ? 'codicon-folder-opened' : (state.fileSortOrder === 'visible-first' ? 'codicon-eye' : (state.fileSortOrder === 'muted-first' ? 'codicon-eye-closed' : (state.fileSortOrder === 'modified' ? 'codicon-history' : (state.fileSortOrder === 'name' ? 'codicon-sort-alphabetically' : 'codicon-graph-line'))))}"></span>
                                     </button>
-                                    <button id="new-discussion-same-files-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-purple); color: var(--vscode-charts-purple);" title="Start a new discussion with the exact same files and muted states">
-                                        <span class="codicon codicon-repo-forked"></span> Fork Chat
-                                    </button>
-                                    <button id="fork-and-compress-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);" title="Fork discussion with same files and mute states, compressing history into two alternating messages (user summary + AI acknowledgement)">
-                                        <span class="codicon codicon-git-pull-request"></span> Fork & Compress
-                                    </button>
-                                    <button id="compress-history-btn" class="section-bulk-btn" style="border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);" title="Compress current discussion history in-place to liberate tokens for code files">
-                                        <span class="codicon codicon-fold"></span> Compress History
-                                    </button>
-                                    ${finalProjectFilesCount > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn" title="Bulk manage visibility (mute/reveal) and removal"><span class="codicon codicon-checklist"></span> Bulk Operations</button>` : ''}
+                                    ${finalProjectFilesCount > 0 ? `<button id="toggle-inline-bulk-btn" class="section-bulk-btn ${(state as any).isInlineBulkMode ? 'active' : ''}" style="${(state as any).isInlineBulkMode ? 'background: var(--vscode-button-background); color: var(--vscode-button-foreground); font-weight: bold;' : ''}" title="Toggle bulk selection checkboxes in file list"><span class="codicon codicon-checklist"></span> Select</button>` : ''}
                                 </div>
                             </div>
+                            ${(state as any).isInlineBulkMode ? `
+                            <div id="inline-bulk-toolbar" style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; margin-bottom: 6px; background: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-radius: 4px; gap: 6px; flex-wrap: wrap;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <input type="checkbox" id="inline-bulk-select-all" title="Select / Deselect All Files" style="margin: 0; cursor: pointer;">
+                                    <label for="inline-bulk-select-all" style="font-size: 10px; font-weight: 700; cursor: pointer; user-select: none;">All</label>
+                                    <span id="inline-bulk-count" style="font-size: 9.5px; opacity: 0.7;">(0 selected)</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 4px;">
+                                    <button id="inline-bulk-mute-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Mute selected files (reduce content tokens to 0)"><i class="codicon codicon-eye-closed"></i> Mute</button>
+                                    <button id="inline-bulk-unmute-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Reveal / Unmute selected files (full content)"><i class="codicon codicon-eye"></i> Unmute</button>
+                                    <button id="inline-bulk-structure-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px; color: var(--vscode-charts-blue); border-color: rgba(0, 122, 204, 0.4);" title="Half-mute selected: Structure / Definitions only (save tokens)"><i class="codicon codicon-symbol-class"></i> Structure</button>
+                                    <button id="inline-bulk-remove-btn" class="code-action-btn delete-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Remove selected files from context"><i class="codicon codicon-trash"></i> Remove</button>
+                                </div>
+                            </div>` : ''}
                             <div class="hud-files-search-bar" style="display: flex; align-items: center; gap: 6px; margin: 0 0 8px 0; padding: 2px 8px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px;">
                                 <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.6;"></i>
                                 <input type="text" id="hud-files-search-input" placeholder="Filter context files by name or path..." value="${(state as any).hudFileFilterQuery || ''}" style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); flex: 1; height: 22px; padding: 0;">
@@ -4263,7 +4301,8 @@ export class ContextPresenter {
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
                                 <span class="external-count-label">External & Research (${finalExternalFilesCount})</span>
                                 <div style="display: flex; gap: 8px; align-items: center;">
-                                    <button id="add-external-file-btn" class="icon-btn" title="Import Document to .lollms/external_files (PDF, DOCX, TXT, MD, etc.)"><i class="codicon codicon-add"></i></button>
+                                    <button id="add-external-file-btn" class="icon-btn" title="Import Document Copy to .lollms/external_files (PDF, DOCX, TXT, MD, etc.)"><i class="codicon codicon-add"></i></button>
+                                    <button id="add-external-link-btn" class="icon-btn" title="Link External File(s) as Live References (Read-Only - Updates on disk are automatically reflected)"><i class="codicon codicon-link"></i></button>
                                     <button id="web-context-btn" class="icon-btn" title="Web Discovery & Research"><i class="codicon codicon-globe"></i></button>
                                     ${finalExternalFilesCount > 0 ? `<button id="bulk-process-external-btn" class="section-bulk-btn" title="Process external files"><span class="codicon codicon-wand"></span> Process</button><button id="bulk-delete-external-btn" class="section-bulk-btn delete" title="Remove external files"><span class="codicon codicon-trash"></span> Remove</button>` : ''}
                                 </div>
@@ -5309,27 +5348,165 @@ export class ContextBinder {
             applyFilesFilter((state as any).hudFileFilterQuery);
         }
 
-        // Bind accordion toggles dynamically
-        dashboard.querySelectorAll('.lazy-file-accordion').forEach(accordion => {
-            accordion.addEventListener('toggle', () => {
-                const details = accordion as HTMLDetailsElement;
-                const filePath = details.dataset.path;
-
-                if (details.open && filePath) {
-                    const uniqueDomId = filePath.replace(/[^a-zA-Z0-9]/g, '_');
-                    const pane = details.querySelector(`.lazy-file-pane`) as HTMLElement;
-
-                    // Fetch content if pane still displays the loading placeholder or is empty
-                    const needsLoad = !pane || pane.innerHTML.includes('Ingesting file content') || pane.innerHTML.trim() === '';
-                    if (needsLoad) {
-                        vscode.postMessage({
-                            command: 'requestLazyFileContent',
-                            filePath: filePath
-                        });
-                    }
+        // Bind direct file opening in VS Code editor tab on clicking row/name
+        dashboard.querySelectorAll('.file-row-main').forEach(row => {
+            row.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const p = (row as HTMLElement).dataset.path || (row.closest('.context-item') as HTMLElement)?.dataset.path;
+                if (p) {
+                    vscode.postMessage({ command: 'openFile', path: p });
                 }
             });
         });
+
+        // Bind half-mute (structure only / definitions only) toggle button
+        dashboard.querySelectorAll('.toggle-structure-file-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const p = (btn as HTMLElement).dataset.path;
+                const targetState = (btn as HTMLElement).dataset.state;
+                if (p) {
+                    const cmd = targetState === 'definitions-only'
+                        ? 'lollms-vs-coder.setContextDefinitionsOnly'
+                        : 'lollms-vs-coder.setContextIncluded';
+                    vscode.postMessage({
+                        command: 'executeLollmsCommand',
+                        details: {
+                            command: cmd,
+                            params: [null, [{ path: p, scheme: 'file' }]]
+                        }
+                    });
+                }
+            });
+        });
+
+        // Bind inline bulk selection mode toggle button
+        const toggleInlineBulkBtn = dashboard.querySelector('#toggle-inline-bulk-btn') as HTMLElement;
+        if (toggleInlineBulkBtn) {
+            toggleInlineBulkBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                (state as any).isInlineBulkMode = !(state as any).isInlineBulkMode;
+                updateContext();
+            };
+        }
+
+        // Bind inline bulk action toolbar
+        const inlineBulkToolbar = dashboard.querySelector('#inline-bulk-toolbar');
+        if (inlineBulkToolbar) {
+            const masterCheck = inlineBulkToolbar.querySelector('#inline-bulk-select-all') as HTMLInputElement;
+            const countLabel = inlineBulkToolbar.querySelector('#inline-bulk-count') as HTMLElement;
+            const muteBtn = inlineBulkToolbar.querySelector('#inline-bulk-mute-btn') as HTMLElement;
+            const unmuteBtn = inlineBulkToolbar.querySelector('#inline-bulk-unmute-btn') as HTMLElement;
+            const structBtn = inlineBulkToolbar.querySelector('#inline-bulk-structure-btn') as HTMLElement;
+            const removeBtn = inlineBulkToolbar.querySelector('#inline-bulk-remove-btn') as HTMLElement;
+
+            const updateCheckedCount = () => {
+                const checked = Array.from(dashboard.querySelectorAll('.inline-file-check:checked')) as HTMLInputElement[];
+                if (countLabel) countLabel.textContent = `(${checked.length} selected)`;
+                if (masterCheck) {
+                    const totalChecks = dashboard.querySelectorAll('.inline-file-check').length;
+                    masterCheck.checked = totalChecks > 0 && checked.length === totalChecks;
+                    masterCheck.indeterminate = checked.length > 0 && checked.length < totalChecks;
+                }
+            };
+
+            if (masterCheck) {
+                masterCheck.onchange = () => {
+                    const checked = masterCheck.checked;
+                    dashboard.querySelectorAll('.inline-file-check').forEach((cb: any) => {
+                        cb.checked = checked;
+                    });
+                    dashboard.querySelectorAll('.inline-folder-check').forEach((cb: any) => {
+                        cb.checked = checked;
+                    });
+                    updateCheckedCount();
+                };
+            }
+
+            dashboard.querySelectorAll('.inline-file-check').forEach(cb => {
+                cb.addEventListener('change', updateCheckedCount);
+            });
+
+            dashboard.querySelectorAll('.inline-folder-check').forEach((fcb: any) => {
+                fcb.addEventListener('change', () => {
+                    const isChecked = fcb.checked;
+                    const folder = fcb.closest('.context-tree-folder');
+                    if (folder) {
+                        folder.querySelectorAll('.inline-file-check').forEach((cb: any) => {
+                            cb.checked = isChecked;
+                        });
+                    }
+                    updateCheckedCount();
+                });
+            });
+
+            const getCheckedPaths = (): string[] => {
+                const checks = Array.from(dashboard.querySelectorAll('.inline-file-check:checked')) as HTMLInputElement[];
+                return checks.map(c => c.dataset.path || '').filter(Boolean);
+            };
+
+            if (muteBtn) {
+                muteBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const paths = getCheckedPaths();
+                    if (paths.length === 0) {
+                        vscode.postMessage({ command: 'showWarning', message: 'No files selected.' });
+                        return;
+                    }
+                    vscode.postMessage({ command: 'bulkMuteFiles', paths });
+                };
+            }
+
+            if (unmuteBtn) {
+                unmuteBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const paths = getCheckedPaths();
+                    if (paths.length === 0) {
+                        vscode.postMessage({ command: 'showWarning', message: 'No files selected.' });
+                        return;
+                    }
+                    vscode.postMessage({ command: 'bulkUnmuteFiles', paths });
+                };
+            }
+
+            if (structBtn) {
+                structBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const paths = getCheckedPaths();
+                    if (paths.length === 0) {
+                        vscode.postMessage({ command: 'showWarning', message: 'No files selected.' });
+                        return;
+                    }
+                    const targetUris = paths.map(p => ({ path: p, scheme: 'file' }));
+                    vscode.postMessage({
+                        command: 'executeLollmsCommand',
+                        details: {
+                            command: 'lollms-vs-coder.setContextDefinitionsOnly',
+                            params: [null, targetUris]
+                        }
+                    });
+                };
+            }
+
+            if (removeBtn) {
+                removeBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const paths = getCheckedPaths();
+                    if (paths.length === 0) {
+                        vscode.postMessage({ command: 'showWarning', message: 'No files selected.' });
+                        return;
+                    }
+                    vscode.postMessage({ command: 'bulkRemoveFiles', paths });
+                };
+            }
+        }
 
         // Helper function for surgical, in-place DOM updates when toggling file mute status
         const updateFileMuteDom = (filePath: string, isMuted: boolean) => {
@@ -5743,6 +5920,16 @@ export class ContextBinder {
             };
         }
 
+        // Bind Link External File as Live Reference
+        const addExternalLinkBtn = dashboard.querySelector('#add-external-link-btn') as HTMLElement;
+        if (addExternalLinkBtn) {
+            addExternalLinkBtn.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'requestAddExternalFileLink' });
+            };
+        }
+
         // Bind Web Discovery & Research Button
         const webContextBtn = dashboard.querySelector('#web-context-btn') as HTMLElement;
         if (webContextBtn) {
@@ -5763,12 +5950,8 @@ export class ContextBinder {
             bulkRemoveProjectBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const currentFiles = state.lastContextData?.files || files || [];
-                const projectFiles = currentFiles.filter((f: any) => {
-                    const p = getFilePath(f);
-                    return !p.includes('.lollms/') && !p.startsWith('http') && !p.startsWith('external/');
-                });
-                showBulkOperationsModal(projectFiles);
+                (state as any).isInlineBulkMode = !(state as any).isInlineBulkMode;
+                updateContext();
             };
         }
 
@@ -8078,59 +8261,26 @@ export function detectMultiStepsInContent(content: string): MultiStepsDetectionR
 export function collapseAllLibrarianMessages() {
     const wrappers = Array.from(document.querySelectorAll('.message-wrapper')) as HTMLElement[];
     wrappers.forEach((wrapper: any) => {
-        const msgDiv = wrapper.querySelector('.message') as HTMLElement;
-        const roleName = wrapper.querySelector('.role-name')?.textContent || '';
-        const msgId = String(wrapper.dataset.messageId || '');
-        const personality = String(wrapper.dataset.personalityName || '');
-
-        let originalContent = '';
-        if (wrapper.dataset.originalContent) {
-            try {
-                const parsed = JSON.parse(wrapper.dataset.originalContent);
-                originalContent = typeof parsed === 'string' ? parsed : (Array.isArray(parsed) ? parsed.map((p: any) => p.text || '').join('\n') : String(parsed));
-            } catch {
-                originalContent = String(wrapper.dataset.originalContent);
-            }
-        }
-        if (!originalContent) {
-            originalContent = wrapper.querySelector('.message-content')?.textContent || '';
-        }
-
-        const isContextShield = msgId.startsWith('verification_notice_') ||
-            originalContent.startsWith('Librarian Verification Notice:') ||
-            personality.includes('Context Shield');
-
-        const isPastedOrCoder = msgId.startsWith('assistant_') || 
-                                wrapper.dataset.pastedAsAi === 'true' || 
-                                personality.includes('Coder') || 
-                                personality.includes('Default');
-
-        const isLibrarian = !isContextShield && !isPastedOrCoder && (
-            wrapper.dataset.isLibrarian === 'true' ||
-            msgDiv?.classList.contains('librarian-message') ||
-            msgId.startsWith('librarian_') ||
-            msgId.startsWith('lib_report_') ||
-            msgId.startsWith('lib_') ||
-            msgId.startsWith('governor_') ||
-            (personality.includes('Librarian') && !personality.includes('Coder')) ||
-            (roleName.includes('Librarian') && !roleName.includes('Coder'))
+        // Find all internal librarian zones inside the message
+        const librarianZones = wrapper.querySelectorAll(
+            'details.librarian-plan-card, details.librarian-compressed-directive, details.plan-findings-block, details.plan-phase-block'
         );
 
-        if (isLibrarian) {
-            if (typeof wrapper.toggleCollapse === 'function') {
-                wrapper.toggleCollapse(true, false);
-            } else if (!wrapper.classList.contains('collapsed-message')) {
-                const collapseBtn = wrapper.querySelector('.msg-collapse-btn') as HTMLElement;
-                if (collapseBtn) {
-                    collapseBtn.click();
-                } else {
-                    wrapper.classList.add('collapsed-message');
-                    const previewPill = wrapper.querySelector('.collapsed-msg-preview') as HTMLElement;
-                    if (previewPill) {
-                        previewPill.innerHTML = '<span class="collapsed-badge lib" style="background:rgba(214,122,13,0.18); color:var(--vscode-charts-orange); border:1px solid rgba(214,122,13,0.35); padding:1px 6px; border-radius:10px; font-size:10px;"><i class="codicon codicon-library"></i> Librarian Report</span>';
-                        previewPill.style.display = 'inline-flex';
-                    }
-                }
+        if (librarianZones.length > 0) {
+            // Only collapse the librarian zone(s) themselves
+            librarianZones.forEach((zone: any) => {
+                zone.open = false;
+            });
+
+            // Keep the full message wrapper completely uncollapsed so all code, text, and tools remain visible
+            wrapper.classList.remove('collapsed-message');
+            const collapseBtn = wrapper.querySelector('.msg-collapse-btn') as HTMLElement;
+            if (collapseBtn) {
+                collapseBtn.innerHTML = '<i class="codicon codicon-chevron-down"></i>';
+            }
+            const previewPill = wrapper.querySelector('.collapsed-msg-preview') as HTMLElement;
+            if (previewPill) {
+                previewPill.style.display = 'none';
             }
         }
     });

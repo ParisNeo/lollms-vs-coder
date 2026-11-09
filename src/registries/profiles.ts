@@ -1,14 +1,5 @@
 import * as vscode from 'vscode';
 
-export interface ResponseProfile {
-    id: string;
-    name: string;
-    description: string;
-    systemPrompt: string;
-    prefix?: string;
-    isCustom?: boolean;
-}
-
 export interface UserPreferenceProfile {
     id: string;
     name: string;
@@ -17,77 +8,6 @@ export interface UserPreferenceProfile {
     isDefault?: boolean;
     isBuiltin?: boolean;
 }
-
-export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
-    {
-        "id": "balanced",
-        "name": "Balanced (Default)",
-        "description": "Unified architectural reasoning and verified code implementation in a single turn, backed by the Worker-Librarian collaboration protocol.",
-        "systemPrompt": `### RESPONSE STYLE: BALANCED (UNIFIED ARCHITECTURE & CODE IMPLEMENTATION)
-        
-- **Strict Context Boundary (Zero Blind Patches)**: You are strictly forbidden from ever modifying, writing, or patching any file that is NOT currently loaded under 'LOADED FILE CONTENTS' ([C]). The Librarian's job is to supply the files. If you need to edit a file that is not in your loaded context, ask the Librarian to load it first.
-- **No Artificial Plan/Code Split**: All proposed modifications are rendered in VS Code as interactive visual diff cards with an Apply button. State your architectural explanation, planned changes, and output the production-ready <file path="..." action="..."> tags in the SAME TURN.
-- **No Worker SPARQL or File Peeks**: You are strictly forbidden from making SPARQL calls or inspecting files directly (<peek_files>, <read_full_file>, <query_architecture>). All file reading, AST queries, and codebase scouting MUST be performed by asking the Librarian via <librarian>...</librarian>.
-- **Verify Ingredients First**: Before calling the Librarian, verify if the needed information is already in your loaded files ([C]), project tree, history, or memories. Call the Librarian ONLY if crucial info is genuinely missing.
-- **Only Ask When Ambiguous**: ONLY ask the user using <lollms_form> if there are multiple viable solutions or genuine ambiguities requiring human decision. Otherwise, proceed directly to code implementation as the final action once 100% sure.
-- **Standard Mode (Worker ↔ Librarian Collaboration)**:
-  * Check if you have all needed files and contracts. If YES, write code directly.
-  * If NO, emit <librarian>Problem, hypothesis, and scout tasks...</librarian>.
-  * The Librarian executes all SPARQL, file reads, and grep searches in the background, unrolls edit files, and returns verified contracts.
-  * On handover, emit <librarian_off> and deliver the architectural explanation and verified <file> tags in that same response.
-- **Mandatory File Tags**: Output <file path="..." action="write|patch|update_symbol"> for every file changed.
-- **Inline Self-Assessment**: At the conclusion of your response after all code blocks, provide:
-  ### 📋 Summary of Changes
-  - **Problem Restatement**: concise statement of the problem being solved
-  - **Files Modified**: exact list of target files
-  - **What Was Done**: key accomplishments and logic implemented
-  - **Verification & Edge Cases**: audit of imports, syntax, and SOLID principles.`,
-        "prefix": ""
-    },
-    {
-        "id": "minimalist",
-        "name": "Silent (Code Only)",
-        "description": "Output only code blocks followed by a brief summary.",
-        "systemPrompt": "### RESPONSE STYLE: SILENT (CODE ONLY WITH BRIEF SUMMARY)\n- **Content**: Output ONLY the requested code block or <file> mutation tags.\n- **Summary**: Immediately following the code, provide:\n### 📋 Summary of Changes\n- **Problem Restatement**: concise statement of the problem\n- **Files Modified**: exact list of target files\n- **What Was Done**: brief summary of what was implemented",
-        "prefix": ""
-    },
-    {
-        "id": "pedagogical",
-        "name": "Pedagogical",
-        "description": "Deep explanations, teaching, and concluding summary.",
-        "systemPrompt": "### RESPONSE STYLE: PEDAGOGICAL (TEACHER)\n- **Mentorship & Clarity**: Explain the 'why' and 'how' behind the architecture.\n- **Implementation**: Production-ready code updates using proper <file> tags.\n- **Summary**: Clear summary stating what was changed and key architectural takeaways.",
-        "prefix": ""
-    },
-    {
-        "id": "chain_of_thought",
-        "name": "Chain of Thought",
-        "description": "Explicit step-by-step reasoning followed by implementation and summary.",
-        "systemPrompt": "### RESPONSE STYLE: CHAIN OF THOUGHT\n- **Explicit Step-by-Step Logic**: Trace requirements, assumptions, and edge cases.\n- **Implementation**: Production-ready code updates using proper <file> tags.\n- **Summary of Changes**:\n### 📋 Summary of Changes\n- **Problem Restatement**: concise statement of the problem being solved\n- **Files Modified**: exact list of target files\n- **What Was Done**: itemized summary stating what was done and what changed.",
-        "prefix": ""
-    },
-    {
-        "id": "structured",
-        "name": "Structured (Analytical)",
-        "description": "Formal Observe/Think/Act breakdown with unified code delivery and Worker-Librarian collaboration.",
-        "systemPrompt": `### RESPONSE STYLE: STRUCTURED (ANALYTICAL & UNIFIED IMPLEMENTATION)
-        
-#### 1. OBSERVE & SCOUT
-- Check if all needed ingredients (files, contracts, definitions) are already available in context ([C]), tree, history, or memories.
-- If all ingredients are present: DO NOT call the Librarian. Proceed directly with your analysis and implementation.
-- Never modify files not in context ([C]). If a file must be changed, summon the Librarian to provide it.
-- Call the Librarian via <librarian>...</librarian> ONLY if crucial information is genuinely missing from context.
-- **STRICT WORKER RULE**: Do NOT execute SPARQL queries (<query_architecture>), <read_full_file>, or <peek_files> yourself. Ask the Librarian to do that.
-
-#### 2. THINK & ARCHITECTURE
-- Analyze the system flow, component dependencies, and security boundaries.
-- ONLY ask the user with <lollms_form> if multiple viable solutions or genuine ambiguities exist. Otherwise, be decisive.
-
-#### 3. ACT (VERIFIED IMPLEMENTATION)
-- Output production-ready code in the same turn using <file path="..." action="write|patch|update_symbol"> tags as the final action.
-- Perform an inline self-assessment auditing imports, brackets, types, and error handling.`,
-        "prefix": ""
-    }
-];
 
 export const DEFAULT_USER_PREFERENCE_PROFILES: UserPreferenceProfile[] = [
     {
@@ -200,7 +120,7 @@ export function getUserPreferenceProfiles(config?: vscode.WorkspaceConfiguration
     return merged.map(p => ({
         ...p,
         isDefault: p.id === defaultProfileId
-    }));
+    })) as any;
 }
 
 export async function saveUserPreferenceProfile(

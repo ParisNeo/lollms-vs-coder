@@ -23,7 +23,12 @@ export class QuickEditManager {
     ) {}
 
     public async triggerQuickEdit() {
-        const activeEditor = vscode.window.activeTextEditor;
+        let activeEditor = vscode.window.activeTextEditor;
+        if (!activeEditor || (activeEditor.document.uri.scheme !== 'file' && activeEditor.document.uri.scheme !== 'vscode-notebook-cell')) {
+            activeEditor = vscode.window.visibleTextEditors.find(e => 
+                e.document.uri.scheme === 'file' || e.document.uri.scheme === 'vscode-notebook-cell'
+            );
+        }
         const extUri = this.extensionUri || vscode.extensions.getExtension('parisneo.lollms-vs-coder')?.extensionUri;
         if (!extUri) {
             vscode.window.showErrorMessage("Failed to locate extension URI for Lollms Companion.");
@@ -34,7 +39,7 @@ export class QuickEditManager {
         panel.agentManager = this.contextManager?.agentManager;
         panel.discussionManager = this.discussionManager;
 
-        if (activeEditor && activeEditor.document.uri.scheme === 'file') {
+        if (activeEditor) {
             panel.setActiveEditor(activeEditor);
         }
 

@@ -115,7 +115,7 @@ export const toolPlugin: TagPlugin = {
         }).join('');
 
         return `
-        <div class="generation-block" style="border: 1px solid ${color}; border-left: 5px solid ${color};">
+        <div class="generation-block lollms-tool-block lollms-tool-card" id="${blockId}" data-tool-name="${toolName}" data-params='${JSON.stringify(params).replace(/'/g, "&apos;")}' style="border: 1px solid ${color}; border-left: 5px solid ${color};">
             <div class="generation-header" style="background: ${color}1a;">
                 <span class="summary-lang-label" style="color: ${color}; font-weight: 800;">
                     <i class="codicon codicon-${icon}"></i> ${groupLabel}: ${toolName.toUpperCase()}
@@ -149,10 +149,11 @@ export const toolPlugin: TagPlugin = {
     },
 
     initialize: (container, context) => {
-        const block = container.querySelector('.generation-block') as HTMLElement;
-        if (!block) return;
+        const blocks = container.querySelectorAll('.generation-block.lollms-tool-block, .generation-block');
+        if (blocks.length === 0) return;
 
-        const runTool = (button: HTMLButtonElement, autoReprompt: boolean) => {
+        blocks.forEach((block: any) => {
+            const runTool = (button: HTMLButtonElement, autoReprompt: boolean) => {
             const toolName = button.dataset.tool;
 
             // 1. Start with original params
@@ -220,6 +221,7 @@ export const toolPlugin: TagPlugin = {
                 e.stopPropagation();
                 runTool(btn, isReprompt);
             };
+        });
         });
     }
 };

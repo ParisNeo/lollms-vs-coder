@@ -146,13 +146,35 @@ export function isProjectFile(filePathOrItem: any): boolean {
     const p = typeof filePathOrItem === 'string' ? filePathOrItem : (filePathOrItem?.path || '');
     if (!p) return true;
     const norm = p.replace(/\\/g, '/').toLowerCase().trim();
-    const isInternal = norm.includes('.lollms/external_files') || 
-                       norm.startsWith('.lollms/external_files') ||
-                       norm.startsWith('external/') || 
-                       norm.includes('/external/') ||
-                       norm.startsWith('http') ||
-                       norm.includes('.lollms/');
-    return !isInternal;
+    if (
+        norm.includes('.lollms/external_files') || 
+        norm.startsWith('.lollms/external_files') ||
+        norm.startsWith('external/') || 
+        norm.includes('/external/') ||
+        norm.startsWith('http://') ||
+        norm.startsWith('https://') ||
+        norm.includes('.lollms/')
+    ) {
+        return false;
+    }
+
+    // Any absolute path outside active workspace folders is an external linked reference file
+    const isAbs = /^[a-zA-Z]:[\\/]/.test(norm) || norm.startsWith('/');
+    if (isAbs) {
+        if (typeof vscode !== 'undefined' && vscode.workspace && Array.isArray(vscode.workspace.workspaceFolders)) {
+            const isInsideAny = vscode.workspace.workspaceFolders.some(f => {
+                const fPath = f.uri.fsPath.replace(/\\/g, '/').toLowerCase().trim();
+                return norm === fPath || norm.startsWith(fPath + '/');
+            });
+            if (!isInsideAny) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 export function arePathsEqual(pathA: string, pathB: string): boolean {
@@ -2024,7 +2046,7 @@ export function parseFileTagAttributes(attrStr: string, rawContent?: string): Fi
     }
 
     let action: 'write' | 'patch' | 'update_symbol' = 'write';
-    if (actionRaw === 'write' || actionRaw === 'create' || actionRaw === 'overwrite' || actionRaw === 'new') {
+    if (actionRaw === 'write' || actionRaw === 'create' || actionRaw === 'overwrite' || actionRaw === 'new' || actionRaw === 'add') {
         action = 'write';
     } else if (actionRaw === 'update_symbol' || (symbol && actionRaw !== 'patch')) {
         action = 'update_symbol';
@@ -2058,7 +2080,15 @@ export function normalizePseudoFileBlocks(text: string): string {
     result = result.replace(fileHeaderRegex, (fullMatch, filePath, actionRaw, body) => {
         const cleanPath = (filePath || '').replace(/^[`"']|[`"']$/g, '').trim();
         if (!isValidFilePath(cleanPath)) return fullMatch;
-        const action = (actionRaw && actionRaw.toLowerCase().includes('write')) ? 'write' : 'patch';
+        const hasAider = body.includes('<<<<<<< SEARCH');
+        let action = 'write';
+        if (actionRaw) {
+            action = actionRaw.toLowerCase().includes('patch') ? 'patch' : 'write';
+        } else if (hasAider) {
+            action = 'patch';
+        } else {
+            action = 'write';
+        }
 
         if (body.includes('<file\b')) return fullMatch;
 

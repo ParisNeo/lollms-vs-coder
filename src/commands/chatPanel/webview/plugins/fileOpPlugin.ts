@@ -587,6 +587,7 @@ export const fileOpPlugin: TagPlugin = {
         let title = "", icon = "", command = "", btnText = "";
         let detailsHtml = "";
         let payload: any = {};
+        let allFullyActive = false;
 
         if (type === 'remove_files_from_context') {
             title = "Context Pruning Proposed";
@@ -628,7 +629,7 @@ export const fileOpPlugin: TagPlugin = {
             const fullyActiveLines = linesStatus.filter(x => x.status === 'full_content').map(x => x.path);
 
             const needsActivationLines = [...mutedLines, ...structureOnlyLines, ...notInContextLines];
-            const allFullyActive = needsActivationLines.length === 0;
+            allFullyActive = needsActivationLines.length === 0;
 
             let btnText = "Activate Full Content";
             if (allFullyActive) {
@@ -926,9 +927,14 @@ export const loadStructurePlugin: TagPlugin = {
                             <span class="codicon codicon-symbol-class" style="color: var(--vscode-charts-blue);"></span>
                             <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${f}</span>
                         </div>
-                        <button class="code-action-btn secondary-btn peek-file-open-btn" data-path="${f}" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Open file in editor">
-                            <span class="codicon codicon-file"></span>
-                        </button>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <button class="code-action-btn secondary-btn copy-single-structure-btn" data-path="${f}" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Copy structure &amp; signatures for this file to clipboard">
+                                <i class="codicon codicon-copy"></i>
+                            </button>
+                            <button class="code-action-btn secondary-btn peek-file-open-btn" data-path="${f}" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Open file in editor">
+                                <span class="codicon codicon-file"></span>
+                            </button>
+                        </div>
                     </div>
                 `).join('')}
             </div>` : '';
@@ -941,6 +947,9 @@ export const loadStructurePlugin: TagPlugin = {
                     <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${titleText}</span>
                 </div>
                 <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                    <button class="code-action-btn secondary-btn copy-structure-btn" data-files="${encodedFiles}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 8px;" title="Copy extracted structure and signatures to clipboard">
+                        <i class="codicon codicon-copy"></i> Copy Structure
+                    </button>
                     <button class="code-action-btn apply-btn load-structure-btn" data-files="${encodedFiles}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold;">
                         <i class="codicon codicon-symbol-class"></i> Load Structure (${paths.length > 1 ? `${paths.length} Files &middot; ` : ''}Tokens Saved)
                     </button>
@@ -954,11 +963,46 @@ export const loadStructurePlugin: TagPlugin = {
             </div>
             <div class="expansion-body" style="padding: 8px 12px; font-size: 11px; opacity: 0.85;">
                 ${filesListHtml}
-                <div>The AI requested the architectural structure and typed signatures for <strong>${paths.length === 1 ? paths[0] : `${paths.length} files`}</strong> without loading full file bodies to conserve context budget.</div>
+                <div>The AI requested the architectural structure and typed signatures for <strong>${paths.length === 1 ? paths[0] : `${paths.length} files`}</strong>. Note: Generating structure takes extra analysis time; privilege using Unmute to load full code when context budget allows. Unmuting upgrades structure files directly to full code.</div>
             </div>
         </div>`;
     },
     initialize: (container, context) => {
+        container.querySelectorAll('.copy-structure-btn, .copy-single-structure-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const raw = btnEl.dataset.files;
+                let files: string[] = [];
+                try {
+                    files = JSON.parse(decodeURIComponent(raw || '[]'));
+                } catch {
+                    if (btnEl.dataset.path) files = [btnEl.dataset.path];
+                }
+                if (btnEl.dataset.path && !files.includes(btnEl.dataset.path)) {
+                    files.push(btnEl.dataset.path);
+                }
+                if (files.length === 0) return;
+
+                const origHtml = btnEl.innerHTML;
+                btnEl.disabled = true;
+                btnEl.innerHTML = `<i class="codicon codicon-loading spin"></i> Copying...`;
+
+                context.vscode.postMessage({
+                    command: 'copyStructureToClipboard',
+                    files
+                });
+
+                setTimeout(() => {
+                    btnEl.disabled = false;
+                    btnEl.innerHTML = `<i class="codicon codicon-check"></i> Copied!`;
+                    setTimeout(() => {
+                        btnEl.innerHTML = origHtml;
+                    }, 2000);
+                }, 500);
+            };
+        });
+
         container.querySelectorAll('.load-structure-btn').forEach(btn => {
             (btn as HTMLElement).onclick = (e: MouseEvent) => {
                 e.stopPropagation();
@@ -1131,7 +1175,12 @@ export const showSymbolPlugin: TagPlugin = {
                             <span class="codicon codicon-symbol-method" style="color: var(--vscode-charts-orange);"></span>
                             <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600;">${s}</span>
                         </div>
-                        <span class="file-token-badge weight-light" style="font-size: 9px; border-color: rgba(255, 152, 0, 0.4); color: var(--vscode-charts-orange);">Symbol</span>
+                        <div style="display: flex; align-items: center; gap: 6px;">
+                            <span class="file-token-badge weight-light" style="font-size: 9px; border-color: rgba(255, 152, 0, 0.4); color: var(--vscode-charts-orange);">Symbol</span>
+                            <button class="code-action-btn secondary-btn copy-single-sym-btn" data-target="${filePath}" data-symbol="${s}" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Copy this symbol code to clipboard">
+                                <i class="codicon codicon-copy"></i>
+                            </button>
+                        </div>
                     </div>
                 `).join('')}
             </div>` : '';
@@ -1144,6 +1193,9 @@ export const showSymbolPlugin: TagPlugin = {
                     <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Symbol Code Request: ${displayLabel}</span>
                 </div>
                 <div style="display: flex; gap: 6px;">
+                    <button class="code-action-btn secondary-btn copy-sym-btn" data-target="${filePath}" data-symbols="${encodedSymbols}" style="height: 22px; font-size: 10px; padding: 0 8px;" title="Copy symbol code to clipboard">
+                        <i class="codicon codicon-copy"></i> Copy Symbol
+                    </button>
                     <button class="code-action-btn apply-btn execute-sym-btn" data-target="${filePath}" data-symbols="${encodedSymbols}" data-message-id="${context.messageId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold; background: var(--vscode-charts-orange) !important; color: white !important;">
                         <i class="codicon codicon-play"></i> Inspect &amp; Reprompt (${symbols.length > 1 ? `${symbols.length} Symbols` : 'Symbol'})
                     </button>
@@ -1156,6 +1208,45 @@ export const showSymbolPlugin: TagPlugin = {
         </div>`;
     },
     initialize: (container, context) => {
+        container.querySelectorAll('.copy-sym-btn, .copy-single-sym-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const target = btnEl.dataset.target;
+                const symbol = btnEl.dataset.symbol;
+                const rawSymbols = btnEl.dataset.symbols;
+                if (!target) return;
+
+                let symbols: string[] = [];
+                if (rawSymbols) {
+                    try { symbols = JSON.parse(decodeURIComponent(rawSymbols)); } catch { symbols = [rawSymbols]; }
+                }
+                if (symbol && !symbols.includes(symbol)) {
+                    symbols = [symbol];
+                }
+
+                const origHtml = btnEl.innerHTML;
+                btnEl.disabled = true;
+                btnEl.innerHTML = `<i class="codicon codicon-loading spin"></i> Copying...`;
+
+                context.vscode.postMessage({
+                    command: 'executeShowSymbol',
+                    target,
+                    symbols: symbols.length > 0 ? symbols : undefined,
+                    symbol: symbols.length === 1 ? symbols[0] : undefined,
+                    copyOnly: true
+                });
+
+                setTimeout(() => {
+                    btnEl.disabled = false;
+                    btnEl.innerHTML = `<i class="codicon codicon-check"></i> Copied!`;
+                    setTimeout(() => {
+                        btnEl.innerHTML = origHtml;
+                    }, 2000);
+                }, 500);
+            };
+        });
+
         container.querySelectorAll('.execute-sym-btn').forEach(btn => {
             (btn as HTMLElement).onclick = (e: MouseEvent) => {
                 e.stopPropagation();
@@ -1186,13 +1277,53 @@ export const showSymbolPlugin: TagPlugin = {
     }
 };
 
+export function extractPeekPaths(attrStr: string, inner: string): string[] {
+    const paths: string[] = [];
+    const addPath = (raw: string) => {
+        if (!raw) return;
+        const clean = raw.trim().replace(/^['"`]|['"`]$/g, '').replace(/^-\s*/, '').trim();
+        if (clean && !clean.startsWith('<') && !paths.includes(clean)) {
+            paths.push(clean);
+        }
+    };
+
+    const attrRegex = /(?:path|paths|file|files|target)=["']([^"']+)["']/gi;
+    let aMatch: RegExpExecArray | null;
+    while ((aMatch = attrRegex.exec(attrStr)) !== null) {
+        const val = aMatch[1].trim();
+        if (val.startsWith('[') && val.endsWith(']')) {
+            try {
+                const parsed = JSON.parse(val.replace(/'/g, '"'));
+                if (Array.isArray(parsed)) {
+                    parsed.forEach(p => addPath(String(p)));
+                }
+            } catch {
+                val.slice(1, -1).split(/[\r\n,]+/).forEach(addPath);
+            }
+        } else {
+            val.split(/[\r\n,;\s]+/).forEach(addPath);
+        }
+    }
+
+    if (inner && inner.trim()) {
+        const lines = inner.split(/[\r\n,;]+/);
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('<')) continue;
+            trimmed.split(/\s+/).forEach(addPath);
+        }
+    }
+
+    return paths;
+}
+
 export const peekFilesPlugin: TagPlugin = {
     id: 'peek_files',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/gim,
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/peek_files>)?)/gim,
     render: (match, context) => {
         const attrStr = match[1] || "";
         const inner = (match[2] || "").trim();
-        const rawPaths = inner.split(/[\s\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(p => p && !p.startsWith('<'));
+        const rawPaths = extractPeekPaths(attrStr, inner);
         if (rawPaths.length === 0) return null;
 
         const linesMatch = attrStr.match(/lines=["']?(\d+)["']?/i);

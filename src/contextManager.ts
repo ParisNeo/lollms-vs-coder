@@ -39,7 +39,7 @@ export class ContextManager {
   private lollmsAPI: LollmsAPI;
   private toolManager?: any;
   public agentManager?: any; // Set dynamically from chatPanel
-  private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg']);
+  private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']);
   private docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.msg', '.odt', '.rtf', '.csv', '.tsv']);
   private binaryExtensions = new Set([
     '.pth', '.pt', '.onnx', '.tflite', '.pb', '.h5', '.hdf5', '.pkl', '.bin',
@@ -51,6 +51,7 @@ export class ContextManager {
   private extensionToLanguageMap: { [key: string]: string } = {
     'py': 'python', 'js': 'javascript', 'jsx': 'javascript', 'ts': 'typescript',
     'tsx': 'typescript', 'vue': 'vue', 'rs': 'rust', 'sh': 'bash', 'md': 'markdown',
+    'svg': 'xml',
     'json': 'json', 'html': 'html', 'css': 'css', 'scss': 'scss', 'less': 'less',
     'cpp': 'cpp', 'c': 'c', 'h': 'c', 'hpp': 'cpp', 'cs': 'csharp', 'go': 'go',
     'java': 'java', 'php': 'php', 'rb': 'ruby', 'swift': 'swift', 'kt': 'kotlin',
@@ -83,6 +84,7 @@ private _cachedTreeString: string | null = null;
   private _fileTreeObject: any = null;
   private _fileContentCache!: Map<string, { content: string, mtime: number, size: number, state: ContextState }>;
   private _cachedIsolatedTrees = new Map<string, string>(); // Caches the rendered tree per workspace folder
+  private _saveTokenCacheDebounceTimer?: NodeJS.Timeout;
   private _cachedVisibleFiles: string[] | null = null;
   private _recentlyAddedFiles: Map<string, number> = new Map();
   private _unpackedDirectories: Set<string> = new Set();
@@ -568,12 +570,20 @@ private _cachedTreeString: string | null = null;
     if (folders.length === 0) return null;
 
     let normalized = namespacedPath.replace(/\\/g, '/').trim();
-    normalized = normalized.replace(/^\.?\/+/, '');
+    if (/^\/[a-zA-Z]:[\\/]/.test(normalized)) {
+      normalized = normalized.substring(1);
+    }
+
+    const isOriginalAbsolute = path.isAbsolute(normalized) || /^[a-zA-Z]:[\\/]/.test(normalized);
 
     // 1. Path Traversal Blocking
     if (normalized.includes('../') || normalized.includes('..\\')) {
       Logger.warn(`Blocked traversal attempt: ${namespacedPath}`);
       return null;
+    }
+
+    if (!isOriginalAbsolute) {
+      normalized = normalized.replace(/^\.?\/+/, '');
     }
 
     const isWindows = process.platform === 'win32';
@@ -973,6 +983,10 @@ private _cachedTreeString: string | null = null;
       treeString += '\n```\n';
 
       if (!signal?.aborted && Object.keys(projectTreeObj).length > 0) {
+          if (this._cachedIsolatedTrees.size >= 5) {
+              const firstKey = this._cachedIsolatedTrees.keys().next().value;
+              if (firstKey !== undefined) this._cachedIsolatedTrees.delete(firstKey);
+          }
           this._cachedIsolatedTrees.set(cacheKey, treeString);
       }
       return treeString;
@@ -1140,6 +1154,10 @@ private _cachedTreeString: string | null = null;
       treeString += '```\n';
 
       if (!signal?.aborted) {
+        if (this._cachedProjectTreeMap.size >= 5) {
+          const firstKey = this._cachedProjectTreeMap.keys().next().value;
+          if (firstKey !== undefined) this._cachedProjectTreeMap.delete(firstKey);
+        }
         this._cachedProjectTreeMap.set(projectTreeCacheKey, treeString);
       }
       return treeString;
@@ -1253,12 +1271,20 @@ private _cachedTreeString: string | null = null;
         result.text += `1. **Addressing**: Address files using their exact relative path from the workspace root (e.g. \`path/to/file.ext\`, exactly as shown in the tree below). Do NOT invent, assume, or prepend nonexistent root folders.\n`;
     }
     result.text += `2. **Possessed Files (DO NOT RE-REQUEST)**: You already possess the complete source code for all **${contextFiles.length}** file(s) marked **\`[C]\`** under 'LOADED FILE CONTENTS'. Calling \`<add_files_to_context>\` or \`read_file\` for possessed files is STRICTLY FORBIDDEN and wastes context tokens.\n`;
-    result.text += `3. **Unpossessed Files (NO PATH HALLUCINATIONS)**: Files with no marker have hidden content. To load them, use \`<add_files_to_context>\` with the EXACT path from the tree. Never guess or hallucinate paths that do not exist in the tree.\n\n`;
+    result.text += `3. **Privilege Full Code via Unmute (<unmute_files>)**:
+- Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` directly transitions any file from either **Muted (\`[M]\`)** OR **Structure-Only (\`[D]\`)** to **Full Code (\`[C]\`)**.
+- Always **privilege using unmute (full code)** whenever you are not heavily constrained by token budget. Generating structure from code requires complex AST parsing and takes extra time.
+- If you need to inspect or modify code and context space allows, output \`<unmute_files>\` to load the complete file immediately.\n`;
+    result.text += `4. **Use Structure Mode (<load_structure>) ONLY When Heavily Constrained**:
+- Do NOT default to \`<load_structure>\` unless the context is genuinely bloated or you are tightly constrained by token limits.
+- Structure mode (\`<load_structure path="path/to/file.ext" />\`) provides only signatures and interfaces without implementation bodies. It is strictly for reference when token capacity is scarce. Files in structure mode CANNOT be edited directly.
+- Note: If a file is in structure mode \`[D]\` and you later need its full content or need to modify it, call \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to upgrade it directly from structure to full code (\`[C]\`).\n`;
+    result.text += `5. **Unpossessed Files (NO PATH HALLUCINATIONS)**: Files with no marker have hidden content. To load them, use \`<add_files_to_context>\` with the EXACT path from the tree. Never guess or hallucinate paths that do not exist in the tree.\n\n`;
 
     result.text += `### 🏷️ CONTEXT MARKERS (LEGEND)\n`;
-    result.text += `- **\`[C]\` (Content Loaded)**: Full source code is ALREADY in memory under 'LOADED FILE CONTENTS'. DO NOT request with <add_files_to_context>.\n`;
-    result.text += `- **\`[M]\` (Muted in Context)**: The file is already tracked in your context, but its content is currently muted (0 tokens) to preserve context budget. DO NOT call <add_files_to_context>! Output \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to restore its content. Output \`<mute_files>\\npath/to/file.ext\\n</mute_files>\` to mute active files.\n`;
-    result.text += `- **\`[D]\` (Definitions Only)**: Signatures are loaded.\n`;
+    result.text += `- **\`[C]\` (Full Content Loaded)**: Full source code is ALREADY in memory under 'LOADED FILE CONTENTS'. Ready for editing.\n`;
+    result.text += `- **\`[M]\` (Muted in Context)**: Content is muted (0 tokens). Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` un-mutes it and loads full code (\`[C]\`).\n`;
+    result.text += `- **\`[D]\` (Structure / Definitions Only)**: Only signatures/structure are loaded. Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` upgrades this file directly from structure-only to full code (\`[C]\`). Keep structure only when context is too bloated or files are reference-only.\n`;
     result.text += `- **(No Marker)**: File content is HIDDEN. Use <add_files_to_context> with the exact tree path to load it.\n\n`;
     
     if (options?.capabilities?.includeGitInfo) {
@@ -1591,8 +1617,8 @@ private _cachedTreeString: string | null = null;
           }
         }
 
-          if (fileContent.length < 500000) { // Cache loaded files under 500KB to prevent heap bloat
-            if (this._fileContentCache.size >= 60) { // Limit to 60 most recent files (max ~25MB RAM)
+          if (fileContent.length < 300000) { // Cache loaded files under 300KB to prevent heap bloat
+            if (this._fileContentCache.size >= 30) { // Limit to 30 most recent files (max ~9MB RAM)
               const oldestKey = this._fileContentCache.keys().next().value;
               if (oldestKey !== undefined) {
                 this._fileContentCache.delete(oldestKey);
@@ -1632,11 +1658,8 @@ private _cachedTreeString: string | null = null;
   result.governorReport = liveKnowledge || await this.getStructureGuide();
   this._lastContext = result;
   if (options?.discussionId) {
-    if (this._lastContextByDiscussion.size >= 3) {
-      const oldestDiscId = this._lastContextByDiscussion.keys().next().value;
-      if (oldestDiscId) {
-        this._lastContextByDiscussion.delete(oldestDiscId);
-      }
+    if (this._lastContextByDiscussion.size >= 1) {
+      this._lastContextByDiscussion.clear();
     }
     this._lastContextByDiscussion.set(options.discussionId, result);
   }
@@ -1977,13 +2000,18 @@ ${text.substring(0, 10000)}`;
     if (!filePath) return true;
     const norm = filePath.replace(/\\/g, '/').toLowerCase().trim();
 
+    if (norm.includes('.lollms/external_files') || norm.includes('.lollms/skills') || norm.includes('.lollms/selection')) {
+      return false;
+    }
+
+    if (norm.includes('.lollms/') || norm.endsWith('.lollms')) {
+      return true;
+    }
+
     const blockedDirs = [
-      'node_modules', '.git', '.github', '.lollms',
-      'venv', '.venv', 'env', '.env', 'virtualenv', 'conda-env',
-      '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
-      'dist', 'build', 'out', 'bin', 'obj', 'target',
-      'data', 'data_workspace', '.idea', '.vscode',
-      '.next', '.nuxt', '.turbo', '.svelte-kit', '.cache'
+      'node_modules', '.git',
+      'venv', '.venv', 'virtualenv', 'conda-env',
+      '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox'
     ];
 
     for (const d of blockedDirs) {
@@ -1994,19 +2022,13 @@ ${text.substring(0, 10000)}`;
 
     const blockedExts = [
       '.min.js', '.min.css', '.map', '.pyc', '.pyo', '.pyd',
-      '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg',
-      '.pdf', '.zip', '.tar', '.gz', '.7z', '.exe', '.dll', '.bin',
-      '.lock'
+      '.zip', '.tar', '.gz', '.7z', '.exe', '.dll', '.bin'
     ];
 
     for (const ext of blockedExts) {
       if (norm.endsWith(ext)) {
         return true;
       }
-    }
-
-    if (norm.endsWith('package-lock.json') || norm.endsWith('yarn.lock') || norm.endsWith('pnpm-lock.yaml')) {
-      return true;
     }
 
     return false;
@@ -3699,11 +3721,18 @@ Example:
   }
 
   private async savePersistentTokenCache() {
-    const { getLollmsStorageUri } = require('./utils');
-    const storage = getLollmsStorageUri(this.context);
-    const cachePath = vscode.Uri.joinPath(storage, 'token_cache.json');
-    const content = Buffer.from(JSON.stringify(this._tokenCache, null, 2), 'utf8');
-    await vscode.workspace.fs.writeFile(cachePath, content);
+    if (this._saveTokenCacheDebounceTimer) {
+      clearTimeout(this._saveTokenCacheDebounceTimer);
+    }
+    this._saveTokenCacheDebounceTimer = setTimeout(async () => {
+      try {
+        const { getLollmsStorageUri } = require('./utils');
+        const storage = getLollmsStorageUri(this.context);
+        const cachePath = vscode.Uri.joinPath(storage, 'token_cache.json');
+        const content = Buffer.from(JSON.stringify(this._tokenCache, null, 2), 'utf8');
+        await vscode.workspace.fs.writeFile(cachePath, content);
+      } catch {}
+    }, 1000);
   }
 
   public async getCachedTokens(filePath: string, currentHash: string): Promise<number | null> {
@@ -3767,6 +3796,40 @@ Example:
     return result;
   }
 
+  public async removeExternalLink(targetPathOrUri: string | vscode.Uri, folder?: vscode.WorkspaceFolder): Promise<boolean> {
+    const wsFolder = folder || vscode.workspace.workspaceFolders?.[0];
+    if (!wsFolder) return false;
+
+    const rawPath = typeof targetPathOrUri === 'string' ? targetPathOrUri : targetPathOrUri.fsPath;
+    const cleanNorm = rawPath.replace(/\\/g, '/').toLowerCase().trim();
+
+    this._externalLinksCache = null;
+    const linksMap = await this.getExternalLinks(wsFolder);
+    let matchedKey: string | null = null;
+
+    for (const [key, info] of linksMap.entries()) {
+      const kClean = key.toLowerCase().trim();
+      const targetClean = (info.targetPath || '').replace(/\\/g, '/').toLowerCase().trim();
+      if (kClean === cleanNorm || targetClean === cleanNorm || kClean.endsWith('/' + cleanNorm) || cleanNorm.endsWith('/' + kClean)) {
+        matchedKey = key;
+        break;
+      }
+    }
+
+    if (matchedKey) {
+      linksMap.delete(matchedKey);
+      const linksFileUri = vscode.Uri.joinPath(wsFolder.uri, '.lollms', 'external_links.json');
+      const serialized: Record<string, any> = {};
+      linksMap.forEach((v, k) => { serialized[k] = v; });
+      try {
+        await vscode.workspace.fs.writeFile(linksFileUri, Buffer.from(JSON.stringify(serialized, null, 2), 'utf8'));
+      } catch {}
+      this._externalLinksCache = null;
+      return true;
+    }
+    return false;
+  }
+
   public async addExternalLink(targetUri: vscode.Uri, folder?: vscode.WorkspaceFolder): Promise<string> {
     const wsFolder = folder || vscode.workspace.workspaceFolders?.[0];
     if (!wsFolder) throw new Error("No workspace folder open.");
@@ -3775,6 +3838,9 @@ Example:
     await vscode.workspace.fs.stat(targetUri);
     const originalPath = targetUri.fsPath.replace(/\\/g, '/');
     const fileName = path.basename(targetUri.fsPath);
+
+    // Invalidate in-memory cache so fresh links map is read
+    this._externalLinksCache = null;
 
     // Track original path in external_links.json without copying any file content
     const linksMap = await this.getExternalLinks(wsFolder);
@@ -3789,6 +3855,9 @@ Example:
     linksMap.forEach((v, k) => { serialized[k] = v; });
     await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(wsFolder.uri, '.lollms')).then(undefined, () => {});
     await vscode.workspace.fs.writeFile(linksFileUri, Buffer.from(JSON.stringify(serialized, null, 2), 'utf8'));
+
+    // Invalidate again after write so subsequent calls get the updated map
+    this._externalLinksCache = null;
 
     // Directly register original path into context
     await this.contextStateProvider?.addFilesToContext([originalPath]);

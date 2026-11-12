@@ -440,6 +440,7 @@ export const dom = {
     get skillsCloseBtn() { return document.getElementById('skills-close-btn') as HTMLSpanElement; },
 
     // Web Discovery
+    get customExternalTextModal() { return document.getElementById('custom-external-text-modal') as HTMLDivElement; },
     get webContextBtn() { return document.getElementById('web-context-btn') as HTMLButtonElement; },
     get webModal() { return document.getElementById('web-modal') as HTMLDivElement; },
     get webModalCloseBtn() { return document.getElementById('web-modal-close-btn') as HTMLSpanElement; },

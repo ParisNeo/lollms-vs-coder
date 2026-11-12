@@ -1270,8 +1270,10 @@ export function updateLoaderStatus(status: string, stats?: { files?: number, tok
 export function setCalculatingTokens(isCalculating: boolean, text?: string) {
     const label = document.getElementById('token-count-label');
     const quickRefreshIcon = document.querySelector('#hud-quick-refresh-btn .codicon');
+    const hudSpinner = document.getElementById('hud-spinner');
 
     if (isCalculating) {
+        if (hudSpinner) hudSpinner.style.display = 'inline-flex';
         if (label) {
             if (state.lastTokenMetrics && state.lastTokenMetrics.totalTokens > 0) {
                 const prevTotal = state.lastTokenMetrics.totalTokens.toLocaleString();
@@ -1283,7 +1285,12 @@ export function setCalculatingTokens(isCalculating: boolean, text?: string) {
         }
         if (quickRefreshIcon) quickRefreshIcon.classList.add('spin');
     } else {
+        if (hudSpinner) hudSpinner.style.display = 'none';
         if (quickRefreshIcon) quickRefreshIcon.classList.remove('spin');
+        if (label && state.lastTokenMetrics && state.lastTokenMetrics.totalTokens > 0) {
+            const isApprox = state.lastTokenMetrics.isApproximate ? 'Est. ' : '';
+            label.textContent = `${isApprox}Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()}`;
+        }
     }
 }
 (window as any).setCalculatingTokens = setCalculatingTokens;
@@ -2143,6 +2150,7 @@ export class BadgesBinder {
         const optionsList = [
             { label: '🧠 Thinking Mode', icon: 'codicon-circuit-board', key: 'thinkingMode' },
             { label: '📚 Librarian Mode', icon: 'codicon-library', key: 'librarianMode' },
+            { label: '⚡ Auto-Execute Tools', icon: 'codicon-play', key: 'autoExecuteTools' },
             { label: '📊 SPARQL Engine', icon: 'codicon-graph', key: 'sparqlEnabled' },
             { label: '🔍 GREP Indexer', icon: 'codicon-search', key: 'grepEnabled' },
             { label: '🌍 Web Research', icon: 'codicon-globe', key: 'webSearch' },
@@ -2159,6 +2167,7 @@ export class BadgesBinder {
 
         menu.innerHTML = optionsList.map(opt => {
             const checked = opt.key === 'librarianMode' ? caps.fastMode === false :
+                            opt.key === 'autoExecuteTools' ? caps.autoExecuteTools === true :
                             opt.key === 'sparqlEnabled' ? caps.sparqlEnabled !== false :
                             opt.key === 'grepEnabled' ? caps.grepEnabled !== false :
                             opt.key === 'projectMemoryEnabled' ? caps.projectMemoryEnabled !== false :
@@ -2208,6 +2217,20 @@ export class BadgesBinder {
                         command: 'updateDiscussionCapabilitiesPartial',
                         partial: { fastMode: newFast }
                     });
+                    updateBadges();
+                    return;
+                }
+
+                if (key === 'autoExecuteTools') {
+                    if (state.capabilities) {
+                        state.capabilities.autoExecuteTools = isChecked;
+                    }
+                    vscode.postMessage({
+                        command: 'updateDiscussionCapabilitiesPartial',
+                        partial: { autoExecuteTools: isChecked }
+                    });
+                    const capInput = document.getElementById('cap-autoExecuteTools') as HTMLInputElement;
+                    if (capInput) capInput.checked = isChecked;
                     updateBadges();
                     return;
                 }
@@ -2497,16 +2520,7 @@ export function updateBadges() {
         infraGroup.appendChild(badgeWrapper);
     }
 
-    // Render & Bind Response Style Mode (Balanced/Structured/Minimalist)
-    const currentProfileId = caps.responseProfileId || 'balanced';
-    const currentProfile = state.profiles.find(p => p.id === currentProfileId) || state.profiles[0];
-    if (currentProfile) {
-        const div = document.createElement('div');
-        div.innerHTML = BadgesPresenter.renderResponseProfileBadge(currentProfile.name, currentProfile.description);
-        const badgeWrapper = div.firstElementChild as HTMLElement;
-        BadgesBinder.bindResponseProfileMenu(badgeWrapper, state.profiles, currentProfileId);
-        infraGroup.appendChild(badgeWrapper);
-    }
+
 
     // --- OPERATIONAL MODE BADGE (Assistant / Agent) INSIDE PRIMARY INFRA GROUP ---
     const isAgent = caps.agentMode === true;
@@ -2530,6 +2544,64 @@ export function updateBadges() {
     BadgesBinder.bindOperationalModeMenu(operationalModeWrapper, isAssistant, false, isAgent);
     infraGroup.appendChild(operationalModeWrapper);
 
+    // --- 📚 LIBRARIAN MODE SELECTION IN HUD ---
+    const isLibrarian = caps.fastMode === false;
+    const libDiv = document.createElement('div');
+    libDiv.className = 'badge-wrapper';
+    libDiv.innerHTML = `
+        <span id="hud-librarian-badge" class="mode-badge ${isLibrarian ? 'active librarian' : 'inactive'} clickable" style="${isLibrarian ? 'background-color: var(--vscode-charts-orange); color: white; border-color: var(--vscode-charts-orange);' : ''}" title="${isLibrarian ? 'Librarian Mode: ACTIVE (Evaluates dependencies & architecture before coding). Click to switch to Fast Mode.' : 'Librarian Mode: INACTIVE (Fast Mode active). Click to activate Librarian Mode.'}">
+            <span class="codicon codicon-library" style="margin-right: 4px;"></span>
+            <span class="badge-label">${isLibrarian ? '📚 Librarian' : '⚡ Fast Mode'}</span>
+            <span class="badge-toggle-btn codicon ${isLibrarian ? 'codicon-pass-filled' : 'codicon-circle-large-outline'}" style="margin-left: 4px;"></span>
+        </span>
+    `;
+    const libBadge = libDiv.querySelector('#hud-librarian-badge') as HTMLElement;
+    if (libBadge) {
+        libBadge.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const currentFast = state.capabilities?.fastMode !== false;
+            const newFast = !currentFast;
+            if (state.capabilities) state.capabilities.fastMode = newFast;
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { fastMode: newFast }
+            });
+            updateBadges();
+        };
+    }
+    infraGroup.appendChild(libDiv);
+
+    // --- ⚡ AUTO-EXECUTE TOOLS MODE SELECTION IN HUD ---
+    const isAutoTools = caps.autoExecuteTools === true;
+    const toolsDiv = document.createElement('div');
+    toolsDiv.className = 'badge-wrapper';
+    toolsDiv.innerHTML = `
+        <span id="hud-auto-tools-badge" class="mode-badge ${isAutoTools ? 'active auto-tools' : 'inactive'} clickable" style="${isAutoTools ? 'background-color: var(--vscode-charts-green); color: white; border-color: var(--vscode-charts-green);' : ''}" title="${isAutoTools ? 'Auto-Execute Tools: ACTIVE (Automatically executes tools and triggers next round). Click to disable.' : 'Auto-Execute Tools: INACTIVE (Manual tool clicking). Click to activate.'}">
+            <span class="codicon ${isAutoTools ? 'codicon-play' : 'codicon-tools'}" style="margin-right: 4px;"></span>
+            <span class="badge-label">${isAutoTools ? '⚡ Auto-Tools' : '🛠️ Manual Tools'}</span>
+            <span class="badge-toggle-btn codicon ${isAutoTools ? 'codicon-pass-filled' : 'codicon-circle-large-outline'}" style="margin-left: 4px;"></span>
+        </span>
+    `;
+    const toolsBadge = toolsDiv.querySelector('#hud-auto-tools-badge') as HTMLElement;
+    if (toolsBadge) {
+        toolsBadge.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const currentAuto = state.capabilities?.autoExecuteTools === true;
+            const newAuto = !currentAuto;
+            if (state.capabilities) state.capabilities.autoExecuteTools = newAuto;
+            vscode.postMessage({
+                command: 'updateDiscussionCapabilitiesPartial',
+                partial: { autoExecuteTools: newAuto }
+            });
+            const capInput = document.getElementById('cap-autoExecuteTools') as HTMLInputElement;
+            if (capInput) capInput.checked = newAuto;
+            updateBadges();
+        };
+    }
+    infraGroup.appendChild(toolsDiv);
+
     // --- AGENT CRITICAL SPECIFIC PROFILE ---
     if (isAgent && state.agentProfiles && state.agentProfiles.length > 0) {
         const currentProfileId = caps.activeAgentProfileId || 'software_architect';
@@ -2549,6 +2621,7 @@ export function updateBadges() {
     const activeIcons: string[] = [];
     if (caps.thinkingMode) activeIcons.push('🧠');
     if (caps.fastMode === false) activeIcons.push('📚');
+    if (caps.autoExecuteTools === true) activeIcons.push('⚡');
     if (caps.sparqlEnabled !== false) activeIcons.push('📊');
     if (caps.grepEnabled !== false) activeIcons.push('🔍');
     if (caps.webSearch === true) activeIcons.push('🌍');
@@ -2588,22 +2661,8 @@ export function updateBadges() {
     if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds?.toString() || '2';
     if (dom.capProjectMemory) dom.capProjectMemory.checked = caps.projectMemoryEnabled !== false;
 
-    const isLibrarian = caps.fastMode === false;
-    const topLibBtn = document.getElementById('toggleLibrarianModeBtn') || document.getElementById('toggleFastModeBtn');
-    if (topLibBtn) {
-        topLibBtn.classList.toggle('active', isLibrarian);
-        topLibBtn.setAttribute('title', isLibrarian
-            ? "Librarian Mode: ACTIVE (Evaluates dependencies and plans before coding). Click to switch back to Fast Mode (default)."
-            : "Librarian Mode: Inactive (Fast Mode is default). Click to activate Librarian backed mode.");
-    }
-
-    const inputLibBtn = document.getElementById('librarianModeInputBtn') || document.getElementById('fastModeInputBtn');
-    if (inputLibBtn) {
-        inputLibBtn.classList.toggle('active', isLibrarian);
-        inputLibBtn.setAttribute('title', isLibrarian
-            ? "Librarian Mode: ACTIVE (Evaluates dependencies and plans before coding). Click to switch back to Fast Mode (default)."
-            : "Librarian Mode: Inactive (Fast Mode is default). Click to activate Librarian backed mode.");
-    }
+    const autoToolsCapCheck = document.getElementById('cap-autoExecuteTools') as HTMLInputElement;
+    if (autoToolsCapCheck) autoToolsCapCheck.checked = caps.autoExecuteTools === true;
 }
 // Global exposure for events.ts
 (window as any).closeProfileEditor = () => {
@@ -5577,7 +5636,10 @@ export function renderWizardFileList(searchQuery: string = '') {
 }
 (window as any).renderWizardFileList = renderWizardFileList;
 
-export function openNewDiscussionWizard(selections: (string | { name: string; fileName: string; fileCount?: number })[] = []) {
+export function openNewDiscussionWizard(
+    selections: (string | { name: string; fileName: string; fileCount?: number })[] = [],
+    initialFiles?: any[]
+) {
     if (!dom.wizardModal) return;
 
     // Reset staged images and candidate lists
@@ -5585,8 +5647,16 @@ export function openNewDiscussionWizard(selections: (string | { name: string; fi
     (window as any).wizardStagedImages = wizardStagedImages;
     renderWizardStagedImages();
 
-    // 0. Populate Candidate Files List
-    const allFiles: any[] = state.lastContextData?.files || [];
+    // 0. Populate Candidate Files List with robust fallback sourcing
+    let allFiles: any[] = [];
+    if (initialFiles && initialFiles.length > 0) {
+        allFiles = initialFiles;
+    } else if (state.lastContextData?.files && state.lastContextData.files.length > 0) {
+        allFiles = state.lastContextData.files;
+    } else if ((window as any).lazyFilesRegistry && (window as any).lazyFilesRegistry.size > 0) {
+        allFiles = Array.from((window as any).lazyFilesRegistry.values());
+    }
+
     const mtimeMap = (state as any).fileMtimeMap || {};
     wizardCandidateFiles = allFiles.map((f: any) => {
         const rawPath = typeof f === 'string' ? f : (f.path || '');
@@ -5951,8 +6021,19 @@ export function renderWorkspaceMatrix() {
 
 let currentStagingChanges: any[] = [];
 let currentStagingIdx = 0;
+let lastButtonClickTime = 0;
 (window as any).currentStagingChanges = currentStagingChanges;
 (window as any).currentStagingIdx = currentStagingIdx;
+
+export function isButtonThrottled(cooldownMs: number = 250): boolean {
+    const now = Date.now();
+    if (now - lastButtonClickTime < cooldownMs) {
+        return true;
+    }
+    lastButtonClickTime = now;
+    return false;
+}
+(window as any).isButtonThrottled = isButtonThrottled;
 
 /**
  * Opens the Raw Aider Block modal with tabs for each hunk.

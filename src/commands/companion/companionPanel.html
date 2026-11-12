@@ -9,31 +9,32 @@
         font-src {{cspSource}} https://cdn.jsdelivr.net https://cdnjs.cloudflare.com;
         img-src {{cspSource}} data:;
         script-src 'unsafe-inline' 'unsafe-eval' {{cspSource}} https://cdn.jsdelivr.net https://cdnjs.cloudflare.com;
-        connect-src https://cdn.jsdelivr.net https://cdnjs.cloudflare.com;
+        connect-src {{cspSource}} https: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com;
     ">
     <title>Lollms Companion</title>
     <!-- KaTeX Math Typesetting -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-    <script {{nonce}} src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-    <script {{nonce}} src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 
     <!-- Essential Libraries -->
-    <script {{nonce}} src="https://cdn.jsdelivr.net/npm/marked@5.1.1/marked.min.js"></script>
-    <script {{nonce}} src="https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@5.1.1/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
     <link href="{{codiconUri}}" rel="stylesheet" />
     <link href="{{cssUri}}" rel="stylesheet" />
 
-    <script {{nonce}} src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
-    <script {{nonce}} src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
-    <script {{nonce}} src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js"></script>
-    <script {{nonce}} src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
-    <script {{nonce}} src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-diff.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-diff.min.js"></script>
 
     <style>
         /* ============================================================
            PROFESSIONAL VS CODE THEME INTEGRATION
            Clean, elegant, non-distracting UI matching the active theme.
+        */
         :root {
             --code-bg: var(--vscode-editor-background);
             --code-header-bg: var(--vscode-editorWidget-background);
@@ -1021,6 +1022,7 @@
            MULTI-STEP APPLY ALL BAR & STEP CARDS
            Emitted when the LLM chains <add_files_to_context> /
            <deselect_context_files> / unmute calls in one turn (fast mode).
+        */
         .companion-step-card {
             margin: 6px 0;
             border: 1px solid var(--vscode-widget-border);
@@ -1267,7 +1269,7 @@
                 <div class="input-area">
                     <div class="context-info" style="margin-bottom: 6px; font-size: 11px; display: flex; align-items: center; gap: 6px; color: var(--vscode-descriptionForeground);">
                         <span class="codicon codicon-file-code" style="color: var(--vscode-textLink-foreground);"></span>
-                        <span id="context-info-text">Connecting to editor...</span>
+                        <span id="context-info-text">{{initialContextInfo}}</span>
                     </div>
                     <div class="rich-input-toolbar" style="border: none; border-radius: 0; background: transparent; padding: 2px 0; margin-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
                         <button class="toolbar-tool" onclick="wrapText('python')" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
@@ -1295,8 +1297,29 @@
         </div>
     </div>
 
-    <script {{nonce}}>
+    <script>
         const vscode = acquireVsCodeApi();
+        window.vscode = vscode;
+
+        // Post webview-ready immediately to establish the connection handshake
+        try {
+            vscode.postMessage({ command: 'webview-ready' });
+        } catch (e) {
+            console.error("Companion: failed to send webview-ready", e);
+        }
+
+        // Global safe fallbacks for markdown and sanitization
+        if (typeof marked === 'undefined') {
+            window.marked = {
+                parse: function(txt) { return escapeHtml(txt).replace(/\n/g, '<br>'); }
+            };
+        }
+        if (typeof DOMPurify === 'undefined') {
+            window.DOMPurify = {
+                sanitize: function(html) { return html; }
+            };
+        }
+
         const container = document.getElementById('markdown-content');
         const promptInput = document.getElementById('prompt-input');
 
@@ -1798,7 +1821,7 @@
                 counter += 1;
                 const raw = blocks.map(b => '<file ' + b.attrStr + '>' + b.rawContent + '</file>
 
-').join('\n');
+\n\n').join('\n');
                 const targets = blocks.map(b => {
                     const pm = (b.attrStr || '').match(/(?:path|file_path|filepath|file|target|name|filename)\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/i);
                     return pm ? (pm[1] || pm[2] || '').trim() : '';
@@ -3389,8 +3412,21 @@
         }
         window.focusCompanionCode = focusCompanionCode;
 
+        // Immediately render empty state placeholder if container is empty
+        if (container && !container.innerHTML.trim()) {
+            container.innerHTML = '<div class="empty-state">' +
+                '<div style="font-size: 26px; opacity: 0.7; margin-bottom: 8px;"><i class="codicon codicon-sparkle"></i></div>' +
+                '<h3>Lollms Companion</h3>' +
+                '<p>Ask questions, request code changes, or ask where something is defined in the current file.</p>' +
+                '</div>';
+        }
+
         // Notify extension that the webview is ready to receive state
-        vscode.postMessage({ command: 'webview-ready' });
+        try {
+            vscode.postMessage({ command: 'webview-ready' });
+        } catch (e) {
+            console.error("Companion: failed to send webview-ready", e);
+        }
     </script>
 </body>
 </html>

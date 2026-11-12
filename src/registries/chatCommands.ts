@@ -717,14 +717,21 @@ ${transcript}`;
         if (existingPanel) {
             existingPanel._panel.reveal();
             ChatPanel.currentPanel = existingPanel;
+            existingPanel._panel.webview.postMessage({ command: 'showDiscussionLoader', title: 'Switching discussion...' });
             existingPanel.loadDiscussion();
             return;
         }
 
         if (ChatPanel.currentPanel && ChatPanel.currentPanel.getCurrentDiscussion()?.id === cleanId) {
             ChatPanel.currentPanel._panel.reveal();
+            ChatPanel.currentPanel._panel.webview.postMessage({ command: 'showDiscussionLoader', title: 'Switching discussion...' });
             ChatPanel.currentPanel.loadDiscussion();
             return;
+        }
+
+        // If a panel is currently active, show loader immediately on it before transition
+        if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) {
+            ChatPanel.currentPanel._panel.webview.postMessage({ command: 'showDiscussionLoader', title: 'Loading discussion...' });
         }
 
         // 1. Create or show panel (sets internal discussionId)

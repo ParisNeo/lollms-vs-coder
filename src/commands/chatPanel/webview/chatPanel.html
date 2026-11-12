@@ -123,6 +123,159 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        .discussion-loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(18, 18, 18, 0.45);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            z-index: 100000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.15s ease-out;
+        }
+        .discussion-loading-overlay.visible {
+            opacity: 1 !important;
+            pointer-events: auto !important;
+            display: flex !important;
+        }
+        .discussion-loader-card {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            padding: 22px 30px;
+            background: var(--vscode-editorWidget-background, #252526);
+            border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.12));
+            border-radius: 12px;
+            box-shadow: 0 10px 36px rgba(0, 0, 0, 0.45);
+            min-width: 210px;
+            text-align: center;
+        }
+        .discussion-loader-spinner {
+            width: 28px;
+            height: 28px;
+            border: 2.5px solid var(--vscode-charts-blue, #007acc);
+            border-bottom-color: transparent;
+            border-radius: 50%;
+            animation: lollms-preload-spin 0.75s linear infinite;
+        }
+        .discussion-loader-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--vscode-foreground, #cccccc);
+        }
+        .discussion-loader-subtitle {
+            font-size: 11px;
+            opacity: 0.75;
+            color: var(--vscode-descriptionForeground, #888888);
+        }
+        .tree-multi-unmute-bar {
+            position: fixed;
+            bottom: 84px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 99999;
+            background: var(--vscode-editorWidget-background, #252526);
+            border: 1.5px solid var(--vscode-charts-green, #4caf50);
+            border-radius: 8px;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+            padding: 8px 14px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: slideUpUnmute 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes slideUpUnmute {
+            from { transform: translate(-50%, 15px); opacity: 0; }
+            to { transform: translate(-50%, 0); opacity: 1; }
+        }
+        .unmute-bar-content {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .unmute-bar-text {
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+        }
+        .unmute-bar-buttons {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .tree-unmute-tag {
+            cursor: pointer;
+            background: rgba(214, 122, 13, 0.2);
+            color: var(--vscode-charts-orange, #e67e22);
+            border: 1px solid rgba(214, 122, 13, 0.4);
+            border-radius: 3px;
+            padding: 0 4px;
+            font-weight: bold;
+            font-size: 9px;
+            display: inline-block;
+            transition: all 0.15s ease;
+            user-select: none;
+        }
+        .tree-unmute-tag:hover {
+            background: var(--vscode-charts-green, #4caf50) !important;
+            color: white !important;
+            border-color: var(--vscode-charts-green, #4caf50) !important;
+            transform: scale(1.1);
+        }
+        .tree-unmute-tag.selected {
+            background: var(--vscode-charts-green, #4caf50) !important;
+            color: white !important;
+            border-color: var(--vscode-charts-green, #4caf50) !important;
+        }
+        .tree-unmute-tag.selected::before {
+            content: "✓ ";
+        }
+        .clickable-unmute-pill, .clickable-folder-unmute-pill {
+            cursor: pointer !important;
+            transition: all 0.15s ease;
+        }
+        .clickable-unmute-pill:hover, .clickable-folder-unmute-pill:hover {
+            border-color: var(--vscode-charts-green, #4caf50) !important;
+            color: var(--vscode-charts-green, #4caf50) !important;
+            background: rgba(46, 204, 113, 0.15) !important;
+            transform: scale(1.04);
+        }
+        .context-item.queued-for-unmute {
+            border-left: 3px solid var(--vscode-charts-green, #4caf50) !important;
+            background: rgba(46, 204, 113, 0.08) !important;
+        }
+        .context-item.queued-for-unmute .clickable-unmute-pill {
+            background: var(--vscode-charts-green, #4caf50) !important;
+            color: white !important;
+            border-color: var(--vscode-charts-green, #4caf50) !important;
+        }
+        .hud-spinner {
+            display: none;
+            align-items: center;
+            justify-content: center;
+            width: 14px;
+            height: 14px;
+            flex-shrink: 0;
+            margin-left: 2px;
+        }
+        .hud-spinner .spinner {
+            width: 10px;
+            height: 10px;
+            border: 1.5px solid var(--vscode-charts-orange, #e67e22);
+            border-bottom-color: transparent;
+            border-radius: 50%;
+            display: inline-block;
+            animation: lollms-hud-spin 0.75s linear infinite;
+        }
+        @keyframes lollms-hud-spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 
     <!-- 2. Local CSS loaded with highest priority -->
@@ -146,6 +299,34 @@
     <div id="initial-webview-loader">
         <div class="loader-spinner"></div>
         <span>Hydrating workspace context...</span>
+    </div>
+
+    <!-- 🔄 DISCUSSION LOADING BLURRY OVERLAY -->
+    <div id="discussion-loading-overlay" class="discussion-loading-overlay" style="display: none;">
+        <div class="discussion-loader-card">
+            <div class="discussion-loader-spinner"></div>
+            <div class="discussion-loader-title" id="discussion-loading-title">Loading discussion...</div>
+            <div class="discussion-loader-subtitle" id="discussion-loading-sub">Preparing messages and context...</div>
+        </div>
+    </div>
+
+    <!-- 👁️ FLOATING MULTI-FILE UNMUTE ACTION BAR -->
+    <div id="tree-multi-unmute-bar" class="tree-multi-unmute-bar" style="display: none;">
+        <div class="unmute-bar-content">
+            <i class="codicon codicon-eye" style="color: var(--vscode-charts-green); font-size: 16px;"></i>
+            <div class="unmute-bar-text">
+                <span id="tree-unmute-count" style="font-weight: bold; font-size: 12px;">0 files</span>
+                <span style="font-size: 10px; opacity: 0.8;">selected from tree for unmuting</span>
+            </div>
+            <div class="unmute-bar-buttons">
+                <button id="tree-unmute-apply-btn" class="code-action-btn apply-btn" style="background: var(--vscode-charts-green) !important; color: white !important; font-weight: bold; height: 26px; padding: 0 12px;">
+                    <i class="codicon codicon-check"></i> Unmute Selected
+                </button>
+                <button id="tree-unmute-cancel-btn" class="code-action-btn secondary-btn" style="height: 26px; padding: 0 8px;" title="Clear selection">
+                    <i class="codicon codicon-close"></i>
+                </button>
+            </div>
+        </div>
     </div>
 
     <div class="chat-container">
@@ -354,7 +535,6 @@
                             <button class="toolbar-tool" id="jump-to-context-btn" title="Jump to Project Context / Dashboard"><i class="codicon codicon-dashboard"></i><span>Context</span></button>
 
                             <button class="toolbar-tool" data-wrap-type="plan" title="Librarian Plan &amp; Findings Template"><i class="codicon codicon-checklist"></i><span>Plan</span></button>
-                            <button class="toolbar-tool toggle-librarian-mode-btn toggle-fast-mode-btn" id="toggleLibrarianModeBtn" title="Librarian Mode: Inactive (Fast Mode is default). Click to activate Librarian backed mode"><i class="codicon codicon-library"></i><span>Librarian Mode</span></button>
                             <div class="toolbar-separator"></div>
                             <button class="toolbar-tool" data-wrap-type="python" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
                             <button class="toolbar-tool" data-wrap-type="code" title="Code Block"><i class="codicon codicon-code"></i><span>Code</span></button>
@@ -379,7 +559,6 @@
 
                                 <div class="control-buttons">
                                     <div class="voice-controls">
-                                        <button id="librarianModeInputBtn" title="Librarian Mode: Inactive (Fast Mode is default). Click to activate Librarian backed mode" class="voice-btn toggle-librarian-mode-btn toggle-fast-mode-btn"><i class="codicon codicon-library"></i></button>
                                         <button id="sttButton" title="Listen (STT)" class="voice-btn"><i class="codicon codicon-mic"></i></button>
                                         <button id="toggleReasoningEffortBtn" title="Toggle Reasoning Effort (Low / Medium / High)" class="voice-btn"><i class="codicon codicon-circuit-board"></i></button>
                                         <button id="toggleTempSliderBtn" title="Toggle Custom Temperature" class="voice-btn"><i class="codicon codicon-thermometer"></i></button>
@@ -707,44 +886,7 @@
                     </div>
                 </div>
 
-                <div class="modal-section">
-                    <h3>Response Style (Profile)</h3>
-                    <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Customize how the AI talks and thinks.</p>
-                    
-                    <div style="display:flex; gap:10px; margin-bottom:10px;">
-                        <select id="modal-default-profile-select" class="menu-select" style="flex:1; margin:0;"></select>
-                        <button id="modal-add-profile-btn" class="code-action-btn apply-btn" style="margin:0; width: auto; height: 32px;"><i class="codicon codicon-add"></i> New</button>
-                    </div>
 
-                    <div id="modal-profiles-container" style="display:flex; flex-direction:column; gap:8px; max-height: 200px; overflow-y: auto; padding: 2px;"></div>
-
-                    <!-- Profile Editor (Hidden) -->
-                    <div id="modal-profile-editor" style="display:none; border: 1px solid var(--vscode-focusBorder); padding: 12px; border-radius: 4px; margin-top: 10px; background: var(--vscode-editor-inactiveSelectionBackground);">
-                        <h4 style="margin: 0 0 10px 0; font-size: 12px;">Edit Profile</h4>
-                        <div style="display:flex; flex-direction:column; gap:8px;">
-                            <div>
-                                <label style="font-size: 11px; font-weight:bold;">Name</label>
-                                <input type="text" id="modal-p-name" style="width:100%; padding:4px; margin-top:2px;">
-                            </div>
-                            <div>
-                                <label style="font-size: 11px; font-weight:bold;">Description</label>
-                                <input type="text" id="modal-p-desc" style="width:100%; padding:4px; margin-top:2px;">
-                            </div>
-                            <div>
-                                <label style="font-size: 11px; font-weight:bold;">Prefix (Optional command)</label>
-                                <input type="text" id="modal-p-prefix" placeholder="/no_think" style="width:100%; padding:4px; margin-top:2px;">
-                            </div>
-                            <div>
-                                <label style="font-size: 11px; font-weight:bold;">System Instructions</label>
-                                <textarea id="modal-p-prompt" rows="4" style="width:100%; padding:4px; margin-top:2px; font-family:var(--vscode-editor-font-family); font-size:11px;"></textarea>
-                            </div>
-                            <div style="display:flex; gap:8px; margin-top:10px; justify-content: flex-end;">
-                                <button id="modal-p-cancel" class="code-action-btn" style="width: auto;">Cancel</button>
-                                <button id="modal-p-save" class="code-action-btn apply-btn" style="width: auto;">Update</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
                 
                 <div class="modal-section">
                     <h3>Context Management</h3>
@@ -889,6 +1031,10 @@
                     <div class="checkbox-container">
                         <label class="switch"><input type="checkbox" id="cap-autoApply"><span class="slider"></span></label>
                         <label for="cap-autoApply"><strong>Auto Apply:</strong> Automatically apply code blocks</label>
+                    </div>
+                    <div class="checkbox-container">
+                        <label class="switch"><input type="checkbox" id="cap-autoExecuteTools"><span class="slider"></span></label>
+                        <label for="cap-autoExecuteTools"><strong>Auto-Execute Tools:</strong> Automatically run tools sent during generation &amp; trigger next round</label>
                     </div>
                     <div id="automation-sub-options" style="margin-left: 25px; opacity: 0.5; pointer-events: none;">
                         <div class="checkbox-container">
@@ -1464,6 +1610,37 @@
         </div>
     </div>
 
+    <!-- 📝 CUSTOM EXTERNAL CONTENT MODAL -->
+    <div id="custom-external-text-modal" class="modal">
+        <div class="modal-content" style="max-width: 700px; width: 90%;">
+            <div class="modal-header">
+                <h2 style="margin:0; font-size: 14px; display:flex; align-items:center; gap:8px;">
+                    <i class="codicon codicon-file-text" style="color: var(--vscode-charts-teal, #00b4d8);"></i> Add Custom External Content
+                </h2>
+                <span class="close-btn" id="custom-external-close-btn">&times;</span>
+            </div>
+            <div class="modal-body" style="display:flex; flex-direction:column; gap:12px; padding: 16px;">
+                <p style="font-size: 11px; opacity: 0.8; margin: 0;">
+                    Type or paste documentation, API specs, or notes. It will be saved into <code>.lollms/external_files</code> as a read-only reference for the AI.
+                </p>
+                <div class="form-group" style="margin: 0;">
+                    <label for="custom-external-title-input" style="font-size: 11px; font-weight: bold; margin-bottom: 4px; display: block;">Title / Filename</label>
+                    <input type="text" id="custom-external-title-input" placeholder="e.g. api_spec.md, notes.txt, or requirements.md" style="width: 100%; box-sizing: border-box; height: 26px; padding: 4px 8px; font-size: 11.5px;">
+                </div>
+                <div class="form-group" style="margin: 0; display:flex; flex-direction:column; flex:1;">
+                    <label for="custom-external-content-input" style="font-size: 11px; font-weight: bold; margin-bottom: 4px; display: block;">Content</label>
+                    <textarea id="custom-external-content-input" rows="12" placeholder="Type or paste custom external content here..." style="width: 100%; box-sizing: border-box; font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.45; resize: vertical; padding: 8px;"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer" style="display:flex; justify-content:flex-end; gap:8px; padding: 12px 16px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background);">
+                <button type="button" id="custom-external-cancel-btn" class="code-action-btn secondary-btn" style="height: 28px; padding: 0 14px;">Cancel</button>
+                <button type="button" id="custom-external-save-btn" class="code-action-btn apply-btn" style="height: 28px; padding: 0 16px; font-weight: bold; background: var(--vscode-charts-teal, #00b4d8) !important; color: white !important;">
+                    <i class="codicon codicon-save"></i> Save to External Files
+                </button>
+            </div>
+        </div>
+    </div>
+
     <div id="bulk-process-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -1960,12 +2137,7 @@
                         </div>
                     </div>
 
-                    <div style="display:grid; grid-template-columns: 1fr; gap:12px; margin-top: 10px;">
-                        <div class="form-group" style="margin: 0;">
-                            <label for="wizard-profile">Response Style Profile</label>
-                            <select id="wizard-profile" style="width:100%;"></select>
-                        </div>
-                    </div>
+
 
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top: 10px;">
                         <div class="form-group" style="margin: 0;">

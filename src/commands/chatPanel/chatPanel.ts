@@ -63,6 +63,7 @@ export class ChatPanel {
   // Static registry for standard chat generations
   public static activeGenerations: Map<string, ActiveGeneration> = new Map();
   public static _tokenCountCache: Map<string, number> = new Map();
+  public static _contextSizeCache: Map<string, number> = new Map();
 
   public static currentPanel: ChatPanel | undefined;
   public static isBatchApplying = false;
@@ -263,47 +264,7 @@ export class ChatPanel {
         // 0. Process Mute, Unmute, and Granular Structure/Definitions Tags
         const isFastMode = this._discussionCapabilities.fastMode !== false;
 
-        const structRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?)/gim;
-        let structMatch;
-        while ((structMatch = structRegex.exec(content)) !== null) {
-            if (signal.aborted) break;
-            const attrStr = structMatch[1] || "";
-            const inner = (structMatch[2] || "").trim();
-            const targetPaths: string[] = [];
-            const addTarget = (p: string) => {
-                const clean = p.trim().replace(/^['"`]|['"`]$/g, '').replace(/^-\s*/, '').trim();
-                if (clean && !targetPaths.includes(clean)) targetPaths.push(clean);
-            };
-
-            const attrRegex = /(?:path|paths|files|target)=["']([^"']+)["']/gi;
-            let am: RegExpExecArray | null;
-            while ((am = attrRegex.exec(attrStr)) !== null) {
-                am[1].split(/[\r\n,;\s]+/).forEach(addTarget);
-            }
-            if (inner) {
-                inner.split(/[\r\n,;]+/).forEach(l => l.trim().split(/\s+/).forEach(addTarget));
-            }
-
-            if (targetPaths.length > 0) {
-                await this.unmuteFiles(targetPaths);
-                await this.addFilesToDiscussionContext(targetPaths, 'definitions-only');
-                const provider = this._contextManager.getContextStateProvider();
-                if (provider) {
-                    const urisToSet: vscode.Uri[] = [];
-                    for (const tp of targetPaths) {
-                        const res = await this._contextManager.resolveWorkspaceFromPath(tp);
-                        if (res) {
-                            urisToSet.push(res.uri);
-                            this._contextManager.refreshFileInCache(res.uri);
-                        }
-                    }
-                    if (urisToSet.length > 0) {
-                        await provider.setStateForUris(urisToSet, 'definitions-only');
-                    }
-                }
-                this.recordCurrentPromptFiles(targetPaths);
-            }
-        }
+        await this.processStructureTags(content);
 
         const muteRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<mute_files\b[^>]*?>([\s\S]*?)<\/mute_files>/gim;
         let muteMatch;
@@ -1167,7 +1128,7 @@ Now that you possess these files, please deliver the verified code modifications
                       role: 'user',
                       content: `⚠️ **CONTEXT CAPACITY NOTICE**: The files you attempted to modify [${unpossessedList}] cannot all be loaded because doing so would exceed context capacity (~${capacity.toLocaleString()} tokens).
 You may ONLY modify files currently visible under 'LOADED FILE CONTENTS' [C].
-If you absolutely require specific files, you can only use <unmute_files> or <add_files_to_context> to request the essential files.`
+If you need to modify files, privilege using <unmute_files> to recover full content (unmute directly upgrades structure-only [D] or muted [M] files to full code [C]). Only use <load_structure> when context is genuinely bloated or files are strictly reference-only.`
                   });
               });
               return;
@@ -1244,40 +1205,60 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
       for (const tf of targetFiles) {
           const cleanTf = tf.replace(/\\/g, '/').toLowerCase().trim();
 
-          // Check if file is in included files and NOT muted
-          const { isProjectFile } = require('../../utils');
+          // Check if file is an external reference document
+          const { isProjectFile, arePathsEqual } = require('../../utils');
           if (!isProjectFile(tf) || cleanTf.includes('.lollms/external_files')) {
               unpossessedFiles.push(`${tf} (Read-only external reference document - cannot be modified)`);
               continue;
           }
 
-          const isIncluded = rawIncluded.some(inc => inc === cleanTf || inc.endsWith('/' + cleanTf) || cleanTf.endsWith('/' + inc));
-          const isMuted = currentMuted.some(m => m === cleanTf || m.endsWith('/' + cleanTf) || cleanTf.endsWith('/' + m));
+          const isIncluded = rawIncluded.some(inc => arePathsEqual(inc, tf) || inc === cleanTf);
+          const isMuted = currentMuted.some(m => arePathsEqual(m, tf) || m === cleanTf);
 
           if (!isIncluded || isMuted) {
-              // Check if file is a brand-new file being created (does not yet exist on disk)
+              // Check if file actually exists on disk with content
               let existsOnDisk = false;
               try {
                   const res = await this._contextManager.resolveWorkspaceFromPath(tf);
                   if (res) {
                       const stat = await vscode.workspace.fs.stat(res.uri).catch(() => null);
-                      if (stat) existsOnDisk = true;
+                      // Only mark as existing if it is an actual file with content (> 0 bytes)
+                      if (stat && stat.type === vscode.FileType.File && stat.size > 0) {
+                          existsOnDisk = true;
+                      }
                   }
               } catch {}
 
-              const blockForTf = blocks.find(b => {
-                  const attrs = parseFileTagAttributes(b.attrStr, b.rawContent);
-                  const p = attrs?.path ? (attrs.path.includes(':') && !/^[a-zA-Z]:[\\/]/.test(attrs.path) ? attrs.path.split(':')[0] : attrs.path) : '';
-                  return p.replace(/\\/g, '/').toLowerCase().trim() === cleanTf;
-              });
-              const actionForTf = blockForTf ? parseFileTagAttributes(blockForTf.attrStr, blockForTf.rawContent)?.action : 'write';
-
-              // If file does NOT exist on disk and is a full write, it is an allowed new file creation
-              if (!existsOnDisk && actionForTf === 'write') {
+              // 1. If file does NOT exist on disk as a non-empty file, it is a brand-new file creation: ALLOWED!
+              if (!existsOnDisk) {
                   continue;
               }
 
-              // Otherwise, this is an existing file that the Coder cannot see: FORBIDDEN!
+              // 2. If file was created or added during this active prompt or current session: ALLOWED!
+              if (this._currentPromptAddedFiles.has(cleanTf) || this._contextManager.isRecentlyAdded(tf)) {
+                  continue;
+              }
+
+              // 3. Check if blocks targeting this file are creating or initializing the file
+              const blocksForTf = blocks.filter(b => {
+                  const attrs = parseFileTagAttributes(b.attrStr, b.rawContent);
+                  const p = attrs?.path ? (attrs.path.includes(':') && !/^[a-zA-Z]:[\\/]/.test(attrs.path) ? attrs.path.split(':')[0] : attrs.path) : '';
+                  return arePathsEqual(p, tf) || p.replace(/\\/g, '/').toLowerCase().trim() === cleanTf;
+              });
+
+              const isCreatingNewFile = blocksForTf.some(b => {
+                  const attrs = parseFileTagAttributes(b.attrStr, b.rawContent);
+                  if (attrs?.action === 'write') return true;
+                  // Aider creation hunk with empty search block
+                  if (b.rawContent && /<<<<<<< SEARCH\s*\r?\n\s*=======\s*\r?\n/m.test(b.rawContent)) return true;
+                  return false;
+              });
+
+              if (isCreatingNewFile) {
+                  continue;
+              }
+
+              // Otherwise, this is an existing file on disk that the Coder cannot see: FORBIDDEN!
               unpossessedFiles.push(tf);
           }
       }
@@ -1488,6 +1469,12 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
 
     public async loadDiscussion(): Promise<void> {
           if (this._isDisposed || !this._panel || !this._panel.webview) return;
+
+          // Immediately display responsive blurry overlay and spinner in webview
+          this._panel.webview.postMessage({
+              command: 'showDiscussionLoader',
+              title: this._currentDiscussion?.title ? `Loading "${this._currentDiscussion.title}"...` : 'Loading discussion...'
+          });
 
           // Guard against accessing properties of a webview panel that is already disposed
           try {
@@ -1709,9 +1696,12 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
             this._shouldOpenWizardOnLoad = false;
             const { getAvailableContextSelections } = require('../contextCommands');
             const savedSelections = await getAvailableContextSelections();
+            const provider = this._contextManager?.getContextStateProvider();
+            const activeFiles = provider ? provider.getIncludedFiles() : [];
             this._panel.webview.postMessage({
                 command: 'openNewDiscussionWizard',
-                selections: savedSelections
+                selections: savedSelections,
+                files: activeFiles
             });
         }
 
@@ -1988,14 +1978,12 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
             this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
         }  
 
-        // Non-blocking deferred calculations to prevent UI render blocking
+        // Fast background sync: use lightweight background sync and avoid redundant model HTTP fetches
         setTimeout(async () => {
-            // Always trigger context and token sync to ensure disk changes & applied files are fresh
             if (this._panel && this._panel.webview && !this._isDisposed) {
-                this.updateContextAndTokens({ isBackgroundSync: false });
+                this.updateContextAndTokens({ isBackgroundSync: true });
             }
-            this._fetchAndSetModels(false);
-        }, 150);
+        }, 80);
     }
 
   public recordCurrentPromptFiles(files: string[]) {
@@ -2024,10 +2012,17 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
       for (const m of searchSlice) {
           const text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => p.text || '').join('\n') : '');
           if (!text) continue;
-          const addMatch = text.match(/<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/gi);
+          const addMatch = text.match(/<add_files_to_context\b[^>]*?>([\s\S]*?)<\/add_files_to_context>/gi);
           if (addMatch) {
               for (const match of addMatch) {
-                  const inner = match.replace(/<\/?add_files_to_context>/gi, '');
+                  const inner = match.replace(/<\/?add_files_to_context\b[^>]*?>/gi, '');
+                  inner.split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).forEach(p => files.add(p.replace(/\\/g, '/').toLowerCase().trim()));
+              }
+          }
+          const unmuteMatch = text.match(/<unmute_files\b[^>]*?>([\s\S]*?)<\/unmute_files>/gi);
+          if (unmuteMatch) {
+              for (const match of unmuteMatch) {
+                  const inner = match.replace(/<\/?unmute_files\b[^>]*?>/gi, '');
                   inner.split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).forEach(p => files.add(p.replace(/\\/g, '/').toLowerCase().trim()));
               }
           }
@@ -2037,24 +2032,34 @@ If you absolutely require specific files, you can only use <unmute_files> or <ad
 
   private getPreviousTurnFiles(): Set<string> {
       const files = new Set<string>();
+      for (const f of this._currentPromptAddedFiles) {
+          files.add(f.replace(/\\/g, '/').toLowerCase().trim());
+      }
       if (!this._currentDiscussion) return files;
       const msgs = this._currentDiscussion.messages || [];
-      const recentMsgs = msgs.slice(-4);
+      const recentMsgs = msgs.slice(-6);
       for (const m of recentMsgs) {
           const text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => p.text || '').join('\n') : '');
           if (!text) continue;
-          const addMatch = text.match(/<add_files_to_context>([\s\S]*?)<\/add_files_to_context>/gi);
+          const addMatch = text.match(/<add_files_to_context\b[^>]*?>([\s\S]*?)<\/add_files_to_context>/gi);
           if (addMatch) {
               for (const match of addMatch) {
-                  const inner = match.replace(/<\/?add_files_to_context>/gi, '');
-                  inner.split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).forEach(p => files.add(p.toLowerCase()));
+                  const inner = match.replace(/<\/?add_files_to_context\b[^>]*?>/gi, '');
+                  inner.split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).forEach(p => files.add(p.replace(/\\/g, '/').toLowerCase().trim()));
+              }
+          }
+          const unmuteMatch = text.match(/<unmute_files\b[^>]*?>([\s\S]*?)<\/unmute_files>/gi);
+          if (unmuteMatch) {
+              for (const match of unmuteMatch) {
+                  const inner = match.replace(/<\/?unmute_files\b[^>]*?>/gi, '');
+                  inner.split(/[\r\n,]+/).map(p => p.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).forEach(p => files.add(p.replace(/\\/g, '/').toLowerCase().trim()));
               }
           }
           const fileMatch = text.match(/<file\s+([^>]*?)>/gi);
           if (fileMatch) {
               for (const fm of fileMatch) {
                   const pathMatch = fm.match(/path=["']([^"']+)["']/i);
-                  if (pathMatch) files.add(pathMatch[1].trim().toLowerCase());
+                  if (pathMatch) files.add(pathMatch[1].trim().replace(/\\/g, '/').toLowerCase());
               }
           }
       }
@@ -2199,9 +2204,15 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
   const self = this;
   if (self._isDisposed || !self._panel || !self._panel.webview) return;
 
-    // Enhanced High-Performance Debouncing Gate:
-    // If a calculation is requested within 400ms of another, we clear the timer 
-    // and reschedule to completely avoid redundant parallel calculations.
+    if (self._isTokenizing) {
+        self._tokenizationPendingRerun = true;
+        self._tokenizationPendingOptions = options;
+        if (self._tokenAbortController) {
+            self._tokenAbortController.abort();
+        }
+        return;
+    }
+
     if ((self as any)._tokenDebounceTimeout) {
         clearTimeout((self as any)._tokenDebounceTimeout);
     }
@@ -2212,7 +2223,6 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                 return resolvePromise();
             }
 
-            // Concurrency Abort: Force-cancel any running tokenization promise immediately
             if (self._tokenAbortController) {
                 self._tokenAbortController.abort();
             }
@@ -2255,20 +2265,32 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                 const provider = self._contextManager.getContextStateProvider();
                 const rawIncluded = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
 
-                // Reconcile discussion includedFiles with latest provider files so external additions are never missed
+                // Reconcile discussion includedFiles with latest provider files and preserve definitions-only structure states
                 if (provider && self._currentDiscussion) {
+                    const { arePathsEqual } = require('../../utils');
                     if (!(self._currentDiscussion as any).includedFiles) {
                         (self._currentDiscussion as any).includedFiles = JSON.parse(JSON.stringify(rawIncluded));
                     } else {
                         const discFiles: any[] = (self._currentDiscussion as any).includedFiles;
-                        const { arePathsEqual } = require('../../utils');
                         for (const gf of rawIncluded) {
-                            const exists = discFiles.some(f => {
+                            const match = discFiles.find(f => {
                                 const cf = typeof f === 'string' ? f : (f.path || '');
                                 return arePathsEqual(cf, gf.path);
                             });
-                            if (!exists) {
+                            if (!match) {
                                 discFiles.push(JSON.parse(JSON.stringify(gf)));
+                            } else if (typeof match === 'object' && match.state) {
+                                gf.state = match.state;
+                            }
+                        }
+                        for (const df of discFiles) {
+                            const dPath = typeof df === 'string' ? df : df.path;
+                            const dState = typeof df === 'object' ? df.state : 'included';
+                            const inRaw = rawIncluded.find(rf => arePathsEqual(rf.path, dPath));
+                            if (inRaw) {
+                                inRaw.state = dState;
+                            } else if (dPath) {
+                                rawIncluded.push({ path: dPath, state: dState, bytes: 0, tokens: 0 });
                             }
                         }
                     }
@@ -2430,10 +2452,19 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                         // --- LAZY INGESTION & DELTA STATE CACHE ---
                         const provider = self._contextManager.getContextStateProvider();
                         const rawIncluded = provider ? provider.getIncludedFiles() : [];
+                        const discFiles: any[] = (self._currentDiscussion as any)?.includedFiles || [];
+                        const { arePathsEqual } = require('../../utils');
+
                         const includedFiles = await Promise.all(rawIncluded.filter(f => f && f.path).map(async f => {
                             let bytes = f.bytes || 0;
                             let tokens = f.tokens || 0;
                             let mtime = f.mtime || 0;
+                            const match = discFiles.find(df => {
+                                const cf = typeof df === 'string' ? df : (df.path || '');
+                                return arePathsEqual(cf, f.path);
+                            });
+                            const effectiveState = (match && typeof match === 'object' && match.state) ? match.state : f.state;
+
                             const cached = (self._contextManager as any)._fileContentCache?.get(f.path);
                             if (cached?.content) {
                                 bytes = cached.size || cached.content.length;
@@ -2458,7 +2489,7 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                                 bytes,
                                 tokens,
                                 mtime,
-                                state: f.state,
+                                state: effectiveState,
                                 hasContent: false
                             };
                         }));
@@ -2669,6 +2700,22 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
 
                     let results;
                     try {
+                        const getCachedContextSize = async (model: string): Promise<{ context_size: number; isEstimation?: boolean }> => {
+                            if (ChatPanel._contextSizeCache.has(model)) {
+                                return { context_size: ChatPanel._contextSizeCache.get(model)!, isEstimation: false };
+                            }
+                            try {
+                                const res = await self._lollmsAPI.getContextSize(model);
+                                if (res && res.context_size > 0) {
+                                    ChatPanel._contextSizeCache.set(model, res.context_size);
+                                    return res;
+                                }
+                            } catch {}
+                            const fallbackSize = getContextLimitForModel(model);
+                            ChatPanel._contextSizeCache.set(model, fallbackSize);
+                            return { context_size: fallbackSize, isEstimation: true };
+                        };
+
                         results = await Promise.all([
                             getTokenCount(systemText),
                             getTokenCount(historyText),
@@ -2677,10 +2724,7 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                             getTokenCount(projectMemory || ""),
                             getTokenCount(briefingText || ""),
                             diagramText,
-                            self._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
-                                Logger.error(`[TokenStats] Context Size API critically failed: ${e.message}`);
-                                return { context_size: 128000, isEstimation: true }; 
-                            }),
+                            getCachedContextSize(modelForTokenization),
                             Promise.all(statsPromises)
                         ]);
                     } catch (e: any) {
@@ -2843,7 +2887,13 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                     resolvePromise();
 
                 } catch (error: any) {
-                    if (error.name === "Operation cancelled" || signal.aborted) {
+                    const isAborted = signal.aborted || 
+                        error?.name === 'AbortError' || 
+                        error?.message === 'Operation cancelled' || 
+                        error?.message === 'AbortError' || 
+                        error?.name === 'Operation cancelled';
+
+                    if (isAborted) {
                         self.log("Context update cancelled.", 'INFO');
                         if (self._panel && self._panel.webview && !self._isDisposed) {
                             self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
@@ -2852,132 +2902,45 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
                         return resolvePromise();
                     }
 
-                    Logger.error(`[TokenStats] API Pipeline Failed! Error: ${error.message}`);
+                    Logger.warn(`[TokenStats] Context update pipeline notice: ${error.message}`);
 
                     if (self._isDisposed) return resolvePromise();
 
-                    try {
-                        const contextSizeRes = await self._lollmsAPI.getContextSize(modelForTokenization).catch(() => null);
-                        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                        let finalCtxSize = 128000;
-                        let isLimitApproximate = true;
+                    // Fast non-blocking estimation using in-memory file stats without re-reading disk
+                    const provider = self._contextManager.getContextStateProvider();
+                    const currentFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
+                    const currentMuted = self._currentDiscussion?.mutedFiles || [];
+                    let fastFileTokens = 0;
+                    currentFiles.forEach(f => {
+                        const isMuted = currentMuted.some(m => m.replace(/\\/g, '/').toLowerCase().trim() === f.path.replace(/\\/g, '/').toLowerCase().trim());
+                        if (!isMuted) fastFileTokens += f.tokens || Math.max(1, Math.ceil((f.bytes || 100) / 3.5));
+                    });
 
-                        if (contextSizeRes && contextSizeRes.context_size > 0) {
-                            finalCtxSize = contextSizeRes.context_size;
-                            isLimitApproximate = !!contextSizeRes.isEstimation && !!(contextSizeRes as any).isUserDefined;
-                        } else {
-                            const manualOverride = config.get<number>('failsafeContextSize') || 0;
-                            if (manualOverride > 0) {
-                                finalCtxSize = manualOverride;
-                                isLimitApproximate = false;
-                            } else {
-                                finalCtxSize = 128000;
-                                isLimitApproximate = true;
-                            }
-                        }
+                    const fallbackTotal = fastFileTokens + 3000;
+                    const finalCtxSize = getContextLimitForModel(modelForTokenization);
 
-                        const folderStats: Record<string, { tree: number, files: number }> = {};
-                        const activeFolders = vscode.workspace.workspaceFolders || [];
-                        activeFolders.forEach(f => folderStats[f.uri.toString()] = { tree: 0, files: 0 });
-
-                        self.log("updateContextAndTokens: Building context fallback...");
-                        const context = await self._contextManager.getContextContent({ signal, discussionId: self.discussionId }).catch(() => ({
-                            text: '', projectTree: '', selectedFilesContent: '', skillsContent: '', images: [], importedSkills: []
-                        }));
-
-                        if (signal.aborted) {
-                            if (self._panel && self._panel.webview && !self._isDisposed) {
-                                self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                                self._panel.webview.postMessage({ command: 'hideProjectLoader' });
-                            }
-                            return resolvePromise();
-                        }
-
-                        const historyText = self._currentDiscussion!.messages
-                            .filter(m => !m.skipInPrompt)
-                            .map(m => {
-                                const content = m.content;
-                                if (typeof content === 'string') return stripThinkingTags(content);
-                                if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => stripThinkingTags(item.text)).join('\n');
-                                return '';
-                            }).filter(text => text.trim().length > 0).join('\n');
-                        const systemText = await getProcessedSystemPrompt('chat', self._discussionCapabilities, undefined, undefined, false, { ...context, tree: '', files: '', skills: '' } as any);
-
-                        const wordCount = (context.text + '\n' + historyText + '\n' + (systemText || '')).trim().split(/\s+/).length;
-                        const estimatedTokens = Math.ceil(wordCount * 1.35);
-                        Logger.warn(`[TokenStats] Recovered after context error. Estimated Tokens: ${estimatedTokens}, Capacity: ${finalCtxSize}`);
-
-                        const systemTokens = Math.ceil((systemText?.length || 0) / 3.5);
-                        const historyTokens = Math.ceil((historyText?.length || 0) / 3.5);
-                        const treeTokens = Math.max(
-                            1,
-                            Math.ceil((context.projectTree?.length || 0) / 3.5)
-                        );
-
-                        const provider = self._contextManager.getContextStateProvider();
-                        const currentFiles = provider ? provider.getIncludedFiles().filter(f => f && f.path) : [];
-                        const currentMuted = self._currentDiscussion?.mutedFiles || [];
-                        const unmutedFallback = currentFiles.filter(f => {
-                            const cleanF = f.path.replace(/\\/g, '/').toLowerCase().trim();
-                            return !currentMuted.some(m => {
-                                const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
-                                return cleanM === cleanF || cleanM.endsWith('/' + cleanF) || cleanF.endsWith('/' + cleanM);
-                            });
+                    if (self._panel && self._panel.webview && !self._isDisposed) {
+                        self._panel.webview.postMessage({
+                            command: 'updateTokenProgress',
+                            totalTokens: fallbackTotal,
+                            contextSize: finalCtxSize,
+                            isApproximate: true,
+                            segments: { system: 2000, briefing: 0, tree: 500, skills: 0, memory: 0, diagrams: 0, files: fastFileTokens, external: 0, history: 500, images: 0 }
                         });
-
-                        const filesTokens = (unmutedFallback.length === 0 || self._discussionCapabilities.disableProjectContext)
-                            ? 0
-                            : Math.ceil((context.selectedFilesContent?.length || 0) / 3.5);
-                        const skillsTokens = Math.ceil((context.skillsContent?.length || 0) / 3.5);
-                        const briefingTokens = 0;
-                        const diagramTokens = 0;
-                        const memoryTokens = 0;
-
-                        const totalTokens = systemTokens + historyTokens + treeTokens + filesTokens + skillsTokens + memoryTokens + briefingTokens + diagramTokens;
-
-                        if (self._panel && self._panel.webview && !self._isDisposed) {
-                            self._panel.webview.postMessage({
-                                command: 'updateTokenProgress',
-                                totalTokens: totalTokens,
-                                contextSize: finalCtxSize,
-                                isApproximate: isLimitApproximate,
-                                folderStats: folderStats,
-                                segments: {
-                                    system: systemTokens,
-                                    briefing: briefingTokens,
-                                    tree: treeTokens,
-                                    skills: skillsTokens,
-                                    memory: memoryTokens,
-                                    diagrams: diagramTokens,
-                                    files: filesTokens,
-                                    history: historyTokens,
-                                    images: 0
-                                }
-                            });
-
-                            self._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
-                        }
-
-                    } catch (fallbackError: any) {
-                        self.log(`Fallback token calculation failed: ${fallbackError.message}`, 'ERROR');
-                        if (self._panel && self._panel.webview && !self._isDisposed) {
-                            self._panel.webview.postMessage({
-                                command: 'updateTokenProgress',
-                                error: `API Error`
-                            });
-                            self._panel.webview.postMessage({ command: 'updateStatus', status: 'Error scanning context', type: 'error' });
-                        }
-                    } finally {
-                        if (self._panel && self._panel.webview && !self._isDisposed) {
-                            self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
-                            self._panel.webview.postMessage({ command: 'hideProjectLoader' });
-                        }
-                        resolvePromise();
+                        self._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+                        self._panel.webview.postMessage({ command: 'hideProjectLoader' });
                     }
+                    resolvePromise();
                 } finally {
                     self._isTokenizing = false;
                     if (self._tokenAbortController?.signal === signal) {
                         self._tokenAbortController = null;
+                    }
+                    if (self._tokenizationPendingRerun && !self._isDisposed) {
+                        self._tokenizationPendingRerun = false;
+                        const pendingOpts = self._tokenizationPendingOptions;
+                        self._tokenizationPendingOptions = null;
+                        setTimeout(() => { self.updateContextAndTokens(pendingOpts); }, 50);
                     }
                 }
             } catch (outerErr: any) {
@@ -3021,9 +2984,12 @@ public async commitDiscussionFilesToGlobal(): Promise<void> {
               const { getAvailableContextSelections } = require('../contextCommands');
               savedSelections = await getAvailableContextSelections();
           }
+          const provider = this._contextManager?.getContextStateProvider();
+          const activeFiles = provider ? provider.getIncludedFiles() : [];
           this._panel.webview.postMessage({
               command: 'openNewDiscussionWizard',
-              selections: savedSelections || []
+              selections: savedSelections || [],
+              files: activeFiles
           });
           this._shouldOpenWizardOnLoad = false;
       }
@@ -3913,7 +3879,8 @@ ${filesSection}
       try {
           // Note: We DO NOT add to ContextStateProvider here. 
           // These files are discussion-local "Imported Data".
-          if (isImage) {
+          const isSvg = name.toLowerCase().endsWith('.svg');
+          if (isImage && !isSvg) {
               const msg: ChatMessage = {
                   id: 'user_img_' + Date.now() + Math.random().toString(36).substring(2),
                   role: 'user',
@@ -3923,6 +3890,45 @@ ${filesSection}
                   ]
               };
               await this.addMessageToDiscussion(msg);
+          } else if (isSvg) {
+              // SVGs are text XML files - decode base64 or read raw content and save as text so the LLM can understand and edit it
+              let svgText = "";
+              if (content.includes('base64,')) {
+                  const base64 = content.split('base64,')[1];
+                  svgText = Buffer.from(base64, 'base64').toString('utf8');
+              } else if (content.startsWith('data:image/svg+xml')) {
+                  svgText = decodeURIComponent(content.replace(/^data:image\/svg\+xml;?(?:utf8)?,/, ''));
+              } else {
+                  svgText = content;
+              }
+
+              const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+              if (workspaceFolder && svgText.trim().length > 0) {
+                  const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'external_files');
+                  await vscode.workspace.fs.createDirectory(cacheDir).then(undefined, () => {});
+
+                  const safeName = name.replace(/[^a-zA-Z0-9.]/g, '_');
+                  const fileUri = vscode.Uri.joinPath(cacheDir, safeName);
+
+                  await vscode.workspace.fs.writeFile(fileUri, Buffer.from(svgText, 'utf8'));
+
+                  const relativePath = path.join('.lollms', 'external_files', safeName).replace(/\\/g, '/');
+                  await this._contextManager.getContextStateProvider()?.addFilesToContext([relativePath]);
+                  await this.addFilesToDiscussionContext([relativePath]);
+                  this.recordCurrentPromptFiles([relativePath]);
+              }
+
+              const systemMsg: ChatMessage = {
+                  id: 'attachment_' + Date.now() + Math.random().toString(36).substring(2),
+                  role: 'system',
+                  content: `Attached SVG file: **${name}**\n\`\`\`xml:${name}\n${svgText}\n\`\`\``,
+                  attachmentData: {
+                      name,
+                      text: svgText,
+                      images: []
+                  }
+              } as any;
+              await this.addMessageToDiscussion(systemMsg);
           } else {
               const base64 = content.split(',')[1];
               const extractedImages: { filePath: string; data: string }[] =[];
@@ -4047,9 +4053,12 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
     if (this._isDisposed || !this._currentDiscussion || !this.processManager) return;
 
     // 0. Ensure all modified files and open editors are saved before reading context or generating
-    while (ChatPanel.isBatchApplying) {
+    let batchWaitLimit = 0;
+    while (ChatPanel.isBatchApplying && batchWaitLimit < 50) {
         await new Promise(r => setTimeout(r, 40));
+        batchWaitLimit++;
     }
+    ChatPanel.isBatchApplying = false;
     try {
         await vscode.workspace.saveAll(false);
         for (const doc of vscode.workspace.textDocuments) {
@@ -4474,29 +4483,55 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
         const totalEstimatedAtLaunch = unmutedLoadAtLaunch + estOverhead;
 
         if (totalEstimatedAtLaunch > triggerTokensThreshold && candidateFilesAtLaunch.length > 1) {
-            this.log(`[Fast Selector] Context load (~${totalEstimatedAtLaunch.toLocaleString()} tok) exceeds Librarian Trigger Threshold (~${triggerTokensThreshold.toLocaleString()} tok, ${triggerThresholdPct}%). Auto-pruning down to ~${targetBudgetLimit.toLocaleString()} tok...`, 'INFO');
+            this.log(`[Fast Selector] Context load (~${totalEstimatedAtLaunch.toLocaleString()} tok) exceeds Librarian Trigger Threshold (~${triggerTokensThreshold.toLocaleString()} tok, ${triggerThresholdPct}%). Adjusting down to ~${targetBudgetLimit.toLocaleString()} tok...`, 'INFO');
             
             const maxCodeAllowed = Math.max(2000, targetBudgetLimit - estOverhead);
             const sortedCandidates = [...candidateFilesAtLaunch].sort((a, b) => b.score - a.score || a.tokens - b.tokens);
+            const prevUnlocked = this.getPreviousTurnFiles();
+            const currentPromptFiles = this.getCurrentPromptFiles();
 
             let cumulative = 0;
-            const newMuted = new Set<string>();
+            const filesToDemoteToStructure: string[] = [];
 
             for (const c of sortedCandidates) {
-                if (cumulative + c.tokens <= maxCodeAllowed) {
+                const normP = c.path.replace(/\\/g, '/').toLowerCase().trim();
+                const isPreviousTurn = prevUnlocked.has(normP) || currentPromptFiles.has(normP) || this._currentPromptAddedFiles.has(normP) || this._contextManager.isRecentlyAdded(c.path);
+                const isHighPriority = c.score >= 5000;
+
+                if (cumulative + c.tokens <= maxCodeAllowed || isPreviousTurn || isHighPriority) {
                     cumulative += c.tokens;
                 } else {
-                    newMuted.add(c.path);
+                    filesToDemoteToStructure.push(c.path);
+                    cumulative += Math.min(c.tokens, 150);
                 }
             }
 
-            if (newMuted.size > 0) {
-                this._currentDiscussion.mutedFiles = Array.from(new Set([...(this._currentDiscussion.mutedFiles || []), ...Array.from(newMuted)]));
-                this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
+            if (filesToDemoteToStructure.length > 0) {
+                await this.addFilesToDiscussionContext(filesToDemoteToStructure, 'definitions-only');
+                if (providerForLaunch) {
+                    const urisToStructure: vscode.Uri[] = [];
+                    for (const p of filesToDemoteToStructure) {
+                        const res = await this._contextManager.resolveWorkspaceFromPath(p);
+                        if (res) {
+                            urisToStructure.push(res.uri);
+                            this._contextManager.refreshFileInCache(res.uri);
+                        }
+                    }
+                    if (urisToStructure.length > 0) {
+                        await providerForLaunch.setStateForUris(urisToStructure, 'definitions-only');
+                    }
+                }
+                if (this._currentDiscussion.mutedFiles) {
+                    const { arePathsEqual } = require('../../utils');
+                    this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(m =>
+                        !filesToDemoteToStructure.some(p => arePathsEqual(m, p))
+                    );
+                    this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
+                }
                 if (!this._currentDiscussion.id.startsWith('temp-')) {
                     await this._discussionManager.saveDiscussion(this._currentDiscussion);
                 }
-                this.log(`[Fast Selector] Muted ${newMuted.size} files to liberate context prior to prompt generation.`);
+                this.log(`[Fast Selector] Replaced ${filesToDemoteToStructure.length} file(s) with structure (definitions-only) instead of removing them.`);
                 this.updateContextAndTokens({ isBackgroundSync: false });
             }
         }
@@ -4573,9 +4608,15 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
             } else {
                 this.log(`[Librarian Phase 0] Context not sufficient: "${fastInspectionRes.rationale}". Freeing context and starting Phase 1 scouting.`);
                 
-                // Free the context from code files content (keep external research documents and tree active)
+                // Free the context from code files content (keep external research documents, tree, and files from previous turn active)
                 const { isProjectFile } = require('../../utils');
-                const projectFilesToMute = originallyIncluded.filter(p => isProjectFile(p));
+                const prevTurnFiles = this.getPreviousTurnFiles();
+                const currentPromptFiles = this.getCurrentPromptFiles();
+                const projectFilesToMute = originallyIncluded.filter(p => {
+                    if (!isProjectFile(p)) return false;
+                    const normP = p.replace(/\\/g, '/').toLowerCase().trim();
+                    return !prevTurnFiles.has(normP) && !currentPromptFiles.has(normP) && !this._currentPromptAddedFiles.has(normP);
+                });
                 if (projectFilesToMute.length > 0) {
                     await this.muteFiles(projectFilesToMute);
                 }
@@ -4833,6 +4874,12 @@ private async _executeSendMessage(message: ChatMessage, autoContext: boolean = f
 ### 📂 ATTACHED PROJECT CONTEXT (CURRENT GROUND TRUTH)
 I am providing you with the real-time, ground-truth state of my project files on disk and in my editor.
 NOTE: This loaded content is your SOLE source of truth. Do NOT assume that patches or changes you suggested in previous turns are applied unless they appear in the file content below.
+
+#### 📜 FILE MODIFICATION & STRUCTURE RULES:
+1. **FULL CONTENT REQUIRED FOR EDITS**: To modify or patch any file, you MUST possess its full content under 'LOADED FILE CONTENTS' [C].
+2. **PRIVILEGE UNMUTE (FULL CODE) OVER STRUCTURE**: Generating structure from code takes extra time and processing. When you are not heavily constrained by token budget or context limits, always **privilege using \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` to get full code directly**.
+3. **UPGRADE STRUCTURE TO FULL CODE VIA UNMUTE**: Calling \`<unmute_files>\\npath/to/file.ext\\n</unmute_files>\` automatically transitions files from **structure-only [D]** directly to **full code [C]**, as well as unmuting [M] files to full code [C].
+4. **USE STRUCTURE ONLY WHEN RESOURCE-CONSTRAINED**: ONLY use structure (\`<load_structure path="..." />\` or mode="structure") if the file will NOT be modified AND the context budget is too bloated to fit full content. Never attempt to patch a file in structure-only mode.
 ${leanNotice}
 ${memoryBlockInState}
 ${knowledgeText ? `#### 🏛️ CODE KNOWLEDGE (KNOWLEDGE.md)\n${knowledgeText}\n` : ""}
@@ -4976,9 +5023,11 @@ The user has CONFIRMED and VALIDATED your plan.
             if (controller?.signal.aborted) return;
 
             // 3. Post-stream parsing & execution
-            // In FAST MODE: STRICT SINGLE SHOT! Do NOT execute tools or recurse.
+            // If AUTO-EXECUTE TOOLS is disabled (and not in agent mode):
+            // STRICT SINGLE SHOT! Do NOT execute tools or recurse.
             // Tags (<add_files_to_context>, <unmute_files>, etc.) are rendered in the chat bubble for the user to execute manually.
-            if (isFastMode) {
+            const shouldAutoExecuteTools = this._discussionCapabilities.autoExecuteTools === true || this._discussionCapabilities.agentMode === true;
+            if (!shouldAutoExecuteTools) {
                 const cleanFinalText = stripThinkingTags(currentFullResponseBuffer).trim();
                 const finalAssistantMessage: ChatMessage = {
                     id: assistantMessageId,
@@ -5031,7 +5080,7 @@ The user has CONFIRMED and VALIDATED your plan.
                 { tag: 'unpack_directory', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<unpack_directory\b([^>]*?)>([\s\S]*?)<\/unpack_directory>/gim },
                 { tag: 'load_structure', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?)/gim },
                 { tag: 'show_symbol', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:show_symbol|get_symbol_code|read_symbol)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:show_symbol|get_symbol_code|read_symbol)>)/gim },
-                { tag: 'peek_files', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)>([\s\S]*?)<\/peek_files>/gim },
+                { tag: 'peek_files', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<peek_files\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/peek_files>)?)/gim },
                 { tag: 'read_full_file', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:read_full_file|read_file)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:read_full_file|read_file)>)/gim },
                 { tag: 'grep', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<(?:grep|grep_search|search_files)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:grep|grep_search|search_files)>)/gim },
                 { tag: 'query_architecture', pattern: /(?:^[ \t]*|(?<=>)[ \t]*)<query_architecture\b([^>]*?)>([\s\S]*?)<\/query_architecture>/gim },
@@ -5183,7 +5232,7 @@ The user has CONFIRMED and VALIDATED your plan.
                                         defsLog.push(`### 📋 Definitions & Signatures for \`${tf}\`:\n\`\`\`typescript\n${defs}\n\`\`\``);
                                     }
                                 }
-                                toolResult = `Success: Loaded structure & signatures into context for [${targetFiles.join(', ')}].\n\n${defsLog.join('\n\n')}`;
+                                toolResult = `Success: Loaded structure & signatures into context for [${targetFiles.join(', ')}].\nNote: Structure is for reference only. Whenever you need full source code or plan to edit these files, privilege using <unmute_files> to upgrade them directly from structure to full code.\n\n${defsLog.join('\n\n')}`;
                                 isSuccess = true;
                                 completedDynamicActions.push(`Loaded structure for ${targetFiles.length} file(s).`);
                             } else {
@@ -5208,12 +5257,42 @@ The user has CONFIRMED and VALIDATED your plan.
                                 completedDynamicActions.push(allOk ? `Unpacked directory: ${rawDirs.join(', ')}.` : `Failed to unpack: ${rawDirs.join(', ')}.`);
                             }
                         } else if (action.tag === 'peek_files') {
-                            const rawPaths = action.params.split(/[\s\r\n,]+/).map((p: string) => p.trim().replace(/^['"]|['"]$/g, '')).filter((p: string) => p && !p.startsWith('<'));
+                            const rawAttr = action.attrStr || "";
+                            const rawInner = action.params || "";
+                            const rawPaths: string[] = [];
+                            const attrRegex = /(?:path|paths|file|files|target)=["']([^"']+)["']/gi;
+                            let am: RegExpExecArray | null;
+                            while ((am = attrRegex.exec(rawAttr)) !== null) {
+                                am[1].split(/[\r\n,;\s]+/).forEach(p => {
+                                    const clean = p.trim().replace(/^['"]|['"]$/g, '');
+                                    if (clean && !clean.startsWith('<') && !rawPaths.includes(clean)) rawPaths.push(clean);
+                                });
+                            }
+                            if (rawInner && rawInner !== rawAttr) {
+                                rawInner.split(/[\s\r\n,]+/).forEach((p: string) => {
+                                    const clean = p.trim().replace(/^['"]|['"]$/g, '');
+                                    if (clean && !clean.startsWith('<') && !rawPaths.includes(clean)) rawPaths.push(clean);
+                                });
+                            }
+
                             if (rawPaths.length === 0) {
                                 toolResult = "Error: No file path provided in <peek_files>.";
                                 isSuccess = false;
                             } else {
-                                const peekRes = await this._contextManager.peekFiles(rawPaths);
+                                const linesMatch = rawAttr.match(/lines=["']?(\d+)["']?/i);
+                                const wordsMatch = rawAttr.match(/words=["']?(\d+)["']?/i);
+                                const offsetMatch = rawAttr.match(/offset=["']?(\d+)["']?/i);
+                                const fromMatch = rawAttr.match(/from=["']?(top|bottom)["']?/i);
+                                const regexMatch = rawAttr.match(/regex=["']([^"']+)["']/i);
+                                const peekOpts: any = {};
+                                if (linesMatch) peekOpts.lines = parseInt(linesMatch[1], 10);
+                                if (wordsMatch) peekOpts.words = parseInt(wordsMatch[1], 10);
+                                if (offsetMatch) peekOpts.offset = parseInt(offsetMatch[1], 10);
+                                if (fromMatch) peekOpts.from = fromMatch[1].toLowerCase();
+                                if (regexMatch) peekOpts.regex = regexMatch[1];
+
+                                const peekPayload = rawPaths.map(p => ({ path: p, ...peekOpts }));
+                                const peekRes = await this._contextManager.peekFiles(peekPayload);
                                 const outMsgs: string[] = [];
                                 let anyOk = false;
                                 for (const pr of peekRes) {
@@ -5608,6 +5687,7 @@ Do NOT repeat the verbal summary. Output the code tags now.`
         }
 
         await this.processKnowledgeUpdates(currentFullResponseBuffer);
+        await this.processStructureTags(currentFullResponseBuffer);
 
         const normalizedBuffer = normalizePseudoFileBlocks(currentFullResponseBuffer);
         const hasCodeBlocks = normalizedBuffer.includes('<file') || normalizedBuffer.includes('<<<<<<< SEARCH');
@@ -6733,6 +6813,64 @@ ${res.output || '(No output recorded)'}
       }
   }
 
+  public async processStructureTags(content: string): Promise<string[]> {
+      if (!content) return [];
+      const structRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<(?:load_structure|read_definitions)\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/(?:load_structure|read_definitions)>)?)/gim;
+      const targetPaths: string[] = [];
+      const addTarget = (p: string) => {
+          const clean = p.trim().replace(/^['"`]|['"`]$/g, '').replace(/^-\s*/, '').trim();
+          if (clean && !targetPaths.includes(clean)) targetPaths.push(clean);
+      };
+
+      let structMatch: RegExpExecArray | null;
+      while ((structMatch = structRegex.exec(content)) !== null) {
+          const attrStr = structMatch[1] || "";
+          const inner = (structMatch[2] || "").trim();
+
+          const attrRegex = /(?:path|paths|files|target)=["']([^"']+)["']/gi;
+          let am: RegExpExecArray | null;
+          while ((am = attrRegex.exec(attrStr)) !== null) {
+              am[1].split(/[\r\n,;\s]+/).forEach(addTarget);
+          }
+          if (inner) {
+              inner.split(/[\r\n,;]+/).forEach(l => l.trim().split(/\s+/).forEach(addTarget));
+          }
+      }
+
+      if (targetPaths.length > 0) {
+          if (this._currentDiscussion?.mutedFiles) {
+              const { arePathsEqual } = require('../../utils');
+              this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(m =>
+                  !targetPaths.some(t => arePathsEqual(m, t))
+              );
+              this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
+          }
+
+          await this.addFilesToDiscussionContext(targetPaths, 'definitions-only');
+          const provider = this._contextManager.getContextStateProvider();
+          if (provider) {
+              const urisToSet: vscode.Uri[] = [];
+              for (const tp of targetPaths) {
+                  const res = await this._contextManager.resolveWorkspaceFromPath(tp);
+                  if (res) {
+                      urisToSet.push(res.uri);
+                      this._contextManager.refreshFileInCache(res.uri);
+                  }
+              }
+              if (urisToSet.length > 0) {
+                  await provider.setStateForUris(urisToSet, 'definitions-only');
+              }
+          }
+          this.recordCurrentPromptFiles(targetPaths);
+          if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
+              await this._discussionManager.saveDiscussion(this._currentDiscussion);
+          }
+          this.log(`[Structure Ingestion] Ingested structure for ${targetPaths.length} file(s) into context (definitions-only).`);
+          await this.updateContextAndTokens({ isBackgroundSync: false });
+      }
+      return targetPaths;
+  }
+
   public async processKnowledgeUpdates(content: string): Promise<void> {
       if (!content) return;
       const updateKnRegex = /<update_knowledge\b([^>]*?)>([\s\S]*?)<\/update_knowledge>/gi;
@@ -6807,6 +6945,7 @@ ${res.output || '(No output recorded)'}
       if (!this._currentDiscussion.id.startsWith('temp-')) {
           await this._discussionManager.saveDiscussion(this._currentDiscussion);
       }
+      this.contextStateProvider?.updateContextKeys();
       await this.updateContextAndTokens({ isBackgroundSync: true });
       return addedCount;
   }
@@ -6825,12 +6964,31 @@ ${res.output || '(No output recorded)'}
 
       this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
 
+      // Restore full content ('included') for any files that were in definitions-only/structure mode
+      if (this._contextManager) {
+          const provider = this._contextManager.getContextStateProvider();
+          const urisToInclude: vscode.Uri[] = [];
+          for (const rawP of paths) {
+              const res = await this._contextManager.resolveWorkspaceFromPath(rawP);
+              if (res) {
+                  urisToInclude.push(res.uri);
+                  this._contextManager.refreshFileInCache(res.uri);
+              }
+          }
+          if (provider && urisToInclude.length > 0) {
+              await provider.setStateForUris(urisToInclude, 'included');
+          }
+      }
+
+      await this.addFilesToDiscussionContext(paths, 'included');
+
       const removedCount = initialCount - this._currentDiscussion.mutedFiles.length;
 
       if (!this._currentDiscussion.id.startsWith('temp-')) {
           await this._discussionManager.saveDiscussion(this._currentDiscussion);
       }
-      await this.updateContextAndTokens({ isBackgroundSync: true });
+      this.contextStateProvider?.updateContextKeys();
+      await this.updateContextAndTokens({ isBackgroundSync: false });
       return removedCount;
   }
 
@@ -7228,6 +7386,10 @@ ${res.output || '(No output recorded)'}
     // Release memory buffers immediately
     this._executionLogs = [];
     this.chatHistory = [];
+    this._failedPatchesRegistry.clear();
+    this._batchRepairAttempts.clear();
+    this._diagnosticWatchUris.clear();
+    this._currentPromptAddedFiles.clear();
 
     if (this._panel) {
         try {
@@ -7735,7 +7897,7 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 break;
             case 'executeShowSymbol':
                 {
-                    const { target, symbol, symbols, path: filePath, reprompt } = message;
+                    const { target, symbol, symbols, path: filePath, reprompt, copyOnly } = message;
                     const { showSymbolTool } = require('../../tools/builtins/showSymbol');
                     const env = {
                         contextManager: this._contextManager,
@@ -7744,7 +7906,14 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         currentPlan: null
                     };
                     const res = await showSymbolTool.execute({ target, symbol, symbols, path: filePath }, env as any, new AbortController().signal);
-                    if (reprompt) {
+                    if (copyOnly) {
+                        if (res.output) {
+                            await vscode.env.clipboard.writeText(res.output);
+                            vscode.window.showInformationMessage("Symbol code copied to clipboard.");
+                        } else {
+                            vscode.window.showErrorMessage("Failed to extract symbol code.");
+                        }
+                    } else if (reprompt) {
                         await this.sendMessage({
                             role: 'user',
                             content: `Here is the requested symbol implementation code:\n\n${res.output}\n\nPlease proceed with your task.`
@@ -7769,6 +7938,30 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                             vscode.window.showInformationMessage(`Copied peeked slice of ${peekResults.length} file(s) to clipboard.`);
                         } catch (err: any) {
                             vscode.window.showErrorMessage(`Peek failed: ${err.message}`);
+                        }
+                    }
+                }
+                break;
+            case 'copyStructureToClipboard':
+                {
+                    const files = Array.isArray(message.files) ? message.files : (message.path ? [message.path] : []);
+                    if (this._contextManager && files.length > 0) {
+                        try {
+                            const defsLog: string[] = [];
+                            for (const p of files) {
+                                const res = await this._contextManager.resolveWorkspaceFromPath(p);
+                                if (res) {
+                                    const defs = await this._contextManager.extractDefinitions(res.uri);
+                                    defsLog.push(`### 📋 Definitions & Signatures for \`${p}\`:\n\`\`\`typescript\n${defs}\n\`\`\``);
+                                } else {
+                                    defsLog.push(`### ❌ File \`${p}\`\n(File not found)`);
+                                }
+                            }
+                            const text = defsLog.join('\n\n');
+                            await vscode.env.clipboard.writeText(text);
+                            vscode.window.showInformationMessage(`Copied structure & signatures for ${files.length} file(s) to clipboard.`);
+                        } catch (err: any) {
+                            vscode.window.showErrorMessage(`Failed to copy structure: ${err.message}`);
                         }
                     }
                 }
@@ -7862,102 +8055,170 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 break;
             case 'executeAllMessageActions':
                 {
-                    const { actions } = message;
+                    const { actions, messageId } = message;
                     if (!Array.isArray(actions) || actions.length === 0) return;
 
                     const resultsLog: string[] = [];
                     const provider = this._contextManager.getContextStateProvider();
                     const folders = vscode.workspace.workspaceFolders;
 
-                    for (const action of actions) {
-                        try {
-                            if (action.type === 'peek') {
-                                const peekRes = await this._contextManager.peekFiles(action.payload);
-                                const sliceText = peekRes.map(r => r.error ? `[${r.path}: ${r.error}]` : `### 📄 ${r.path}\n\`\`\`\n${r.content}\n\`\`\``).join('\n\n');
-                                resultsLog.push(`#### ✅ Peek Execution (${action.payload.length} files)\n${sliceText}`);
-                            } else if (action.type === 'add_context') {
-                                const unmutedCount = await this.unmuteFiles(action.payload);
-                                const added = await provider?.addFilesToContext(action.payload) || [];
-                                const unmuteNotice = unmutedCount > 0 ? ` (Unmuted ${unmutedCount} file(s))` : '';
-                                resultsLog.push(`#### ✅ Added to Context: [${added.join(', ')}]${unmuteNotice}`);
-                            } else if (action.type === 'unmute') {
-                                const count = await this.unmuteFiles(action.payload);
-                                resultsLog.push(`#### ✅ Unmuted Files: [${action.payload.join(', ')}] (${count} files reactivated with full content)`);
+                    const { id: execProcId, controller: execCtrl } = this.processManager.register(
+                        this.discussionId,
+                        `Executing ${actions.length} action(s)...`
+                    );
+                    this.updateGeneratingState();
 
-                            } else if (action.type === 'load_structure') {
-                                const files = Array.isArray(action.payload) ? action.payload : [action.payload];
-                                await this.unmuteFiles(files);
-                                await this.addFilesToDiscussionContext(files, 'definitions-only');
+                    try {
+                        for (let i = 0; i < actions.length; i++) {
+                            if (execCtrl.signal.aborted) {
+                                this.log("Batch tool execution aborted by user.");
+                                break;
+                            }
 
-                                if (provider) {
-                                    const urisToSet: vscode.Uri[] = [];
+                            const action = actions[i];
+                            const actionName = action.name || (action.type === 'tool' ? action.payload?.name : action.type);
+                            const actionIdx = action.index !== undefined ? action.index : i;
+
+                            this.processManager.updateDescription(execProcId, `Executing tool (${i + 1}/${actions.length}): ${actionName}...`);
+                            this.updateGeneratingState();
+
+                            // 1. Notify UI: Item processing started
+                            this._panel.webview.postMessage({
+                                command: 'executeActionStart',
+                                messageId,
+                                actionIndex: actionIdx,
+                                actionId: action.id,
+                                actionType: action.type,
+                                actionName,
+                                currentIndex: i,
+                                totalCount: actions.length
+                            });
+
+                            let isSuccess = true;
+                            let outputText = '';
+
+                            try {
+                                if (action.type === 'peek') {
+                                    const peekRes = await this._contextManager.peekFiles(action.payload);
+                                    const sliceText = peekRes.map(r => r.error ? `[${r.path}: ${r.error}]` : `### 📄 ${r.path}\n\`\`\`\n${r.content}\n\`\`\``).join('\n\n');
+                                    isSuccess = !peekRes.some(r => r.error);
+                                    outputText = sliceText;
+                                    resultsLog.push(`#### ✅ Peek Execution (${action.payload.length} files)\n${sliceText}`);
+                                } else if (action.type === 'add_context') {
+                                    const unmutedCount = await this.unmuteFiles(action.payload);
+                                    const added = await provider?.addFilesToContext(action.payload) || [];
+                                    const unmuteNotice = unmutedCount > 0 ? ` (Unmuted ${unmutedCount} file(s))` : '';
+                                    isSuccess = added.length > 0 || unmutedCount > 0;
+                                    outputText = `Added to context: [${added.join(', ')}]${unmuteNotice}`;
+                                    resultsLog.push(`#### ✅ Added to Context: [${added.join(', ')}]${unmuteNotice}`);
+                                } else if (action.type === 'unmute') {
+                                    const count = await this.unmuteFiles(action.payload);
+                                    isSuccess = count > 0;
+                                    outputText = `Unmuted ${count} file(s): [${action.payload.join(', ')}]`;
+                                    resultsLog.push(`#### ✅ Unmuted Files: [${action.payload.join(', ')}] (${count} files reactivated with full content)`);
+                                } else if (action.type === 'load_structure') {
+                                    const files = Array.isArray(action.payload) ? action.payload : [action.payload];
+                                    await this.unmuteFiles(files);
+                                    await this.addFilesToDiscussionContext(files, 'definitions-only');
+
+                                    if (provider) {
+                                        const urisToSet: vscode.Uri[] = [];
+                                        for (const p of files) {
+                                            const res = await this._contextManager.resolveWorkspaceFromPath(p);
+                                            if (res) {
+                                                urisToSet.push(res.uri);
+                                                this._contextManager.refreshFileInCache(res.uri);
+                                            }
+                                        }
+                                        if (urisToSet.length > 0) {
+                                            await provider.setStateForUris(urisToSet, 'definitions-only');
+                                        }
+                                    }
+                                    this.recordCurrentPromptFiles(files);
+
+                                    const defsLog: string[] = [];
                                     for (const p of files) {
                                         const res = await this._contextManager.resolveWorkspaceFromPath(p);
                                         if (res) {
-                                            urisToSet.push(res.uri);
-                                            this._contextManager.refreshFileInCache(res.uri);
+                                            const defs = await this._contextManager.extractDefinitions(res.uri);
+                                            defsLog.push(`### 📋 Definitions & Signatures for \`${p}\`:\n\`\`\`typescript\n${defs}\n\`\`\``);
                                         }
                                     }
-                                    if (urisToSet.length > 0) {
-                                        await provider.setStateForUris(urisToSet, 'definitions-only');
-                                    }
-                                }
-                                this.recordCurrentPromptFiles(files);
-
-                                const defsLog: string[] = [];
-                                for (const p of files) {
-                                    const res = await this._contextManager.resolveWorkspaceFromPath(p);
-                                    if (res) {
-                                        const defs = await this._contextManager.extractDefinitions(res.uri);
-                                        defsLog.push(`### 📋 Definitions & Signatures for \`${p}\`:\n\`\`\`typescript\n${defs}\n\`\`\``);
-                                    }
-                                }
-                                resultsLog.push(`#### ✅ Structure & Signatures Loaded for [${files.join(', ')}]\n${defsLog.join('\n\n')}`);
-
-                            } else if (action.type === 'show_symbol') {
-                                const { showSymbolTool } = require('../../tools/builtins/showSymbol');
-                                const env = {
-                                    contextManager: this._contextManager,
-                                    lollmsApi: this._lollmsAPI,
-                                    workspaceRoot: folders?.[0],
-                                    currentPlan: null
-                                };
-                                const symRes = await showSymbolTool.execute({
-                                    target: action.payload.target,
-                                    symbol: action.payload.symbol,
-                                    symbols: action.payload.symbols
-                                }, env as any, new AbortController().signal);
-                                const label = action.payload.symbols 
-                                    ? (Array.isArray(action.payload.symbols) ? action.payload.symbols.join(', ') : action.payload.symbols)
-                                    : (action.payload.symbol || action.payload.target);
-                                resultsLog.push(`#### ${symRes.success ? '✅' : '❌'} Symbols: ${action.payload.target || ''} [${label}]\n${symRes.output}`);
-
-                            } else if (action.type === 'tool') {
-                                const toolDef = this.agentManager.getTools().find(t => t.name === action.payload.name);
-                                if (toolDef) {
+                                    isSuccess = defsLog.length > 0;
+                                    outputText = `Loaded structure & signatures for [${files.join(', ')}]`;
+                                    resultsLog.push(`#### ✅ Structure & Signatures Loaded for [${files.join(', ')}]\n${defsLog.join('\n\n')}`);
+                                } else if (action.type === 'show_symbol') {
+                                    const { showSymbolTool } = require('../../tools/builtins/showSymbol');
                                     const env = {
-                                        workspaceRoot: vscode.workspace.workspaceFolders?.[0],
-                                        lollmsApi: this._lollmsAPI,
                                         contextManager: this._contextManager,
-                                        agentManager: this.agentManager,
-                                        skillsManager: this._skillsManager,
-                                        codeGraphManager: this._codeGraphManager,
-                                        personalityManager: this._personalityManager,
-                                        currentPlan: (this.agentManager as any)?.currentPlan || null
+                                        lollmsApi: this._lollmsAPI,
+                                        workspaceRoot: folders?.[0],
+                                        currentPlan: null
                                     };
-                                    const toolRes = await toolDef.execute(action.payload.params || {}, env as any, new AbortController().signal);
-                                    resultsLog.push(`#### ${toolRes.success ? '✅' : '❌'} Tool: ${action.payload.name}\n${toolRes.output}`);
+                                    const symRes = await showSymbolTool.execute({
+                                        target: action.payload.target,
+                                        symbol: action.payload.symbol,
+                                        symbols: action.payload.symbols
+                                    }, env as any, execCtrl.signal);
+                                    isSuccess = symRes.success;
+                                    outputText = symRes.output;
+                                    const label = action.payload.symbols 
+                                        ? (Array.isArray(action.payload.symbols) ? action.payload.symbols.join(', ') : action.payload.symbols)
+                                        : (action.payload.symbol || action.payload.target);
+                                    resultsLog.push(`#### ${symRes.success ? '✅' : '❌'} Symbols: ${action.payload.target || ''} [${label}]\n${symRes.output}`);
+                                } else if (action.type === 'tool') {
+                                    const toolDef = this.agentManager.getTools().find((t: any) => t.name === action.payload.name);
+                                    if (toolDef) {
+                                        const env = {
+                                            workspaceRoot: vscode.workspace.workspaceFolders?.[0],
+                                            lollmsApi: this._lollmsAPI,
+                                            contextManager: this._contextManager,
+                                            agentManager: this.agentManager,
+                                            skillsManager: this._skillsManager,
+                                            codeGraphManager: this._codeGraphManager,
+                                            personalityManager: this._personalityManager,
+                                            currentPlan: (this.agentManager as any)?.currentPlan || null
+                                        };
+                                        const toolRes = await toolDef.execute(action.payload.params || {}, env as any, execCtrl.signal);
+                                        isSuccess = toolRes.success;
+                                        outputText = toolRes.output;
+                                        resultsLog.push(`#### ${toolRes.success ? '✅' : '❌'} Tool: ${action.payload.name}\n${toolRes.output}`);
+                                    } else {
+                                        isSuccess = false;
+                                        outputText = `Tool '${action.payload.name}' not found.`;
+                                        resultsLog.push(`#### ❌ Tool Not Found: ${action.payload.name}`);
+                                    }
                                 }
+                            } catch (actionErr: any) {
+                                isSuccess = false;
+                                outputText = actionErr.message;
+                                resultsLog.push(`#### ❌ Action Error: ${actionErr.message}`);
                             }
-                        } catch (actionErr: any) {
-                            resultsLog.push(`#### ❌ Action Error: ${actionErr.message}`);
+
+                            // 2. Notify UI: Item processing finished
+                            this._panel.webview.postMessage({
+                                command: 'executeActionResult',
+                                messageId,
+                                actionIndex: actionIdx,
+                                actionId: action.id,
+                                actionType: action.type,
+                                actionName,
+                                success: isSuccess,
+                                output: outputText,
+                                currentIndex: i,
+                                totalCount: actions.length
+                            });
                         }
+                    } finally {
+                        this.processManager.unregister(execProcId);
+                        this.updateGeneratingState();
+                        this.updateContextAndTokens();
                     }
 
-                    this.updateContextAndTokens();
-
-                    const observationPrompt = `### 📋 BATCH EXECUTION RESULTS (${actions.length} actions executed)\n\n${resultsLog.join('\n\n---\n\n')}\n\nReview the observation results above and proceed with your technical answer.`;
-                    await this.sendMessage({ role: 'user', content: observationPrompt });
+                    if (!execCtrl.signal.aborted && resultsLog.length > 0) {
+                        const observationPrompt = `### 📋 BATCH EXECUTION RESULTS (${actions.length} actions executed)\n\n${resultsLog.join('\n\n---\n\n')}\n\nReview the observation results above and proceed with your technical answer.`;
+                        await this.sendMessage({ role: 'user', content: observationPrompt });
+                    }
                 }
                 break;
             case 'addFilesToContext':
@@ -8205,9 +8466,9 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     canSelectMany: true,
                     openLabel: 'Add to AI Context',
                     filters: { 
-                        'Documentation & Code': ['md', 'txt', 'rst', 'pdf', 'docx', 'html', 'htm', 'json', 'yaml', 'yml', 'py', 'ts', 'js', 'cpp', 'c', 'cs', 'java', 'rs', 'go', 'sh', 'xlsx', 'pptx', 'msg', 'csv'],
-                        'Documents': ['md', 'txt', 'pdf', 'docx', 'pptx', 'xlsx', 'msg', 'odt', 'rtf', 'csv', 'tsv', 'html', 'rst'],
-                        'Images': ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'svg'],
+                        'Documentation & Code': ['md', 'txt', 'rst', 'pdf', 'docx', 'html', 'htm', 'json', 'yaml', 'yml', 'py', 'ts', 'js', 'cpp', 'c', 'cs', 'java', 'rs', 'go', 'sh', 'xlsx', 'pptx', 'msg', 'csv', 'svg'],
+                        'Documents': ['md', 'txt', 'pdf', 'docx', 'pptx', 'xlsx', 'msg', 'odt', 'rtf', 'csv', 'tsv', 'html', 'rst', 'svg'],
+                        'Images': ['png', 'jpg', 'jpeg', 'webp', 'bmp'],
                         'All Files': ['*']
                     }
                 });
@@ -8220,12 +8481,12 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                         const ext = path.extname(uri.fsPath).toLowerCase();
                         const fileName = path.basename(uri.fsPath);
 
-                        // If it's a complex binary/document or image, treat it as a rich attachment
-                        if (['.pdf', '.docx', '.pptx', '.xlsx', '.msg', '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.svg'].includes(ext)) {
+                        // If it's a complex binary/document or raster image, treat it as a rich attachment
+                        if (['.pdf', '.docx', '.pptx', '.xlsx', '.msg', '.png', '.jpg', '.jpeg', '.webp', '.bmp'].includes(ext)) {
                             try {
                                 const bytes = await vscode.workspace.fs.readFile(uri);
                                 const base64 = Buffer.from(bytes).toString('base64');
-                                const isImage = ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.svg'].includes(ext);
+                                const isImage = ['.png', '.jpg', '.jpeg', '.webp', '.bmp'].includes(ext);
 
                                 let importMode: string | undefined = undefined;
                                 if (ext === '.pdf') {
@@ -8352,6 +8613,9 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                 break;
             // requestAddFileToContext removed - now handled by webview file input
             // to ensure files are treated as discussion attachments.
+            case 'createCustomExternalFile':
+                await this.handleCreateCustomExternalFile(message.fileName, message.content);
+                break;
             case 'requestAddExternalFile':
                 await this.handleRequestAddExternalFile();
                 break;
@@ -8602,6 +8866,10 @@ private _setWebviewMessageListener(webview: vscode.Webview) {
                     try {
                         const res = await this._contextManager.resolveWorkspaceFromPath(message.filePath);
                         if (res) {
+                            if (message.pendingContent) {
+                                await vscode.workspace.fs.writeFile(res.uri, Buffer.from(message.pendingContent, 'utf8'));
+                                this._contextManager.refreshFileInCache(res.uri);
+                            }
                             const doc = await vscode.workspace.openTextDocument(res.uri);
                             await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.One });
                         }
@@ -8957,6 +9225,10 @@ ${reportBlock}
                 break;
             case 'toggleFileStructure':
                 if (this._currentDiscussion && message.path) {
+                    this._panel.webview.postMessage({
+                        command: 'tokenCalculationStarted',
+                        text: 'Switching structure view...'
+                    });
                     const targetPath = message.path.replace(/\\/g, '/').trim();
                     const res = await this._contextManager.resolveWorkspaceFromPath(targetPath);
                     const resolvedPath = res ? res.relativePath : targetPath;
@@ -8999,10 +9271,6 @@ ${reportBlock}
                         this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
                     }
 
-                    if (res) {
-                        this._contextManager.refreshFileInCache(res.uri);
-                    }
-
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
@@ -9016,6 +9284,10 @@ ${reportBlock}
 
             case 'bulkSetFilesStructure':
                 if (this._currentDiscussion && Array.isArray(message.paths) && message.paths.length > 0) {
+                    this._panel.webview.postMessage({
+                        command: 'tokenCalculationStarted',
+                        text: `Setting structure view for ${message.paths.length} file(s)...`
+                    });
                     const targetState = message.targetState || 'definitions-only';
                     if (!(this._currentDiscussion as any).includedFiles) {
                         const globalIncluded = this._contextManager?.getContextStateProvider()?.getIncludedFiles() || [];
@@ -9073,23 +9345,26 @@ ${reportBlock}
 
             case 'toggleMuteFile':
                 if (this._currentDiscussion && message.path) {
+                    this._panel.webview.postMessage({
+                        command: 'tokenCalculationStarted',
+                        text: 'Updating file visibility...'
+                    });
                     const { arePathsEqual } = require('../../utils');
                     if (!this._currentDiscussion.mutedFiles) this._currentDiscussion.mutedFiles = [];
                     const targetPath = message.path.replace(/\\/g, '/').trim();
                     const isMuted = this._currentDiscussion.mutedFiles.some(p => arePathsEqual(p, targetPath));
 
                     if (isMuted) {
-                        this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(p => !arePathsEqual(p, targetPath));
-                        vscode.window.showInformationMessage(`Reactivated "${path.basename(targetPath)}" for this discussion.`);
+                        await this.unmuteFiles([targetPath]);
+                        vscode.window.showInformationMessage(`Reactivated "${path.basename(targetPath)}" with full content.`);
                     } else {
-                        this._currentDiscussion.mutedFiles.push(targetPath);
+                        await this.muteFiles([targetPath]);
                         vscode.window.showInformationMessage(`Deactivated "${path.basename(targetPath)}" for this discussion (Muted).`);
                     }
 
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
-                    this.updateContextAndTokens({ isBackgroundSync: true });
                 }
                 break;
 
@@ -9181,38 +9456,69 @@ ${reportBlock}
             case 'removeFileFromContext':
             case 'bulkRemoveFiles':
                 if (this._contextManager) {
-                    const paths = message.command === 'bulkRemoveFiles' ? message.paths : [message.path];
+                    const paths: string[] = message.command === 'bulkRemoveFiles' ? (message.paths || []) : [message.path];
                     const uris: vscode.Uri[] = [];
+                    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 
                     let tokensToRemove = 0;
-                    for (let p of (paths as string[])) {
-                        const res = await this._contextManager.resolveWorkspaceFromPath(p);
-                        if (res) {
-                            uris.push(res.uri);
-                        } else {
-                            uris.push(vscode.Uri.file(p));
+                    for (const p of paths) {
+                        const cleanP = String(p).replace(/\\/g, '/').trim();
+
+                        // 1. Remove external link if linked
+                        await (this._contextManager as any).removeExternalLink?.(cleanP, workspaceFolder);
+
+                        // 2. If it's stored inside .lollms/external_files, delete it from disk
+                        if (cleanP.includes('.lollms/external_files')) {
+                            try {
+                                const res = await this._contextManager.resolveWorkspaceFromPath(cleanP);
+                                if (res) {
+                                    await vscode.workspace.fs.delete(res.uri, { useTrash: true }).then(undefined, () => {});
+                                }
+                            } catch {}
                         }
 
-                        // Retrieve the cached token weight before removing it to perform instant subtraction
-                        const cached = (this._contextManager as any)._fileContentCache.get(p);
+                        const res = await this._contextManager.resolveWorkspaceFromPath(cleanP);
+                        if (res) {
+                            uris.push(res.uri);
+                            this._contextManager.refreshFileInCache(res.uri);
+                        } else {
+                            uris.push(vscode.Uri.file(cleanP));
+                        }
+
+                        const cached = (this._contextManager as any)._fileContentCache?.get(cleanP);
                         if (cached) {
                             tokensToRemove += Math.ceil(cached.content.length / 3.5);
                         }
-
-                        // Remove from active token cache to force immediate accurate updates
-                        await this._contextManager.removeCachedTokens(p);
+                        await this._contextManager.removeCachedTokens(cleanP);
                     }
 
-                    await this._contextManager.getContextStateProvider()?.setStateForUris(uris, 'tree-only');
+                    const provider = this._contextManager.getContextStateProvider();
+                    if (provider) {
+                        await (provider as any).removeFiles?.(paths);
+                        await provider.setStateForUris(uris, 'tree-only');
+                    }
+
+                    // Remove from discussion state and active muted files
+                    await this.removeFilesFromDiscussionContext(paths);
+                    if (this._currentDiscussion && this._currentDiscussion.mutedFiles) {
+                        const targetPaths = paths.map((x: string) => x.replace(/\\/g, '/').toLowerCase().trim());
+                        this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter((m: string) => {
+                            const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                            return !targetPaths.some((t: string) => cleanM === t || cleanM.endsWith('/' + t) || t.endsWith('/' + cleanM));
+                        });
+                        this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
+                        if (!this._currentDiscussion.id.startsWith('temp-')) {
+                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                        }
+                    }
 
                     // --- INSTANT HYDRATION SUBTRACTION ---
-                    // Dynamically subtract the token weight from the current cached metrics
-                    // and update the webview instantly to eliminate any lagging calculation delay.
                     if (this._currentDiscussion?.lastTokenMetrics) {
                         const m = this._currentDiscussion.lastTokenMetrics;
                         m.total = Math.max(0, m.total - tokensToRemove);
                         if (m.segments) {
                             m.segments.files = Math.max(0, m.segments.files - tokensToRemove);
+                            m.segments.external = Math.max(0, (m.segments.external || 0) - tokensToRemove);
                         }
 
                         this._panel.webview.postMessage({
@@ -9224,8 +9530,8 @@ ${reportBlock}
                         });
                     }
 
-                    // Run the background sync asynchronously to align with disk state
-                    this.updateContextAndTokens({ isBackgroundSync: true });
+                    // Run synchronization to update HUD and token counts
+                    this.updateContextAndTokens({ isBackgroundSync: false });
                 }
                 break;
             case 'scrutinizeKnowledgeTree':
@@ -11227,8 +11533,9 @@ Task:
           return { contextData: currentContext, history: activeHistory };
       }
 
-      // Stage 2: If still over budget, remove/mute useless and low-relevance files
-      this.log(`[Context Optimization] Load remains ~${totalEstimated.toLocaleString()} tok (> ${targetBudget.toLocaleString()} tok). Pruning low-relevance files...`, 'INFO');
+      // Stage 2: If still over budget, replace low-relevance files with their structure instead of removing them,
+      // while avoiding files that were added or unlocked in the previous turn.
+      this.log(`[Context Optimization] Load remains ~${totalEstimated.toLocaleString()} tok (> ${targetBudget.toLocaleString()} tok). Demoting low-relevance files to structure instead of removing them...`, 'INFO');
 
       const cleanPrompt = promptText.toLowerCase();
       const recentTurns = activeHistory.slice(-3).map(m => typeof m.content === 'string' ? m.content.toLowerCase() : '').join(' ');
@@ -11246,11 +11553,15 @@ Task:
           .split(/\s+/)
           .filter(w => w.length > 2);
 
+      const prevTurnFiles = this.getPreviousTurnFiles();
+      const currentPromptFiles = this.getCurrentPromptFiles();
+
       const candidateBlocks = loadedBlocks.map((fb: any) => {
           const attrs = parseFileTagAttributes(fb.attrStr, fb.rawContent);
           const p = attrs?.path ? attrs.path.replace(/\\/g, '/').toLowerCase() : '';
           const baseName = path.basename(p);
           const toks = Math.max(1, Math.ceil((fb.rawContent || '').length / 3.5));
+          const isStructure = attrs?.mode === 'structure' || fb.attrStr.includes('mode="structure"') || fb.attrStr.includes('mode="definitions-only"');
           let score = 0;
 
           const isClutter = p.endsWith('.min.js') || p.endsWith('.min.css') || p.endsWith('.map') || 
@@ -11269,48 +11580,86 @@ Task:
               if (p.includes(kw)) score += 150;
           }
 
-          return { block: fb, path: attrs?.path || '', norm: p, score, tokens: toks };
+          return { block: fb, path: attrs?.path || '', norm: p, score, tokens: toks, isStructure };
       });
 
-      // Sort lowest relevance first to eliminate useless files first
+      // Sort lowest relevance first to demote lower priority files first
       candidateBlocks.sort((a: any, b: any) => a.score - b.score || b.tokens - a.tokens);
 
       const maxAllowedCodeTokens = Math.max(1500, targetBudget - (fixedOverheadTokens + historyTokens + treeTokens + skillsTokens + promptTokens));
       let currentCodeTokens = activeCodeTokens;
-      const pathsToMute: string[] = [];
+      const filesReplacedWithStructure: string[] = [];
       const keptBlocks: any[] = [];
 
-      // Mute lowest-relevance files until code budget is satisfied
       for (const cand of candidateBlocks) {
           const { isProjectFile } = require('../../utils');
           const isExternalDoc = !isProjectFile(cand.path);
           const isExplicitlyRequested = cand.score >= 50000;
-          const isTargetProtected = isExternalDoc || protectedFiles.some(pf => {
+          const isPreviousTurnFile = prevTurnFiles.has(cand.norm) || 
+                                     currentPromptFiles.has(cand.norm) || 
+                                     this._currentPromptAddedFiles.has(cand.norm) ||
+                                     this._contextManager.isRecentlyAdded(cand.path);
+          const isTargetProtected = isExternalDoc || isPreviousTurnFile || isExplicitlyRequested || protectedFiles.some(pf => {
               const cleanPf = pf.replace(/\\/g, '/').toLowerCase().trim();
               return cand.norm === cleanPf || cand.norm.endsWith('/' + cleanPf) || cleanPf.endsWith('/' + cand.norm);
           });
-          if (currentCodeTokens > maxAllowedCodeTokens && !isExplicitlyRequested && !isTargetProtected) {
-              pathsToMute.push(cand.path);
-              currentCodeTokens -= cand.tokens;
+
+          if (currentCodeTokens > maxAllowedCodeTokens && !isTargetProtected && !cand.isStructure) {
+              let defs = "";
+              try {
+                  const res = await this._contextManager.resolveWorkspaceFromPath(cand.path);
+                  if (res) {
+                      defs = await this._contextManager.extractDefinitions(res.uri);
+                  }
+              } catch {}
+              if (!defs || defs === "(No definitions found)") {
+                  defs = `// [Structure & Signatures for ${cand.path}]\n// To recover full content, use <unmute_files>${cand.path}</unmute_files>`;
+              }
+              const structureBlock = `<!-- NOTE: Full content replaced with structure to fit context budget. To recover full content, use <unmute_files>${cand.path}</unmute_files> -->\n<file path="${cand.path}" mode="structure">\n${defs}\n</file>
+
+`;
+              const defTokens = Math.max(1, Math.ceil(structureBlock.length / 3.5));
+
+              currentCodeTokens -= (cand.tokens - defTokens);
+              filesReplacedWithStructure.push(cand.path);
+              keptBlocks.push({
+                  ...cand,
+                  tokens: defTokens,
+                  isStructure: true,
+                  block: {
+                      ...cand.block,
+                      fullMatch: structureBlock
+                  }
+              });
           } else {
               keptBlocks.push(cand);
           }
       }
 
-      if (pathsToMute.length > 0) {
-          const existingMuted = this._currentDiscussion.mutedFiles || [];
-          const newMutedSet = new Set(existingMuted.map(p => p.replace(/\\/g, '/').toLowerCase()));
-          pathsToMute.forEach(p => newMutedSet.add(p.replace(/\\/g, '/').toLowerCase()));
-          keptBlocks.forEach(b => newMutedSet.delete(b.norm));
-
-          this._currentDiscussion.mutedFiles = Array.from(newMutedSet);
-          this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
-
+      if (filesReplacedWithStructure.length > 0) {
+          await this.addFilesToDiscussionContext(filesReplacedWithStructure, 'definitions-only');
+          const provider = this._contextManager.getContextStateProvider();
+          if (provider) {
+              const urisToUpdate: vscode.Uri[] = [];
+              for (const p of filesReplacedWithStructure) {
+                  const r = await this._contextManager.resolveWorkspaceFromPath(p);
+                  if (r) urisToUpdate.push(r.uri);
+              }
+              if (urisToUpdate.length > 0) {
+                  await provider.setStateForUris(urisToUpdate, 'definitions-only');
+              }
+          }
+          if (this._currentDiscussion.mutedFiles) {
+              const { arePathsEqual } = require('../../utils');
+              this._currentDiscussion.mutedFiles = this._currentDiscussion.mutedFiles.filter(m => 
+                  !filesReplacedWithStructure.some(p => arePathsEqual(m, p))
+              );
+              this._discussionCapabilities.mutedFiles = [...this._currentDiscussion.mutedFiles];
+          }
           if (!this._currentDiscussion.id.startsWith('temp-')) {
               this._discussionManager.saveDiscussion(this._currentDiscussion).catch(() => {});
           }
-
-          this.log(`[Context Optimization] Muted ${pathsToMute.length} non-essential file(s) to align with target budget.`, 'INFO');
+          this.log(`[Context Optimization] Replaced ${filesReplacedWithStructure.length} file(s) with structure instead of removing them.`);
       }
 
       const newSelectedFilesContent = keptBlocks.map(b => b.block.fullMatch).join('\n\n');
@@ -11387,6 +11736,59 @@ Task:
       });
   }
 
+  public async handleCreateCustomExternalFile(fileName: string, content: string): Promise<void> {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) {
+          vscode.window.showErrorMessage("Active workspace required to create external content.");
+          return;
+      }
+
+      this._panel.webview.postMessage({
+          command: 'setGeneratingState',
+          isGenerating: true,
+          statusText: 'Saving custom external file...'
+      });
+      this._panel.webview.postMessage({
+          command: 'tokenCalculationStarted',
+          text: 'Saving external content & updating tokens...'
+      });
+
+      const targetDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'external_files');
+      await vscode.workspace.fs.createDirectory(targetDir).then(undefined, () => {});
+
+      let safeName = fileName.replace(/\\/g, '/').trim();
+      safeName = path.basename(safeName).replace(/[^a-zA-Z0-9._-]/g, '_');
+      if (!safeName.includes('.')) {
+          safeName += '.md';
+      }
+
+      const fileUri = vscode.Uri.joinPath(targetDir, safeName);
+      const relPath = path.join('.lollms', 'external_files', safeName).replace(/\\/g, '/');
+
+      try {
+          await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf8'));
+
+          await this.unmuteFiles([relPath]);
+          await this.addFilesToDiscussionContext([relPath]);
+          await this._contextManager.getContextStateProvider()?.addFilesToContext([relPath]);
+          this._contextManager.recordRecentlyAddedFiles([relPath]);
+          this.recordCurrentPromptFiles([relPath]);
+
+          try {
+              const toks = Math.max(1, Math.ceil(content.length / 3.5));
+              const compHash = `${content.length}_${Date.now()}`;
+              await this._contextManager.setCachedTokens(relPath, compHash, toks);
+          } catch {}
+
+          vscode.window.showInformationMessage(`✅ Added '${safeName}' to External & Research (.lollms/external_files).`);
+      } catch (err: any) {
+          vscode.window.showErrorMessage(`Failed to save external content: ${err.message}`);
+      } finally {
+          this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+          await this.updateContextAndTokens({ isBackgroundSync: false });
+      }
+  }
+
   public async handleRequestAddExternalFileLink() {
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) {
@@ -11410,6 +11812,10 @@ Task:
           command: 'setGeneratingState',
           isGenerating: true,
           statusText: 'Linking external live reference files...'
+      });
+      this._panel.webview.postMessage({
+          command: 'tokenCalculationStarted',
+          text: 'Linking external reference files...'
       });
 
       let linkedCount = 0;
@@ -11501,6 +11907,8 @@ Task:
       }
 
       if (relativePathsAdded.length > 0) {
+          await this.unmuteFiles(relativePathsAdded);
+          await this.addFilesToDiscussionContext(relativePathsAdded);
           await this._contextManager.getContextStateProvider()?.addFilesToContext(relativePathsAdded);
           this._contextManager.recordRecentlyAddedFiles(relativePathsAdded);
           this.recordCurrentPromptFiles(relativePathsAdded);
@@ -11508,7 +11916,7 @@ Task:
       }
 
       this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
-      this.updateContextAndTokens({ isBackgroundSync: false });
+      await this.updateContextAndTokens({ isBackgroundSync: false });
   }
 
   public async auditFileDiagnostics(filePath: string, messageId?: string, blockIndex?: number, blockId?: string, signal?: AbortSignal) {
@@ -11521,9 +11929,9 @@ Task:
 
       this._diagnosticWatchUris.add(resolution.uri.fsPath);
 
-      // Brief delay allows the language server compiler (tsserver, pyright, eslint) to evaluate the new disk content
-      await new Promise(r => setTimeout(r, 450));
-      if (signal?.aborted || !ChatPanel.isBatchApplying) return;
+      // Brief delay allows language server (tsserver, pyright) to evaluate new disk content
+      await new Promise(r => setTimeout(r, 200));
+      if (this._isDisposed || signal?.aborted) return;
 
       const diags = vscode.languages.getDiagnostics(resolution.uri);
       const errors = diags.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
@@ -11965,12 +12373,21 @@ Generate the surgical fix to resolve these errors.`;
 
       if (confirm === vscode.l10n.t("label.deleteAll")) {
           try {
-              for (const relativePath of files) {
-                  const uri = vscode.Uri.joinPath(workspaceFolder.uri, relativePath);
-                  await vscode.workspace.fs.delete(uri, { recursive: true, useTrash: true });
+              for (const p of files) {
+                  const cleanP = String(p).replace(/\\/g, '/').trim();
+                  // Remove from external links if linked
+                  await (this._contextManager as any).removeExternalLink?.(cleanP, workspaceFolder);
+
+                  // Delete file from disk if inside .lollms/external_files or workspace
+                  const res = await this._contextManager.resolveWorkspaceFromPath(cleanP);
+                  if (res && (cleanP.includes('.lollms/external_files') || res.folder)) {
+                      await vscode.workspace.fs.delete(res.uri, { recursive: true, useTrash: true }).then(undefined, () => {});
+                  }
               }
+              await (this._contextManager.getContextStateProvider() as any)?.removeFiles?.(files);
+              await this.removeFilesFromDiscussionContext(files);
               vscode.window.showInformationMessage(vscode.l10n.t("info.bulkDeleteFilesSuccess", files.length));
-              this.updateContextAndTokens();
+              this.updateContextAndTokens({ isBackgroundSync: false });
           } catch (e: any) {
               vscode.window.showErrorMessage(vscode.l10n.t("error.bulkDeleteFailed", e.message));
           }
@@ -12241,6 +12658,12 @@ ${langGuidance}
             return false;
         }
 
+        // Immediately notify webview HUD to show the active spinner
+        this._panel.webview.postMessage({
+            command: 'tokenCalculationStarted',
+            text: 'Compressing chat history...'
+        });
+
         return await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
             title: "Lollms: Compressing conversation history...",
@@ -12259,15 +12682,45 @@ ${langGuidance}
                 );
 
                 if (res && res.liberatedTokens > 0) {
+                    // 1. Calculate new history text and token weight
+                    const newHistoryText = this._currentDiscussion!.messages
+                        .filter(m => !m.skipInPrompt)
+                        .map(m => typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(p => p.text || '').join('\n') : ''))
+                        .join('\n');
+                    const newHistoryTokens = Math.max(1, Math.ceil(newHistoryText.length / 3.5));
+
+                    // 2. Adjust lastTokenMetrics immediately so loadDiscussion receives the newly reduced metrics
+                    if (this._currentDiscussion!.lastTokenMetrics) {
+                        const oldHistoryTokens = this._currentDiscussion!.lastTokenMetrics.segments?.history || 0;
+                        const liberated = Math.max(0, oldHistoryTokens - newHistoryTokens);
+                        this._currentDiscussion!.lastTokenMetrics.total = Math.max(0, this._currentDiscussion!.lastTokenMetrics.total - liberated);
+                        if (this._currentDiscussion!.lastTokenMetrics.segments) {
+                            this._currentDiscussion!.lastTokenMetrics.segments.history = newHistoryTokens;
+                        }
+                    }
+
+                    // 3. Clear token count cache so stale history hash isn't used
+                    ChatPanel._tokenCountCache.clear();
+
+                    if (!this._currentDiscussion!.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion!);
+                    }
+
+                    // 4. Reload discussion layout with newly reduced metrics
                     await this.loadDiscussion();
-                    this.updateContextAndTokens({ isBackgroundSync: false });
+
+                    // 5. Authoritatively update context and tokens
+                    await this.updateContextAndTokens({ isBackgroundSync: false });
+
                     vscode.window.showInformationMessage(`✅ Chat history compressed (~${res.liberatedTokens.toLocaleString()} tokens liberated). Files preserved in context.`);
                     return true;
                 } else {
+                    this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
                     vscode.window.showWarningMessage("Could not compress conversation history.");
                     return false;
                 }
             } catch (err: any) {
+                this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
                 this.log(`Failed to compress discussion history: ${err.message}`, 'ERROR');
                 vscode.window.showErrorMessage(`Failed to compress history: ${err.message}`);
                 return false;

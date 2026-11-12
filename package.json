@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.83",
+  "version": "1.0.89",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -558,24 +558,49 @@
         "icon": "$(trash)"
       },
       {
+        "command": "lollms-vs-coder.toggleContextIncluded",
+        "title": "Toggle AI Context",
+        "icon": "$(check)"
+      },
+      {
         "command": "lollms-vs-coder.setContextIncluded",
         "title": "%command.setContextIncluded.title%"
+      },
+      {
+        "command": "lollms-vs-coder.setContextIncludedActive",
+        "title": "%command.setContextIncludedActive.title%"
       },
       {
         "command": "lollms-vs-coder.setContextTreeOnly",
         "title": "%command.setContextTreeOnly.title%"
       },
       {
+        "command": "lollms-vs-coder.setContextTreeOnlyActive",
+        "title": "%command.setContextTreeOnlyActive.title%"
+      },
+      {
         "command": "lollms-vs-coder.setContextExcluded",
         "title": "%command.setContextExcluded.title%"
+      },
+      {
+        "command": "lollms-vs-coder.setContextExcludedActive",
+        "title": "%command.setContextExcludedActive.title%"
       },
       {
         "command": "lollms-vs-coder.setContextCollapsed",
         "title": "%command.setContextCollapsed.title%"
       },
       {
+        "command": "lollms-vs-coder.setContextCollapsedActive",
+        "title": "%command.setContextCollapsedActive.title%"
+      },
+      {
         "command": "lollms-vs-coder.setContextDefinitionsOnly",
         "title": "%command.setContextDefinitionsOnly.title%"
+      },
+      {
+        "command": "lollms-vs-coder.setContextDefinitionsOnlyActive",
+        "title": "%command.setContextDefinitionsOnlyActive.title%"
       },
       {
         "command": "lollms-vs-coder.saveContextSelection",
@@ -1476,10 +1501,7 @@
             "**/build/**",
             "**/dist/**",
             "**/out/**",
-            "**/target/**",
-            "**/bin/**",
             "**/obj/**",
-            "**/data/**",
             "**/data_workspace/**",
             "**/*.pyc",
             "**/*.egg-info/**",
@@ -1504,7 +1526,6 @@
             "*.jpeg",
             "*.gif",
             "*.bmp",
-            "*.svg",
             "*.ico",
             "*.lock",
             "**/poetry.lock",
@@ -1930,6 +1951,11 @@
           "when": "resourceScheme == file"
         },
         {
+          "submenu": "lollms-vs-coder.setContextSubmenu",
+          "group": "1_modification@0",
+          "when": "resourceScheme == file"
+        },
+        {
           "command": "lollms-vs-coder.learnSelectionAsSkill",
           "when": "editorHasSelection",
           "group": "1_modification@1"
@@ -1958,23 +1984,53 @@
       ],
       "lollms-vs-coder.setContextSubmenu": [
         {
-          "command": "lollms-vs-coder.setContextIncluded",
+          "command": "lollms-vs-coder.setContextIncludedActive",
+          "when": "resourcePath in lollms:includedPaths",
           "group": "1_modification@1"
         },
         {
-          "command": "lollms-vs-coder.setContextTreeOnly",
+          "command": "lollms-vs-coder.setContextIncluded",
+          "when": "resourcePath not in lollms:includedPaths",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "lollms-vs-coder.setContextTreeOnlyActive",
+          "when": "resourcePath not in lollms:configuredPaths",
           "group": "1_modification@2"
         },
         {
-          "command": "lollms-vs-coder.setContextDefinitionsOnly",
+          "command": "lollms-vs-coder.setContextTreeOnly",
+          "when": "resourcePath in lollms:configuredPaths",
+          "group": "1_modification@2"
+        },
+        {
+          "command": "lollms-vs-coder.setContextDefinitionsOnlyActive",
+          "when": "resourcePath in lollms:definitionsPaths",
           "group": "1_modification@3"
         },
         {
-          "command": "lollms-vs-coder.setContextCollapsed",
+          "command": "lollms-vs-coder.setContextDefinitionsOnly",
+          "when": "resourcePath not in lollms:definitionsPaths",
+          "group": "1_modification@3"
+        },
+        {
+          "command": "lollms-vs-coder.setContextCollapsedActive",
+          "when": "resourcePath in lollms:collapsedPaths",
           "group": "1_modification@4"
         },
         {
+          "command": "lollms-vs-coder.setContextCollapsed",
+          "when": "resourcePath not in lollms:collapsedPaths",
+          "group": "1_modification@4"
+        },
+        {
+          "command": "lollms-vs-coder.setContextExcludedActive",
+          "when": "resourcePath in lollms:excludedPaths",
+          "group": "1_modification@5"
+        },
+        {
           "command": "lollms-vs-coder.setContextExcluded",
+          "when": "resourcePath not in lollms:excludedPaths",
           "group": "1_modification@5"
         }
       ],
@@ -2226,6 +2282,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "lollms-vs-coder.toggleContextIncluded",
+          "when": "view == lollmsFileTreeView && viewItem =~ /contextItem:/",
+          "group": "inline"
+        },
+        {
+          "submenu": "lollms-vs-coder.setContextSubmenu",
+          "when": "view == lollmsFileTreeView",
+          "group": "1_modification@1"
+        },
         {
           "command": "lollms-vs-coder.deleteProjectMemory",
           "when": "view == lollmsProjectMemoryView && viewItem == projectMemory",

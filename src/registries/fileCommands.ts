@@ -11,6 +11,7 @@ import { FileRepairStudioPanel } from '../panels/fileRepairStudioPanel';
 
 export function registerFileCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
 
+    const inMemorySnapshots = new Map<string, string>();
     const lastSnapshotWrite = new Map<string, number>();
 
     // Open dedicated File Repair Studio Tab
@@ -143,25 +144,24 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const hash = crypto.createHash('md5').update(fileUri.fsPath).digest('hex').substring(0, 8);
         const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${hash}_${fileName}.orig`);
         
+        inMemorySnapshots.set(fileUri.toString(), originalContent);
+        if (snapshotOnly) return;
+
         const now = Date.now();
         const lastWrite = lastSnapshotWrite.get(snapshotUri.toString()) || 0;
+        const snapshotContent = inMemorySnapshots.get(fileUri.toString()) || originalContent;
 
-        // Overwrite if it's been more than 5 seconds since the last snapshot write
-        // This ensures a new AI interaction creates a fresh baseline, while a fast
-        // "Apply All" batch preserves the baseline from the start of the batch.
         if (now - lastWrite > 5000) {
-            await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
+            await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(snapshotContent, 'utf8'));
             lastSnapshotWrite.set(snapshotUri.toString(), now);
         } else {
             try {
                 await vscode.workspace.fs.stat(snapshotUri);
             } catch {
-                await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
+                await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(snapshotContent, 'utf8'));
                 lastSnapshotWrite.set(snapshotUri.toString(), now);
             }
         }
-
-        if (snapshotOnly) return;
 
         // Open the Diff Editor
         const title = `${fileName} (Original) ↔ ${fileName} (Proposed)`;
@@ -1373,8 +1373,8 @@ ${originalFileContent}
                 };
             }
 
-            if (options?.autoSave) {
-                await vscode.commands.executeCommand('workbench.action.files.save');
+            if (options?.autoSave && document.isDirty) {
+                await document.save();
             }
 
             const originalContent = document.getText();

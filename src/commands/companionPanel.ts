@@ -39,6 +39,14 @@ export class CompanionPanel {
         if (CompanionPanel.currentPanel) {
             CompanionPanel.currentPanel._panel.reveal(column);
             CompanionPanel.currentPanel.updateTitle(title);
+            const active = vscode.window.activeTextEditor || vscode.window.visibleTextEditors.find(e => 
+                e.document.uri.scheme === 'file' || e.document.uri.scheme === 'vscode-notebook-cell'
+            );
+            if (active) {
+                CompanionPanel.currentPanel.setActiveEditor(active);
+            } else {
+                CompanionPanel.currentPanel.updateContextInfoFromEditor();
+            }
             return CompanionPanel.currentPanel;
         }
 
@@ -64,14 +72,16 @@ export class CompanionPanel {
         this._panel = panel;
         this._extensionUri = extensionUri;
 
-        const active = vscode.window.activeTextEditor;
-        if (active && active.document.uri.scheme === 'file') {
+        const active = vscode.window.activeTextEditor || vscode.window.visibleTextEditors.find(e => 
+            e.document.uri.scheme === 'file' || e.document.uri.scheme === 'vscode-notebook-cell'
+        );
+        if (active && (active.document.uri.scheme === 'file' || active.document.uri.scheme === 'vscode-notebook-cell')) {
             this._lastActiveEditor = active;
         }
         this.updateContextInfoFromEditor();
 
         vscode.window.onDidChangeActiveTextEditor(editor => {
-            if (editor && editor.document && editor.document.uri.scheme === 'file') {
+            if (editor && editor.document && (editor.document.uri.scheme === 'file' || editor.document.uri.scheme === 'vscode-notebook-cell')) {
                 if (!this._isAttached) {
                     this._lastActiveEditor = editor;
                     this.updateContextInfoFromEditor();
@@ -87,10 +97,20 @@ export class CompanionPanel {
             }
         }, null, this._disposables);
 
+        vscode.window.onDidChangeVisibleTextEditors(editors => {
+            if (!this._isAttached && (!this._lastActiveEditor || this._lastActiveEditor.document.isClosed)) {
+                const candidate = editors.find(e => e.document && (e.document.uri.scheme === 'file' || e.document.uri.scheme === 'vscode-notebook-cell'));
+                if (candidate) {
+                    this._lastActiveEditor = candidate;
+                    this.updateContextInfoFromEditor();
+                }
+            }
+        }, null, this._disposables);
+
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
-        this._panel.webview.html = this._getHtmlForWebview(this._panel.webview);
         this._setWebviewMessageListener(this._panel.webview);
+        this._panel.webview.html = this._getHtmlForWebview(this._panel.webview);
     }
 
     private _getHtmlForWebview(webview: vscode.Webview): string {
@@ -120,16 +140,22 @@ export class CompanionPanel {
 
         const codiconUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
         const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.css'));
-        const bundleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'companionPanel.bundle.js'));
+        const prismThemeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'prism-tomorrow.css'));
 
         const nonce = this.getNonce();
+        const initialInfo = (this._contextInfo || "No active editor")
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
 
         return htmlContent
             .replace(/\{\{cspSource\}\}/g, webview.cspSource)
-            .replace(/\{\{nonce\}\}/g, `nonce="${nonce}"`)
+            .replace(/\{\{nonce\}\}/g, nonce)
             .replace(/\{\{codiconUri\}\}/g, codiconUri.toString())
             .replace(/\{\{cssUri\}\}/g, cssUri.toString())
-            .replace(/\{\{bundleUri\}\}/g, bundleUri.toString());
+            .replace(/\{\{prismThemeUri\}\}/g, prismThemeUri.toString())
+            .replace(/\{\{bundleUri\}\}/g, bundleUri.toString())
+            .replace(/\{\{initialContextInfo\}\}/g, initialInfo);
     }
 
     private getNonce(): string {
@@ -143,21 +169,17 @@ export class CompanionPanel {
 
     private _setWebviewMessageListener(webview: vscode.Webview) {
             webview.onDidReceiveMessage(async (message) => {
-                const folder = vscode.workspace.workspaceFolders?.[0];
-                if (!folder) return;
-
                 switch (message.command) {
                     case 'webview-ready':
+                        this.updateContextInfoFromEditor();
                         this.setContextInfo(this._contextInfo);
                         this._panel.webview.postMessage({ command: 'updateAttachState', isAttached: this._isAttached });
                         this.updateHistoryList();
-                        if (this.chatHistory && this.chatHistory.length > 0) {
-                            this._panel.webview.postMessage({
-                                command: 'updateChat',
-                                history: this.chatHistory,
-                                streamingText: ''
-                            });
-                        }
+                        this._panel.webview.postMessage({
+                            command: 'updateChat',
+                            history: this.chatHistory || [],
+                            streamingText: ''
+                        });
                         break;
                     case 'focusCode':
                         await this.focusCodeInEditor(message.code);
@@ -780,10 +802,17 @@ export class CompanionPanel {
         }
     }
 
-    private updateContextInfoFromEditor() {
-        if (!this._lastActiveEditor) {
-             this.setContextInfo("No active editor");
-             return;
+    public updateContextInfoFromEditor() {
+        if (!this._lastActiveEditor || this._lastActiveEditor.document.isClosed) {
+            const fallback = vscode.window.activeTextEditor || vscode.window.visibleTextEditors.find(e => 
+                e.document.uri.scheme === 'file' || e.document.uri.scheme === 'vscode-notebook-cell'
+            );
+            if (fallback && (fallback.document.uri.scheme === 'file' || fallback.document.uri.scheme === 'vscode-notebook-cell')) {
+                this._lastActiveEditor = fallback;
+            } else {
+                this.setContextInfo("No active editor");
+                return;
+            }
         }
         const doc = this._lastActiveEditor.document;
         const sel = this._lastActiveEditor.selection;

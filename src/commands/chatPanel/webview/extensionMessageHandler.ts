@@ -592,6 +592,108 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     renderMessageContent(message.id, text, false);
                 }
                 break;
+            case 'executeActionStart': {
+                const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                const row = wrapper?.querySelector(`#tool-row-${message.messageId}-${message.actionIndex}`) as HTMLElement;
+                if (row) {
+                    const iconEl = row.querySelector('.status-icon');
+                    if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-loading spin" style="color:var(--vscode-charts-orange)"></span>';
+                    row.style.background = 'rgba(255, 255, 255, 0.05)';
+                    row.style.borderColor = 'var(--vscode-charts-orange)';
+                }
+
+                const execBtn = wrapper?.querySelector(`#execute-all-actions-${message.messageId}`) as HTMLButtonElement;
+                if (execBtn) {
+                    execBtn.disabled = true;
+                    execBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Executing [${message.currentIndex + 1}/${message.totalCount}]: ${message.actionName || 'Tool'}...`;
+                }
+
+                if (message.totalCount > 0) {
+                    const bar = wrapper?.querySelector(`#tools-progress-bar-${message.messageId}`) as HTMLElement;
+                    if (bar) {
+                        const pct = Math.round((message.currentIndex / message.totalCount) * 100);
+                        bar.style.width = `${pct}%`;
+                    }
+                }
+                break;
+            }
+            case 'executeActionResult': {
+                const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                const row = wrapper?.querySelector(`#tool-row-${message.messageId}-${message.actionIndex}`) as HTMLElement;
+                if (row) {
+                    const iconEl = row.querySelector('.status-icon');
+                    if (message.success) {
+                        row.classList.remove('status-pending', 'status-failed');
+                        row.classList.add('status-success');
+                        if (iconEl) {
+                            iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
+                        }
+                        row.style.borderColor = 'rgba(46, 204, 113, 0.4)';
+                        row.style.background = 'rgba(46, 204, 113, 0.06)';
+
+                        const singleBtn = row.querySelector('.tool-single-run-btn') as HTMLButtonElement;
+                        if (singleBtn) {
+                            singleBtn.disabled = true;
+                            singleBtn.innerHTML = '<i class="codicon codicon-check"></i> Done';
+                        }
+                    } else {
+                        row.classList.remove('status-pending', 'status-success');
+                        row.classList.add('status-failed');
+                        if (iconEl) {
+                            iconEl.innerHTML = '<span class="codicon codicon-error" style="color:var(--vscode-charts-red)"></span>';
+                        }
+                        row.style.borderColor = 'var(--vscode-charts-red)';
+                        row.style.background = 'rgba(231, 76, 60, 0.08)';
+
+                        const singleBtn = row.querySelector('.tool-single-run-btn') as HTMLButtonElement;
+                        if (singleBtn) {
+                            singleBtn.disabled = false;
+                            singleBtn.innerHTML = '<i class="codicon codicon-refresh"></i> Retry';
+                        }
+                    }
+                }
+
+                // If this tool corresponds to a specific card on the page, mark its button as applied/done
+                if (message.actionId) {
+                    const block = document.getElementById(message.actionId);
+                    if (block) {
+                        block.querySelectorAll('.run-local-tool-btn, .run-reprompt-tool-btn, .apply-btn').forEach((btn: any) => {
+                            btn.disabled = true;
+                            btn.classList.remove('apply-btn');
+                            btn.classList.add('applied');
+                            btn.innerHTML = '<i class="codicon codicon-check"></i> Executed';
+                        });
+                    }
+                }
+
+                if (message.totalCount > 0) {
+                    const bar = wrapper?.querySelector(`#tools-progress-bar-${message.messageId}`) as HTMLElement;
+                    if (bar) {
+                        const pct = Math.round(((message.currentIndex + 1) / message.totalCount) * 100);
+                        bar.style.width = `${pct}%`;
+                        if (pct >= 100) {
+                            bar.style.background = 'var(--vscode-charts-green)';
+                        }
+                    }
+                }
+
+                if (message.currentIndex + 1 >= message.totalCount) {
+                    const execBtn = wrapper?.querySelector(`#execute-all-actions-${message.messageId}`) as HTMLButtonElement;
+                    if (execBtn) {
+                        execBtn.disabled = true;
+                        execBtn.classList.remove('apply-btn');
+                        execBtn.classList.add('applied');
+                        execBtn.style.setProperty('background', 'var(--vscode-charts-green)', 'important');
+                        execBtn.innerHTML = `<span class="codicon codicon-check"></span> All Tools Executed (${message.totalCount})`;
+                    }
+                    const badge = wrapper?.querySelector(`#tools-status-badge-${message.messageId}`) as HTMLElement;
+                    if (badge) {
+                        badge.style.background = 'var(--vscode-charts-green)';
+                        badge.textContent = 'All Executed';
+                    }
+                }
+                break;
+            }
             case 'updateMessage':
                 {
                     if (typeof message.newContent === 'string' && message.newContent.startsWith('LOG_UPDATE:')) {
@@ -705,6 +807,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (Array.isArray(message.files)) {
                     if (!state.fileTokensMap) state.fileTokensMap = {};
                     if (!state.fileMtimeMap) state.fileMtimeMap = {};
+                    if (!(window as any).lazyFilesRegistry) (window as any).lazyFilesRegistry = new Map();
                     if (message.files.length === 0) {
                         state.fileTokensMap = {};
                         state.fileMtimeMap = {};
@@ -715,6 +818,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 if (f.tokens) state.fileTokensMap[f.path] = f.tokens;
                                 else if (f.bytes) state.fileTokensMap[f.path] = Math.ceil(f.bytes / 3.5);
                                 if (f.mtime) state.fileMtimeMap[f.path] = f.mtime;
+                                (window as any).lazyFilesRegistry.set(f.path, f);
                             }
                         });
                     }
@@ -745,6 +849,24 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     message.projectTree,
                     message.governorReport
                 );
+                if (dom.wizardModal && dom.wizardModal.classList.contains('visible') && Array.isArray(message.files)) {
+                    import('./ui.js').then(ui => {
+                        const mtimeMap = (state as any).fileMtimeMap || {};
+                        ui.wizardCandidateFiles.length = 0;
+                        message.files.forEach((f: any) => {
+                            const rawPath = typeof f === 'string' ? f : (f.path || '');
+                            if (!rawPath) return;
+                            const normPath = rawPath.replace(/\\/g, '/');
+                            const fileName = normPath.split('/').pop() || normPath;
+                            const dirName = normPath.includes('/') ? normPath.substring(0, normPath.lastIndexOf('/')) : '';
+                            const tokens = (typeof f === 'object' && f.tokens) ? f.tokens : (state.fileTokensMap?.[rawPath] || Math.ceil((f.bytes || 1000) / 3.5));
+                            const bytes = (typeof f === 'object' && f.bytes) ? f.bytes : Math.round(tokens * 3.5);
+                            const mtime = (typeof f === 'object' && f.mtime) ? f.mtime : (mtimeMap[rawPath] || 0);
+                            ui.wizardCandidateFiles.push({ path: rawPath, fileName, dirName, tokens, bytes, mtime });
+                        });
+                        ui.renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+                    });
+                }
                 updateBadges();
                 // Only schedule background sync if generation is not actively streaming
                 if (!state.isGenerating) {
@@ -877,7 +999,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
 
             case 'openNewDiscussionWizard':
-                openNewDiscussionWizard(message.selections || []);
+                openNewDiscussionWizard(message.selections || [], message.files);
                 break;
             case 'openGovernorFilterModal':
                 import('./ui.js').then(ui => ui.openGovernorFilterModal());
@@ -1089,6 +1211,20 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
+            case 'showDiscussionLoader':
+                {
+                    const overlay = document.getElementById('discussion-loading-overlay');
+                    const titleEl = document.getElementById('discussion-loading-title');
+                    if (titleEl && message.title) titleEl.textContent = message.title;
+                    if (overlay) overlay.classList.add('visible');
+                }
+                break;
+            case 'hideDiscussionLoader':
+                {
+                    const overlay = document.getElementById('discussion-loading-overlay');
+                    if (overlay) overlay.classList.remove('visible');
+                }
+                break;
             case 'loadDiscussion':
                 {
                     if (message.workspaceFolders) {
@@ -1235,7 +1371,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                     setTimeout(() => {
                         collapseAllLibrarianMessages();
-                    }, 150);
+                        const discOverlay = document.getElementById('discussion-loading-overlay');
+                        if (discOverlay) discOverlay.classList.remove('visible');
+                    }, 80);
                     }
                     break;
 

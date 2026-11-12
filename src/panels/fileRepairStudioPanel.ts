@@ -1307,6 +1307,20 @@ export class FileRepairStudioPanel {
                     break;
                 }
                 case 'acceptAndClose': {
+                    if (this._pendingPatch) {
+                        const pending = this._pendingPatch;
+                        try {
+                            const uri = vscode.Uri.file(pending.filePath);
+                            await vscode.workspace.fs.writeFile(uri, Buffer.from(pending.patchedContent, 'utf8'));
+                            this._services.contextManager.refreshFileInCache(uri);
+                            try { await vscode.commands.executeCommand('workbench.action.closeActiveEditor'); } catch {}
+                        } catch (e: any) {
+                            Logger.warn(`Failed to apply pending patch on accept: ${e.message}`);
+                        }
+                        this._pendingPatch = null;
+                        this._previewContent = '';
+                    }
+
                     const remainingCount = this._diagnostics.filter(d => !d.isFixed).length;
                     const fixedCount = this._diagnostics.filter(d => d.isFixed).length;
                     const summaryMsg = fixedCount > 0 

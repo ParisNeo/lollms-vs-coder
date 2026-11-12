@@ -13,6 +13,7 @@ cytoscape.use(coseBilkent);
 cytoscape.use(cytoscapeDagre);
 import { renderWorkspaceMatrix, openRawCodeModal, updateProgressBar, setCalculatingTokens } from './ui.js';
 import { applyDiffToString, applySearchReplace, normalizeAiderContent } from './utils.js';
+import { renderAssistantMessage } from './renderers/assistant_message_renderer.js';
 
 // CodeMirror imports
 import { EditorState } from "@codemirror/state";
@@ -93,6 +94,101 @@ export function ensurePluginsInitialized() {
 ensurePluginsInitialized();
 installAgentUiListener();
 (window as any).renderCytoscapeDiagram = renderCytoscapeDiagram;
+
+export function makeTreeInteractive(treeText: string): string {
+    if (!treeText || (!treeText.includes('[M]') && !treeText.includes('[D]'))) return treeText;
+
+    const lines = treeText.split('\n');
+    const dirStack: { indent: number; dir: string }[] = [];
+    const outputLines: string[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        const indentMatch = line.match(/^(\s*)/);
+        const indent = indentMatch ? indentMatch[1].length : 0;
+
+        const dirMatch = trimmed.match(/^([a-zA-Z0-9_\-\.\/]+)\/:\s*$/);
+        if (dirMatch) {
+            let dirName = dirMatch[1].replace(/^\.\/?/, '');
+            while (dirStack.length > 0 && dirStack[dirStack.length - 1].indent >= indent) {
+                dirStack.pop();
+            }
+            const parentDir = dirStack.length > 0 ? dirStack[dirStack.length - 1].dir : '';
+            const fullDir = parentDir ? (dirName ? `${parentDir}/${dirName}` : parentDir) : dirName;
+            dirStack.push({ indent, dir: fullDir });
+            outputLines.push(line);
+            continue;
+        }
+
+        const fileTagMatch = line.match(/^(\s*(?:├──|└──|\|──)\s+)([a-zA-Z0-9_\-\.]+)\s+(\[(?:M|D)\])/);
+        if (fileTagMatch) {
+            const fileName = fileTagMatch[2];
+            const tag = fileTagMatch[3];
+            const isMuted = tag === '[M]';
+
+            let currentDir = '';
+            for (let s = dirStack.length - 1; s >= 0; s--) {
+                if (dirStack[s].indent < indent) {
+                    currentDir = dirStack[s].dir;
+                    break;
+                }
+            }
+            const relPath = currentDir ? `${currentDir}/${fileName}` : fileName;
+            const title = isMuted 
+                ? `Click to unmute ${relPath} and activate full content [C]` 
+                : `Click to upgrade ${relPath} to full code [C]`;
+
+            const chipHtml = `<span class="tree-unmute-tag" data-path="${relPath}" title="${title}">${tag}</span>`;
+            outputLines.push(line.replace(tag, chipHtml));
+            continue;
+        }
+
+        outputLines.push(line);
+    }
+
+    return outputLines.join('\n');
+}
+(window as any).makeTreeInteractive = makeTreeInteractive;
+
+export function isProjectFile(filePathOrItem: any): boolean {
+    const f = typeof filePathOrItem === 'string' ? filePathOrItem : (filePathOrItem?.path || '');
+    if (!f) return true;
+    const norm = f.replace(/\\/g, '/').toLowerCase().trim();
+    if (
+        norm.includes('.lollms/external_files') || 
+        norm.startsWith('.lollms/external_files') ||
+        norm.startsWith('external/') || 
+        norm.includes('/external/') ||
+        norm.startsWith('http://') ||
+        norm.startsWith('https://') ||
+        norm.includes('.lollms/')
+    ) {
+        return false;
+    }
+
+    const isAbs = /^[a-zA-Z]:[\\/]/.test(norm) || norm.startsWith('/');
+    if (isAbs) {
+        const wsFolders: any[] = (window as any).workspaceFolders || (state as any).workspaceFolders || [];
+        if (wsFolders.length > 0) {
+            const isInsideAny = wsFolders.some((wf: any) => {
+                const raw = typeof wf === 'string' ? wf : (wf.fsPath || wf.uri || '');
+                let cleanWf = raw.replace(/\\/g, '/').toLowerCase().trim();
+                try { cleanWf = decodeURIComponent(cleanWf); } catch {}
+                cleanWf = cleanWf.replace(/^file:\/\/\/?/i, '');
+                return cleanWf && (norm === cleanWf || norm.startsWith(cleanWf + '/'));
+            });
+            if (!isInsideAny) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    return true;
+}
+(window as any).isProjectFile = isProjectFile;
 
 export function stripThinkingTags(text: string): string {
     if (typeof text !== 'string') return '';
@@ -1532,6 +1628,13 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         const parent = pre.parentNode;
         if (!parent) return;
 
+        // Make text tree code blocks interactive for unmuting directly on click
+        if (codeText.includes('[M]') || codeText.includes('[D]')) {
+            if (codeText.includes('├──') || codeText.includes('└──') || codeText.includes('/:') || codeText.includes('./:')) {
+                code.innerHTML = makeTreeInteractive(code.textContent || '');
+            }
+        }
+
         // 1. Handle Diagrams
         if (isDiagram && !isDisabled) {
             const rz = document.createElement('div');
@@ -2716,24 +2819,41 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         });
     }
 
-    const hasActions = totalExecutableActionsCount > 1;
+    const hasExecutableTools = totalExecutableActionsCount > 0;
     const hasTurnFiles = turnContextFiles.length > 0;
     const isAutoExecutionActive = state.capabilities?.autoApply === true || state.capabilities?.agentMode === true || state.capabilities?.dynamicMode === true;
 
-    // Only render the manual bulk execution prompt if auto-execution is disabled and the message has unexecuted actions
-    if ((hasActions || hasTurnFiles) && isFinal && !isAutoExecutionActive) {
+    // Render Tools & Actions Execution Card (with tools list, execution status, and progress bar)
+    if ((hasExecutableTools || hasTurnFiles) && isFinal && !isAutoExecutionActive) {
         const encodedTurnFiles = encodeURIComponent(JSON.stringify(turnContextFiles));
+        const toolCountText = totalExecutableActionsCount === 1 ? '1 tool' : `${totalExecutableActionsCount} tools`;
+        const execBtnText = totalExecutableActionsCount === 1 ? 'Execute Tool' : `Execute All Tools (${totalExecutableActionsCount})`;
+
         finalHtml += `
-            <div class="execute-all-actions-wrapper" style="margin-top: 14px; padding: 0 12px; display: flex; gap: 10px; flex-wrap: wrap;">
-                ${hasActions ? `
-                <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="flex: 1; min-width: 220px; height: 34px; font-weight: bold; justify-content: center; background: var(--vscode-charts-purple, #9b59b6) !important; color: white !important;">
-                    <i class="codicon codicon-play"></i> Execute All Actions (${totalExecutableActionsCount} operations: Peeks/Context/Unmutes/Structure/Symbols/Tools)
+        <div class="tools-execution-card" id="tools-card-${messageId}" style="margin-top: 16px; padding: 12px 14px; background: rgba(155, 89, 182, 0.08); border: 1.5px solid var(--vscode-charts-purple, #9b59b6); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <div style="font-weight:800; font-size:12px; color:var(--vscode-charts-purple, #9b59b6); display:flex; align-items:center; gap:6px;">
+                    <i class="codicon codicon-tools" style="color:var(--vscode-charts-purple, #9b59b6); font-size:14px;"></i>
+                    <span>Tools &amp; Actions to Execute (<span id="tools-count-${messageId}">${toolCountText}</span>)</span>
+                </div>
+                <span class="mode-badge active tools-status-badge" id="tools-status-badge-${messageId}" style="font-size:9.5px; padding:2px 8px; background:var(--vscode-charts-purple, #9b59b6); color:white;">Ready to Execute</span>
+            </div>
+            <div class="tools-pills-container" id="tools-pills-${messageId}" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;"></div>
+            <div class="tools-results-list" id="tools-results-${messageId}" style="width:100%; margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
+            <div class="execute-all-wrapper" style="margin-top: 10px; padding: 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                ${hasExecutableTools ? `
+                <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="flex:1; min-width:200px; height:34px; font-weight:bold; justify-content:center; background:var(--vscode-charts-purple, #9b59b6) !important; color:white !important;">
+                    <span class="codicon codicon-play"></span> ${execBtnText}
                 </button>` : ''}
                 ${hasTurnFiles ? `
-                <button class="code-action-btn secondary-btn copy-all-turn-context-btn" id="copy-all-turn-context-${messageId}" data-files="${encodedTurnFiles}" style="height: 34px; font-weight: bold; justify-content: center; padding: 0 16px; border: 1px solid var(--vscode-charts-blue); color: var(--vscode-textLink-foreground); display: inline-flex; align-items: center; gap: 6px;" title="Copy the content of all files requested in this turn to clipboard">
-                    <i class="codicon codicon-copy"></i> Copy All (${turnContextFiles.length} file${turnContextFiles.length > 1 ? 's' : ''})
+                <button class="code-action-btn secondary-btn copy-all-turn-context-btn" id="copy-all-turn-context-${messageId}" data-files="${encodedTurnFiles}" style="height:34px; font-weight:bold; justify-content:center; padding:0 14px; border:1px solid var(--vscode-charts-blue); color:var(--vscode-textLink-foreground); display:inline-flex; align-items:center; gap:6px;" title="Copy the content of all files requested in this turn to clipboard">
+                    <i class="codicon codicon-copy"></i> Copy Files (${turnContextFiles.length})
                 </button>` : ''}
-            </div>`;
+                <div class="tools-progress-container" id="tools-progress-container-${messageId}" style="width:100%; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden; display:none;">
+                    <div class="tools-progress-bar" id="tools-progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-purple, #9b59b6); transition: width 0.3s ease;"></div>
+                </div>
+            </div>
+        </div>`;
     }
 
     if (totalActionableCount > 0 && isFinal) {
@@ -2957,121 +3077,51 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     enhanceCodeBlocks(bodyZone, messageId, rawContent, isFinal);
 
-    // Synchronize master batch button and populate the results list rows
+    // Synchronize master batch button, code changes list, and tools execution list rows
     if (isFinal) {
         syncResultsListRows(messageId);
         checkAndSyncMessageAppliedState(messageId);
+        syncToolsListRows(messageId);
     }
 
     // Attach listener for Execute All Actions button
     const executeAllBtn = contentDiv.querySelector(`#execute-all-actions-${messageId}`) as HTMLButtonElement;
     if (executeAllBtn) {
         executeAllBtn.onclick = () => {
+            const actions = getExecutableActionsForMessage(messageId);
+            if (!Array.isArray(actions) || actions.length === 0) return;
+
             executeAllBtn.disabled = true;
-            executeAllBtn.innerHTML = '<div class="spinner"></div> Executing All Actions...';
+            executeAllBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Executing Tools (0/${actions.length})...`;
 
-            const actions: { type: 'peek' | 'add_context' | 'tool'; payload: any }[] = [];
+            const progressContainer = contentDiv.querySelector(`#tools-progress-container-${messageId}`) as HTMLElement;
+            const progressBar = contentDiv.querySelector(`#tools-progress-bar-${messageId}`) as HTMLElement;
+            if (progressContainer) progressContainer.style.display = 'block';
+            if (progressBar) {
+                progressBar.style.width = '0%';
+                progressBar.style.background = 'var(--vscode-charts-purple, #9b59b6)';
+            }
 
-            // 1. Gather peeks
-            contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="peek"]').forEach((card: any) => {
-                try {
-                    const payload = JSON.parse(decodeURIComponent(card.dataset.payload));
-                    actions.push({ type: 'peek', payload });
-                } catch {}
-            });
-
-
-            // 2. Gather add_files_to_context (legacy fallback)
-            contentDiv.querySelectorAll('.context-expansion-block').forEach((block: any) => {
-                try {
-                    const files = JSON.parse(block.dataset.files || '[]');
-                    if (files.length > 0) {
-                        actions.push({ type: 'add_context', payload: files });
-                    }
-                } catch {}
-            });
-
-            // 2.5. Gather unmute_files actions for bulk application
-            contentDiv.querySelectorAll('.unmute-files-block, [data-action-type="unmute"]').forEach((block: any) => {
-                try {
-                    const rawPaths = block.dataset.paths || block.dataset.payload;
-                    const paths = JSON.parse(decodeURIComponent(rawPaths || '[]'));
-                    if (Array.isArray(paths) && paths.length > 0) {
-                        actions.push({ type: 'unmute', payload: paths });
-                    }
-                } catch {}
-                const unmuteBtn = block.querySelector('.unmute-btn') as HTMLButtonElement;
-                if (unmuteBtn) {
-                    unmuteBtn.disabled = true;
-                    unmuteBtn.classList.add('applied');
-                    unmuteBtn.innerHTML = '<i class="codicon codicon-check"></i> Files Unmuted';
+            // Set all pending rows to waiting indicator
+            actions.forEach(a => {
+                const row = contentDiv.querySelector(`#tool-row-${messageId}-${a.index}`);
+                if (row && !a.isExecuted) {
+                    const iconEl = row.querySelector('.status-icon');
+                    if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-primitive-dot" style="opacity:0.5;"></span>';
                 }
-            });
-
-            // 2.6. Gather load_structure actions for bulk application
-            contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="load_structure"]').forEach((card: any) => {
-                try {
-                    const raw = card.dataset.files || card.dataset.paths || card.dataset.payload;
-                    const files = raw ? JSON.parse(decodeURIComponent(raw)) : (card.dataset.path ? [card.dataset.path] : []);
-                    if (Array.isArray(files) && files.length > 0) {
-                        actions.push({ type: 'load_structure', payload: files });
-                    }
-                } catch {}
-                const structBtns = card.querySelectorAll('.load-structure-btn, .load-structure-reprompt-btn');
-                structBtns.forEach((btn: any) => {
-                    btn.disabled = true;
-                    btn.classList.remove('apply-btn');
-                    btn.classList.add('applied');
-                    btn.innerHTML = '<i class="codicon codicon-check"></i> Structure Loaded';
-                });
-            });
-
-            // 2.7. Gather show_symbol actions for bulk application
-            contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="show_symbol"]').forEach((card: any) => {
-                try {
-                    const btn = card.querySelector('.execute-sym-btn');
-                    const target = btn?.dataset.target || card.dataset.target;
-                    const rawSymbols = btn?.dataset.symbols || card.dataset.symbols;
-                    let symbolsList: string[] = [];
-                    if (rawSymbols) {
-                        try { symbolsList = JSON.parse(decodeURIComponent(rawSymbols)); } catch { symbolsList = [rawSymbols]; }
-                    }
-                    const symbol = btn?.dataset.symbol || card.dataset.symbol || '';
-                    if (target) {
-                        actions.push({ 
-                            type: 'show_symbol', 
-                            payload: { 
-                                target, 
-                                symbol: symbol || (symbolsList.length === 1 ? symbolsList[0] : undefined),
-                                symbols: symbolsList.length > 0 ? symbolsList : undefined
-                            } 
-                        });
-                    }
-                } catch {}
-                const symBtn = card.querySelector('.execute-sym-btn') as HTMLButtonElement;
-                if (symBtn) {
-                    symBtn.disabled = true;
-                    symBtn.classList.remove('apply-btn');
-                    symBtn.classList.add('applied');
-                    symBtn.innerHTML = '<i class="codicon codicon-check"></i> Symbol Inspected';
-                }
-            });
-
-            // 3. Gather lollms_tool calls
-            contentDiv.querySelectorAll('.lollms-tool-card').forEach((tc: any) => {
-                try {
-                    const name = tc.dataset.toolName;
-                    const params = JSON.parse(decodeURIComponent(tc.dataset.params || '{}'));
-                    if (name) {
-                        actions.push({ type: 'tool', payload: { name, params } });
-                    }
-                } catch {}
             });
 
             vscode.postMessage({
                 command: 'executeAllMessageActions',
                 messageId,
-                actions
+                actions: actions.map(a => ({
+                    id: a.id,
+                    index: a.index,
+                    type: a.type,
+                    name: a.name,
+                    payload: a.payload,
+                    blockId: a.blockId
+                }))
             });
         };
     }
@@ -3187,6 +3237,371 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
 
 
+
+export interface ExecutableActionItem {
+    id: string;
+    index: number;
+    type: 'tool' | 'peek' | 'add_context' | 'unmute' | 'load_structure' | 'show_symbol';
+    name: string;
+    label: string;
+    detail: string;
+    icon: string;
+    color: string;
+    blockId?: string;
+    payload: any;
+    isExecuted: boolean;
+}
+
+export function getExecutableActionsForMessage(messageId: string): ExecutableActionItem[] {
+    const actions: ExecutableActionItem[] = [];
+    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
+    if (!wrapper) return actions;
+
+    const contentDiv = wrapper.querySelector('.message-content') as HTMLElement;
+    if (!contentDiv) return actions;
+
+    let actionIndex = 0;
+
+    // 1. Tool blocks (<lollms_tool>, .lollms-tool-card, .generation-block)
+    contentDiv.querySelectorAll('.lollms-tool-card, .lollms-tool-block, .generation-block[data-tool-name], .generation-block').forEach((block: any) => {
+        try {
+            const toolBtn = block.querySelector('[data-tool]');
+            const toolName = block.dataset.toolName || toolBtn?.dataset.tool || 'unknown_tool';
+            if (toolName === 'unknown_tool' && !toolBtn) return;
+
+            let params: any = {};
+            try {
+                const rawParams = block.dataset.params || toolBtn?.dataset.params;
+                if (rawParams) params = JSON.parse(rawParams);
+            } catch {}
+
+            let icon = 'codicon-tools';
+            let color = 'var(--vscode-charts-orange)';
+            if (toolName.includes('command') || toolName.includes('script') || toolName.includes('terminal')) {
+                icon = 'codicon-terminal';
+                color = 'var(--vscode-charts-red)';
+            } else if (toolName.includes('search') || toolName.includes('scrape') || toolName.includes('web')) {
+                icon = 'codicon-globe';
+                color = 'var(--vscode-charts-blue)';
+            } else if (toolName.includes('file')) {
+                icon = 'codicon-file-code';
+                color = 'var(--vscode-charts-green)';
+            }
+
+            let detail = '';
+            if (params.command) detail = String(params.command);
+            else if (params.query) detail = String(params.query);
+            else if (params.path || params.file) detail = String(params.path || params.file);
+            else if (params.url) detail = String(params.url);
+            else {
+                const entries = Object.entries(params).filter(([k]) => !k.startsWith('_'));
+                detail = entries.slice(0, 2).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ');
+            }
+
+            const isDone = (toolBtn?.disabled === true && (toolBtn?.classList.contains('applied') || toolBtn?.innerHTML.includes('check'))) ||
+                           block.classList.contains('applied');
+
+            actions.push({
+                id: `tool-${messageId}-${actionIndex}`,
+                index: actionIndex++,
+                type: 'tool',
+                name: toolName,
+                label: toolName,
+                detail: detail || 'Execute tool',
+                icon,
+                color,
+                blockId: block.id,
+                payload: { name: toolName, params },
+                isExecuted: isDone
+            });
+        } catch {}
+    });
+
+    // 2. Peek files (<peek_files>)
+    contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="peek"]').forEach((card: any) => {
+        try {
+            const payload = JSON.parse(decodeURIComponent(card.dataset.payload || '[]'));
+            const paths = Array.isArray(payload) ? payload.map((p: any) => typeof p === 'string' ? p : p.path).filter(Boolean) : [];
+            const isDone = card.classList.contains('status-completed') || card.querySelector('.execute-peek-reprompt-btn')?.disabled;
+
+            actions.push({
+                id: `peek-${messageId}-${actionIndex}`,
+                index: actionIndex++,
+                type: 'peek',
+                name: 'peek_files',
+                label: `Peek Files (${paths.length})`,
+                detail: paths.join(', '),
+                icon: 'codicon-eye',
+                color: 'var(--vscode-charts-green)',
+                blockId: card.id,
+                payload,
+                isExecuted: !!isDone
+            });
+        } catch {}
+    });
+
+    // 3. Add to Context (<add_files_to_context>)
+    contentDiv.querySelectorAll('.context-expansion-block').forEach((block: any) => {
+        try {
+            const files = JSON.parse(block.dataset.files || '[]');
+            if (Array.isArray(files) && files.length > 0) {
+                const addBtn = block.querySelector('.add-btn');
+                const isDone = addBtn?.classList.contains('applied') || addBtn?.disabled;
+
+                actions.push({
+                    id: `add-ctx-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'add_context',
+                    name: 'add_files_to_context',
+                    label: `Add to Context (${files.length})`,
+                    detail: files.join(', '),
+                    icon: 'codicon-cloud-download',
+                    color: 'var(--vscode-charts-blue)',
+                    blockId: block.id,
+                    payload: files,
+                    isExecuted: !!isDone
+                });
+            }
+        } catch {}
+    });
+
+    // 4. Unmute files (<unmute_files>)
+    contentDiv.querySelectorAll('.unmute-files-block, [data-action-type="unmute"]').forEach((block: any) => {
+        try {
+            const rawPaths = block.dataset.paths || block.dataset.payload;
+            const paths = JSON.parse(decodeURIComponent(rawPaths || '[]'));
+            if (Array.isArray(paths) && paths.length > 0) {
+                const unmuteBtn = block.querySelector('.unmute-btn');
+                const isDone = unmuteBtn?.classList.contains('applied') || unmuteBtn?.disabled;
+
+                actions.push({
+                    id: `unmute-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'unmute',
+                    name: 'unmute_files',
+                    label: `Unmute Files (${paths.length})`,
+                    detail: paths.join(', '),
+                    icon: 'codicon-eye',
+                    color: 'var(--vscode-charts-green)',
+                    blockId: block.id,
+                    payload: paths,
+                    isExecuted: !!isDone
+                });
+            }
+        } catch {}
+    });
+
+    // 5. Load structure (<load_structure>)
+    contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="load_structure"]').forEach((card: any) => {
+        try {
+            const raw = card.dataset.files || card.dataset.paths || card.dataset.payload;
+            const files = raw ? JSON.parse(decodeURIComponent(raw)) : (card.dataset.path ? [card.dataset.path] : []);
+            if (Array.isArray(files) && files.length > 0) {
+                const loadBtn = card.querySelector('.load-structure-btn');
+                const isDone = card.classList.contains('status-completed') || loadBtn?.classList.contains('applied');
+
+                actions.push({
+                    id: `struct-${messageId}-${actionIndex}`,
+                    index: actionIndex++,
+                    type: 'load_structure',
+                    name: 'load_structure',
+                    label: `Load Structure (${files.length})`,
+                    detail: files.join(', '),
+                    icon: 'codicon-symbol-class',
+                    color: 'var(--vscode-charts-blue)',
+                    blockId: card.id,
+                    payload: files,
+                    isExecuted: !!isDone
+                });
+            }
+        } catch {}
+    });
+
+    // 6. Show symbol (<show_symbol>)
+    contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="show_symbol"]').forEach((card: any) => {
+        try {
+            const btn = card.querySelector('.execute-sym-btn');
+            const target = btn?.dataset.target || card.dataset.target || '';
+            const rawSymbols = btn?.dataset.symbols || card.dataset.symbols;
+            let symbolsList: string[] = [];
+            if (rawSymbols) {
+                try { symbolsList = JSON.parse(decodeURIComponent(rawSymbols)); } catch { symbolsList = [rawSymbols]; }
+            }
+            const symbol = btn?.dataset.symbol || card.dataset.symbol || '';
+            const symLabel = symbolsList.length > 0 ? symbolsList.join(', ') : symbol;
+            const isDone = btn?.classList.contains('applied') || btn?.disabled;
+
+            actions.push({
+                id: `sym-${messageId}-${actionIndex}`,
+                index: actionIndex++,
+                type: 'show_symbol',
+                name: 'show_symbol',
+                label: `Show Symbol: ${target}`,
+                detail: symLabel ? `${target} [${symLabel}]` : target,
+                icon: 'codicon-symbol-method',
+                color: 'var(--vscode-charts-orange)',
+                blockId: card.id,
+                payload: {
+                    target,
+                    symbol: symbol || (symbolsList.length === 1 ? symbolsList[0] : undefined),
+                    symbols: symbolsList.length > 0 ? symbolsList : undefined
+                },
+                isExecuted: !!isDone
+            });
+        } catch {}
+    });
+
+    return actions;
+}
+
+export function syncToolsListRows(messageId: string) {
+    if (!messageId) return;
+    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
+    if (!wrapper) return;
+
+    const pillsContainer = wrapper.querySelector(`#tools-pills-${messageId}`) as HTMLElement;
+    const resultsList = wrapper.querySelector(`#tools-results-${messageId}`) as HTMLElement;
+    if (!resultsList) return;
+
+    const actions = getExecutableActionsForMessage(messageId);
+    if (actions.length === 0) return;
+
+    // Update count in header
+    const countEl = wrapper.querySelector(`#tools-count-${messageId}`);
+    if (countEl) countEl.textContent = `${actions.length} action${actions.length > 1 ? 's' : ''}`;
+
+    // Render Pills
+    if (pillsContainer) {
+        pillsContainer.innerHTML = actions.map(act => `
+            <div class="tool-pill" data-block-id="${act.blockId || ''}" style="cursor:pointer; display:inline-flex; align-items:center; gap:5px; padding:3px 8px; border-radius:4px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); font-size:11px;" title="Click to scroll to this tool">
+                <i class="codicon ${act.icon}" style="color:${act.color};"></i>
+                <span style="font-weight:600;">${act.name}</span>
+            </div>
+        `).join('');
+
+        pillsContainer.querySelectorAll('.tool-pill').forEach((pill: any) => {
+            pill.onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const bId = pill.dataset.blockId;
+                if (bId) {
+                    const block = document.getElementById(bId);
+                    if (block) {
+                        block.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        block.classList.add('flash-highlight');
+                        setTimeout(() => block.classList.remove('flash-highlight'), 1200);
+                    }
+                }
+            };
+        });
+    }
+
+    // Render Rows in resultsList
+    resultsList.innerHTML = actions.map(act => {
+        const isDone = act.isExecuted;
+        const stateClass = isDone ? 'status-success' : 'status-pending';
+
+        return `
+            <div class="tool-row ${stateClass}" 
+                 id="tool-row-${messageId}-${act.index}" 
+                 data-tool-idx="${act.index}" 
+                 data-block-id="${act.blockId || ''}"
+                 style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:4px; border:1px solid var(--vscode-widget-border); background:var(--vscode-editor-background); transition: background 0.15s, border-color 0.15s;">
+                <span class="status-icon" style="width:16px; height:16px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;">
+                    ${isDone 
+                        ? '<i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i>' 
+                        : '<i class="codicon codicon-primitive-dot" style="opacity:0.5;"></i>'}
+                </span>
+                <span class="tool-icon" style="flex-shrink:0;"><i class="codicon ${act.icon}" style="color:${act.color};"></i></span>
+                <span class="tool-name clickable" title="Click to jump to tool" style="font-weight:bold; font-size:11.5px; color:var(--vscode-textLink-foreground); cursor:pointer; flex-shrink:0;">
+                    ${act.name}
+                </span>
+                <span class="tool-detail" title="${act.detail}" style="font-size:10.5px; opacity:0.8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; font-family:var(--vscode-editor-font-family, monospace);">
+                    ${act.detail}
+                </span>
+                <button class="icon-btn tool-jump-btn" data-block-id="${act.blockId || ''}" title="Scroll to tool card in message" style="width:20px; height:20px; padding:0; flex-shrink:0;">
+                    <i class="codicon codicon-link-external" style="font-size:11px;"></i>
+                </button>
+                <button class="code-action-btn secondary-btn tool-single-run-btn" data-tool-idx="${act.index}" ${isDone ? 'disabled' : ''} style="height:20px; font-size:9px; padding:0 6px; flex-shrink:0;">
+                    <i class="codicon ${isDone ? 'codicon-check' : 'codicon-play'}"></i> ${isDone ? 'Done' : 'Run'}
+                </button>
+            </div>
+        `;
+    }).join('');
+
+    // Wire up jump buttons
+    resultsList.querySelectorAll('.tool-jump-btn, .tool-name').forEach((el: any) => {
+        el.onclick = (e: MouseEvent) => {
+            e.stopPropagation();
+            const row = el.closest('.tool-row') as HTMLElement;
+            const bId = row?.dataset.blockId;
+            if (bId) {
+                const targetEl = document.getElementById(bId);
+                if (targetEl) {
+                    targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    targetEl.classList.add('flash-highlight');
+                    setTimeout(() => targetEl.classList.remove('flash-highlight'), 1200);
+                }
+            }
+        };
+    });
+
+    // Wire up single run buttons
+    resultsList.querySelectorAll('.tool-single-run-btn').forEach((btn: any) => {
+        btn.onclick = (e: MouseEvent) => {
+            e.stopPropagation();
+            const idx = parseInt(btn.dataset.toolIdx, 10);
+            const act = actions.find(a => a.index === idx);
+            if (!act || act.isExecuted) return;
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner" style="width:10px; height:10px; border-width:1.5px;"></span> Running...';
+
+            const progressContainer = wrapper.querySelector(`#tools-progress-container-${messageId}`) as HTMLElement;
+            const progressBar = wrapper.querySelector(`#tools-progress-bar-${messageId}`) as HTMLElement;
+            if (progressContainer) progressContainer.style.display = 'block';
+            if (progressBar) {
+                progressBar.style.width = '0%';
+                progressBar.style.background = 'var(--vscode-charts-purple, #9b59b6)';
+            }
+
+            vscode.postMessage({
+                command: 'executeAllMessageActions',
+                messageId,
+                actions: [{
+                    id: act.id,
+                    index: act.index,
+                    type: act.type,
+                    name: act.name,
+                    payload: act.payload,
+                    blockId: act.blockId
+                }]
+            });
+        };
+    });
+
+    // Check if all actions are executed to update main execute button
+    const allDone = actions.length > 0 && actions.every(a => a.isExecuted);
+    const execBtn = wrapper.querySelector(`#execute-all-actions-${messageId}`) as HTMLButtonElement;
+    const badge = wrapper.querySelector(`#tools-status-badge-${messageId}`) as HTMLElement;
+    if (allDone) {
+        if (execBtn) {
+            execBtn.disabled = true;
+            execBtn.classList.remove('apply-btn');
+            execBtn.classList.add('applied');
+            execBtn.style.setProperty('background', 'var(--vscode-charts-green)', 'important');
+            execBtn.innerHTML = `<span class="codicon codicon-check"></span> All Tools Executed (${actions.length})`;
+        }
+        if (badge) {
+            badge.style.background = 'var(--vscode-charts-green)';
+            badge.textContent = 'All Executed';
+        }
+        const bar = wrapper.querySelector(`#tools-progress-bar-${messageId}`) as HTMLElement;
+        if (bar) {
+            bar.style.width = '100%';
+            bar.style.background = 'var(--vscode-charts-green)';
+        }
+    }
+}
 
 export interface PatchItem {
     id: string;
@@ -3606,10 +4021,8 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
         isWaiting = true;
     }
 
-    // Render immediately so DOM nodes exist before streaming chunks arrive
-    import('./renderers/assistant_message_renderer.js').then(assistant => {
-        assistant.renderAssistantMessage(id, rawContent, isFinal);
-    });
+    // Render shell structure (header, actions, .message-content) and content synchronously
+    renderAssistantMessage(id, rawContent, isFinal);
 
     if (isWaiting && role === 'assistant') {
         const contentDiv = messageDiv.querySelector('.message-content');
@@ -3748,7 +4161,7 @@ export class ContextPresenter {
         const renderFileItemRow = (item: typeof normalized[0], isTree: boolean = false): string => {
             const f = item.path;
             const isMuted = item.isMuted;
-            const isDefOnly = item.state === 'definitions-only';
+            const isDefOnly = item.state === 'definitions-only' || item.state === 'structure' || item.state === 'definitions';
             const bytes = item.bytes || 0;
             const tokens = item.tokens || (bytes > 0 ? Math.ceil(bytes / 3.5) : 0);
             const mtime = item.mtime || 0;
@@ -3765,9 +4178,9 @@ export class ContextPresenter {
             const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
             const weightClass = isMuted ? 'weight-muted' : (isDefOnly ? 'weight-medium' : (bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light')));
             const tokenBadge = isMuted
-                ? `<span class="file-token-badge weight-muted" title="Muted: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens liberated / 0 active tokens)">${formattedBytes} [MUTED]</span>`
+                ? `<span class="file-token-badge weight-muted clickable-unmute-pill" data-path="${f}" title="Click to unmute and activate full content [C]">${formattedBytes} [MUTED]</span>`
                 : (isDefOnly
-                    ? `<span class="file-token-badge weight-medium" style="border-color: var(--vscode-charts-blue); color: var(--vscode-charts-blue);" title="Structure Only: ${bytes.toLocaleString()} bytes (Definitions only in context)">[STRUCTURE] ${formattedBytes} (~${displayTok} tok)</span>`
+                    ? `<span class="file-token-badge weight-medium clickable-unmute-pill" data-path="${f}" style="border-color: var(--vscode-charts-blue); color: var(--vscode-charts-blue);" title="Click to upgrade to full code [C]">[STRUCTURE] ${formattedBytes} (~${displayTok} tok)</span>`
                     : `<span class="file-token-badge ${weightClass}" title="Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)">${formattedBytes} (~${displayTok} tok)</span>`);
 
             const timeStr = formatTimeAgo(mtime);
@@ -3796,11 +4209,10 @@ export class ContextPresenter {
                         <span class="codicon codicon-symbol-class"></span>
                     </button>
                     <div class="file-row-main" data-path="${f}" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; cursor: pointer;" title="${f}">
-                        <span class="codicon ${f.includes('external_files') ? 'codicon-link' : 'codicon-file'}" style="flex-shrink: 0; ${f.includes('external_files') ? 'color: var(--vscode-charts-teal, #00b4d8);' : ''}"></span>
+                        <span class="codicon ${!isProjectFile(f) ? 'codicon-link' : 'codicon-file'}" style="flex-shrink: 0; ${!isProjectFile(f) ? 'color: var(--vscode-charts-teal, #00b4d8);' : ''}"></span>
                         <span class="path-text file-open-link" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-weight: 600; font-size: 11px;" title="${f}">${fileName}</span>
                         ${(!isTree && dirName) ? `<span class="dir-text" style="font-size: 9px; opacity: 0.55; margin-right: 4px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f}">${dirName}</span>` : ''}
-                        ${f.includes('external_files') ? '<span class="file-token-badge weight-light" style="font-size: 8.5px; padding: 1px 4px; color: var(--vscode-charts-teal, #00b4d8); border-color: rgba(0, 180, 216, 0.4);" title="External reference document (Read-Only)">REF</span>' : ''}
-                        ${(!isTree && dirName) ? `<span class="dir-text" style="font-size: 9px; opacity: 0.45; margin-right: 4px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f}">${dirName}</span>` : ''}
+                        ${!isProjectFile(f) ? '<span class="file-token-badge weight-light" style="font-size: 8.5px; padding: 1px 4px; color: var(--vscode-charts-teal, #00b4d8); border-color: rgba(0, 180, 216, 0.4);" title="External reference document (Read-Only)">REF</span>' : ''}
                         ${timeBadge}
                         ${tokenBadge}
                     </div>
@@ -3905,7 +4317,7 @@ export class ContextPresenter {
                             <span class="codicon codicon-folder"></span>
                             <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; ${isAllMuted ? 'text-decoration: line-through; opacity: 0.75;' : ''}">${sub.name}</span>
                             <span style="font-size: 9px; opacity: 0.6; font-weight: normal;">${totalCount} file${totalCount === 1 ? '' : 's'}${isSomeMuted ? ` (${mutedSubCount} muted)` : ''}</span>
-                            <span class="file-token-badge ${isAllMuted ? 'weight-muted' : 'weight-light'}" title="${isAllMuted ? `Muted: ~${tokDisplay} tokens deactivated` : `Active: ~${tokDisplay} tokens`}">${isAllMuted ? `~${tokDisplay} tok [MUTED]` : `~${tokDisplay} tok`}</span>
+                            <span class="file-token-badge ${isAllMuted ? 'weight-muted' : 'weight-light'} ${isAllMuted || isSomeMuted ? 'clickable-folder-unmute-pill' : ''}" data-paths="${encodedSubPaths}" title="${isAllMuted || isSomeMuted ? 'Left-click to select all muted files in folder for unmuting' : `Active: ~${tokDisplay} tokens`}">${isAllMuted ? `~${tokDisplay} tok [MUTED]` : `~${tokDisplay} tok`}</span>
                         </summary>
                         <div class="context-tree-folder-body" style="padding: 4px 2px 4px 8px; border-left: 1px dashed var(--vscode-tree-indentGuidesStroke, rgba(255,255,255,0.15)); margin-left: 6px;">
                             ${renderTreeDir(sub)}
@@ -4021,7 +4433,7 @@ export class ContextPresenter {
                  <summary style="font-size: 10px; opacity: 0.75; cursor: pointer; display: flex; align-items: center; gap: 4px;">
                      <i class="codicon codicon-list-tree"></i> <span>View File Manifest Tree</span>
                  </summary>
-                 <pre style="margin: 6px 0 0 0; padding: 8px 10px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-family: var(--vscode-editor-font-family, monospace); font-size: 10px; max-height: 180px; overflow: auto; line-height: 1.4; white-space: pre;">${DOMPurify.sanitize(cleanTree.replace(/^```text\r?\n|^```\r?\n|```$/g, ''))}</pre>
+                 <pre style="margin: 6px 0 0 0; padding: 8px 10px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-family: var(--vscode-editor-font-family, monospace); font-size: 10px; max-height: 180px; overflow: auto; line-height: 1.4; white-space: pre;">${DOMPurify.sanitize(makeTreeInteractive(cleanTree.replace(/^```text\r?\n|^```\r?\n|```$/g, '')))}</pre>
                </details>`
             : '';
 
@@ -4074,7 +4486,7 @@ export class ContextPresenter {
                     </div>
                 </div>
 
-                <!-- SUB-ROW: Git Branch Selector, Graph Studio, Test & Debug, and Search Bar -->
+                <!-- SUB-ROW: Git Branch Selector, Graph Studio, Test & Debug, Fork & Compress, Compress History, and Search Bar -->
                 <div class="hud-secondary-search-bar">
                     <div class="hud-secondary-tools-group">
                         <div id="hud-secondary-git-container"></div>
@@ -4099,6 +4511,14 @@ export class ContextPresenter {
                                 </div>
                             </div>
                         </div>
+                        <button id="hud-header-fork-compress-btn" class="code-action-btn secondary-btn hud-tool-btn" title="Fork discussion with the same files and mute states, compressing history into a clean summary">
+                            <i class="codicon codicon-git-pull-request" style="color: var(--vscode-charts-orange);"></i>
+                            <span>Fork &amp; Compress</span>
+                        </button>
+                        <button id="hud-header-compress-history-btn" class="code-action-btn secondary-btn hud-tool-btn" title="Compress current discussion history in-place to liberate tokens for code files">
+                            <i class="codicon codicon-fold" style="color: var(--vscode-charts-orange);"></i>
+                            <span>Compress History</span>
+                        </button>
                     </div>
 
                     <div class="hud-search-container" id="hud-search-bar">
@@ -4132,6 +4552,9 @@ export class ContextPresenter {
                         <div class="token-progress-container" id="token-progress-container" style="flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.06);">
                             <div class="${(state as any).lastTokenMetrics && (state as any).lastTokenMetrics.totalTokens > 0 ? (((state as any).lastTokenMetrics.totalTokens / ((state as any).lastTokenMetrics.contextSize || 128000)) > 0.95 ? 'token-progress-bar range-danger' : (((state as any).lastTokenMetrics.totalTokens / ((state as any).lastTokenMetrics.contextSize || 128000)) > 0.7 ? 'token-progress-bar range-warning' : 'token-progress-bar range-safe')) : 'token-progress-bar'}" id="token-progress-bar" style="width: ${(state as any).lastTokenMetrics && (state as any).lastTokenMetrics.totalTokens > 0 ? Math.min(100, Math.round(((state as any).lastTokenMetrics.totalTokens / ((state as any).lastTokenMetrics.contextSize || 128000)) * 100)) + '%' : (finalProjectFilesCount > 0 ? '15%' : '0%')};"></div>
                         </div>
+                        <div id="hud-spinner" class="hud-spinner" style="display: none;" title="Updating context & tokens...">
+                            <div class="spinner"></div>
+                        </div>
                     </div>
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <span id="token-count-label" style="font-size: 9px; opacity: 0.75; font-family: var(--vscode-editor-font-family);">${(state as any).lastTokenMetrics && (state as any).lastTokenMetrics.totalTokens > 0 ? `${(state as any).lastTokenMetrics.isApproximate ? 'Est. ' : ''}Tokens: ${(state as any).lastTokenMetrics.totalTokens.toLocaleString()} / ${((state as any).lastTokenMetrics.contextSize || 128000).toLocaleString()}` : (finalProjectFilesCount > 0 ? `Tokens: Measuring (${finalProjectFilesCount} files)...` : 'Tokens: 0 / 128,000')}</span>
@@ -4150,6 +4573,7 @@ export class ContextPresenter {
                         <button id="run-tests-context-btn" class="icon-btn" title="Run Project Tests & Report to AI" style="padding: 2px; color: var(--vscode-charts-green);"><i class="codicon codicon-beaker"></i></button>
                         <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
                         <button id="compress-history-context-btn" class="icon-btn" title="Compress Chat History (Summarize earlier turns in-place to free context tokens for files)" style="padding: 2px; color: var(--vscode-charts-orange);"><i class="codicon codicon-fold"></i></button>
+                        <button id="fork-compress-context-btn" class="icon-btn" title="Fork &amp; Compress Discussion (New discussion with same files and compressed history summary)" style="padding: 2px; color: var(--vscode-charts-orange);"><i class="codicon codicon-git-pull-request"></i></button>
                         <select id="hud-selections-dropdown" ${finalSelections.length === 0 ? 'disabled' : ''} style="background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: ${finalSelections.length === 0 ? 'default' : 'pointer'}; height: 22px; max-width: 150px; outline: none; display: inline-block; opacity: ${finalSelections.length === 0 ? '0.5' : '1'};">
                             <option value="">${finalSelections.length > 0 ? '📁 Select Saved Context...' : '📁 No Saved Contexts'}</option>
                             ${finalSelections.map((s: string) => `<option value="${s}">${s.replace('.lollms-ctx', '')}</option>`).join('')}
@@ -4279,12 +4703,13 @@ export class ContextPresenter {
                         </div>
                     </details>
 
-                    <!-- 📂 SEPARATE EXTERNAL & RESEARCH SECTION (.lollms/external_files) -->
-                    <details class="info-collapsible external-details" style="margin-bottom: 8px;">
+                    <!-- 📂 SEPARATE EXTERNAL & RESEARCH SECTION (.lollms/external_files & Live Links) -->
+                    <details class="info-collapsible external-details" ${finalExternalFilesCount > 0 ? 'open' : ''} style="margin-bottom: 8px;">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
                                 <span class="external-count-label">External & Research (${finalExternalFilesCount})</span>
                                 <div style="display: flex; gap: 8px; align-items: center;">
+                                    <button id="add-external-text-btn" class="icon-btn" title="Type or Paste Custom Content (Saved to .lollms/external_files)"><i class="codicon codicon-edit"></i></button>
                                     <button id="add-external-file-btn" class="icon-btn" title="Import Document Copy to .lollms/external_files (PDF, DOCX, TXT, MD, etc.)"><i class="codicon codicon-add"></i></button>
                                     <button id="add-external-link-btn" class="icon-btn" title="Link External File(s) as Live References (Read-Only - Updates on disk are automatically reflected)"><i class="codicon codicon-link"></i></button>
                                     <button id="web-context-btn" class="icon-btn" title="Web Discovery & Research"><i class="codicon codicon-globe"></i></button>
@@ -4294,7 +4719,7 @@ export class ContextPresenter {
                         </summary>
                         <div class="collapsible-content hud-external-files-container" style="padding-top: 8px;">
                             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px; padding: 0 4px;">
-                                <span style="font-size: 10px; opacity: 0.65; font-family: var(--vscode-editor-font-family);"><i class="codicon codicon-folder"></i> .lollms/external_files</span>
+                                <span style="font-size: 10px; opacity: 0.65; font-family: var(--vscode-editor-font-family);"><i class="codicon codicon-folder"></i> .lollms/external_files &amp; Live Links</span>
                             </div>
                             <div class="hud-external-files-list">${externalFilesHtml}</div>
                         </div>
@@ -4615,6 +5040,34 @@ export class ContextBinder {
                     }
                 };
             });
+        }
+
+        const headerForkCompressBtn = dashboard.querySelector('#hud-header-fork-compress-btn') as HTMLElement;
+        if (headerForkCompressBtn) {
+            headerForkCompressBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'forkAndCompressDiscussion' });
+            };
+        }
+
+        const headerCompressHistBtn = dashboard.querySelector('#hud-header-compress-history-btn') as HTMLElement;
+        if (headerCompressHistBtn) {
+            headerCompressHistBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                import('./ui.js').then(ui => ui.setCalculatingTokens(true, "Compressing chat history..."));
+                vscode.postMessage({ command: 'compressDiscussionHistory' });
+            };
+        }
+
+        const forkCompressContextBtn = dashboard.querySelector('#fork-compress-context-btn') as HTMLElement;
+        if (forkCompressContextBtn) {
+            forkCompressContextBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({ command: 'forkAndCompressDiscussion' });
+            };
         }
 
         const runTestsContextBtn = dashboard.querySelector('#run-tests-context-btn') as HTMLElement;
@@ -5041,12 +5494,9 @@ export class ContextBinder {
             });
         }
 
-        // Lazy on-demand loading: Only query graph elements if the knowledge accordion is actually expanded
-        if (kgDetailsAccordion?.open) {
-            vscode.postMessage({ command: 'requestKnowledgeGraphData' });
-            if ((window as any).renderKgWithCytoscape) {
-                (window as any).renderKgWithCytoscape((window as any)._latestKgElements);
-            }
+        // Lazy on-demand loading: Only render cached graph elements if the knowledge accordion is already open
+        if (kgDetailsAccordion?.open && (window as any).renderKgWithCytoscape && (window as any)._latestKgElements) {
+            (window as any).renderKgWithCytoscape((window as any)._latestKgElements);
         }
 
         // Live SPARQL Query Bar & AI Text-to-SPARQL Assistant
@@ -5238,6 +5688,146 @@ export class ContextBinder {
             };
         }
 
+        // Multi-file tree unmute state and interactive floating bar binder
+        const queuedUnmutePaths: Set<string> = (window as any)._queuedUnmutePaths || new Set<string>();
+        (window as any)._queuedUnmutePaths = queuedUnmutePaths;
+
+        const updateFloatingUnmuteBar = () => {
+            const bar = document.getElementById('tree-multi-unmute-bar');
+            const countEl = document.getElementById('tree-unmute-count');
+            const applyBtn = document.getElementById('tree-unmute-apply-btn') as HTMLButtonElement;
+            if (!bar) return;
+
+            const count = queuedUnmutePaths.size;
+            if (count > 0) {
+                bar.style.display = 'flex';
+                if (countEl) countEl.textContent = `${count} file${count > 1 ? 's' : ''}`;
+                if (applyBtn) {
+                    applyBtn.innerHTML = `<i class="codicon codicon-check"></i> Unmute Selected (${count})`;
+                }
+            } else {
+                bar.style.display = 'none';
+            }
+
+            document.querySelectorAll('.tree-unmute-tag[data-path]').forEach((tag: any) => {
+                const p = tag.dataset.path;
+                tag.classList.toggle('selected', queuedUnmutePaths.has(p));
+            });
+            document.querySelectorAll('.context-item[data-path]').forEach((item: any) => {
+                const p = item.dataset.path;
+                item.classList.toggle('queued-for-unmute', queuedUnmutePaths.has(p));
+            });
+        };
+        (window as any).updateFloatingUnmuteBar = updateFloatingUnmuteBar;
+
+        if (!(window as any)._treeUnmuteDelegationInstalled) {
+            (window as any)._treeUnmuteDelegationInstalled = true;
+
+            document.addEventListener('click', (e: MouseEvent) => {
+                const target = e.target as HTMLElement;
+
+                // 1. Click on [M] or [D] tag in text tree manifest
+                const treeTag = target.closest('.tree-unmute-tag') as HTMLElement;
+                if (treeTag) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const p = treeTag.dataset.path;
+                    if (p) {
+                        queuedUnmutePaths.clear();
+                        updateFloatingUnmuteBar();
+                        vscode.postMessage({ command: 'bulkUnmuteFiles', paths: [p] });
+                    }
+                    return;
+                }
+
+                // 2. Click on [MUTED] token badge in HUD tree list
+                const mutePill = target.closest('.clickable-unmute-pill') as HTMLElement;
+                if (mutePill) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const p = mutePill.dataset.path;
+                    if (p) {
+                        queuedUnmutePaths.clear();
+                        updateFloatingUnmuteBar();
+                        vscode.postMessage({ command: 'bulkUnmuteFiles', paths: [p] });
+                    }
+                    return;
+                }
+
+                // 3. Click on folder [MUTED] token badge in HUD tree list
+                const folderPill = target.closest('.clickable-folder-unmute-pill') as HTMLElement;
+                if (folderPill) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const rawPaths = folderPill.dataset.paths;
+                    if (rawPaths) {
+                        try {
+                            const paths: string[] = JSON.parse(decodeURIComponent(rawPaths));
+                            const currentMuted = state.mutedFiles || [];
+                            const mutedInFolder = paths.filter(p => currentMuted.some((m: string) => m.toLowerCase().trim() === p.toLowerCase().trim()));
+                            mutedInFolder.forEach(p => queuedUnmutePaths.add(p));
+                            updateFloatingUnmuteBar();
+                        } catch {}
+                    }
+                    return;
+                }
+
+                // 4. Ctrl/Cmd+click on muted file row in tree
+                const mutedRow = target.closest('.context-item.file-muted .file-row-main') as HTMLElement;
+                if (mutedRow && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const p = mutedRow.dataset.path || (mutedRow.closest('.context-item') as HTMLElement)?.dataset.path;
+                    if (p) {
+                        if (queuedUnmutePaths.has(p)) queuedUnmutePaths.delete(p);
+                        else queuedUnmutePaths.add(p);
+                        updateFloatingUnmuteBar();
+                    }
+                    return;
+                }
+
+                // 5. Apply multi-unmute button click
+                const applyBtn = target.closest('#tree-unmute-apply-btn');
+                if (applyBtn) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const paths = Array.from(queuedUnmutePaths);
+                    if (paths.length > 0) {
+                        vscode.postMessage({ command: 'bulkUnmuteFiles', paths });
+                        queuedUnmutePaths.clear();
+                        updateFloatingUnmuteBar();
+                    }
+                    return;
+                }
+
+                // 6. Cancel multi-unmute selection button click
+                const cancelBtn = target.closest('#tree-unmute-cancel-btn');
+                if (cancelBtn) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    queuedUnmutePaths.clear();
+                    updateFloatingUnmuteBar();
+                    return;
+                }
+            });
+
+            // Double click to instantly unmute a single file
+            document.addEventListener('dblclick', (e: MouseEvent) => {
+                const target = e.target as HTMLElement;
+                const quickTarget = target.closest('.tree-unmute-tag, .clickable-unmute-pill') as HTMLElement;
+                if (quickTarget) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const p = quickTarget.dataset.path;
+                    if (p) {
+                        queuedUnmutePaths.clear();
+                        updateFloatingUnmuteBar();
+                        vscode.postMessage({ command: 'bulkUnmuteFiles', paths: [p] });
+                    }
+                }
+            });
+        }
+
         // Bind collapse/expand children buttons for folders with subfolders
         dashboard.querySelectorAll('.collapse-folder-children-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
@@ -5266,6 +5856,8 @@ export class ContextBinder {
         // Bind HUD Files List Search & Real-Time Filter
         const hudFilesSearchInp = dashboard.querySelector('#hud-files-search-input') as HTMLInputElement;
         const hudFilesSearchClear = dashboard.querySelector('#hud-files-search-clear') as HTMLElement;
+
+        let refreshBulkCheckStatus: (() => void) | undefined;
 
         const applyFilesFilter = (query: string) => {
             (state as any).hudFileFilterQuery = query;
@@ -5303,6 +5895,10 @@ export class ContextBinder {
                     folder.style.display = 'none';
                 }
             });
+
+            if (refreshBulkCheckStatus) {
+                refreshBulkCheckStatus();
+            }
         };
 
         if (hudFilesSearchInp) {
@@ -5343,6 +5939,39 @@ export class ContextBinder {
                 }
             });
         });
+
+        // Helper to retrieve accurate token weight for optimistic HUD recalculations
+        const getFileTokenWeight = (filePath: string): number => {
+            if (!filePath) return 100;
+            const norm = filePath.replace(/\\/g, '/').toLowerCase().trim();
+            if (state.fileTokensMap) {
+                for (const [k, v] of Object.entries(state.fileTokensMap)) {
+                    const cleanK = k.replace(/\\/g, '/').toLowerCase().trim();
+                    if (cleanK === norm || cleanK.endsWith('/' + norm) || norm.endsWith('/' + cleanK)) {
+                        if (v > 0) return v;
+                    }
+                }
+            }
+            const fileEntry = state.lastContextData?.files?.find((f: any) => {
+                const p = (typeof f === 'string' ? f : f?.path || '').replace(/\\/g, '/').toLowerCase().trim();
+                return p === norm || p.endsWith('/' + norm) || norm.endsWith('/' + p);
+            });
+            if (fileEntry && typeof fileEntry === 'object') {
+                if (fileEntry.tokens && fileEntry.tokens > 0) return fileEntry.tokens;
+                if (fileEntry.bytes && fileEntry.bytes > 0) return Math.max(1, Math.ceil(fileEntry.bytes / 3.5));
+            }
+            const row = document.querySelector(`.context-item[data-path="${filePath}"]`);
+            if (row) {
+                const badge = row.querySelector('.file-token-badge:not(.file-mtime-badge)');
+                const match = badge?.textContent?.match(/~?(\d+(?:\.\d+)?k?)\s*tok/i);
+                if (match) {
+                    const val = match[1].toLowerCase();
+                    if (val.endsWith('k')) return Math.round(parseFloat(val) * 1000);
+                    return parseInt(val, 10);
+                }
+            }
+            return 100;
+        };
 
         // Bind half-mute (structure only / definitions only) toggle button
         dashboard.querySelectorAll('.toggle-structure-file-btn').forEach(btn => {
@@ -5385,6 +6014,46 @@ export class ContextBinder {
                     }
                 }
 
+                // OPTIMISTIC TOKEN PROGRESS BAR UPDATE (0ms instant response)
+                const fileTok = getFileTokenWeight(p);
+                const structTok = Math.min(fileTok, Math.max(25, Math.round(fileTok * 0.15)));
+                const delta = fileTok - structTok;
+
+                if (state.lastTokenMetrics) {
+                    if (isNowDefOnly) {
+                        state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - delta);
+                        if (state.lastTokenMetrics.segments?.files !== undefined) {
+                            state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - delta);
+                        }
+                    } else {
+                        state.lastTokenMetrics.totalTokens += delta;
+                        if (state.lastTokenMetrics.segments?.files !== undefined) {
+                            state.lastTokenMetrics.segments.files += delta;
+                        }
+                    }
+                    const barContainer = document.getElementById('token-progress-container');
+                    const labelEl = document.getElementById('token-count-label');
+                    if (labelEl) {
+                        labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()} (Updating...)`;
+                    }
+                    updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
+                }
+
+                setCalculatingTokens(true, "Updating structure view...");
+
+                const regItem = (window as any).lazyFilesRegistry?.get(p);
+                if (regItem && typeof regItem === 'object') {
+                    regItem.state = targetState;
+                }
+                const normP = p.replace(/\\/g, '/').toLowerCase();
+                const ctxFile = state.lastContextData?.files?.find((fi: any) => {
+                    const cf = (typeof fi === 'string' ? fi : fi.path || '').replace(/\\/g, '/').toLowerCase();
+                    return cf === normP || cf.endsWith('/' + normP) || normP.endsWith('/' + cf);
+                });
+                if (ctxFile && typeof ctxFile === 'object') {
+                    ctxFile.state = targetState;
+                }
+
                 // Post dedicated command to extension host
                 vscode.postMessage({
                     command: 'toggleFileStructure',
@@ -5415,24 +6084,50 @@ export class ContextBinder {
             const structBtn = inlineBulkToolbar.querySelector('#inline-bulk-structure-btn') as HTMLElement;
             const removeBtn = inlineBulkToolbar.querySelector('#inline-bulk-remove-btn') as HTMLElement;
 
+            const isFileCheckVisible = (cb: HTMLElement): boolean => {
+                const item = cb.closest('.context-item') as HTMLElement;
+                if (!item) return false;
+                if (item.style.display === 'none') return false;
+                const folder = item.closest('.context-tree-folder') as HTMLElement;
+                if (folder && folder.style.display === 'none') return false;
+                return true;
+            };
+
+            const getTargetFileChecks = (): HTMLInputElement[] => {
+                const allChecks = Array.from(dashboard.querySelectorAll('.inline-file-check')) as HTMLInputElement[];
+                const hasSearchFilter = !!((state as any).hudFileFilterQuery && (state as any).hudFileFilterQuery.trim()) ||
+                                        !!(dashboard.querySelector('#hud-files-search-input') as HTMLInputElement)?.value.trim();
+                return hasSearchFilter ? allChecks.filter(isFileCheckVisible) : allChecks;
+            };
+
             const updateCheckedCount = () => {
-                const checked = Array.from(dashboard.querySelectorAll('.inline-file-check:checked')) as HTMLInputElement[];
+                const targetChecks = getTargetFileChecks();
+                const checked = targetChecks.filter(cb => cb.checked);
                 if (countLabel) countLabel.textContent = `(${checked.length} selected)`;
                 if (masterCheck) {
-                    const totalChecks = dashboard.querySelectorAll('.inline-file-check').length;
-                    masterCheck.checked = totalChecks > 0 && checked.length === totalChecks;
-                    masterCheck.indeterminate = checked.length > 0 && checked.length < totalChecks;
+                    masterCheck.checked = targetChecks.length > 0 && checked.length === targetChecks.length;
+                    masterCheck.indeterminate = checked.length > 0 && checked.length < targetChecks.length;
                 }
             };
+
+            refreshBulkCheckStatus = updateCheckedCount;
 
             if (masterCheck) {
                 masterCheck.onchange = () => {
                     const checked = masterCheck.checked;
-                    dashboard.querySelectorAll('.inline-file-check').forEach((cb: any) => {
+                    const targetChecks = getTargetFileChecks();
+                    targetChecks.forEach((cb: HTMLInputElement) => {
                         cb.checked = checked;
                     });
-                    dashboard.querySelectorAll('.inline-folder-check').forEach((cb: any) => {
-                        cb.checked = checked;
+                    dashboard.querySelectorAll('.inline-folder-check').forEach((fcb: any) => {
+                        const folder = fcb.closest('.context-tree-folder') as HTMLElement;
+                        if (folder && folder.style.display !== 'none') {
+                            const childChecks = (Array.from(folder.querySelectorAll('.inline-file-check')) as HTMLInputElement[]).filter(isFileCheckVisible);
+                            if (childChecks.length > 0) {
+                                fcb.checked = childChecks.every(c => c.checked);
+                                fcb.indeterminate = childChecks.some(c => c.checked) && !fcb.checked;
+                            }
+                        }
                     });
                     updateCheckedCount();
                 };
@@ -5447,7 +6142,8 @@ export class ContextBinder {
                     const isChecked = fcb.checked;
                     const folder = fcb.closest('.context-tree-folder');
                     if (folder) {
-                        folder.querySelectorAll('.inline-file-check').forEach((cb: any) => {
+                        const childChecks = (Array.from(folder.querySelectorAll('.inline-file-check')) as HTMLInputElement[]).filter(isFileCheckVisible);
+                        childChecks.forEach((cb: HTMLInputElement) => {
                             cb.checked = isChecked;
                         });
                     }
@@ -5456,7 +6152,8 @@ export class ContextBinder {
             });
 
             const getCheckedPaths = (): string[] => {
-                const checks = Array.from(dashboard.querySelectorAll('.inline-file-check:checked')) as HTMLInputElement[];
+                const targetChecks = getTargetFileChecks();
+                const checks = targetChecks.filter(c => c.checked);
                 return checks.map(c => c.dataset.path || '').filter(Boolean);
             };
 
@@ -5526,6 +6223,29 @@ export class ContextBinder {
                 const rowPath = (row.dataset.path || '').replace(/\\/g, '/').trim().toLowerCase();
                 if (rowPath === normPath || rowPath.endsWith('/' + normPath) || normPath.endsWith('/' + rowPath)) {
                     row.classList.toggle('file-muted', isMuted);
+
+                    if (!isMuted) {
+                        row.classList.remove('file-def-only');
+                        const structBtn = row.querySelector('.toggle-structure-file-btn') as HTMLElement;
+                        if (structBtn) {
+                            structBtn.classList.remove('is-active');
+                            structBtn.dataset.state = 'definitions-only';
+                            structBtn.style.color = 'var(--vscode-foreground)';
+                            structBtn.style.opacity = '0.6';
+                            structBtn.title = 'Half-Mute: Include Structure / Definitions Only (save tokens)';
+                        }
+                        const regItem = (window as any).lazyFilesRegistry?.get(filePath);
+                        if (regItem && typeof regItem === 'object') {
+                            regItem.state = 'included';
+                        }
+                        const ctxFile = state.lastContextData?.files?.find((fi: any) => {
+                            const p = (typeof fi === 'string' ? fi : fi.path || '').replace(/\\/g, '/').toLowerCase();
+                            return p === normPath || p.endsWith('/' + normPath) || normPath.endsWith('/' + p);
+                        });
+                        if (ctxFile && typeof ctxFile === 'object') {
+                            ctxFile.state = 'included';
+                        }
+                    }
 
                     const btn = row.querySelector('.toggle-mute-file-btn') as HTMLElement;
                     if (btn) {
@@ -5658,31 +6378,17 @@ export class ContextBinder {
                     // Surgical in-place DOM update (zero rerenders, zero scroll jumping)
                     updateFileMuteDom(pathVal, isMutingNow);
 
-                    // Optimistic token metrics update
-                    const fileTok = state.fileTokensMap?.[pathVal] || 0;
-                    if (state.lastTokenMetrics) {
+                    // Optimistic token metrics update with resilient weight discovery (0ms response)
+                    const fileTok = getFileTokenWeight(pathVal);
+                    if (state.lastTokenMetrics && fileTok > 0) {
                         if (isMutingNow) {
-                            const allFiles = (state.lastContextData?.files || []).map((f: any) => typeof f === 'string' ? f : (f?.path || ''));
-                            const isAllMuted = allFiles.length > 0 && allFiles.every(p => {
-                                const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
-                                return state.mutedFiles.some(m => {
-                                    const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
-                                    return cleanM === cleanP || cleanM.endsWith('/' + cleanP) || cleanP.endsWith('/' + cleanM);
-                                });
-                            });
-                            if (isAllMuted && state.lastTokenMetrics.segments) {
-                                const prevFiles = state.lastTokenMetrics.segments.files || 0;
-                                state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - prevFiles);
-                                state.lastTokenMetrics.segments.files = 0;
-                            } else if (fileTok > 0) {
-                                state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - fileTok);
-                                if (state.lastTokenMetrics.segments && state.lastTokenMetrics.segments.files !== undefined) {
-                                    state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - fileTok);
-                                }
+                            state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - fileTok);
+                            if (state.lastTokenMetrics.segments?.files !== undefined) {
+                                state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - fileTok);
                             }
-                        } else if (fileTok > 0) {
+                        } else {
                             state.lastTokenMetrics.totalTokens += fileTok;
-                            if (state.lastTokenMetrics.segments && state.lastTokenMetrics.segments.files !== undefined) {
+                            if (state.lastTokenMetrics.segments?.files !== undefined) {
                                 state.lastTokenMetrics.segments.files += fileTok;
                             }
                         }
@@ -5690,7 +6396,7 @@ export class ContextBinder {
                         const barContainer = document.getElementById('token-progress-container');
                         const labelEl = document.getElementById('token-count-label');
                         if (labelEl) {
-                            labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()}`;
+                            labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()} (Updating...)`;
                         }
                         updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
                     }
@@ -5824,7 +6530,18 @@ export class ContextBinder {
                 const type = target.dataset.type;
                 const value = target.dataset.value;
 
-                if (type === 'file') {
+                if (type === 'file' && value) {
+                    const row = target.closest('.context-item') as HTMLElement;
+                    if (row) {
+                        row.style.opacity = '0.3';
+                        row.style.pointerEvents = 'none';
+                    }
+                    if (state.lastContextData && Array.isArray(state.lastContextData.files)) {
+                        state.lastContextData.files = state.lastContextData.files.filter((item: any) => {
+                            const p = typeof item === 'string' ? item : (item?.path || '');
+                            return p !== value && p.toLowerCase() !== value.toLowerCase();
+                        });
+                    }
                     vscode.postMessage({ command: 'removeFileFromContext', path: value });
                 } else if (type === 'skill') {
                     vscode.postMessage({ command: 'removeSkillFromContext', skillId: value });
@@ -5918,6 +6635,27 @@ export class ContextBinder {
 
         // Helper to extract file path string
         const getFilePath = (item: any) => typeof item === 'string' ? item : (item?.path || '');
+
+        // Bind Add Custom External Content Modal
+        const addExternalTextBtn = dashboard.querySelector('#add-external-text-btn') as HTMLElement;
+        if (addExternalTextBtn) {
+            addExternalTextBtn.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const modal = document.getElementById('custom-external-text-modal');
+                if (modal) {
+                    modal.style.display = 'flex';
+                    modal.classList.add('visible');
+                    const titleInp = document.getElementById('custom-external-title-input') as HTMLInputElement;
+                    if (titleInp) {
+                        titleInp.value = '';
+                        setTimeout(() => titleInp.focus(), 50);
+                    }
+                    const contentInp = document.getElementById('custom-external-content-input') as HTMLTextAreaElement;
+                    if (contentInp) contentInp.value = '';
+                }
+            };
+        }
 
         // Bind Add External File (.lollms/external_files)
         const addExternalFileBtn = dashboard.querySelector('#add-external-file-btn') as HTMLElement;
@@ -6026,32 +6764,33 @@ export class ContextBinder {
             };
         }
 
-        const forkCompressBtn = dashboard.querySelector('#fork-and-compress-btn') as HTMLElement;
-        if (forkCompressBtn) {
-            forkCompressBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                vscode.postMessage({ command: 'forkAndCompressDiscussion' });
-            };
-        }
+        const bindTrigger = (selector: string, action: () => void) => {
+            const el = dashboard.querySelector(selector) as HTMLElement;
+            if (el) {
+                el.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    action();
+                };
+            }
+        };
 
-        const compressHistBtn = dashboard.querySelector('#compress-history-btn') as HTMLElement;
-        if (compressHistBtn) {
-            compressHistBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                vscode.postMessage({ command: 'compressDiscussionHistory' });
-            };
-        }
+        bindTrigger('#hud-header-fork-compress-btn', () => vscode.postMessage({ command: 'forkAndCompressDiscussion' }));
+        bindTrigger('#fork-compress-context-btn', () => vscode.postMessage({ command: 'forkAndCompressDiscussion' }));
+        bindTrigger('#fork-and-compress-btn', () => vscode.postMessage({ command: 'forkAndCompressDiscussion' }));
 
-        const compressHistContextBtn = dashboard.querySelector('#compress-history-context-btn') as HTMLElement;
-        if (compressHistContextBtn) {
-            compressHistContextBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                vscode.postMessage({ command: 'compressDiscussionHistory' });
-            };
-        }
+        bindTrigger('#hud-header-compress-history-btn', () => {
+            import('./ui.js').then(ui => ui.setCalculatingTokens(true, "Compressing chat history..."));
+            vscode.postMessage({ command: 'compressDiscussionHistory' });
+        });
+        bindTrigger('#compress-history-context-btn', () => {
+            import('./ui.js').then(ui => ui.setCalculatingTokens(true, "Compressing chat history..."));
+            vscode.postMessage({ command: 'compressDiscussionHistory' });
+        });
+        bindTrigger('#compress-history-btn', () => {
+            import('./ui.js').then(ui => ui.setCalculatingTokens(true, "Compressing chat history..."));
+            vscode.postMessage({ command: 'compressDiscussionHistory' });
+        });
 
         const iconForkBtn = dashboard.querySelector('#new-chat-same-context-icon-btn') as HTMLElement;
         if (iconForkBtn) {
@@ -6239,14 +6978,39 @@ export function updateContext(
     const isProjectFile = (item: any) => {
         const f = getFilePath(item);
         if (!f) return true;
-        const norm = f.replace(/\\/g, '/').toLowerCase();
-        const isInternal = norm.includes('.lollms/external_files') || 
-                           norm.startsWith('.lollms/external_files') ||
-                           norm.startsWith('external/') || 
-                           norm.includes('/external/') ||
-                           norm.startsWith('http') ||
-                           norm.includes('.lollms/');
-        return !isInternal;
+        const norm = f.replace(/\\/g, '/').toLowerCase().trim();
+        if (
+            norm.includes('.lollms/external_files') || 
+            norm.startsWith('.lollms/external_files') ||
+            norm.startsWith('external/') || 
+            norm.includes('/external/') ||
+            norm.startsWith('http://') ||
+            norm.startsWith('https://') ||
+            norm.includes('.lollms/')
+        ) {
+            return false;
+        }
+
+        const isAbs = /^[a-zA-Z]:[\\/]/.test(norm) || norm.startsWith('/');
+        if (isAbs) {
+            const wsFolders: any[] = (window as any).workspaceFolders || (state as any).workspaceFolders || [];
+            if (wsFolders.length > 0) {
+                const isInsideAny = wsFolders.some((wf: any) => {
+                    const raw = typeof wf === 'string' ? wf : (wf.fsPath || wf.uri || '');
+                    let cleanWf = raw.replace(/\\/g, '/').toLowerCase().trim();
+                    try { cleanWf = decodeURIComponent(cleanWf); } catch {}
+                    cleanWf = cleanWf.replace(/^file:\/\/\/?/i, '');
+                    return cleanWf && (norm === cleanWf || norm.startsWith(cleanWf + '/'));
+                });
+                if (!isInsideAny) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        return true;
     };
 
     const projectFiles = finalFiles.filter(isProjectFile);
@@ -6268,7 +7032,7 @@ export function updateContext(
         const currentMutedDiagrams = state.mutedDiagrams || state.lastContextData.mutedDiagrams || [];
 
         const projectFilesHtml = ContextPresenter.renderFileList(safeProjectFiles, "No project files selected.", false, tokenMap, sortOrder, currentMutedFiles);
-        const externalFilesHtml = ContextPresenter.renderFileList(safeExternalFiles, "No search results in context.", true, tokenMap, sortOrder, currentMutedFiles);
+        const externalFilesHtml = ContextPresenter.renderFileList(safeExternalFiles, "No external documents or links in context.", true, tokenMap, sortOrder, currentMutedFiles);
         const skillsHtml = ContextPresenter.renderSkills(safeFinalSkills, currentMutedSkills);
         const briefingHtml = finalBriefing ? renderDataBriefing(finalBriefing) : '<div style="font-style:italic; opacity:0.5;">No specific task constraints defined. Click the shield to add instructions.</div>';
 

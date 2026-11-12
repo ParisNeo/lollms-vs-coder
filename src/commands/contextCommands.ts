@@ -71,7 +71,18 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         if (targetUris.length > 0) {
             const provider = services.contextManager.getContextStateProvider();
             if (provider) {
-                if (state === 'included' && targetUris.some(u => u.fsPath.includes(path.sep))) {
+                let hasDirectory = false;
+                for (const u of targetUris) {
+                    try {
+                        const st = await vscode.workspace.fs.stat(u);
+                        if (st.type === vscode.FileType.Directory) {
+                            hasDirectory = true;
+                            break;
+                        }
+                    } catch {}
+                }
+
+                if (state === 'included' && hasDirectory) {
                     await vscode.window.withProgress({
                         location: vscode.ProgressLocation.Notification,
                         title: `Lollms: Recursively adding folder contents...`,
@@ -140,11 +151,39 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         }
     };
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.toggleContextIncluded', async (uriOrItem?: vscode.Uri | ContextItem, uris?: vscode.Uri[]) => {
+        let targetUri: vscode.Uri | undefined;
+        if (uriOrItem instanceof vscode.Uri) {
+            targetUri = uriOrItem;
+        } else if (uriOrItem && typeof uriOrItem === 'object' && uriOrItem.resourceUri instanceof vscode.Uri) {
+            targetUri = uriOrItem.resourceUri;
+        } else if (vscode.window.activeTextEditor?.document.uri.scheme === 'file') {
+            targetUri = vscode.window.activeTextEditor.document.uri;
+        }
+        if (!targetUri) return;
+
+        const provider = services.contextManager.getContextStateProvider();
+        if (!provider) return;
+
+        const currentState = provider.getStateForUri(targetUri);
+        const newState = currentState === 'included' ? 'tree-only' : 'included';
+        await setContextState(targetUri, [targetUri], newState);
+
+        const relPath = vscode.workspace.asRelativePath(targetUri, false);
+        const statusMsg = newState === 'included' ? `Added "${relPath}" to AI context [C]` : `Removed "${relPath}" from AI context`;
+        vscode.window.setStatusBarMessage(statusMsg, 3000);
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextIncluded', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'included')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextIncludedActive', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'included')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextTreeOnly', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'tree-only')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextTreeOnlyActive', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'tree-only')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextExcluded', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'fully-excluded')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextExcludedActive', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'fully-excluded')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextCollapsed', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'collapsed')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextCollapsedActive', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'collapsed')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextDefinitionsOnly', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'definitions-only')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextDefinitionsOnlyActive', (uri: vscode.Uri, uris: vscode.Uri[]) => setContextState(uri, uris, 'definitions-only')));
 
     async function collectFilesFromUri(targetUri: vscode.Uri): Promise<string[]> {
         try {

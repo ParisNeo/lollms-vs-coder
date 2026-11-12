@@ -35,25 +35,34 @@ export class ContextItem extends vscode.TreeItem {
         } else if (state === 'included') {
             this.label = `[C] ${this.label}`; // Added [C] prefix for Content Loaded
         }
+
+        if (!isDirectory) {
+            this.command = {
+                command: 'lollms-vs-coder.toggleContextIncluded',
+                title: 'Toggle AI Context',
+                arguments: [resourceUri]
+            };
+        }
     }
 }
 
 export const DANGEROUS_BLOCKED_FOLDERS = new Set([
-    '.git', '.github', '.lollms', '.lollms_code', 'lollms_code', '.claude', 'claude', 'node_modules',
-    'venv', '.venv', 'env', '.env', 'virtualenv', 'conda-env',
-    '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
-    'dist', 'build', 'out', 'bin', 'obj', 'target', '.output', 'output',
-    'data', 'data_workspace', '.idea', '.vscode',
-    '.next', '.nuxt', '.turbo', '.svelte-kit', '.cache'
+    '.git', 'node_modules', 'venv', '.venv', 'virtualenv', 'conda-env',
+    '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox'
 ]);
 
 export function isDangerousOrBlocked(fsPathOrRel: string, workspaceRoot?: string): boolean {
     if (!fsPathOrRel) return false;
     let target = fsPathOrRel.replace(/\\/g, '/');
 
-    // Allow .lollms/external_files and .lollms/skills to be tracked in context
-    if (target.includes('.lollms/external_files') || target.includes('.lollms/skills')) {
+    // Allow user-managed .lollms assets
+    if (target.includes('.lollms/external_files') || target.includes('.lollms/skills') || target.includes('.lollms/selection')) {
         return false;
+    }
+
+    // Block internal .lollms database files (discussions, cache)
+    if (target.includes('.lollms/') || target.endsWith('.lollms')) {
+        return true;
     }
 
     // If an absolute path is passed, only inspect segments relative to the workspace root
@@ -80,9 +89,6 @@ export function isDangerousOrBlocked(fsPathOrRel: string, workspaceRoot?: string
     for (const seg of segments) {
         const lower = seg.toLowerCase();
         if (DANGEROUS_BLOCKED_FOLDERS.has(lower)) {
-            return true;
-        }
-        if (lower.startsWith('.') && lower !== '.' && lower !== '..' && lower !== '.gitignore' && lower !== '.env.example') {
             return true;
         }
     }
@@ -115,9 +121,8 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private _cachedStateKeys: { [key: string]: ContextState } | null = null;
 
     private defaultCollapsedFolders = new Set([
-        'node_modules', 'dist', 'build', 'out', 'bin', 'obj', 'target',
-        'venv', '.venv', 'env', '.env', 'data', 'data_workspace',
-        '.git', '.idea', '.vscode', '.ruff_cache', '__pycache__'
+        'node_modules', 'dist', 'build', 'out', 'obj', 'target',
+        'venv', '.venv', '.git', '.idea', '.vscode', '.ruff_cache', '__pycache__'
     ]);
 
     constructor(context: vscode.ExtensionContext) {
@@ -134,7 +139,8 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         // Perform cleanup and migration on init
         this.cleanNonExistentFiles()
             .then(() => this.migrateDefaultCollapsedFolders())
-            .then(() => this.refresh());
+            .then(() => this.refresh())
+            .then(() => this.updateContextKeys());
     }
 
     private getUnifiedWorkspaceState(): { [key: string]: ContextState } {
@@ -198,6 +204,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             await this.migrateDefaultCollapsedFolders();
             this.refresh();
         } else {
+            this.updateContextKeys();
             this._onDidChangeFileDecorations.fire(undefined);
         }
     }
@@ -209,6 +216,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             this._cachedVisibleFiles = null;
         }
         this.getUnifiedWorkspaceState();
+        this.updateContextKeys();
         this._onDidChangeTreeData.fire();
         this._onDidChangeFileDecorations.fire();
     }
@@ -255,6 +263,15 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 const normalizedKey = this.normalize(key).trim().replace(/^\.?\/+/, '');
                 const curState = workspaceState[key];
                 if (curState === 'included' && isDangerousOrBlocked(normalizedKey)) return { remove: key };
+
+                if (path.isAbsolute(normalizedKey) || /^[a-zA-Z]:[\\/]/.test(normalizedKey)) {
+                    try {
+                        await vscode.workspace.fs.stat(vscode.Uri.file(normalizedKey));
+                        return null; // Exists on disk
+                    } catch {
+                        return { remove: key };
+                    }
+                }
 
                 for (const folder of folders) {
                     const candidate = vscode.Uri.joinPath(folder.uri, normalizedKey);
@@ -327,6 +344,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             this._cachedStateKeys = workspaceState;
             this.rebuildActivePrefixCache(workspaceState);
             await this.context.workspaceState.update(this.stateKey, workspaceState);
+            this.updateContextKeys();
         }
     }
 
@@ -344,6 +362,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         if (stateWasModified) {
             await this.context.workspaceState.update(this.stateKey, workspaceState);
+            this.updateContextKeys();
             this.refresh(false);
         }
     }
@@ -419,6 +438,12 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const relativePath = this.normalize(path.relative(workspaceFolder.uri.fsPath, uri.fsPath));
         if (relativePath === '' || relativePath === '.') return false;
 
+        // If the user explicitly included this file in context state, never exclude it!
+        const workspaceState = this.getUnifiedWorkspaceState();
+        if (workspaceState[relativePath] === 'included' || workspaceState[relativePath] === 'definitions-only') {
+            return false;
+        }
+
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const exceptions = config.get<string[]>('contextFileExceptions') || [];
         return exceptions.some(pattern => minimatch(relativePath, pattern, { dot: true }));
@@ -437,6 +462,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const relativePath = this.normalize(rel);
 
         const workspaceState = this.getUnifiedWorkspaceState();
+        if (workspaceState[relativePath] === 'included' || workspaceState[relativePath] === 'definitions-only') {
+            return false;
+        }
         if (workspaceState[relativePath] === 'fully-excluded') return true;
 
         let currentPath = relativePath;
@@ -503,7 +531,18 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             if (state === 'included' && isDangerousOrBlocked(uri.fsPath)) continue;
 
             const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
-            if (!workspaceFolder) continue;
+            if (!workspaceFolder) {
+                // External file (outside workspace root, e.g. linked external reference)
+                const normPath = this.normalize(uri.fsPath).trim().replace(/^\.?\/+/, '').toLowerCase();
+                const normFs = uri.fsPath.replace(/\\/g, '/').toLowerCase().trim();
+                for (const key of Object.keys(workspaceState)) {
+                    const cleanKey = this.normalize(key).trim().replace(/^\.?\/+/, '').toLowerCase();
+                    if (cleanKey === normPath || cleanKey === normFs || cleanKey.endsWith('/' + normPath) || normPath.endsWith('/' + cleanKey)) {
+                        delete workspaceState[key];
+                    }
+                }
+                continue;
+            }
 
             const relativePath = this.normalize(vscode.workspace.asRelativePath(uri, false));
             modifiedUris.push(uri);
@@ -556,6 +595,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         this._cachedStateKeys = workspaceState;
         this.rebuildActivePrefixCache(workspaceState);
         await this.context.workspaceState.update(this.stateKey, workspaceState);
+        this.updateContextKeys();
 
         // Instant refresh: notify tree provider and refresh visible decorations in viewport
         this._onDidChangeTreeData.fire();
@@ -564,6 +604,75 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     
     public async setStateForUri(uri: vscode.Uri, state: ContextState) {
         await this.setStateForUris([uri], state);
+    }
+
+    public updateContextKeys(): void {
+        const workspaceState = this.getUnifiedWorkspaceState();
+        const folders = vscode.workspace.workspaceFolders || (this.workspaceFolder ? [this.workspaceFolder] : []);
+
+        const includedMap: Record<string, boolean> = {};
+        const definitionsMap: Record<string, boolean> = {};
+        const collapsedMap: Record<string, boolean> = {};
+        const excludedMap: Record<string, boolean> = {};
+        const configuredMap: Record<string, boolean> = {};
+
+        const addKeyVariants = (targetMap: Record<string, boolean>, relPath: string, folder: vscode.WorkspaceFolder) => {
+            const uri = vscode.Uri.joinPath(folder.uri, relPath);
+            const fsPath = uri.fsPath;
+            const normFs = fsPath.replace(/\\/g, '/');
+
+            targetMap[fsPath] = true;
+            targetMap[fsPath.toLowerCase()] = true;
+            targetMap[normFs] = true;
+            targetMap[normFs.toLowerCase()] = true;
+            targetMap[uri.path] = true;
+            targetMap[uri.path.toLowerCase()] = true;
+            targetMap[uri.toString()] = true;
+            targetMap[decodeURIComponent(uri.toString())] = true;
+
+            configuredMap[fsPath] = true;
+            configuredMap[fsPath.toLowerCase()] = true;
+            configuredMap[normFs] = true;
+            configuredMap[normFs.toLowerCase()] = true;
+            configuredMap[uri.path] = true;
+            configuredMap[uri.path.toLowerCase()] = true;
+            configuredMap[uri.toString()] = true;
+            configuredMap[decodeURIComponent(uri.toString())] = true;
+        };
+
+        for (const [key, state] of Object.entries(workspaceState)) {
+            const normalizedKey = this.normalize(key).trim().replace(/^\.?\/+/, '');
+            for (const folder of folders) {
+                if (state === 'included') {
+                    addKeyVariants(includedMap, normalizedKey, folder);
+                } else if (state === 'definitions-only') {
+                    addKeyVariants(definitionsMap, normalizedKey, folder);
+                } else if (state === 'collapsed') {
+                    addKeyVariants(collapsedMap, normalizedKey, folder);
+                } else if (state === 'fully-excluded') {
+                    addKeyVariants(excludedMap, normalizedKey, folder);
+                }
+            }
+        }
+
+        try {
+            const { ChatPanel } = require('./chatPanel/chatPanel');
+            const activeDiscussion = ChatPanel.currentPanel?.getCurrentDiscussion?.();
+            if (activeDiscussion?.mutedFiles && Array.isArray(activeDiscussion.mutedFiles)) {
+                for (const mutedPath of activeDiscussion.mutedFiles) {
+                    const normMuted = this.normalize(mutedPath).trim().replace(/^\.?\/+/, '');
+                    for (const folder of folders) {
+                        addKeyVariants(collapsedMap, normMuted, folder);
+                    }
+                }
+            }
+        } catch {}
+
+        vscode.commands.executeCommand('setContext', 'lollms:includedPaths', includedMap);
+        vscode.commands.executeCommand('setContext', 'lollms:definitionsPaths', definitionsMap);
+        vscode.commands.executeCommand('setContext', 'lollms:collapsedPaths', collapsedMap);
+        vscode.commands.executeCommand('setContext', 'lollms:excludedPaths', excludedMap);
+        vscode.commands.executeCommand('setContext', 'lollms:configuredPaths', configuredMap);
     }
 
     /**
@@ -803,7 +912,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 const lastSlash = currentPath.lastIndexOf('/');
                 currentPath = currentPath.substring(0, lastSlash);
                 const parentState = workspaceState[currentPath];
-                if (parentState === 'fully-excluded' || parentState === 'collapsed') {
+                if (parentState === 'fully-excluded') {
                     isParentExcluded = true;
                     break;
                 }
@@ -843,6 +952,15 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
             const segments = normalizedPath.split('/');
             const fileName = segments[segments.length - 1];
+
+            // 0. ABSOLUTE PATH CHECK: e.g. linked external file outside workspace
+            if (!targetUri && (path.isAbsolute(file) || /^[a-zA-Z]:[\\/]/.test(file))) {
+                const absUri = vscode.Uri.file(file);
+                try {
+                    await vscode.workspace.fs.stat(absUri);
+                    targetUri = absUri;
+                } catch {}
+            }
 
             // 1. DIRECT CHECK: Check across all roots for direct relative path existence
             for (const folder of folders) {
@@ -961,6 +1079,26 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         await this.context.workspaceState.update(this.stateKey, {});
         this.refresh(true);
         this._onDidChangeFileDecorations.fire(undefined); 
+    }
+
+    public async removeFiles(pathsOrUris: (string | vscode.Uri)[]): Promise<void> {
+        const workspaceState = this.getUnifiedWorkspaceState();
+        for (const item of pathsOrUris) {
+            const raw = typeof item === 'string' ? item : item.fsPath;
+            const norm = this.normalize(raw).trim().replace(/^\.?\/+/, '').toLowerCase();
+            const fileName = path.basename(norm);
+            for (const key of Object.keys(workspaceState)) {
+                const kNorm = this.normalize(key).trim().replace(/^\.?\/+/, '').toLowerCase();
+                if (kNorm === norm || kNorm.endsWith('/' + norm) || norm.endsWith('/' + kNorm) || (norm.includes('external') && path.basename(kNorm) === fileName)) {
+                    delete workspaceState[key];
+                }
+            }
+        }
+        this._cachedStateKeys = workspaceState;
+        this.rebuildActivePrefixCache(workspaceState);
+        await this.context.workspaceState.update(this.stateKey, workspaceState);
+        this._onDidChangeTreeData.fire();
+        this._onDidChangeFileDecorations.fire(undefined);
     }
 
     public async softReset(): Promise<void> {

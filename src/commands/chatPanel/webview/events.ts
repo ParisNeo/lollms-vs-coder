@@ -70,18 +70,18 @@ const handlePasteImages = (e: ClipboardEvent): boolean => {
 
     const imageBlobs: { blob: Blob; name: string }[] = [];
 
-    // 1. Inspect items for direct image objects (screenshots, copied image data)
+    // 1. Inspect items for direct image objects (screenshots, copied image data) - exclude SVGs so they are treated as editable XML
     if (clipboardData.items && clipboardData.items.length > 0) {
         for (let i = 0; i < clipboardData.items.length; i++) {
             const item = clipboardData.items[i];
-            if (item.type && item.type.indexOf('image') !== -1) {
+            if (item.type && item.type.indexOf('image') !== -1 && !item.type.includes('svg')) {
                 const blob = item.getAsFile();
                 if (blob) {
                     imageBlobs.push({ blob, name: (blob as File).name || `pasted_${Date.now()}_${i}.png` });
                 }
             } else if (item.kind === 'file') {
                 const file = item.getAsFile();
-                if (file && (file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name))) {
+                if (file && (file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(file.name)) && !file.name.toLowerCase().endsWith('.svg') && file.type !== 'image/svg+xml') {
                     imageBlobs.push({ blob: file, name: file.name });
                 }
             }
@@ -92,7 +92,7 @@ const handlePasteImages = (e: ClipboardEvent): boolean => {
     if (imageBlobs.length === 0 && clipboardData.files && clipboardData.files.length > 0) {
         for (let i = 0; i < clipboardData.files.length; i++) {
             const file = clipboardData.files[i];
-            if (file && (file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name))) {
+            if (file && (file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(file.name)) && !file.name.toLowerCase().endsWith('.svg') && file.type !== 'image/svg+xml') {
                 imageBlobs.push({ blob: file, name: file.name });
             }
         }
@@ -281,49 +281,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         });
     });
 
-    const toggleLibrarianModeHandler = (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        // Fast Mode is default (fastMode: true). Clicking activates/deactivates Librarian backed mode.
-        const currentFast = state.capabilities?.fastMode !== false;
-        const newFast = !currentFast;
-        const isLibrarian = !newFast;
 
-        if (state.capabilities) {
-            state.capabilities.fastMode = newFast;
-        }
-
-        const topBtn = document.getElementById('toggleLibrarianModeBtn') || document.getElementById('toggleFastModeBtn');
-        if (topBtn) {
-            topBtn.classList.toggle('active', isLibrarian);
-            topBtn.setAttribute('title', isLibrarian
-                ? "Librarian Mode: ACTIVE (Evaluates dependencies and plans before coding). Click to switch back to Fast Mode (default)."
-                : "Librarian Mode: Inactive (Fast Mode is default). Click to activate Librarian backed mode.");
-        }
-
-        const inputBtn = document.getElementById('librarianModeInputBtn') || document.getElementById('fastModeInputBtn');
-        if (inputBtn) {
-            inputBtn.classList.toggle('active', isLibrarian);
-            inputBtn.setAttribute('title', isLibrarian
-                ? "Librarian Mode: ACTIVE (Evaluates dependencies and plans before coding). Click to switch back to Fast Mode (default)."
-                : "Librarian Mode: Inactive (Fast Mode is default). Click to activate Librarian backed mode.");
-        }
-
-        vscode.postMessage({
-            command: 'updateDiscussionCapabilitiesPartial',
-            partial: { fastMode: newFast }
-        });
-    };
-
-    const libTopBtn = document.getElementById('toggleLibrarianModeBtn') || document.getElementById('toggleFastModeBtn');
-    if (libTopBtn) {
-        libTopBtn.addEventListener('click', toggleLibrarianModeHandler);
-    }
-
-    const libInputBtn = document.getElementById('librarianModeInputBtn') || document.getElementById('fastModeInputBtn');
-    if (libInputBtn) {
-        libInputBtn.addEventListener('click', toggleLibrarianModeHandler);
-    }
 
     // --- GLOBAL DRAG & DROP HANDLERS ---
     const chatContainer = document.querySelector('.chat-container') as HTMLElement;
@@ -578,7 +536,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
 
         for (const file of Array.from(files)) {
             const reader = new FileReader();
-            const isImage = file.type.startsWith('image/');
+            const isSvg = file.name.toLowerCase().endsWith('.svg') || file.type === 'image/svg+xml';
+            const isImage = file.type.startsWith('image/') && !isSvg;
 
             reader.onload = (event) => {
                 const content = event.target?.result as string;
@@ -587,7 +546,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                     renderPendingImages();
                     setGeneratingState(false);
                 } else {
-                    // Pass the user-selected parse strategy to the backend
+                    // Pass the user-selected parse strategy to the backend (SVGs are sent as text/XML)
                     vscode.postMessage({
                         command: 'loadFile',
                         file: { 
@@ -1211,59 +1170,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     if (dom.inputAreaWrapper) dom.inputAreaWrapper.addEventListener('click', handleGlobalClick);
     if (dom.contextContainer) dom.contextContainer.addEventListener('click', handleGlobalClick);
 
-    // --- Discussion Settings (Profiles) Event Listeners ---
-    document.getElementById('modal-add-profile-btn')?.addEventListener('click', () => {
-        (document.getElementById('modal-profile-editor') as HTMLElement).style.display = 'block';
-        (document.getElementById('modal-profiles-container') as HTMLElement).style.display = 'none';
-        
-        // Reset fields for a new profile
-        const nameInp = document.getElementById('modal-p-name') as HTMLInputElement;
-        const descInp = document.getElementById('modal-p-desc') as HTMLInputElement;
-        const prefInp = document.getElementById('modal-p-prefix') as HTMLInputElement;
-        const promInp = document.getElementById('modal-p-prompt') as HTMLTextAreaElement;
-        
-        if (nameInp) nameInp.value = '';
-        if (descInp) descInp.value = '';
-        if (prefInp) prefInp.value = '';
-        if (promInp) promInp.value = '';
-        
-        (window as any).currentEditingProfileIdx = -1; 
-    });
 
-    document.getElementById('modal-p-cancel')?.addEventListener('click', () => {
-        if (typeof (window as any).closeProfileEditor === 'function') {
-            (window as any).closeProfileEditor();
-        }
-    });
-
-    document.getElementById('modal-p-save')?.addEventListener('click', () => {
-        if (typeof (window as any).saveProfileFromModal === 'function') {
-            (window as any).saveProfileFromModal();
-        }
-    });
-
-    const addProfileBtn = document.getElementById('modal-add-profile-btn');
-    if (addProfileBtn) {
-        addProfileBtn.addEventListener('click', () => {
-            // Defined in ui.ts via global exposure for simplicity in this port
-            (document.getElementById('modal-profile-editor') as any).style.display = 'block';
-            (document.getElementById('modal-profiles-container') as any).style.display = 'none';
-        });
-    }
-
-    const cancelPEBtn = document.getElementById('modal-p-cancel');
-    if (cancelPEBtn) {
-        cancelPEBtn.addEventListener('click', () => {
-            if (typeof (window as any).closeProfileEditor === 'function') (window as any).closeProfileEditor();
-        });
-    }
-
-    const savePEBtn = document.getElementById('modal-p-save');
-    if (savePEBtn) {
-        savePEBtn.addEventListener('click', () => {
-            if (typeof (window as any).saveProfileFromModal === 'function') (window as any).saveProfileFromModal();
-        });
-    }
     
     // Live update of temperature label
     const tempRange = document.getElementById('modal-temperature') as HTMLInputElement;
@@ -1375,15 +1282,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     if (dom.saveDiscussionToolsBtn) {
         dom.saveDiscussionToolsBtn.addEventListener('click', () => {
             const partialFormat = (document.querySelector('input[name="cap-partialFormat"]:checked') as HTMLInputElement)?.value || 'aider';
-            const selectedProfileId = (document.getElementById('modal-default-profile-select') as HTMLSelectElement)?.value;
             const selectedPrefProfileId = dom.capPreferencesProfile?.value || 'clean_craftsman';
-
-            // CRITICAL: Sync current list of profiles and the chosen default back to Global Settings
-            vscode.postMessage({ 
-                command: 'updateProfiles', 
-                profiles: state.profiles, 
-                defaultId: selectedProfileId 
-            });
 
             const enableTempInput = document.getElementById('cap-enableTemperature') as HTMLInputElement;
             const isTempEnabled = enableTempInput ? enableTempInput.checked : false;
@@ -1460,6 +1359,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 gitWorkflow: dom.capGitWorkflow?.checked ?? false,
                 includeGitInfo: dom.capIncludeGitInfo?.checked ?? false,
                 fastMode: state.capabilities?.fastMode !== false,
+                autoExecuteTools: (document.getElementById('cap-autoExecuteTools') as HTMLInputElement)?.checked ?? false,
                 enableTTS: (document.getElementById('cap-enableTTS') as HTMLInputElement)?.checked ?? true,
                 enableSTT: (document.getElementById('cap-enableSTT') as HTMLInputElement)?.checked ?? true,
                 herdMode: dom.capHerdMode?.checked ?? false,
@@ -2280,9 +2180,13 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     if (wizardUnmuteAllBtn) {
         wizardUnmuteAllBtn.onclick = () => {
             import('./ui.js').then(ui => {
-                ui.wizardMutedSet.clear();
-                state.wizardMutedFiles = [];
-                ui.renderWizardFileList(wizardFilterInp?.value || '');
+                const query = (document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value.toLowerCase().trim() || '';
+                const targetFiles = query
+                    ? ui.wizardCandidateFiles.filter(f => f.path.toLowerCase().includes(query) || f.fileName.toLowerCase().includes(query))
+                    : ui.wizardCandidateFiles;
+                targetFiles.forEach(f => ui.wizardMutedSet.delete(f.path.toLowerCase().trim()));
+                state.wizardMutedFiles = Array.from(ui.wizardMutedSet);
+                ui.renderWizardFileList(query);
             });
         };
     }
@@ -2291,9 +2195,13 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     if (wizardMuteAllBtn) {
         wizardMuteAllBtn.onclick = () => {
             import('./ui.js').then(ui => {
-                ui.wizardCandidateFiles.forEach(f => ui.wizardMutedSet.add(f.path.toLowerCase().trim()));
+                const query = (document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value.toLowerCase().trim() || '';
+                const targetFiles = query
+                    ? ui.wizardCandidateFiles.filter(f => f.path.toLowerCase().includes(query) || f.fileName.toLowerCase().includes(query))
+                    : ui.wizardCandidateFiles;
+                targetFiles.forEach(f => ui.wizardMutedSet.add(f.path.toLowerCase().trim()));
                 state.wizardMutedFiles = Array.from(ui.wizardMutedSet);
-                ui.renderWizardFileList(wizardFilterInp?.value || '');
+                ui.renderWizardFileList(query);
             });
         };
     }
@@ -2302,13 +2210,26 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     if (wizardContextSelect) {
         wizardContextSelect.addEventListener('change', () => {
             const val = wizardContextSelect.value;
-            // Selecting any saved context selection automatically enables Fast Mode
-            if (val && val !== 'current' && val !== 'empty') {
-                const fastCheck = document.getElementById('wizard-fast-mode') as HTMLInputElement;
-                if (fastCheck) {
-                    fastCheck.checked = true;
+            import('./ui.js').then(ui => {
+                if (val === 'empty') {
+                    // Mute all candidate files
+                    ui.wizardCandidateFiles.forEach(f => ui.wizardMutedSet.add(f.path.toLowerCase().trim()));
+                    state.wizardMutedFiles = Array.from(ui.wizardMutedSet);
+                    ui.renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+                } else if (val === 'current') {
+                    ui.wizardMutedSet.clear();
+                    const activeMuted = state.mutedFiles || state.lastContextData?.mutedFiles || [];
+                    activeMuted.forEach((m: string) => ui.wizardMutedSet.add(m.toLowerCase().trim()));
+                    state.wizardMutedFiles = Array.from(ui.wizardMutedSet);
+                    ui.renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+                } else if (val) {
+                    // Selecting a saved context selection automatically enables Fast Mode
+                    const fastCheck = document.getElementById('wizard-fast-mode') as HTMLInputElement;
+                    if (fastCheck) {
+                        fastCheck.checked = true;
+                    }
                 }
-            }
+            });
         });
     }
 
@@ -3029,7 +2950,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             messageId: studioState?.messageId,
             blockIndex: studioState?.blockIndex,
             blockId: studioState?.blockId,
-            errorsCount: remainingCount
+            errorsCount: remainingCount,
+            pendingContent: studioState?.currentCode || undefined
         });
         closeRepairModal();
     };
@@ -3126,6 +3048,51 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             repairTabErrorsBtn.classList.remove('apply-btn');
             repairErrorsContainer.style.display = 'none';
             repairCodeContainer.style.display = 'block';
+        };
+    }
+
+    // --- Custom External Content Modal Events ---
+    const customExtModal = document.getElementById('custom-external-text-modal');
+    const closeCustomExtBtn = document.getElementById('custom-external-close-btn');
+    const cancelCustomExtBtn = document.getElementById('custom-external-cancel-btn');
+    const saveCustomExtBtn = document.getElementById('custom-external-save-btn');
+
+    const closeCustomExt = () => {
+        if (customExtModal) {
+            customExtModal.style.display = 'none';
+            customExtModal.classList.remove('visible');
+        }
+    };
+
+    if (closeCustomExtBtn) closeCustomExtBtn.onclick = closeCustomExt;
+    if (cancelCustomExtBtn) cancelCustomExtBtn.onclick = closeCustomExt;
+
+    if (saveCustomExtBtn) {
+        saveCustomExtBtn.onclick = () => {
+            const titleInp = document.getElementById('custom-external-title-input') as HTMLInputElement;
+            const contentInp = document.getElementById('custom-external-content-input') as HTMLTextAreaElement;
+            const fileName = titleInp ? titleInp.value.trim() : '';
+            const content = contentInp ? contentInp.value : '';
+
+            if (!fileName) {
+                vscode.postMessage({ command: 'showError', message: 'Please enter a filename or title.' });
+                titleInp?.focus();
+                return;
+            }
+
+            if (!content.trim()) {
+                vscode.postMessage({ command: 'showError', message: 'Content cannot be empty.' });
+                contentInp?.focus();
+                return;
+            }
+
+            vscode.postMessage({
+                command: 'createCustomExternalFile',
+                fileName,
+                content
+            });
+
+            closeCustomExt();
         };
     }
 
@@ -3353,6 +3320,11 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         // --- HUD TOOLBAR DELEGATION ---
         const hudBtn = target.closest('.persistent-hud .icon-btn, .persistent-hud .msg-action-btn');
         if (hudBtn) {
+            if (typeof (window as any).isButtonThrottled === 'function' && (window as any).isButtonThrottled(200)) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
             e.preventDefault();
             e.stopPropagation(); // Prevents dashboard details from toggling
             const id = hudBtn.id;
@@ -3438,6 +3410,27 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             });
             return;
         }
+        // --- 0.4. Form Radio Option Card Selection ---
+        const radioCard = target.closest('.radio-option') as HTMLElement;
+        if (radioCard && !target.closest('.lollms-form-submit-btn')) {
+            const radioInput = radioCard.querySelector('input[type="radio"]') as HTMLInputElement;
+            if (radioInput) {
+                radioInput.checked = true;
+                const groupName = radioCard.dataset.group || radioInput.name;
+                const formBlock = radioCard.closest('.lollms-form-block');
+                if (formBlock) {
+                    formBlock.querySelectorAll(`.radio-option[data-group="${groupName}"]`).forEach((opt: any) => {
+                        opt.classList.remove('selected');
+                        opt.style.border = '1px solid var(--vscode-widget-border)';
+                        opt.style.background = 'rgba(0, 0, 0, 0.15)';
+                    });
+                    radioCard.classList.add('selected');
+                    radioCard.style.border = '1.5px solid var(--vscode-charts-blue)';
+                    radioCard.style.background = 'rgba(0, 122, 204, 0.12)';
+                }
+            }
+        }
+
         // --- 0.5. Form Submission (CRITICAL) ---
         const formBtn = target.closest('.lollms-form-submit-btn') as HTMLButtonElement;
         if (formBtn) {
@@ -3454,16 +3447,32 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             // Collect Data
             const data: Record<string, string> = {};
             const radios = Array.from(formBlock.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
-            radios.forEach((input) => { if (input.checked) data[input.name] = input.value; });
+            radios.forEach((input) => {
+                if (input.checked) {
+                    const card = input.closest('.radio-option');
+                    const labelText = card?.querySelector('.radio-label-title')?.textContent?.trim() || input.value;
+                    data[input.name] = labelText;
+                }
+            });
+
+            // If radio options exist and none was explicitly checked, auto-select the first one!
+            if (radios.length > 0 && !radios.some(r => r.checked)) {
+                radios[0].checked = true;
+                const card = radios[0].closest('.radio-option');
+                const labelText = card?.querySelector('.radio-label-title')?.textContent?.trim() || radios[0].value;
+                data[radios[0].name] = labelText;
+            }
 
             const textInputs = Array.from(formBlock.querySelectorAll('input[type="text"], input[type="number"], textarea')) as (HTMLInputElement | HTMLTextAreaElement)[];
             textInputs.forEach(input => { if (input.name) data[input.name] = input.value; });
 
-            // Validation check: ensure at least one option is selected if radios exist
-            if (radios.length > 0 && !radios.some(r => r.checked)) {
-                formBlock.style.outline = "2px solid var(--vscode-charts-red)";
-                setTimeout(() => formBlock.style.outline = "none", 500);
-                return;
+            const checkboxes = Array.from(formBlock.querySelectorAll('input[type="checkbox"]')) as HTMLInputElement[];
+            checkboxes.forEach(input => { if (input.checked && input.name) data[input.name] = input.value; });
+
+            // If still empty (e.g. description-only form with no inputs), record a confirmation decision
+            if (Object.keys(data).length === 0) {
+                const descText = formBlock.querySelector('.form-description')?.textContent?.trim();
+                data['choice'] = descText || "Approved";
             }
 
             // Lock immediately to prevent double submissions

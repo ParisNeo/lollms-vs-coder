@@ -166,6 +166,7 @@ export class DiscussionManager {
             herdParticipantModels: [],
             herdCriticEnabled: false,
             agentMode: false,
+            agentSecurityLevel: (config.get<string>('agent.securityLevel') as ('strict' | 'guarded' | 'relaxed')) || 'guarded',
             dynamicMode: false,
             debugMode: false,
             verifierMode: false,

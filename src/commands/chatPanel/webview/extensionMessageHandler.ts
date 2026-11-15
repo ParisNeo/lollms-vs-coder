@@ -1460,14 +1460,22 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if(dom.capUseImageModeForDocs) dom.capUseImageModeForDocs.checked = !!caps.useImageModeForDocs;
                     if(dom.capWebSearch) dom.capWebSearch.checked = caps.webSearch;
                     if(dom.capDistillWebResults) dom.capDistillWebResults.checked = caps.distillWebResults;
-                    if(dom.capAntiPromptInjection) dom.capAntiPromptInjection.checked = caps.antiPromptInjection;
+                    if(dom.capAntiPromptInjection) dom.capAntiPromptInjection.checked = caps.antiPromptInjection !== false && caps.contextPoisoningGateEnabled !== false;
+                    const gateModeSelect = document.getElementById('cap-contextPoisoningGateMode') as HTMLSelectElement;
+                    if (gateModeSelect && caps.contextPoisoningGateMode) {
+                        gateModeSelect.value = caps.contextPoisoningGateMode;
+                    }
+                    const gateLlmAuditCheck = document.getElementById('cap-contextPoisoningLlmAudit') as HTMLInputElement;
+                    if (gateLlmAuditCheck) {
+                        gateLlmAuditCheck.checked = !!caps.contextPoisoningLlmAudit;
+                    }
                     if(dom.capSearchInCacheFirst) dom.capSearchInCacheFirst.checked = caps.searchInCacheFirst;
                     
                     if (caps.searchSources) {
-                        const sources = ['google', 'arxiv', 'wikipedia', 'stackoverflow', 'youtube', 'github'];
+                        const sources = ['google', 'ddg', 'searxng', 'arxiv', 'hal', 'crossref', 'europepmc', 'wikipedia', 'stackoverflow', 'mdn', 'youtube', 'github'];
                         sources.forEach(s => {
                             const el = document.getElementById(`src-${s}`) as HTMLInputElement;
-                            if (el) el.checked = !!caps.searchSources[s];
+                            if (el && caps.searchSources[s] !== undefined) el.checked = !!caps.searchSources[s];
                         });
                     }
                     
@@ -2031,19 +2039,25 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'setAgentMode':
             case 'updateAgentMode': {
-                // Embedded agent mode: capability flag + chip sync only. ZERO chrome changes.
                 const isActive: boolean = message.isActive ?? message.agentMode ?? false;
                 if (state.capabilities) {
                     state.capabilities.agentMode = isActive;
                 }
                 updateBadges();
                 if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = isActive;
-                // Phase-5: refresh the agent-active chip (Phase-4 ui.ts export).
-                // Best-effort + idempotent: dynamic import keeps this safe.
                 import('./ui.js').then((ui: any) => {
-                    try { ui.syncAgentModeUI?.(isActive); } catch { /* chip refresh is best-effort */ }
+                    try { ui.syncAgentModeUI?.(isActive); } catch {}
                 });
                 if (!isActive) setGeneratingState(false);
+                break;
+            }
+            case 'updateAgentSecurityState': {
+                if (state.capabilities) {
+                    if (message.level) state.capabilities.agentSecurityLevel = message.level;
+                    if (message.mutationCount !== undefined) state.capabilities.agentMutationCount = message.mutationCount;
+                }
+                (state as any).agentMutationCount = message.mutationCount ?? (state as any).agentMutationCount ?? 0;
+                updateBadges();
                 break;
             }
             case 'error':
@@ -2205,10 +2219,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     // 2. Populate Mission Profile Dropdown
                     const profileSelect = document.getElementById('setting-activeProfile') as HTMLSelectElement;
-                    if (profileSelect && message.allProfiles) {
+                    if (message.allProfiles) {
                         profileSelect.innerHTML = message.allProfiles.map((p: any) => 
                             `<option value="${p.id}" ${p.id === message.settings.activeProfile ? 'selected' : ''}>${p.name}</option>`
                         ).join('');
+                    }
+
+                    const secLevelSelect = document.getElementById('setting-securityLevel') as HTMLSelectElement;
+                    if (secLevelSelect) {
+                        secLevelSelect.value = state.capabilities?.agentSecurityLevel || 'guarded';
                     }
 
                     // 3. Render the tools grid
@@ -2392,6 +2411,78 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             }
+            case 'deleteFilesResult': {
+                const { blockId, rowId, deletedPaths = [], failedPaths = [], cancelled } = message;
+                const blockEl = blockId ? document.getElementById(blockId) : null;
+
+                const normalizeP = (p: string) => String(p || '').replace(/\\/g, '/').toLowerCase().trim();
+                const deletedSet = new Set((deletedPaths as string[]).map(normalizeP));
+                const failedSet = new Set((failedPaths as string[]).map(normalizeP));
+
+                if (blockEl) {
+                    const rows = Array.from(blockEl.querySelectorAll('.delete-file-row')) as HTMLElement[];
+                    rows.forEach(row => {
+                        const rPath = normalizeP(row.dataset.path || '');
+                        const singleBtn = row.querySelector('.delete-single-file-btn') as HTMLButtonElement | null;
+                        const labelEl = row.querySelector('.file-label') as HTMLElement | null;
+                        const iconEl = row.querySelector('.codicon') as HTMLElement | null;
+
+                        if (deletedSet.has(rPath)) {
+                            row.classList.add('status-deleted');
+                            row.style.opacity = '0.65';
+                            row.style.borderLeftColor = 'var(--vscode-charts-green)';
+                            if (labelEl) labelEl.style.textDecoration = 'line-through';
+                            if (iconEl) {
+                                iconEl.className = 'codicon codicon-check';
+                                iconEl.style.color = 'var(--vscode-charts-green)';
+                            }
+                            if (singleBtn) {
+                                singleBtn.disabled = true;
+                                singleBtn.classList.remove('delete-btn');
+                                singleBtn.classList.add('applied');
+                                singleBtn.innerHTML = '<span class="codicon codicon-check"></span> Deleted';
+                            }
+                        } else if (cancelled || failedSet.has(rPath)) {
+                            if (singleBtn && !row.classList.contains('status-deleted')) {
+                                singleBtn.disabled = false;
+                                singleBtn.innerHTML = failedSet.has(rPath)
+                                    ? '<span class="codicon codicon-error"></span> Retry'
+                                    : '<span class="codicon codicon-trash"></span> Delete';
+                            }
+                        }
+                    });
+
+                    const remainingCount = rows.filter(r => !r.classList.contains('status-deleted')).length;
+                    const allBtn = blockEl.querySelector('.delete-all-files-btn') as HTMLButtonElement | null;
+                    if (allBtn) {
+                        if (remainingCount === 0 && deletedSet.size > 0) {
+                            allBtn.disabled = true;
+                            allBtn.classList.remove('delete-btn');
+                            allBtn.classList.add('applied');
+                            allBtn.style.setProperty('background-color', 'var(--vscode-charts-green)', 'important');
+                            allBtn.innerHTML = `<span class="codicon codicon-check"></span> Deleted (${rows.length})`;
+                        } else {
+                            allBtn.disabled = false;
+                            allBtn.innerHTML = remainingCount === 1
+                                ? `<span class="codicon codicon-trash"></span> Delete File`
+                                : `<span class="codicon codicon-trash"></span> Delete All (${remainingCount} files)`;
+                        }
+                    }
+                } else if (rowId) {
+                    const row = document.getElementById(rowId);
+                    const singleBtn = row?.querySelector('.delete-single-file-btn') as HTMLButtonElement | null;
+                    if (singleBtn) {
+                        singleBtn.disabled = !cancelled && deletedSet.size > 0;
+                        singleBtn.innerHTML = (!cancelled && deletedSet.size > 0)
+                            ? '<span class="codicon codicon-check"></span> Deleted'
+                            : '<span class="codicon codicon-trash"></span> Delete';
+                    }
+                }
+                break;
+            }
+            case 'fileSymbolsData':
+                import('./ui.js').then(ui => ui.handleFileSymbolsData(message));
+                break;
             case 'structureLoaded': {
                 const { blockId, files, success, error } = message;
                 const blockEl = blockId ? document.getElementById(blockId) : null;
@@ -2735,9 +2826,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 const mainBtn = document.getElementById(`apply-all-${message.messageId}`) as HTMLButtonElement;
                 if (mainBtn) {
                     mainBtn.disabled = false;
-                    mainBtn.classList.add('sequential-applying');
-                    mainBtn.classList.add('stop-btn-red'); // Style as red stop button
-                    mainBtn.innerHTML = `<span class="codicon codicon-primitive-square"></span> Stop Applying [${message.currentIndex + 1}/${message.totalCount}]`;
+                    mainBtn.classList.add('sequential-applying', 'stop-btn-red');
+                    mainBtn.style.setProperty('background-color', 'var(--vscode-charts-red, #e51400)', 'important');
+                    mainBtn.style.setProperty('color', '#ffffff', 'important');
+                    mainBtn.innerHTML = `<div class="spinner" style="border-color: rgba(255,255,255,0.35); border-top-color: #ffffff;"></div> Stop Applying [${message.currentIndex + 1}/${message.totalCount}]`;
                 }
 
                 // Update Progress Bar
@@ -2751,6 +2843,20 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             }
 
+            case 'resetApplyingButtons':
+                {
+                    document.querySelectorAll('[data-applying="true"]').forEach((btnEl: any) => {
+                        delete btnEl.dataset.applying;
+                        btnEl.disabled = false;
+                        btnEl.classList.remove('stop-btn-red', 'sequential-applying');
+                        btnEl.style.removeProperty('background-color');
+                        btnEl.style.removeProperty('color');
+                        btnEl.style.removeProperty('border-color');
+                        if (btnEl.dataset.prevHtml) btnEl.innerHTML = btnEl.dataset.prevHtml;
+                        if (btnEl.dataset.prevTitle) btnEl.title = btnEl.dataset.prevTitle;
+                    });
+                }
+                break;
             case 'fileSavedOnDisk':
                 {
                     const { filePath, messageId, blockIndex, hunkIndex, blockId } = message;
@@ -2767,16 +2873,29 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
                     }
 
-                    // 2. Target the specific block matching blockIndex/blockId or data-path
-                    const targetBlock = (blockId ? document.getElementById(blockId) : null)
+                    // 2. Target the specific block matching blockId / blockIndex / normalized path
+                    const normTarget = String(filePath).replace(/\\/g, '/').toLowerCase().trim();
+                    let targetBlock: Element | null = (blockId ? document.getElementById(blockId) : null)
                         || (messageId && blockIndex !== undefined ? document.getElementById(`block-${messageId}-${blockIndex}`) : null)
-                        || (document.querySelector(`.file-mutation-card[data-path='${filePath}']`));
+                        || (messageId && blockIndex !== undefined ? document.querySelector(`.message-wrapper[data-message-id='${messageId}'] .file-mutation-card[data-block-index='${blockIndex}']`) : null);
+
+                    if (!targetBlock) {
+                        const allCards = Array.from(document.querySelectorAll('.file-mutation-card[data-path], details.code-collapsible[data-path]')) as HTMLElement[];
+                        targetBlock = allCards.find(c => {
+                            const cp = (c.dataset.path || '').replace(/\\/g, '/').toLowerCase().trim();
+                            return cp === normTarget || cp.endsWith('/' + normTarget) || normTarget.endsWith('/' + cp);
+                        }) || null;
+                    }
 
                     if (targetBlock) {
                         const applyBtn = targetBlock.querySelector('.apply-btn, .apply-mutation-btn') as HTMLButtonElement;
                         if (applyBtn) {
+                            delete applyBtn.dataset.applying;
                             applyBtn.disabled = false;
-                            applyBtn.classList.remove('delete-btn', 'apply-failed-btn');
+                            applyBtn.classList.remove('delete-btn', 'apply-failed-btn', 'stop-btn-red');
+                            applyBtn.style.removeProperty('background-color');
+                            applyBtn.style.removeProperty('color');
+                            applyBtn.style.removeProperty('border-color');
                             applyBtn.classList.add('applied');
                             applyBtn.innerHTML = '<i class="codicon codicon-check"></i>';
                             applyBtn.title = "Successfully applied. Click to re-apply.";
@@ -2791,7 +2910,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
                     if (messageId) {
-                        checkAndSyncMessageAppliedState(messageId);
+                        import('./messageRenderer.js').then(m => {
+                            m.syncResultsListRows(messageId);
+                            m.checkAndSyncMessageAppliedState(messageId);
+                        });
                     }
                 }
                 break;
@@ -2799,6 +2921,29 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 {
                     const wrapper = message.messageId ? document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`) as HTMLElement : null;
                     const isUndo = message.undo === true;
+
+                    if (message.messageId && message.blockIndex !== undefined) {
+                        if (!state.failedPatches) state.failedPatches = {};
+                        if (!state.failedPatches[message.messageId]) state.failedPatches[message.messageId] = {};
+                        const hKey = (message.hunkIndex !== undefined && message.hunkIndex !== -1) ? String(message.hunkIndex) : 'full';
+                        const pKey = `${message.blockIndex}-${hKey}`;
+
+                        if (message.success) {
+                            delete state.failedPatches[message.messageId][pKey];
+                            if (hKey === 'full') {
+                                Object.keys(state.failedPatches[message.messageId]).forEach(k => {
+                                    if (k.startsWith(`${message.blockIndex}-`)) {
+                                        delete state.failedPatches[message.messageId][k];
+                                    }
+                                });
+                            }
+                        } else if (!isUndo) {
+                            state.failedPatches[message.messageId][pKey] = {
+                                error: message.error || 'Patch application failed.',
+                                filePath: message.filePath || ''
+                            };
+                        }
+                    }
                     const mainApplyBtn = (message.messageId && message.blockIndex !== undefined) 
                         ? document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement 
                         : null;
@@ -2981,12 +3126,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         blockEl = wrapper.querySelector(`.file-mutation-card[data-block-index='${message.blockIndex}'], details[id='block-${message.messageId}-${message.blockIndex}'], details[data-block-index='${message.blockIndex}']`) as HTMLDetailsElement;
                     }
                     if (!blockEl && message.filePath) {
-                        if (wrapper) {
-                            blockEl = wrapper.querySelector(`.file-mutation-card[data-path='${message.filePath}'], details[data-path='${message.filePath}']`) as HTMLDetailsElement;
-                        }
-                        if (!blockEl) {
-                            blockEl = document.querySelector(`.file-mutation-card[data-path='${message.filePath}'], details[data-path='${message.filePath}']`) as HTMLDetailsElement;
-                        }
+                        const normMsgPath = String(message.filePath).replace(/\\/g, '/').toLowerCase().trim();
+                        const scopeRoot = wrapper || document;
+                        const candidates = Array.from(scopeRoot.querySelectorAll('.file-mutation-card[data-path], details.code-collapsible[data-path]')) as HTMLDetailsElement[];
+                        blockEl = candidates.find(c => {
+                            const cp = (c.dataset.path || '').replace(/\\/g, '/').toLowerCase().trim();
+                            return cp === normMsgPath || cp.endsWith('/' + normMsgPath) || normMsgPath.endsWith('/' + cp);
+                        }) || null;
                     }
                     if (!blockEl && message.messageId && message.blockIndex !== undefined) {
                         blockEl = document.getElementById(`block-${message.messageId}-${message.blockIndex}`) as HTMLDetailsElement;
@@ -3063,19 +3209,39 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             if (!btn) return;
                             const bubble = btn.closest('.aider-hunk-bubble, .code-collapsible, .file-mutation-card');
                             const undoBtn = bubble?.querySelector('.undo-hunk-btn, .undo-block-btn, .undo-mutation-btn') as HTMLElement;
-                            const isPatch = bubble?.getAttribute('data-action') === 'patch' || bubble?.classList.contains('aider-diff-container') || bubble?.querySelector('.aider-hunk-group') !== null;
+                            const redoBtn = bubble?.querySelector('.redo-mutation-btn, .redo-block-btn') as HTMLButtonElement | null;
+                            const actionAttr = bubble?.getAttribute('data-action');
+                            const isDeleteCode = actionAttr === 'delete_code';
+                            const isPatch = !isDeleteCode && (actionAttr === 'patch' || bubble?.classList.contains('aider-diff-container') || bubble?.querySelector('.aider-hunk-group') !== null);
 
+                            delete btn.dataset.applying;
                             btn.disabled = false;
-                            btn.classList.remove('delete-btn', 'apply-failed-btn', 'sequential-applying');
+                            btn.classList.remove('delete-btn', 'apply-failed-btn', 'sequential-applying', 'stop-btn-red');
+                            btn.style.removeProperty('background-color');
+                            btn.style.removeProperty('color');
+                            btn.style.removeProperty('border-color');
+
+                            if (redoBtn && redoBtn !== btn) {
+                                delete redoBtn.dataset.applying;
+                                redoBtn.disabled = false;
+                                redoBtn.classList.remove('stop-btn-red');
+                                redoBtn.style.removeProperty('background-color');
+                                redoBtn.style.removeProperty('color');
+                                redoBtn.style.removeProperty('border-color');
+                                redoBtn.innerHTML = '<i class="codicon codicon-redo"></i>';
+                                redoBtn.title = 'Redo / Re-apply this change';
+                            }
 
                             const isMainBtn = btn.id && btn.id.startsWith('apply-btn-');
-
-                            if (isUndo) {
-                                btn.classList.remove('applied');
-                                const icon = isMainBtn 
+                            const readyIcon = isDeleteCode
+                                ? 'codicon-diff-removed'
+                                : (isMainBtn
                                     ? (btn.classList.contains('apply-all-btn') ? 'codicon-check-all' : (isPatch ? 'codicon-diff-modified' : 'codicon-tools'))
-                                    : (isPatch ? 'codicon-arrow-swap' : 'codicon-tools');
-                                btn.innerHTML = `<i class="codicon ${icon}"></i>`;
+                                    : (isPatch ? 'codicon-arrow-swap' : 'codicon-tools'));
+
+                            if (isUndo || message.rejected) {
+                                btn.classList.remove('applied');
+                                btn.innerHTML = `<i class="codicon ${readyIcon}"></i>`;
                                 btn.title = "Review Diff & Apply";
                                 if (undoBtn) {
                                     undoBtn.style.display = 'none';
@@ -3086,62 +3252,110 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 btn.classList.add('applied');
                                 btn.innerHTML = '<i class="codicon codicon-check"></i>';
                                 btn.title = "Successfully applied. Click to re-apply.";
-                                
-                                if (isPatch) {
-                                    let activeUndoBtn = undoBtn as HTMLButtonElement;
-                                    if (!activeUndoBtn) {
-                                        activeUndoBtn = document.createElement('button');
-                                        activeUndoBtn.className = 'code-action-btn delete-btn undo-mutation-btn';
-                                        activeUndoBtn.title = 'Undo this patch (apply inverse)';
-                                        activeUndoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
-                                        const actions = bubble?.querySelector('.code-actions');
-                                        if (actions) actions.insertBefore(activeUndoBtn, btn);
-                                    }
-                                    activeUndoBtn.style.display = 'inline-flex';
-                                    activeUndoBtn.disabled = false;
-                                    activeUndoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
-                                    
-                                    const rawCodeAttr = bubble?.getAttribute('data-raw-code');
-                                    const rawCode = rawCodeAttr ? decodeURIComponent(rawCodeAttr) : (bubble?.querySelector('pre code')?.textContent || "");
-                                    const path = bubble?.getAttribute('data-path');
-                                    const bIdx = parseInt(bubble?.getAttribute('data-block-index') || "0", 10);
-                                    activeUndoBtn.onclick = (e: MouseEvent) => {
+
+                                const actions = bubble?.querySelector('.code-actions');
+                                const rawCodeAttr = bubble?.getAttribute('data-raw-code');
+                                const rawCode = rawCodeAttr ? decodeURIComponent(rawCodeAttr) : (bubble?.querySelector('pre code')?.textContent || "");
+                                const targetPath = bubble?.getAttribute('data-path') || '';
+                                const bIdx = parseInt(bubble?.getAttribute('data-block-index') || "0", 10);
+
+                                // Ensure a dedicated Redo button is visible right after applying
+                                if (actions && !actions.querySelector('.redo-mutation-btn, .redo-block-btn')) {
+                                    const newRedoBtn = document.createElement('button');
+                                    newRedoBtn.className = 'code-action-btn secondary-btn redo-mutation-btn';
+                                    newRedoBtn.title = 'Redo / Re-apply this change';
+                                    newRedoBtn.innerHTML = '<i class="codicon codicon-redo"></i>';
+                                    newRedoBtn.onclick = (e: MouseEvent) => {
                                         e.stopPropagation();
-                                        activeUndoBtn.disabled = true;
-                                        activeUndoBtn.innerHTML = '<div class="spinner"></div>';
+                                        if (newRedoBtn.dataset.applying === 'true') {
+                                            delete newRedoBtn.dataset.applying;
+                                            newRedoBtn.classList.remove('stop-btn-red');
+                                            newRedoBtn.style.removeProperty('background-color');
+                                            newRedoBtn.style.removeProperty('color');
+                                            newRedoBtn.innerHTML = '<i class="codicon codicon-redo"></i>';
+                                            vscode.postMessage({ command: 'stopGeneration' });
+                                            return;
+                                        }
+                                        newRedoBtn.dataset.applying = 'true';
+                                        newRedoBtn.classList.add('stop-btn-red');
+                                        newRedoBtn.style.setProperty('background-color', 'var(--vscode-charts-red, #e51400)', 'important');
+                                        newRedoBtn.style.setProperty('color', '#ffffff', 'important');
+                                        newRedoBtn.title = 'Applying... Click to stop';
+                                        newRedoBtn.innerHTML = '<div class="spinner" style="border-color: rgba(255,255,255,0.35); border-top-color: #ffffff;"></div>';
+                                        const cmd = isDeleteCode ? 'deleteCodeBlock' : (isPatch ? 'replaceCode' : 'applyFileContent');
                                         vscode.postMessage({
-                                            command: 'replaceCode',
-                                            filePath: path,
+                                            command: cmd,
+                                            filePath: targetPath,
                                             content: rawCode,
                                             messageId: message.messageId,
                                             blockIndex: bIdx,
                                             blockId: bubble?.id,
-                                            options: { undo: true, silent: true, autoSave: true, blockId: bubble?.id, blockIndex: bIdx }
+                                            options: { silent: false, autoSave: false, blockId: bubble?.id, blockIndex: bIdx }
                                         });
                                     };
+                                    actions.insertBefore(newRedoBtn, btn);
+                                }
+
+                                if (isPatch) {
+                                    let activeUndoBtn = undoBtn as HTMLButtonElement;
+                                    if (!activeUndoBtn && actions) {
+                                        activeUndoBtn = document.createElement('button');
+                                        activeUndoBtn.className = 'code-action-btn delete-btn undo-mutation-btn';
+                                        activeUndoBtn.title = 'Undo this patch (apply inverse)';
+                                        activeUndoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
+                                        actions.insertBefore(activeUndoBtn, btn);
+                                    }
+                                    if (activeUndoBtn) {
+                                        activeUndoBtn.style.display = 'inline-flex';
+                                        activeUndoBtn.disabled = false;
+                                        activeUndoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
+                                        activeUndoBtn.onclick = (e: MouseEvent) => {
+                                            e.stopPropagation();
+                                            activeUndoBtn.disabled = true;
+                                            activeUndoBtn.innerHTML = '<div class="spinner"></div>';
+                                            vscode.postMessage({
+                                                command: 'replaceCode',
+                                                filePath: targetPath,
+                                                content: rawCode,
+                                                messageId: message.messageId,
+                                                blockIndex: bIdx,
+                                                blockId: bubble?.id,
+                                                options: { undo: true, silent: true, autoSave: true, blockId: bubble?.id, blockIndex: bIdx }
+                                            });
+                                        };
+                                    }
                                 }
                             } else if (message.reviewingDiff) {
                                 btn.classList.remove('applied');
                                 btn.innerHTML = '<i class="codicon codicon-diff"></i>';
-                                btn.title = "Reviewing diff in tab. Validate changes to complete application.";
+                                btn.title = "Reviewing diff in tab. Validate changes (✓) in the diff editor to complete application.";
                             } else {
                                 btn.classList.remove('applied');
-                                const icon = isMainBtn 
-                                    ? (isPatch ? 'codicon-diff-modified' : 'codicon-tools')
-                                    : (isPatch ? 'codicon-arrow-swap' : 'codicon-tools');
-                                btn.innerHTML = `<i class="codicon ${icon}"></i>`;
+                                btn.innerHTML = `<i class="codicon ${readyIcon}"></i>`;
                                 btn.title = isMainBtn 
                                     ? "Interactive diff opened. Edit right side and validate to apply."
                                     : "Apply this hunk surgically.";
                             }
                         };
 
-                        // Update specific Apply button for this block
+                        // Update specific Apply button (and any active Redo button) for this block
                         const mainBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
                         if (mainBtn) restoreBtn(mainBtn);
 
                         const mutationApplyBtn = blockEl?.querySelector('.apply-mutation-btn') as HTMLButtonElement;
                         if (mutationApplyBtn) restoreBtn(mutationApplyBtn);
+
+                        const activeRedoBtn = blockEl?.querySelector('.redo-mutation-btn[data-applying="true"], .redo-block-btn[data-applying="true"]') as HTMLButtonElement;
+                        if (activeRedoBtn && mutationApplyBtn) restoreBtn(mutationApplyBtn);
+
+                        targetRows.forEach(row => {
+                            row.querySelectorAll('.row-single-apply-btn, .row-single-redo-btn').forEach((rb: any) => {
+                                delete rb.dataset.applying;
+                                rb.classList.remove('stop-btn-red');
+                                rb.style.removeProperty('background-color');
+                                rb.style.removeProperty('color');
+                            });
+                        });
 
                         blockEl.querySelectorAll('.apply-failed-btn').forEach((b: any) => restoreBtn(b));
 
@@ -3371,7 +3585,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     // Update master button state via authoritative calculation
                     if (message.messageId) {
-                        checkAndSyncMessageAppliedState(message.messageId);
+                        if (!message.success) {
+                            import('./messageRenderer.js').then(m => {
+                                m.syncResultsListRows(message.messageId);
+                                m.checkAndSyncMessageAppliedState(message.messageId);
+                            });
+                        } else {
+                            checkAndSyncMessageAppliedState(message.messageId);
+                        }
 
                         const resultsList = document.getElementById(`results-${message.messageId}`) || wrapper?.querySelector('.apply-results-list');
                         if (resultsList && isUndo) {

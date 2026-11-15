@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.89",
+  "version": "1.0.93",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1120,6 +1120,21 @@
           "default": 3,
           "description": "Maximum number of agent tasks that can be executed in parallel."
         },
+        "lollmsVsCoder.agent.securityLevel": {
+          "type": "string",
+          "default": "guarded",
+          "enum": [
+            "strict",
+            "guarded",
+            "relaxed"
+          ],
+          "enumDescriptions": [
+            "Strict Guard: Require confirmation for shell commands, deletions, moves, existing-file overwrites, and >35% shrinks.",
+            "Guarded (Default): Block catastrophic commands & protected files, confirm risky deletions/scripts & >50% shrinks, and snapshot before writes.",
+            "Relaxed (Git-Isolated): Enforce hard-blocks on catastrophic wipes & .git/secret protection while allowing normal workspace edits."
+          ],
+          "description": "Security protection level for Autonomous Agent Mode to prevent destructive hallucinations."
+        },
         "lollmsVsCoder.agent.maxSteps": {
           "type": "number",
           "default": 100,
@@ -1186,21 +1201,83 @@
         },
         "lollmsVsCoder.searchProvider": {
           "type": "string",
-          "default": "google_custom_search",
-          "description": "Provider for the 'search_web' tool.",
+          "default": "auto_keyless",
+          "description": "Default web search provider. 'auto_keyless' routes to free keyless APIs (StackOverflow, GitHub, MDN, arXiv, HAL, Crossref, EuropePMC, Wikipedia, DuckDuckGo, or local SearXNG) with zero API keys required.",
           "enum": [
+            "auto_keyless",
+            "duckduckgo",
+            "searxng",
             "google_custom_search"
+          ],
+          "enumDescriptions": [
+            "Automatic keyless router across specialized developer/academic APIs, local SearXNG (if configured), and DuckDuckGo HTML/Lite.",
+            "DuckDuckGo static HTML/Lite keyless web search.",
+            "Self-hosted SearXNG JSON API (configured via lollmsVsCoder.searxngUrl).",
+            "Google Custom Search API (requires searchApiKey and searchCx)."
           ]
+        },
+        "lollmsVsCoder.searxngUrl": {
+          "type": "string",
+          "default": "http://localhost:8888",
+          "description": "Base URL of a self-hosted SearXNG instance (with format=json enabled in settings.yml) for keyless meta-search."
+        },
+        "lollmsVsCoder.useJinaReader": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use Jina Reader (r.jina.ai) as a keyless fallback to extract clean Markdown from SPAs or JS-heavy documentation pages."
         },
         "lollmsVsCoder.searchApiKey": {
           "type": "string",
           "default": "",
-          "description": "API Key for the search provider (e.g., Google Custom Search API Key)."
+          "description": "Optional API Key for Google Custom Search (not needed for keyless providers)."
         },
         "lollmsVsCoder.searchCx": {
           "type": "string",
           "default": "",
-          "description": "Search Engine ID (CX) for Google Custom Search."
+          "description": "Optional Search Engine ID (CX) for Google Custom Search."
+        },
+        "lollmsVsCoder.contextPoisoningGate.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Context Poisoning Gate to scan, sanitize, quarantine, or block external web/document content before it enters AI context."
+        },
+        "lollmsVsCoder.contextPoisoningGate.mode": {
+          "type": "string",
+          "default": "quarantine_and_sanitize",
+          "enum": [
+            "quarantine_and_sanitize",
+            "block_suspicious",
+            "prompt_user"
+          ],
+          "enumDescriptions": [
+            "Redact detected injection/hijack payloads, escape control delimiters, and wrap in an untrusted-data quarantine frame.",
+            "Block ingestion completely when high or critical context poisoning risk is detected.",
+            "Ask for explicit user confirmation whenever high or critical context poisoning risk is detected."
+          ],
+          "description": "Action taken by the Context Poisoning Gate when suspicious content is detected."
+        },
+        "lollmsVsCoder.contextPoisoningGate.useLlmAudit": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run a second-pass isolated LLM security classifier when high/critical patterns are flagged (reduces false positives on security articles)."
+        },
+        "lollmsVsCoder.contextPoisoningGate.trustedDomains": {
+          "type": "array",
+          "default": [
+            "arxiv.org",
+            "en.wikipedia.org",
+            "developer.mozilla.org",
+            "github.com",
+            "raw.githubusercontent.com",
+            "stackoverflow.com",
+            "pypi.org",
+            "registry.npmjs.org",
+            "crates.io",
+            "api.crossref.org",
+            "www.ebi.ac.uk",
+            "api.archives-ouvertes.fr"
+          ],
+          "description": "List of trusted research domains for Context Poisoning Gate scoring."
         },
         "lollmsVsCoder.autoUpdateChangelog": {
           "type": "boolean",
@@ -2449,8 +2526,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-package",
-    "build-webview": "npm run copy-assets && esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts",
-    "minify-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts",
+    "build-webview": "npm run copy-assets && esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts && esbuild ./src/commands/companion/companionWebview.ts --bundle --outfile=out/webview/companion.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap --loader:.ts=ts",
+    "minify-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts && esbuild ./src/commands/companion/companionWebview.ts --bundle --outfile=out/webview/companion.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --minify --loader:.ts=ts",
     "compile-tests": "esbuild ./src/test/runTest.ts --bundle --outfile=out/test/runTest.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap && esbuild ./src/test/suite/index.ts --bundle --outfile=out/test/suite/index.js --external:vscode --external:mocha --external:glob --format=cjs --platform=node --target=es2020 --sourcemap && esbuild ./src/test/suite/extension.test.ts --bundle --outfile=out/test/suite/extension.test.js --external:vscode --external:mocha --external:glob --format=cjs --platform=node --target=es2020 --sourcemap",
     "compile": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap && npm run compile-tests",
     "watch": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap --watch",

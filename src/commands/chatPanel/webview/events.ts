@@ -691,6 +691,23 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         });
     });
 
+    const openBrowserBtn = document.getElementById('web-open-browser-btn');
+    if (openBrowserBtn) {
+        openBrowserBtn.addEventListener('click', () => {
+            const queryInp = document.getElementById('web-search-query') as HTMLInputElement;
+            const q = queryInp?.value?.trim();
+            if (!q) {
+                vscode.postMessage({ command: 'showError', message: 'Please enter a search query.' });
+                return;
+            }
+            vscode.postMessage({
+                command: 'requestWebAction',
+                action: 'open_browser',
+                params: { query: q }
+            });
+        });
+    }
+
     // Integrated Drag & Drop Zone for Local Files Ingestion
     const dragDropZone = document.getElementById('drag-drop-zone');
     if (dragDropZone) {
@@ -1128,6 +1145,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         const maxEditRetries = parseInt((document.getElementById('setting-maxEditRetries') as HTMLInputElement).value, 10);
         const autoProfileSwitch = (document.getElementById('setting-autoProfileSwitch') as HTMLInputElement).checked;
         const activeProfile = (document.getElementById('setting-activeProfile') as HTMLSelectElement).value;
+        const agentSecurityLevel = ((document.getElementById('setting-securityLevel') as HTMLSelectElement)?.value || 'guarded') as 'strict' | 'guarded' | 'relaxed';
 
         // 1. Update internal capability state
         if (state.capabilities) {
@@ -1135,6 +1153,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             state.capabilities.maxSteps = maxSteps;
             state.capabilities.maxEditRetries = maxEditRetries;
             state.capabilities.activeAgentProfileId = activeProfile;
+            state.capabilities.agentSecurityLevel = agentSecurityLevel;
         }
 
         // 2. Notify extension
@@ -1145,7 +1164,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 maxSteps,
                 maxEditRetries,
                 autoProfileSwitch,
-                activeAgentProfileId: activeProfile
+                activeAgentProfileId: activeProfile,
+                agentSecurityLevel
             } 
         });
 
@@ -1348,13 +1368,23 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                 enableImages: dom.capEnableImages?.checked ?? true,
                 useImageModeForDocs: dom.capUseImageModeForDocs?.checked ?? false,
                 webSearch: dom.capWebSearch?.checked ?? false,
+                antiPromptInjection: (document.getElementById('cap-antiPromptInjection') as HTMLInputElement)?.checked ?? true,
+                contextPoisoningGateEnabled: (document.getElementById('cap-antiPromptInjection') as HTMLInputElement)?.checked ?? true,
+                contextPoisoningGateMode: ((document.getElementById('cap-contextPoisoningGateMode') as HTMLSelectElement)?.value || 'quarantine_and_sanitize') as any,
+                contextPoisoningLlmAudit: (document.getElementById('cap-contextPoisoningLlmAudit') as HTMLInputElement)?.checked ?? false,
                 searchSources: {
-                    google: (document.getElementById('src-google') as HTMLInputElement)?.checked ?? true,
+                    google: (document.getElementById('src-google') as HTMLInputElement)?.checked ?? false,
+                    ddg: (document.getElementById('src-ddg') as HTMLInputElement)?.checked ?? true,
+                    searxng: (document.getElementById('src-searxng') as HTMLInputElement)?.checked ?? false,
                     arxiv: (document.getElementById('src-arxiv') as HTMLInputElement)?.checked ?? true,
+                    hal: (document.getElementById('src-hal') as HTMLInputElement)?.checked ?? false,
+                    crossref: (document.getElementById('src-crossref') as HTMLInputElement)?.checked ?? false,
+                    europepmc: (document.getElementById('src-europepmc') as HTMLInputElement)?.checked ?? false,
                     wikipedia: (document.getElementById('src-wikipedia') as HTMLInputElement)?.checked ?? true,
                     stackoverflow: (document.getElementById('src-stackoverflow') as HTMLInputElement)?.checked ?? true,
+                    mdn: (document.getElementById('src-mdn') as HTMLInputElement)?.checked ?? true,
                     youtube: (document.getElementById('src-youtube') as HTMLInputElement)?.checked ?? true,
-                    github: (document.getElementById('src-github') as HTMLInputElement)?.checked ?? false
+                    github: (document.getElementById('src-github') as HTMLInputElement)?.checked ?? true
                 },
                 gitWorkflow: dom.capGitWorkflow?.checked ?? false,
                 includeGitInfo: dom.capIncludeGitInfo?.checked ?? false,
@@ -1504,6 +1534,19 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             }
         });
     });
+
+    const briefingCompactBtn = document.getElementById('briefing-compact-btn') as HTMLButtonElement | null;
+    if (briefingCompactBtn) {
+        briefingCompactBtn.addEventListener('click', () => {
+            briefingCompactBtn.disabled = true;
+            briefingCompactBtn.innerHTML = '<span class="spinner" style="width:12px; height:12px; border-width:2px; margin-right:6px;"></span> Compacting...';
+            vscode.postMessage({ command: 'compactMissionBriefing' });
+            setTimeout(() => {
+                briefingCompactBtn.disabled = false;
+                briefingCompactBtn.innerHTML = '<i class="codicon codicon-fold"></i> Compact &amp; Prune';
+            }, 2500);
+        });
+    }
 
     if (dom.briefingClearBtn) {
         dom.briefingClearBtn.addEventListener('click', () => {

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
+import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
 
 export const readFileTool: ToolDefinition = {
     name: "read_file",
@@ -20,6 +21,11 @@ export const readFileTool: ToolDefinition = {
             return { success: false, output: "Error: No active workspace folder." };
         }
         
+        const pathCheck = AgentSecurityGuard.validateWorkspacePath(rawPath, env.workspaceRoot);
+        if (!pathCheck.valid) {
+            return { success: false, output: `🛑 SECURITY VIOLATION: ${pathCheck.reason}` };
+        }
+
         let filePath = rawPath.trim();
         if (filePath.startsWith('/') || filePath.startsWith('\\')) filePath = filePath.substring(1);
 

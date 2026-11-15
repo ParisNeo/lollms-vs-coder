@@ -1,5 +1,7 @@
+import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { Logger } from '../../logger';
+import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
 
 export const executeCommandTool: ToolDefinition = {
     name: "execute_command",
@@ -31,7 +33,17 @@ export const executeCommandTool: ToolDefinition = {
 
         const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : 900000; // 15 minute default
 
-        // --- 🛡️ SOVEREIGN SECURITY AUDIT ---
+        // --- 🛡️ DETERMINISTIC + LLM SECURITY AUDIT ---
+        const secLevel = env.agentManager?.getSecurityLevel?.() || 'guarded';
+        const staticRes = AgentSecurityGuard.analyzeShellCommand(params.command, secLevel);
+        if (staticRes.decision === 'block') {
+            Logger.error(`[SECURITY HARD-BLOCK] Command: ${params.command}. Reason: ${staticRes.reason}`);
+            return {
+                success: false,
+                output: `🛑 SECURITY VIOLATION: Execution blocked deterministically.\nReason: ${staticRes.reason}`
+            };
+        }
+
         const audit = await (env.agentManager as any).performSecurityAudit(params.command, signal);
         if (!audit.safe) {
             Logger.error(`[SECURITY BLOCK] Command: ${params.command}. Reason: ${audit.reason}`);

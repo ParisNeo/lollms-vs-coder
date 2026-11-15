@@ -23,7 +23,11 @@ export function normalizePseudoFileBlocks(text: string): string {
     if (!text || typeof text !== 'string') return '';
     let result = text;
 
+    // Ensure <file ...> tags that accidentally follow prose on the same line (outside backticks) start on their own line
+    result = result.replace(/^([^\r\n`]+?)[ \t]*(<file\s+(?=[^>]*\bpath=["'][^"']+["'])[^>]*>)/gim, '$1\n\n$2');
+
     const replaceTagRegex = /<replace\b[^>]*>[\s\r\n]*<search\b[^>]*>([\s\S]*?)<\/search>[\s\r\n]*<(?:replace_with|replace)\b[^>]*>([\s\S]*?)<\/(?:replace_with|replace)>[\s\r\n]*<\/replace>/gi;
+    
     result = result.replace(replaceTagRegex, (_match, s, r) => {
         return `<<<<<<< SEARCH\n${s.trimEnd()}\n=======\n${r.trimStart()}\n>>>>>>> REPLACE`;
     });
@@ -49,9 +53,66 @@ export function normalizePseudoFileBlocks(text: string): string {
 
         const fenceMatch = body.match(/```(?:\w+)?\r?\n([\s\S]*?)\r?\n```/);
         if (fenceMatch) {
-            return `\n\n<file path="${cleanPath}" action="${action}">\n${fenceMatch[1]}\n</file>\n\n`;
+            return `\n\n<file path="${cleanPath}" action="${action}">\n${fenceMatch[1]}\n</file>
+
+\n\n`;
         }
 
+        return fullMatch;
+    });
+
+    // Normalize <delete_code path="...">...</delete_code> into <file path="..." action="delete_code">...</file>
+    result = result.replace(/^[ \t]*<delete_code\b([^>]*?)>([\s\S]*?)<\/delete_code>[ \t]*$/gim, (fullMatch, attrStr, body) => {
+        const attrs = parseFileTagAttributes(attrStr);
+        if (attrs?.path && isValidFilePath(attrs.path)) {
+            return `\n\n<file path="${attrs.path}" action="delete_code">\n${body.trim()}\n</file>\n\n`;
+        }
+        return fullMatch;
+    });
+
+    // Normalize empty-replace or search-only Aider blocks so parseAiderHunks handles deletions cleanly
+    result = result.replace(/<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g, (fullMatch, inner) => {
+        if (!/^=======$/m.test(inner)) {
+            return `<<<<<<< SEARCH\n${inner}\n=======\n\n>>>>>>> REPLACE`;
+        }
+        return fullMatch;
+    });
+    result = result.replace(/^[ \t]*=======\r?\n[ \t]*>>>>>>> REPLACE/gm, '=======\n\n>>>>>>> REPLACE');
+
+    // Normalize <file path="..." action="delete" /> or <file path="..." action="delete"></file> into <delete_files>
+    result = result.replace(/^[ \t]*<file\b([^>]*\baction=["']delete["'][^>]*?)(?:\/>|>([\s\S]*?)<\/file>)[ \t]*$/gim, (fullMatch, attrStr) => {
+        const attrs = parseFileTagAttributes(attrStr);
+        if (attrs?.path && isValidFilePath(attrs.path)) {
+            return `\n\n<delete_files>\n${attrs.path}\n</delete_files>\n\n`;
+        }
+        return fullMatch;
+    });
+
+    // Normalize <delete_file ...> and self-closing <delete_files ... /> into canonical <delete_files>...</delete_files>
+    result = result.replace(/^[ \t]*<(delete_file|delete_files)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)[ \t]*$/gim, (fullMatch, tagName, attrPart, inner) => {
+        if (tagName.toLowerCase() === 'delete_files' && inner !== undefined) {
+            return fullMatch;
+        }
+        const paths: string[] = [];
+        const pathAttr = (attrPart || '').match(/\bpath=["']([^"']+)["']/i);
+        if (pathAttr && isValidFilePath(pathAttr[1].trim())) {
+            paths.push(pathAttr[1].trim());
+        }
+        const pathsAttr = (attrPart || '').match(/\bpaths=["'](\[.*?\])["']/i);
+        if (pathsAttr) {
+            try {
+                const parsed = JSON.parse(pathsAttr[1].replace(/'/g, '"'));
+                if (Array.isArray(parsed)) {
+                    parsed.forEach(p => { if (typeof p === 'string' && isValidFilePath(p.trim())) paths.push(p.trim()); });
+                }
+            } catch {}
+        }
+        if (inner && inner.trim()) {
+            inner.split(/[\r\n,]+/).map((l: string) => l.trim().replace(/^['"`]|['"`]$/g, '')).filter((l: string) => l && isValidFilePath(l)).forEach((l: string) => paths.push(l));
+        }
+        if (paths.length > 0) {
+            return `\n\n<delete_files>\n${Array.from(new Set(paths)).join('\n')}\n</delete_files>\n\n`;
+        }
         return fullMatch;
     });
 
@@ -238,11 +299,12 @@ export const fileMutationPlugin: TagPlugin = {
 
         
 
-        const isPatch = action === 'patch' || (action !== 'write' && action !== 'update_symbol' && rawContent.includes('<<<<<<< SEARCH'));
+        const isDeleteCode = action === 'delete_code';
+        const isPatch = !isDeleteCode && (action === 'patch' || (action !== 'write' && action !== 'update_symbol' && rawContent.includes('<<<<<<< SEARCH')));
         const blockIdx = context.blockIndex !== undefined ? context.blockIndex : 0;
         const blockId = `file-mutation-${context.messageId}-${blockIdx}`;
-        const actionLabel = isPatch ? 'SURGICAL PATCH' : (symbol ? `SYMBOL: ${symbol}` : 'WRITE FILE');
-        const actionIcon = isPatch ? 'codicon-diff-modified' : (symbol ? 'codicon-symbol-method' : 'codicon-file-code');
+        const actionLabel = isDeleteCode ? 'DELETE CODE' : (isPatch ? 'SURGICAL PATCH' : (symbol ? `SYMBOL: ${symbol}` : 'WRITE FILE'));
+        const actionIcon = isDeleteCode ? 'codicon-diff-removed' : (isPatch ? 'codicon-diff-modified' : (symbol ? 'codicon-symbol-method' : 'codicon-file-code'));
 
         const ext = filePath.split('.').pop() || 'plaintext';
         // Only mark as streaming if the message is genuinely still in-flight AND global state is generating
@@ -256,7 +318,26 @@ export const fileMutationPlugin: TagPlugin = {
 
         let bodyHtml = "";
 
-        if (isPatch) {
+        if (isDeleteCode) {
+            let cleanDelete = rawContent;
+            if (cleanDelete.includes('<<<<<<< SEARCH')) {
+                const parsedDel = parseAiderHunks(normalizeAiderContent(cleanDelete));
+                if (parsedDel.length > 0) {
+                    cleanDelete = parsedDel.map(h => h.searchPart).filter(Boolean).join('\n');
+                } else {
+                    cleanDelete = cleanDelete.replace(/<<<<<<< SEARCH\r?\n?/g, '').replace(/\r?\n?=======[\s\S]*?>>>>>>> REPLACE/g, '').replace(/\r?\n?>>>>>>> REPLACE/g, '');
+                }
+            }
+            const delLines = cleanDelete.replace(/\r\n/g, '\n').split('\n');
+            bodyHtml = `
+            <div class="hunk-contents-wrapper">
+                <div class="aider-hunk-bubble">
+                    <div class="aider-hunk-content">
+                        <pre style="margin:0; padding:12px; background:var(--vscode-editor-background); border:none; overflow:auto; max-height:350px;">${renderDiffLines(delLines, 'removed')}</pre>
+                    </div>
+                </div>
+            </div>`;
+        } else if (isPatch) {
             const normalizedRaw = normalizeAiderContent(rawContent);
             const hunks = parseAiderHunks(normalizedRaw);
 
@@ -276,7 +357,8 @@ export const fileMutationPlugin: TagPlugin = {
 
                     const panesHtml = hunks.map((h, hIdx) => {
                         const sLines = (h.searchPart || "").replace(/\r\n/g, '\n').split('\n');
-                        const rLines = (h.replacePart || "").replace(/\r\n/g, '\n').split('\n');
+                        const rawRLines = (h.replacePart || "").replace(/\r\n/g, '\n').split('\n');
+                        const rLines = (rawRLines.length === 1 && rawRLines[0] === '') ? [] : rawRLines;
 
                         let pref = 0;
                         while (pref < sLines.length && pref < rLines.length && sLines[pref].trim() === rLines[pref].trim()) {
@@ -321,7 +403,8 @@ export const fileMutationPlugin: TagPlugin = {
                     // Single hunk view
                     const h = hunks[0];
                     const sLines = (h.searchPart || "").replace(/\r\n/g, '\n').split('\n');
-                    const rLines = (h.replacePart || "").replace(/\r\n/g, '\n').split('\n');
+                    const rawRLines = (h.replacePart || "").replace(/\r\n/g, '\n').split('\n');
+                    const rLines = (rawRLines.length === 1 && rawRLines[0] === '') ? [] : rawRLines;
 
                     let pref = 0;
                     while (pref < sLines.length && pref < rLines.length && sLines[pref].trim() === rLines[pref].trim()) {
@@ -374,6 +457,7 @@ export const fileMutationPlugin: TagPlugin = {
                 <div class="code-actions">
                     <button class="code-action-btn copy-mutation-btn" title="Copy Content"><i class="codicon codicon-copy"></i></button>
                     ${isPatch ? `<button class="code-action-btn raw-stitch-mutation-btn" title="Open Manual Stitching View"><i class="codicon codicon-source-control"></i></button>` : ''}
+                    ${isApplied ? `<button class="code-action-btn secondary-btn redo-mutation-btn" title="Redo / Re-apply this change"><i class="codicon codicon-redo"></i></button>` : ''}
                     ${(isApplied && isPatch) ? `<button class="code-action-btn delete-btn undo-mutation-btn" title="Undo this patch"><i class="codicon codicon-discard"></i></button>` : ''}
                     <button class="code-action-btn ${applyBtnClass} apply-mutation-btn" ${applyBtnDisabled} title="${applyBtnTitle}"><i class="codicon ${applyBtnIcon}"></i></button>
                 </div>
@@ -408,14 +492,47 @@ export const fileMutationPlugin: TagPlugin = {
                 };
             });
 
-            // Individual Hunk Apply buttons
-            card.querySelectorAll('.apply-hunk-btn').forEach((hunkBtn: HTMLElement) => {
-                hunkBtn.onclick = (e: MouseEvent) => {
-                    e.stopPropagation();
-                    const hIdx = parseInt((hunkBtn as HTMLElement).dataset.hunkIndex || "0", 10);
-                    (hunkBtn as HTMLButtonElement).disabled = true;
-                    hunkBtn.innerHTML = '<div class="spinner"></div>';
+            const setApplyingStopStyle = (btnEl: HTMLElement, active: boolean) => {
+                if (active) {
+                    btnEl.dataset.applying = 'true';
+                    btnEl.dataset.prevHtml = btnEl.innerHTML;
+                    btnEl.dataset.prevTitle = btnEl.title;
+                    btnEl.classList.add('stop-btn-red');
+                    btnEl.style.setProperty('background-color', 'var(--vscode-charts-red, #e51400)', 'important');
+                    btnEl.style.setProperty('color', '#ffffff', 'important');
+                    btnEl.style.setProperty('border-color', 'var(--vscode-charts-red, #e51400)', 'important');
+                    btnEl.title = 'Applying... Click to stop';
+                    btnEl.innerHTML = '<div class="spinner" style="border-color: rgba(255,255,255,0.35); border-top-color: #ffffff;"></div>';
+                } else {
+                    delete btnEl.dataset.applying;
+                    btnEl.classList.remove('stop-btn-red');
+                    btnEl.style.removeProperty('background-color');
+                    btnEl.style.removeProperty('color');
+                    btnEl.style.removeProperty('border-color');
+                    if (btnEl.dataset.prevHtml) btnEl.innerHTML = btnEl.dataset.prevHtml;
+                    if (btnEl.dataset.prevTitle) btnEl.title = btnEl.dataset.prevTitle;
+                }
+            };
 
+            const dispatchApplyMutation = (triggerBtn: HTMLElement, hIdx?: number) => {
+                if (triggerBtn.dataset.applying === 'true') {
+                    setApplyingStopStyle(triggerBtn, false);
+                    context.vscode.postMessage({ command: 'stopGeneration' });
+                    return;
+                }
+                setApplyingStopStyle(triggerBtn, true);
+
+                if (action === 'delete_code') {
+                    context.vscode.postMessage({
+                        command: 'deleteCodeBlock',
+                        filePath,
+                        content: rawContent,
+                        messageId: context.messageId,
+                        blockIndex: blockIndex,
+                        blockId: card.id,
+                        options: { silent: false, autoSave: false, blockId: card.id, blockIndex: blockIndex }
+                    });
+                } else if (action === 'patch' || (action !== 'write' && action !== 'update_symbol' && rawContent.includes('<<<<<<< SEARCH'))) {
                     context.vscode.postMessage({
                         command: 'replaceCode',
                         filePath,
@@ -426,6 +543,26 @@ export const fileMutationPlugin: TagPlugin = {
                         blockId: card.id,
                         options: { silent: false, autoSave: false, blockId: card.id, blockIndex: blockIndex, hunkIndex: hIdx }
                     });
+                } else {
+                    const targetPath = symbol ? `${filePath}:${symbol}` : filePath;
+                    context.vscode.postMessage({
+                        command: 'applyFileContent',
+                        filePath: targetPath,
+                        content: rawContent,
+                        messageId: context.messageId,
+                        blockIndex: blockIndex,
+                        blockId: card.id,
+                        options: { silent: false, autoSave: false, blockId: card.id, blockIndex: blockIndex }
+                    });
+                }
+            };
+
+            // Individual Hunk Apply buttons
+            card.querySelectorAll('.apply-hunk-btn').forEach((hunkBtn: HTMLElement) => {
+                hunkBtn.onclick = (e: MouseEvent) => {
+                    e.stopPropagation();
+                    const hIdx = parseInt(hunkBtn.dataset.hunkIndex || "0", 10);
+                    dispatchApplyMutation(hunkBtn, hIdx);
                 };
             });
 
@@ -454,9 +591,9 @@ export const fileMutationPlugin: TagPlugin = {
                 rawBtn.onclick = (e: MouseEvent) => {
                     e.stopPropagation();
                     const hIdx = parseInt((rawBtn as HTMLElement).dataset.hunkIndex || "0", 10);
-                    import('../ui.js').then(ui => {
-                        ui.openRawCodeModal(context.messageId, blockIndex, filePath, rawContent, hIdx, card.id);
-                    });
+                    if (typeof (window as any).openRawCodeModal === 'function') {
+                        (window as any).openRawCodeModal(context.messageId, blockIndex, filePath, rawContent, hIdx, card.id);
+                    }
                 };
             });
 
@@ -485,31 +622,15 @@ export const fileMutationPlugin: TagPlugin = {
             if (applyBtn) {
                 applyBtn.onclick = (e: MouseEvent) => {
                     e.stopPropagation();
-                    applyBtn.disabled = true;
-                    applyBtn.innerHTML = '<div class="spinner"></div>';
+                    dispatchApplyMutation(applyBtn);
+                };
+            }
 
-                    if (action === 'patch' || (action !== 'write' && action !== 'update_symbol' && rawContent.includes('<<<<<<< SEARCH'))) {
-                        context.vscode.postMessage({
-                            command: 'replaceCode',
-                            filePath,
-                            content: rawContent,
-                            messageId: context.messageId,
-                            blockIndex: blockIndex,
-                            blockId: card.id,
-                            options: { silent: false, autoSave: false, blockId: card.id, blockIndex: blockIndex }
-                        });
-                    } else {
-                        const targetPath = symbol ? `${filePath}:${symbol}` : filePath;
-                        context.vscode.postMessage({
-                            command: 'applyFileContent',
-                            filePath: targetPath,
-                            content: rawContent,
-                            messageId: context.messageId,
-                            blockIndex: blockIndex,
-                            blockId: card.id,
-                            options: { silent: false, autoSave: false, blockId: card.id, blockIndex: blockIndex }
-                        });
-                    }
+            const redoBtn = card.querySelector('.redo-mutation-btn') as HTMLButtonElement;
+            if (redoBtn) {
+                redoBtn.onclick = (e: MouseEvent) => {
+                    e.stopPropagation();
+                    dispatchApplyMutation(redoBtn);
                 };
             }
 
@@ -552,9 +673,9 @@ export const fileMutationPlugin: TagPlugin = {
             if (rawStitchBtn) {
                 rawStitchBtn.onclick = (e: MouseEvent) => {
                     e.stopPropagation();
-                    import('../ui.js').then(ui => {
-                        ui.openRawCodeModal(context.messageId, blockIndex, filePath, rawContent, 0, card.id);
-                    });
+                    if (typeof (window as any).openRawCodeModal === 'function') {
+                        (window as any).openRawCodeModal(context.messageId, blockIndex, filePath, rawContent, 0, card.id);
+                    }
                 };
             }
         });
@@ -577,12 +698,25 @@ export const fileOpPlugin: TagPlugin = {
         }
 
         if (lines.length === 0) {
+            const singlePathAttr = attrPart.match(/\bpath=['"]([^'"]+)['"]/i);
+            if (singlePathAttr && singlePathAttr[1].trim()) {
+                lines.push(singlePathAttr[1].trim());
+            }
+        }
+
+        if (lines.length === 0) {
             lines = inner.split('\n')
-                .map(l => l.trim().replace(/^['"]|['"]$/g, ''))
+                .map(l => l.trim().replace(/^['"`]|['"`]$/g, '').replace(/^-\s*/, '').trim())
                 .filter(l => l.length > 0 && !l.startsWith('<') && l !== '...');
         }
 
+        if (type === 'delete_files') {
+            lines = Array.from(new Set(lines.filter(l => isValidFilePath(l))));
+        }
+
         if (lines.length === 0) return null;
+
+        const blockId = `file-op-${type}-${Date.now().toString(36)}-${Math.random().toString(36).substring(7)}`;
 
         let title = "", icon = "", command = "", btnText = "";
         let detailsHtml = "";
@@ -717,16 +851,29 @@ export const fileOpPlugin: TagPlugin = {
             }).join('');
             payload = { paths: needsActivationLines.length > 0 ? needsActivationLines : lines };
         } else if (type === 'delete_files') {
-            title = "File Deletion Proposed";
+            title = `File Deletion Proposed (${lines.length} file${lines.length > 1 ? 's' : ''})`;
             icon = "codicon-trash";
             command = "deleteFile";
-            btnText = `Delete All (${lines.length} files)`;
-            detailsHtml = lines.map(p => `
-                <div class="expansion-file-item" style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px;">
-                    <span class="codicon codicon-file"></span>
-                    <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p}</span>
-                </div>
-            `).join('');
+            btnText = lines.length === 1 ? `Delete File` : `Delete All (${lines.length} files)`;
+            detailsHtml = lines.map((p, idx) => {
+                const rowId = `${blockId}-del-${idx}`;
+                return `
+                <div class="expansion-file-item delete-file-row" id="${rowId}" data-path="${p}" style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; font-family: var(--vscode-editor-font-family); font-size: 11px; border-left: 3px solid var(--vscode-charts-red, #f44336);">
+                    <div style="display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;">
+                        <span class="codicon codicon-trash" style="color: var(--vscode-charts-red, #f44336); flex-shrink: 0;"></span>
+                        <span class="file-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${p}">${p}</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+                        <button class="code-action-btn secondary-btn open-delete-target-btn" data-path="${p}" style="height: 18px; font-size: 9px; padding: 0 5px;" title="Open file to inspect before deleting">
+                            <span class="codicon codicon-go-to-file"></span> Open
+                        </button>
+                        ${lines.length > 1 ? `
+                        <button class="code-action-btn delete-btn delete-single-file-btn" data-path="${p}" data-row-id="${rowId}" data-block-id="${blockId}" style="height: 18px; font-size: 9px; padding: 0 6px;" title="Delete only this file">
+                            <span class="codicon codicon-trash"></span> Delete
+                        </button>` : ''}
+                    </div>
+                </div>`;
+            }).join('');
             payload = { filePaths: lines, paths: lines };
         } else if (type === 'move_files' || type === 'copy_files') {
             title = type === 'move_files' ? "Move/Rename Proposed" : "Copy Proposed";
@@ -751,7 +898,7 @@ export const fileOpPlugin: TagPlugin = {
         }
 
         const isUnmuteType = type === 'unmute_files';
-        const blockId = `file-op-${type}-${Date.now().toString(36)}-${Math.random().toString(36).substring(7)}`;
+        const isDeleteType = type === 'delete_files';
         const encodedPaths = encodeURIComponent(JSON.stringify(lines));
         const encodedFilesJson = JSON.stringify(lines).replace(/"/g, '&quot;');
 
@@ -766,14 +913,20 @@ export const fileOpPlugin: TagPlugin = {
             <button class="code-action-btn apply-btn unmute-reprompt-btn" ${isUnmuteDisabled ? 'disabled style="opacity:0.6;"' : ''} data-command="bulkUnmuteFiles" data-payload='${JSON.stringify({ paths: payload.paths || lines, reprompt: true })}' data-block-id="${blockId}" style="background: var(--vscode-charts-green) !important; color: white !important; font-weight: bold;" title="Activate full source code and immediately ask AI to proceed">
                 <span class="codicon codicon-play"></span> ${allFullyActive ? 'Reprompt AI' : 'Activate & Reprompt'}
             </button>
+        ` : (isDeleteType ? `
+            <button class="code-action-btn delete-btn delete-all-files-btn" data-paths="${encodedPaths}" data-block-id="${blockId}" style="background-color: var(--vscode-charts-red, #e53935) !important; color: white !important; font-weight: bold;">
+                <span class="codicon codicon-trash"></span> ${btnText}
+            </button>
         ` : `
             <button class="code-action-btn apply-btn file-op-btn" data-command="${command}" data-payload='${JSON.stringify(payload)}'>
                 <span class="codicon codicon-check"></span> ${btnText}
             </button>
-        `;
+        `);
 
-        const cardExtraClass = isUnmuteType ? 'unmute-files-block assistant-executable-card' : '';
-        const borderAccent = isUnmuteType ? 'border-left: 4px solid var(--vscode-charts-green);' : 'border-left: 4px solid var(--vscode-charts-orange);';
+        const cardExtraClass = isUnmuteType ? 'unmute-files-block assistant-executable-card' : (isDeleteType ? 'delete-files-block' : '');
+        const borderAccent = isUnmuteType
+            ? 'border-left: 4px solid var(--vscode-charts-green);'
+            : (isDeleteType ? 'border-left: 4px solid var(--vscode-charts-red, #e53935);' : 'border-left: 4px solid var(--vscode-charts-orange);');
 
         return `
         <div class="file-operation-block ${cardExtraClass}" id="${blockId}" data-action-type="${isUnmuteType ? 'unmute' : 'file_op'}" data-paths="${encodedPaths}" data-payload="${encodedPaths}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); ${borderAccent} border-radius: 8px; margin: 12px 0; overflow: hidden;">
@@ -802,6 +955,67 @@ export const fileOpPlugin: TagPlugin = {
                 (btn as HTMLButtonElement).disabled = true;
                 btn.innerHTML = '<i class="codicon codicon-check"></i> Applied';
                 btn.classList.add('applied');
+            };
+        });
+
+        container.querySelectorAll('.open-delete-target-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const filePath = (btn as HTMLElement).dataset.path;
+                if (filePath) {
+                    context.vscode.postMessage({ command: 'openFile', path: filePath });
+                }
+            };
+        });
+
+        container.querySelectorAll('.delete-single-file-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const filePath = btnEl.dataset.path;
+                const rowId = btnEl.dataset.rowId;
+                const blockId = btnEl.dataset.blockId || btnEl.closest('.delete-files-block')?.id;
+                if (!filePath) return;
+
+                btnEl.disabled = true;
+                btnEl.innerHTML = '<span class="codicon codicon-loading spin"></span> Deleting...';
+                context.vscode.postMessage({
+                    command: 'deleteFile',
+                    filePaths: [filePath],
+                    rowId,
+                    blockId
+                });
+            };
+        });
+
+        container.querySelectorAll('.delete-all-files-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const rawPaths = btnEl.dataset.paths;
+                const blockId = btnEl.dataset.blockId || btnEl.closest('.delete-files-block')?.id;
+                if (!rawPaths) return;
+
+                try {
+                    const paths: string[] = JSON.parse(decodeURIComponent(rawPaths));
+                    const blockEl = blockId ? document.getElementById(blockId) : null;
+                    const remainingPaths = blockEl
+                        ? paths.filter(p => {
+                            const row = Array.from(blockEl.querySelectorAll('.delete-file-row')).find((r: any) => r.dataset.path === p);
+                            return !row || !row.classList.contains('status-deleted');
+                        })
+                        : paths;
+
+                    if (remainingPaths.length === 0) return;
+
+                    btnEl.disabled = true;
+                    btnEl.innerHTML = '<span class="codicon codicon-loading spin"></span> Deleting...';
+                    context.vscode.postMessage({
+                        command: 'deleteFile',
+                        filePaths: remainingPaths,
+                        blockId
+                    });
+                } catch {}
             };
         });
 

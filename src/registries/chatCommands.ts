@@ -6,7 +6,7 @@ import { startDiscussionWithInitialPrompt } from '../utils/discussionUtils';
 import { AgentManager } from '../agentManager';
 import { AutomationPanel } from '../panels/automationPanel';
 import { getProcessedSystemPrompt, stripThinkingTags } from '../utils';
-import { getAvailableContextSelections } from '../commands/contextCommands';
+import { getAvailableContextSelections, loadContextSelectionFile } from '../commands/contextCommands';
 
 export async function registerChatCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
@@ -174,32 +174,18 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         // Handle chosen context selection
         if (params.contextSelection && params.contextSelection !== 'current' && params.contextSelection !== 'empty') {
             try {
-                const targetFileName = params.contextSelection.endsWith('.lollms-ctx') ? params.contextSelection : `${params.contextSelection}.lollms-ctx`;
-                const allFolders = vscode.workspace.workspaceFolders || [];
-                let content: Uint8Array | undefined;
-
-                for (const f of allFolders) {
-                    try {
-                        const fileUri = vscode.Uri.joinPath(f.uri, '.lollms', 'selection', targetFileName);
-                        content = await vscode.workspace.fs.readFile(fileUri);
-                        break;
-                    } catch {}
-                }
-
-                if (content && discussion.capabilities) {
-                    const parsed = JSON.parse(Buffer.from(content).toString('utf8'));
-                    const files = Array.isArray(parsed) ? parsed : (parsed?.files || []);
-                    if (Array.isArray(files)) {
-                        const newSettings = { ... (discussion.capabilities.folderSettings || {}) };
-                        files.forEach((f: string) => {
-                            const segments = f.split('/');
-                            const projFolder = allFolders.find(fd => fd.name === segments[0]);
-                            if (projFolder) {
-                                newSettings[projFolder.uri.toString()] = { tree: true, content: true };
-                            }
-                        });
-                        discussion.capabilities.folderSettings = newSettings;
-                    }
+                const loadedSel = await loadContextSelectionFile(params.contextSelection);
+                if (loadedSel && discussion.capabilities) {
+                    const allFolders = vscode.workspace.workspaceFolders || [];
+                    const newSettings = { ... (discussion.capabilities.folderSettings || {}) };
+                    loadedSel.files.forEach((f: string) => {
+                        const segments = f.split('/');
+                        const projFolder = allFolders.find(fd => fd.name === segments[0]);
+                        if (projFolder) {
+                            newSettings[projFolder.uri.toString()] = { tree: true, content: true };
+                        }
+                    });
+                    discussion.capabilities.folderSettings = newSettings;
                     // Loading a selection toggles to fast mode automatically
                     discussion.capabilities.fastMode = true;
                 }

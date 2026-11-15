@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { stripThinkingTags } from '../../utils';
+import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
 import { ChatMessage } from '../../lollmsAPI';
 import * as path from 'path';
 
@@ -133,9 +134,38 @@ ${params.instructions}
             return { success: false, output: "Error: Specialist produced insufficient or empty code." };
         }
 
+        const prot = AgentSecurityGuard.isProtectedPath(params.file_path);
+        if (prot.protected) {
+            return { success: false, output: `🛑 SECURITY VIOLATION: ${prot.reason}` };
+        }
+
         const fullUri = vscode.Uri.joinPath(env.workspaceRoot.uri, params.file_path);
+        let originalContent: string | null = null;
+        try {
+            const existingBytes = await vscode.workspace.fs.readFile(fullUri);
+            originalContent = Buffer.from(existingBytes).toString('utf8');
+        } catch {}
+
+        const secLevel = env.agentManager?.getSecurityLevel?.() || 'guarded';
+        const validation = AgentSecurityGuard.validateWriteContent(params.file_path, originalContent, finalCode, secLevel, true);
+        if (!validation.valid) {
+            if (validation.requiresConfirmation && env.agentManager?.requestSecurityApproval) {
+                const approval = await env.agentManager.requestSecurityApproval(
+                    `Confirm Risky Overwrite: ${params.file_path}`,
+                    validation.reason || 'Potential code loss or placeholder detected.',
+                    'generate_code',
+                    params.file_path,
+                    signal
+                );
+                if (approval === 'block') {
+                    return { success: false, output: `🛑 SECURITY BLOCK: ${validation.reason}` };
+                }
+            } else {
+                return { success: false, output: `🛑 SECURITY BLOCK: ${validation.reason}` };
+            }
+        }
+
         const parentDir = vscode.Uri.joinPath(fullUri, '..');
-        
         await vscode.workspace.fs.createDirectory(parentDir);
         await vscode.workspace.fs.writeFile(fullUri, Buffer.from(finalCode, 'utf8'));
         // Clear cache for the new/overwritten file

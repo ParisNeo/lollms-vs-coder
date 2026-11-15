@@ -6,6 +6,55 @@ import * as path from 'path';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { AgentManager } from '../agentManager';
 
+export interface SavedContextSelection {
+    version?: number;
+    name?: string;
+    description?: string;
+    files: string[];
+    mutedFiles?: string[];
+    fileStates?: Record<string, ContextState>;
+    fileSymbols?: Record<string, string[]>;
+    created?: number;
+}
+
+export function parseContextSelection(raw: unknown): SavedContextSelection {
+    if (Array.isArray(raw)) {
+        return {
+            files: raw.filter((f): f is string => typeof f === 'string')
+        };
+    }
+    if (raw && typeof raw === 'object') {
+        const obj = raw as Record<string, any>;
+        return {
+            version: typeof obj.version === 'number' ? obj.version : undefined,
+            name: typeof obj.name === 'string' ? obj.name : undefined,
+            description: typeof obj.description === 'string' ? obj.description : undefined,
+            files: Array.isArray(obj.files) ? obj.files.filter((f: any): f is string => typeof f === 'string') : [],
+            mutedFiles: Array.isArray(obj.mutedFiles) ? obj.mutedFiles.filter((f: any): f is string => typeof f === 'string') : undefined,
+            fileStates: obj.fileStates && typeof obj.fileStates === 'object' ? obj.fileStates : undefined,
+            fileSymbols: obj.fileSymbols && typeof obj.fileSymbols === 'object' ? obj.fileSymbols : undefined,
+            created: typeof obj.created === 'number' ? obj.created : undefined
+        };
+    }
+    return { files: [] };
+}
+
+export async function loadContextSelectionFile(fileName: string): Promise<SavedContextSelection | null> {
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (folders.length === 0 || !fileName) return null;
+
+    const targetFileName = fileName.endsWith('.lollms-ctx') ? fileName : `${fileName}.lollms-ctx`;
+    for (const folder of folders) {
+        const candidate = vscode.Uri.joinPath(folder.uri, '.lollms', 'selection', targetFileName);
+        try {
+            const bytes = await vscode.workspace.fs.readFile(candidate);
+            const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
+            return parseContextSelection(parsed);
+        } catch {}
+    }
+    return null;
+}
+
 export async function getAvailableContextSelections(): Promise<{ name: string; fileName: string; fileCount?: number; description?: string }[]> {
     const folders = vscode.workspace.workspaceFolders || [];
     const selections: { name: string; fileName: string; fileCount?: number; description?: string }[] = [];
@@ -24,14 +73,10 @@ export async function getAvailableContextSelections(): Promise<{ name: string; f
                         let displayName = name.replace('.lollms-ctx', '');
                         try {
                             const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(selectionDir, name));
-                            const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
-                            if (Array.isArray(parsed)) {
-                                fileCount = parsed.length;
-                            } else if (parsed && typeof parsed === 'object') {
-                                if (Array.isArray(parsed.files)) fileCount = parsed.files.length;
-                                if (parsed.name) displayName = parsed.name;
-                                if (parsed.description) desc = parsed.description;
-                            }
+                            const sel = parseContextSelection(JSON.parse(Buffer.from(bytes).toString('utf8')));
+                            fileCount = sel.files.length;
+                            if (sel.name) displayName = sel.name;
+                            if (sel.description) desc = sel.description;
                         } catch {}
                         selections.push({
                             name: displayName,
@@ -551,6 +596,80 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         }
     }));
 
+    const applyLoadedSelection = async (parsed: any, isReplace: boolean) => {
+        const files: string[] = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.files) ? parsed.files : []);
+        const mutedFiles: string[] = (!Array.isArray(parsed) && Array.isArray(parsed?.mutedFiles)) ? parsed.mutedFiles : [];
+        const fileStates: Record<string, ContextState> = (!Array.isArray(parsed) && parsed?.fileStates && typeof parsed.fileStates === 'object') ? parsed.fileStates : {};
+        const fileSymbols: Record<string, string[]> = (!Array.isArray(parsed) && parsed?.fileSymbols && typeof parsed.fileSymbols === 'object') ? parsed.fileSymbols : {};
+
+        const provider = services.contextManager.getContextStateProvider();
+        const openPanels = new Set<ChatPanel>();
+        if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) openPanels.add(ChatPanel.currentPanel);
+        ChatPanel.panels.forEach(p => { if (!p.isDisposed) openPanels.add(p); });
+
+        if (isReplace) {
+            await provider?.softReset();
+            for (const panel of openPanels) {
+                const disc = panel.getCurrentDiscussion();
+                if (disc) {
+                    disc.mutedFiles = [];
+                    if (disc.capabilities) {
+                        (disc.capabilities as any).mutedFiles = [];
+                    }
+                }
+            }
+        }
+
+        const allFilesToAdd = Array.from(new Set([...files, ...mutedFiles]));
+        if (allFilesToAdd.length > 0) {
+            await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', allFilesToAdd);
+        }
+
+        // Restore structure-only states
+        const defOnlyUris: vscode.Uri[] = [];
+        for (const [fPath, st] of Object.entries(fileStates)) {
+            if (st === 'definitions-only') {
+                const res = await services.contextManager.resolveWorkspaceFromPath(fPath);
+                if (res) {
+                    defOnlyUris.push(res.uri);
+                    services.contextManager.refreshFileInCache(res.uri);
+                }
+            }
+        }
+        if (provider && defOnlyUris.length > 0) {
+            await provider.setStateForUris(defOnlyUris, 'definitions-only');
+        }
+
+        for (const panel of openPanels) {
+            const disc = panel.getCurrentDiscussion();
+            if (disc && (disc as any).includedFiles) {
+                const discFiles: any[] = (disc as any).includedFiles;
+                for (const entry of discFiles) {
+                    const p = typeof entry === 'string' ? entry : entry.path;
+                    if (!p) continue;
+                    const matchedStateKey = Object.keys(fileStates).find(k => k.replace(/\\/g, '/').toLowerCase() === p.replace(/\\/g, '/').toLowerCase());
+                    if (matchedStateKey && typeof entry === 'object') {
+                        entry.state = fileStates[matchedStateKey];
+                    }
+                    const matchedSymKey = Object.keys(fileSymbols).find(k => k.replace(/\\/g, '/').toLowerCase() === p.replace(/\\/g, '/').toLowerCase());
+                    if (matchedSymKey && Array.isArray(fileSymbols[matchedSymKey]) && typeof entry === 'object') {
+                        entry.state = 'definitions-only';
+                        entry.symbols = [...fileSymbols[matchedSymKey]];
+                    }
+                }
+            }
+
+            if (mutedFiles.length > 0) {
+                await panel.muteFiles(mutedFiles);
+            }
+
+            await panel.updateCapabilities({ fastMode: true });
+            panel.updateContextAndTokens({ isBackgroundSync: false });
+        }
+
+        return { files, mutedFiles };
+    };
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveContextSelection', async () => {
         const provider = services.contextManager.getContextStateProvider();
         if (!provider) {
@@ -558,10 +677,35 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
             return;
         }
         
-        const included = provider.getIncludedFiles().map(f => f.path);
+        const includedEntries = provider.getIncludedFiles();
+        const included = includedEntries.map(f => f.path);
         if (included.length === 0) {
             vscode.window.showInformationMessage("No files currently included in context.");
             return;
+        }
+
+        const activeDisc = ChatPanel.currentPanel?.getCurrentDiscussion();
+        const mutedFiles: string[] = activeDisc?.mutedFiles ? [...activeDisc.mutedFiles] : [];
+        const fileStates: Record<string, ContextState> = {};
+        const fileSymbols: Record<string, string[]> = {};
+
+        for (const entry of includedEntries) {
+            if (entry.state && entry.state !== 'included') {
+                fileStates[entry.path] = entry.state;
+            }
+        }
+
+        if (activeDisc && Array.isArray((activeDisc as any).includedFiles)) {
+            for (const entry of (activeDisc as any).includedFiles) {
+                if (entry && typeof entry === 'object' && entry.path) {
+                    if (entry.state && entry.state !== 'included') {
+                        fileStates[entry.path] = entry.state;
+                    }
+                    if (Array.isArray(entry.symbols) && entry.symbols.length > 0) {
+                        fileSymbols[entry.path] = [...entry.symbols];
+                    }
+                }
+            }
         }
 
         const folders = vscode.workspace.workspaceFolders;
@@ -585,7 +729,15 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
 
         if (uri) {
             try {
-                const content = JSON.stringify(included, null, 2);
+                const payload: Record<string, any> = {
+                    version: 2,
+                    files: included
+                };
+                if (mutedFiles.length > 0) payload.mutedFiles = mutedFiles;
+                if (Object.keys(fileStates).length > 0) payload.fileStates = fileStates;
+                if (Object.keys(fileSymbols).length > 0) payload.fileSymbols = fileSymbols;
+
+                const content = JSON.stringify(payload, null, 2);
                 await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
                 vscode.window.showInformationMessage(`Context selection saved to ${path.basename(uri.fsPath)}`);
 
@@ -625,17 +777,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
             const parsed = JSON.parse(Buffer.from(content).toString('utf8'));
             const files = Array.isArray(parsed) ? parsed : (parsed?.files || []);
             if (Array.isArray(files)) {
-                await services.contextManager.getContextStateProvider()?.softReset();
-                await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', files);
-
-                // Auto-toggle to Fast Mode when loading a selection
-                const openPanels = new Set<ChatPanel>();
-                if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) openPanels.add(ChatPanel.currentPanel);
-                ChatPanel.panels.forEach(p => { if (!p.isDisposed) openPanels.add(p); });
-                for (const panel of openPanels) {
-                    await panel.updateCapabilities({ fastMode: true });
-                }
-
+                await applyLoadedSelection(parsed, true);
                 const selName = (parsed && !Array.isArray(parsed) && parsed.name) ? parsed.name : targetFileName.replace('.lollms-ctx', '');
                 vscode.window.showInformationMessage(`Context switched to: ${selName} (Fast Mode automatically enabled)`);
             }
@@ -671,18 +813,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                 const parsed = JSON.parse(Buffer.from(content).toString('utf8'));
                 const files = Array.isArray(parsed) ? parsed : (parsed?.files || []);
                 if (Array.isArray(files)) {
-                    // REPLACE: Soft reset the selection first
-                    await services.contextManager.getContextStateProvider()?.softReset();
-                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', files);
-
-                    // Auto-toggle to Fast Mode when loading a selection
-                    const openPanels = new Set<ChatPanel>();
-                    if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) openPanels.add(ChatPanel.currentPanel);
-                    ChatPanel.panels.forEach(p => { if (!p.isDisposed) openPanels.add(p); });
-                    for (const panel of openPanels) {
-                        await panel.updateCapabilities({ fastMode: true });
-                    }
-
+                    await applyLoadedSelection(parsed, true);
                     vscode.window.showInformationMessage(`Context selection replaced with ${files.length} files (Fast Mode automatically enabled).`);
                 } else {
                     vscode.window.showErrorMessage("Invalid context file format.");
@@ -720,17 +851,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                 const parsed = JSON.parse(Buffer.from(content).toString('utf8'));
                 const files = Array.isArray(parsed) ? parsed : (parsed?.files || []);
                 if (Array.isArray(files)) {
-                    // APPEND: Just add files without soft reset
-                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', files);
-
-                    // Auto-toggle to Fast Mode when loading a selection
-                    const openPanels = new Set<ChatPanel>();
-                    if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) openPanels.add(ChatPanel.currentPanel);
-                    ChatPanel.panels.forEach(p => { if (!p.isDisposed) openPanels.add(p); });
-                    for (const panel of openPanels) {
-                        await panel.updateCapabilities({ fastMode: true });
-                    }
-
+                    await applyLoadedSelection(parsed, false);
                     vscode.window.showInformationMessage(`Appended ${files.length} files to context (Fast Mode automatically enabled).`);
                 } else {
                     vscode.window.showErrorMessage("Invalid context file format.");

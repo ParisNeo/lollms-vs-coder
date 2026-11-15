@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
+import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
 import * as path from 'path';
 
 export const moveFileTool: ToolDefinition = {
@@ -14,6 +15,11 @@ export const moveFileTool: ToolDefinition = {
     ],
     async execute(params: { source: string, destination: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         try {
+            const srcProt = AgentSecurityGuard.isProtectedPath(params.source);
+            if (srcProt.protected) return { success: false, output: `🛑 SECURITY VIOLATION: ${srcProt.reason}` };
+            const dstProt = AgentSecurityGuard.isProtectedPath(params.destination);
+            if (dstProt.protected) return { success: false, output: `🛑 SECURITY VIOLATION: ${dstProt.reason}` };
+
             // Use namespaced resolution to support cross-project movement
             const srcRes = await env.contextManager.resolveWorkspaceFromPath(params.source);
             const destRes = await env.contextManager.resolveWorkspaceFromPath(params.destination);

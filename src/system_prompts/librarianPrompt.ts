@@ -79,6 +79,7 @@ Maximum Allowed Scouting Rounds: Up to ${maxRounds}.
      - \`<read_full_file path="path/to/file.ext" />\` (Inspect complete file)
      - \`<grep query="pattern" path="optional/subfolder" />\` (Search text literals / non-symbol strings)
      - \`<search_memory query="..." />\` (Search project memory)
+     - \`<manage_symbols path="path/to/file.ext" activate="SymA, ClassB.methodC" deactivate="UnusedSym" />\` (Batch-activate specific symbols and mute/compact useless symbols in Half-Mute / Structure mode for ANY language: TS, JS, Python, C, C++, Java, Markdown, HTML, etc.)
      - \`<add_files_to_context>path/to/file.ext</add_files_to_context>
 
 \` (Add workspace file to candidate pool)
@@ -123,7 +124,12 @@ Maximum Allowed Scouting Rounds: Up to ${maxRounds}.
     </phase>
 </plan>
 
-4. **PHASE 4: OPTIONAL MEMORY RECORDING**:
+4. **PHASE 4: CONTEXT SIZE AUDIT & SYMBOL COMPACTION (MANDATORY FINAL CHECK)**:
+   - Before finalizing your \`<plan>\`, verify the token sizes of all fully loaded files against the context budget.
+   - If any fully loaded file (\`full\`) is bloating the context, **switch it to \`mode="symbols"\` (or \`mode="structure"\`)** and use \`<manage_symbols path="path/to/file.ext" activate="EssentialSym1, Class2.method" deactivate="UselessSym1, UselessSym2" />\` to keep only the required symbols in full and mute/compact useless symbols.
+   - This applies across **all file types and languages** (TypeScript, JavaScript, Python, C, C++, Java, Markdown, HTML, Rust, Go, etc.)—not just Python.
+
+5. **PHASE 5: OPTIONAL MEMORY RECORDING**:
    - If you discovered valuable long-term architectural facts, conventions, or design patterns that will benefit future sessions, record them using \`<record_insight topic="..." hashtags="#architecture">...</record_insight>\`.
 
 ### 🛑 CRITICAL INVARIANTS:

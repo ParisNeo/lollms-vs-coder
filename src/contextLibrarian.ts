@@ -1925,6 +1925,10 @@ Analyze the requirements. Use your discovery tools (<read_definitions>, <show_sy
             let parsedMultiStepsPlan: MultiPartPlan | undefined = undefined;
             const structurePaths: string[] = [];
             const symbolFiles: { path: string; symbols: string[] }[] = [];
+            let decisionStatus = 'fit_all';
+            let editPaths: string[] = [];
+            let contextPaths: string[] = [];
+            let unneededPaths: string[] = [];
 
             // Parse explicit <viewing_strategy> tag if present
             const strategyMatch = cleanResponse.match(/<viewing_strategy\b[^>]*>([\s\S]*?)<\/viewing_strategy>/i);
@@ -2072,15 +2076,12 @@ Analyze the requirements. Use your discovery tools (<read_definitions>, <show_sy
             if (adviceTagMatch && !extractedAdvice) extractedAdvice = adviceTagMatch[1].trim();
             if (sigTagMatch) extractedSignatures = sigTagMatch[1].trim();
 
-            let decisionStatus = 'fit_all';
-            let editPaths: string[] = [];
-            let contextPaths: string[] = [];
-            let unneededPaths: string[] = [];
-
             if (parsedMultiStepsPlan && parsedMultiStepsPlan.parts.length > 0) {
                 decisionStatus = 'split_multi_part';
                 // Step 1 files are edit files; subsequent step files are context files
-                editPaths = [...parsedMultiStepsPlan.parts[0].editFiles];
+                for (const ef of parsedMultiStepsPlan.parts[0].editFiles) {
+                    if (!editPaths.includes(ef)) editPaths.push(ef);
+                }
                 for (let pi = 1; pi < parsedMultiStepsPlan.parts.length; pi++) {
                     contextPaths.push(...parsedMultiStepsPlan.parts[pi].editFiles);
                 }
@@ -2093,9 +2094,21 @@ Analyze the requirements. Use your discovery tools (<read_definitions>, <show_sy
                 const ctxMatch = inner.match(/<context_files>([\s\S]*?)<\/context_files>/i) || cleanResponse.match(/<context_files>([\s\S]*?)<\/context_files>/i);
                 const unneededMatch = inner.match(/<unneeded_files>([\s\S]*?)<\/unneeded_files>/i) || cleanResponse.match(/<unneeded_files>([\s\S]*?)<\/unneeded_files>/i);
 
-                if (editMatch) editPaths = editMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean);
-                if (ctxMatch) contextPaths = ctxMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean);
-                if (unneededMatch) unneededPaths = unneededMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean);
+                if (editMatch) {
+                    editMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean).forEach(p => {
+                        if (!editPaths.includes(p)) editPaths.push(p);
+                    });
+                }
+                if (ctxMatch) {
+                    ctxMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean).forEach(p => {
+                        if (!contextPaths.includes(p)) contextPaths.push(p);
+                    });
+                }
+                if (unneededMatch) {
+                    unneededMatch[1].split(/[\r\n,]+/).map(p => p.trim()).filter(Boolean).forEach(p => {
+                        if (!unneededPaths.includes(p)) unneededPaths.push(p);
+                    });
+                }
             }
 
             // Resilient Extraction: Detect prose hydrates e.g. "S1 hydrate: [path]" or "<unmute_files>"
@@ -2946,7 +2959,7 @@ Produce a concise, technical architectural directive for the Coder addressing "$
         governorReport?: string,
         overrideSelectedFilesContent?: string
     ): GovernorArbitrationResult {
-        const isFastMode = capabilities?.fastMode === true;
+        const isFastMode = capabilities?.fastMode !== false;
         const briefingText = isFastMode ? "" : (briefingContent !== undefined ? briefingContent : "");
         const finalTree = (contextData.projectTree && contextData.projectTree.trim()) 
             ? contextData.projectTree 

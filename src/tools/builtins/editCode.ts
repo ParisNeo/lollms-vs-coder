@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { applySearchReplace, getProcessedSystemPrompt, stripThinkingTags, normalizeAiderContent, parseAiderHunks } from '../../utils';
+import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
 import { ChatMessage } from '../../lollmsAPI';
 import * as path from 'path';
 import { Logger } from '../../logger';
@@ -222,6 +223,29 @@ If you need to modify this file, write and execute a script (e.g., Python with o
                     continue;
                 }
 
+                const secLevel = env.agentManager?.getSecurityLevel?.() || 'guarded';
+                const writeValidation = AgentSecurityGuard.validateWriteContent(filePath, originalContent, workingContent, secLevel, false);
+                if (!writeValidation.valid) {
+                    if (writeValidation.requiresConfirmation && env.agentManager?.requestSecurityApproval) {
+                        const approval = await env.agentManager.requestSecurityApproval(
+                            `Confirm Large Shrink Edit: ${filePath}`,
+                            writeValidation.reason || 'Significant code reduction detected.',
+                            'edit_code',
+                            filePath,
+                            signal
+                        );
+                        if (approval === 'block') {
+                            attempts++;
+                            lastFailureReason = writeValidation.reason || 'Edit blocked due to excessive code shrink.';
+                            continue;
+                        }
+                    } else {
+                        attempts++;
+                        lastFailureReason = writeValidation.reason || 'Content integrity check failed.';
+                        continue;
+                    }
+                }
+
                 // 4. THE GUARDIAN PASS (Protocol Step 5)
                 await vscode.workspace.fs.writeFile(fileUri, Buffer.from(workingContent, 'utf8'));
                 env.contextManager.refreshFileInCache(fileUri);
@@ -255,8 +279,8 @@ If you need to modify this file, write and execute a script (e.g., Python with o
                     const logicIssues = diagnostics.filter(d => !envIssues.includes(d));
 
                     if (logicIssues.length > 0 || smokeTestResult.includes("SyntaxError")) {
-                        // CRITICAL: Rollback and retry
-                        await vscode.workspace.fs.writeFile(fileUri, Buffer.from(workingContent, 'utf8'));
+                        // CRITICAL: Rollback to originalContent and retry
+                        await vscode.workspace.fs.writeFile(fileUri, Buffer.from(originalContent, 'utf8'));
                         attempts++;
                         lastFailureReason = `Surgical logic errors detected:\n${errorReport}`;
                         continue;

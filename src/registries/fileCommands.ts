@@ -13,6 +13,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
     const inMemorySnapshots = new Map<string, string>();
     const lastSnapshotWrite = new Map<string, number>();
+    const pendingDiffMetadata = new Map<string, { discussionId?: string; messageId?: string; blockIndex?: number; hunkIndex?: number; blockId?: string; filePath?: string }>();
 
     // Open dedicated File Repair Studio Tab
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openFileRepairStudio', async (fileTarget?: vscode.Uri | string, initialErrors?: any[]) => {
@@ -515,28 +516,25 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 const parentDir = vscode.Uri.joinPath(fileUri, '..');
                 await vscode.workspace.fs.createDirectory(parentDir);
 
-                const edit = new vscode.WorkspaceEdit();
-                edit.createFile(fileUri, { ignoreIfExists: true });
-                edit.insert(fileUri, new vscode.Position(0, 0), content);
-
-                await vscode.workspace.applyEdit(edit);
-                const newDoc = await vscode.workspace.openTextDocument(fileUri);
-                await newDoc.save();
+                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf8'));
 
                 services.contextManager.refreshFileInCache(fileUri);
                 services.contextManager.clearRenderedTreeCache();
 
-                if (ChatPanel.currentPanel) {
-                    await ChatPanel.currentPanel.unmuteFiles([cleanPath]);
-                }
+                if (!(options as any)?.isBatch) {
+                    if (ChatPanel.currentPanel) {
+                        await ChatPanel.currentPanel.unmuteFiles([cleanPath]);
+                    }
 
-                try {
-                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [cleanPath]);
-                } catch (e) {
-                    Logger.warn(`Failed to auto-add new file to context: ${e}`);
+                    try {
+                        await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [cleanPath]);
+                    } catch (e) {
+                        Logger.warn(`Failed to auto-add new file to context: ${e}`);
+                    }
                 }
 
                 if (!options?.silent) {
+                    const newDoc = await vscode.workspace.openTextDocument(fileUri);
                     await vscode.window.showTextDocument(newDoc);
                 }
                 return { success: true, alreadyApplied: false };
@@ -713,13 +711,16 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             } else {
                 // Interactive Review: Open full-file diff comparing the full disk file vs the full proposed file (with symbol spliced in)
                 const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
-                await services.diffManager.openDiff(fileUri, finalWriteContent, discussionId, {
+                const diffMeta = {
+                    discussionId,
                     messageId: options?.messageId,
                     blockIndex: options?.blockIndex,
                     hunkIndex: options?.hunkIndex,
                     blockId: options?.blockId,
                     filePath: cleanPath
-                });
+                };
+                pendingDiffMetadata.set(fileUri.toString(), diffMeta);
+                await services.diffManager.openDiff(fileUri, finalWriteContent, discussionId, diffMeta);
             }
 
             return { success: true, alreadyApplied: !!options?.silent };
@@ -872,9 +873,12 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
         if (generatedUri && services.diffManager.isLollmsDiff(generatedUri)) {
             const originalUri = services.diffManager.getOriginalUri(generatedUri);
-            const metadata = (services.diffManager as any).getMetadata?.(generatedUri) || (generatedUri as any)._lollmsMeta;
+            const fallbackMeta = originalUri ? pendingDiffMetadata.get(originalUri.toString()) : undefined;
+            const rawMeta = (services.diffManager as any).getMetadata?.(generatedUri) || (generatedUri as any)._lollmsMeta;
+            const metadata = { ...fallbackMeta, ...rawMeta };
 
             if (originalUri) {
+                pendingDiffMetadata.delete(originalUri.toString());
                 const doc = await vscode.workspace.openTextDocument(generatedUri);
                 const newContent = doc.getText();
 
@@ -888,15 +892,17 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     await originalDoc.save();
                     services.contextManager.refreshFileInCache(originalUri);
 
-                    const relPath = vscode.workspace.asRelativePath(originalUri, false);
-                    await services.contextManager.getContextStateProvider()?.addFilesToContext([relPath]);
+                    const isMultiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
+                    const contextRelPath = vscode.workspace.asRelativePath(originalUri, isMultiRoot);
+                    const uiFilePath = metadata?.filePath || contextRelPath;
+                    await services.contextManager.getContextStateProvider()?.addFilesToContext([contextRelPath]);
 
                     // Notify the active ChatPanel and sync the discussion state
                     const targetDiscussionId = metadata?.discussionId || ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
                     const panel = targetDiscussionId ? ChatPanel.panels.get(targetDiscussionId) || ChatPanel.currentPanel : ChatPanel.currentPanel;
 
                     if (panel) {
-                        await panel.unmuteFiles([relPath]);
+                        await panel.unmuteFiles([contextRelPath]);
                         panel.updateContextAndTokens({ isBackgroundSync: false });
 
                         if (metadata?.messageId && metadata?.blockIndex !== undefined) {
@@ -909,24 +915,28 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                             blockIndex: metadata?.blockIndex,
                             hunkIndex: metadata?.hunkIndex,
                             blockId: metadata?.blockId,
-                            filePath: relPath,
+                            filePath: uiFilePath,
                             success: true,
                             alreadyApplied: true
                         });
 
                         panel._panel.webview.postMessage({
                             command: 'fileSavedOnDisk',
-                            filePath: relPath,
+                            filePath: uiFilePath,
                             messageId: metadata?.messageId,
                             blockIndex: metadata?.blockIndex,
-                            hunkIndex: metadata?.hunkIndex
+                            hunkIndex: metadata?.hunkIndex,
+                            blockId: metadata?.blockId
                         });
                     }
 
                     if (CompanionPanel.currentPanel) {
                         CompanionPanel.currentPanel._panel.webview.postMessage({
                             command: 'applyAllResult',
-                            filePath: relPath,
+                            messageId: metadata?.messageId,
+                            blockIndex: metadata?.blockIndex,
+                            hunkIndex: metadata?.hunkIndex,
+                            filePath: uiFilePath,
                             blockId: metadata?.blockId,
                             alreadyApplied: true,
                             success: true
@@ -985,13 +995,40 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         }
         
         if (generatedUri && services.diffManager.isLollmsDiff(generatedUri)) {
-            const metadata = (services.diffManager as any).getMetadata?.(generatedUri) || (generatedUri as any)._lollmsMeta;
+            const originalUri = services.diffManager.getOriginalUri(generatedUri);
+            const fallbackMeta = originalUri ? pendingDiffMetadata.get(originalUri.toString()) : undefined;
+            const rawMeta = (services.diffManager as any).getMetadata?.(generatedUri) || (generatedUri as any)._lollmsMeta;
+            const metadata = { ...fallbackMeta, ...rawMeta };
+            if (originalUri) {
+                pendingDiffMetadata.delete(originalUri.toString());
+            }
+
             services.diffManager.cleanup(generatedUri);
             await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+
+            const targetDiscussionId = metadata?.discussionId || ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
+            const panel = targetDiscussionId ? ChatPanel.panels.get(targetDiscussionId) || ChatPanel.currentPanel : ChatPanel.currentPanel;
+            if (panel) {
+                panel._panel.webview.postMessage({
+                    command: 'applyAllResult',
+                    messageId: metadata?.messageId,
+                    blockIndex: metadata?.blockIndex,
+                    hunkIndex: metadata?.hunkIndex,
+                    blockId: metadata?.blockId,
+                    filePath: metadata?.filePath,
+                    alreadyApplied: false,
+                    reviewingDiff: false,
+                    success: true,
+                    rejected: true
+                });
+            }
 
             if (CompanionPanel.currentPanel) {
                 CompanionPanel.currentPanel._panel.webview.postMessage({
                     command: 'applyAllResult',
+                    messageId: metadata?.messageId,
+                    blockIndex: metadata?.blockIndex,
+                    hunkIndex: metadata?.hunkIndex,
                     filePath: metadata?.filePath,
                     blockId: metadata?.blockId,
                     alreadyApplied: false,
@@ -1349,8 +1386,15 @@ ${originalFileContent}
             if (rawMatches.length > 0) {
                 matches = rawMatches.map(m => [m[0], m[1].replace(/^\r?\n/, '').replace(/\r?\n$/, ''), m[2].replace(/^\r?\n/, '').replace(/\r?\n$/, '')]);
             } else {
-                if (!options?.silent) vscode.window.showErrorMessage("No valid Search/Replace blocks found.");
-                return { success: false, error: "Invalid Aider block format: Markers must be on their own lines." };
+                // Fallback for search-only blocks emitted by LLMs intending code deletion
+                const searchOnlyRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+                const searchOnlyMatches = [...normalizedContent.matchAll(searchOnlyRegex)];
+                if (searchOnlyMatches.length > 0) {
+                    matches = searchOnlyMatches.map(m => [m[0], m[1].replace(/^\r?\n/, '').replace(/\r?\n$/, ''), '']);
+                } else {
+                    if (!options?.silent) vscode.window.showErrorMessage("No valid Search/Replace blocks found.");
+                    return { success: false, error: "Invalid Aider block format: Markers must be on their own lines." };
+                }
             }
         }
 
@@ -1430,7 +1474,60 @@ ${originalFileContent}
                     continue; 
                 }
 
-                const result = applySearchReplace(currentContent, searchCode, replaceCode);
+                let result = applySearchReplace(currentContent, searchCode, replaceCode);
+
+                // Clean line-aware deletion fallback when REPLACE is empty
+                if (!result.success && replaceCode.trim() === '' && searchCode.trim().length > 0) {
+                    const eol = currentContent.includes('\r\n') ? '\r\n' : '\n';
+                    const normDoc = currentContent.replace(/\r\n/g, '\n');
+                    const normSearch = searchCode.replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
+                    let idx = normDoc.indexOf(normSearch);
+                    let matchLen = normSearch.length;
+
+                    if (idx === -1) {
+                        const docLines = normDoc.split('\n');
+                        const searchLines = normSearch.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+                        if (searchLines.length > 0) {
+                            for (let li = 0; li < docLines.length; li++) {
+                                if (docLines[li].trim() !== searchLines[0]) continue;
+                                let ok = true;
+                                let docOffset = 0;
+                                let lastLi = li;
+                                for (let sj = 0; sj < searchLines.length; sj++) {
+                                    while (li + docOffset < docLines.length && docLines[li + docOffset].trim().length === 0) docOffset++;
+                                    if (li + docOffset >= docLines.length || docLines[li + docOffset].trim() !== searchLines[sj]) {
+                                        ok = false;
+                                        break;
+                                    }
+                                    lastLi = li + docOffset;
+                                    docOffset++;
+                                }
+                                if (ok) {
+                                    const prefixChars = docLines.slice(0, li).join('\n').length + (li > 0 ? 1 : 0);
+                                    const blockChars = docLines.slice(li, lastLi + 1).join('\n').length;
+                                    idx = prefixChars;
+                                    matchLen = blockChars;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (idx !== -1) {
+                        const lineStart = normDoc.lastIndexOf('\n', idx - 1) + 1;
+                        if (normDoc.slice(lineStart, idx).trim() === '') {
+                            matchLen += (idx - lineStart);
+                            idx = lineStart;
+                        }
+                        const before = normDoc.slice(0, idx);
+                        let after = normDoc.slice(idx + matchLen);
+                        if (after.startsWith('\n') && (before === '' || before.endsWith('\n'))) {
+                            after = after.slice(1);
+                        }
+                        const updated = (before + after).replace(/\n/g, eol);
+                        result = { success: true, result: updated, strategy: 'empty-replace-delete' } as any;
+                    }
+                }
 
                 if (result.success) {
                     currentContent = result.result;
@@ -1585,13 +1682,16 @@ ${originalContent}
                         Logger.info(`replaceCode: Persisted ${applyCount}/${matches.length} succeeded hunks to disk for ${sanitizedFilePath}`);
                     } else {
                         const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
-                        await services.diffManager.openDiff(fileUri, currentContent, discussionId, {
+                        const diffMeta = {
+                            discussionId,
                             messageId: messageId,
                             blockIndex: options?.blockIndex,
                             hunkIndex: options?.hunkIndex,
                             blockId: options?.blockId,
                             filePath: sanitizedFilePath
-                        });
+                        };
+                        pendingDiffMetadata.set(fileUri.toString(), diffMeta);
+                        await services.diffManager.openDiff(fileUri, currentContent, discussionId, diffMeta);
                     }
                 }
 
@@ -1685,46 +1785,138 @@ ${originalContent}
         }
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteCodeBlock', async (filePath: string, content: string) => {
-        const activeWorkspace = getActiveWorkspace();
-        if (!activeWorkspace) return;
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteCodeBlock', async (filePath: string, content: string, options?: { silent?: boolean; autoSave?: boolean; messageId?: string; blockIndex?: number; hunkIndex?: number; blockId?: string }) => {
+        const cleanPath = (filePath || '').replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
+        if (!isValidFilePath(cleanPath)) {
+            const err = `Invalid file path: "${cleanPath}".`;
+            if (!options?.silent) vscode.window.showErrorMessage(err);
+            return { success: false, error: err };
+        }
 
-        const match = content.match(/<<<<([\s\S]*?)>>>>/);
-        const codeToDelete = match ? match[1].trim() : content.trim();
-        const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
-        
+        const resolution = await services.contextManager.resolveWorkspaceFromPath(cleanPath);
+        if (!resolution || !resolution.uri) {
+            const err = `Could not resolve path: ${cleanPath}`;
+            if (!options?.silent) vscode.window.showErrorMessage(err);
+            return { success: false, error: err };
+        }
+
+        const fileUri = resolution.uri;
+        let blocksToDelete: string[] = [];
+
+        const raw = (content || '').trim();
+        if (raw.includes('<<<<<<< SEARCH')) {
+            const hunks = parseAiderHunks(normalizeAiderContent(raw));
+            if (hunks.length > 0) {
+                blocksToDelete = hunks.map(h => h.searchPart).filter(b => b.trim().length > 0);
+            } else {
+                const stripped = raw
+                    .replace(/<<<<<<< SEARCH\r?\n?/g, '')
+                    .replace(/\r?\n?=======[\s\S]*?>>>>>>> REPLACE/g, '')
+                    .replace(/\r?\n?>>>>>>> REPLACE/g, '')
+                    .trim();
+                if (stripped) blocksToDelete.push(stripped);
+            }
+        } else {
+            const legacyMatch = raw.match(/<<<<([\s\S]*?)>>>>/);
+            const block = legacyMatch ? legacyMatch[1].trim() : raw;
+            if (block) blocksToDelete.push(block);
+        }
+
+        if (blocksToDelete.length === 0) {
+            const err = `No code lines specified for deletion in ${cleanPath}.`;
+            if (!options?.silent) vscode.window.showErrorMessage(err);
+            return { success: false, error: err };
+        }
+
         try {
-            let document = await vscode.workspace.openTextDocument(fileUri);
+            const document = await vscode.workspace.openTextDocument(fileUri);
             const originalContent = document.getText();
-            const range = findBlockRange(document, codeToDelete);
-            
-            if (!range) {
-                vscode.window.showErrorMessage(`Could not locate code to delete in ${filePath}.`);
-                return;
+            const eol = originalContent.includes('\r\n') ? '\r\n' : '\n';
+            let updatedNorm = originalContent.replace(/\r\n/g, '\n');
+
+            for (const block of blocksToDelete) {
+                const normBlock = block.replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
+                let idx = updatedNorm.indexOf(normBlock);
+                let matchLen = normBlock.length;
+
+                if (idx === -1) {
+                    const docLines = updatedNorm.split('\n');
+                    const searchLines = normBlock.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+                    if (searchLines.length > 0) {
+                        for (let i = 0; i < docLines.length; i++) {
+                            if (docLines[i].trim() !== searchLines[0]) continue;
+                            let matched = true;
+                            let docOffset = 0;
+                            let lastMatched = i;
+                            for (let j = 0; j < searchLines.length; j++) {
+                                while (i + docOffset < docLines.length && docLines[i + docOffset].trim().length === 0) docOffset++;
+                                if (i + docOffset >= docLines.length || docLines[i + docOffset].trim() !== searchLines[j]) {
+                                    matched = false;
+                                    break;
+                                }
+                                lastMatched = i + docOffset;
+                                docOffset++;
+                            }
+                            if (matched) {
+                                idx = docLines.slice(0, i).join('\n').length + (i > 0 ? 1 : 0);
+                                matchLen = docLines.slice(i, lastMatched + 1).join('\n').length;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (idx === -1) {
+                    const err = `Could not locate code to delete in ${cleanPath}.`;
+                    if (!options?.silent) vscode.window.showErrorMessage(err);
+                    return { success: false, error: err };
+                }
+
+                // Expand backwards to start of line if preceded only by indentation
+                const lineStart = updatedNorm.lastIndexOf('\n', idx - 1) + 1;
+                if (updatedNorm.slice(lineStart, idx).trim() === '') {
+                    matchLen += (idx - lineStart);
+                    idx = lineStart;
+                }
+
+                const before = updatedNorm.substring(0, idx);
+                let after = updatedNorm.substring(idx + matchLen);
+                if (after.startsWith('\n') && (before === '' || before.endsWith('\n'))) {
+                    after = after.substring(1);
+                }
+                updatedNorm = before + after;
             }
-            
-            const before = originalContent.substring(0, range.start);
-            let after = originalContent.substring(range.end);
-            
-            if (after.startsWith('\r\n')) {
-                after = after.substring(2);
-            } else if (after.startsWith('\n')) {
-                after = after.substring(1);
+
+            const newFullContent = updatedNorm.replace(/\n/g, eol);
+            if (options?.silent || options?.autoSave) {
+                const edit = new vscode.WorkspaceEdit();
+                const lastLine = document.lineCount > 0 ? document.lineCount - 1 : 0;
+                edit.replace(fileUri, new vscode.Range(new vscode.Position(0, 0), document.lineAt(lastLine).range.end), newFullContent);
+                const applied = await vscode.workspace.applyEdit(edit);
+                if (applied) {
+                    await document.save();
+                } else {
+                    await vscode.workspace.fs.writeFile(fileUri, Buffer.from(newFullContent, 'utf8'));
+                }
+                services.contextManager.refreshFileInCache(fileUri);
+                return { success: true, alreadyApplied: true };
+            } else {
+                const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
+                const diffMeta = {
+                    discussionId,
+                    messageId: options?.messageId,
+                    blockIndex: options?.blockIndex,
+                    hunkIndex: options?.hunkIndex,
+                    blockId: options?.blockId,
+                    filePath: cleanPath
+                };
+                pendingDiffMetadata.set(fileUri.toString(), diffMeta);
+                await services.diffManager.openDiff(fileUri, newFullContent, discussionId, diffMeta);
+                return { success: true, alreadyApplied: false };
             }
-
-            const newFullContent = before + after;
-
-            const edit = new vscode.WorkspaceEdit();
-            edit.replace(fileUri, new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end), newFullContent);
-            const applied = await vscode.workspace.applyEdit(edit);
-            if (applied) {
-                await document.save();
-            }
-
-            await openDiffView(fileUri, originalContent);
-
-        } catch(e: any) {
-            vscode.window.showErrorMessage(`Error accessing file ${filePath}: ${e.message}`);
+        } catch (e: any) {
+            if (!options?.silent) vscode.window.showErrorMessage(`Error deleting code in ${cleanPath}: ${e.message}`);
+            return { success: false, error: e.message };
         }
     }));
 
@@ -1746,18 +1938,103 @@ ${originalContent}
         }
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteFile', async (pathsStr: string) => {
-        const activeWorkspace = getActiveWorkspace();
-        if (!activeWorkspace) return;
-        const paths = pathsStr.split(/[\n,]/).map(p => p.trim()).filter(p => p);
-        const edit = new vscode.WorkspaceEdit();
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteFile', async (pathsInput: string | string[], options?: { silent?: boolean; skipConfirm?: boolean }) => {
+        const rawPaths = Array.isArray(pathsInput)
+            ? pathsInput
+            : String(pathsInput || '').split(/[\r\n,]+/);
+        const paths = Array.from(new Set(rawPaths.map(p => p.trim().replace(/^['"`]|['"`]$/g, '')).filter(p => p && p !== '.' && p !== '..')));
+
+        if (paths.length === 0) {
+            return { success: false, cancelled: false, deletedPaths: [], failedPaths: [] };
+        }
+
+        const { isProjectFile } = require('../utils');
+        const resolvedTargets: { rawPath: string; relativePath: string; uri: vscode.Uri }[] = [];
+        const failedPaths: string[] = [];
+
         for (const p of paths) {
-            const uri = vscode.Uri.joinPath(activeWorkspace.uri, p);
-            edit.deleteFile(uri, { ignoreIfNotExists: true, recursive: true });
+            if (!isValidFilePath(p) || !isProjectFile(p) || p.includes('.lollms/external_files')) {
+                failedPaths.push(p);
+                continue;
+            }
+            const res = await services.contextManager.resolveWorkspaceFromPath(p);
+            if (!res || !res.folder || !vscode.workspace.getWorkspaceFolder(res.uri)) {
+                failedPaths.push(p);
+                continue;
+            }
+            if (!res.relativePath || res.relativePath === '.' || res.relativePath === '..') {
+                failedPaths.push(p);
+                continue;
+            }
+            try {
+                await vscode.workspace.fs.stat(res.uri);
+                resolvedTargets.push({ rawPath: p, relativePath: res.relativePath, uri: res.uri });
+            } catch {
+                failedPaths.push(p);
+            }
         }
-        if (await vscode.workspace.applyEdit(edit)) {
-            vscode.window.showInformationMessage(`Deleted ${paths.length} file(s)/folder(s).`);
+
+        if (resolvedTargets.length === 0) {
+            if (!options?.silent) {
+                vscode.window.showWarningMessage(`No deletable workspace files found for: ${paths.join(', ')}`);
+            }
+            return { success: false, cancelled: false, deletedPaths: [], failedPaths: paths };
         }
+
+        if (!options?.skipConfirm) {
+            const previewList = resolvedTargets.slice(0, 8).map(t => `• ${t.relativePath}`).join('\n');
+            const moreText = resolvedTargets.length > 8 ? `\n... and ${resolvedTargets.length - 8} more` : '';
+            const confirm = await vscode.window.showWarningMessage(
+                `Move ${resolvedTargets.length} file(s) to Trash?\n\n${previewList}${moreText}`,
+                { modal: true },
+                'Move to Trash'
+            );
+            if (confirm !== 'Move to Trash') {
+                return { success: false, cancelled: true, deletedPaths: [], failedPaths: [] };
+            }
+        }
+
+        const deletedPaths: string[] = [];
+        const deletedRelPaths: string[] = [];
+
+        for (const target of resolvedTargets) {
+            try {
+                await vscode.workspace.fs.delete(target.uri, { recursive: true, useTrash: true });
+                services.contextManager.refreshFileInCache(target.uri);
+                services.contextManager.removeFilesUnderPath(target.relativePath);
+                services.contextManager.markTreeDirty(true);
+                deletedPaths.push(target.rawPath);
+                deletedRelPaths.push(target.relativePath);
+            } catch (err: any) {
+                Logger.error(`Failed to delete ${target.relativePath}: ${err.message}`);
+                failedPaths.push(target.rawPath);
+            }
+        }
+
+        if (deletedRelPaths.length > 0) {
+            const allRemoveCandidates = Array.from(new Set([...deletedPaths, ...deletedRelPaths]));
+            await services.contextManager.getContextStateProvider()?.removeFiles(allRemoveCandidates);
+
+            const openPanels = new Set<ChatPanel>();
+            if (ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed) openPanels.add(ChatPanel.currentPanel);
+            ChatPanel.panels.forEach(p => { if (!p.isDisposed) openPanels.add(p); });
+
+            for (const panel of openPanels) {
+                await panel.removeFilesFromDiscussionContext(allRemoveCandidates);
+                panel.updateContextAndTokens({ isBackgroundSync: false });
+            }
+
+            if (!options?.silent) {
+                vscode.window.showInformationMessage(`Moved ${deletedRelPaths.length} file(s) to Trash.`);
+            }
+        }
+
+        return {
+            success: deletedPaths.length > 0,
+            cancelled: false,
+            deletedPaths,
+            failedPaths
+        };
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.bulkMoveFiles', async (operations: {src: string, dest: string}[]) => {

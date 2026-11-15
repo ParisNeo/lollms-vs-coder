@@ -7,6 +7,7 @@ import { ChatMessage } from '../lollmsAPI';
 interface HistoryItem {
     id: string;
     prompt: string;
+    promptContent?: any;
     response: string;
     timestamp: number;
 }
@@ -27,6 +28,7 @@ export class CompanionPanel {
     private _contextInfo: string = "No active context";
     private _trustScore: number = 75;
     private _preApplySnapshots: Map<string, { filePath: string; content: string }> = new Map();
+    private _activeAbortController: AbortController | null = null;
     private _htmlCache: string | undefined;
 
     public agentManager: any;
@@ -138,9 +140,20 @@ export class CompanionPanel {
             }
         }
 
+        const srcCssPath = vscode.Uri.joinPath(this._extensionUri, 'src', 'commands', 'chatPanel', 'webview', 'chatPanel.css');
+        const outCssPath = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.css');
+        try {
+            if (fs.existsSync(srcCssPath.fsPath)) {
+                const outDir = path.dirname(outCssPath.fsPath);
+                if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+                fs.copyFileSync(srcCssPath.fsPath, outCssPath.fsPath);
+            }
+        } catch {}
+
         const codiconUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
-        const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.css'));
+        const cssUri = webview.asWebviewUri(outCssPath);
         const prismThemeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'prism-tomorrow.css'));
+        const bundleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'companion.bundle.js'));
 
         const nonce = this.getNonce();
         const initialInfo = (this._contextInfo || "No active editor")
@@ -185,11 +198,12 @@ export class CompanionPanel {
                         await this.focusCodeInEditor(message.code);
                         break;
                     case 'saveAndAsk':
-                        await this.handleSaveAndAsk(message.messageId, message.text);
+                        await this.handleSaveAndAsk(message.messageId, message.text, message.images);
                         break;
                     case 'submitPrompt':
                         const payload = JSON.stringify({
-                            text: message.text || message.query || ""
+                            text: message.text || message.query || "",
+                            images: Array.isArray(message.images) ? message.images : undefined
                         });
                         this._onDidSubmit.fire(payload);
                         break;
@@ -211,7 +225,26 @@ export class CompanionPanel {
                     case 'deleteHistory':
                         this.deleteHistoryItem(message.id);
                         break;
+                    case 'stopGeneration':
+                        this.abortActiveGeneration();
+                        break;
+                    case 'openFile':
+                        if (message.path) {
+                            const ws = vscode.workspace.workspaceFolders?.[0];
+                            const targetUri = path.isAbsolute(message.path)
+                                ? vscode.Uri.file(message.path)
+                                : (ws ? vscode.Uri.joinPath(ws.uri, message.path) : vscode.Uri.file(message.path));
+                            try {
+                                const doc = await vscode.workspace.openTextDocument(targetUri);
+                                const targetCol = this._panel.viewColumn === vscode.ViewColumn.One ? vscode.ViewColumn.Two : vscode.ViewColumn.One;
+                                await vscode.window.showTextDocument(doc, { viewColumn: targetCol, preview: false });
+                            } catch (e: any) {
+                                vscode.window.showErrorMessage(`Could not open file: ${e.message}`);
+                            }
+                        }
+                        break;
                     case 'clearActiveChat':
+                        this.abortActiveGeneration();
                         this.chatHistory = [];
                         break;
                     case 'updateMessage':
@@ -274,13 +307,17 @@ export class CompanionPanel {
 
                                 this._panel.webview.postMessage({
                                     command: 'applyAllResult',
+                                    messageId: message.messageId,
+                                    blockIndex: c.blockIndex,
                                     success: ok,
                                     error: res?.error,
                                     blockId: c.blockId,
                                     hunkIndex: c.hunkIndex,
                                     filePath: targetPath,
                                     alreadyApplied: ok && !isUndo,
-                                    undo: isUndo
+                                    undo: isUndo,
+                                    currentIndex: i,
+                                    totalCount: changes.length
                                 });
                             }
 
@@ -334,17 +371,65 @@ export class CompanionPanel {
 
                             this._panel.webview.postMessage({
                                 command: 'applyAllResult',
+                                messageId: message.messageId,
+                                blockIndex: message.blockIndex ?? message.options?.blockIndex,
                                 success: res?.success ?? false,
                                 error: res?.error,
                                 blockId: blockId,
-                                hunkIndex: message.options?.hunkIndex,
+                                hunkIndex: message.hunkIndex ?? message.options?.hunkIndex,
                                 filePath: targetPath,
                                 alreadyApplied: res?.success && (opts.silent || isUndo ? !isUndo : false),
                                 reviewingDiff: res?.success && isManual,
                                 undo: isUndo
                             });
                         } catch (e: any) {
-                            this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message, blockId: message.options?.blockId || message.blockId });
+                            this._panel.webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: message.messageId,
+                                blockIndex: message.blockIndex ?? message.options?.blockIndex,
+                                success: false,
+                                error: e.message,
+                                blockId: message.options?.blockId || message.blockId
+                            });
+                        }
+                        break;
+                    case 'deleteCodeBlock':
+                        try {
+                            let targetPath = message.filePath;
+                            if (!targetPath && this._lastActiveEditor) {
+                                targetPath = vscode.workspace.asRelativePath(this._lastActiveEditor.document.uri);
+                            }
+                            const isManual = !message.options?.silent;
+                            const blockId = message.blockId || message.options?.blockId;
+                            const opts = {
+                                ...message.options,
+                                silent: !isManual,
+                                autoSave: !isManual,
+                                messageId: message.messageId,
+                                blockIndex: message.blockIndex ?? message.options?.blockIndex,
+                                blockId
+                            };
+                            const res: any = await vscode.commands.executeCommand('lollms-vs-coder.deleteCodeBlock', targetPath, message.content, opts);
+                            this._panel.webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: message.messageId,
+                                blockIndex: message.blockIndex ?? message.options?.blockIndex,
+                                success: res?.success ?? false,
+                                error: res?.error,
+                                blockId,
+                                filePath: targetPath,
+                                alreadyApplied: res?.success && opts.silent,
+                                reviewingDiff: res?.success && isManual
+                            });
+                        } catch (e: any) {
+                            this._panel.webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: message.messageId,
+                                blockIndex: message.blockIndex ?? message.options?.blockIndex,
+                                success: false,
+                                error: e.message,
+                                blockId: message.options?.blockId || message.blockId
+                            });
                         }
                         break;
                     case 'acceptDiff':
@@ -404,16 +489,25 @@ export class CompanionPanel {
 
                             this._panel.webview.postMessage({
                                 command: 'applyAllResult',
+                                messageId: message.messageId,
+                                blockIndex: message.blockIndex ?? message.options?.blockIndex,
                                 success: res?.success ?? false,
                                 error: res?.error,
                                 blockId: blockId,
-                                hunkIndex: message.options?.hunkIndex,
+                                hunkIndex: message.hunkIndex ?? message.options?.hunkIndex,
                                 filePath: targetPath,
                                 alreadyApplied: res?.success && (opts.silent ? true : res.alreadyApplied),
                                 reviewingDiff: res?.success && isManual
                             });
                         } catch (e: any) {
-                            this._panel.webview.postMessage({ command: 'applyAllResult', success: false, error: e.message, blockId: message.options?.blockId || message.blockId });
+                            this._panel.webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: message.messageId,
+                                blockIndex: message.blockIndex ?? message.options?.blockIndex,
+                                success: false,
+                                error: e.message,
+                                blockId: message.options?.blockId || message.blockId
+                            });
                         }
                         break;
                     case 'reviewDecision':
@@ -936,10 +1030,10 @@ export class CompanionPanel {
         return false;
     }
 
-    public async handleSaveAndAsk(messageId: string, newText: string) {
-        if (!newText || typeof newText !== 'string') return;
-        const cleanText = newText.trim();
-        if (!cleanText) return;
+    public async handleSaveAndAsk(messageId: string, newText: string, images?: { name: string; data: string }[]) {
+        const cleanText = typeof newText === 'string' ? newText.trim() : '';
+        const safeImages = Array.isArray(images) ? images : [];
+        if (!cleanText && safeImages.length === 0) return;
 
         // Truncate chatHistory up to this message so the previous assistant turn is re-generated
         if (messageId && this.chatHistory && this.chatHistory.length > 0) {
@@ -969,7 +1063,8 @@ export class CompanionPanel {
         }
 
         const payload = JSON.stringify({
-            text: cleanText
+            text: cleanText,
+            images: safeImages
         });
         this._onDidSubmit.fire(payload);
     }
@@ -977,6 +1072,18 @@ export class CompanionPanel {
     public setContextInfo(info: string, filePath?: string) {
         this._contextInfo = info;
         this._panel.webview.postMessage({ command: 'updateContextInfo', text: info, filePath });
+    }
+
+    public setAbortController(controller: AbortController | null) {
+        this._activeAbortController = controller;
+    }
+
+    public abortActiveGeneration() {
+        if (this._activeAbortController) {
+            this._activeAbortController.abort();
+            this._activeAbortController = null;
+        }
+        this.setLoading(false);
     }
 
     public setLoading(isLoading: boolean) {
@@ -1002,10 +1109,11 @@ export class CompanionPanel {
         this._panel.webview.postMessage({ command: 'updateHistory', history: this._history });
     }
 
-    public addHistory(prompt: string, response: string) {
+    public addHistory(prompt: string, response: string, promptContent?: any) {
         const newItem: HistoryItem = {
             id: Date.now().toString(),
             prompt,
+            promptContent,
             response,
             timestamp: Date.now()
         };
@@ -1027,8 +1135,8 @@ export class CompanionPanel {
             this._currentHistoryIndex = index;
             const item = this._history[index];
             this.chatHistory = [
-                { role: 'user', content: item.prompt },
-                { role: 'assistant', content: item.response }
+                { id: `hist_user_${item.id}`, role: 'user', content: item.promptContent || item.prompt },
+                { id: `hist_asst_${item.id}`, role: 'assistant', content: item.response }
             ];
             this._panel.webview.postMessage({
                 command: 'updateChat',

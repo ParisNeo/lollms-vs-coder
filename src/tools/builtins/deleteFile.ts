@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
+import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
 
 export const deleteFileTool: ToolDefinition = {
     name: "delete_file",
-    description: "Deletes one or more files or folders from the workspace recursively. Use with caution.",
+    description: "Deletes one or more files or folders from the workspace safely (moves to Trash). Use with caution.",
     isAgentic: true,
     isDefault: true,
     permissionGroup: 'filesystem_write',
@@ -16,35 +18,49 @@ export const deleteFileTool: ToolDefinition = {
             return { success: false, output: "Error: 'paths' parameter (array) is required." };
         }
 
-        const edit = new vscode.WorkspaceEdit();
         const deleted: string[] = [];
         const failed: string[] = [];
+        const blocked: string[] = [];
+        const rootResolved = path.resolve(env.workspaceRoot.uri.fsPath);
 
         for (const p of params.paths) {
-            let relPath = p.trim();
-            if (relPath.startsWith('/') || relPath.startsWith('\\')) relPath = relPath.substring(1);
-            
+            const raw = String(p || '').trim();
+            const prot = AgentSecurityGuard.isProtectedPath(raw);
+            if (prot.protected) {
+                blocked.push(`${raw} (${prot.reason})`);
+                continue;
+            }
+
+            let relPath = raw.replace(/^[/\\]+/, '');
             const uri = vscode.Uri.joinPath(env.workspaceRoot.uri, relPath);
+            const targetResolved = path.resolve(uri.fsPath);
+
+            if (targetResolved === rootResolved || !targetResolved.startsWith(rootResolved + path.sep)) {
+                blocked.push(`${raw} (Outside workspace root)`);
+                continue;
+            }
+
             try {
                 await vscode.workspace.fs.stat(uri);
-                edit.deleteFile(uri, { ignoreIfNotExists: true, recursive: true });
+                await vscode.workspace.fs.delete(uri, { recursive: true, useTrash: true });
+                env.contextManager?.refreshFileInCache(uri);
                 deleted.push(relPath);
             } catch {
                 failed.push(relPath);
             }
         }
 
+        if (blocked.length > 0 && deleted.length === 0) {
+            return { success: false, output: `🛑 SECURITY VIOLATION: Blocked deletion of protected paths:\n${blocked.join('\n')}` };
+        }
+
         if (deleted.length === 0) {
             return { success: false, output: `No files found to delete. Checked: ${params.paths.join(', ')}` };
         }
 
-        const success = await vscode.workspace.applyEdit(edit);
-        if (success) {
-            let output = `Successfully deleted: ${deleted.join(', ')}`;
-            if (failed.length > 0) output += `\nFailed to find: ${failed.join(', ')}`;
-            return { success: true, output };
-        } else {
-            return { success: false, output: "Failed to apply file deletions. Check workspace permissions." };
-        }
+        let output = `Successfully moved to Trash: ${deleted.join(', ')}`;
+        if (failed.length > 0) output += `\nFailed to find: ${failed.join(', ')}`;
+        if (blocked.length > 0) output += `\nBlocked protected paths: ${blocked.join(', ')}`;
+        return { success: true, output };
     }
 };

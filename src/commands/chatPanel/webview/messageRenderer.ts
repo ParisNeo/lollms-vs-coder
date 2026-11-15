@@ -1348,8 +1348,14 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
     let actionableBlockCount = 0;
 
     pres.forEach((pre) => {
-        const code = pre.querySelector('code');
-        if (!code || pre.parentElement?.classList.contains('code-collapsible') || pre.closest('.skill-preview')) return;
+        const code = pre.querySelector(':scope > code');
+        if (
+            !code ||
+            pre.parentElement?.classList.contains('code-collapsible') ||
+            pre.closest('.skill-preview, .processing-block, .processing-body, .librarian-plan-card, .librarian-decision-card, .plan-scratchpad, .debug-report-card')
+        ) {
+            return;
+        }
 
         const preLang = pre.getAttribute('data-lang') || '';
         let language = preLang || 'plaintext';
@@ -1538,32 +1544,62 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
                 repairBtn.disabled = isDisabled;
                 actions.appendChild(repairBtn);
             } else {
+                const triggerLegacyApply = (targetBtn: HTMLButtonElement) => {
+                    if (targetBtn.dataset.applying === 'true') {
+                        delete targetBtn.dataset.applying;
+                        targetBtn.classList.remove('stop-btn-red');
+                        targetBtn.style.removeProperty('background-color');
+                        targetBtn.style.removeProperty('color');
+                        targetBtn.style.removeProperty('border-color');
+                        if (targetBtn.dataset.prevHtml) targetBtn.innerHTML = targetBtn.dataset.prevHtml;
+                        if (targetBtn.dataset.prevTitle) targetBtn.title = targetBtn.dataset.prevTitle;
+                        vscode.postMessage({ command: 'stopGeneration' });
+                        return;
+                    }
+                    const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
+                    const cmd = isDiff ? 'applyPatchContent' : (isAider ? 'replaceCode' : 'applyFileContent');
+
+                    targetBtn.dataset.applying = 'true';
+                    targetBtn.dataset.prevHtml = targetBtn.innerHTML;
+                    targetBtn.dataset.prevTitle = targetBtn.title;
+                    targetBtn.classList.add('stop-btn-red');
+                    targetBtn.style.setProperty('background-color', 'var(--vscode-charts-red, #e51400)', 'important');
+                    targetBtn.style.setProperty('color', '#ffffff', 'important');
+                    targetBtn.style.setProperty('border-color', 'var(--vscode-charts-red, #e51400)', 'important');
+                    targetBtn.title = 'Applying... Click to stop';
+                    targetBtn.innerHTML = '<div class="spinner" style="border-color: rgba(255,255,255,0.35); border-top-color: #ffffff;"></div>';
+
+                    vscode.postMessage({ 
+                        command: cmd, 
+                        filePath: finalPath, 
+                        content: codeText, 
+                        messageId: currentMsgId, 
+                        blockIndex: blockIdx,
+                        blockId: details.id
+                    });
+                };
+
                 const applyBtn = createButton(
-                    isFullyApplied ? 'Re-apply' : 'Apply', 
+                    isFullyApplied ? 'Applied' : 'Apply', 
                     isFullyApplied ? 'codicon-check' : (isAider ? 'codicon-arrow-swap' : 'codicon-tools'), 
-                    () => {
-                        const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
-                        const cmd = isDiff ? 'applyPatchContent' : (isAider ? 'replaceCode' : 'applyFileContent');
-
-                        // Show spinner on the specific button
-                        applyBtn.innerHTML = '<div class="spinner"></div>';
-
-                        vscode.postMessage({ 
-                            command: cmd, 
-                            filePath: finalPath, 
-                            content: codeText, 
-                            messageId: currentMsgId, 
-                            blockIndex: blockIdx 
-                        });
-                    }, 
+                    () => triggerLegacyApply(applyBtn), 
                     `code-action-btn apply-btn ${isFullyApplied ? 'applied' : ''}`
                 );
                 applyBtn.id = applyBtnId;
-                applyBtn.disabled = isDisabled; // Only disabled if block is still streaming/unclosed
+                applyBtn.disabled = isDisabled;
                 actions.appendChild(applyBtn);
 
-                // ADDED: Companion Undo Button for Aider/Full File block
                 if (isFullyApplied) {
+                    const redoBtn = createButton(
+                        'Redo',
+                        'codicon-redo',
+                        () => triggerLegacyApply(redoBtn),
+                        'code-action-btn secondary-btn redo-block-btn',
+                        'Redo / Re-apply this change'
+                    );
+                    redoBtn.disabled = isDisabled;
+                    actions.appendChild(redoBtn);
+
                     const undoBtn = createButton(
                         'Undo',
                         'codicon-discard',
@@ -1576,6 +1612,7 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
                                 content: codeText, 
                                 messageId: currentMsgId, 
                                 blockIndex: blockIdx,
+                                blockId: details.id,
                                 options: { undo: true }
                             });
                         },
@@ -1746,9 +1783,24 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
                 const hunkUndo = pane.querySelector('.undo-hunk-btn') as HTMLElement;
 
                 hunkApply.onclick = () => {
+                    if (hunkApply.dataset.applying === 'true') {
+                        delete hunkApply.dataset.applying;
+                        hunkApply.classList.remove('stop-btn-red');
+                        hunkApply.style.removeProperty('background-color');
+                        hunkApply.style.removeProperty('color');
+                        if (hunkApply.dataset.prevHtml) hunkApply.innerHTML = hunkApply.dataset.prevHtml;
+                        vscode.postMessage({ command: 'stopGeneration' });
+                        return;
+                    }
                     const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
-                    hunkApply.disabled = true;
-                    vscode.postMessage({ command: 'replaceCode', filePath: finalPath, content: m[0], messageId: currentMsgId, blockIndex: blockIdx, hunkIndex: hIdx });
+                    hunkApply.dataset.applying = 'true';
+                    hunkApply.dataset.prevHtml = hunkApply.innerHTML;
+                    hunkApply.classList.add('stop-btn-red');
+                    hunkApply.style.setProperty('background-color', 'var(--vscode-charts-red, #e51400)', 'important');
+                    hunkApply.style.setProperty('color', '#ffffff', 'important');
+                    hunkApply.title = 'Applying... Click to stop';
+                    hunkApply.innerHTML = '<div class="spinner" style="border-color: rgba(255,255,255,0.35); border-top-color: #ffffff;"></div>';
+                    vscode.postMessage({ command: 'replaceCode', filePath: finalPath, content: m[0], messageId: currentMsgId, blockIndex: blockIdx, hunkIndex: hIdx, blockId: details.id });
                 };
 
                 hunkUndo.onclick = () => {
@@ -2794,66 +2846,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     // Detect Multi-Step updates structure in the current response
     const detectedMultiSteps = detectMultiStepsInContent(sourceText);
 
-    // Detect actionable interactive items (Peek, Context Add, Unmute Files, Structure, Symbols, Tools)
-    const peekCount = (mainProcessedContent.match(/<peek_files\b/gi) || []).length;
-    const addContextCount = (mainProcessedContent.match(/<add_files_to_context\b/gi) || []).length;
-    const unmuteCount = (mainProcessedContent.match(/<unmute_files\b/gi) || []).length;
-    const structCount = (mainProcessedContent.match(/<(?:load_structure|read_definitions)\b/gi) || []).length;
-    const symCount = (mainProcessedContent.match(/<(?:show_symbol|read_symbol|get_symbol_code)\b/gi) || []).length;
-    const toolCallCount = (mainProcessedContent.match(/<lollms_tool\b/gi) || []).length;
-    const totalExecutableActionsCount = peekCount + addContextCount + unmuteCount + structCount + symCount + toolCallCount;
-
-    // Collect all unique files requested to be added to context across the entire turn
-    const turnContextFiles: string[] = [];
-    const addContextRegex = /(?:^[ \t]*|(?<=>)[ \t]*)<add_files_to_context\b[^>]*?>([\s\S]*?)<\/add_files_to_context>/gim;
-    let acm: RegExpExecArray | null;
-    while ((acm = addContextRegex.exec(mainProcessedContent)) !== null) {
-        const inner = acm[1] || "";
-        const lines = inner.split(/[\s\r\n,]+/)
-            .map(f => f.trim().replace(/^['"]|['"]$/g, ''))
-            .filter(f => f && !f.startsWith('<'));
-        lines.forEach(f => {
-            if (!turnContextFiles.includes(f)) {
-                turnContextFiles.push(f);
-            }
-        });
-    }
-
-    const hasExecutableTools = totalExecutableActionsCount > 0;
-    const hasTurnFiles = turnContextFiles.length > 0;
     const isAutoExecutionActive = state.capabilities?.autoApply === true || state.capabilities?.agentMode === true || state.capabilities?.dynamicMode === true;
 
-    // Render Tools & Actions Execution Card (with tools list, execution status, and progress bar)
-    if ((hasExecutableTools || hasTurnFiles) && isFinal && !isAutoExecutionActive) {
-        const encodedTurnFiles = encodeURIComponent(JSON.stringify(turnContextFiles));
-        const toolCountText = totalExecutableActionsCount === 1 ? '1 tool' : `${totalExecutableActionsCount} tools`;
-        const execBtnText = totalExecutableActionsCount === 1 ? 'Execute Tool' : `Execute All Tools (${totalExecutableActionsCount})`;
-
-        finalHtml += `
-        <div class="tools-execution-card" id="tools-card-${messageId}" style="margin-top: 16px; padding: 12px 14px; background: rgba(155, 89, 182, 0.08); border: 1.5px solid var(--vscode-charts-purple, #9b59b6); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <div style="font-weight:800; font-size:12px; color:var(--vscode-charts-purple, #9b59b6); display:flex; align-items:center; gap:6px;">
-                    <i class="codicon codicon-tools" style="color:var(--vscode-charts-purple, #9b59b6); font-size:14px;"></i>
-                    <span>Tools &amp; Actions to Execute (<span id="tools-count-${messageId}">${toolCountText}</span>)</span>
-                </div>
-                <span class="mode-badge active tools-status-badge" id="tools-status-badge-${messageId}" style="font-size:9.5px; padding:2px 8px; background:var(--vscode-charts-purple, #9b59b6); color:white;">Ready to Execute</span>
-            </div>
-            <div class="tools-pills-container" id="tools-pills-${messageId}" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;"></div>
-            <div class="tools-results-list" id="tools-results-${messageId}" style="width:100%; margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
-            <div class="execute-all-wrapper" style="margin-top: 10px; padding: 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                ${hasExecutableTools ? `
-                <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="flex:1; min-width:200px; height:34px; font-weight:bold; justify-content:center; background:var(--vscode-charts-purple, #9b59b6) !important; color:white !important;">
-                    <span class="codicon codicon-play"></span> ${execBtnText}
-                </button>` : ''}
-                ${hasTurnFiles ? `
-                <button class="code-action-btn secondary-btn copy-all-turn-context-btn" id="copy-all-turn-context-${messageId}" data-files="${encodedTurnFiles}" style="height:34px; font-weight:bold; justify-content:center; padding:0 14px; border:1px solid var(--vscode-charts-blue); color:var(--vscode-textLink-foreground); display:inline-flex; align-items:center; gap:6px;" title="Copy the content of all files requested in this turn to clipboard">
-                    <i class="codicon codicon-copy"></i> Copy Files (${turnContextFiles.length})
-                </button>` : ''}
-                <div class="tools-progress-container" id="tools-progress-container-${messageId}" style="width:100%; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden; display:none;">
-                    <div class="tools-progress-bar" id="tools-progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-purple, #9b59b6); transition: width 0.3s ease;"></div>
-                </div>
-            </div>
-        </div>`;
+    // Reserve slot for Tools & Actions card; populated strictly from verified rendered DOM cards after parsing
+    if (isFinal && !isAutoExecutionActive) {
+        finalHtml += `<div class="tools-card-slot" id="tools-card-slot-${messageId}"></div>`;
     }
 
     if (totalActionableCount > 0 && isFinal) {
@@ -3070,102 +3067,156 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     }
 
     // Highlight only code blocks that have NOT yet been highlighted by Prism
-    contentDiv.querySelectorAll('.plan-scratchpad pre code:not([data-prism-highlighted]), .file-mutation-card pre code:not([data-prism-highlighted]), .code-collapsible pre code:not([data-prism-highlighted])').forEach(block => {
+    contentDiv.querySelectorAll('.plan-scratchpad pre code:not([data-prism-highlighted]), .file-mutation-card pre code:not([data-prism-highlighted]), .code-collapsible pre code:not([data-prism-highlighted]), .processing-block pre code:not([data-prism-highlighted])').forEach(block => {
         Prism.highlightElement(block);
         block.setAttribute('data-prism-highlighted', 'true');
     });
 
     enhanceCodeBlocks(bodyZone, messageId, rawContent, isFinal);
 
-    // Synchronize master batch button, code changes list, and tools execution list rows
+    // Synchronize master batch button and code changes list
     if (isFinal) {
         syncResultsListRows(messageId);
         checkAndSyncMessageAppliedState(messageId);
-        syncToolsListRows(messageId);
     }
 
-    // Attach listener for Execute All Actions button
-    const executeAllBtn = contentDiv.querySelector(`#execute-all-actions-${messageId}`) as HTMLButtonElement;
-    if (executeAllBtn) {
-        executeAllBtn.onclick = () => {
-            const actions = getExecutableActionsForMessage(messageId);
-            if (!Array.isArray(actions) || actions.length === 0) return;
-
-            executeAllBtn.disabled = true;
-            executeAllBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Executing Tools (0/${actions.length})...`;
-
-            const progressContainer = contentDiv.querySelector(`#tools-progress-container-${messageId}`) as HTMLElement;
-            const progressBar = contentDiv.querySelector(`#tools-progress-bar-${messageId}`) as HTMLElement;
-            if (progressContainer) progressContainer.style.display = 'block';
-            if (progressBar) {
-                progressBar.style.width = '0%';
-                progressBar.style.background = 'var(--vscode-charts-purple, #9b59b6)';
-            }
-
-            // Set all pending rows to waiting indicator
-            actions.forEach(a => {
-                const row = contentDiv.querySelector(`#tool-row-${messageId}-${a.index}`);
-                if (row && !a.isExecuted) {
-                    const iconEl = row.querySelector('.status-icon');
-                    if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-primitive-dot" style="opacity:0.5;"></span>';
-                }
-            });
-
-            vscode.postMessage({
-                command: 'executeAllMessageActions',
-                messageId,
-                actions: actions.map(a => ({
-                    id: a.id,
-                    index: a.index,
-                    type: a.type,
-                    name: a.name,
-                    payload: a.payload,
-                    blockId: a.blockId
-                }))
-            });
-        };
-    }
-
-    // Attach listener for Copy All Turn Files button
-    const copyAllBtn = contentDiv.querySelector(`#copy-all-turn-context-${messageId}`) as HTMLButtonElement;
-    if (copyAllBtn) {
-        copyAllBtn.onclick = () => {
-            const allFiles: string[] = [];
+    // Populate Tools & Actions Execution Card strictly from actual rendered DOM action cards
+    if (isFinal && !isAutoExecutionActive) {
+        const toolsSlot = contentDiv.querySelector(`#tools-card-slot-${messageId}`) as HTMLElement;
+        if (toolsSlot) {
+            const realActions = getExecutableActionsForMessage(messageId);
+            const turnContextFiles: string[] = [];
             contentDiv.querySelectorAll('.context-expansion-block').forEach((block: any) => {
                 try {
                     const files = JSON.parse(block.dataset.files || '[]');
                     if (Array.isArray(files)) {
                         files.forEach((f: string) => {
-                            if (f && !allFiles.includes(f)) allFiles.push(f);
+                            if (f && !turnContextFiles.includes(f)) turnContextFiles.push(f);
                         });
                     }
                 } catch {}
             });
 
-            if (allFiles.length === 0 && copyAllBtn.dataset.files) {
-                try {
-                    const fallback = JSON.parse(decodeURIComponent(copyAllBtn.dataset.files));
-                    if (Array.isArray(fallback)) {
-                        fallback.forEach(f => { if (f && !allFiles.includes(f)) allFiles.push(f); });
-                    }
-                } catch {}
-            }
+            const hasExecutableTools = realActions.length > 0;
+            const hasTurnFiles = turnContextFiles.length > 0;
 
-            if (allFiles.length > 0) {
-                vscode.postMessage({
-                    command: 'copyFilesToClipboard',
-                    files: allFiles
-                });
+            if (hasExecutableTools || hasTurnFiles) {
+                const encodedTurnFiles = encodeURIComponent(JSON.stringify(turnContextFiles));
+                const toolCountText = realActions.length === 1 ? '1 tool' : `${realActions.length} tools`;
+                const execBtnText = realActions.length === 1 ? 'Execute Tool' : `Execute All Tools (${realActions.length})`;
 
-                const origHtml = copyAllBtn.innerHTML;
-                copyAllBtn.classList.add('success');
-                copyAllBtn.innerHTML = `<i class="codicon codicon-check"></i> Copied ${allFiles.length} File${allFiles.length > 1 ? 's' : ''}!`;
-                setTimeout(() => {
-                    copyAllBtn.classList.remove('success');
-                    copyAllBtn.innerHTML = origHtml;
-                }, 2000);
+                toolsSlot.innerHTML = DOMPurify.sanitize(`
+                <div class="tools-execution-card" id="tools-card-${messageId}" style="margin-top: 16px; padding: 12px 14px; background: rgba(155, 89, 182, 0.08); border: 1.5px solid var(--vscode-charts-purple, #9b59b6); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <div style="font-weight:800; font-size:12px; color:var(--vscode-charts-purple, #9b59b6); display:flex; align-items:center; gap:6px;">
+                            <i class="codicon codicon-tools" style="color:var(--vscode-charts-purple, #9b59b6); font-size:14px;"></i>
+                            <span>Tools &amp; Actions to Execute (<span id="tools-count-${messageId}">${toolCountText}</span>)</span>
+                        </div>
+                        <span class="mode-badge active tools-status-badge" id="tools-status-badge-${messageId}" style="font-size:9.5px; padding:2px 8px; background:var(--vscode-charts-purple, #9b59b6); color:white;">Ready to Execute</span>
+                    </div>
+                    <div class="tools-pills-container" id="tools-pills-${messageId}" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;"></div>
+                    <div class="tools-results-list" id="tools-results-${messageId}" style="width:100%; margin-top:8px; display:flex; flex-direction:column; gap:4px;"></div>
+                    <div class="execute-all-wrapper" style="margin-top: 10px; padding: 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        ${hasExecutableTools ? `
+                        <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="flex:1; min-width:200px; height:34px; font-weight:bold; justify-content:center; background:var(--vscode-charts-purple, #9b59b6) !important; color:white !important;">
+                            <span class="codicon codicon-play"></span> ${execBtnText}
+                        </button>` : ''}
+                        ${hasTurnFiles ? `
+                        <button class="code-action-btn secondary-btn copy-all-turn-context-btn" id="copy-all-turn-context-${messageId}" data-files="${encodedTurnFiles}" style="height:34px; font-weight:bold; justify-content:center; padding:0 14px; border:1px solid var(--vscode-charts-blue); color:var(--vscode-textLink-foreground); display:inline-flex; align-items:center; gap:6px;" title="Copy the content of all files requested in this turn to clipboard">
+                            <i class="codicon codicon-copy"></i> Copy Files (${turnContextFiles.length})
+                        </button>` : ''}
+                        <div class="tools-progress-container" id="tools-progress-container-${messageId}" style="width:100%; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden; display:none;">
+                            <div class="tools-progress-bar" id="tools-progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-purple, #9b59b6); transition: width 0.3s ease;"></div>
+                        </div>
+                    </div>
+                </div>`, SANITIZE_CONFIG);
+
+                syncToolsListRows(messageId);
+
+                const executeAllBtn = toolsSlot.querySelector(`#execute-all-actions-${messageId}`) as HTMLButtonElement;
+                if (executeAllBtn) {
+                    executeAllBtn.onclick = () => {
+                        const actions = getExecutableActionsForMessage(messageId);
+                        if (!Array.isArray(actions) || actions.length === 0) return;
+
+                        executeAllBtn.disabled = true;
+                        executeAllBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Executing Tools (0/${actions.length})...`;
+
+                        const progressContainer = toolsSlot.querySelector(`#tools-progress-container-${messageId}`) as HTMLElement;
+                        const progressBar = toolsSlot.querySelector(`#tools-progress-bar-${messageId}`) as HTMLElement;
+                        if (progressContainer) progressContainer.style.display = 'block';
+                        if (progressBar) {
+                            progressBar.style.width = '0%';
+                            progressBar.style.background = 'var(--vscode-charts-purple, #9b59b6)';
+                        }
+
+                        actions.forEach(a => {
+                            const row = toolsSlot.querySelector(`#tool-row-${messageId}-${a.index}`);
+                            if (row && !a.isExecuted) {
+                                const iconEl = row.querySelector('.status-icon');
+                                if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-primitive-dot" style="opacity:0.5;"></span>';
+                            }
+                        });
+
+                        vscode.postMessage({
+                            command: 'executeAllMessageActions',
+                            messageId,
+                            actions: actions.map(a => ({
+                                id: a.id,
+                                index: a.index,
+                                type: a.type,
+                                name: a.name,
+                                payload: a.payload,
+                                blockId: a.blockId
+                            }))
+                        });
+                    };
+                }
+
+                const copyAllBtn = toolsSlot.querySelector(`#copy-all-turn-context-${messageId}`) as HTMLButtonElement;
+                if (copyAllBtn) {
+                    copyAllBtn.onclick = () => {
+                        const allFiles: string[] = [];
+                        contentDiv.querySelectorAll('.context-expansion-block').forEach((block: any) => {
+                            try {
+                                const files = JSON.parse(block.dataset.files || '[]');
+                                if (Array.isArray(files)) {
+                                    files.forEach((f: string) => {
+                                        if (f && !allFiles.includes(f)) allFiles.push(f);
+                                    });
+                                }
+                            } catch {}
+                        });
+
+                        if (allFiles.length === 0 && copyAllBtn.dataset.files) {
+                            try {
+                                const fallback = JSON.parse(decodeURIComponent(copyAllBtn.dataset.files));
+                                if (Array.isArray(fallback)) {
+                                    fallback.forEach(f => { if (f && !allFiles.includes(f)) allFiles.push(f); });
+                                }
+                            } catch {}
+                        }
+
+                        if (allFiles.length > 0) {
+                            vscode.postMessage({
+                                command: 'copyFilesToClipboard',
+                                files: allFiles
+                            });
+
+                            const origHtml = copyAllBtn.innerHTML;
+                            copyAllBtn.classList.add('success');
+                            copyAllBtn.innerHTML = `<i class="codicon codicon-check"></i> Copied ${allFiles.length} File${allFiles.length > 1 ? 's' : ''}!`;
+                            setTimeout(() => {
+                                copyAllBtn.classList.remove('success');
+                                copyAllBtn.innerHTML = origHtml;
+                            }, 2000);
+                        }
+                    };
+                }
+            } else {
+                toolsSlot.innerHTML = '';
             }
-        };
+        }
     }
 
     // Attach single unified listener for the Apply All / Apply All Steps button
@@ -3184,11 +3235,15 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const changes = gatherChangesFromBlocks(messageId, isUndo);
 
             if (changes.length > 0) {
-                applyAllBtn.disabled = true;
+                applyAllBtn.disabled = false;
+                applyAllBtn.classList.add('sequential-applying', 'stop-btn-red');
+                applyAllBtn.style.setProperty('background-color', 'var(--vscode-charts-red, #e51400)', 'important');
+                applyAllBtn.style.setProperty('color', '#ffffff', 'important');
+                applyAllBtn.title = 'Click to stop applying';
                 const batchLabel = changes.length === 1 ? 'Change' : 'All Changes';
                 applyAllBtn.innerHTML = isUndo 
-                    ? `<span class="codicon codicon-sync spin"></span> Undoing ${batchLabel}...` 
-                    : `<span class="codicon codicon-sync spin"></span> Applying ${batchLabel}...`;
+                    ? `<div class="spinner" style="border-color: rgba(255,255,255,0.35); border-top-color: #ffffff;"></div> Stop Undoing ${batchLabel}` 
+                    : `<div class="spinner" style="border-color: rgba(255,255,255,0.35); border-top-color: #ffffff;"></div> Stop Applying ${batchLabel}`;
 
                 const resList = document.getElementById(`results-${messageId}`);
                 const progressContainer = document.getElementById(`progress-container-${messageId}`);
@@ -3610,7 +3665,7 @@ export interface PatchItem {
     path: string;
     label: string;
     content: string;
-    type: 'replace' | 'file' | 'diff';
+    type: 'replace' | 'file' | 'diff' | 'delete_code';
     blockId: string;
     isApplied: boolean;
     isExcluded?: boolean;
@@ -3641,8 +3696,10 @@ export function getPatchesForMessage(messageId: string): PatchItem[] {
             const rawCodeAttr = block.dataset.rawCode;
             const codeText = rawCodeAttr ? decodeURIComponent(rawCodeAttr) : (block.querySelector('pre code')?.textContent || "");
             const applyBtn = block.querySelector('.apply-mutation-btn, .apply-btn');
-            const targetPath = (symbol && action !== 'patch') ? `${rawPath}:${symbol}` : rawPath;
-            const changeType = (action === 'patch' || codeText.includes('<<<<<<< SEARCH')) ? 'replace' : 'file';
+            const targetPath = (symbol && action !== 'patch' && action !== 'delete_code') ? `${rawPath}:${symbol}` : rawPath;
+            const changeType: PatchItem['type'] = action === 'delete_code'
+                ? 'delete_code'
+                : ((action === 'patch' || codeText.includes('<<<<<<< SEARCH')) ? 'replace' : 'file');
 
             const hunkTabs = Array.from(block.querySelectorAll('.hunk-tab')) as HTMLElement[];
             if (hunkTabs.length > 1) {
@@ -4039,17 +4096,17 @@ function addChatMessage(message: any, isFinal: boolean = true, isTechnical: bool
 
 const renderDataBriefing = (briefing: string) => {
     const raw = (briefing || "").trim();
-    if (!raw) return ""; // Return empty if truly empty
+    if (!raw) return "";
     try {
-        if (!raw.startsWith('{')) return raw;
+        if (!raw.startsWith('{')) {
+            return sanitizer.sanitize(marked.parse(raw) as string, SANITIZE_CONFIG);
+        }
         const entries = JSON.parse(raw);
         const keys = Object.keys(entries);
         if (keys.length === 0) return "";
-        return keys.map(id => {
-            const title = id.replace(/_/g, ' ').toUpperCase();
-            return `<strong>[${title}]</strong><br>${entries[id]}`;
-        }).join('<br><br>');
-    } catch { return raw; }
+        const md = keys.map(id => `**[${id.replace(/_/g, ' ').toUpperCase()}]**\n${entries[id]}`).join('\n\n');
+        return sanitizer.sanitize(marked.parse(md) as string, SANITIZE_CONFIG);
+    } catch { return sanitizer.sanitize(raw); }
 };
 
 
@@ -4207,6 +4264,9 @@ export class ContextPresenter {
                     </button>
                     <button class="toggle-structure-file-btn ${isDefOnly ? 'is-active' : ''}" data-path="${f}" data-state="${isDefOnly ? 'included' : 'definitions-only'}" title="${defTitle}" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; color: ${isDefOnly ? 'var(--vscode-charts-blue)' : 'var(--vscode-foreground)'}; opacity: ${isDefOnly ? '1' : '0.6'}; transition: all 0.15s ease; flex-shrink: 0;">
                         <span class="codicon codicon-symbol-class"></span>
+                    </button>
+                    <button class="edit-file-structure-btn" data-path="${f}" title="Structure Selection Studio: Select which symbols to keep vs compact" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center; color: var(--vscode-foreground); opacity: 0.65; transition: all 0.15s ease; flex-shrink: 0;">
+                        <span class="codicon codicon-list-filter"></span>
                     </button>
                     <div class="file-row-main" data-path="${f}" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; cursor: pointer;" title="${f}">
                         <span class="codicon ${!isProjectFile(f) ? 'codicon-link' : 'codicon-file'}" style="flex-shrink: 0; ${!isProjectFile(f) ? 'color: var(--vscode-charts-teal, #00b4d8);' : ''}"></span>
@@ -4449,11 +4509,12 @@ export class ContextPresenter {
             governorReportDisplayHtml = `
                 <div class="empty-context-msg" style="padding: 10px; display: flex; flex-direction: column; gap: 8px;">
                     <span>No Librarian findings report recorded yet (<code>.lollms/structure.md</code>).</span>
+                    ${!isAgentActive ? `
                     <div style="display: flex; gap: 8px;">
                         <button id="hud-launch-governor-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; width: auto; border-color: var(--vscode-charts-orange); color: var(--vscode-charts-orange);">
                             <i class="codicon codicon-library"></i> Generate Findings with Librarian
                         </button>
-                    </div>
+                    </div>` : ''}
                 </div>
                 ${rawTreeHtml}
             `;
@@ -4635,12 +4696,15 @@ export class ContextPresenter {
                     <details class="info-collapsible briefing-details" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-charts-purple);">
                         <summary>
                             <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                                <span>Mission Briefing & Constraints</span>
-                                <button id="edit-briefing-btn" class="icon-btn" title="Edit Briefing" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-shield"></i></button>
+                                <span style="display:flex; align-items:center; gap:6px;">
+                                    <span>Mission Briefing &amp; Project Memory</span>
+                                    ${briefing ? '<span class="file-token-badge weight-light" style="font-size:9px; padding:1px 5px; color:var(--vscode-charts-purple); border-color:rgba(155,89,182,0.45);">Active</span>' : ''}
+                                </span>
+                                <button id="edit-briefing-btn" class="icon-btn" title="Edit Mission Briefing & Compact Memory" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-shield"></i></button>
                             </div>
                         </summary>
                         <div class="collapsible-content">
-                            <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5; color: var(--vscode-editor-foreground);">
+                            <div class="briefing-content markdown-body" style="padding: 10px; font-size: 12px; line-height: 1.5; max-height: 300px; overflow-y: auto; color: var(--vscode-editor-foreground);">
                                 ${briefingHtml}
                             </div>
                         </div>
@@ -4664,7 +4728,7 @@ export class ContextPresenter {
                                     <select id="hud-visibility-preset-select" class="section-bulk-btn" style="height:20px; font-size:10px; padding: 0 4px; max-width: 130px; cursor: pointer;" title="Quick switch visibility profile / preset">
                                         <option value="">📁 Preset...</option>
                                     </select>
-                                    ${finalProjectFilesCount > 0 ? `<button id="governor-filter-btn" class="section-bulk-btn" title="Librarian: Scout codebase & optimize files with AI based on prompt"><span class="codicon codicon-library"></span> Librarian</button>` : ''}
+                                    ${(!isAgentActive && finalProjectFilesCount > 0) ? `<button id="governor-filter-btn" class="section-bulk-btn" title="Librarian: Scout codebase & optimize files with AI based on prompt"><span class="codicon codicon-library"></span> Librarian</button>` : ''}
                                     <select id="sort-files-select" class="section-bulk-btn" style="height:20px; font-size:10px; padding: 0 4px; cursor: pointer; max-width: 140px;" title="Organize & Sort Files">
                                         <option value="tree" ${state.fileSortOrder === 'tree' ? 'selected' : ''}>🌳 Folder (Tree)</option>
                                         <option value="visible-first" ${state.fileSortOrder === 'visible-first' ? 'selected' : ''}>👁️ Visible First</option>
@@ -5972,6 +6036,18 @@ export class ContextBinder {
             }
             return 100;
         };
+
+        // Bind Structure Selection Studio button
+        dashboard.querySelectorAll('.edit-file-structure-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const p = (btn as HTMLElement).dataset.path;
+                if (p) {
+                    import('./ui.js').then(ui => ui.openStructureEditorModal(p));
+                }
+            });
+        });
 
         // Bind half-mute (structure only / definitions only) toggle button
         dashboard.querySelectorAll('.toggle-structure-file-btn').forEach(btn => {
@@ -8232,10 +8308,9 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                 const isDebuggable = ['execute_command', 'run_file', 'execute_python_script', 'read_file', 'read_files', 'scrape_website', 'search_web'].includes(task.action);
                 const hasForm = !!task.parameters.lollms_form;
 
-                // --- NEW: Render Forms inside Plan Tasks ---
-                // We use 'agent_plan' as the identifier since the Plan Zone is global to the session
+                // Interactive forms are rendered exclusively in the main discussion stream to avoid duplication
                 if (hasForm) {
-                    formHtml = `<div style="margin-top: 10px;">${renderFormBlock(task.parameters.lollms_form, "agent_plan")}</div>`;
+                    formHtml = `<div style="margin-top: 8px; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); background: rgba(0, 122, 204, 0.08); font-size: 11px;"><i class="codicon codicon-comment-discussion"></i> Awaiting decision in the main discussion.</div>`;
                 }
 
                 if (task.status === 'failed' || (task.status === 'pending' && !hasForm)) {
@@ -8647,6 +8722,7 @@ export function syncResultsListRows(messageId: string) {
     if (!state.excludedPatches) state.excludedPatches = {};
     if (!state.excludedPatches[messageId]) state.excludedPatches[messageId] = new Set<string>();
     const excludedSet = state.excludedPatches[messageId];
+    const failedMap = state.failedPatches?.[messageId] || {};
 
     resList.style.display = 'flex';
     resList.style.flexDirection = 'column';
@@ -8655,10 +8731,14 @@ export function syncResultsListRows(messageId: string) {
     const renderRowHtml = (p: PatchItem) => {
         const isDone = p.isApplied;
         const isExcluded = p.isExcluded || excludedSet.has(p.id);
+        const failedInfo = !isDone ? (failedMap[p.id] || (p.hunkIndex !== undefined ? failedMap[`${p.blockIndex}-full`] : undefined)) : undefined;
+        const isFailed = !!failedInfo;
 
         let iconHtml = '';
         if (isDone) {
             iconHtml = '<span class="status-icon"><i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i></span>';
+        } else if (isFailed) {
+            iconHtml = '<span class="status-icon" title="' + escapeHtml(failedInfo.error) + '"><i class="codicon codicon-error" style="color:var(--vscode-charts-red)"></i></span>';
         } else {
             iconHtml = `
                 <input type="checkbox" 
@@ -8675,6 +8755,8 @@ export function syncResultsListRows(messageId: string) {
         let badgeHtml = '';
         if (isDone) {
             badgeHtml = '<span class="validated-badge" style="margin-left:auto; font-size:10px; color:var(--vscode-charts-green); font-weight:bold; display:flex; align-items:center; gap:4px;"><i class="codicon codicon-pass-filled"></i> Validated</span>';
+        } else if (isFailed) {
+            badgeHtml = `<span class="failed-badge" title="${escapeHtml(failedInfo.error)}" style="margin-left:auto; font-size:10px; color:var(--vscode-charts-red); font-weight:bold; display:flex; align-items:center; gap:4px;">Failed</span>`;
         } else if (isExcluded) {
             badgeHtml = '<span class="excluded-badge" style="margin-left:auto; font-size:10px; color:var(--vscode-descriptionForeground); font-style:italic; opacity:0.7;">Excluded</span>';
         } else {
@@ -8700,9 +8782,18 @@ export function syncResultsListRows(messageId: string) {
                     style="height:20px; font-size:9px; padding:0 6px; margin-left:4px; display:inline-flex; align-items:center; gap:3px;">
                 <i class="codicon codicon-play"></i> Apply
             </button>
-        ` : '';
+        ` : `
+            <button class="code-action-btn secondary-btn row-single-redo-btn" 
+                    data-patch-id="${p.id}"
+                    data-block-index="${p.blockIndex}"
+                    ${p.hunkIndex !== undefined ? `data-hunk-index="${p.hunkIndex}"` : ''}
+                    title="Redo / Re-apply this change"
+                    style="height:20px; font-size:9px; padding:0 6px; margin-left:4px; display:inline-flex; align-items:center; gap:3px;">
+                <i class="codicon codicon-redo"></i> Redo
+            </button>
+        `;
 
-        const rowStateClass = isDone ? 'status-success' : (isExcluded ? 'status-excluded' : 'status-pending');
+        const rowStateClass = isDone ? 'status-success' : (isFailed ? 'status-failed' : (isExcluded ? 'status-excluded' : 'status-pending'));
         const rowOpacity = isExcluded ? 'opacity: 0.55;' : '';
 
         return `
@@ -8710,6 +8801,7 @@ export function syncResultsListRows(messageId: string) {
                  data-patch-id="${p.id}"
                  data-block-index="${p.blockIndex}" 
                  ${p.hunkIndex !== undefined ? `data-hunk-index="${p.hunkIndex}"` : ''}
+                 title="${isFailed ? escapeHtml(failedInfo.error) : ''}"
                  style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:4px; border:1px solid var(--vscode-widget-border); ${rowOpacity}">
                 ${iconHtml}
                 <span class="row-path clickable" title="Click to open file in editor" onclick="vscode.postMessage({command:'openFile', path:'${p.path}'})" style="${isExcluded ? 'text-decoration: line-through; opacity: 0.7;' : ''}">${p.label}</span>
@@ -8762,18 +8854,42 @@ export function syncResultsListRows(messageId: string) {
         });
     });
 
-    // Attach listeners to single apply buttons
-    resList.querySelectorAll('.row-single-apply-btn').forEach((btn: any) => {
+    // Attach listeners to single apply & redo buttons
+    resList.querySelectorAll('.row-single-apply-btn, .row-single-redo-btn').forEach((btn: any) => {
         btn.addEventListener('click', (e: MouseEvent) => {
             e.stopPropagation();
+            if (btn.dataset.applying === 'true') {
+                delete btn.dataset.applying;
+                btn.classList.remove('stop-btn-red');
+                btn.style.removeProperty('background-color');
+                btn.style.removeProperty('color');
+                if (btn.dataset.prevHtml) btn.innerHTML = btn.dataset.prevHtml;
+                vscode.postMessage({ command: 'stopGeneration' });
+                return;
+            }
             const patchId = btn.dataset.patchId;
             const patch = patches.find(p => p.id === patchId);
             if (!patch) return;
 
-            btn.disabled = true;
-            btn.innerHTML = '<div class="spinner"></div>';
+            btn.dataset.applying = 'true';
+            btn.dataset.prevHtml = btn.innerHTML;
+            btn.classList.add('stop-btn-red');
+            btn.style.setProperty('background-color', 'var(--vscode-charts-red, #e51400)', 'important');
+            btn.style.setProperty('color', '#ffffff', 'important');
+            btn.title = 'Applying... Click to stop';
+            btn.innerHTML = '<div class="spinner" style="width:10px; height:10px; border-width:1.5px; border-color: rgba(255,255,255,0.35); border-top-color: #ffffff;"></div> Stop';
 
-            if (patch.type === 'file') {
+            if (patch.type === 'delete_code') {
+                vscode.postMessage({
+                    command: 'deleteCodeBlock',
+                    filePath: patch.path,
+                    content: patch.content,
+                    messageId: messageId,
+                    blockIndex: patch.blockIndex,
+                    blockId: patch.blockId,
+                    options: { silent: false, autoSave: false, blockId: patch.blockId, blockIndex: patch.blockIndex }
+                });
+            } else if (patch.type === 'file') {
                 vscode.postMessage({
                     command: 'applyFileContent',
                     filePath: patch.path,
@@ -8856,6 +8972,52 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
         applyAllBtn.style.removeProperty('background-color');
         applyAllBtn.style.removeProperty('color');
         applyAllBtn.innerHTML = `<span class="codicon codicon-discard"></span> Undo ${totalCount === 1 ? 'Changes' : 'All Changes'} (${totalCount} ${fileWord})`;
+    }
+
+    const failedMap = state.failedPatches?.[messageId] || {};
+    const failedPatchesList = patches.filter(p => !p.isApplied && (failedMap[p.id] || (p.hunkIndex !== undefined && failedMap[`${p.blockIndex}-full`])));
+    const existingFixBtn = document.getElementById(`try-fix-failed-${messageId}`) as HTMLButtonElement | null;
+
+    if (failedPatchesList.length > 0) {
+        let fixBtn = existingFixBtn;
+        if (!fixBtn) {
+            fixBtn = document.createElement('button');
+            fixBtn.id = `try-fix-failed-${messageId}`;
+            fixBtn.className = 'code-action-btn apply-btn try-fix-failed-btn';
+            fixBtn.style.cssText = 'height: 34px; padding: 0 14px; font-size: 11.5px; font-weight: 700; background: var(--vscode-charts-purple, #8e44ad) !important; color: #ffffff !important; display: inline-flex; align-items: center; gap: 6px; margin-top: 16px;';
+            applyAllBtn.insertAdjacentElement('afterend', fixBtn);
+        }
+        fixBtn.disabled = false;
+        const hunkWord = failedPatchesList.length === 1 ? 'Hunk' : 'Hunks';
+        fixBtn.innerHTML = `<span class="codicon codicon-sparkle"></span> Try to Fix (${failedPatchesList.length} Failed ${hunkWord})`;
+        fixBtn.title = 'Send a new user message asking the AI to fix the failed hunk(s) against current files on disk';
+        fixBtn.onclick = (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const currentFailed = getPatchesForMessage(messageId).filter(p => !p.isApplied && (failedMap[p.id] || (p.hunkIndex !== undefined && failedMap[`${p.blockIndex}-full`])));
+            if (currentFailed.length === 0) return;
+
+            fixBtn!.disabled = true;
+            fixBtn!.innerHTML = '<div class="spinner" style="border-color: rgba(255,255,255,0.35); border-top-color: #ffffff;"></div> Requesting Fix...';
+            vscode.postMessage({
+                command: 'requestFixFailedHunks',
+                messageId,
+                failedHunks: currentFailed.map(p => {
+                    const info = failedMap[p.id] || failedMap[`${p.blockIndex}-full`];
+                    return {
+                        filePath: p.path,
+                        label: p.label,
+                        blockIndex: p.blockIndex,
+                        hunkIndex: p.hunkIndex,
+                        type: p.type,
+                        content: p.content,
+                        error: info?.error || 'Search block mismatch or patch failed to apply.'
+                    };
+                })
+            });
+        };
+    } else if (existingFixBtn) {
+        existingFixBtn.remove();
     }
 }
 

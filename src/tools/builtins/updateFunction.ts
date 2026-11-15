@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
+import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
 
 export const updateFunctionTool: ToolDefinition = {
     name: "update_function",
@@ -215,7 +217,27 @@ export const updateFunctionTool: ToolDefinition = {
             }
         }
 
-        // 4. Apply Edit and persist
+        // 4. Validate integrity and apply edit
+        const secLevel = env.agentManager?.getSecurityLevel?.() || 'guarded';
+        const fullAfterText = text.substring(0, doc.offsetAt(effectiveRange.start)) + adjustedContent + text.substring(doc.offsetAt(effectiveRange.end));
+        const validation = AgentSecurityGuard.validateWriteContent(filePath, text, fullAfterText, secLevel, false);
+        if (!validation.valid) {
+            if (validation.requiresConfirmation && env.agentManager?.requestSecurityApproval) {
+                const approval = await env.agentManager.requestSecurityApproval(
+                    `Confirm Symbol Update: ${filePath}`,
+                    validation.reason || 'Significant code reduction detected.',
+                    'update_function',
+                    filePath,
+                    signal
+                );
+                if (approval === 'block') {
+                    return { success: false, output: `🛑 SECURITY BLOCK: ${validation.reason}` };
+                }
+            } else {
+                return { success: false, output: `🛑 SECURITY BLOCK: ${validation.reason}` };
+            }
+        }
+
         const edit = new vscode.WorkspaceEdit();
         edit.replace(res.uri, effectiveRange, adjustedContent);
         const success = await vscode.workspace.applyEdit(edit);

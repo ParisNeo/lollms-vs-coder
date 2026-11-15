@@ -1911,10 +1911,41 @@ export class BadgesPresenter {
     public static renderAgentProfileBadge(currentProfileName: string): string {
         return `
         <div class="badge-wrapper" style="position: relative;">
-            <span class="mode-badge active clickable genie-profile-trigger" style="background-color: var(--vscode-charts-orange); color: white;" title="Genie Mission: ${currentProfileName}. Click to change protocol.">
+            <span class="mode-badge active clickable genie-profile-trigger" style="background-color: var(--vscode-charts-orange); color: white;" title="Agent Mission Profile: ${currentProfileName}. Click to change protocol.">
                 <span class="codicon codicon-target"></span> <span class="badge-label">${currentProfileName}</span>
             </span>
             <div class="custom-menu" id="genie-profile-menu"></div>
+        </div>`;
+    }
+
+    public static renderAgentSecurityBadge(level: 'strict' | 'guarded' | 'relaxed', mutationCount: number = 0): string {
+        const meta: Record<string, { label: string; color: string; title: string }> = {
+            strict: {
+                label: 'Strict Guard',
+                color: 'var(--vscode-charts-purple, #9b59b6)',
+                title: 'Agent Security: STRICT (Confirms all shell commands, deletes, moves, overwrites, and >35% shrinks)'
+            },
+            guarded: {
+                label: 'Guarded',
+                color: 'var(--vscode-charts-green, #2ea043)',
+                title: 'Agent Security: GUARDED (Blocks catastrophic commands & protected files; snapshots writes; confirms risky deletes/shrinks)'
+            },
+            relaxed: {
+                label: 'Relaxed',
+                color: 'var(--vscode-charts-orange, #d67a0d)',
+                title: 'Agent Security: RELAXED (Enforces catastrophic hard-blocks, protected paths & snapshots; allows normal edits/runs)'
+            }
+        };
+        const cur = meta[level] || meta.guarded;
+        const mutSuffix = mutationCount > 0 ? ` · ${mutationCount}` : '';
+        return `
+        <div class="badge-wrapper" style="position: relative;">
+            <span id="hud-agent-security-badge" class="mode-badge active clickable" style="background-color: ${cur.color}; color: white; border-color: ${cur.color};" title="${cur.title}. Click to configure or rollback.">
+                <span class="codicon codicon-shield"></span>
+                <span class="badge-label">${cur.label}${mutSuffix}</span>
+                <span class="codicon codicon-chevron-down" style="font-size: 9px; opacity: 0.85; margin-left: 2px;"></span>
+            </span>
+            <div id="agent-security-menu" class="custom-menu hidden" style="min-width: 255px;"></div>
         </div>`;
     }
 
@@ -2147,23 +2178,25 @@ export class BadgesBinder {
         const menu = group.querySelector('#hud-options-menu') as HTMLElement;
         if (!badge || !menu) return;
 
-        const optionsList = [
-            { label: '🧠 Thinking Mode', icon: 'codicon-circuit-board', key: 'thinkingMode' },
-            { label: '📚 Librarian Mode', icon: 'codicon-library', key: 'librarianMode' },
-            { label: '⚡ Auto-Execute Tools', icon: 'codicon-play', key: 'autoExecuteTools' },
-            { label: '📊 SPARQL Engine', icon: 'codicon-graph', key: 'sparqlEnabled' },
-            { label: '🔍 GREP Indexer', icon: 'codicon-search', key: 'grepEnabled' },
-            { label: '🌍 Web Research', icon: 'codicon-globe', key: 'webSearch' },
-            { label: '🧬 Project DNA', icon: 'codicon-chip', key: 'projectMemoryEnabled' },
-            { label: '💡 Skills Library', icon: 'codicon-lightbulb', key: 'autoSkillMode' },
-            { label: '⚡ Auto-Apply Blocks', icon: 'codicon-zap', key: 'autoApply' },
-            { label: '🐞 Debug Protocol', icon: 'codicon-bug', key: 'debugMode' },
-            { label: '🛡️ Verifier Protocol', icon: 'codicon-shield', key: 'verifierMode' },
-            { label: '🧪 Test Protocol', icon: 'codicon-beaker', key: 'testMode' },
-            { label: '📖 Docs Protocol', icon: 'codicon-book', key: 'documentationMode' },
-            { label: '🐙 Git Integration', icon: 'codicon-git-branch', key: 'gitAutoWorkflow' },
-            { label: '🐂 Multi-Agent (Herd)', icon: 'codicon-organization', key: 'herdMode' }
+        const isAgent = caps.agentMode === true;
+        const allOptionsList = [
+            { label: '🧠 Thinking Mode', icon: 'codicon-circuit-board', key: 'thinkingMode', assistantOnly: false },
+            { label: '📚 Librarian Mode', icon: 'codicon-library', key: 'librarianMode', assistantOnly: true },
+            { label: '⚡ Auto-Execute Tools', icon: 'codicon-play', key: 'autoExecuteTools', assistantOnly: true },
+            { label: '📊 SPARQL Engine', icon: 'codicon-graph', key: 'sparqlEnabled', assistantOnly: false },
+            { label: '🔍 GREP Indexer', icon: 'codicon-search', key: 'grepEnabled', assistantOnly: false },
+            { label: '🌍 Web Research', icon: 'codicon-globe', key: 'webSearch', assistantOnly: false },
+            { label: '🧬 Project DNA', icon: 'codicon-chip', key: 'projectMemoryEnabled', assistantOnly: false },
+            { label: '💡 Skills Library', icon: 'codicon-lightbulb', key: 'autoSkillMode', assistantOnly: false },
+            { label: '⚡ Auto-Apply Blocks', icon: 'codicon-zap', key: 'autoApply', assistantOnly: true },
+            { label: '🐞 Debug Protocol', icon: 'codicon-bug', key: 'debugMode', assistantOnly: false },
+            { label: '🛡️ Verifier Protocol', icon: 'codicon-shield', key: 'verifierMode', assistantOnly: false },
+            { label: '🧪 Test Protocol', icon: 'codicon-beaker', key: 'testMode', assistantOnly: false },
+            { label: '📖 Docs Protocol', icon: 'codicon-book', key: 'documentationMode', assistantOnly: false },
+            { label: '🐙 Git Integration', icon: 'codicon-git-branch', key: 'gitAutoWorkflow', assistantOnly: false },
+            { label: '🐂 Multi-Agent (Herd)', icon: 'codicon-organization', key: 'herdMode', assistantOnly: true }
         ];
+        const optionsList = isAgent ? allOptionsList.filter(o => !o.assistantOnly) : allOptionsList;
 
         menu.innerHTML = optionsList.map(opt => {
             const checked = opt.key === 'librarianMode' ? caps.fastMode === false :
@@ -2210,12 +2243,17 @@ export class BadgesBinder {
 
                 if (key === 'librarianMode') {
                     const newFast = !isChecked;
+                    const partialUpdate: any = { fastMode: newFast };
+                    if (!newFast) {
+                        partialUpdate.contextGovernorEnabled = true;
+                    }
                     if (state.capabilities) {
                         state.capabilities.fastMode = newFast;
+                        if (!newFast) state.capabilities.contextGovernorEnabled = true;
                     }
                     vscode.postMessage({
                         command: 'updateDiscussionCapabilitiesPartial',
-                        partial: { fastMode: newFast }
+                        partial: partialUpdate
                     });
                     updateBadges();
                     return;
@@ -2327,6 +2365,88 @@ export class BadgesBinder {
         });
 
         badge.onclick = (e) => {
+            e.stopPropagation();
+            const isOpening = !menu.classList.contains('visible');
+            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+            if (isOpening) {
+                adjustMenuPosition(badge, menu);
+                menu.classList.add('visible');
+            }
+        };
+    }
+
+    public static bindAgentSecurityMenu(wrapper: HTMLElement, currentLevel: 'strict' | 'guarded' | 'relaxed', mutationCount: number) {
+        const badge = wrapper.querySelector('#hud-agent-security-badge') as HTMLElement;
+        const menu = wrapper.querySelector('#agent-security-menu') as HTMLElement;
+        if (!badge || !menu) return;
+
+        const levels: Array<{ id: 'strict' | 'guarded' | 'relaxed'; label: string; desc: string }> = [
+            { id: 'strict', label: '🛡️ Strict Guard', desc: 'Confirm commands, deletes, moves & overwrites' },
+            { id: 'guarded', label: '⚖️ Guarded (Recommended)', desc: 'Block destruction, snapshot writes, confirm shrinks' },
+            { id: 'relaxed', label: '🚀 Relaxed (Git-Isolated)', desc: 'Hard-blocks & snapshots only' }
+        ];
+
+        menu.innerHTML = `
+            <div style="padding: 5px 12px; font-size: 9.5px; font-weight: 800; text-transform: uppercase; opacity: 0.65; border-bottom: 1px solid var(--vscode-menu-separatorBackground);">
+                Agent Security Shield
+            </div>
+            ${levels.map(l => `
+                <div class="custom-menu-item sec-level-opt" data-level="${l.id}" style="flex-direction: column; align-items: flex-start; gap: 2px; ${l.id === currentLevel ? 'font-weight:bold; background: var(--vscode-list-activeSelectionBackground);' : ''}">
+                    <div style="display:flex; align-items:center; gap:6px; width:100%;">
+                        <span class="codicon ${l.id === currentLevel ? 'codicon-check' : 'codicon-circle-outline'}"></span>
+                        <span>${l.label}</span>
+                    </div>
+                    <div style="font-size: 9.5px; opacity: 0.7; padding-left: 22px;">${l.desc}</div>
+                </div>
+            `).join('')}
+            <div style="height: 1px; background: var(--vscode-menu-separatorBackground); margin: 4px 0;"></div>
+            <div class="custom-menu-item sec-action-opt" data-action="checkpoint">
+                <span class="codicon codicon-git-commit" style="color: var(--vscode-charts-blue);"></span>
+                <span>Create Git Checkpoint Now</span>
+            </div>
+            <div class="custom-menu-item sec-action-opt" data-action="rollback" data-scope="last" style="${mutationCount === 0 ? 'opacity:0.45; pointer-events:none;' : ''}">
+                <span class="codicon codicon-discard" style="color: var(--vscode-charts-orange);"></span>
+                <span>Revert Last Mutation</span>
+            </div>
+            <div class="custom-menu-item sec-action-opt" data-action="rollback" data-scope="all" style="${mutationCount === 0 ? 'opacity:0.45; pointer-events:none;' : ''}">
+                <span class="codicon codicon-history" style="color: var(--vscode-charts-red);"></span>
+                <span>Rollback All Agent Mutations (${mutationCount})</span>
+            </div>
+            <div class="custom-menu-item sec-action-opt" data-action="view_log">
+                <span class="codicon codicon-output"></span>
+                <span>View Security Audit Log</span>
+            </div>
+        `;
+
+        menu.querySelectorAll('.sec-level-opt').forEach((item: any) => {
+            item.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const level = item.dataset.level as 'strict' | 'guarded' | 'relaxed';
+                if (state.capabilities) {
+                    state.capabilities.agentSecurityLevel = level;
+                }
+                vscode.postMessage({ command: 'agentSecurityAction', action: 'set_level', level });
+                menu.classList.remove('visible');
+                updateBadges();
+            };
+        });
+
+        menu.querySelectorAll('.sec-action-opt').forEach((item: any) => {
+            item.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                vscode.postMessage({
+                    command: 'agentSecurityAction',
+                    action: item.dataset.action,
+                    scope: item.dataset.scope
+                });
+                menu.classList.remove('visible');
+            };
+        });
+
+        badge.onclick = (e) => {
+            e.preventDefault();
             e.stopPropagation();
             const isOpening = !menu.classList.contains('visible');
             document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
@@ -2544,75 +2664,93 @@ export function updateBadges() {
     BadgesBinder.bindOperationalModeMenu(operationalModeWrapper, isAssistant, false, isAgent);
     infraGroup.appendChild(operationalModeWrapper);
 
-    // --- 📚 LIBRARIAN MODE SELECTION IN HUD ---
-    const isLibrarian = caps.fastMode === false;
-    const libDiv = document.createElement('div');
-    libDiv.className = 'badge-wrapper';
-    libDiv.innerHTML = `
-        <span id="hud-librarian-badge" class="mode-badge ${isLibrarian ? 'active librarian' : 'inactive'} clickable" style="${isLibrarian ? 'background-color: var(--vscode-charts-orange); color: white; border-color: var(--vscode-charts-orange);' : ''}" title="${isLibrarian ? 'Librarian Mode: ACTIVE (Evaluates dependencies & architecture before coding). Click to switch to Fast Mode.' : 'Librarian Mode: INACTIVE (Fast Mode active). Click to activate Librarian Mode.'}">
-            <span class="codicon codicon-library" style="margin-right: 4px;"></span>
-            <span class="badge-label">${isLibrarian ? '📚 Librarian' : '⚡ Fast Mode'}</span>
-            <span class="badge-toggle-btn codicon ${isLibrarian ? 'codicon-pass-filled' : 'codicon-circle-large-outline'}" style="margin-left: 4px;"></span>
-        </span>
-    `;
-    const libBadge = libDiv.querySelector('#hud-librarian-badge') as HTMLElement;
-    if (libBadge) {
-        libBadge.onclick = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const currentFast = state.capabilities?.fastMode !== false;
-            const newFast = !currentFast;
-            if (state.capabilities) state.capabilities.fastMode = newFast;
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { fastMode: newFast }
-            });
-            updateBadges();
-        };
-    }
-    infraGroup.appendChild(libDiv);
-
-    // --- ⚡ AUTO-EXECUTE TOOLS MODE SELECTION IN HUD ---
-    const isAutoTools = caps.autoExecuteTools === true;
-    const toolsDiv = document.createElement('div');
-    toolsDiv.className = 'badge-wrapper';
-    toolsDiv.innerHTML = `
-        <span id="hud-auto-tools-badge" class="mode-badge ${isAutoTools ? 'active auto-tools' : 'inactive'} clickable" style="${isAutoTools ? 'background-color: var(--vscode-charts-green); color: white; border-color: var(--vscode-charts-green);' : ''}" title="${isAutoTools ? 'Auto-Execute Tools: ACTIVE (Automatically executes tools and triggers next round). Click to disable.' : 'Auto-Execute Tools: INACTIVE (Manual tool clicking). Click to activate.'}">
-            <span class="codicon ${isAutoTools ? 'codicon-play' : 'codicon-tools'}" style="margin-right: 4px;"></span>
-            <span class="badge-label">${isAutoTools ? '⚡ Auto-Tools' : '🛠️ Manual Tools'}</span>
-            <span class="badge-toggle-btn codicon ${isAutoTools ? 'codicon-pass-filled' : 'codicon-circle-large-outline'}" style="margin-left: 4px;"></span>
-        </span>
-    `;
-    const toolsBadge = toolsDiv.querySelector('#hud-auto-tools-badge') as HTMLElement;
-    if (toolsBadge) {
-        toolsBadge.onclick = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const currentAuto = state.capabilities?.autoExecuteTools === true;
-            const newAuto = !currentAuto;
-            if (state.capabilities) state.capabilities.autoExecuteTools = newAuto;
-            vscode.postMessage({
-                command: 'updateDiscussionCapabilitiesPartial',
-                partial: { autoExecuteTools: newAuto }
-            });
-            const capInput = document.getElementById('cap-autoExecuteTools') as HTMLInputElement;
-            if (capInput) capInput.checked = newAuto;
-            updateBadges();
-        };
-    }
-    infraGroup.appendChild(toolsDiv);
-
-    // --- AGENT CRITICAL SPECIFIC PROFILE ---
-    if (isAgent && state.agentProfiles && state.agentProfiles.length > 0) {
-        const currentProfileId = caps.activeAgentProfileId || 'software_architect';
-        const currentProfile = state.agentProfiles.find(p => p.id === currentProfileId) || state.agentProfiles[0];
-        if (currentProfile) {
-            const pDiv = document.createElement('div');
-            pDiv.innerHTML = BadgesPresenter.renderAgentProfileBadge(currentProfile.name);
-            const profileWrapper = pDiv.firstElementChild as HTMLElement;
-            BadgesBinder.bindAgentProfileMenu(profileWrapper, state.agentProfiles, currentProfileId);
-            container.appendChild(profileWrapper);
+    // --- 📚 LIBRARIAN & ⚡ AUTO-TOOLS BADGES (Assistant Mode ONLY) ---
+    if (!isAgent) {
+        const isLibrarian = caps.fastMode === false;
+        const libDiv = document.createElement('div');
+        libDiv.className = 'badge-wrapper';
+        libDiv.innerHTML = `
+            <span id="hud-librarian-badge" class="mode-badge ${isLibrarian ? 'active librarian' : 'inactive'} clickable" style="${isLibrarian ? 'background-color: var(--vscode-charts-orange); color: white; border-color: var(--vscode-charts-orange);' : ''}" title="${isLibrarian ? 'Librarian Mode: ACTIVE (Evaluates dependencies & architecture before coding). Click to switch to Fast Mode.' : 'Librarian Mode: INACTIVE (Fast Mode active). Click to activate Librarian Mode.'}">
+                <span class="codicon codicon-library" style="margin-right: 4px;"></span>
+                <span class="badge-label">${isLibrarian ? '📚 Librarian' : '⚡ Fast Mode'}</span>
+                <span class="badge-toggle-btn codicon ${isLibrarian ? 'codicon-pass-filled' : 'codicon-circle-large-outline'}" style="margin-left: 4px;"></span>
+            </span>
+        `;
+        const libBadge = libDiv.querySelector('#hud-librarian-badge') as HTMLElement;
+        if (libBadge) {
+            libBadge.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const currentFast = state.capabilities?.fastMode !== false;
+                const newFast = !currentFast;
+                const partialUpdate: any = { fastMode: newFast };
+                if (!newFast) {
+                    partialUpdate.contextGovernorEnabled = true;
+                }
+                if (state.capabilities) {
+                    state.capabilities.fastMode = newFast;
+                    if (!newFast) state.capabilities.contextGovernorEnabled = true;
+                }
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial: partialUpdate
+                });
+                updateBadges();
+            };
         }
+        infraGroup.appendChild(libDiv);
+
+        const isAutoTools = caps.autoExecuteTools === true;
+        const toolsDiv = document.createElement('div');
+        toolsDiv.className = 'badge-wrapper';
+        toolsDiv.innerHTML = `
+            <span id="hud-auto-tools-badge" class="mode-badge ${isAutoTools ? 'active auto-tools' : 'inactive'} clickable" style="${isAutoTools ? 'background-color: var(--vscode-charts-green); color: white; border-color: var(--vscode-charts-green);' : ''}" title="${isAutoTools ? 'Auto-Execute Tools: ACTIVE (Automatically executes tools and triggers next round). Click to disable.' : 'Auto-Execute Tools: INACTIVE (Manual tool clicking). Click to activate.'}">
+                <span class="codicon ${isAutoTools ? 'codicon-play' : 'codicon-tools'}" style="margin-right: 4px;"></span>
+                <span class="badge-label">${isAutoTools ? '⚡ Auto-Tools' : '🛠️ Manual Tools'}</span>
+                <span class="badge-toggle-btn codicon ${isAutoTools ? 'codicon-pass-filled' : 'codicon-circle-large-outline'}" style="margin-left: 4px;"></span>
+            </span>
+        `;
+        const toolsBadge = toolsDiv.querySelector('#hud-auto-tools-badge') as HTMLElement;
+        if (toolsBadge) {
+            toolsBadge.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const currentAuto = state.capabilities?.autoExecuteTools === true;
+                const newAuto = !currentAuto;
+                if (state.capabilities) state.capabilities.autoExecuteTools = newAuto;
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial: { autoExecuteTools: newAuto }
+                });
+                const capInput = document.getElementById('cap-autoExecuteTools') as HTMLInputElement;
+                if (capInput) capInput.checked = newAuto;
+                updateBadges();
+            };
+        }
+        infraGroup.appendChild(toolsDiv);
+    }
+
+    // --- AGENT SPECIFIC PROFILE & SECURITY SHIELD BADGES ---
+    if (isAgent) {
+        if (state.agentProfiles && state.agentProfiles.length > 0) {
+            const currentProfileId = caps.activeAgentProfileId || 'software_architect';
+            const currentProfile = state.agentProfiles.find(p => p.id === currentProfileId) || state.agentProfiles[0];
+            if (currentProfile) {
+                const pDiv = document.createElement('div');
+                pDiv.innerHTML = BadgesPresenter.renderAgentProfileBadge(currentProfile.name);
+                const profileWrapper = pDiv.firstElementChild as HTMLElement;
+                BadgesBinder.bindAgentProfileMenu(profileWrapper, state.agentProfiles, currentProfileId);
+                container.appendChild(profileWrapper);
+            }
+        }
+
+        const secLevel: 'strict' | 'guarded' | 'relaxed' = caps.agentSecurityLevel || 'guarded';
+        const mutationCount: number = Number(caps.agentMutationCount ?? (state as any).agentMutationCount ?? 0) || 0;
+        const secDiv = document.createElement('div');
+        secDiv.innerHTML = BadgesPresenter.renderAgentSecurityBadge(secLevel, mutationCount);
+        const secWrapper = secDiv.firstElementChild as HTMLElement;
+        BadgesBinder.bindAgentSecurityMenu(secWrapper, secLevel, mutationCount);
+        container.appendChild(secWrapper);
     }
 
     // --- Auxiliary HUD Options Dropdown Hub (⚙️ 📊 🔍) ---
@@ -2620,20 +2758,20 @@ export function updateBadges() {
 
     const activeIcons: string[] = [];
     if (caps.thinkingMode) activeIcons.push('🧠');
-    if (caps.fastMode === false) activeIcons.push('📚');
-    if (caps.autoExecuteTools === true) activeIcons.push('⚡');
+    if (!isAgent && caps.fastMode === false) activeIcons.push('📚');
+    if (!isAgent && caps.autoExecuteTools === true) activeIcons.push('⚡');
     if (caps.sparqlEnabled !== false) activeIcons.push('📊');
     if (caps.grepEnabled !== false) activeIcons.push('🔍');
     if (caps.webSearch === true) activeIcons.push('🌍');
     if (caps.projectMemoryEnabled !== false) activeIcons.push('🧬');
     if (caps.autoSkillMode === true) activeIcons.push('💡');
-    if (caps.autoApply === true) activeIcons.push('⚡');
+    if (!isAgent && caps.autoApply === true) activeIcons.push('⚡');
     if (caps.debugMode === true) activeIcons.push('🐞');
     if (caps.verifierMode === true) activeIcons.push('🛡️');
     if (caps.testMode === true) activeIcons.push('🧪');
     if (caps.documentationMode === true) activeIcons.push('📖');
     if (caps.gitAutoWorkflow === true) activeIcons.push('🐙');
-    if (caps.herdMode === true) activeIcons.push('🐂');
+    if (!isAgent && caps.herdMode === true) activeIcons.push('🐂');
 
     const iconsLabel = activeIcons.length > 0 ? activeIcons.join(' ') : '⚙️';
     const optDiv = document.createElement('div');
@@ -2664,6 +2802,22 @@ export function updateBadges() {
     const autoToolsCapCheck = document.getElementById('cap-autoExecuteTools') as HTMLInputElement;
     if (autoToolsCapCheck) autoToolsCapCheck.checked = caps.autoExecuteTools === true;
 }
+
+export function syncAgentModeUI(isActive: boolean): void {
+    if (document.body) {
+        document.body.classList.toggle('agent-mode-active', isActive === true);
+    }
+    if (state.capabilities) {
+        state.capabilities.agentMode = isActive === true;
+    }
+    updateBadges();
+    if (state.lastContextData) {
+        import('./messageRenderer.js').then(m => {
+            m.updateContext();
+        }).catch(() => {});
+    }
+}
+(window as any).syncAgentModeUI = syncAgentModeUI;
 // Global exposure for events.ts
 (window as any).closeProfileEditor = () => {
     const editor = document.getElementById('modal-profile-editor');
@@ -3279,9 +3433,9 @@ export function renderDiscussionSearchResults(results: any[], query: string) {
 export function renderWebSearchResults(action: string, results: any[]) {
     let container = document.getElementById(`tab-${action}`);
     if (!container) {
-        if (['ddg', 'google', 'so', 'wiki', 'search_provider'].includes(action)) {
+        if (['auto', 'auto_keyless', 'ddg', 'duckduckgo', 'searxng', 'google', 'so', 'stackoverflow', 'github', 'mdn', 'npm', 'pypi', 'crates', 'wiki', 'wikipedia', 'search_provider'].includes(action)) {
             container = document.getElementById('tab-search');
-        } else if (['arxiv', 'hal', 'academic_provider'].includes(action)) {
+        } else if (['arxiv', 'hal', 'crossref', 'europepmc', 'academic_provider'].includes(action)) {
             container = document.getElementById('tab-arxiv');
         }
     }
@@ -3290,11 +3444,10 @@ export function renderWebSearchResults(action: string, results: any[]) {
     // Reset button state immediately
     const submitBtn = container.querySelector('.web-submit-btn') as HTMLButtonElement;
     if (submitBtn) {
-        submitBtn.innerHTML = (action === 'google' || action === 'ddg' || action === 'github') ? 'Search Again' : 'Search';
+        submitBtn.innerHTML = 'Search';
         submitBtn.disabled = false;
-        submitBtn.style.width = ''; // Reset explicit width from events.ts
+        submitBtn.style.width = '';
     } else {
-        // Fallback: search for any button in the flex container if specific class finding failed
         const anyBtn = container.querySelector('button');
         if (anyBtn) {
             anyBtn.innerHTML = 'Search';
@@ -3310,21 +3463,26 @@ export function renderWebSearchResults(action: string, results: any[]) {
     }
 
     if (!results || results.length === 0) {
-        resultsList.innerHTML = '<div style="padding:10px; opacity:0.6;">No results found.</div>';
+        resultsList.innerHTML = '<div style="padding:10px; opacity:0.6;">No results found. Try another provider or click the external browser button.</div>';
         return;
     }
 
-    resultsList.innerHTML = results.map((res, idx) => `
-        <div class="web-search-item" data-url="${res.url}">
+    resultsList.innerHTML = results.map((res, idx) => {
+        const safeUrl = sanitizer.sanitize(res.url || '');
+        const safeTitle = sanitizer.sanitize(res.title || safeUrl);
+        const safeSnippet = sanitizer.sanitize(res.snippet || '');
+        return `
+        <div class="web-search-item" data-url="${safeUrl}">
             <div style="display:flex; align-items: flex-start; gap:10px;">
-                <input type="checkbox" class="web-result-check" id="web-res-${action}-${idx}" value="${res.url}" style="margin-top: 3px;">
-                <label for="web-res-${action}-${idx}" style="flex:1; min-width:0;">
-                    <div class="web-result-title">${res.title}</div>
-                    <div class="web-result-url">${res.url}</div>
+                <input type="checkbox" class="web-result-check" id="web-res-${action}-${idx}" value="${safeUrl}" style="margin-top: 3px;">
+                <label for="web-res-${action}-${idx}" style="flex:1; min-width:0; cursor:pointer;">
+                    <div class="web-result-title">${safeTitle}</div>
+                    <div class="web-result-url">${safeUrl}</div>
+                    ${safeSnippet ? `<div style="font-size:10.5px; opacity:0.75; margin-top:3px; line-height:1.35;">${safeSnippet}</div>` : ''}
                 </label>
             </div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 
     // Add "Add Selected" button if it doesn't exist
     let addBtn = container.querySelector('.web-add-selected-btn') as HTMLButtonElement;
@@ -6580,4 +6738,242 @@ export function updateProgressBar(container: HTMLElement | null, current: number
 
     const ratio = current / total;
     container.style.borderColor = ratio > 1.0 ? 'var(--vscode-charts-red)' : '';
+}
+
+// --- STRUCTURE SELECTION STUDIO (SYMBOL-LEVEL HALF-MUTE EDITOR) ---
+export const structureEditorState = {
+    filePath: '',
+    symbols: [] as { name: string; displayName: string; kind: string; detail?: string; startLine: number; endLine: number; tokens: number; parent?: string }[],
+    activeSymbols: new Set<string>(),
+    selectedSymbols: new Set<string>(),
+    searchQuery: '',
+    useRegex: false,
+    matchCase: false
+};
+(window as any).structureEditorState = structureEditorState;
+
+export function openStructureEditorModal(filePath: string) {
+    const modal = document.getElementById('structure-editor-modal');
+    const pathEl = document.getElementById('structure-editor-filepath');
+    const listEl = document.getElementById('structure-symbols-list');
+    const searchInp = document.getElementById('structure-search-input') as HTMLInputElement | null;
+    if (!modal || !listEl) return;
+
+    structureEditorState.filePath = filePath;
+    structureEditorState.symbols = [];
+    structureEditorState.activeSymbols.clear();
+    structureEditorState.selectedSymbols.clear();
+    structureEditorState.searchQuery = '';
+    if (searchInp) searchInp.value = '';
+    if (pathEl) pathEl.textContent = filePath;
+    listEl.innerHTML = '<div style="padding: 30px; text-align: center; opacity: 0.7; font-size: 11px;"><div class="spinner" style="margin-bottom:8px;"></div><div>Extracting symbols...</div></div>';
+
+    modal.style.display = 'flex';
+    modal.classList.add('visible');
+
+    bindStructureEditorEvents();
+    vscode.postMessage({ command: 'requestFileSymbols', filePath });
+}
+(window as any).openStructureEditorModal = openStructureEditorModal;
+
+export function handleFileSymbolsData(msg: any) {
+    if (msg.filePath !== structureEditorState.filePath) return;
+    structureEditorState.symbols = Array.isArray(msg.symbols) ? msg.symbols : [];
+    structureEditorState.activeSymbols = new Set<string>(Array.isArray(msg.activeSymbols) ? msg.activeSymbols : []);
+    structureEditorState.selectedSymbols.clear();
+    renderStructureSymbolsList();
+}
+(window as any).handleFileSymbolsData = handleFileSymbolsData;
+
+function getFilteredStructureSymbols() {
+    const q = structureEditorState.searchQuery.trim();
+    if (!q) return structureEditorState.symbols;
+
+    if (structureEditorState.useRegex) {
+        try {
+            const re = new RegExp(q, structureEditorState.matchCase ? '' : 'i');
+            return structureEditorState.symbols.filter(s => re.test(s.name) || (s.detail && re.test(s.detail)));
+        } catch {
+            return [];
+        }
+    }
+
+    const needle = structureEditorState.matchCase ? q : q.toLowerCase();
+    return structureEditorState.symbols.filter(s => {
+        const hay = structureEditorState.matchCase ? `${s.name} ${s.detail || ''}` : `${s.name} ${s.detail || ''}`.toLowerCase();
+        return hay.includes(needle);
+    });
+}
+
+export function renderStructureSymbolsList() {
+    const listEl = document.getElementById('structure-symbols-list');
+    const statsEl = document.getElementById('structure-editor-stats');
+    const footerEl = document.getElementById('structure-editor-footer-summary');
+    const selCountEl = document.getElementById('structure-selected-count');
+    const selAllCheck = document.getElementById('structure-select-all-check') as HTMLInputElement | null;
+    const unmuteSelBtn = document.getElementById('structure-unmute-selected-btn') as HTMLButtonElement | null;
+    const muteSelBtn = document.getElementById('structure-mute-selected-btn') as HTMLButtonElement | null;
+    if (!listEl) return;
+
+    const filtered = getFilteredStructureSymbols();
+    const total = structureEditorState.symbols.length;
+    const activeCount = structureEditorState.symbols.filter(s => structureEditorState.activeSymbols.has(s.name)).length;
+    const activeTokens = structureEditorState.symbols
+        .filter(s => structureEditorState.activeSymbols.has(s.name))
+        .reduce((sum, s) => sum + s.tokens, 0);
+
+    if (statsEl) statsEl.textContent = `${activeCount} / ${total} Active (~${activeTokens.toLocaleString()} tok)`;
+    if (footerEl) footerEl.textContent = `${activeCount} symbol(s) kept in full; ${total - activeCount} compacted to signatures.`;
+
+    const selectedVisibleCount = filtered.filter(s => structureEditorState.selectedSymbols.has(s.name)).length;
+    if (selCountEl) selCountEl.textContent = `(${structureEditorState.selectedSymbols.size} selected)`;
+    if (selAllCheck) {
+        selAllCheck.checked = filtered.length > 0 && selectedVisibleCount === filtered.length;
+        selAllCheck.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < filtered.length;
+    }
+    if (unmuteSelBtn) unmuteSelBtn.disabled = structureEditorState.selectedSymbols.size === 0;
+    if (muteSelBtn) muteSelBtn.disabled = structureEditorState.selectedSymbols.size === 0;
+
+    if (filtered.length === 0) {
+        listEl.innerHTML = `<div style="padding: 24px; text-align: center; opacity: 0.6; font-size: 11px;">${total === 0 ? 'No symbols found in this file.' : 'No symbols match the current filter.'}</div>`;
+        return;
+    }
+
+    const kindIcon = (kind: string) => {
+        if (kind === 'class') return 'codicon-symbol-class';
+        if (kind === 'interface') return 'codicon-symbol-interface';
+        if (kind === 'method' || kind === 'function') return 'codicon-symbol-method';
+        if (kind === 'enum') return 'codicon-symbol-enum';
+        return 'codicon-symbol-misc';
+    };
+
+    listEl.innerHTML = filtered.map(sym => {
+        const isActive = structureEditorState.activeSymbols.has(sym.name);
+        const isSelected = structureEditorState.selectedSymbols.has(sym.name);
+        const escapedName = sanitizer.sanitize(sym.name);
+        const detailHtml = sym.detail ? `<span style="opacity:0.6; font-size:10px; margin-left:6px;">${sanitizer.sanitize(sym.detail)}</span>` : '';
+
+        return `
+        <div class="structure-symbol-row" data-symbol="${escapedName}" style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:4px; border:1px solid var(--vscode-widget-border); background:${isActive ? 'rgba(46, 204, 113, 0.08)' : 'var(--vscode-editor-inactiveSelectionBackground)'}; border-left:3px solid ${isActive ? 'var(--vscode-charts-green)' : 'var(--vscode-widget-border)'};">
+            <input type="checkbox" class="structure-select-check" data-symbol="${escapedName}" ${isSelected ? 'checked' : ''} style="margin:0; cursor:pointer;">
+            <span class="codicon ${kindIcon(sym.kind)}" style="color:${isActive ? 'var(--vscode-charts-green)' : 'var(--vscode-charts-blue)'}; flex-shrink:0;"></span>
+            <div style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                <span style="font-weight:600; font-size:11.5px; ${!isActive ? 'opacity:0.75;' : ''}">${escapedName}</span>${detailHtml}
+            </div>
+            <span style="font-size:10px; opacity:0.6; font-family:var(--vscode-editor-font-family);">L${sym.startLine}-${sym.endLine}</span>
+            <span class="file-token-badge ${isActive ? 'weight-light' : 'weight-muted'}" style="font-size:9.5px;">~${sym.tokens} tok</span>
+            <button type="button" class="code-action-btn ${isActive ? 'secondary-btn' : 'apply-btn'} structure-toggle-sym-btn" data-symbol="${escapedName}" style="height:22px; font-size:10px; padding:0 8px; min-width:74px; justify-content:center;">
+                <i class="codicon ${isActive ? 'codicon-eye-closed' : 'codicon-eye'}"></i> ${isActive ? 'Mute' : 'Unmute'}
+            </button>
+        </div>`;
+    }).join('');
+
+    listEl.querySelectorAll('.structure-select-check').forEach((cb: any) => {
+        cb.onchange = () => {
+            const sym = cb.dataset.symbol;
+            if (!sym) return;
+            if (cb.checked) structureEditorState.selectedSymbols.add(sym);
+            else structureEditorState.selectedSymbols.delete(sym);
+            renderStructureSymbolsList();
+        };
+    });
+
+    listEl.querySelectorAll('.structure-toggle-sym-btn').forEach((btn: any) => {
+        btn.onclick = (e: MouseEvent) => {
+            e.stopPropagation();
+            const sym = btn.dataset.symbol;
+            if (!sym) return;
+            if (structureEditorState.activeSymbols.has(sym)) structureEditorState.activeSymbols.delete(sym);
+            else structureEditorState.activeSymbols.add(sym);
+            renderStructureSymbolsList();
+        };
+    });
+}
+
+let structureEventsBound = false;
+function bindStructureEditorEvents() {
+    if (structureEventsBound) return;
+    structureEventsBound = true;
+
+    const modal = document.getElementById('structure-editor-modal');
+    const close = () => {
+        if (modal) {
+            modal.style.display = 'none';
+            modal.classList.remove('visible');
+        }
+    };
+
+    document.getElementById('structure-editor-close-btn')?.addEventListener('click', close);
+    document.getElementById('structure-cancel-btn')?.addEventListener('click', close);
+
+    const searchInp = document.getElementById('structure-search-input') as HTMLInputElement | null;
+    const clearBtn = document.getElementById('structure-search-clear-btn');
+    const regexBtn = document.getElementById('structure-search-regex-btn');
+    const caseBtn = document.getElementById('structure-search-case-btn');
+
+    searchInp?.addEventListener('input', () => {
+        structureEditorState.searchQuery = searchInp.value;
+        if (clearBtn) clearBtn.style.display = searchInp.value ? 'inline-flex' : 'none';
+        renderStructureSymbolsList();
+    });
+
+    clearBtn?.addEventListener('click', () => {
+        if (searchInp) searchInp.value = '';
+        structureEditorState.searchQuery = '';
+        if (clearBtn) clearBtn.style.display = 'none';
+        renderStructureSymbolsList();
+    });
+
+    regexBtn?.addEventListener('click', () => {
+        structureEditorState.useRegex = !structureEditorState.useRegex;
+        regexBtn.classList.toggle('apply-btn', structureEditorState.useRegex);
+        regexBtn.classList.toggle('secondary-btn', !structureEditorState.useRegex);
+        renderStructureSymbolsList();
+    });
+
+    caseBtn?.addEventListener('click', () => {
+        structureEditorState.matchCase = !structureEditorState.matchCase;
+        caseBtn.classList.toggle('apply-btn', structureEditorState.matchCase);
+        caseBtn.classList.toggle('secondary-btn', !structureEditorState.matchCase);
+        renderStructureSymbolsList();
+    });
+
+    document.getElementById('structure-select-all-check')?.addEventListener('change', (e) => {
+        const checked = (e.target as HTMLInputElement).checked;
+        const filtered = getFilteredStructureSymbols();
+        filtered.forEach(s => {
+            if (checked) structureEditorState.selectedSymbols.add(s.name);
+            else structureEditorState.selectedSymbols.delete(s.name);
+        });
+        renderStructureSymbolsList();
+    });
+
+    document.getElementById('structure-unmute-selected-btn')?.addEventListener('click', () => {
+        structureEditorState.selectedSymbols.forEach(s => structureEditorState.activeSymbols.add(s));
+        renderStructureSymbolsList();
+    });
+
+    document.getElementById('structure-mute-selected-btn')?.addEventListener('click', () => {
+        structureEditorState.selectedSymbols.forEach(s => structureEditorState.activeSymbols.delete(s));
+        renderStructureSymbolsList();
+    });
+
+    document.getElementById('structure-unmute-all-btn')?.addEventListener('click', () => {
+        getFilteredStructureSymbols().forEach(s => structureEditorState.activeSymbols.add(s.name));
+        renderStructureSymbolsList();
+    });
+
+    document.getElementById('structure-mute-all-btn')?.addEventListener('click', () => {
+        getFilteredStructureSymbols().forEach(s => structureEditorState.activeSymbols.delete(s.name));
+        renderStructureSymbolsList();
+    });
+
+    document.getElementById('structure-apply-btn')?.addEventListener('click', () => {
+        vscode.postMessage({
+            command: 'updateFileSymbols',
+            filePath: structureEditorState.filePath,
+            activeSymbols: Array.from(structureEditorState.activeSymbols)
+        });
+        close();
+    });
 }

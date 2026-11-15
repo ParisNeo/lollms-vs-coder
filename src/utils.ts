@@ -9,13 +9,16 @@ import * as crypto from 'crypto';
 export function stripLibrarianReferences(text: string): string {
     if (!text || typeof text !== 'string') return '';
     return text
-        .split('\n')
-        .filter(line => !/\b(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)\b/i.test(line))
-        .join('\n')
+        .replace(/<plan\b[^>]*>[\s\S]*?<\/plan>/gi, '')
+        .replace(/<findings\b[^>]*>[\s\S]*?<\/findings>/gi, '')
+        .replace(/<librarian_report\b[^>]*>[\s\S]*?<\/librarian_report>/gi, '')
         .replace(/<details\b[^>]*class=["'][^"']*librarian[^"']*["'][\s\S]*?<\/details>/gi, '')
         .replace(/<(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)\b[^>]*>[\s\S]*?<\/(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)>/gi, '')
         .replace(/<librarian_off\b[^>]*>[\s\S]*?<\/librarian_off>/gi, '')
         .replace(/<librarian_decision\b[^>]*>[\s\S]*?<\/librarian_decision>/gi, '')
+        .split('\n')
+        .filter(line => !/\b(?:librarian|ask_librarian|consult_librarian|governor|ask_governor)\b/i.test(line))
+        .join('\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 }
@@ -301,6 +304,7 @@ export interface DiscussionCapabilities {
 
     includeGitInfo?: boolean;
     agentMode: boolean;
+    agentSecurityLevel?: 'strict' | 'guarded' | 'relaxed';
     dynamicMode?: boolean; // Added for live in-chat multi-turn tools loop
     debugMode: boolean;
     verifierMode: boolean;
@@ -1181,7 +1185,7 @@ export async function getProcessedSystemPrompt(
         finalPersona = config.get<string>(key) || "You are an expert software engineer.";
     }
 
-    const isFastMode = capabilities?.fastMode === true;
+    const isFastMode = promptType !== 'agent' && promptType !== 'surgical_agent' && capabilities?.fastMode !== false;
     if (workingMemory && !isFastMode) {
         finalPersona = `### 🧠 LIBRARIAN'S CONTEXT ANALYSIS\n${workingMemory}\n\n${finalPersona}`;
     }

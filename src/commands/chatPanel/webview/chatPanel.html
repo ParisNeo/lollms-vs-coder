@@ -534,7 +534,7 @@
                         <div class="rich-input-toolbar">
                             <button class="toolbar-tool" id="jump-to-context-btn" title="Jump to Project Context / Dashboard"><i class="codicon codicon-dashboard"></i><span>Context</span></button>
 
-                            <button class="toolbar-tool" data-wrap-type="plan" title="Librarian Plan &amp; Findings Template"><i class="codicon codicon-checklist"></i><span>Plan</span></button>
+                            <button class="toolbar-tool assistant-only-control" data-wrap-type="plan" title="Librarian Plan &amp; Findings Template"><i class="codicon codicon-checklist"></i><span>Plan</span></button>
                             <div class="toolbar-separator"></div>
                             <button class="toolbar-tool" data-wrap-type="python" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
                             <button class="toolbar-tool" data-wrap-type="code" title="Code Block"><i class="codicon codicon-code"></i><span>Code</span></button>
@@ -620,6 +620,14 @@
                                 <label for="setting-autoProfileSwitch" style="font-size:11px; font-weight:bold;">Auto Profile Switch</label>
                             </div>
                             <p class="help-text">AI auto-selects best mission protocol.</p>
+
+                            <label style="margin-top:15px;" for="setting-securityLevel">🛡️ Security Shield Level</label>
+                            <select id="setting-securityLevel" class="menu-select" style="width:100%; margin:4px 0;">
+                                <option value="strict">🛡️ Strict (Confirm All Risks)</option>
+                                <option value="guarded" selected>⚖️ Guarded (Recommended)</option>
+                                <option value="relaxed">🚀 Relaxed (Git-Isolated)</option>
+                            </select>
+                            <p class="help-text">Guards against destructive commands, root wipes, and hallucinated file shrinks.</p>
                         </div>
 
                         <div style="flex:1"></div>
@@ -1119,35 +1127,73 @@
                         <label class="switch"><input type="checkbox" id="cap-distillWebResults"><span class="slider"></span></label>
                         <label for="cap-distillWebResults">Distill/Refactor web results using AI</label>
                     </div>
-                    <div class="checkbox-container" style="margin-bottom: 10px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 10px;">
-                        <label class="switch"><input type="checkbox" id="cap-antiPromptInjection"><span class="slider"></span></label>
-                        <label for="cap-antiPromptInjection">Anti-Prompt Injection cleaning</label>
+                    <div class="checkbox-container" style="margin-bottom: 8px;">
+                        <label class="switch"><input type="checkbox" id="cap-antiPromptInjection" checked><span class="slider"></span></label>
+                        <label for="cap-antiPromptInjection"><strong>🛡️ Context Poisoning Gate:</strong> Scan &amp; sanitize external content before ingestion</label>
                     </div>
-                    <div style="font-size: 11px; margin-bottom: 8px; opacity: 0.8;">Active Sources:</div>
+                    <div style="display:grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--vscode-widget-border);">
+                        <div class="form-group" style="margin:0;">
+                            <label for="cap-contextPoisoningGateMode" style="font-size: 10px; font-weight: bold; opacity: 0.8;">Gate Policy on High Risk</label>
+                            <select id="cap-contextPoisoningGateMode" class="menu-select" style="width:100%; margin:2px 0 0 0; height: 24px;">
+                                <option value="quarantine_and_sanitize" selected>Quarantine &amp; Sanitize (Default)</option>
+                                <option value="block_suspicious">Block Ingestion Completely</option>
+                                <option value="prompt_user">Ask User Before Ingestion</option>
+                            </select>
+                        </div>
+                        <div class="checkbox-container" style="margin:0; padding-top: 14px;">
+                            <label class="switch" style="width:24px; height:14px;"><input type="checkbox" id="cap-contextPoisoningLlmAudit"><span class="slider" style="border-radius:14px;"></span></label>
+                            <label for="cap-contextPoisoningLlmAudit" style="font-size: 11px;" title="Run an isolated LLM security classifier on flagged external pages">LLM Deep Audit</label>
+                        </div>
+                    </div>
+                    <div style="font-size: 11px; margin-bottom: 8px; opacity: 0.8;">Active Sources (Keyless by Default):</div>
                     <div class="checkbox-grid" id="search-sources-grid">
                         <div class="checkbox-container">
+                            <input type="checkbox" id="src-ddg" data-source="ddg" checked>
+                            <label for="src-ddg">DuckDuckGo (Keyless)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-searxng" data-source="searxng">
+                            <label for="src-searxng">SearXNG (Local Docker)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-stackoverflow" data-source="stackoverflow" checked>
+                            <label for="src-stackoverflow">StackOverflow (Keyless)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-github" data-source="github" checked>
+                            <label for="src-github">GitHub (Keyless)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-mdn" data-source="mdn" checked>
+                            <label for="src-mdn">MDN Docs (Keyless)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-arxiv" data-source="arxiv" checked>
+                            <label for="src-arxiv">ArXiv (Keyless)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-hal" data-source="hal">
+                            <label for="src-hal">HAL Archive (Keyless)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-crossref" data-source="crossref">
+                            <label for="src-crossref">Crossref DOIs (Keyless)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-europepmc" data-source="europepmc">
+                            <label for="src-europepmc">Europe PMC (Keyless)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-wikipedia" data-source="wikipedia" checked>
+                            <label for="src-wikipedia">Wikipedia (Keyless)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="src-youtube" data-source="youtube" checked>
+                            <label for="src-youtube">YouTube Transcripts</label>
+                        </div>
+                        <div class="checkbox-container">
                             <input type="checkbox" id="src-google" data-source="google">
-                            <label for="src-google">Google (Custom)</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <input type="checkbox" id="src-arxiv" data-source="arxiv">
-                            <label for="src-arxiv">ArXiv (Papers)</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <input type="checkbox" id="src-wikipedia" data-source="wikipedia">
-                            <label for="src-wikipedia">Wikipedia</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <input type="checkbox" id="src-stackoverflow" data-source="stackoverflow">
-                            <label for="src-stackoverflow">StackOverflow</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <input type="checkbox" id="src-youtube" data-source="youtube">
-                            <label for="src-youtube">YouTube (Transcripts)</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <input type="checkbox" id="src-github" data-source="github">
-                            <label for="src-github">GitHub (Search)</label>
+                            <label for="src-google">Google (API Key)</label>
                         </div>
                     </div>
                 </div>
@@ -1610,6 +1656,65 @@
         </div>
     </div>
 
+    <!-- 🧩 STRUCTURE SELECTION STUDIO MODAL (SYMBOL-LEVEL HALF-MUTE EDITOR) -->
+    <div id="structure-editor-modal" class="modal" style="z-index: 112000 !important;">
+        <div class="modal-content" style="max-width: 780px; width: 92%; height: 80vh; max-height: 780px; display: flex; flex-direction: column;">
+            <div class="modal-header" style="padding: 10px 18px; border-bottom: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center; background: var(--vscode-editorWidget-background);">
+                <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+                    <div style="width: 28px; height: 28px; border-radius: 6px; background: rgba(0, 122, 204, 0.15); color: var(--vscode-charts-blue); display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0;">
+                        <i class="codicon codicon-list-filter"></i>
+                    </div>
+                    <div style="min-width: 0;">
+                        <h2 style="margin: 0; font-size: 13px; font-weight: 800; letter-spacing: 0.4px;">Structure Selection Studio</h2>
+                        <div id="structure-editor-filepath" style="font-size: 10.5px; opacity: 0.75; font-family: var(--vscode-editor-font-family, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Loading...</div>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px; flex-shrink: 0;">
+                    <span id="structure-editor-stats" class="file-token-badge weight-light" style="font-size: 10px; padding: 2px 8px;">0 Active</span>
+                    <span class="close-btn" id="structure-editor-close-btn">&times;</span>
+                </div>
+            </div>
+
+            <div style="padding: 10px 16px; background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-widget-border); display: flex; flex-direction: column; gap: 8px;">
+                <!-- Search Bar with RegExp & Case toggles -->
+                <div style="display: flex; align-items: center; gap: 8px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 3px 8px;">
+                    <i class="codicon codicon-search" style="font-size: 12px; opacity: 0.7;"></i>
+                    <input type="text" id="structure-search-input" placeholder="Filter symbols by name or signature (supports RegExp)..." style="background: transparent; border: none; outline: none; font-size: 11.5px; color: var(--vscode-input-foreground); flex: 1; height: 22px; padding: 0;">
+                    <button type="button" id="structure-search-case-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px; font-weight: bold;" title="Match Case">Ab</button>
+                    <button type="button" id="structure-search-regex-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 10px; padding: 0 6px; font-weight: bold;" title="Use Regular Expression">.*</button>
+                    <button type="button" id="structure-search-clear-btn" class="icon-btn" style="padding: 0; width: 18px; height: 18px; display: none;" title="Clear Filter"><i class="codicon codicon-close"></i></button>
+                </div>
+
+                <!-- Batch & Selection Toolbar -->
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <input type="checkbox" id="structure-select-all-check" style="margin: 0; cursor: pointer;" title="Select / Deselect all visible symbols">
+                        <label for="structure-select-all-check" style="font-size: 11px; font-weight: 600; cursor: pointer; user-select: none;">Select All</label>
+                        <span id="structure-selected-count" style="font-size: 10px; opacity: 0.7;">(0 selected)</span>
+                        <button type="button" id="structure-unmute-selected-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 8px;" disabled title="Keep full implementation for selected symbols"><i class="codicon codicon-eye"></i> Unmute Selected</button>
+                        <button type="button" id="structure-mute-selected-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 8px;" disabled title="Compact selected symbols to signatures only"><i class="codicon codicon-eye-closed"></i> Mute Selected</button>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <button type="button" id="structure-unmute-all-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 8px;" title="Unmute all visible symbols"><i class="codicon codicon-eye"></i> Unmute All</button>
+                        <button type="button" id="structure-mute-all-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 8px;" title="Compact all visible symbols"><i class="codicon codicon-eye-closed"></i> Mute All</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="structure-symbols-list" style="flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; background: var(--vscode-editor-background);">
+                <div style="padding: 30px; text-align: center; opacity: 0.6; font-size: 11px;">Loading symbols...</div>
+            </div>
+
+            <div class="modal-footer" style="padding: 10px 18px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); display: flex; justify-content: space-between; align-items: center;">
+                <span id="structure-editor-footer-summary" style="font-size: 11px; opacity: 0.85;">Select symbols to keep full code; others stay compacted as signatures.</span>
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" id="structure-cancel-btn" class="code-action-btn secondary-btn" style="height: 28px; padding: 0 14px;">Cancel</button>
+                    <button type="button" id="structure-apply-btn" class="code-action-btn apply-btn" style="height: 28px; padding: 0 16px; font-weight: bold;"><i class="codicon codicon-check"></i> Apply Structure</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- 📝 CUSTOM EXTERNAL CONTENT MODAL -->
     <div id="custom-external-text-modal" class="modal">
         <div class="modal-content" style="max-width: 700px; width: 90%;">
@@ -1898,32 +2003,42 @@
                 <!-- Tab 3: Web Search Engines -->
                 <div id="tab-search" class="web-tab-content">
                     <div class="web-form-group">
-                        <label>Query Search Stream</label>
-                        <div class="web-form-row">
-                            <input type="text" id="web-search-query" placeholder="e.g. latest changes in React Server Components 2026" style="flex:1;">
-                            <select id="web-search-provider" style="width:140px; margin:0;">
-                                <option value="ddg">DuckDuckGo</option>
-                                <option value="google">Google Custom</option>
-                                <option value="wiki">Wikipedia</option>
-                                <option value="so">StackOverflow</option>
+                        <label>Query Search Stream (Zero-API-Key Options Included)</label>
+                        <div class="web-form-row" style="gap:6px;">
+                            <input type="text" id="web-search-query" placeholder="e.g. TypeScript async generator pattern, or fastapi cors" style="flex:1;">
+                            <select id="web-search-provider" style="width:185px; margin:0;">
+                                <option value="auto" selected>⚡ Auto Keyless Router</option>
+                                <option value="ddg">🦆 DuckDuckGo (Keyless)</option>
+                                <option value="searxng">🔎 Local SearXNG (Self-Hosted)</option>
+                                <option value="so">💬 StackOverflow (Keyless)</option>
+                                <option value="github">🐙 GitHub Repos (Keyless)</option>
+                                <option value="mdn">📘 MDN Web Docs (Keyless)</option>
+                                <option value="npm">📦 npm Registry (Keyless)</option>
+                                <option value="pypi">🐍 PyPI Package (Keyless)</option>
+                                <option value="crates">🦀 crates.io (Keyless)</option>
+                                <option value="wiki">📖 Wikipedia (Keyless)</option>
+                                <option value="google">🔍 Google Custom (API Key)</option>
                             </select>
-                            <button class="code-action-btn apply-btn web-submit-btn" data-action="search_provider" style="width:90px; justify-content:center;">Query</button>
+                            <button class="code-action-btn apply-btn web-submit-btn" data-action="search_provider" style="width:80px; justify-content:center;">Query</button>
+                            <button type="button" class="code-action-btn secondary-btn" id="web-open-browser-btn" title="Open query in your desktop browser (zero blocking fallback)" style="width:34px; justify-content:center; padding:0;"><i class="codicon codicon-link-external"></i></button>
                         </div>
                     </div>
                     <div id="web-search-results" class="web-search-results" style="max-height:280px; overflow-y:auto; border: 1px solid var(--vscode-widget-border); border-radius:4px; margin-top:10px;">
-                        <div style="padding:20px; opacity:0.5; text-align:center;">Results stream will populate here. Select pages to index.</div>
+                        <div style="padding:20px; opacity:0.5; text-align:center;">Results stream will populate here. All pages pass through the Context Poisoning Gate before ingestion.</div>
                     </div>
                 </div>
 
                 <!-- Tab 4: Academic Databases -->
                 <div id="tab-arxiv" class="web-tab-content">
                     <div class="web-form-group">
-                        <label>Scholarly Search Query (ArXiv/HAL)</label>
-                        <div class="web-form-row">
+                        <label>Scholarly Search Query (Keyless Open-Access APIs)</label>
+                        <div class="web-form-row" style="gap:6px;">
                             <input type="text" id="web-arxiv-input" placeholder="e.g. GraphRAG entity extraction" style="flex:1;">
-                            <select id="web-academic-provider" style="width:120px; margin:0;">
-                                <option value="arxiv">ArXiv</option>
-                                <option value="hal">HAL Archive</option>
+                            <select id="web-academic-provider" style="width:170px; margin:0;">
+                                <option value="arxiv">📄 ArXiv (Keyless)</option>
+                                <option value="hal">🏛️ HAL Archive (Keyless)</option>
+                                <option value="crossref">📚 Crossref DOIs (Keyless)</option>
+                                <option value="europepmc">🧬 Europe PMC (Keyless)</option>
                             </select>
                             <button class="code-action-btn apply-btn web-submit-btn" data-action="academic_provider" style="width:90px; justify-content:center;">Search</button>
                         </div>
@@ -2025,8 +2140,11 @@
                     </div>
                 </div>
             </div>
-            <div class="modal-footer" style="display:flex; justify-content: space-between;">
-                <button id="briefing-clear-btn" class="code-action-btn delete-btn" style="width:120px; justify-content:center; height:32px; font-weight:bold;">Clear Briefing</button>
+            <div class="modal-footer" style="display:flex; justify-content: space-between; gap:8px;">
+                <div style="display:flex; gap:8px;">
+                    <button id="briefing-clear-btn" class="code-action-btn delete-btn" style="width:120px; justify-content:center; height:32px; font-weight:bold;">Clear Briefing</button>
+                    <button id="briefing-compact-btn" class="code-action-btn secondary-btn" style="justify-content:center; height:32px; padding:0 12px; font-weight:600;" title="Prune stale file references, merge duplicates, and consolidate cross-session entries"><i class="codicon codicon-fold"></i> Compact &amp; Prune</button>
+                </div>
                 <button id="briefing-save-btn" class="code-action-btn apply-btn" style="width:120px; justify-content:center; height:32px; font-weight:bold;"><i class="codicon codicon-save"></i> Save</button>
             </div>
         </div>

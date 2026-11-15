@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { GitIntegration, GitFileVersionCommit } from '../gitIntegration';
+import { LollmsAPI } from '../lollmsAPI';
+import { stripThinkingTags } from '../utils';
 import { Logger } from '../logger';
 
 export class FileHistoryComparePanel {
@@ -8,6 +11,7 @@ export class FileHistoryComparePanel {
     private readonly _panel: vscode.WebviewPanel;
     private readonly _extensionUri: vscode.Uri;
     private readonly _gitIntegration: GitIntegration;
+    private readonly _lollmsAPI?: LollmsAPI;
     private _currentFolder: vscode.WorkspaceFolder;
     private _currentFilePath: string; // Relative to workspace folder
     private _disposables: vscode.Disposable[] = [];
@@ -22,12 +26,15 @@ export class FileHistoryComparePanel {
     private _skipCount: number = 0;
     private readonly _pageSize: number = 50;
     private _hasMoreCommits: boolean = true;
+    private _searchContent: string = '';
+    private _hasPreAiSnapshot: boolean = false;
 
     public static async createOrShow(
         extensionUri: vscode.Uri,
         gitIntegration: GitIntegration,
         folder: vscode.WorkspaceFolder,
-        filePath: string
+        filePath: string,
+        lollmsAPI?: LollmsAPI
     ) {
         const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : vscode.ViewColumn.One;
 
@@ -58,7 +65,7 @@ export class FileHistoryComparePanel {
             }
         );
 
-        FileHistoryComparePanel.currentPanel = new FileHistoryComparePanel(panel, extensionUri, gitIntegration, folder, filePath);
+        FileHistoryComparePanel.currentPanel = new FileHistoryComparePanel(panel, extensionUri, gitIntegration, folder, filePath, lollmsAPI);
     }
 
     private constructor(
@@ -66,11 +73,13 @@ export class FileHistoryComparePanel {
         extensionUri: vscode.Uri,
         gitIntegration: GitIntegration,
         folder: vscode.WorkspaceFolder,
-        filePath: string
+        filePath: string,
+        lollmsAPI?: LollmsAPI
     ) {
         this._panel = panel;
         this._extensionUri = extensionUri;
         this._gitIntegration = gitIntegration;
+        this._lollmsAPI = lollmsAPI;
         this._currentFolder = folder;
         this._currentFilePath = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
 
@@ -93,10 +102,19 @@ export class FileHistoryComparePanel {
         this._commits = [];
         this._skipCount = 0;
         this._hasMoreCommits = true;
+        this._searchContent = '';
+        this._hasPreAiSnapshot = false;
         this._refA = 'WORKING_TREE';
         this._refB = '';
         this._panel.title = `History: ${path.basename(filePath)}`;
         await this.loadHistory(false);
+    }
+
+    private getPreAiSnapshotUri(): vscode.Uri {
+        const fileUri = vscode.Uri.joinPath(this._currentFolder.uri, this._currentFilePath);
+        const fileName = path.basename(fileUri.fsPath);
+        const hash = crypto.createHash('md5').update(fileUri.fsPath).digest('hex').substring(0, 8);
+        return vscode.Uri.joinPath(this._currentFolder.uri, '.lollms', 'snapshots', `${hash}_${fileName}.orig`);
     }
 
     public dispose() {
@@ -117,11 +135,21 @@ export class FileHistoryComparePanel {
         this._panel.webview.postMessage({ command: 'setLoading', loading: true, status: append ? 'Loading more commits...' : 'Fetching history across all branches...' });
 
         try {
+            if (!append) {
+                try {
+                    await vscode.workspace.fs.stat(this.getPreAiSnapshotUri());
+                    this._hasPreAiSnapshot = true;
+                } catch {
+                    this._hasPreAiSnapshot = false;
+                }
+            }
+
             const newBatch = await this._gitIntegration.getFileHistoryAllBranches(
                 this._currentFolder, 
                 this._currentFilePath, 
                 this._pageSize, 
-                this._skipCount
+                this._skipCount,
+                this._searchContent
             );
 
             if (append) {
@@ -145,7 +173,10 @@ export class FileHistoryComparePanel {
                 commits: this._commits,
                 refA: this._refA,
                 refB: this._refB,
-                hasMore: this._hasMoreCommits
+                hasMore: this._hasMoreCommits,
+                hasPreAiSnapshot: this._hasPreAiSnapshot,
+                hasAiApi: !!this._lollmsAPI,
+                searchContent: this._searchContent
             });
 
             // LAZY LOADING MANDATE: Do NOT compute/load heavy diffs on initial load.
@@ -174,7 +205,17 @@ export class FileHistoryComparePanel {
             return this._contentCache.get(ref)!;
         }
 
-        const content = await this._gitIntegration.getFileContentAtRef(this._currentFolder, ref, this._currentFilePath);
+        let content = '';
+        if (ref === 'SNAPSHOT_PRE_AI') {
+            try {
+                const bytes = await vscode.workspace.fs.readFile(this.getPreAiSnapshotUri());
+                content = Buffer.from(bytes).toString('utf8');
+            } catch {
+                content = '';
+            }
+        } else {
+            content = await this._gitIntegration.getFileContentAtRef(this._currentFolder, ref, this._currentFilePath);
+        }
         this._contentCache.set(ref, content);
         return content;
     }
@@ -190,11 +231,21 @@ export class FileHistoryComparePanel {
         });
 
         try {
-            const [contentA, contentB, rawDiff] = await Promise.all([
+            const effectiveRefB = this._refB || this._refA;
+            const [contentA, contentB] = await Promise.all([
                 this.getFileContent(this._refA),
-                this.getFileContent(this._refB || this._refA),
-                this._gitIntegration.getFileDiffBetweenRefs(this._currentFolder, this._refA, this._refB || this._refA, this._currentFilePath)
+                this.getFileContent(effectiveRefB)
             ]);
+
+            let rawDiff = '';
+            if (this._refA !== effectiveRefB) {
+                if (this._refA !== 'SNAPSHOT_PRE_AI' && effectiveRefB !== 'SNAPSHOT_PRE_AI') {
+                    rawDiff = await this._gitIntegration.getFileDiffBetweenRefs(this._currentFolder, this._refA, effectiveRefB, this._currentFilePath);
+                }
+                if (!rawDiff.trim() && contentA !== contentB) {
+                    rawDiff = this.generateUnifiedDiff(this._currentFilePath, contentA, contentB);
+                }
+            }
 
             if (currentReq !== this._diffRequestId) {
                 return; // Newer request superseded this diff computation
@@ -224,9 +275,193 @@ export class FileHistoryComparePanel {
         }
     }
 
+    private generateUnifiedDiff(filePath: string, contentA: string, contentB: string, contextLines: number = 3): string {
+        const splitLines = (text: string): string[] => {
+            if (!text) return [];
+            const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+            if (lines.length > 0 && lines[lines.length - 1] === '') {
+                lines.pop();
+            }
+            return lines;
+        };
+
+        const linesA = splitLines(contentA);
+        const linesB = splitLines(contentB);
+
+        let prefix = 0;
+        while (prefix < linesA.length && prefix < linesB.length && linesA[prefix] === linesB[prefix]) {
+            prefix++;
+        }
+
+        let suffix = 0;
+        while (
+            suffix < linesA.length - prefix &&
+            suffix < linesB.length - prefix &&
+            linesA[linesA.length - 1 - suffix] === linesB[linesB.length - 1 - suffix]
+        ) {
+            suffix++;
+        }
+
+        const midA = linesA.slice(prefix, linesA.length - suffix);
+        const midB = linesB.slice(prefix, linesB.length - suffix);
+
+        if (midA.length === 0 && midB.length === 0) {
+            return '';
+        }
+
+        type Op = { type: 'equal' | 'delete' | 'insert'; idxA: number; idxB: number; text: string };
+        const ops: Op[] = [];
+
+        for (let i = 0; i < prefix; i++) {
+            ops.push({ type: 'equal', idxA: i, idxB: i, text: linesA[i] });
+        }
+
+        const n = midA.length;
+        const m = midB.length;
+        const maxD = Math.min(n + m, 1500);
+        const offset = maxD;
+        const v = new Int32Array(2 * maxD + 1);
+        const trace: Int32Array[] = [];
+        let foundD = -1;
+
+        if (n > 0 && m > 0) {
+            for (let d = 0; d <= maxD; d++) {
+                trace.push(v.slice(offset - d, offset + d + 1));
+                for (let k = -d; k <= d; k += 2) {
+                    const down = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1]);
+                    let x = down ? v[offset + k + 1] : v[offset + k - 1] + 1;
+                    let y = x - k;
+                    while (x < n && y < m && midA[x] === midB[y]) {
+                        x++;
+                        y++;
+                    }
+                    v[offset + k] = x;
+                    if (x >= n && y >= m) {
+                        foundD = d;
+                        break;
+                    }
+                }
+                if (foundD !== -1) break;
+            }
+        }
+
+        if (foundD !== -1) {
+            const midOps: Op[] = [];
+            let x = n;
+            let y = m;
+            for (let d = foundD; d > 0; d--) {
+                const vPrev = trace[d];
+                const k = x - y;
+                const down = k === -d || (k !== d && vPrev[d + k - 1] < vPrev[d + k + 1]);
+                const kPrev = down ? k + 1 : k - 1;
+                const xStart = vPrev[d + kPrev];
+                const yStart = xStart - kPrev;
+                const xMid = down ? xStart : xStart + 1;
+                const yMid = xMid - k;
+
+                while (x > xMid && y > yMid) {
+                    x--;
+                    y--;
+                    midOps.push({ type: 'equal', idxA: prefix + x, idxB: prefix + y, text: midA[x] });
+                }
+                if (down) {
+                    midOps.push({ type: 'insert', idxA: prefix + xStart, idxB: prefix + yStart, text: midB[yStart] });
+                } else {
+                    midOps.push({ type: 'delete', idxA: prefix + xStart, idxB: prefix + yStart, text: midA[xStart] });
+                }
+                x = xStart;
+                y = yStart;
+            }
+            while (x > 0 && y > 0) {
+                x--;
+                y--;
+                midOps.push({ type: 'equal', idxA: prefix + x, idxB: prefix + y, text: midA[x] });
+            }
+            midOps.reverse();
+            ops.push(...midOps);
+        } else {
+            for (let i = 0; i < n; i++) {
+                ops.push({ type: 'delete', idxA: prefix + i, idxB: prefix, text: midA[i] });
+            }
+            for (let j = 0; j < m; j++) {
+                ops.push({ type: 'insert', idxA: prefix + n, idxB: prefix + j, text: midB[j] });
+            }
+        }
+
+        for (let i = 0; i < suffix; i++) {
+            const idxA = linesA.length - suffix + i;
+            const idxB = linesB.length - suffix + i;
+            ops.push({ type: 'equal', idxA, idxB, text: linesA[idxA] });
+        }
+
+        // Group non-equal operations into unified diff hunks
+        const changeIndices: number[] = [];
+        for (let i = 0; i < ops.length; i++) {
+            if (ops[i].type !== 'equal') changeIndices.push(i);
+        }
+        if (changeIndices.length === 0) return '';
+
+        const hunks: Array<{ startOp: number; endOp: number }> = [];
+        let curStart = Math.max(0, changeIndices[0] - contextLines);
+        let curEnd = Math.min(ops.length - 1, changeIndices[0] + contextLines);
+
+        for (let i = 1; i < changeIndices.length; i++) {
+            const nextStart = Math.max(0, changeIndices[i] - contextLines);
+            const nextEnd = Math.min(ops.length - 1, changeIndices[i] + contextLines);
+            if (nextStart <= curEnd + 1) {
+                curEnd = nextEnd;
+            } else {
+                hunks.push({ startOp: curStart, endOp: curEnd });
+                curStart = nextStart;
+                curEnd = nextEnd;
+            }
+        }
+        hunks.push({ startOp: curStart, endOp: curEnd });
+
+        const out: string[] = [`--- a/${filePath}`, `+++ b/${filePath}`];
+        for (const h of hunks) {
+            let lenA = 0;
+            let lenB = 0;
+            let firstIdxA = -1;
+            let firstIdxB = -1;
+            const hunkLines: string[] = [];
+
+            for (let i = h.startOp; i <= h.endOp; i++) {
+                const op = ops[i];
+                if (op.type === 'equal') {
+                    if (firstIdxA === -1) firstIdxA = op.idxA;
+                    if (firstIdxB === -1) firstIdxB = op.idxB;
+                    lenA++;
+                    lenB++;
+                    hunkLines.push(` ${op.text}`);
+                } else if (op.type === 'delete') {
+                    if (firstIdxA === -1) firstIdxA = op.idxA;
+                    if (firstIdxB === -1) firstIdxB = op.idxB;
+                    lenA++;
+                    hunkLines.push(`-${op.text}`);
+                } else {
+                    if (firstIdxA === -1) firstIdxA = op.idxA;
+                    if (firstIdxB === -1) firstIdxB = op.idxB;
+                    lenB++;
+                    hunkLines.push(`+${op.text}`);
+                }
+            }
+
+            const startA = lenA === 0 ? Math.max(0, firstIdxA) : firstIdxA + 1;
+            const startB = lenB === 0 ? Math.max(0, firstIdxB) : firstIdxB + 1;
+            out.push(`@@ -${startA},${lenA} +${startB},${lenB} @@`);
+            out.push(...hunkLines);
+        }
+
+        return out.join('\n') + '\n';
+    }
+
     private getRefDisplayInfo(ref: string): { label: string, detail: string } {
         if (ref === 'WORKING_TREE') {
             return { label: 'Working Tree (Current Disk)', detail: 'Current file state on disk' };
+        }
+        if (ref === 'SNAPSHOT_PRE_AI') {
+            return { label: 'Pre-AI Snapshot', detail: 'Saved .lollms/snapshots backup before AI edit' };
         }
         const commit = this._commits.find(c => c.hash === ref);
         if (commit) {
@@ -271,6 +506,15 @@ export class FileHistoryComparePanel {
                 case 'loadMore':
                     await this.loadHistory(true);
                     break;
+                case 'searchFileHistory':
+                    this._searchContent = typeof message.query === 'string' ? message.query.trim() : '';
+                    this._skipCount = 0;
+                    this._commits = [];
+                    await this.loadHistory(false);
+                    break;
+                case 'explainDiff':
+                    await this.handleExplainDiff(message.diff || '');
+                    break;
                 case 'copyContent': {
                     const content = await this.getFileContent(message.ref);
                     await vscode.env.clipboard.writeText(content);
@@ -312,9 +556,18 @@ export class FileHistoryComparePanel {
 
         if (confirm === "Restore Version") {
             try {
-                const targetContent = await this.getFileContent(ref);
                 const fileUri = vscode.Uri.joinPath(this._currentFolder.uri, this._currentFilePath);
+                // Save a safety snapshot of the current working tree before overwriting
+                try {
+                    const currentBytes = await vscode.workspace.fs.readFile(fileUri);
+                    const snapUri = this.getPreAiSnapshotUri();
+                    await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(snapUri, '..'));
+                    await vscode.workspace.fs.writeFile(snapUri, currentBytes);
+                    this._hasPreAiSnapshot = true;
+                    this._contentCache.delete('SNAPSHOT_PRE_AI');
+                } catch {}
 
+                const targetContent = await this.getFileContent(ref);
                 await vscode.workspace.fs.writeFile(fileUri, Buffer.from(targetContent, 'utf8'));
                 this._contentCache.delete('WORKING_TREE');
 
@@ -323,6 +576,28 @@ export class FileHistoryComparePanel {
             } catch (err: any) {
                 vscode.window.showErrorMessage(`Failed to restore file: ${err.message}`);
             }
+        }
+    }
+
+    private async handleExplainDiff(rawDiff: string) {
+        if (!this._lollmsAPI) {
+            this._panel.webview.postMessage({ command: 'aiSummaryResult', error: 'AI service is not available.' });
+            return;
+        }
+        const trimmed = (rawDiff || '').trim();
+        if (!trimmed) {
+            this._panel.webview.postMessage({ command: 'aiSummaryResult', summary: 'No diff lines to summarize (versions are identical or comparing a snapshot without unified diff).' });
+            return;
+        }
+        try {
+            const excerpt = trimmed.length > 8000 ? trimmed.substring(0, 8000) + '\n... [truncated]' : trimmed;
+            const response = await this._lollmsAPI.sendChat([
+                { role: 'system', content: 'You are a concise senior code reviewer. Summarize the key changes in this file diff in 3-5 clear bullet points.' },
+                { role: 'user', content: `File: \`${this._currentFilePath}\`\n\n\`\`\`diff\n${excerpt}\n\`\`\`` }
+            ], null, undefined, undefined, { thinking: false });
+            this._panel.webview.postMessage({ command: 'aiSummaryResult', summary: stripThinkingTags(response).trim() });
+        } catch (err: any) {
+            this._panel.webview.postMessage({ command: 'aiSummaryResult', error: err?.message || 'Failed to generate AI summary.' });
         }
     }
 
@@ -340,6 +615,8 @@ export class FileHistoryComparePanel {
 
             if (this._refA === 'WORKING_TREE') {
                 uriA = vscode.Uri.joinPath(this._currentFolder.uri, this._currentFilePath);
+            } else if (this._refA === 'SNAPSHOT_PRE_AI') {
+                uriA = this.getPreAiSnapshotUri();
             } else {
                 uriA = vscode.Uri.joinPath(cacheDir, `${shortA}_${baseName}`);
                 const contentA = await this.getFileContent(this._refA);
@@ -348,6 +625,8 @@ export class FileHistoryComparePanel {
 
             if (this._refB === 'WORKING_TREE' || !this._refB) {
                 uriB = vscode.Uri.joinPath(this._currentFolder.uri, this._currentFilePath);
+            } else if (this._refB === 'SNAPSHOT_PRE_AI') {
+                uriB = this.getPreAiSnapshotUri();
             } else {
                 uriB = vscode.Uri.joinPath(cacheDir, `${shortB}_${baseName}`);
                 const contentB = await this.getFileContent(this._refB);
@@ -805,8 +1084,13 @@ export class FileHistoryComparePanel {
                 <span>Commits (All Branches)</span>
                 <span id="commit-count" style="opacity:0.6;">0</span>
             </div>
-            <div class="search-box">
+            <div class="search-box" style="display:flex; flex-direction:column; gap:6px;">
                 <input type="text" id="commit-filter" placeholder="Filter commits (message, author, hash, branch)..." />
+                <div style="display:flex; gap:4px; align-items:center;">
+                    <input type="text" id="code-search-input" placeholder="Search code changes (git log -S)..." style="flex:1;" />
+                    <button id="btn-code-search" title="Search commits that added or removed this code"><i class="codicon codicon-search"></i></button>
+                    <button id="btn-code-search-clear" title="Clear code search" style="display:none;"><i class="codicon codicon-close"></i></button>
+                </div>
             </div>
             <div class="commits-list" id="commits-list">
                 <div style="padding: 20px; text-align: center; opacity: 0.6;">Loading history...</div>
@@ -841,13 +1125,27 @@ export class FileHistoryComparePanel {
                         <button id="btn-mode-unified">Unified</button>
                     </div>
 
+                    <div class="diff-view-mode-toggle" title="Toggle between collapsed diff context and full uncollapsed code">
+                        <button id="btn-context-compact" class="active">Collapsed</button>
+                        <button id="btn-context-full">Full Code</button>
+                    </div>
+
                     <button id="btn-copy-a" title="Copy Version A file content to clipboard"><i class="codicon codicon-copy"></i> Copy A</button>
                     <button id="btn-copy-b" title="Copy Version B file content to clipboard"><i class="codicon codicon-copy"></i> Copy B</button>
+                    <button id="btn-explain-diff" title="Summarize changes with AI" style="display:none;"><i class="codicon codicon-sparkle"></i> Explain Changes</button>
                     <button id="btn-copy-diff" title="Copy unified patch diff to clipboard"><i class="codicon codicon-clippy"></i> Copy Diff</button>
                     <button id="btn-native-diff" class="primary" title="Open in VS Code native side-by-side diff editor"><i class="codicon codicon-diff"></i> VS Code Diff</button>
                     <button id="btn-restore-a" class="restore-btn" title="Replace current disk file with Version A"><i class="codicon codicon-discard"></i> Restore A</button>
                     <button id="btn-restore-b" class="restore-btn" title="Replace current disk file with Version B"><i class="codicon codicon-discard"></i> Restore B</button>
                 </div>
+            </div>
+
+            <div id="ai-summary-banner" style="display:none; padding:10px 16px; background:rgba(0,122,204,0.08); border-bottom:1px solid var(--vscode-widget-border); font-size:12px; line-height:1.5;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; font-weight:bold; color:var(--vscode-textLink-foreground);">
+                    <span><i class="codicon codicon-sparkle"></i> AI Change Summary</span>
+                    <button id="btn-close-ai-summary" style="padding:1px 6px; font-size:10px;">&times;</button>
+                </div>
+                <div id="ai-summary-body" style="white-space:pre-wrap;"></div>
             </div>
 
             <div class="diff-view-area" id="diff-content">
@@ -875,9 +1173,18 @@ export class FileHistoryComparePanel {
         let currentInfoA = null;
         let currentInfoB = null;
         let viewMode = 'split';
+        let showFullCode = false;
+        let activeRenderToken = 0;
+        let hasPreAiSnapshot = false;
 
         const listEl = document.getElementById('commits-list');
         const filterInput = document.getElementById('commit-filter');
+        const codeSearchInput = document.getElementById('code-search-input');
+        const btnCodeSearch = document.getElementById('btn-code-search');
+        const btnCodeSearchClear = document.getElementById('btn-code-search-clear');
+        const btnExplainDiff = document.getElementById('btn-explain-diff');
+        const aiSummaryBanner = document.getElementById('ai-summary-banner');
+        const aiSummaryBody = document.getElementById('ai-summary-body');
         const diffArea = document.getElementById('diff-content');
         const loadingOverlay = document.getElementById('loading-overlay');
         const loadingText = document.getElementById('loading-text');
@@ -888,6 +1195,8 @@ export class FileHistoryComparePanel {
 
         const btnModeSplit = document.getElementById('btn-mode-split');
         const btnModeUnified = document.getElementById('btn-mode-unified');
+        const btnContextCompact = document.getElementById('btn-context-compact');
+        const btnContextFull = document.getElementById('btn-context-full');
 
         filterInput.addEventListener('input', function() { renderCommitList(filterInput.value.trim()); });
 
@@ -914,6 +1223,18 @@ export class FileHistoryComparePanel {
             renderCurrentView();
         };
 
+        function setFullCodeMode(full) {
+            showFullCode = !!full;
+            btnContextFull.classList.toggle('active', showFullCode);
+            btnContextCompact.classList.toggle('active', !showFullCode);
+            if (currentInfoA || currentInfoB || currentContentA || currentContentB) {
+                renderCurrentView();
+            }
+        }
+
+        btnContextCompact.onclick = function() { setFullCodeMode(false); };
+        btnContextFull.onclick = function() { setFullCodeMode(true); };
+
         document.getElementById('btn-refresh').onclick = function() { vscode.postMessage({ command: 'refresh' }); };
         document.getElementById('btn-change-file').onclick = function() { vscode.postMessage({ command: 'chooseDifferentFile' }); };
         document.getElementById('btn-swap').onclick = function() { vscode.postMessage({ command: 'swapRefs' }); };
@@ -927,6 +1248,28 @@ export class FileHistoryComparePanel {
         document.getElementById('btn-restore-a').onclick = function() { vscode.postMessage({ command: 'restoreVersion', ref: activeRefA }); };
         document.getElementById('btn-restore-b').onclick = function() { vscode.postMessage({ command: 'restoreVersion', ref: activeRefB || activeRefA }); };
 
+        btnCodeSearch.onclick = function() {
+            const q = codeSearchInput.value.trim();
+            btnCodeSearchClear.style.display = q ? 'inline-flex' : 'none';
+            vscode.postMessage({ command: 'searchFileHistory', query: q });
+        };
+        codeSearchInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') btnCodeSearch.click();
+        });
+        btnCodeSearchClear.onclick = function() {
+            codeSearchInput.value = '';
+            btnCodeSearchClear.style.display = 'none';
+            vscode.postMessage({ command: 'searchFileHistory', query: '' });
+        };
+        btnExplainDiff.onclick = function() {
+            aiSummaryBanner.style.display = 'block';
+            aiSummaryBody.textContent = 'Analyzing diff with AI...';
+            vscode.postMessage({ command: 'explainDiff', diff: currentRawDiff });
+        };
+        document.getElementById('btn-close-ai-summary').onclick = function() {
+            aiSummaryBanner.style.display = 'none';
+        };
+
         window.addEventListener('message', function(event) {
             const msg = event.data;
             switch (msg.command) {
@@ -938,6 +1281,8 @@ export class FileHistoryComparePanel {
                     document.getElementById('header-file-name').textContent = msg.fileName;
                     document.getElementById('header-file-path').textContent = '(' + msg.filePath + ')';
                     commitsData = msg.commits || [];
+                    hasPreAiSnapshot = !!msg.hasPreAiSnapshot;
+                    btnExplainDiff.style.display = msg.hasAiApi ? 'inline-flex' : 'none';
                     activeRefA = msg.refA || 'WORKING_TREE';
                     activeRefB = msg.refB || (commitsData.length > 0 ? commitsData[0].hash : 'WORKING_TREE');
                     document.getElementById('commit-count').textContent = commitsData.length;
@@ -971,6 +1316,10 @@ export class FileHistoryComparePanel {
                     renderCurrentView();
                     highlightSelectedRows();
                     break;
+                case 'aiSummaryResult':
+                    aiSummaryBanner.style.display = 'block';
+                    aiSummaryBody.textContent = msg.error ? ('Error: ' + msg.error) : (msg.summary || 'No summary generated.');
+                    break;
                 case 'setError':
                     diffArea.innerHTML = '<div style="color:var(--vscode-errorForeground); padding:20px;">' + escapeHtml(msg.error) + '</div>';
                     break;
@@ -1002,17 +1351,24 @@ export class FileHistoryComparePanel {
             const subA = partA.substring(1).split(',');
             const subB = partB.substring(1).split(',');
 
-            const startA = parseInt(subA[0], 10) || 1;
-            const lenA = subA.length > 1 ? (parseInt(subA[1], 10) || 0) : 1;
+            const rawStartA = parseInt(subA[0], 10);
+            const rawLenA = subA.length > 1 ? parseInt(subA[1], 10) : 1;
+            const rawStartB = parseInt(subB[0], 10);
+            const rawLenB = subB.length > 1 ? parseInt(subB[1], 10) : 1;
 
-            const startB = parseInt(subB[0], 10) || 1;
-            const lenB = subB.length > 1 ? (parseInt(subB[1], 10) || 0) : 1;
-
-            return { startA: startA, lenA: lenA, startB: startB, lenB: lenB };
+            return {
+                startA: Number.isNaN(rawStartA) ? 1 : rawStartA,
+                lenA: Number.isNaN(rawLenA) ? 0 : rawLenA,
+                startB: Number.isNaN(rawStartB) ? 1 : rawStartB,
+                lenB: Number.isNaN(rawLenB) ? 0 : rawLenB
+            };
         }
 
         function populateDropdowns() {
             let opts = '<option value="WORKING_TREE">Current Working Tree (Disk)</option>';
+            if (hasPreAiSnapshot) {
+                opts += '<option value="SNAPSHOT_PRE_AI">Pre-AI Edit Snapshot (.lollms/snapshots)</option>';
+            }
             commitsData.forEach(function(c) {
                 const short = c.hash.substring(0, 7);
                 const msg = c.message.length > 30 ? c.message.substring(0, 27) + '...' : c.message;
@@ -1053,6 +1409,31 @@ export class FileHistoryComparePanel {
 
             attachRowListeners(workingRow, 'WORKING_TREE');
             listEl.appendChild(workingRow);
+
+            if (hasPreAiSnapshot) {
+                const snapRow = document.createElement('div');
+                const isSnapA = activeRefA === 'SNAPSHOT_PRE_AI';
+                const isSnapB = activeRefB === 'SNAPSHOT_PRE_AI';
+                const selSnapClass = isSnapA && isSnapB ? ' selected-both' : (isSnapA ? ' selected-a' : (isSnapB ? ' selected-b' : ''));
+                snapRow.className = 'commit-row' + selSnapClass;
+                snapRow.dataset.hash = 'SNAPSHOT_PRE_AI';
+                snapRow.innerHTML = '' +
+                    '<div class="commit-top">' +
+                        '<span class="commit-hash"><i class="codicon codicon-history"></i> Pre-AI Snapshot</span>' +
+                        '<span class="commit-date">.lollms/snapshots</span>' +
+                    '</div>' +
+                    '<div class="commit-msg">Saved backup before AI patch/restore</div>' +
+                    '<div class="commit-meta">' +
+                        '<span class="ref-badge" style="background:#d67a0d">SNAPSHOT</span>' +
+                        '<div class="quick-pick-btns">' +
+                            '<button class="btn-set-a">Set A</button>' +
+                            '<button class="btn-set-b">Set B</button>' +
+                            '<button class="restore-btn btn-row-restore" title="Restore to this snapshot">Restore</button>' +
+                        '</div>' +
+                    '</div>';
+                attachRowListeners(snapRow, 'SNAPSHOT_PRE_AI');
+                listEl.appendChild(snapRow);
+            }
 
             const filtered = query
                 ? commitsData.filter(function(c) {
@@ -1160,7 +1541,7 @@ export class FileHistoryComparePanel {
             return l.endsWith(CR) ? l.slice(0, -1) : l;
         }
 
-        function buildSideBySideDiff(contentA, contentB, rawDiff) {
+        function buildSideBySideDiff(contentA, contentB, rawDiff, showFull) {
             const linesA = contentA ? contentA.split(NL).map(cleanLine) : [];
             const linesB = contentB ? contentB.split(NL).map(cleanLine) : [];
 
@@ -1168,16 +1549,16 @@ export class FileHistoryComparePanel {
                 const max = Math.max(linesA.length, linesB.length);
                 const rowsA = [];
                 const rowsB = [];
-                const isIdentical = contentA === contentB;
+                const isIdentical = linesA.length === linesB.length && linesA.every(function(l, idx) { return l === linesB[idx]; });
 
-                // For identical large files, collapse instead of generating thousands of elements
-                if (isIdentical && max > 20) {
+                // For identical large files, collapse unless Full Code mode is active
+                if (!showFull && isIdentical && max > 20) {
                     for (let i = 0; i < 4; i++) {
                         rowsA.push({ num: i + 1, text: linesA[i] || '', type: 'unchanged' });
                         rowsB.push({ num: i + 1, text: linesB[i] || '', type: 'unchanged' });
                     }
-                    rowsA.push({ num: '...', text: '--- ' + (max - 8) + ' identical lines hidden ---', type: 'collapsed' });
-                    rowsB.push({ num: '...', text: '--- ' + (max - 8) + ' identical lines hidden ---', type: 'collapsed' });
+                    rowsA.push({ num: '...', text: '--- ' + (max - 8) + ' identical lines hidden (click to expand) ---', type: 'collapsed' });
+                    rowsB.push({ num: '...', text: '--- ' + (max - 8) + ' identical lines hidden (click to expand) ---', type: 'collapsed' });
                     for (let i = max - 4; i < max; i++) {
                         rowsA.push({ num: i + 1, text: linesA[i] || '', type: 'unchanged' });
                         rowsB.push({ num: i + 1, text: linesB[i] || '', type: 'unchanged' });
@@ -1185,19 +1566,43 @@ export class FileHistoryComparePanel {
                     return { rowsA: rowsA, rowsB: rowsB };
                 }
 
-                for (let i = 0; i < max; i++) {
-                    const textA = i < linesA.length ? linesA[i] : '';
-                    const textB = i < linesB.length ? linesB[i] : '';
-                    rowsA.push({
-                        num: i < linesA.length ? (i + 1) : '',
-                        text: textA,
-                        type: isIdentical ? 'unchanged' : (i < linesA.length ? 'removed' : 'empty')
-                    });
-                    rowsB.push({
-                        num: i < linesB.length ? (i + 1) : '',
-                        text: textB,
-                        type: isIdentical ? 'unchanged' : (i < linesB.length ? 'added' : 'empty')
-                    });
+                if (isIdentical) {
+                    for (let i = 0; i < max; i++) {
+                        rowsA.push({ num: i + 1, text: linesA[i] || '', type: 'unchanged' });
+                        rowsB.push({ num: i + 1, text: linesB[i] || '', type: 'unchanged' });
+                    }
+                    return { rowsA: rowsA, rowsB: rowsB };
+                }
+
+                // Prefix/suffix fallback alignment when rawDiff is absent
+                let prefix = 0;
+                while (prefix < linesA.length && prefix < linesB.length && linesA[prefix] === linesB[prefix]) {
+                    prefix++;
+                }
+                let suffix = 0;
+                while (suffix < linesA.length - prefix && suffix < linesB.length - prefix && linesA[linesA.length - 1 - suffix] === linesB[linesB.length - 1 - suffix]) {
+                    suffix++;
+                }
+                for (let i = 0; i < prefix; i++) {
+                    rowsA.push({ num: i + 1, text: linesA[i], type: 'unchanged' });
+                    rowsB.push({ num: i + 1, text: linesB[i], type: 'unchanged' });
+                }
+                const midLenA = linesA.length - prefix - suffix;
+                const midLenB = linesB.length - prefix - suffix;
+                const midMax = Math.max(midLenA, midLenB);
+                for (let i = 0; i < midMax; i++) {
+                    rowsA.push(i < midLenA
+                        ? { num: prefix + i + 1, text: linesA[prefix + i], type: 'removed' }
+                        : { num: '', text: '', type: 'empty' });
+                    rowsB.push(i < midLenB
+                        ? { num: prefix + i + 1, text: linesB[prefix + i], type: 'added' }
+                        : { num: '', text: '', type: 'empty' });
+                }
+                for (let i = 0; i < suffix; i++) {
+                    const idxA = linesA.length - suffix + i;
+                    const idxB = linesB.length - suffix + i;
+                    rowsA.push({ num: idxA + 1, text: linesA[idxA], type: 'unchanged' });
+                    rowsB.push({ num: idxB + 1, text: linesB[idxB], type: 'unchanged' });
                 }
                 return { rowsA: rowsA, rowsB: rowsB };
             }
@@ -1223,9 +1628,9 @@ export class FileHistoryComparePanel {
                         curHunk = { startA: 1, lenA: 1, startB: 1, lenB: 1, lines: [] };
                     }
                 } else if (curHunk) {
-                    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ') || line.startsWith('index ')) {
-                        // skip header
-                    } else if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ') || line === '') {
+                    if (line.startsWith('diff --git ') || line.startsWith('index ')) {
+                        curHunk = null;
+                    } else if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')) {
                         curHunk.lines.push(line);
                     }
                 }
@@ -1243,8 +1648,8 @@ export class FileHistoryComparePanel {
                 const hunk = hunks[h];
                 const distanceA = hunk.startA - lineIdxA;
 
-                // Folding / collapsing large spans of unchanged lines
-                if (distanceA > (CONTEXT_PAD * 2 + 2)) {
+                // Folding / collapsing large spans of unchanged lines unless Full Code mode is active
+                if (!showFull && distanceA > (CONTEXT_PAD * 2 + 2)) {
                     // 1. Context lines before collapse
                     for (let c = 0; c < CONTEXT_PAD && lineIdxA < hunk.startA; c++) {
                         rowsA.push({ num: lineIdxA, text: linesA[lineIdxA - 1] || '', type: 'unchanged' });
@@ -1255,8 +1660,8 @@ export class FileHistoryComparePanel {
 
                     const skipCount = (hunk.startA - CONTEXT_PAD) - lineIdxA;
                     if (skipCount > 0) {
-                        rowsA.push({ num: '...', text: '↕ ' + skipCount + ' unchanged lines hidden', type: 'collapsed' });
-                        rowsB.push({ num: '...', text: '↕ ' + skipCount + ' unchanged lines hidden', type: 'collapsed' });
+                        rowsA.push({ num: '...', text: '↕ ' + skipCount + ' unchanged lines hidden (click to expand)', type: 'collapsed' });
+                        rowsB.push({ num: '...', text: '↕ ' + skipCount + ' unchanged lines hidden (click to expand)', type: 'collapsed' });
                         lineIdxA += skipCount;
                         lineIdxB += skipCount;
                     }
@@ -1313,9 +1718,9 @@ export class FileHistoryComparePanel {
                 }
             }
 
-            // Collapse trailing unchanged lines after last hunk
+            // Collapse trailing unchanged lines after last hunk unless Full Code mode is active
             const remainingA = linesA.length - lineIdxA + 1;
-            if (remainingA > (CONTEXT_PAD * 2 + 2)) {
+            if (!showFull && remainingA > (CONTEXT_PAD * 2 + 2)) {
                 for (let c = 0; c < CONTEXT_PAD; c++) {
                     rowsA.push({ num: lineIdxA, text: linesA[lineIdxA - 1] || '', type: 'unchanged' });
                     rowsB.push({ num: lineIdxB, text: linesB[lineIdxB - 1] || '', type: 'unchanged' });
@@ -1324,8 +1729,8 @@ export class FileHistoryComparePanel {
                 }
                 const skipTrailing = (linesA.length - CONTEXT_PAD) - lineIdxA + 1;
                 if (skipTrailing > 0) {
-                    rowsA.push({ num: '...', text: '↕ ' + skipTrailing + ' unchanged lines hidden', type: 'collapsed' });
-                    rowsB.push({ num: '...', text: '↕ ' + skipTrailing + ' unchanged lines hidden', type: 'collapsed' });
+                    rowsA.push({ num: '...', text: '↕ ' + skipTrailing + ' unchanged lines hidden (click to expand)', type: 'collapsed' });
+                    rowsB.push({ num: '...', text: '↕ ' + skipTrailing + ' unchanged lines hidden (click to expand)', type: 'collapsed' });
                     lineIdxA += skipTrailing;
                     lineIdxB += skipTrailing;
                 }
@@ -1361,6 +1766,7 @@ export class FileHistoryComparePanel {
         }
 
         function renderCurrentView() {
+            activeRenderToken++;
             updateDiffStats(currentRawDiff);
 
             if (viewMode === 'split') {
@@ -1408,7 +1814,7 @@ export class FileHistoryComparePanel {
             const labelA = currentInfoA ? currentInfoA.label : activeRefA.substring(0, 7);
             const labelB = currentInfoB ? currentInfoB.label : activeRefB.substring(0, 7);
 
-            const sideBySide = buildSideBySideDiff(currentContentA, currentContentB, currentRawDiff);
+            const sideBySide = buildSideBySideDiff(currentContentA, currentContentB, currentRawDiff, showFullCode);
             const rowsA = sideBySide.rowsA;
             const rowsB = sideBySide.rowsB;
 
@@ -1428,28 +1834,40 @@ export class FileHistoryComparePanel {
             const paneB = document.getElementById('split-content-b');
 
             // Non-blocking chunked line insertion
+            const renderToken = activeRenderToken;
             const totalRows = rowsA.length;
             const chunkSize = 400;
             let currentIdx = 0;
 
+            function onGapClick(e) {
+                if (e.target && e.target.closest && e.target.closest('.collapsed-gap')) {
+                    setFullCodeMode(true);
+                }
+            }
+            if (paneA) paneA.onclick = onGapClick;
+            if (paneB) paneB.onclick = onGapClick;
+
             function renderNextChunk() {
+                if (renderToken !== activeRenderToken) return;
                 const end = Math.min(currentIdx + chunkSize, totalRows);
                 let chunkHtmlA = '';
                 let chunkHtmlB = '';
 
                 for (let i = currentIdx; i < end; i++) {
                     const rA = rowsA[i];
-                    const clsA = rA.type === 'removed' ? ' removed' : (rA.type === 'empty' ? ' empty-placeholder' : (rA.type === 'collapsed' ? ' header-line' : ''));
+                    const clsA = rA.type === 'removed' ? ' removed' : (rA.type === 'empty' ? ' empty-placeholder' : (rA.type === 'collapsed' ? ' header-line collapsed-gap' : ''));
+                    const styleA = rA.type === 'collapsed' ? ' style="cursor:pointer;" title="Click to show full uncollapsed code"' : '';
                     const numStrA = rA.num !== '' ? String(rA.num) : '&nbsp;';
-                    chunkHtmlA += '<div class="diff-line' + clsA + '">' +
+                    chunkHtmlA += '<div class="diff-line' + clsA + '"' + styleA + '>' +
                         '<span class="diff-line-num">' + numStrA + '</span>' +
                         '<span class="diff-line-content">' + escapeHtml(rA.text) + '</span>' +
                         '</div>';
 
                     const rB = rowsB[i];
-                    const clsB = rB.type === 'added' ? ' added' : (rB.type === 'empty' ? ' empty-placeholder' : (rB.type === 'collapsed' ? ' header-line' : ''));
+                    const clsB = rB.type === 'added' ? ' added' : (rB.type === 'empty' ? ' empty-placeholder' : (rB.type === 'collapsed' ? ' header-line collapsed-gap' : ''));
+                    const styleB = rB.type === 'collapsed' ? ' style="cursor:pointer;" title="Click to show full uncollapsed code"' : '';
                     const numStrB = rB.num !== '' ? String(rB.num) : '&nbsp;';
-                    chunkHtmlB += '<div class="diff-line' + clsB + '">' +
+                    chunkHtmlB += '<div class="diff-line' + clsB + '"' + styleB + '>' +
                         '<span class="diff-line-num">' + numStrB + '</span>' +
                         '<span class="diff-line-content">' + escapeHtml(rB.text) + '</span>' +
                         '</div>';
@@ -1490,12 +1908,79 @@ export class FileHistoryComparePanel {
         }
 
         function renderUnifiedView() {
+            if (showFullCode) {
+                const fullData = buildSideBySideDiff(currentContentA, currentContentB, currentRawDiff, true);
+                const rowsA = fullData.rowsA;
+                const rowsB = fullData.rowsB;
+                const totalRows = rowsA.length;
+
+                if (totalRows === 0) {
+                    diffArea.innerHTML = '<div class="diff-empty"><span>Empty file.</span></div>';
+                    return;
+                }
+
+                const unifiedLines = [];
+                let i = 0;
+                while (i < totalRows) {
+                    const rA = rowsA[i];
+                    const rB = rowsB[i];
+                    if (rA.type === 'unchanged' && rB.type === 'unchanged') {
+                        unifiedLines.push({ cls: '', num: rA.num !== '' ? String(rA.num) : '&nbsp;', prefix: ' ', text: rA.text });
+                        i++;
+                    } else {
+                        const removedBlock = [];
+                        const addedBlock = [];
+                        while (i < totalRows && (rowsA[i].type !== 'unchanged' || rowsB[i].type !== 'unchanged')) {
+                            if (rowsA[i].type === 'removed') {
+                                removedBlock.push({ cls: ' removed', num: '-' + rowsA[i].num, prefix: '-', text: rowsA[i].text });
+                            }
+                            if (rowsB[i].type === 'added') {
+                                addedBlock.push({ cls: ' added', num: '+' + rowsB[i].num, prefix: '+', text: rowsB[i].text });
+                            }
+                            i++;
+                        }
+                        for (let r = 0; r < removedBlock.length; r++) unifiedLines.push(removedBlock[r]);
+                        for (let a = 0; a < addedBlock.length; a++) unifiedLines.push(addedBlock[a]);
+                    }
+                }
+
+                diffArea.innerHTML = '<div class="unified-diff-content" id="unified-full-content"></div>';
+                const container = document.getElementById('unified-full-content');
+                const renderToken = activeRenderToken;
+                let idx = 0;
+                const chunkSize = 400;
+
+                function renderUnifiedChunk() {
+                    if (renderToken !== activeRenderToken || !container) return;
+                    const end = Math.min(idx + chunkSize, unifiedLines.length);
+                    let chunkHtml = '';
+                    for (let k = idx; k < end; k++) {
+                        const item = unifiedLines[k];
+                        chunkHtml += '<div class="diff-line' + item.cls + '">' +
+                            '<span class="diff-line-num">' + item.num + '</span>' +
+                            '<span class="diff-line-content">' + escapeHtml(item.prefix + item.text) + '</span>' +
+                            '</div>';
+                    }
+                    container.insertAdjacentHTML('beforeend', chunkHtml);
+                    idx = end;
+                    if (idx < unifiedLines.length) {
+                        requestAnimationFrame(renderUnifiedChunk);
+                    }
+                }
+
+                renderUnifiedChunk();
+                return;
+            }
+
             if (!currentRawDiff || !currentRawDiff.trim()) {
+                const lineEndingNote = currentContentA !== currentContentB
+                    ? 'Lines match (only line endings or trailing newline differ between Base (A) and Compare (B)).'
+                    : 'No differences detected between Base (A) and Compare (B).';
                 diffArea.innerHTML = '' +
                     '<div class="diff-empty">' +
                         '<i class="codicon codicon-check" style="font-size:32px; color:#28a745"></i>' +
                         '<span style="font-weight:bold; font-size:13px;">Identical Versions</span>' +
-                        '<span style="font-size:11px;">No differences detected between Base (A) and Compare (B).</span>' +
+                        '<span style="font-size:11px;">' + escapeHtml(lineEndingNote) + '</span>' +
                     '</div>';
                 return;
             }
@@ -1536,140 +2021,7 @@ export class FileHistoryComparePanel {
             diffArea.innerHTML = html;
         }
 
-        function buildSideBySideDiff(contentA, contentB, rawDiff) {
-            const linesA = contentA.split('\\n').map(function(l) { return l.endsWith('\\r') ? l.slice(0, -1) : l; });
-            const linesB = contentB.split('\\n').map(function(l) { return l.endsWith('\\r') ? l.slice(0, -1) : l; });
 
-            if (!rawDiff || !rawDiff.trim()) {
-                const max = Math.max(linesA.length, linesB.length);
-                const rowsA = [];
-                const rowsB = [];
-                for (let i = 0; i < max; i++) {
-                    const textA = i < linesA.length ? linesA[i] : '';
-                    const textB = i < linesB.length ? linesB[i] : '';
-                    const isIdentical = contentA === contentB;
-                    rowsA.push({
-                        num: i < linesA.length ? i + 1 : '',
-                        text: textA,
-                        type: isIdentical ? 'unchanged' : (i < linesA.length ? 'removed' : 'empty')
-                    });
-                    rowsB.push({
-                        num: i < linesB.length ? i + 1 : '',
-                        text: textB,
-                        type: isIdentical ? 'unchanged' : (i < linesB.length ? 'added' : 'empty')
-                    });
-                }
-                return { rowsA: rowsA, rowsB: rowsB };
-            }
-
-            const diffLines = rawDiff.split('\\n').map(function(l) { return l.endsWith('\\r') ? l.slice(0, -1) : l; });
-            const hunks = [];
-            let curHunk = null;
-
-            for (let i = 0; i < diffLines.length; i++) {
-                const line = diffLines[i];
-                const match = line.match(/^@@\\s+-(\\d+)(?:,(\\d+))?\\s+\\+(\\d+)(?:,(\\d+))?\\s+@@/);
-                if (match) {
-                    if (curHunk) hunks.push(curHunk);
-                    curHunk = {
-                        startA: parseInt(match[1], 10),
-                        lenA: match[2] !== undefined ? parseInt(match[2], 10) : 1,
-                        startB: parseInt(match[3], 10),
-                        lenB: match[4] !== undefined ? parseInt(match[4], 10) : 1,
-                        lines: []
-                    };
-                } else if (curHunk) {
-                    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ') || line.startsWith('index ')) {
-                        // skip header
-                    } else if (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ') || line === '') {
-                        curHunk.lines.push(line);
-                    }
-                }
-            }
-            if (curHunk) hunks.push(curHunk);
-
-            if (hunks.length === 0) {
-                const max = Math.max(linesA.length, linesB.length);
-                const rowsA = [];
-                const rowsB = [];
-                for (let i = 0; i < max; i++) {
-                    rowsA.push({ num: i < linesA.length ? i + 1 : '', text: linesA[i] || '', type: 'unchanged' });
-                    rowsB.push({ num: i < linesB.length ? i + 1 : '', text: linesB[i] || '', type: 'unchanged' });
-                }
-                return { rowsA: rowsA, rowsB: rowsB };
-            }
-
-            const rowsA = [];
-            const rowsB = [];
-
-            let lineIdxA = 1;
-            let lineIdxB = 1;
-
-            for (let h = 0; h < hunks.length; h++) {
-                const hunk = hunks[h];
-
-                while (lineIdxA < hunk.startA && lineIdxA <= linesA.length) {
-                    const textA = linesA[lineIdxA - 1] !== undefined ? linesA[lineIdxA - 1] : '';
-                    const textB = lineIdxB <= linesB.length ? linesB[lineIdxB - 1] : '';
-                    rowsA.push({ num: lineIdxA, text: textA, type: 'unchanged' });
-                    rowsB.push({ num: lineIdxB <= linesB.length ? lineIdxB : '', text: textB, type: 'unchanged' });
-                    lineIdxA++;
-                    lineIdxB++;
-                }
-
-                let curHunkIdx = 0;
-                while (curHunkIdx < hunk.lines.length) {
-                    const hLine = hunk.lines[curHunkIdx];
-                    if (hLine.startsWith(' ')) {
-                        const text = hLine.substring(1);
-                        rowsA.push({ num: lineIdxA, text: linesA[lineIdxA - 1] !== undefined ? linesA[lineIdxA - 1] : text, type: 'unchanged' });
-                        rowsB.push({ num: lineIdxB, text: linesB[lineIdxB - 1] !== undefined ? linesB[lineIdxB - 1] : text, type: 'unchanged' });
-                        lineIdxA++;
-                        lineIdxB++;
-                        curHunkIdx++;
-                    } else {
-                        const removed = [];
-                        const added = [];
-                        while (curHunkIdx < hunk.lines.length && (hunk.lines[curHunkIdx].startsWith('-') || hunk.lines[curHunkIdx].startsWith('+'))) {
-                            if (hunk.lines[curHunkIdx].startsWith('-')) {
-                                removed.push(hunk.lines[curHunkIdx].substring(1));
-                            } else if (hunk.lines[curHunkIdx].startsWith('+')) {
-                                added.push(hunk.lines[curHunkIdx].substring(1));
-                            }
-                            curHunkIdx++;
-                        }
-
-                        const maxChange = Math.max(removed.length, added.length);
-                        for (let k = 0; k < maxChange; k++) {
-                            if (k < removed.length) {
-                                rowsA.push({ num: lineIdxA, text: linesA[lineIdxA - 1] !== undefined ? linesA[lineIdxA - 1] : removed[k], type: 'removed' });
-                                lineIdxA++;
-                            } else {
-                                rowsA.push({ num: '', text: '', type: 'empty' });
-                            }
-
-                            if (k < added.length) {
-                                rowsB.push({ num: lineIdxB, text: linesB[lineIdxB - 1] !== undefined ? linesB[lineIdxB - 1] : added[k], type: 'added' });
-                                lineIdxB++;
-                            } else {
-                                rowsB.push({ num: '', text: '', type: 'empty' });
-                            }
-                        }
-                    }
-                }
-            }
-
-            while (lineIdxA <= linesA.length || lineIdxB <= linesB.length) {
-                const textA = lineIdxA <= linesA.length ? linesA[lineIdxA - 1] : '';
-                const textB = lineIdxB <= linesB.length ? linesB[lineIdxB - 1] : '';
-                rowsA.push({ num: lineIdxA <= linesA.length ? lineIdxA : '', text: textA, type: 'unchanged' });
-                rowsB.push({ num: lineIdxB <= linesB.length ? lineIdxB : '', text: textB, type: 'unchanged' });
-                lineIdxA++;
-                lineIdxB++;
-            }
-
-            return { rowsA: rowsA, rowsB: rowsB };
-        }
 
 
         // Notify extension host that webview is ready

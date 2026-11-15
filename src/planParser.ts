@@ -331,27 +331,55 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
             return ''; // Remove all others
         }).trim();
 
-        // 1. Strongest: Markdown block
-        const markdownMatch = cleaned.match(/```json\s*([\s\S]+?)\s*```/);
-        if (markdownMatch) return markdownMatch[1].trim();
+        const isLikelyToolPayload = (s: string) =>
+            s.includes('"tool"') ||
+            s.includes('"tasks"') ||
+            s.includes('"action"') ||
+            s.includes('"tool_calls"') ||
+            (s.includes('"name"') && (s.includes('"arguments"') || s.includes('"params"')));
 
-        // 2. Robust: Find outermost braces
+        // 1. Strongest: Markdown block
+        const markdownMatch = cleaned.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
+        if (markdownMatch) {
+            const inner = markdownMatch[1].trim();
+            if (inner.startsWith('{') && isLikelyToolPayload(inner)) {
+                return inner;
+            }
+        }
+
+        // 2. Robust: Find outermost braces (string-aware so braces inside strings do not skew depth)
         let braceCount = 0;
         let startIndex = cleaned.indexOf('{');
         if (startIndex === -1) return null;
 
         let result = null;
+        let inString = false;
+        let escaped = false;
 
         for (let i = 0; i < cleaned.length; i++) {
-            if (cleaned[i] === '{') {
+            const ch = cleaned[i];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (ch === '\\' && inString) {
+                escaped = true;
+                continue;
+            }
+            if (ch === '"') {
+                inString = !inString;
+                continue;
+            }
+            if (inString) continue;
+
+            if (ch === '{') {
                 if (braceCount === 0) startIndex = i;
                 braceCount++;
-            } else if (cleaned[i] === '}') {
+            } else if (ch === '}') {
                 braceCount--;
                 if (braceCount === 0 && startIndex !== -1) {
                     const potential = cleaned.substring(startIndex, i + 1);
-                    // Check if it's likely a tool call or plan
-                    if (potential.includes('"tool"') || potential.includes('"tasks"') || potential.includes('"action"')) {
+                    if (isLikelyToolPayload(potential)) {
                         result = potential;
                         break; // Take the first valid structural object
                     }
@@ -482,11 +510,15 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
         const userProfiles = config.get<any[]>('agentProfiles') || [];
 
         // 2. Identify the active one (prioritize discussion-specific override from the UI badge)
-        const discussionProfileId = env?.agentManager?.getCurrentDiscussion()?.capabilities?.activeAgentProfileId;
+        const activeDiscussion = env?.agentManager?.getCurrentDiscussion?.();
+        const discussionProfileId = activeDiscussion?.capabilities?.activeAgentProfileId;
         const activeProfileId = discussionProfileId || (this as any)._activeProfileOverride || config.get<string>('agent.activeProfile') || 'software_architect';
         const profile = userProfiles.find(p => p.id === activeProfileId) || userProfiles[0];
         const profileProtocol = profile ? profile.protocol : "";
-        const baseSystemInfo = await getProcessedSystemPrompt('agent', undefined, agentPersona);
+        const agentCapabilities = activeDiscussion?.capabilities
+            ? { ...activeDiscussion.capabilities, agentMode: true, fastMode: false }
+            : ({ agentMode: true, fastMode: false } as any);
+        const baseSystemInfo = await getProcessedSystemPrompt('agent', agentCapabilities, agentPersona);
 
         const content = OrchestratorPromptBuilder.getOrchestratorSystemPrompt({
             allowedTools,

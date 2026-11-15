@@ -55,6 +55,9 @@ export interface DiscussionCapabilities {
     webSearch: boolean;
     distillWebResults: boolean;
     antiPromptInjection: boolean;
+    contextPoisoningGateEnabled?: boolean;
+    contextPoisoningGateMode?: 'quarantine_and_sanitize' | 'block_suspicious' | 'prompt_user';
+    contextPoisoningLlmAudit?: boolean;
     searchInCacheFirst: boolean;
     searchSources: {
         google: boolean;
@@ -63,6 +66,7 @@ export interface DiscussionCapabilities {
         stackoverflow: boolean;
         youtube: boolean;
         github: boolean;
+        [key: string]: boolean;
     };
     gitWorkflow: boolean;
     herdMode: boolean;
@@ -73,6 +77,8 @@ export interface DiscussionCapabilities {
     herdParticipantModels?: string[];
     herdCriticEnabled?: boolean;
     agentMode: boolean;
+    agentSecurityLevel?: 'strict' | 'guarded' | 'relaxed';
+    agentMutationCount?: number;
     debugMode: boolean;
     verifierMode: boolean;
     maxDebugSteps: number;
@@ -136,6 +142,7 @@ export const state: {
     isGenerating: boolean,
     isHudExpanded: boolean,
     appliedState: Record<string, Record<number, number[]>>, // Persistent applied hunks
+    failedPatches: Record<string, Record<string, { error: string; filePath: string }>>, // Failed hunks/files per messageId
     excludedPatches: Record<string, Set<string>>, // Excluded hunks/files from Apply All per messageId
     matrixStats: Record<string, { tree: number, files: number }>, // Per-folder token stats
     usageData: { project: any[], extra: any[] },
@@ -174,6 +181,7 @@ export const state: {
     streamingMessages: {},
     isGenerating: false,
     appliedState: {},
+    failedPatches: {},
     excludedPatches: {},
     searchScope: 'discussion', // 'discussion' (default: text/prose only) | 'all' (includes code/files)
     usageData: { project: [], extra: [] },

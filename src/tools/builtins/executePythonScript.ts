@@ -1,4 +1,6 @@
+import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
+import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -17,6 +19,45 @@ export const executePythonScriptTool: ToolDefinition = {
         async execute(params: { env_name?: string, script_path: string, args?: string, timeout_s?: number, is_gui?: boolean }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
             if (!params.script_path) {
                 return { success: false, output: "Error: 'script_path' is required." };
+            }
+
+            const pathCheck = AgentSecurityGuard.validateWorkspacePath(params.script_path, env.workspaceRoot);
+            if (!pathCheck.valid) {
+                return { success: false, output: `🛑 SECURITY VIOLATION: ${pathCheck.reason}` };
+            }
+            if (params.env_name) {
+                const envCheck = AgentSecurityGuard.validateWorkspacePath(params.env_name, env.workspaceRoot);
+                if (!envCheck.valid) {
+                    return { success: false, output: `🛑 SECURITY VIOLATION: ${envCheck.reason}` };
+                }
+            }
+
+            if (env.workspaceRoot && env.agentManager) {
+                try {
+                    const scriptUri = vscode.Uri.joinPath(env.workspaceRoot.uri, params.script_path);
+                    const bytes = await vscode.workspace.fs.readFile(scriptUri);
+                    const scriptContent = Buffer.from(bytes).toString('utf8');
+                    const secLevel = env.agentManager.getSecurityLevel?.() || 'guarded';
+                    const analysis = AgentSecurityGuard.analyzeScriptContent(scriptContent, params.script_path, secLevel);
+                    if (analysis.decision === 'block') {
+                        return { success: false, output: `🛑 SECURITY VIOLATION: ${analysis.reason}` };
+                    }
+                    if (analysis.decision === 'confirm') {
+                        const detail = analysis.matchedLines.length > 0
+                            ? `${analysis.reason}\n\nFlagged lines:\n${analysis.matchedLines.slice(0, 8).join('\n')}`
+                            : analysis.reason;
+                        const decision = await env.agentManager.requestSecurityApproval(
+                            `Authorize Python Script Execution: ${params.script_path}`,
+                            detail,
+                            'execute_python_script',
+                            params.script_path,
+                            signal
+                        );
+                        if (decision === 'block') {
+                            return { success: false, output: `🛑 Execution of '${params.script_path}' was denied by the user.` };
+                        }
+                    }
+                } catch {}
             }
 
             let actualEnvName = params.env_name || "";

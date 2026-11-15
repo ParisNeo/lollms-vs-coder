@@ -19,6 +19,7 @@ import { runCommandInTerminal } from './extensionState';
 import { RLMDatabaseManager } from './rlmDatabaseManager';
 import { FailureMemory } from './agent/failureHandling'; 
 import { Logger } from './logger';
+import { AgentSecurityGuard, AgentSecurityLevel } from './security/agentSecurityGuard';
 
 export interface IAgentUI {
     addMessageToDiscussion(message: ChatMessage): Promise<void>;
@@ -27,6 +28,7 @@ export interface IAgentUI {
     updateGeneratingState(): void;
     requestUserInput(question: string, signal: AbortSignal, options?: { isAgentZone?: boolean }): Promise<string>;
     updateAgentMode(isActive: boolean): void;
+    syncAgentSecurityState?(level: AgentSecurityLevel, mutationCount: number): void;
     runVerificationAgent(content: string, signal: AbortSignal): Promise<string>;
     executeAutomationPipeline(content: string, messageId: string, signal: AbortSignal, processId: string): Promise<void>;
 }
@@ -58,6 +60,7 @@ export class AgentManager {
     private taskEditRetries: Map<number, number> = new Map();
 
     private failureMemory: FailureMemory = new FailureMemory();
+    public securityGuard: AgentSecurityGuard = new AgentSecurityGuard();
     private isDebugging: boolean = false;
     private activeExecutions: Set<string> = new Set();
     public projectMemoryManager?: any; 
@@ -786,7 +789,17 @@ Please commit or stash your work before starting an iterative debug session to e
             if (!safetyPassed) return;
 
             this.processManager.updateDescription(processId, "🧠 Librarian: Scanning project structure...");
-            await this.contextManager.getContextContent({ includeTree: true, signal: controller.signal });
+            await this.contextManager.getContextContent({
+                includeTree: true,
+                discussionId: discussion.id,
+                importedSkillIds: discussion.importedSkills,
+                mutedFiles: discussion.mutedFiles,
+                mutedSkills: discussion.mutedSkills,
+                mutedDiagrams: discussion.mutedDiagrams,
+                capabilities: discussion.capabilities,
+                modelName: discussion.model,
+                signal: controller.signal
+            });
 
             this.processManager.updateDescription(processId, "🎯 Dispatcher: Selecting mission profile...");
             await this.dispatchMissionProfile(content, controller.signal);
@@ -849,6 +862,9 @@ Please commit or stash your work before starting an iterative debug session to e
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         let maxSteps = config.get<number>('agent.maxSteps') || 100;
         let stepCount = 0;
+        let nonToolRetries = 0;
+        const maxNonToolRetries = 3;
+        const loopNudges: ChatMessage[] = [];
         const model = modelOverride || this.currentDiscussion.model;
 
         while (stepCount < maxSteps) {
@@ -859,7 +875,13 @@ Please commit or stash your work before starting an iterative debug session to e
             this.ui.updateGeneratingState();
 
             const contextData = await this.contextManager.getContextContent({ 
-                includeTree: true, 
+                includeTree: true,
+                discussionId: this.currentDiscussion.id,
+                importedSkillIds: this.currentDiscussion.importedSkills,
+                mutedFiles: this.currentDiscussion.mutedFiles,
+                mutedSkills: this.currentDiscussion.mutedSkills,
+                mutedDiagrams: this.currentDiscussion.mutedDiagrams,
+                capabilities: this.currentDiscussion.capabilities,
                 modelName: model,
                 signal 
             });
@@ -868,7 +890,8 @@ Please commit or stash your work before starting an iterative debug session to e
             const systemPrompt = await this.planParser.getArchitectSystemPrompt(
                 this.getEnabledTools(), 
                 this.currentDiscussion.importedSkills,
-                availableSpecialists
+                availableSpecialists,
+                { agentManager: this }
             );
 
             const rawIncludedFiles = this.contextManager.getContextStateProvider()?.getIncludedFiles() || [];
@@ -989,6 +1012,7 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                 systemPrompt,
                 ...recentHistory,
                 ...extraHistory,
+                ...loopNudges.slice(-4),
                 { role: 'user', content: visionParts }
             ];
 
@@ -1017,10 +1041,12 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
 
                 const toolCall = this.planParser.extractJson(cleanResponse);
                 if (!toolCall) {
-                    const hasCode = cleanResponse.includes('```') || 
-                                    cleanResponse.includes('<file') || 
-                                    cleanResponse.includes('<<<<<<< SEARCH');
-                    if (hasCode) {
+                    const hasFileMutationCode = /<file\b[^>]*>/i.test(cleanResponse) || 
+                                                cleanResponse.includes('<<<<<<< SEARCH') ||
+                                                /```[a-zA-Z0-9_+-]+:[^\r\n\s]+/.test(cleanResponse);
+                    if (hasFileMutationCode) {
+                        nonToolRetries = 0;
+                        loopNudges.length = 0;
                         this.processManager?.updateDescription(processId, `Agentic Loop: Applying code updates...`);
 
                         const codingTask: Task = {
@@ -1045,21 +1071,61 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                         continue;
                     }
 
-                    if (cleanResponse.trim().length > 0) {
-                        this.completedActionsHistory.push(`[CONVERSATIONAL RESPONSE]\n- CONTENT: ${cleanResponse.substring(0, 200)}...`);
+                    const trimmedResp = cleanResponse.trim();
+                    if (trimmedResp.length > 0) {
+                        const looksLikeFileListArray = /\[\s*"[^"]+"\s*(?:,\s*"[^"]+"\s*)*\]/.test(trimmedResp);
+                        const hasXmlToolLikeTag = /<(?:add_files_to_context|unmute_files|read_full_file|peek_files|grep|show_symbol|load_structure|query_architecture|lollms_tool)\b/i.test(trimmedResp);
+
+                        if (nonToolRetries < maxNonToolRetries) {
+                            nonToolRetries++;
+                            const nudgeReason = looksLikeFileListArray
+                                ? `You output a raw JSON array of file paths instead of a JSON tool call. Execute it using: {"thought": "Inspect requested files", "tool": "read_files", "params": {"paths": [...]}}.`
+                                : hasXmlToolLikeTag
+                                    ? `XML tags like <add_files_to_context> or <peek_files> are NOT executed in Agent Mode. You MUST output a single JSON tool call: {"thought": "...", "tool": "read_files", "params": {"paths": [...]}}.`
+                                    : `You did not invoke a tool or call submit_response. Do NOT just describe what you plan to do next—output a single valid JSON tool call {"thought": "...", "tool": "tool_name", "params": {...}} to execute your next step, or call submit_response once the task is completely verified.`;
+
+                            loopNudges.push({ role: 'assistant', content: trimmedResp });
+                            loopNudges.push({ role: 'user', content: `⚠️ **AGENT PROTOCOL CORRECTION (Attempt ${nonToolRetries}/${maxNonToolRetries})**:\n${nudgeReason}` });
+                            this.completedActionsHistory.push(`[PROTOCOL NUDGE ${nonToolRetries}/${maxNonToolRetries}] Model omitted JSON tool call; prompting for valid tool invocation.`);
+                            continue;
+                        }
+
+                        this.completedActionsHistory.push(`[CONVERSATIONAL RESPONSE]\n- CONTENT: ${trimmedResp.substring(0, 200)}...`);
                         await this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
                         break; 
                     }
                     continue; 
                 }
 
-                let action;
+                let action: any;
                 try {
                     action = JSON.parse(toolCall);
+                    if (!action.tool && typeof action.action === 'string') {
+                        action.tool = action.action;
+                    }
+                    if (!action.tool && typeof action.name === 'string') {
+                        action.tool = action.name;
+                        if (!action.params && action.arguments !== undefined) {
+                            action.params = typeof action.arguments === 'string' ? JSON.parse(action.arguments) : action.arguments;
+                        }
+                    }
+                    if (!action.tool && Array.isArray(action.tool_calls) && action.tool_calls.length > 0) {
+                        const tc = action.tool_calls[0];
+                        action.tool = tc.function?.name || tc.name;
+                        const rawArgs = tc.function?.arguments ?? tc.arguments;
+                        if (rawArgs !== undefined) {
+                            action.params = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+                        }
+                    }
                     if (stepCount === 1 && action.milestones) {
                         this.currentPlan.milestones = action.milestones.map((m: any) => ({ label: m, status: 'pending' }));
                     }
                 } catch (jsonErr: any) {
+                    if (nonToolRetries < maxNonToolRetries) {
+                        nonToolRetries++;
+                        loopNudges.push({ role: 'assistant', content: cleanResponse });
+                        loopNudges.push({ role: 'user', content: `❌ **MALFORMED JSON (${jsonErr.message})**: Output a single strictly valid JSON object: {"thought": "...", "tool": "tool_name", "params": {...}}.` });
+                    }
                     this.completedActionsHistory.push(`[SYSTEM ERROR] Malformed JSON response received.`);
                     continue;
                 }
@@ -1072,7 +1138,13 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                     this.currentPlan.current_sub_goal = action.current_sub_goal;
                 }
 
-                if (!action.tool || action.tool.trim() === "") {
+                if (!action.tool || typeof action.tool !== 'string' || action.tool.trim() === "") {
+                    if (nonToolRetries < maxNonToolRetries) {
+                        nonToolRetries++;
+                        loopNudges.push({ role: 'assistant', content: cleanResponse });
+                        loopNudges.push({ role: 'user', content: `⚠️ **MISSING TOOL NAME**: Your JSON must include a non-empty "tool" field (e.g. {"thought": "...", "tool": "read_files", "params": {...}}) or "submit_response" to conclude.` });
+                        continue;
+                    }
                     this.isActive = false;
                     this.ui.updateAgentMode(false);
                     this.ui.addMessageToDiscussion({
@@ -1081,6 +1153,9 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                     });
                     break;
                 }
+
+                nonToolRetries = 0;
+                loopNudges.length = 0;
 
                 const workerScope = action.worker || action.worker_scope || this.inferWorkerScope(action.tool, action.params, action.thought || "");
 
@@ -1107,19 +1182,34 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
             const sensitiveGroups = ['shell_execution', 'filesystem_write'];
             const isSensitive = toolDef?.permissionGroup && sensitiveGroups.includes(toolDef.permissionGroup);
 
-            const specificPolicy = toolPolicies[task.action] || (isSensitive ? 'manual' : 'autonomous');
+            const secLevel = this.getSecurityLevel();
+            const defaultSensitivePolicy = secLevel === 'strict' ? 'manual' : 'autonomous';
+            const specificPolicy = toolPolicies[task.action] || (isSensitive ? defaultSensitivePolicy : 'autonomous');
 
             if (specificPolicy === 'manual' && (task as any).needsApproval !== false) {
-                task.status = 'pending'; 
+                task.status = 'pending';
                 (task as any).needsApproval = true;
-                this.ui.addMessageToDiscussion({ 
-                    role: 'system', 
-                    content: `🛡️ **Safety Approval Required:** The agent proposes to execute \`${task.action}\`. Review parameters in the sidebar and click **Run Task & Continue** to proceed.` 
-                });
                 await this.displayPlan(this.currentPlan);
-                this.isActive = false; 
-                this.ui.updateAgentMode(false);
-                break; 
+
+                const targetSummary = task.parameters?.command || task.parameters?.file_path || task.parameters?.path || (Array.isArray(task.parameters?.paths) ? task.parameters.paths.join(', ') : '') || task.action;
+                const approval = await this.requestSecurityApproval(
+                    `Manual Policy Approval: ${task.action}`,
+                    `Tool policy for \`${task.action}\` requires manual confirmation.\nParameters: \`${JSON.stringify(task.parameters).slice(0, 350)}\``,
+                    task.action,
+                    String(targetSummary),
+                    signal,
+                    { allowCheckpoint: true }
+                );
+
+                if (approval === 'block') {
+                    task.status = 'failed';
+                    task.result = `🛑 Blocked by user policy.`;
+                    this.completedActionsHistory.push(`[SECURITY BLOCKED BY USER] Tool '${task.action}' was denied by the user.`);
+                    await this.displayPlan(this.currentPlan);
+                    continue;
+                }
+                (task as any).needsApproval = false;
+                (task as any)._securityApproved = true;
             }
 
             if (task.action === 'submit_response') {
@@ -1188,7 +1278,16 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
             }
 
             // Check token budget ratio
-            const currentData = await this.contextManager.getContextContent({ modelName: model, signal });
+            const currentData = await this.contextManager.getContextContent({
+                discussionId: this.currentDiscussion.id,
+                importedSkillIds: this.currentDiscussion.importedSkills,
+                mutedFiles: this.currentDiscussion.mutedFiles,
+                mutedSkills: this.currentDiscussion.mutedSkills,
+                mutedDiagrams: this.currentDiscussion.mutedDiagrams,
+                capabilities: this.currentDiscussion.capabilities,
+                modelName: model,
+                signal
+            });
             const tokenInfo = await this.lollmsApi.tokenize(currentData.text, model);
             const limitInfo = await this.lollmsApi.getContextSize(model);
 
@@ -1787,7 +1886,7 @@ Please provide a clear, concise final response to the user summarizing the outco
                 const varsBefore = JSON.stringify(this.sessionState.replVariables);
                 const memBefore = this.sessionState.workingMemory.length;
 
-                result = await this.executeTask(task.action, secureParams, signal, undefined, specialistModel, task.agent_persona, task.agent_skills, task.agent_files);
+                result = await this.executeTask(task.action, secureParams, signal, undefined, specialistModel, task.agent_persona, task.agent_skills, task.agent_files, !!(task as any)._securityApproved);
 
                 if (!result.success && ['execute_command', 'run_file', 'execute_python_script'].includes(task.action)) {
                     const caps = this.currentDiscussion?.capabilities;
@@ -2187,7 +2286,114 @@ Please provide a clear, concise final response to the user summarizing the outco
         }
     }
 
+    public getSecurityLevel(): AgentSecurityLevel {
+        return this.securityGuard.getLevel(this.currentDiscussion?.capabilities);
+    }
+
+    public syncSecurityHudState(): void {
+        try {
+            this.ui.syncAgentSecurityState?.(
+                this.getSecurityLevel(),
+                this.securityGuard.getActiveMutationCount()
+            );
+        } catch {}
+    }
+
+    public async createSecurityCheckpoint(reason?: string): Promise<{ success: boolean; message: string }> {
+        if (!this.currentWorkspaceFolder) {
+            return { success: false, message: 'No active workspace folder.' };
+        }
+        const isRepo = await this.gitIntegration.isGitRepo(this.currentWorkspaceFolder);
+        if (!isRepo) {
+            this.securityGuard.resetBlastRadiusCounter();
+            return { success: true, message: 'Blast-radius counter reset (non-Git workspace; file snapshots active).' };
+        }
+        const label = reason || `chore(agent-checkpoint): ${new Date().toISOString().replace(/[:.]/g, '-')}`;
+        await this.gitIntegration.stageAllAndCommit(label, this.currentWorkspaceFolder);
+        this.securityGuard.resetBlastRadiusCounter();
+        this.completedActionsHistory.push(`[GIT CHECKPOINT] 📸 Saved workspace state: ${label}`);
+        return { success: true, message: `Git checkpoint created: ${label}` };
+    }
+
+    public async rollbackAgentMutations(scope: 'last' | 'all' = 'all'): Promise<{ restored: string[]; deleted: string[]; errors: string[] }> {
+        const res = await this.securityGuard.rollbackMutations(scope, this.contextManager);
+        this.syncSecurityHudState();
+        const summaryLines: string[] = [];
+        if (res.restored.length > 0) summaryLines.push(`- **Restored**: ${res.restored.map(f => `\`${f}\``).join(', ')}`);
+        if (res.deleted.length > 0) summaryLines.push(`- **Removed Created Files**: ${res.deleted.map(f => `\`${f}\``).join(', ')}`);
+        if (res.errors.length > 0) summaryLines.push(`- **Errors**: ${res.errors.join('; ')}`);
+
+        await this.ui.addMessageToDiscussion({
+            role: 'system',
+            content: summaryLines.length > 0
+                ? `🛡️ **Agent Security Rollback Complete**\n${summaryLines.join('\n')}`
+                : `ℹ️ **Agent Security Rollback**: No active file mutations to revert.`,
+            skipInPrompt: true
+        });
+        return res;
+    }
+
+    public async requestSecurityApproval(
+        title: string,
+        details: string,
+        toolName: string,
+        target: string,
+        signal: AbortSignal,
+        options?: { allowCheckpoint?: boolean }
+    ): Promise<'allow' | 'checkpoint_and_allow' | 'block'> {
+        const safeTitle = title.replace(/"/g, '&quot;');
+        const safeDetails = details.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const formId = `sec_gate_${Date.now()}`;
+        const checkpointOpt = options?.allowCheckpoint !== false
+            ? `<input type="radio" name="decision" label="📸 Create Git Checkpoint &amp; Allow" value="checkpoint_and_allow" />`
+            : '';
+
+        const formPrompt = `🛡️ **Agent Security Gate: ${title}**\n${details}\n\n<lollms_form id="${formId}" title="🛡️ ${safeTitle}">
+<p style="font-size:11px; margin-bottom:8px; opacity:0.9;">${safeDetails}</p>
+<input type="radio" name="decision" label="🛑 Block Action (Force safer approach)" value="block" checked="true" />
+${checkpointOpt}
+<input type="radio" name="decision" label="✅ Allow Once" value="allow" />
+<submit label="Confirm Security Decision" />
+</lollms_form>`;
+
+        const response = await this.ui.requestUserInput(formPrompt, signal, { isAgentZone: false });
+        const choice = this.parseFormResponse(response, formId).toLowerCase().trim();
+
+        if (choice === 'checkpoint_and_allow') {
+            await this.createSecurityCheckpoint(`chore(pre-action): before ${toolName} on ${path.basename(target || 'workspace')}`);
+            this.securityGuard.recordAudit({ verdict: 'confirmed', tool: toolName, target, reason: `${title} (with Git checkpoint)` });
+            return 'checkpoint_and_allow';
+        }
+        if (choice === 'allow') {
+            this.securityGuard.recordAudit({ verdict: 'confirmed', tool: toolName, target, reason: `${title} (approved once)` });
+            return 'allow';
+        }
+        this.securityGuard.recordAudit({ verdict: 'blocked', tool: toolName, target, reason: `${title} (blocked by user)` });
+        return 'block';
+    }
+
     private async performSecurityAudit(command: string, signal: AbortSignal): Promise<{ safe: boolean, reason: string }> {
+        const level = this.getSecurityLevel();
+        const staticRes = AgentSecurityGuard.analyzeShellCommand(command, level);
+        if (staticRes.decision === 'block') {
+            this.securityGuard.recordAudit({ verdict: 'blocked', tool: 'execute_command', target: command, reason: staticRes.reason });
+            return { safe: false, reason: staticRes.reason };
+        }
+        if (staticRes.decision === 'confirm') {
+            const approval = await this.requestSecurityApproval(
+                'Confirm Shell Command',
+                `Command: \`${command}\`\nReason: ${staticRes.reason}`,
+                'execute_command',
+                command,
+                signal,
+                { allowCheckpoint: true }
+            );
+            if (approval === 'block') {
+                return { safe: false, reason: `User blocked risky command: ${staticRes.reason}` };
+            }
+            return { safe: true, reason: 'Confirmed by user.' };
+        }
+
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const model = config.get<string>('inspectorModelName') || this.lollmsApi.getModelName();
 
@@ -2239,12 +2445,26 @@ Please provide a clear, concise final response to the user summarizing the outco
     }
 
     private checkGlobalPermission(tool: ToolDefinition, params?: any): { allowed: boolean, message?: string } {
-        if (params?.path || params?.file_path || params?.source || params?.destination) {
-            const pathsToCheck = [params.path, params.file_path, params.source, params.destination].filter(Boolean);
-            for (const p of pathsToCheck) {
-                const boundaryCheck = this.checkProjectBoundary(p);
-                if (!boundaryCheck.allowed) return boundaryCheck;
+        const pathCandidates: string[] = [];
+        if (params) {
+            ['path', 'file_path', 'source', 'destination', 'script_path', 'file'].forEach(k => {
+                if (typeof params[k] === 'string' && params[k].trim()) pathCandidates.push(params[k]);
+            });
+            if (Array.isArray(params.paths)) {
+                params.paths.forEach((p: any) => { if (typeof p === 'string' && p.trim()) pathCandidates.push(p); });
             }
+        }
+
+        const isWriteOrDeleteTool = tool.permissionGroup === 'filesystem_write' || ['delete_file', 'move_file', 'edit_code', 'generate_code', 'update_function'].includes(tool.name);
+        for (const p of pathCandidates) {
+            if (isWriteOrDeleteTool) {
+                const protCheck = AgentSecurityGuard.isProtectedPath(p);
+                if (protCheck.protected) {
+                    return { allowed: false, message: `🛑 SECURITY VIOLATION: ${protCheck.reason}` };
+                }
+            }
+            const boundaryCheck = this.checkProjectBoundary(p);
+            if (!boundaryCheck.allowed) return boundaryCheck;
         }
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder.agent.permissions');
@@ -2257,13 +2477,142 @@ Please provide a clear, concise final response to the user summarizing the outco
         return { allowed: true };
     }
 
-    private async executeTask(action: string, params: any, signal: AbortSignal, overrideEnv?: ToolExecutionEnv, taskModel?: string, taskPersona?: string, taskSkills?: string[], taskFiles?: string[]): Promise<{ success: boolean, output: string }> {
+    private async executeTask(action: string, params: any, signal: AbortSignal, overrideEnv?: ToolExecutionEnv, taskModel?: string, taskPersona?: string, taskSkills?: string[], taskFiles?: string[], preApproved: boolean = false): Promise<{ success: boolean, output: string }> {
         const tool = this.toolManager.getTool(action) || this.toolManager.getAllTools().find(t => t.name === action);
         if (!tool) return { success: false, output: `Unknown action: ${action}` };
 
         const perm = this.checkGlobalPermission(tool, params);
         if (!perm.allowed) {
+            this.securityGuard.recordAudit({ verdict: 'blocked', tool: action, target: JSON.stringify(params).slice(0, 120), reason: perm.message || 'Permission denied' });
             return { success: false, output: perm.message || "Permission denied." };
+        }
+
+        // --- 🛡️ AGENT SECURITY LAYER: PRE-EXECUTION GUARDRAILS & SNAPSHOTS ---
+        const securityLevel = this.getSecurityLevel();
+        if (this.currentWorkspaceFolder) {
+            if (action === 'generate_code' && params?.file_path) {
+                const res = await this.contextManager.resolveWorkspaceFromPath(params.file_path);
+                if (res) {
+                    try {
+                        const st = await vscode.workspace.fs.stat(res.uri);
+                        if (st.type === vscode.FileType.File && st.size > 0) {
+                            if (securityLevel !== 'relaxed' && !preApproved) {
+                                const approval = await this.requestSecurityApproval(
+                                    'Overwrite Existing File via generate_code',
+                                    `\`generate_code\` is targeting an existing file (\`${res.relativePath}\`, ${st.size} bytes). Normally \`edit_code\` should be used to preserve existing logic.`,
+                                    action,
+                                    res.relativePath,
+                                    signal
+                                );
+                                if (approval === 'block') {
+                                    return {
+                                        success: false,
+                                        output: `🛑 SECURITY BLOCK: '${res.relativePath}' already exists on disk. Use 'edit_code' or 'update_function' for surgical edits instead of overwriting the whole file with 'generate_code'.`
+                                    };
+                                }
+                            }
+                            await this.securityGuard.snapshotFile(this.currentWorkspaceFolder, res.uri, res.relativePath, action, 'modify');
+                        } else {
+                            await this.securityGuard.snapshotFile(this.currentWorkspaceFolder, res.uri, res.relativePath, action, 'create');
+                        }
+                    } catch {
+                        await this.securityGuard.snapshotFile(this.currentWorkspaceFolder, res.uri, res.relativePath, action, 'create');
+                    }
+                }
+            } else if ((action === 'edit_code' || action === 'update_function') && (params?.file_path || params?.path)) {
+                const targetPath = params.file_path || params.path;
+                const radius = this.securityGuard.checkBlastRadius(targetPath, securityLevel);
+                if (radius.exceeded && !preApproved) {
+                    const approval = await this.requestSecurityApproval(
+                        `Blast-Radius Quota Reached (${radius.count} files)`,
+                        `The agent has already modified ${radius.count - 1} unique files without a checkpoint (limit: ${radius.limit}). Confirm to continue modifying \`${targetPath}\`.`,
+                        action,
+                        targetPath,
+                        signal
+                    );
+                    if (approval === 'block') {
+                        return { success: false, output: `🛑 SECURITY PAUSE: Blast-radius limit (${radius.limit} files) exceeded and user declined continuation.` };
+                    }
+                }
+                const res = await this.contextManager.resolveWorkspaceFromPath(targetPath);
+                if (res) {
+                    await this.securityGuard.snapshotFile(this.currentWorkspaceFolder, res.uri, res.relativePath, action, 'modify');
+                }
+            } else if (action === 'delete_file' && Array.isArray(params?.paths)) {
+                let hasDir = false;
+                for (const p of params.paths) {
+                    const res = await this.contextManager.resolveWorkspaceFromPath(p);
+                    if (res) {
+                        try {
+                            const st = await vscode.workspace.fs.stat(res.uri);
+                            if (st.type === vscode.FileType.Directory) hasDir = true;
+                        } catch {}
+                    }
+                }
+                if (!preApproved && (securityLevel === 'strict' || (securityLevel === 'guarded' && (hasDir || params.paths.length > 2)))) {
+                    const approval = await this.requestSecurityApproval(
+                        `Confirm File Deletion (${params.paths.length} target${params.paths.length > 1 ? 's' : ''})`,
+                        `The agent proposes to delete:\n${params.paths.map((p: string) => `• ${p}`).join('\n')}${hasDir ? '\n(Includes directory deletion!)' : ''}`,
+                        action,
+                        params.paths.join(', '),
+                        signal
+                    );
+                    if (approval === 'block') {
+                        return { success: false, output: `🛑 SECURITY BLOCK: File deletion rejected by user.` };
+                    }
+                }
+                for (const p of params.paths) {
+                    const res = await this.contextManager.resolveWorkspaceFromPath(p);
+                    if (res) {
+                        await this.securityGuard.collectFilesForDeletionSnapshot(this.currentWorkspaceFolder, res.uri, res.relativePath, action);
+                    }
+                }
+            } else if (action === 'move_file' && params?.source && params?.destination) {
+                if (securityLevel === 'strict' && !preApproved) {
+                    const approval = await this.requestSecurityApproval(
+                        'Confirm File Move / Rename',
+                        `Move \`${params.source}\` -> \`${params.destination}\``,
+                        action,
+                        `${params.source} -> ${params.destination}`,
+                        signal
+                    );
+                    if (approval === 'block') {
+                        return { success: false, output: `🛑 SECURITY BLOCK: File move rejected by user.` };
+                    }
+                }
+                const srcRes = await this.contextManager.resolveWorkspaceFromPath(params.source);
+                const dstRes = await this.contextManager.resolveWorkspaceFromPath(params.destination);
+                if (srcRes && dstRes) {
+                    await this.securityGuard.snapshotFile(this.currentWorkspaceFolder, srcRes.uri, srcRes.relativePath, action, 'move', dstRes.uri, dstRes.relativePath);
+                }
+            } else if (action === 'execute_python_script' || action === 'run_file') {
+                const scriptTarget = params?.script_path || params?.file_path;
+                if (scriptTarget) {
+                    const res = await this.contextManager.resolveWorkspaceFromPath(scriptTarget);
+                    if (res) {
+                        try {
+                            const bytes = await vscode.workspace.fs.readFile(res.uri);
+                            const scriptScan = AgentSecurityGuard.analyzeScriptContent(Buffer.from(bytes).toString('utf8'), res.relativePath, securityLevel);
+                            if (scriptScan.decision === 'block') {
+                                return { success: false, output: `🛑 SECURITY BLOCK: ${scriptScan.reason}` };
+                            }
+                            if (scriptScan.decision === 'confirm' && !preApproved) {
+                                const snippet = scriptScan.matchedLines.length > 0 ? `\nFlagged lines:\n${scriptScan.matchedLines.slice(0, 5).join('\n')}` : '';
+                                const approval = await this.requestSecurityApproval(
+                                    `Confirm Script Execution: ${res.relativePath}`,
+                                    `${scriptScan.reason}${snippet}`,
+                                    action,
+                                    res.relativePath,
+                                    signal
+                                );
+                                if (approval === 'block') {
+                                    return { success: false, output: `🛑 SECURITY BLOCK: Script execution rejected by user.` };
+                                }
+                            }
+                        } catch {}
+                    }
+                }
+            }
         }
 
         const assetDir = vscode.Uri.joinPath(this.currentWorkspaceFolder!.uri, '.lollms', 'assets', this.currentDiscussion!.id);
@@ -2312,7 +2661,9 @@ Please provide a clear, concise final response to the user summarizing the outco
         };
         
         try {
-            return await tool.execute(params, env, signal);
+            const execResult = await tool.execute(params, env, signal);
+            this.syncSecurityHudState();
+            return execResult;
         } catch (error: any) {
             const isDebugOn = this.currentDiscussion?.capabilities?.debugMode === true;
             

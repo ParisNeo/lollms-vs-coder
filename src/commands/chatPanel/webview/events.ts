@@ -2,7 +2,7 @@ import { dom, vscode, state } from './dom.js';
 import { performSearch, navigateSearch, clearSearch } from './search.js';
 import { insertNewMessageEditor } from './messageRenderer.js';
 import { setGeneratingState, updateBadges, openImageEditor, renderPendingImages, renderWorkspaceMatrix, openRawCodeModal, setCalculatingTokens } from './ui.js';
-import { isScrolledToBottom, parseAiderHunks } from "./utils.js";
+import { isScrolledToBottom, parseAiderHunks, createFilePatternMatcher } from "./utils.js";
 
 export function initEventHandlers() {
     console.log("[DEBUG:Events] Initializing handlers...");
@@ -339,7 +339,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     }
 
     if (dom.stopButton) {
-        dom.stopButton.addEventListener('click', () => {
+        dom.stopButton.addEventListener('click', (e) => {
+            e.stopPropagation();
             // If waiting for an input (such as Safety Gate), resolve it with a stop signal
             if ((window as any).inputResolver) {
                 vscode.postMessage({
@@ -2173,63 +2174,111 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
         };
     }
 
-    // Wizard Candidate Files Filter and Bulk Unmute / Mute
-    const wizardFilterInp = document.getElementById('wizard-file-filter-input') as HTMLInputElement;
-    if (wizardFilterInp) {
-        wizardFilterInp.oninput = () => {
+    // Wizard Tab Navigation
+    document.querySelectorAll('.wizard-tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const target = (btn as HTMLElement).dataset.tab;
+            document.querySelectorAll('.wizard-tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.wizard-tab-content').forEach(c => c.classList.remove('active'));
+            btn.classList.add('active');
+            if (target) {
+                document.getElementById(target)?.classList.add('active');
+            }
+        });
+    });
+
+    // Wizard Add File, Power Search & External File Triggers
+    document.getElementById('wizard-add-file-btn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        vscode.postMessage({ command: 'requestAddFileToContext' });
+    });
+
+    document.getElementById('wizard-search-add-btn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dom.fileSearchModal?.classList.add('visible');
+        dom.fileSearchInput?.focus();
+    });
+
+    document.getElementById('wizard-add-external-file-btn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        vscode.postMessage({ command: 'requestAddExternalFile' });
+    });
+
+    document.getElementById('wizard-add-external-link-btn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        vscode.postMessage({ command: 'requestAddExternalFileLink' });
+    });
+
+    document.getElementById('wizard-add-external-text-btn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const modal = document.getElementById('custom-external-text-modal');
+        if (modal) {
+            modal.style.display = 'flex';
+            modal.classList.add('visible');
+            const titleInp = document.getElementById('custom-external-title-input') as HTMLInputElement;
+            if (titleInp) {
+                titleInp.value = '';
+                setTimeout(() => titleInp.focus(), 50);
+            }
+            const contentInp = document.getElementById('custom-external-content-input') as HTMLTextAreaElement;
+            if (contentInp) contentInp.value = '';
+        }
+    });
+
+    document.getElementById('wizard-web-context-btn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const modal = document.getElementById('web-modal');
+        if (modal) {
+            modal.style.display = 'flex';
+            modal.classList.add('visible');
+        }
+    });
+
+    // Wizard Skills Search & Refresh
+    const wizardSkillsSearchInp = document.getElementById('wizard-skills-search-input') as HTMLInputElement;
+    if (wizardSkillsSearchInp) {
+        const triggerWizardSkillFilter = () => {
             import('./ui.js').then(ui => {
-                ui.renderWizardFileList(wizardFilterInp.value);
+                ui.filterSkillsTree(
+                    wizardSkillsSearchInp.value,
+                    document.getElementById('wizard-skills-tree-container'),
+                    document.getElementById('wizard-skills-search-case') as HTMLInputElement,
+                    document.getElementById('wizard-skills-search-regex') as HTMLInputElement
+                );
             });
         };
+        wizardSkillsSearchInp.addEventListener('input', triggerWizardSkillFilter);
+        document.getElementById('wizard-skills-search-case')?.addEventListener('change', triggerWizardSkillFilter);
+        document.getElementById('wizard-skills-search-regex')?.addEventListener('change', triggerWizardSkillFilter);
     }
 
-    // Wizard Candidate Files Sorting & Mode Cycling
-    const wizardSortSelect = document.getElementById('wizard-files-sort-select') as HTMLSelectElement;
-    const wizardSortCycleBtn = document.getElementById('wizard-files-sort-cycle-btn');
-
-    if (wizardSortSelect) {
-        wizardSortSelect.onchange = () => {
-            const val = wizardSortSelect.value as any;
-            (state as any).wizardFileSortOrder = val;
-            try {
-                localStorage.setItem('lollms_wizard_file_sort_order', val);
-            } catch {}
-            import('./ui.js').then(ui => {
-                ui.renderWizardFileList(wizardFilterInp?.value || '');
-            });
-        };
-    }
-
-    if (wizardSortCycleBtn) {
-        wizardSortCycleBtn.onclick = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const modes = ['visible-first', 'tree', 'muted-first', 'heavy-to-light', 'light-to-heavy', 'name', 'modified'];
-            const curVal = (state as any).wizardFileSortOrder || wizardSortSelect?.value || 'visible-first';
-            const nextIdx = (modes.indexOf(curVal) + 1) % modes.length;
-            const nextVal = modes[nextIdx];
-            (state as any).wizardFileSortOrder = nextVal;
-            if (wizardSortSelect) wizardSortSelect.value = nextVal;
-            try {
-                localStorage.setItem('lollms_wizard_file_sort_order', nextVal);
-            } catch {}
-            import('./ui.js').then(ui => {
-                ui.renderWizardFileList(wizardFilterInp?.value || '');
-            });
-        };
-    }
+    document.getElementById('wizard-skills-refresh-btn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const container = document.getElementById('wizard-skills-tree-container');
+        if (container) {
+            container.innerHTML = '<div style="padding: 30px; text-align: center; opacity: 0.7; font-size: 11px;"><div class="spinner" style="margin-bottom: 8px;"></div><div>Refreshing skills library...</div></div>';
+        }
+        vscode.postMessage({ command: 'requestWizardSkills' });
+    });
 
     const wizardUnmuteAllBtn = document.getElementById('wizard-unmute-all-btn');
     if (wizardUnmuteAllBtn) {
         wizardUnmuteAllBtn.onclick = () => {
             import('./ui.js').then(ui => {
-                const query = (document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value.toLowerCase().trim() || '';
-                const targetFiles = query
-                    ? ui.wizardCandidateFiles.filter(f => f.path.toLowerCase().includes(query) || f.fileName.toLowerCase().includes(query))
+                const rawQuery = ((state as any).wizardFileFilterQuery || '').trim();
+                const matcher = createFilePatternMatcher(rawQuery);
+                const targetFiles = rawQuery
+                    ? ui.wizardCandidateFiles.filter(f => matcher(f.path, f.fileName))
                     : ui.wizardCandidateFiles;
-                targetFiles.forEach(f => ui.wizardMutedSet.delete(f.path.toLowerCase().trim()));
-                state.wizardMutedFiles = Array.from(ui.wizardMutedSet);
-                ui.renderWizardFileList(query);
+                ui.setWizardFilesMuted(targetFiles.map(f => f.path), false);
+                ui.renderWizardFileList((state as any).wizardFileFilterQuery || '');
             });
         };
     }
@@ -2238,13 +2287,13 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
     if (wizardMuteAllBtn) {
         wizardMuteAllBtn.onclick = () => {
             import('./ui.js').then(ui => {
-                const query = (document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value.toLowerCase().trim() || '';
-                const targetFiles = query
-                    ? ui.wizardCandidateFiles.filter(f => f.path.toLowerCase().includes(query) || f.fileName.toLowerCase().includes(query))
+                const rawQuery = ((state as any).wizardFileFilterQuery || '').trim();
+                const matcher = createFilePatternMatcher(rawQuery);
+                const targetFiles = rawQuery
+                    ? ui.wizardCandidateFiles.filter(f => matcher(f.path, f.fileName))
                     : ui.wizardCandidateFiles;
-                targetFiles.forEach(f => ui.wizardMutedSet.add(f.path.toLowerCase().trim()));
-                state.wizardMutedFiles = Array.from(ui.wizardMutedSet);
-                ui.renderWizardFileList(query);
+                ui.setWizardFilesMuted(targetFiles.map(f => f.path), true);
+                ui.renderWizardFileList((state as any).wizardFileFilterQuery || '');
             });
         };
     }
@@ -2256,15 +2305,13 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             import('./ui.js').then(ui => {
                 if (val === 'empty') {
                     // Mute all candidate files
-                    ui.wizardCandidateFiles.forEach(f => ui.wizardMutedSet.add(f.path.toLowerCase().trim()));
-                    state.wizardMutedFiles = Array.from(ui.wizardMutedSet);
-                    ui.renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+                    ui.setWizardFilesMuted(ui.wizardCandidateFiles.map(f => f.path), true);
+                    ui.renderWizardFileList();
                 } else if (val === 'current') {
                     ui.wizardMutedSet.clear();
                     const activeMuted = state.mutedFiles || state.lastContextData?.mutedFiles || [];
-                    activeMuted.forEach((m: string) => ui.wizardMutedSet.add(m.toLowerCase().trim()));
-                    state.wizardMutedFiles = Array.from(ui.wizardMutedSet);
-                    ui.renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+                    ui.setWizardFilesMuted(activeMuted, true);
+                    ui.renderWizardFileList();
                 } else if (val) {
                     // Selecting a saved context selection automatically enables Fast Mode
                     const fastCheck = document.getElementById('wizard-fast-mode') as HTMLInputElement;
@@ -2694,7 +2741,7 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                     });
                     ui.wizardMutedSet.clear();
                     finalMuted.forEach((m: string) => ui.wizardMutedSet.add(m.replace(/\\/g, '/').toLowerCase().trim()));
-                    ui.renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+                    ui.renderWizardFileList();
                 });
                 const statusEl = document.getElementById('wizard-governor-status');
                 const statusText = document.getElementById('wizard-governor-status-text');
@@ -2877,7 +2924,20 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
 
         const finalMuted = state.wizardMutedFiles !== undefined
             ? state.wizardMutedFiles
-            : ((window as any).wizardMutedSet ? Array.from((window as any).wizardMutedSet) : (state.mutedFiles || []));
+            : (state.mutedFiles || []);
+
+        const wizardSkillsContainer = document.getElementById('wizard-skills-tree-container');
+        const hasSkillsTree = !!(wizardSkillsContainer && wizardSkillsContainer.querySelectorAll('.skill-node').length > 0);
+        const importedSkills = hasSkillsTree
+            ? Array.from(wizardSkillsContainer!.querySelectorAll('.skill-node input.skill-discussion-checkbox:checked'))
+                .map((el: any) => el.value)
+                .filter(Boolean)
+            : undefined;
+        const projectSkills = hasSkillsTree
+            ? Array.from(wizardSkillsContainer!.querySelectorAll('.skill-node input.skill-project-checkbox:checked'))
+                .map((el: any) => el.value)
+                .filter(Boolean)
+            : undefined;
 
         vscode.postMessage({
             command: 'executeLollmsCommand',
@@ -2896,6 +2956,8 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
                     reasoningEffort,
                     fastMode,
                     mutedFiles: finalMuted,
+                    importedSkills,
+                    projectSkills,
                     sendToAi
                 }
             }
@@ -2909,6 +2971,13 @@ window.addEventListener('paste', (e: ClipboardEvent) => {
             dom.wizardModal.style.display = 'none';
             dom.wizardModal.classList.remove('visible');
         }
+
+        const loaderOverlay = document.getElementById('discussion-loading-overlay');
+        const loaderTitle = document.getElementById('discussion-loading-title');
+        const loaderSub = document.getElementById('discussion-loading-sub');
+        if (loaderTitle) loaderTitle.textContent = sendToAi ? 'Creating discussion & preparing prompt...' : 'Creating discussion...';
+        if (loaderSub) loaderSub.textContent = 'Setting up context and loading UI...';
+        if (loaderOverlay) loaderOverlay.classList.add('visible');
     };
 
     if (dom.wizardSubmitBtn) {

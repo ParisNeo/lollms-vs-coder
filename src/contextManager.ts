@@ -470,10 +470,10 @@ private _cachedTreeString: string | null = null;
 
   public async updateMissionBriefing(
     content: string,
-    action: 'write' | 'patch' | 'upsert' | 'remove' = 'upsert',
+    action: 'add' | 'edit' | 'delete' | 'write' | 'patch' | 'upsert' | 'remove' = 'upsert',
     scope: 'global' | 'local' = 'global',
     discussion?: any,
-    meta?: { category?: BriefingCategory; id?: string; title?: string }
+    meta?: { category?: BriefingCategory; id?: string; section?: string; title?: string; isUserModalSave?: boolean }
   ): Promise<string> {
     const isGlobal = scope === 'global' || !discussion;
 
@@ -494,7 +494,7 @@ private _cachedTreeString: string | null = null;
     const { normalizeAiderContent, parseAiderHunks, applySearchReplace } = require('./utils');
     let updatedText = "";
 
-    if (action === 'remove') {
+    if (action === 'remove' || action === 'delete') {
       updatedText = "";
     } else if (action === 'patch') {
       const normalizedAider = normalizeAiderContent(content);
@@ -1665,8 +1665,10 @@ private _cachedTreeString: string | null = null;
             });
         }
 
-        // Yield control back to the Extension Host event loop to prevent UI unresponsiveness
-        await new Promise(resolve => setTimeout(resolve, 0));
+        // Cooperative yield every 20 files without timer clamping overhead
+        if (filesProcessed % 20 === 0) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
 
         const resolution = await this.resolveWorkspaceFromPath(fileEntry.path);
 
@@ -1707,10 +1709,13 @@ private _cachedTreeString: string | null = null;
             continue;
           }
 
-          const isDefOnly = contextState === 'definitions-only' || contextState === 'structure' || options?.leanMode;
-          const symbolsMatch = typeof contextState === 'string' && contextState.startsWith('symbols:') 
-            ? contextState.substring(8).split(',').map((s: string) => s.trim()).filter(Boolean) 
-            : (fileEntry as any).symbols;
+          const isIncludedFull = contextState === 'included' && !options?.leanMode;
+          const isDefOnly = !isIncludedFull && (contextState === 'definitions-only' || contextState === 'structure' || options?.leanMode);
+          const symbolsMatch = isIncludedFull
+            ? undefined
+            : (typeof contextState === 'string' && contextState.startsWith('symbols:') 
+                ? contextState.substring(8).split(',').map((s: string) => s.trim()).filter(Boolean) 
+                : (fileEntry as any).symbols);
 
           if (symbolsMatch && symbolsMatch.length > 0) {
             const defsAndSymbols = await this.extractDefinitionsAndSymbols(fileUri, symbolsMatch);
@@ -1820,6 +1825,100 @@ private _cachedTreeString: string | null = null;
       if (projectContentBuffer) {
         result.text += projectContentBuffer;
         result.selectedFilesContent += projectContentBuffer;
+      }
+    }
+
+    // Include linked external files (paths outside all workspace roots) when unmuted
+    if (!options?.capabilities?.disableProjectContext && !useRLM) {
+      const { arePathsEqual } = require('./utils');
+      let externalContentBuffer = "";
+      const seenExternal = new Set<string>();
+
+      for (const fileEntry of contextFiles) {
+        if (signal?.aborted) throw new Error("Operation cancelled");
+        if (!fileEntry || !fileEntry.path) continue;
+
+        const resolution = await this.resolveWorkspaceFromPath(fileEntry.path);
+        if (!resolution || resolution.folder) continue;
+
+        const extKey = resolution.uri.fsPath.replace(/\\/g, '/').toLowerCase();
+        if (seenExternal.has(extKey)) continue;
+        seenExternal.add(extKey);
+
+        const headerPath = fileEntry.path.replace(/\\/g, '/');
+        const isMuted = mutedFiles.some((m: string) =>
+          arePathsEqual(m, fileEntry.path) || arePathsEqual(m, headerPath) || arePathsEqual(m, resolution.uri.fsPath)
+        );
+        if (isMuted) continue;
+
+        try {
+          const stat = await vscode.workspace.fs.stat(resolution.uri).catch(() => null);
+          if (!stat || stat.type !== vscode.FileType.File) continue;
+
+          const ext = path.extname(resolution.uri.fsPath).toLowerCase();
+          if (this.binaryExtensions.has(ext)) {
+            externalContentBuffer += `<file path="${headerPath}" read_only="true" mode="read-only-external-doc">\n(Binary file content excluded)\n</file>
+
+\n\n`;
+            continue;
+          }
+
+          if (this.imageExtensions.has(ext)) {
+            if (!enableVision) {
+              externalContentBuffer += `### 🖼️ \`${headerPath}\` [IMAGE MUTED]\n> Vision is disabled in settings.\n\n`;
+              continue;
+            }
+            const fileBytes = await vscode.workspace.fs.readFile(resolution.uri);
+            const base64Data = Buffer.from(fileBytes).toString('base64');
+            let mime = ext.substring(1).replace('jpg', 'jpeg');
+            if (ext === '.svg') mime = 'svg+xml';
+            const dataUri = `data:image/${mime};base64,${base64Data}`;
+            const imgIndex = result.images.length;
+            result.images.push({ filePath: headerPath, data: dataUri });
+            externalContentBuffer += `### 🖼️ \`${headerPath}\` [C] (External Image)\n> [VISUAL CONTEXT INDEX]: ${imgIndex}\n\n`;
+            continue;
+          }
+
+          if (fileEntry.state === 'definitions-only' || (fileEntry.state as string) === 'structure' || options?.leanMode) {
+            const definitions = await this.extractDefinitions(resolution.uri);
+            externalContentBuffer += `<file path="${headerPath}" read_only="true" mode="structure">\n${definitions}\n</file>
+
+\n\n`;
+            continue;
+          }
+
+          let fileContent = '';
+          const openDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath.toLowerCase() === resolution.uri.fsPath.toLowerCase());
+          if (openDoc) {
+            fileContent = openDoc.getText();
+          } else {
+            const fileBytes = await vscode.workspace.fs.readFile(resolution.uri);
+            const buffer = Buffer.from(fileBytes);
+            if (this.docExtensions.has(ext)) {
+              fileContent = await this.processFile(path.basename(resolution.uri.fsPath), buffer.toString('base64'), result.images);
+            } else if (this.isBinary(buffer)) {
+              externalContentBuffer += `<file path="${headerPath}" read_only="true" mode="read-only-external-doc">\n(Binary content detected and excluded)\n</file>
+
+\n\n`;
+              continue;
+            } else {
+              fileContent = buffer.toString('utf8');
+            }
+          }
+
+          const formattedContent = fileContent.endsWith('\n') ? fileContent : fileContent + '\n';
+          const lineCount = fileContent.split('\n').length;
+          externalContentBuffer += `<!-- START FILE: ${headerPath} (${lineCount} lines) [READ-ONLY EXTERNAL LINKED FILE - DO NOT MODIFY] -->\n<file path="${headerPath}" read_only="true" mode="read-only-external-doc">\n${formattedContent}</file>
+
+\n<!-- END FILE: ${headerPath} -->\n\n`;
+        } catch (err) {
+          Logger.warn(`Skipping missing/unreadable linked external file: ${headerPath}`, err);
+        }
+      }
+
+      if (externalContentBuffer) {
+        result.text += `\n## 📚 LINKED EXTERNAL FILES — LOADED FILE CONTENTS (READ-ONLY)\n\n${externalContentBuffer}`;
+        result.selectedFilesContent += externalContentBuffer;
       }
     }
   }
@@ -4375,6 +4474,15 @@ Example:
     return this.context.workspaceState.get<string[]>(ContextManager.PROJECT_SKILLS_KEY, []);
   }
 
+  public async setProjectSkills(skillIds: string[]) {
+    const unique = Array.from(new Set(skillIds.filter(Boolean)));
+    const current = await this.getActiveProjectSkills();
+    if (current.length === unique.length && current.every((id, idx) => id === unique[idx])) {
+      return;
+    }
+    await this.context.workspaceState.update(ContextManager.PROJECT_SKILLS_KEY, unique);
+  }
+
   public async addSkillToProject(skillId: string) {
     const current = await this.getActiveProjectSkills();
     if (!current.includes(skillId)) await this.context.workspaceState.update(ContextManager.PROJECT_SKILLS_KEY, [...current, skillId]);
@@ -4477,6 +4585,102 @@ Example:
     await this.contextStateProvider?.addFilesToContext([originalPath]);
     this.refreshFileInCache(targetUri);
     return originalPath;
+  }
+
+  public async getAuthorizedExternalFiles(): Promise<Array<{ path: string; uri: vscode.Uri; fileName: string; source: 'linked' | 'external_files' | 'context' }>> {
+    const folders = vscode.workspace.workspaceFolders || [];
+    const results: Array<{ path: string; uri: vscode.Uri; fileName: string; source: 'linked' | 'external_files' | 'context' }> = [];
+    const seen = new Set<string>();
+    const isWin = process.platform === 'win32';
+
+    const addEntry = (filePath: string, uri: vscode.Uri, fileName: string, source: 'linked' | 'external_files' | 'context') => {
+      const normKey = (isWin ? uri.fsPath.toLowerCase() : uri.fsPath).replace(/\\/g, '/');
+      if (seen.has(normKey)) return;
+      seen.add(normKey);
+      results.push({ path: filePath.replace(/\\/g, '/'), uri, fileName, source });
+    };
+
+    for (const folder of folders) {
+      this._externalLinksCache = null;
+      const linksMap = await this.getExternalLinks(folder);
+      for (const [, info] of linksMap.entries()) {
+        if (info?.targetPath) {
+          const uri = vscode.Uri.file(info.targetPath);
+          addEntry(info.targetPath, uri, info.fileName || path.basename(info.targetPath), 'linked');
+        }
+      }
+
+      const extDir = vscode.Uri.joinPath(folder.uri, '.lollms', 'external_files');
+      try {
+        const entries = await vscode.workspace.fs.readDirectory(extDir);
+        for (const [name, fType] of entries) {
+          if (fType === vscode.FileType.File) {
+            const rel = path.posix.join('.lollms', 'external_files', name);
+            addEntry(rel, vscode.Uri.joinPath(extDir, name), name, 'external_files');
+          }
+        }
+      } catch {}
+    }
+
+    const included = this.contextStateProvider?.getIncludedFiles() || [];
+    for (const f of included) {
+      if (!f?.path) continue;
+      if (!this.isProjectFile(f.path)) {
+        const clean = f.path.replace(/\\/g, '/');
+        if (path.isAbsolute(clean) || /^[a-zA-Z]:[\\/]/.test(clean)) {
+          const uri = vscode.Uri.file(clean);
+          addEntry(clean, uri, path.basename(clean), 'context');
+        } else {
+          const res = await this.resolveWorkspaceFromPath(clean);
+          if (res) {
+            addEntry(clean, res.uri, path.basename(clean), 'context');
+          }
+        }
+      }
+    }
+
+    return results;
+  }
+
+  public async resolveAuthorizedExternalFile(queryPath: string): Promise<{ path: string; uri: vscode.Uri; fileName: string; source: 'linked' | 'external_files' | 'context' } | null> {
+    if (!queryPath || typeof queryPath !== 'string') return null;
+    const cleanQuery = queryPath.trim().replace(/^['"`]|['"`]$/g, '').replace(/\\/g, '/');
+    if (!cleanQuery) return null;
+
+    const authorized = await this.getAuthorizedExternalFiles();
+    if (authorized.length === 0) return null;
+
+    const isWin = process.platform === 'win32';
+    const normCmp = (p: string) => {
+      let s = p.replace(/\\/g, '/').replace(/^\.?\/+/, '');
+      return isWin ? s.toLowerCase() : s;
+    };
+
+    const targetNorm = normCmp(cleanQuery);
+    const targetBase = path.posix.basename(targetNorm);
+
+    // 1. Exact full-path match
+    for (const entry of authorized) {
+      if (normCmp(entry.path) === targetNorm || normCmp(entry.uri.fsPath) === targetNorm) {
+        return entry;
+      }
+    }
+
+    // 2. Path suffix match (e.g., examples/simple/file.py)
+    for (const entry of authorized) {
+      const entryNorm = normCmp(entry.path);
+      if (entryNorm.endsWith('/' + targetNorm)) {
+        return entry;
+      }
+    }
+
+    // 3. Unique filename match
+    const baseMatches = authorized.filter(entry => normCmp(entry.fileName) === targetBase);
+    if (baseMatches.length === 1) {
+      return baseMatches[0];
+    }
+
+    return null;
   }
 
   public isProjectFile(filePathOrItem: any): boolean {

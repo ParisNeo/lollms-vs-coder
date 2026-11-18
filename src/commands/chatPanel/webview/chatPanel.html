@@ -283,15 +283,40 @@
     <link href="{{cssUri}}" rel="stylesheet" />
     <link href="{{prismThemeUri}}" rel="stylesheet" />
 
-    <!-- 3. Deferred External CDN Assets -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
-    <script defer nonce="{{nonce}}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
-    <script defer nonce="{{nonce}}" src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05" crossorigin="anonymous"></script>
-    <script defer nonce="{{nonce}}" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <!-- 3. Non-Blocking External CDN Assets (Loaded asynchronously after DOMContentLoaded) -->
     <script nonce="{{nonce}}">
-        if (typeof pdfjsLib !== 'undefined') {
-            pdfjsLib.GlobalWorkerOptions.workerSrc = '';
-        }
+        window.addEventListener('DOMContentLoaded', function() {
+            setTimeout(function() {
+                var katexCss = document.createElement('link');
+                katexCss.rel = 'stylesheet';
+                katexCss.href = 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css';
+                katexCss.integrity = 'sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV';
+                katexCss.crossOrigin = 'anonymous';
+                document.head.appendChild(katexCss);
+
+                var katexJs = document.createElement('script');
+                katexJs.src = 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js';
+                katexJs.integrity = 'sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8';
+                katexJs.crossOrigin = 'anonymous';
+                katexJs.onload = function() {
+                    var autoRender = document.createElement('script');
+                    autoRender.src = 'https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js';
+                    autoRender.integrity = 'sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05';
+                    autoRender.crossOrigin = 'anonymous';
+                    document.head.appendChild(autoRender);
+                };
+                document.head.appendChild(katexJs);
+
+                var pdfJs = document.createElement('script');
+                pdfJs.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+                pdfJs.onload = function() {
+                    if (typeof pdfjsLib !== 'undefined') {
+                        pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+                    }
+                };
+                document.head.appendChild(pdfJs);
+            }, 0);
+        });
     </script>
 </head>
 <body>
@@ -1622,7 +1647,7 @@
                         <div style="display: flex; gap: 6px; align-items: center;">
                             <div style="display: flex; align-items: center; gap: 6px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 2px 8px; flex: 1;">
                                 <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.6;"></i>
-                                <input type="text" id="gov-file-filter-input" placeholder="Filter files in list..." style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); width: 100%;">
+                                <input type="text" id="gov-file-filter-input" placeholder="Filter files (e.g. *.ts, src/**, !test, /regex/)..." title="Supports wildcards (*, **, ?, {a,b}), exclusions (! or -), OR (| or ,), and /regex/" style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); width: 100%;">
                             </div>
                             <button id="gov-unmute-all-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 6px;" title="Unmute all files (set all active [C])">
                                 <i class="codicon codicon-eye"></i> Unmute All
@@ -1716,7 +1741,7 @@
     </div>
 
     <!-- 📝 CUSTOM EXTERNAL CONTENT MODAL -->
-    <div id="custom-external-text-modal" class="modal">
+    <div id="custom-external-text-modal" class="modal" style="z-index: 105000 !important;">
         <div class="modal-content" style="max-width: 700px; width: 90%;">
             <div class="modal-header">
                 <h2 style="margin:0; font-size: 14px; display:flex; align-items:center; gap:8px;">
@@ -1785,7 +1810,7 @@
                 <!-- Search and Filter Bar -->
                 <div style="display: flex; align-items: center; gap: 8px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 6px; padding: 4px 10px;">
                     <i class="codicon codicon-search" style="opacity: 0.7; font-size: 13px;"></i>
-                    <input type="text" id="bulk-search-input" placeholder="Search files by name or directory path..." style="background: transparent; border: none; outline: none; font-size: 12px; color: var(--vscode-input-foreground); flex: 1;">
+                    <input type="text" id="bulk-search-input" placeholder="Filter files (e.g. *.ts, src/**, !test, /regex/)..." title="Supports wildcards (*, **, ?, {a,b}), exclusions (! or -), OR (| or ,), and /regex/" style="background: transparent; border: none; outline: none; font-size: 12px; color: var(--vscode-input-foreground); flex: 1;">
                     <button id="bulk-search-clear-btn" class="icon-btn" style="padding: 0; width: 18px; height: 18px; display: none;" title="Clear Search"><i class="codicon codicon-close"></i></button>
                 </div>
 
@@ -1856,7 +1881,7 @@
         </div>
     </div>
 
-    <div id="file-search-modal" class="modal">
+    <div id="file-search-modal" class="modal" style="z-index: 105000 !important;">
         <div class="modal-content" style="max-width: 500px;">
             <div class="modal-header">
                 <h2 style="font-size: 14px; font-weight: 600;"><i class="codicon codicon-search" style="margin-right: 8px;"></i>Search & Add Files</h2>
@@ -1931,7 +1956,7 @@
     </div>
 
     <!-- 🚀 UNIFIED GROUNDING & INGESTION CENTER -->
-    <div id="web-modal" class="modal">
+    <div id="web-modal" class="modal" style="z-index: 105000 !important;">
         <div class="modal-content" style="max-width: 850px; width: 95%; height: 85vh;">
             <div class="modal-header" style="border-bottom: 1px solid var(--vscode-widget-border);">
                 <h2 style="margin:0; display:flex; align-items:center; gap:10px;"><i class="codicon codicon-cloud-upload"></i> Sovereign Grounding Center</h2>
@@ -2214,101 +2239,85 @@
                 </div>
             </div>
 
-            <!-- TWO-COLUMN WORKSPACE ONBOARDING STUDIO -->
-            <div class="modal-body" style="padding: 0; flex: 1; min-height: 0; display: flex; overflow: hidden;">
-                <!-- LEFT COLUMN: Prompt, Title, Image Attachments, Personas, Developer Profile -->
-                <div style="flex: 1.15; min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: 16px; border-right: 1px solid var(--vscode-widget-border); overflow-y: auto;">
+            <!-- TABBED NAVIGATION -->
+            <div class="wizard-tabs-nav">
+                <button type="button" class="wizard-tab-btn active" data-tab="tab-wizard-prompt">📝 Prompt</button>
+                <button type="button" class="wizard-tab-btn" data-tab="tab-wizard-files">📁 Files &amp; Context (<span id="wizard-tab-files-count">0</span>)</button>
+                <button type="button" class="wizard-tab-btn" data-tab="tab-wizard-skills">💡 Skills (<span id="wizard-tab-skills-count">0</span>)</button>
+                <button type="button" class="wizard-tab-btn" data-tab="tab-wizard-settings">⚙️ Settings</button>
+            </div>
+
+            <!-- TABBED BODY -->
+            <div class="modal-body" style="padding: 16px; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto;">
+                <!-- TAB 1: PROMPT -->
+                <div id="tab-wizard-prompt" class="wizard-tab-content active" style="gap: 14px;">
                     <div class="form-group" style="margin: 0;">
                         <label for="wizard-title">Discussion Title (Optional)</label>
                         <input type="text" id="wizard-title" placeholder="e.g. Implement JWT Authentication (Leave empty for AI Auto-Title)" style="width:100%; box-sizing:border-box;">
                     </div>
 
-                    <div class="form-group" style="margin: 0;">
+                    <div class="form-group" style="margin: 0; display: flex; flex-direction: column; flex: 1;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                             <label for="wizard-prompt" style="margin: 0;">First Prompt / Instruction</label>
                             <div style="display: flex; gap: 6px;">
                                 <input type="file" id="wizard-image-input" accept="image/*" multiple style="display: none;">
-                                <button type="button" id="wizard-attach-image-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 11px; padding: 0 8px;" title="Import image from disk or paste (Ctrl+V) directly into prompt">
+                                <button type="button" id="wizard-attach-image-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 11px; padding: 0 10px;" title="Import image from disk or paste (Ctrl+V) directly into prompt">
                                     <i class="codicon codicon-file-media"></i> Attach Image
                                 </button>
                             </div>
                         </div>
 
                         <!-- Staged Images Preview Tray -->
-                        <div id="wizard-image-preview-area" class="attachment-preview-area" style="display: none; margin-bottom: 6px; padding: 4px; border-radius: 4px; background: rgba(0,0,0,0.15);"></div>
+                        <div id="wizard-image-preview-area" class="attachment-preview-area" style="display: none; margin-bottom: 8px; padding: 6px; border-radius: 4px; background: rgba(0,0,0,0.15);"></div>
 
-                        <textarea id="wizard-prompt" rows="5" placeholder="What is the objective or question for this discussion? (Paste text or images, Shift+Enter for newline)..." style="width:100%; box-sizing:border-box; font-family:inherit; resize: vertical;"></textarea>
-                        <div style="font-size: 10px; opacity: 0.65; margin-top: 4px; display: flex; justify-content: space-between;">
+                        <textarea id="wizard-prompt" rows="12" placeholder="What is the objective or question for this discussion? (Paste text or images, Shift+Enter for newline)..." style="width:100%; box-sizing:border-box; font-family:inherit; resize: vertical; flex: 1; min-height: 220px;"></textarea>
+                        <div style="font-size: 10.5px; opacity: 0.65; margin-top: 6px; display: flex; justify-content: space-between;">
                             <span>💡 You can paste images (<kbd>Ctrl+V</kbd>) or drag &amp; drop directly into this prompt.</span>
                             <span id="wizard-prompt-tok-estimate">~0 tokens</span>
                         </div>
                     </div>
-
-                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
-                        <div class="form-group" style="margin: 0;">
-                            <label for="wizard-model">Target Model</label>
-                            <select id="wizard-model" style="width:100%;"></select>
-                        </div>
-                        <div class="form-group" style="margin: 0;">
-                            <label for="wizard-personality">Specialist Persona</label>
-                            <select id="wizard-personality" style="width:100%;"></select>
-                        </div>
-                    </div>
-
-
-
-                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top: 10px;">
-                        <div class="form-group" style="margin: 0;">
-                            <label for="wizard-reasoning-effort">Reasoning Effort</label>
-                            <select id="wizard-reasoning-effort" style="width:100%;">
-                                <option value="none">None (Fast / Off)</option>
-                                <option value="low" selected>Low</option>
-                                <option value="medium">Medium</option>
-                                <option value="high">High</option>
-                                <option value="max">Max</option>
-                            </select>
-                        </div>
-                        <div class="form-group" style="margin: 0; display:flex; flex-direction:column; justify-content:flex-end;">
-                            <label for="wizard-fast-mode" style="margin-bottom:4px;">Operation Mode</label>
-                            <div class="checkbox-container" style="margin:0; padding:4px 8px; background:var(--vscode-input-background); border:1px solid var(--vscode-input-border); border-radius:4px; display:flex; align-items:center; gap:8px; height:24px; box-sizing:border-box;">
-                                <label class="switch" style="width:24px; height:14px; margin:0; flex-shrink:0;">
-                                    <input type="checkbox" id="wizard-fast-mode">
-                                    <span class="slider" style="border-radius:14px;"></span>
-                                </label>
-                                <label for="wizard-fast-mode" style="font-size:11px; cursor:pointer; font-weight:600; margin:0; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="Fast Mode: Direct Coder execution on visible files without intermediate Librarian debate or confirmation">
-                                    ⚡ Fast Mode (Direct Coder)
-                                </label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="form-group" style="margin: 0;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                            <label for="wizard-preferences-profile" style="margin:0;">User Preferences Profile</label>
-                            <button id="wizard-save-pref-profile-btn" class="code-action-btn secondary-btn" type="button" style="height:20px; font-size:10px; padding:0 6px;" title="Save current text as a reusable profile">
-                                <i class="codicon codicon-save"></i> Save as Profile
-                            </button>
-                        </div>
-                        <select id="wizard-preferences-profile" style="width:100%; margin-bottom:6px;"></select>
-                        <textarea id="wizard-user-preferences" rows="3" placeholder="e.g. Strict TypeScript, functional style, no placeholders..." style="width:100%; box-sizing:border-box; font-family:inherit;"></textarea>
-                    </div>
                 </div>
 
-                <!-- RIGHT COLUMN: Context Files, Muting Scheme, Governor Integration, Workspace Matrix -->
-                <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--vscode-sideBar-background);">
-                    <!-- Governor & Preset Toolbar -->
-                    <div style="padding: 10px 14px; background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-widget-border); display: flex; flex-direction: column; gap: 8px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-                            <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 140px;">
+                <!-- TAB 2: FILES & CONTEXT (Factorized HUD UI) -->
+                <div id="tab-wizard-files" class="wizard-tab-content" style="gap: 10px;">
+                    <div style="padding: 8px 12px; background: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-radius: 6px; display: flex; flex-direction: column; gap: 8px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 180px;">
                                 <label for="wizard-context-selection" style="font-size: 10px; font-weight: 800; text-transform: uppercase; margin: 0; opacity: 0.7;">Selection:</label>
-                                <select id="wizard-context-selection" style="font-size: 11px; padding: 2px 6px; flex: 1; min-width: 100px; height: 24px; margin: 0;">
+                                <select id="wizard-context-selection" style="font-size: 11px; padding: 2px 6px; flex: 1; min-width: 140px; height: 24px; margin: 0;">
                                     <option value="current" selected>Active Selection</option>
                                     <option value="empty">Empty Context (0 files)</option>
                                 </select>
                             </div>
-                            <button id="wizard-governor-btn" class="code-action-btn apply-btn" type="button" style="height: 24px; font-size: 10px; padding: 0 10px; font-weight: 700; background: var(--vscode-charts-orange) !important; color: white !important; display: inline-flex; align-items: center; gap: 5px;" title="Consult the Librarian to analyze prompt and optimize context">
-                                <i class="codicon codicon-library"></i> Context Librarian
-                            </button>
+                            <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                                <button type="button" id="wizard-add-file-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 8px;" title="Add Project File to Context">
+                                    <i class="codicon codicon-add"></i> Add File
+                                </button>
+                                <button type="button" id="wizard-search-add-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 8px;" title="Power Search Workspace Files">
+                                    <i class="codicon codicon-search"></i> Power Search
+                                </button>
+                                <button type="button" id="wizard-add-external-file-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 8px; color: var(--vscode-charts-teal, #00b4d8); border-color: rgba(0, 180, 216, 0.35);" title="Import External Document Copy to .lollms/external_files (PDF, DOCX, TXT, MD, etc.)">
+                                    <i class="codicon codicon-new-file"></i> External File
+                                </button>
+                                <button type="button" id="wizard-add-external-link-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 8px; color: var(--vscode-charts-teal, #00b4d8); border-color: rgba(0, 180, 216, 0.35);" title="Link External File(s) as Live Read-Only References">
+                                    <i class="codicon codicon-link"></i> Link External
+                                </button>
+                                <button type="button" id="wizard-add-external-text-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 8px; color: var(--vscode-charts-teal, #00b4d8); border-color: rgba(0, 180, 216, 0.35);" title="Type or Paste Custom External Content">
+                                    <i class="codicon codicon-edit"></i> Custom Text
+                                </button>
+                                <button type="button" id="wizard-web-context-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 8px; color: var(--vscode-charts-teal, #00b4d8); border-color: rgba(0, 180, 216, 0.35);" title="Web Discovery &amp; Research">
+                                    <i class="codicon codicon-globe"></i> Web
+                                </button>
+                                <button type="button" id="wizard-export-context-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 8px;" title="Export selection to .lollms-ctx file">
+                                    <i class="codicon codicon-save"></i> Export
+                                </button>
+                                <button type="button" id="wizard-copy-context-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 8px;" title="Copy all active context file content to clipboard">
+                                    <i class="codicon codicon-clippy"></i> Copy
+                                </button>
+                                <button id="wizard-governor-btn" class="code-action-btn apply-btn" type="button" style="height: 24px; font-size: 10px; padding: 0 10px; font-weight: 700; background: var(--vscode-charts-orange) !important; color: white !important; display: inline-flex; align-items: center; gap: 5px;" title="Consult the Librarian to analyze prompt and optimize context">
+                                    <i class="codicon codicon-library"></i> Context Librarian
+                                </button>
+                            </div>
                         </div>
 
                         <!-- Governor Status Indicator if Applied -->
@@ -2319,51 +2328,27 @@
                             </div>
                             <button id="wizard-governor-clear-btn" type="button" style="background:none; border:none; color:var(--vscode-errorForeground); cursor:pointer; font-size:10px; text-decoration:underline; padding:0 4px;">Clear</button>
                         </div>
+                    </div>
 
-                        <!-- File Search Filter, Sorting & Mass Actions -->
-                        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-                            <div style="display: flex; align-items: center; gap: 6px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 2px 8px; flex: 1; min-width: 130px;">
-                                <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.6;"></i>
-                                <input type="text" id="wizard-file-filter-input" placeholder="Filter candidate files..." style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); width: 100%; height: 20px; padding: 0;">
-                            </div>
-                            <select id="wizard-files-sort-select" style="font-size: 10.5px; padding: 2px 4px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 4px; height: 24px; cursor: pointer; max-width: 135px;" title="Sort and organize files">
-                                <option value="visible-first" selected>👁️ Visible First</option>
-                                <option value="tree">🌳 Folder Tree</option>
-                                <option value="muted-first">🙈 Muted First</option>
-                                <option value="heavy-to-light">📊 Size (Heavy → Light)</option>
-                                <option value="light-to-heavy">📊 Size (Light → Heavy)</option>
-                                <option value="name">🔤 Name (A-Z)</option>
-                                <option value="modified">🕒 Last Modified</option>
-                            </select>
-                            <button type="button" id="wizard-files-sort-cycle-btn" class="icon-btn" style="height: 24px; width: 24px; padding: 0;" title="Cycle Sort Mode">
-                                <i class="codicon codicon-eye" id="wizard-files-sort-icon"></i>
-                            </button>
-                            <button type="button" id="wizard-export-context-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 6px;" title="Export selection to .lollms-ctx file">
-                                <i class="codicon codicon-save"></i> Export
-                            </button>
-                            <button type="button" id="wizard-copy-context-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 6px;" title="Copy all active context file content to clipboard">
-                                <i class="codicon codicon-clippy"></i> Copy
-                            </button>
-                            <button type="button" id="wizard-unmute-all-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 6px;" title="Unmute all files">
+                    <!-- Files Header Count -->
+                    <div style="padding: 6px 12px; background: var(--vscode-sideBarSectionHeader-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 10px; font-weight: 700; text-transform: uppercase; opacity: 0.9;">
+                        <span>Context Files (<span id="wizard-active-count">0</span> Active &middot; <span id="wizard-muted-count">0</span> Muted)</span>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span id="wizard-files-load-label">~0 tok</span>
+                            <button type="button" id="wizard-unmute-all-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px; text-transform: none;" title="Unmute all files">
                                 <i class="codicon codicon-eye"></i> Unmute All
                             </button>
-                            <button type="button" id="wizard-mute-all-btn" class="code-action-btn secondary-btn" style="height: 24px; font-size: 10px; padding: 0 6px;" title="Mute all files">
+                            <button type="button" id="wizard-mute-all-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px; text-transform: none;" title="Mute all files">
                                 <i class="codicon codicon-eye-closed"></i> Mute All
                             </button>
                         </div>
                     </div>
 
-                    <!-- Files Header Count -->
-                    <div style="padding: 6px 14px; background: var(--vscode-sideBarSectionHeader-background); border-bottom: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center; font-size: 10px; font-weight: 700; text-transform: uppercase; opacity: 0.85;">
-                        <span>Context Files (<span id="wizard-active-count">0</span> Active &middot; <span id="wizard-muted-count">0</span> Muted)</span>
-                        <span id="wizard-files-load-label">~0 tok</span>
-                    </div>
-
-                    <!-- Candidate Files List Container -->
-                    <div id="wizard-files-list" style="flex: 1; min-height: 0; overflow-y: auto; padding: 6px 8px; display: flex; flex-direction: column; gap: 3px;"></div>
+                    <!-- Factorized HUD Files Panel Host -->
+                    <div id="wizard-files-panel-host" style="flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;"></div>
 
                     <!-- Collapsible Workspace Matrix at Bottom -->
-                    <details style="border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editor-background); margin: 0;">
+                    <details style="border: 1px solid var(--vscode-widget-border); border-radius: 4px; background: var(--vscode-editor-background); margin: 0;">
                         <summary style="padding: 6px 12px; cursor: pointer; font-size: 10px; font-weight: 700; text-transform: uppercase; opacity: 0.8; display: flex; justify-content: space-between; align-items: center;">
                             <span>Workspace Folder Matrix</span>
                             <div style="display:flex; gap:8px;" onclick="event.stopPropagation()">
@@ -2372,15 +2357,96 @@
                                 <button type="button" id="wizard-matrix-all-off" style="background:none; border:none; color: var(--vscode-errorForeground); font-size:10px; cursor: pointer; padding: 0; font-weight: bold;">Mute All</button>
                             </div>
                         </summary>
-                        <div id="wizard-matrix-container" style="max-height: 120px; overflow-y:auto; border-top: 1px solid var(--vscode-widget-border); padding: 4px 0;"></div>
+                        <div id="wizard-matrix-container" style="max-height: 140px; overflow-y:auto; border-top: 1px solid var(--vscode-widget-border); padding: 4px 0;"></div>
                     </details>
+                </div>
+
+                <!-- TAB 3: SKILLS -->
+                <div id="tab-wizard-skills" class="wizard-tab-content" style="gap: 10px;">
+                    <div style="display: flex; align-items: center; gap: 8px; background: var(--vscode-editor-inactiveSelectionBackground); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--vscode-widget-border);">
+                        <i class="codicon codicon-search" style="font-size: 12px; opacity: 0.7;"></i>
+                        <input type="text" id="wizard-skills-search-input" placeholder="Search skills library (e.g. python, react, security)..." style="background: transparent; border: none; outline: none; font-size: 12px; color: var(--vscode-input-foreground); flex: 1; padding: 2px 0;">
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <div style="display: flex; align-items: center; gap: 4px;" title="Match Case">
+                                <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">Ab</span>
+                                <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                    <input type="checkbox" id="wizard-skills-search-case">
+                                    <span class="slider" style="border-radius: 14px;"></span>
+                                </label>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 4px;" title="Use Regular Expression">
+                                <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">.*</span>
+                                <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                    <input type="checkbox" id="wizard-skills-search-regex">
+                                    <span class="slider" style="border-radius: 14px;"></span>
+                                </label>
+                            </div>
+                            <button type="button" id="wizard-skills-refresh-btn" class="code-action-btn secondary-btn" style="height: 22px; font-size: 10px; padding: 0 8px;" title="Reload Skills Library">
+                                <i class="codicon codicon-refresh"></i> Refresh
+                            </button>
+                        </div>
+                    </div>
+                    <div id="wizard-skills-tree-container" style="flex: 1; min-height: 220px; overflow-y: auto; padding: 10px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px;">
+                        <div style="padding: 30px; text-align: center; opacity: 0.6; font-size: 11px;">Loading skills library...</div>
+                    </div>
+                </div>
+
+                <!-- TAB 4: SETTINGS -->
+                <div id="tab-wizard-settings" class="wizard-tab-content" style="gap: 16px;">
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px;">
+                        <div class="form-group" style="margin: 0;">
+                            <label for="wizard-model">Target Model</label>
+                            <select id="wizard-model" style="width:100%;"></select>
+                        </div>
+                        <div class="form-group" style="margin: 0;">
+                            <label for="wizard-personality">Specialist Persona</label>
+                            <select id="wizard-personality" style="width:100%;"></select>
+                        </div>
+                    </div>
+
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:14px;">
+                        <div class="form-group" style="margin: 0;">
+                            <label for="wizard-profile">Response Style / Profile</label>
+                            <select id="wizard-profile" style="width:100%;"></select>
+                        </div>
+                        <div class="form-group" style="margin: 0;">
+                            <label for="wizard-reasoning-effort">Reasoning Effort</label>
+                            <select id="wizard-reasoning-effort" style="width:100%;">
+                                <option value="none">None (Fast / Off)</option>
+                                <option value="low" selected>Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
+                                <option value="max">Max</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group" style="margin: 0; display: flex; flex-direction: column; flex: 1;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                            <label for="wizard-preferences-profile" style="margin:0;">User Preferences Profile &amp; Custom Data</label>
+                            <button id="wizard-save-pref-profile-btn" class="code-action-btn secondary-btn" type="button" style="height:22px; font-size:10px; padding:0 8px;" title="Save current text as a reusable profile">
+                                <i class="codicon codicon-save"></i> Save as Profile
+                            </button>
+                        </div>
+                        <select id="wizard-preferences-profile" style="width:100%; margin-bottom:8px;"></select>
+                        <textarea id="wizard-user-preferences" rows="6" placeholder="e.g. Strict TypeScript, functional style, no placeholders..." style="width:100%; box-sizing:border-box; font-family:inherit; flex: 1;"></textarea>
+                    </div>
                 </div>
             </div>
 
-            <!-- MODAL FOOTER -->
-            <div class="modal-footer" style="padding: 10px 18px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); display: flex; justify-content: space-between; align-items: center;">
+            <!-- MODAL FOOTER (with Fast Mode toggle placed next to Cancel) -->
+            <div class="modal-footer" style="padding: 10px 18px; border-top: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
                 <span id="wizard-footer-summary" style="font-size: 11px; font-weight: 600; opacity: 0.9;">Ready to start new discussion.</span>
-                <div style="display:flex; gap:8px;">
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <div class="checkbox-container" style="margin:0; padding:4px 10px; background:var(--vscode-input-background); border:1px solid var(--vscode-input-border); border-radius:4px; display:flex; align-items:center; gap:8px; height:32px; box-sizing:border-box;" title="Fast Mode: Direct Coder execution on visible files without intermediate Librarian debate or confirmation">
+                        <label class="switch" style="width:24px; height:14px; margin:0; flex-shrink:0;">
+                            <input type="checkbox" id="wizard-fast-mode">
+                            <span class="slider" style="border-radius:14px;"></span>
+                        </label>
+                        <label for="wizard-fast-mode" style="font-size:11px; cursor:pointer; font-weight:600; margin:0; white-space:nowrap; text-transform:none; letter-spacing:0;">
+                            ⚡ Fast Mode
+                        </label>
+                    </div>
                     <button id="wizard-cancel-btn" class="code-action-btn secondary-btn" type="button" style="height:32px; padding: 0 14px;">Cancel</button>
                     <button id="wizard-create-btn" class="code-action-btn secondary-btn" type="button" style="height:32px; padding: 0 14px; border-color:var(--vscode-charts-blue); color:var(--vscode-textLink-foreground);" title="Create session and populate initial prompt without generating immediately">Create</button>
                     <button id="wizard-submit-btn" class="code-action-btn apply-btn" type="button" style="height:32px; padding: 0 18px; font-weight:bold;" title="Create session and immediately run AI with prompt and vision images">Create &amp; Send</button>

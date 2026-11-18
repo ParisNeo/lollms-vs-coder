@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { GitIntegration, execAsync, MAX_BUFFER_SIZE } from '../gitIntegration';
+import { stripThinkingTags } from '../utils';
 
 export class GitDashboardPanel {
     public static currentPanel: GitDashboardPanel | undefined;
@@ -8,6 +10,8 @@ export class GitDashboardPanel {
     private readonly _git: GitIntegration;
     private _disposables: vscode.Disposable[] = [];
     private _isDisposed: boolean = false;
+    private _isWebviewReady: boolean = false;
+    private _pendingFullDiff?: { baseRef?: string; label?: string };
 
     /**
     * Unified diff engine.
@@ -17,21 +21,52 @@ export class GitDashboardPanel {
     * - Staged: ref1="--cached", ref2=""
     * - Unstaged: ref1="", ref2=""
     */
-    public async getDiffContent(folder: vscode.WorkspaceFolder, ref1: string, ref2: string = "", path: string = ""): Promise<string> {
+    private async getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
+        const folders = vscode.workspace.workspaceFolders || [];
+        if (folders.length === 0) return undefined;
+
+        const activeUri = vscode.window.activeTextEditor?.document.uri;
+        if (activeUri) {
+            const activeFolder = vscode.workspace.getWorkspaceFolder(activeUri);
+            if (activeFolder && await this._git.isGitRepo(activeFolder)) {
+                return activeFolder;
+            }
+        }
+
+        for (const f of folders) {
+            if (await this._git.isGitRepo(f)) {
+                return f;
+            }
+        }
+        return folders[0];
+    }
+
+    public async getDiffContent(folder: vscode.WorkspaceFolder, ref1: string, ref2: string = "", filePath: string = ""): Promise<string> {
         if (!folder) return "";
+        const cwd = (await this._git.resolveGitCwd(folder)) || folder.uri.fsPath;
         try {
-            const pathArg = path ? `-- "${path}"` : "";
+            const pathArg = filePath ? `-- "${filePath}"` : "";
             const { stdout } = await execAsync(`git --no-pager diff ${ref1} ${ref2} ${pathArg}`, {
-                cwd: folder.uri.fsPath,
+                cwd,
                 maxBuffer: MAX_BUFFER_SIZE,
                 timeout: 10000
             });
             return stdout || '';
         } catch (e: any) {
-            // Fallback to git show for full commit patches if diff fails
-            if (ref2 && !path) {
-                const { stdout } = await execAsync(`git --no-pager show --pretty="" -p ${ref2}`, { cwd: folder.uri.fsPath });
-                return stdout || '';
+            if (ref2 && !filePath) {
+                try {
+                    return await this._git.getCommitDiff(folder, ref2);
+                } catch {}
+            }
+            if (ref2 && filePath) {
+                try {
+                    const { stdout } = await execAsync(`git --no-pager show --pretty="" -p ${ref2} -- "${filePath}"`, {
+                        cwd,
+                        maxBuffer: MAX_BUFFER_SIZE,
+                        timeout: 10000
+                    });
+                    return stdout || '';
+                } catch {}
             }
             return `Error generating diff: ${e.message}`;
         }
@@ -59,10 +94,44 @@ export class GitDashboardPanel {
         GitDashboardPanel.currentPanel = new GitDashboardPanel(panel, extensionUri, git);
     }
 
-    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, git: GitIntegration) {
+    public static async createOrShowWithFullDiff(
+        extensionUri: vscode.Uri,
+        git: GitIntegration,
+        baseRef?: string,
+        label?: string
+    ) {
+        if (GitDashboardPanel.currentPanel) {
+            GitDashboardPanel.currentPanel._panel.reveal(vscode.ViewColumn.One);
+            await GitDashboardPanel.currentPanel.refresh();
+            await GitDashboardPanel.currentPanel.showFullDiffSince(baseRef, label);
+            return;
+        }
+        const panel = vscode.window.createWebviewPanel(
+            'lollmsGitDashboard',
+            'Lollms Git Dashboard',
+            vscode.ViewColumn.One,
+            {
+                enableScripts: true,
+                retainContextWhenHidden: true,
+                localResourceRoots: [
+                    vscode.Uri.joinPath(extensionUri, 'out', 'styles'),
+                    vscode.Uri.joinPath(extensionUri, 'media')
+                ]
+            }
+        );
+        GitDashboardPanel.currentPanel = new GitDashboardPanel(panel, extensionUri, git, { baseRef, label });
+    }
+
+    private constructor(
+        panel: vscode.WebviewPanel,
+        extensionUri: vscode.Uri,
+        git: GitIntegration,
+        initialFullDiff?: { baseRef?: string; label?: string }
+    ) {
         this._panel = panel;
         this._extensionUri = extensionUri;
         this._git = git;
+        this._pendingFullDiff = initialFullDiff;
 
         // Register listeners BEFORE setting HTML so no messages are missed
         this._setListeners();
@@ -75,11 +144,61 @@ export class GitDashboardPanel {
         setTimeout(() => this.refresh(), 100);
     }
 
+    public async showFullDiffSince(preferredBaseRef?: string, preferredLabel?: string, targetRef: string = 'WORKING_TREE', targetLabel?: string) {
+        if (this._isDisposed) return;
+        const folder = await this.getTargetWorkspaceFolder();
+        if (!folder) return;
+
+        try {
+            let preferred = preferredBaseRef;
+            if (!preferred) {
+                try {
+                    const { ChatPanel } = await import('./chatPanel/chatPanel');
+                    const gitState = ChatPanel.currentPanel?.getCurrentDiscussion()?.gitState;
+                    preferred = gitState?.startCommitHash || gitState?.originalBranch;
+                } catch {}
+            }
+
+            const resolved = await this._git.resolveStartingRef(folder, preferred);
+            if (!resolved) {
+                vscode.window.showInformationMessage('No starting Git commit or branch found to compare against.');
+                return;
+            }
+
+            const baseRef = resolved.ref;
+            const baseLabel = preferredLabel || resolved.label;
+            const effectiveTarget = targetRef || 'WORKING_TREE';
+
+            const [currentBranch, currentHash, files, diff] = await Promise.all([
+                this._git.getCurrentBranch(folder),
+                this._git.getCurrentHash(folder),
+                this._git.getChangedFilesSince(folder, baseRef, effectiveTarget),
+                this._git.getCompareDiff(folder, baseRef, effectiveTarget)
+            ]);
+
+            if (this._isDisposed) return;
+
+            this._panel.webview.postMessage({
+                command: 'showFullDiffRange',
+                baseRef,
+                baseLabel,
+                targetRef: effectiveTarget,
+                targetLabel: targetLabel || (effectiveTarget === 'WORKING_TREE' ? `Current (${currentBranch || 'HEAD'})` : effectiveTarget),
+                currentBranch: currentBranch || 'HEAD',
+                currentHash: currentHash || 'WORKING_TREE',
+                files,
+                diff
+            });
+        } catch (err: any) {
+            vscode.window.showErrorMessage(`Failed to compute full diff: ${err?.message || err}`);
+        }
+    }
+
     private _currentGraphLimit = 50;
 
     private async refresh(appendGraph: boolean = false) {
         if (this._isDisposed) return;
-        const folder = vscode.workspace.workspaceFolders?.[0];
+        const folder = await this.getTargetWorkspaceFolder();
         if (!folder) {
             this._panel.webview.postMessage({ command: 'error', message: 'No workspace folder found.' });
             return;
@@ -100,12 +219,22 @@ export class GitDashboardPanel {
             const submodules = await this._git.getSubmodules(folder);
             const graph = await this._git.getGitGraph(folder, graphLimit, skip);
 
+            let startingRef: { ref: string; label: string } | null = null;
+            try {
+                const { ChatPanel } = await import('./chatPanel/chatPanel');
+                const gitState = ChatPanel.currentPanel?.getCurrentDiscussion()?.gitState;
+                const preferred = gitState?.startCommitHash || gitState?.originalBranch;
+                startingRef = await this._git.resolveStartingRef(folder, preferred);
+            } catch {
+                startingRef = await this._git.resolveStartingRef(folder);
+            }
+
             if (this._isDisposed) return;
             if (appendGraph) { this._currentGraphLimit += limit; }
 
             this._panel.webview.postMessage({ 
                 command: appendGraph ? 'appendGraph' : 'update', 
-                data: { status, branches, currentBranch, stashes, tags, graph: graph ?? '', submodules } 
+                data: { status, branches, currentBranch, stashes, tags, graph: graph ?? '', submodules, startingRef } 
             });
 
         } catch (error: any) {
@@ -123,10 +252,16 @@ export class GitDashboardPanel {
     private _setListeners() {
         this._panel.webview.onDidReceiveMessage(async (msg) => {
             if (msg.command === 'ready') {
+                this._isWebviewReady = true;
                 await this.refresh();
+                if (this._pendingFullDiff) {
+                    const pending = this._pendingFullDiff;
+                    this._pendingFullDiff = undefined;
+                    await this.showFullDiffSince(pending.baseRef, pending.label);
+                }
                 return;
             }
-            const folder = vscode.workspace.workspaceFolders?.[0];
+            const folder = await this.getTargetWorkspaceFolder();
             if (!folder) {
                 if (msg.command === 'refresh' || msg.command === 'loadMore') {
                     this._panel.webview.postMessage({ command: 'error', message: 'No active workspace folder.' });
@@ -274,6 +409,64 @@ export class GitDashboardPanel {
                             });
                         }
                         break;
+                    case 'showFullDiffSinceStart':
+                        await this.showFullDiffSince(msg.baseRef, msg.label, msg.targetRef || 'WORKING_TREE', msg.targetLabel);
+                        break;
+                    case 'compareRefs':
+                        if (msg.refA) {
+                            await this.showFullDiffSince(msg.refA, msg.labelA || msg.refA, msg.refB || 'WORKING_TREE', msg.labelB || msg.refB);
+                        }
+                        break;
+                    case 'explainComparisonWithAI':
+                        await this.handleExplainComparisonWithAI(folder, msg.refA, msg.refB, msg.diff, msg.files);
+                        break;
+                    case 'getFileDiffSinceStart':
+                        if (msg.path && msg.baseRef) {
+                            const targetRef = msg.targetRef || 'WORKING_TREE';
+                            const fileDiff = await this._git.getFileDiffBetweenRefs(folder, msg.baseRef, targetRef, msg.path);
+                            this._panel.webview.postMessage({ command: 'showDiff', path: msg.path, diff: fileDiff });
+                        }
+                        break;
+                    case 'openNativeFileDiffFromRef':
+                        if (msg.path && msg.baseRef) {
+                            const gitCwd = (await this._git.resolveGitCwd(folder)) || folder.uri.fsPath;
+                            const targetRef = msg.targetRef || 'WORKING_TREE';
+                            const leftContent = await this._git.getFileContentAtRef(folder, msg.baseRef, msg.path);
+                            const cacheDir = vscode.Uri.joinPath(folder.uri, '.lollms', 'diff_cache');
+                            await vscode.workspace.fs.createDirectory(cacheDir);
+
+                            const shortA = String(msg.baseRef).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 12);
+                            const shortB = targetRef === 'WORKING_TREE' ? 'Current' : String(targetRef).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 12);
+                            const baseName = path.basename(msg.path);
+
+                            const leftUri = vscode.Uri.joinPath(cacheDir, `${shortA}_${baseName}`);
+                            await vscode.workspace.fs.writeFile(leftUri, Buffer.from(leftContent, 'utf8'));
+
+                            let rightUri: vscode.Uri;
+                            if (targetRef === 'WORKING_TREE') {
+                                const diskUri = vscode.Uri.file(path.join(gitCwd, msg.path));
+                                const exists = await vscode.workspace.fs.stat(diskUri).then(() => true, () => false);
+                                if (exists) {
+                                    rightUri = diskUri;
+                                } else {
+                                    rightUri = vscode.Uri.joinPath(cacheDir, `deleted_${baseName}`);
+                                    await vscode.workspace.fs.writeFile(rightUri, Buffer.from('', 'utf8'));
+                                }
+                            } else {
+                                const rightContent = await this._git.getFileContentAtRef(folder, targetRef, msg.path);
+                                rightUri = vscode.Uri.joinPath(cacheDir, `${shortB}_${baseName}`);
+                                await vscode.workspace.fs.writeFile(rightUri, Buffer.from(rightContent, 'utf8'));
+                            }
+
+                            await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, `${baseName} (${shortA} ↔ ${shortB})`);
+                        }
+                        break;
+                    case 'openDiffTextInEditor':
+                        if (msg.diff) {
+                            const diffDoc = await vscode.workspace.openTextDocument({ content: msg.diff, language: 'diff' });
+                            await vscode.window.showTextDocument(diffDoc, { preview: false });
+                        }
+                        break;
                     case 'compareRef':
                         const fullDiff = await this._git.getCompareDiff(folder, 'HEAD', msg.ref);
                         if (!fullDiff || !fullDiff.trim()) {
@@ -380,8 +573,10 @@ export class GitDashboardPanel {
                         const files = await this._git.getChangedFiles(folder, msg.hash);
                         const selectedFile = await vscode.window.showQuickPick(files, { placeHolder: "Select a file to compare" });
                         if (selectedFile) {
-                            const leftUri = vscode.Uri.joinPath(folder.uri, selectedFile).with({ scheme: 'git', query: msg.hash + '^' });
-                            const rightUri = vscode.Uri.joinPath(folder.uri, selectedFile).with({ scheme: 'git', query: msg.hash });
+                            const gitCwd = (await this._git.resolveGitCwd(folder)) || folder.uri.fsPath;
+                            const fileUri = vscode.Uri.file(path.join(gitCwd, selectedFile));
+                            const leftUri = fileUri.with({ scheme: 'git', query: msg.hash + '^' });
+                            const rightUri = fileUri.with({ scheme: 'git', query: msg.hash });
                             await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, `${selectedFile} (${msg.hash.substring(0,7)})`);
                         }
                         break;
@@ -515,6 +710,67 @@ export class GitDashboardPanel {
             } else {
                 vscode.window.showErrorMessage(`Merge failed: ${e.message}`);
             }
+        }
+    }
+
+    private async handleExplainComparisonWithAI(
+        folder: vscode.WorkspaceFolder,
+        refA?: string,
+        refB?: string,
+        providedDiff?: string,
+        providedFiles?: { path: string; status: string }[]
+    ) {
+        const api = this._git.getLollmsAPI();
+        if (!api) {
+            this._panel.webview.postMessage({ command: 'aiCompareSummaryResult', error: 'AI service unavailable.' });
+            return;
+        }
+
+        try {
+            const baseRef = refA || (await this._git.resolveStartingRef(folder))?.ref;
+            if (!baseRef) {
+                this._panel.webview.postMessage({ command: 'aiCompareSummaryResult', error: 'Could not determine base reference.' });
+                return;
+            }
+            const targetRef = refB || 'WORKING_TREE';
+            const diffText = (providedDiff && providedDiff.trim())
+                ? providedDiff
+                : await this._git.getCompareDiff(folder, baseRef, targetRef);
+            const filesList = Array.isArray(providedFiles) && providedFiles.length > 0
+                ? providedFiles
+                : await this._git.getChangedFilesSince(folder, baseRef, targetRef);
+
+            if (!diffText || !diffText.trim()) {
+                this._panel.webview.postMessage({
+                    command: 'aiCompareSummaryResult',
+                    summary: `No differences detected between \`${baseRef}\` and \`${targetRef}\`.`
+                });
+                return;
+            }
+
+            const filesSummary = filesList.map(f => `- [${f.status}] ${f.path}`).join('\n');
+            const excerpt = diffText.length > 12000 ? diffText.substring(0, 12000) + '\n... [truncated]' : diffText;
+
+            const response = await api.sendChat([
+                {
+                    role: 'system',
+                    content: 'You are a Senior Software Engineer reviewing Git branch/commit differences. Summarize clearly what changed between Base (A) and Compare (B), highlighting added/removed features, bug fixes, and modified files.'
+                },
+                {
+                    role: 'user',
+                    content: `Compare **${baseRef}** -> **${targetRef}**\n\n### Changed Files (${filesList.length}):\n${filesSummary}\n\n### Diff:\n\`\`\`diff\n${excerpt}\n\`\`\``
+                }
+            ], null, undefined, undefined, { thinking: false });
+
+            this._panel.webview.postMessage({
+                command: 'aiCompareSummaryResult',
+                summary: stripThinkingTags(response).trim()
+            });
+        } catch (err: any) {
+            this._panel.webview.postMessage({
+                command: 'aiCompareSummaryResult',
+                error: err?.message || 'Failed to explain differences with AI.'
+            });
         }
     }
 
@@ -801,6 +1057,7 @@ export class GitDashboardPanel {
         </div>
         <div style="flex:1"></div>
         <div class="toolbar-group">
+            <button class="btn" id="btn-full-diff-start" onclick="post('showFullDiffSinceStart')" title="Show full diffs between current state and starting state"><i class="codicon codicon-diff"></i> Full Diff vs Start</button>
             <button class="btn btn-secondary" onclick="post('stash')"><i class="codicon codicon-archive"></i> Stash</button>
             <button class="btn btn-secondary" onclick="post('openGitManager')"><i class="codicon codicon-search"></i> Search</button>
         </div>
@@ -880,9 +1137,19 @@ export class GitDashboardPanel {
                 </div>
 
                 <!-- DIFF VIEW -->
-                <div id="view-DIFF" class="view" style="display:none; padding:0;">
-                    <div id="diff-content-area" style="font-family: var(--vscode-editor-font-family); font-size: 12px; white-space: pre; overflow: auto; height: 100%;">
-                        <div style="opacity:0.5; padding:40px; text-align:center;">Select a file from the sidebar to view diff.</div>
+                <div id="view-DIFF" class="view" style="display:none; padding:0; height:100%; flex-direction:column;">
+                    <div id="diff-compare-toolbar" style="padding: 8px 14px; background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-widget-border); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0;">
+                        <span style="font-size:11px; font-weight:bold; opacity:0.8;">Base (A):</span>
+                        <select id="diff-ref-a" style="background:var(--vscode-dropdown-background); color:var(--vscode-dropdown-foreground); border:1px solid var(--vscode-dropdown-border); padding:3px 6px; border-radius:3px; font-size:12px; max-width:210px;"></select>
+                        <button class="btn btn-secondary" id="diff-swap-btn" title="Swap Base (A) and Compare (B)"><i class="codicon codicon-arrow-swap"></i></button>
+                        <span style="font-size:11px; font-weight:bold; opacity:0.8;">Compare (B):</span>
+                        <select id="diff-ref-b" style="background:var(--vscode-dropdown-background); color:var(--vscode-dropdown-foreground); border:1px solid var(--vscode-dropdown-border); padding:3px 6px; border-radius:3px; font-size:12px; max-width:210px;"></select>
+                        <button class="btn" id="diff-compare-btn" title="Show full diff between Base (A) and Compare (B)"><i class="codicon codicon-git-compare"></i> What's the Difference?</button>
+                        <button class="btn btn-secondary" id="diff-explain-ai-btn" title="Ask AI to explain what changed between Base (A) and Compare (B)"><i class="codicon codicon-sparkle"></i> Explain with AI</button>
+                    </div>
+                    <div id="diff-ai-summary" style="display:none; padding:10px 14px; background:rgba(0,122,204,0.08); border-bottom:1px solid var(--vscode-widget-border); font-size:12px; line-height:1.5; flex-shrink:0; max-height:220px; overflow-y:auto;"></div>
+                    <div id="diff-content-area" style="font-family: var(--vscode-editor-font-family); font-size: 12px; white-space: pre; overflow: auto; flex: 1; min-height: 0;">
+                        <div style="opacity:0.5; padding:40px; text-align:center;">Select two branches or states above and click "What's the Difference?", or click a branch, commit, or file from the sidebar.</div>
                     </div>
                 </div>
             </div>

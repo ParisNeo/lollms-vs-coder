@@ -41,6 +41,34 @@ export function stripLibrarianReferences(text: string): string {
 
 export class CoderPromptBuilder {
 
+    public static buildPhasedContextAndInstrumentationProtocol(options?: { isExport?: boolean; isFastMode?: boolean }): string {
+        const isExport = options?.isExport === true;
+        const phaseIntro = isExport
+            ? 'Do NOT request to load all project files at once.'
+            : 'NEVER try to load all project files into context at once — if you overload the context window, the Context Manager will cut/mute files and cause a loop.';
+
+        return `
+### 🔄 PHASED CONTEXT LOADING & ANTI-LOOP DISCIPLINE
+1. **WORK IN PHASES ON SMALL SUBSETS**: ${phaseIntro} Split multi-file work into **phases** by loading ONLY the small subset (1–3 files) needed for the current phase.
+2. **RELEASE FINISHED FILES FIRST**: When moving from one subset of files to the next, explicitly mute files you are done with using \`<mute_files>\\npath/to/finished.ext\\n</mute_files>\` (or \`<remove_files_from_context>\`) BEFORE requesting new files.
+3. **NEVER RE-REQUEST CUT FILES IN A LOOP**: If the Context Compression notice indicates that files were compacted to \`[D]\` or muted \`[M]\` due to token limits, do NOT immediately re-unmute them all again. Instead:
+   - Inspect only the exact function/lines needed via \`<show_symbol target="path/to/file.ext:SymbolName" />\` or \`<peek_files path="path/to/file.ext" lines="30" from="top" />\`, OR
+   - Mute other unneeded files first via \`<mute_files>\`, OR
+   - Deliver the changes for the currently loaded subset now and outline the next phase.
+
+### 🔬 HYPOTHESIS-DRIVEN INSTRUMENTATION & \`<user_instruction>\` PROTOCOL
+If you fail to solve a bug or problem in one go (e.g., an attempted fix did not resolve the issue, tests/runtime still fail, or the root cause cannot be proven statically):
+1. **AUTOMATICALLY INSTRUMENT THE CODE**: Add targeted, clearly prefixed diagnostic logging / state assertions (e.g., \`[LOLLMS_DEBUG] ...\`) around the suspected paths to **test specific hypotheses** about runtime values, control flow, and timings.
+2. **HIGHLIGHT ACTIONABLE USER STEPS IN \`<user_instruction>\`**: Whenever the user needs to run the instrumented code, reproduce a failure, or perform a manual verification step, wrap those instructions in a top-level \`<user_instruction>\` block starting on a new line so it is highlighted in the UI:
+<user_instruction title="Run Diagnostic Build & Report Output" type="instrumentation" hypothesis="Brief description of what you are testing">
+1. **Hypothesis**: State clearly what this instrumentation tests.
+2. **Steps to Run / Reproduce**: Provide the exact command or UI actions for the user to execute.
+3. **Output to Report**: Specify the exact \`[LOLLMS_DEBUG]\` log lines, stack trace, or observed behavior the user should paste back into the chat.
+</user_instruction>
+3. **CLEANUP AFTER CONFIRMATION**: Once the user reports the output and the root cause is verified and fixed, remove any temporary diagnostic instrumentation.
+`;
+    }
+
     public static buildFileMutationProtocol(capabilities?: any): string {
         const isSymbolModeEnabled = capabilities?.enableSymbolMode !== false;
         const isFileDeleteEnabled = capabilities?.fileDelete !== false;
@@ -106,6 +134,7 @@ RULES:
             const userPreferences = rawUserPrefs.trim();
             const userPrefSection = userPreferences ? `\n### 👤 USER PREFERENCES & CODING GUIDELINES\n${userPreferences}\n` : '';
             const mutationProtocol = CoderPromptBuilder.buildFileMutationProtocol(capabilities);
+            const phasedAndInstrumentationProtocol = CoderPromptBuilder.buildPhasedContextAndInstrumentationProtocol({ isExport, isFastMode });
             const safePersona = typeof persona === 'string' ? persona : String(persona || '');
 
             // 1. FAST MODE CODER
@@ -152,13 +181,23 @@ ${userPrefSection}
      - **Files Modified**: exact list of target files
      - **What Was Done**: key accomplishments and logic implemented
 
-### 🎯 MISSION BRIEFING & CROSS-SESSION MEMORY
-- Respect all rules and cross-session decisions listed under **MISSION BRIEFING & PROJECT-WIDE MEMORY**.
-- When you discover a durable project-wide invariant, architectural decision, or bug pitfall that future sessions must remember, emit a concise keyed update (avoid duplicating existing entries):
-<mission_briefing action="upsert" scope="global" category="decisions|pitfalls|architecture" id="short_unique_slug" title="Concise Title">
-Short, high-signal technical note referencing exact file paths.
-</mission_briefing>
+### 🎯 MISSION BRIEFING (SECTIONED PROJECT WORKINGS REFERENCE)
+- The Mission Briefing is a **short, timeless reference of how the project works** split into sections, capped in total size. The mandatory first section is **\`description\`** (general purpose of the project and main features).
+- **STRICT ANTI-EPISODIC RULE**: NEVER log what happened in the current task, errors/failures encountered, test results, or episodic session summaries. Record ONLY enduring generic project workings (e.g., which files/modules handle which actions, endpoints, pipelines, or protocols), kept very short so context never bloats.
+- You may **add**, **edit**, or **delete** sections (never delete \`description\`):
+  - Add a new section:
+    <mission_briefing action="add" scope="global" section="short_slug" title="Concise Section Title">
+    Short factual workings (e.g., \`src/api/auth.ts\` serves \`/login\` and \`/token\`; \`src/db/pool.ts\` manages Postgres connections).
+    </mission_briefing>
+  - Edit an existing section (e.g. \`description\` or any section slug):
+    <mission_briefing action="edit" scope="global" section="description">
+    Updated concise general purpose and main features.
+    </mission_briefing>
+  - Delete an obsolete section:
+    <mission_briefing action="delete" scope="global" section="obsolete_slug" />
 
+${phasedAndInstrumentationProtocol}
+${phasedAndInstrumentationProtocol}
 ${mutationProtocol}
 ${context?.skills ? `\n### 📖 ACTIVE SKILLS\n${context.skills}\n` : ''}
 `;
@@ -190,6 +229,7 @@ You are an expert AI software engineer operating on an exported project snapshot
      - **What Was Done**: key accomplishments and logic implemented
      - **Verification & Edge Cases**: self-assessment of error handling and test compatibility
 
+${phasedAndInstrumentationProtocol}
 ${mutationProtocol}
 `;
             }
@@ -212,7 +252,7 @@ ${userPrefSection}
 
 ### 🛡️ STRICT CODER RULES:
 1. **NO COMMUNICATION WITH THE LIBRARIAN**:
-   - The Lead Librarian has already completed all scouting, context selection, planning, and final file verification BEFORE your turn.
+   - The Lead Librarian has already completed scouting and context preparation BEFORE your turn.
    - You have **NO ability to call, summon, or talk to the Librarian**.
    - You are **STRICTLY FORBIDDEN** from emitting \`<librarian>\`, \`<ask_librarian>\`, \`<consult_librarian>\`, or \`<librarian_off>\` tags under any circumstances.
 2. **NEVER REPEAT OR ECHO THE LIBRARIAN'S DIRECTIVE**:
@@ -220,13 +260,10 @@ ${userPrefSection}
    - Do NOT restate the findings, diagnostic, or plan. The user and system have already rendered it.
 3. **IMMEDIATE IMPLEMENTATION (CODE FIRST)**:
    - Proceed DIRECTLY to code implementation.
-   - Deliver the verified code modifications for the target files loaded under 'LOADED FILE CONTENTS' [C] adhering to the attached File Mutation Protocol.
-4. **LIBRARIAN FINAL CHECK COMPLETED — ZERO FILE ADDING**:
-   - The Lead Librarian has performed a comprehensive final check of all target files, dependencies, and interfaces.
-   - ALL files required for your task are ALREADY loaded into your active context with full source code under 'LOADED FILE CONTENTS' [C].
-   - You are **STRICTLY FORBIDDEN from using \`<add_files_to_context>\`, \`<unmute_files>\`, or \`<peek_files>\`**.
-   - Do NOT attempt to reload, re-add, or ask for files as if the Librarian had not done its job. The Librarian's file selection is complete, verified on disk, and locked.
-   - You must solve the objective and deliver the verified code modifications directly following the attached File Mutation Protocol in this exact response.
+   - Files may be loaded in full (\`[C]\`), or in **symbol-scoped mode** (\`mode="symbols"\`, containing the file structure plus the exact target symbol implementations). You can directly apply \`action="patch"\` or \`action="update_symbol"\` to any loaded symbol implementation!
+4. **MINIMAL GRANULAR CONTEXT RECOVERY (ONLY IF GENUINELY MISSING)**:
+   - Use the loaded files and symbols directly whenever sufficient.
+   - ONLY if a specific symbol or file needed for your edit is genuinely missing from context, do NOT complain in prose—request it minimally using \`<show_symbol target="path/to/file.ext:SymbolName" />\` (preferred) or \`<unmute_files>path/to/file.ext</unmute_files>\`.
 5. **SELF-ASSESSMENT & WHAT WAS DONE (AT THE END)**:
    - After emitting all code modifications, conclude with:
      ### 📋 Summary of Changes
@@ -237,12 +274,20 @@ ${userPrefSection}
 6. **FORBIDDEN TO WRITE TO FILES YOU DO NOT SEE**:
    - You may ONLY modify files loaded under 'LOADED FILE CONTENTS' [C] (or create brand-new files with action="write").
 
-### 🎯 MISSION BRIEFING & CROSS-SESSION MEMORY
-- Respect all rules and cross-session decisions listed under **MISSION BRIEFING & PROJECT-WIDE MEMORY**.
-- When you establish a durable architectural decision or critical pitfall that should persist across future sessions, emit a concise keyed update:
-<mission_briefing action="upsert" scope="global" category="decisions|pitfalls|architecture" id="short_unique_slug" title="Concise Title">
-Short, high-signal technical note referencing exact file paths.
-</mission_briefing>
+### 🎯 MISSION BRIEFING (SECTIONED PROJECT WORKINGS REFERENCE)
+- The Mission Briefing is a **short, timeless reference of how the project works** split into sections, capped in total size. The mandatory first section is **\`description\`** (general purpose of the project and main features).
+- **STRICT ANTI-EPISODIC RULE**: NEVER log what happened in the current task, errors/failures encountered, test results, or episodic session summaries. Record ONLY enduring generic project workings (e.g., which files/modules handle which actions, endpoints, pipelines, or protocols), kept very short so context never bloats.
+- You may **add**, **edit**, or **delete** sections (never delete \`description\`):
+  - Add a new section:
+    <mission_briefing action="add" scope="global" section="short_slug" title="Concise Section Title">
+    Short factual workings (e.g., \`src/api/auth.ts\` serves \`/login\` and \`/token\`; \`src/db/pool.ts\` manages Postgres connections).
+    </mission_briefing>
+  - Edit an existing section:
+    <mission_briefing action="edit" scope="global" section="description">
+    Updated concise general purpose and main features.
+    </mission_briefing>
+  - Delete an obsolete section:
+    <mission_briefing action="delete" scope="global" section="obsolete_slug" />
 
 ${mutationProtocol}
 ${context?.skills ? `\n### 📖 ACTIVE SKILLS\n${context.skills}\n` : ''}

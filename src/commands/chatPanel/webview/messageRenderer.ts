@@ -1,5 +1,5 @@
 import { dom, vscode, state } from './dom.js';
-import { isScrolledToBottom, collapseBlockWithScrollPreservation, parseAiderHunks, parseFileTagAttributes, isValidFilePath } from './utils.js';
+import { isScrolledToBottom, collapseBlockWithScrollPreservation, parseAiderHunks, parseFileTagAttributes, isValidFilePath, createFilePatternMatcher } from './utils.js';
 import { extractFileBlocks, normalizePseudoFileBlocks } from './plugins/fileOpPlugin.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -31,7 +31,7 @@ import { projectMemoryPlugin } from './plugins/projectMemoryPlugin.js';
 import { milestonePlugin } from './plugins/milestonePlugin.js';
 import { processingPlugin } from './plugins/processingPlugin.js';
 import { formPlugin, parseAndRenderFormContent } from './plugins/formPlugin.js';
-import { fileOpPlugin, fileMutationPlugin, unpackDirectoryPlugin, peekFilesPlugin, loadStructurePlugin, showSymbolPlugin } from './plugins/fileOpPlugin.js';
+import { fileOpPlugin, fileMutationPlugin, unpackDirectoryPlugin, peekFilesPlugin, loadStructurePlugin, showSymbolPlugin, runTestsPlugin, readExternalFilePlugin } from './plugins/fileOpPlugin.js';
 import { breakpointPlugin } from './plugins/breakpointPlugin.js';
 import { imageAssetPlugin } from './plugins/imageAssetPlugin.js';
 import { imageGenPlugin } from './plugins/imageGenPlugin.js';
@@ -44,6 +44,8 @@ import { thinkPlugin } from './plugins/thinkPlugin.js';
 import { librarianPlugin, librarianOffPlugin, multiStepsTaskPlugin, librarianDecisionPlugin, librarianPlanPlugin } from './plugins/librarianPlugin.js';
 import { loadKnowledgePlugin, updateKnowledgePlugin } from './plugins/knowledgePlugin.js';
 import { insightPlugin } from './plugins/insightPlugin.js';
+import { gitDiffPlugin } from './plugins/gitDiffPlugin.js';
+import { userInstructionPlugin } from './plugins/userInstructionPlugin.js';
 
 let pluginsInitialized = false;
 
@@ -65,6 +67,8 @@ export function ensurePluginsInitialized() {
         peekFilesPlugin,
         loadStructurePlugin,
         showSymbolPlugin,
+        runTestsPlugin,
+        readExternalFilePlugin,
         breakpointPlugin,
         imageAssetPlugin,
         imageGenPlugin,
@@ -78,7 +82,9 @@ export function ensurePluginsInitialized() {
         librarianPlugin,
         librarianOffPlugin,
         multiStepsTaskPlugin,
-        insightPlugin
+        insightPlugin,
+        gitDiffPlugin,
+        userInstructionPlugin
     ];
     allPlugins.forEach(p => {
         if (p) {
@@ -150,6 +156,22 @@ export function makeTreeInteractive(treeText: string): string {
     return outputLines.join('\n');
 }
 (window as any).makeTreeInteractive = makeTreeInteractive;
+
+export function areFilesMatching(pathA: string, pathB: string): boolean {
+    if (!pathA || !pathB) return false;
+    const cleanA = pathA.replace(/\\/g, '/').toLowerCase().trim().replace(/^\.?\/+/, '');
+    const cleanB = pathB.replace(/\\/g, '/').toLowerCase().trim().replace(/^\.?\/+/, '');
+    if (cleanA === cleanB) return true;
+    if (cleanA.includes('/') && !cleanB.includes('/')) {
+        const partsA = cleanA.split('/');
+        return partsA[partsA.length - 1] === cleanB && partsA.slice(1).join('/') === cleanB;
+    }
+    if (cleanB.includes('/') && !cleanA.includes('/')) {
+        const partsB = cleanB.split('/');
+        return partsB[partsB.length - 1] === cleanA && partsB.slice(1).join('/') === cleanA;
+    }
+    return false;
+}
 
 export function isProjectFile(filePathOrItem: any): boolean {
     const f = typeof filePathOrItem === 'string' ? filePathOrItem : (filePathOrItem?.path || '');
@@ -249,14 +271,21 @@ const SANITIZE_CONFIG = {
     ADD_ATTR: [
         'target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling', 
         'onclick', 'data-value', 'data-type', 'data-message-id', 'data-pid',
-        'data-files', 'data-block-id', 'data-action', 'data-id', 'data-title', 
+        'data-files', 'data-block-id', 'data-action', 'data-id', 'data-section', 'data-title', 
         'data-content', 'data-importance', 'data-mem-id', 'data-path', 'data-symbol',
         'data-block-index', 'data-raw-code', 'data-lang', 'data-hunk-index', 'data-idx', 'data-closed',
+        'data-base', 'data-label', 'data-branch', 'data-files-count', 'data-raw-instruction', 'data-title',
         'open', 'style'
     ],
     // IMPORTANT: Allow all classes for our custom UI blocks
     ADD_CLASSES: { 
         '*': [
+            'user-instruction-card', 'user-instruction-header', 'user-instruction-title-group',
+            'user-instruction-icon', 'user-instruction-headings', 'user-instruction-kicker',
+            'user-instruction-title', 'user-instruction-badges', 'user-instruction-badge',
+            'user-instruction-streaming', 'user-instruction-body', 'user-instruction-footer',
+            'user-instruction-hint', 'user-instruction-actions', 'copy-user-instruction-btn',
+            'report-user-instruction-btn',
             'expansion-request-block', 'context-expansion-block', 'expansion-header', 'expansion-body', 
             'expansion-file-list', 'expansion-file-item', 'code-action-btn', 'apply-btn', 
             'add-files-to-context-btn', 'add-and-reprompt-btn', 'copy-files-to-clipboard-btn',
@@ -1090,7 +1119,11 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
 // Safely expose startEdit globally after its complete definition
 (window as any).startEdit = startEdit;
 
+let _lastExtractPathsInput = '';
+let _lastExtractPathsOutput: any[] = [];
+
 function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean, start: number, end: number, fenceLength?: number })[] {
+    if (content === _lastExtractPathsInput) return _lastExtractPathsOutput;
     const fileBlocks = extractFileBlocks(content);
     const fileRanges = fileBlocks.map(b => ({ start: b.start, end: b.end }));
 
@@ -1275,6 +1308,8 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
         infos[infos.length - 1].end = currentOffset;
     }
 
+    _lastExtractPathsInput = content;
+    _lastExtractPathsOutput = infos;
     return infos;
 }
 
@@ -1352,7 +1387,7 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         if (
             !code ||
             pre.parentElement?.classList.contains('code-collapsible') ||
-            pre.closest('.skill-preview, .processing-block, .processing-body, .librarian-plan-card, .librarian-decision-card, .plan-scratchpad, .debug-report-card')
+            pre.closest('.skill-preview, .processing-block, .processing-body, .librarian-plan-card, .librarian-decision-card, .plan-scratchpad, .debug-report-card, .user-instruction-card')
         ) {
             return;
         }
@@ -1378,7 +1413,7 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         if (langMap[language.toLowerCase()]) language = langMap[language.toLowerCase()];
         code.className = `language-${language}`;
 
-        let codeText = code.innerText;
+        let codeText = code.textContent || '';
         if (!isDiff && (language === 'diff' || looksLikeDiff(codeText))) {
             isDiff = true;
             const headerMatch = codeText.match(/^(?:---|\+\+\+)\s+(?:[ab]\/)?([^\s\n\r]+)/m);
@@ -1836,7 +1871,11 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             const gutter = document.createElement('div');
             gutter.className = 'code-line-gutter';
             const lineCount = normalizedCodeText.split('\n').length;
-            gutter.innerHTML = Array.from({ length: lineCount }, (_, i) => i + 1).join('<br>');
+            let gutterHtml = '';
+            for (let li = 1; li <= lineCount; li++) {
+                gutterHtml += (li === 1 ? '' : '<br>') + li;
+            }
+            gutter.innerHTML = gutterHtml;
 
             pre.insertBefore(gutter, pre.firstChild);
 
@@ -1844,7 +1883,8 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             parent.replaceChild(details, pre);
             details.appendChild(pre);
 
-            if (!code.hasAttribute('data-prism-highlighted')) {
+            const blockClosed = info ? info.isClosed : true;
+            if (!code.hasAttribute('data-prism-highlighted') && (isFinal || blockClosed || lineCount <= 150)) {
                 Prism.highlightElement(code);
                 code.setAttribute('data-prism-highlighted', 'true');
             }
@@ -1991,33 +2031,30 @@ export function processThinkTags(content: string): { thoughts: ParsedThought[], 
 
 // --- STREAM THROTTLER & DEBOUNCED RENDERER ---
 const streamQueues = new Map<string, { buffer: string; lastRender: number }>();
-let animationFrameRequest: number | null = null;
+let streamFlushTimer: number | null = null;
 
 function flushStreamQueues() {
-    if (streamQueues.size === 0) {
-        if (animationFrameRequest !== null) {
-            cancelAnimationFrame(animationFrameRequest);
-            animationFrameRequest = null;
-        }
-        return;
-    }
+    streamFlushTimer = null;
+    if (streamQueues.size === 0) return;
 
     const now = Date.now();
-    let hasUpdates = false;
+    let nextDelay = Infinity;
 
     streamQueues.forEach((data, messageId) => {
-        if (now - data.lastRender >= 150) { // Throttled to 150ms to prevent browser thread freeze
+        const elapsed = now - data.lastRender;
+        if (elapsed >= 150) {
             renderMessageContent(messageId, data.buffer);
-            data.lastRender = now;
-            hasUpdates = true;
+            data.lastRender = Date.now();
+        } else {
+            nextDelay = Math.min(nextDelay, 150 - elapsed);
         }
     });
 
-    if (hasUpdates) {
-        triggerVirtualListRecalculation();
+    if (streamQueues.size > 0 && nextDelay !== Infinity) {
+        streamFlushTimer = window.setTimeout(() => {
+            requestAnimationFrame(flushStreamQueues);
+        }, Math.max(16, nextDelay));
     }
-
-    animationFrameRequest = requestAnimationFrame(flushStreamQueues);
 }
 
 export function scheduleRender(messageId: string) {
@@ -2030,8 +2067,10 @@ export function scheduleRender(messageId: string) {
         streamQueues.get(messageId)!.buffer = stream.buffer;
     }
 
-    if (animationFrameRequest === null) {
-        animationFrameRequest = requestAnimationFrame(flushStreamQueues);
+    if (streamFlushTimer === null) {
+        streamFlushTimer = window.setTimeout(() => {
+            requestAnimationFrame(flushStreamQueues);
+        }, 16);
     }
 }
 
@@ -2506,9 +2545,9 @@ interface MessageSegment {
 export function renderMessageContent(messageId: string, rawContent: any, isFinal: boolean = false) {
     if (isFinal) {
         streamQueues.delete(messageId);
-        if (streamQueues.size === 0 && animationFrameRequest !== null) {
-            cancelAnimationFrame(animationFrameRequest);
-            animationFrameRequest = null;
+        if (streamQueues.size === 0 && streamFlushTimer !== null) {
+            clearTimeout(streamFlushTimer);
+            streamFlushTimer = null;
         }
     }
 
@@ -2584,6 +2623,13 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     if (thoughtsZone) {
         thoughtsZone.innerHTML = "";
         thoughtsZone.style.display = "none";
+    }
+
+    // Short-circuit identical re-renders before running marked / DOMPurify
+    if (bodyZone &&
+        bodyZone.getAttribute('data-last-source-text') === sourceText &&
+        bodyZone.getAttribute('data-last-is-final') === String(isFinal)) {
+        return;
     }
 
     // 2. EXTRACT VALID LINE-START XML TAG PLUGINS (FIRST-CLASS MUTATIONS & WIDGETS)
@@ -3041,6 +3087,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         }
 
         bodyZone.setAttribute('data-last-rendered-html', sanitized);
+        bodyZone.setAttribute('data-last-source-text', sourceText);
+        bodyZone.setAttribute('data-last-is-final', String(isFinal));
 
         // Restore preserved open states for user-toggled details
         preservedOpenStates.forEach((isOpen, id) => {
@@ -3049,8 +3097,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         });
     }
 
-    // Secure Auto-render invocation for Math expressions in Chat Messages
-    if (typeof (window as any).renderMathInElement === 'function') {
+    // Secure Auto-render invocation for Math expressions (only when final and math delimiters exist)
+    if (isFinal &&
+        typeof (window as any).renderMathInElement === 'function' &&
+        (sourceText.includes('$') || sourceText.includes('\\(') || sourceText.includes('\\['))) {
         try {
             (window as any).renderMathInElement(contentDiv, {
                 delimiters: [
@@ -3067,7 +3117,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     }
 
     // Highlight only code blocks that have NOT yet been highlighted by Prism
-    contentDiv.querySelectorAll('.plan-scratchpad pre code:not([data-prism-highlighted]), .file-mutation-card pre code:not([data-prism-highlighted]), .code-collapsible pre code:not([data-prism-highlighted]), .processing-block pre code:not([data-prism-highlighted])').forEach(block => {
+    contentDiv.querySelectorAll('.plan-scratchpad pre code:not([data-prism-highlighted]), .file-mutation-card pre code:not([data-prism-highlighted]), .code-collapsible pre code:not([data-prism-highlighted]), .processing-block pre code:not([data-prism-highlighted]), .user-instruction-card pre code:not([data-prism-highlighted])').forEach(block => {
         Prism.highlightElement(block);
         block.setAttribute('data-prism-highlighted', 'true');
     });
@@ -3085,25 +3135,18 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         const toolsSlot = contentDiv.querySelector(`#tools-card-slot-${messageId}`) as HTMLElement;
         if (toolsSlot) {
             const realActions = getExecutableActionsForMessage(messageId);
-            const turnContextFiles: string[] = [];
-            contentDiv.querySelectorAll('.context-expansion-block').forEach((block: any) => {
-                try {
-                    const files = JSON.parse(block.dataset.files || '[]');
-                    if (Array.isArray(files)) {
-                        files.forEach((f: string) => {
-                            if (f && !turnContextFiles.includes(f)) turnContextFiles.push(f);
-                        });
-                    }
-                } catch {}
-            });
+            const copyableTypes = new Set(['add_context', 'unmute', 'show_symbol', 'load_structure', 'peek']);
+            const copyableActions = realActions.filter(a => copyableTypes.has(a.type));
 
             const hasExecutableTools = realActions.length > 0;
-            const hasTurnFiles = turnContextFiles.length > 0;
+            const hasCopyableActions = copyableActions.length > 0;
 
-            if (hasExecutableTools || hasTurnFiles) {
-                const encodedTurnFiles = encodeURIComponent(JSON.stringify(turnContextFiles));
+            if (hasExecutableTools || hasCopyableActions) {
                 const toolCountText = realActions.length === 1 ? '1 tool' : `${realActions.length} tools`;
                 const execBtnText = realActions.length === 1 ? 'Execute Tool' : `Execute All Tools (${realActions.length})`;
+                const copyBtnText = copyableActions.length > 1
+                    ? `Copy All (${copyableActions.length})`
+                    : `Copy Content`;
 
                 toolsSlot.innerHTML = DOMPurify.sanitize(`
                 <div class="tools-execution-card" id="tools-card-${messageId}" style="margin-top: 16px; padding: 12px 14px; background: rgba(155, 89, 182, 0.08); border: 1.5px solid var(--vscode-charts-purple, #9b59b6); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
@@ -3121,9 +3164,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         <button class="code-action-btn apply-btn execute-all-actions-btn" id="execute-all-actions-${messageId}" style="flex:1; min-width:200px; height:34px; font-weight:bold; justify-content:center; background:var(--vscode-charts-purple, #9b59b6) !important; color:white !important;">
                             <span class="codicon codicon-play"></span> ${execBtnText}
                         </button>` : ''}
-                        ${hasTurnFiles ? `
-                        <button class="code-action-btn secondary-btn copy-all-turn-context-btn" id="copy-all-turn-context-${messageId}" data-files="${encodedTurnFiles}" style="height:34px; font-weight:bold; justify-content:center; padding:0 14px; border:1px solid var(--vscode-charts-blue); color:var(--vscode-textLink-foreground); display:inline-flex; align-items:center; gap:6px;" title="Copy the content of all files requested in this turn to clipboard">
-                            <i class="codicon codicon-copy"></i> Copy Files (${turnContextFiles.length})
+                        ${hasCopyableActions ? `
+                        <button class="code-action-btn secondary-btn copy-all-actions-btn" id="copy-all-actions-${messageId}" style="height:34px; font-weight:bold; justify-content:center; padding:0 14px; border:1px solid var(--vscode-charts-blue); color:var(--vscode-textLink-foreground); display:inline-flex; align-items:center; gap:6px;" title="Copy all requested files, unmuted files, symbols, structures, and peeks to clipboard">
+                            <i class="codicon codicon-copy"></i> ${copyBtnText}
                         </button>` : ''}
                         <div class="tools-progress-container" id="tools-progress-container-${messageId}" style="width:100%; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden; display:none;">
                             <div class="tools-progress-bar" id="tools-progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-purple, #9b59b6); transition: width 0.3s ease;"></div>
@@ -3173,39 +3216,26 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     };
                 }
 
-                const copyAllBtn = toolsSlot.querySelector(`#copy-all-turn-context-${messageId}`) as HTMLButtonElement;
+                const copyAllBtn = toolsSlot.querySelector(`#copy-all-actions-${messageId}`) as HTMLButtonElement;
                 if (copyAllBtn) {
-                    copyAllBtn.onclick = () => {
-                        const allFiles: string[] = [];
-                        contentDiv.querySelectorAll('.context-expansion-block').forEach((block: any) => {
-                            try {
-                                const files = JSON.parse(block.dataset.files || '[]');
-                                if (Array.isArray(files)) {
-                                    files.forEach((f: string) => {
-                                        if (f && !allFiles.includes(f)) allFiles.push(f);
-                                    });
-                                }
-                            } catch {}
-                        });
+                    copyAllBtn.onclick = (e: MouseEvent) => {
+                        e.stopPropagation();
+                        const actionsToCopy = getExecutableActionsForMessage(messageId)
+                            .filter(a => copyableTypes.has(a.type));
 
-                        if (allFiles.length === 0 && copyAllBtn.dataset.files) {
-                            try {
-                                const fallback = JSON.parse(decodeURIComponent(copyAllBtn.dataset.files));
-                                if (Array.isArray(fallback)) {
-                                    fallback.forEach(f => { if (f && !allFiles.includes(f)) allFiles.push(f); });
-                                }
-                            } catch {}
-                        }
-
-                        if (allFiles.length > 0) {
+                        if (actionsToCopy.length > 0) {
                             vscode.postMessage({
-                                command: 'copyFilesToClipboard',
-                                files: allFiles
+                                command: 'copyAllMessageActions',
+                                actions: actionsToCopy.map(a => ({
+                                    type: a.type,
+                                    name: a.name,
+                                    payload: a.payload
+                                }))
                             });
 
                             const origHtml = copyAllBtn.innerHTML;
                             copyAllBtn.classList.add('success');
-                            copyAllBtn.innerHTML = `<i class="codicon codicon-check"></i> Copied ${allFiles.length} File${allFiles.length > 1 ? 's' : ''}!`;
+                            copyAllBtn.innerHTML = `<i class="codicon codicon-check"></i> Copied (${actionsToCopy.length})!`;
                             setTimeout(() => {
                                 copyAllBtn.classList.remove('success');
                                 copyAllBtn.innerHTML = origHtml;
@@ -3296,7 +3326,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 export interface ExecutableActionItem {
     id: string;
     index: number;
-    type: 'tool' | 'peek' | 'add_context' | 'unmute' | 'load_structure' | 'show_symbol';
+    type: 'tool' | 'peek' | 'add_context' | 'unmute' | 'load_structure' | 'show_symbol' | 'run_tests' | 'read_external_file';
     name: string;
     label: string;
     detail: string;
@@ -3501,6 +3531,53 @@ export function getExecutableActionsForMessage(messageId: string): ExecutableAct
                     symbol: symbol || (symbolsList.length === 1 ? symbolsList[0] : undefined),
                     symbols: symbolsList.length > 0 ? symbolsList : undefined
                 },
+                isExecuted: !!isDone
+            });
+        } catch {}
+    });
+
+    // 7. Run Tests (<run_tests>)
+    contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="run_tests"]').forEach((card: any) => {
+        try {
+            const payload = JSON.parse(decodeURIComponent(card.dataset.payload || '{}'));
+            const targets = Array.isArray(payload.targets) ? payload.targets : [];
+            const btn = card.querySelector('.run-tests-reprompt-btn, .run-tests-local-btn');
+            const isDone = card.classList.contains('status-completed') || btn?.classList.contains('applied');
+
+            actions.push({
+                id: `run-tests-${messageId}-${actionIndex}`,
+                index: actionIndex++,
+                type: 'run_tests',
+                name: 'run_tests',
+                label: `Run Tests (${targets.join(', ')})`,
+                detail: `${payload.runner || 'auto'}: ${targets.join(', ')}`,
+                icon: 'codicon-beaker',
+                color: 'var(--vscode-charts-green)',
+                blockId: card.id,
+                payload,
+                isExecuted: !!isDone
+            });
+        } catch {}
+    });
+
+    // 8. Read External File (<read_external_file>)
+    contentDiv.querySelectorAll('.assistant-executable-card[data-action-type="read_external_file"]').forEach((card: any) => {
+        try {
+            const payload = JSON.parse(decodeURIComponent(card.dataset.payload || '{}'));
+            const btn = card.querySelector('.read-ext-reprompt-btn, .read-ext-local-btn');
+            const isDone = card.classList.contains('status-completed') || btn?.classList.contains('applied');
+
+            actions.push({
+                id: `read-ext-${messageId}-${actionIndex}`,
+                index: actionIndex++,
+                type: 'read_external_file',
+                name: 'read_external_file',
+                label: `Read External (${payload.path || 'list'})`,
+                detail: payload.path || 'List linked external files',
+                icon: 'codicon-link',
+                color: 'var(--vscode-charts-teal, #00b4d8)',
+                blockId: card.id,
+                payload,
                 isExecuted: !!isDone
             });
         } catch {}
@@ -3866,6 +3943,7 @@ function sanitizeForTTS(text: string): string {
     if (typeof text !== 'string') return "";
     // 0. Remove agent round fences entirely — rounds are UI chrome, not speech
     let clean = text.replace(/<agent_round\b[^>]*>([\s\S]*?)<\/agent_round>/gi, (_m, inner) => ' ');
+    clean = clean.replace(/<\/?user_instruction\b[^>]*>/gi, ' ');
     // 1. Remove triple backtick code blocks entirely
     clean = clean.replace(/```[\s\S]*?```/g, ' [code block] ');
     // 2. Remove inline code backticks
@@ -3876,7 +3954,7 @@ function sanitizeForTTS(text: string): string {
     return clean.replace(/\s+/g, ' ').trim();
 }
 
-export function addMessage(message: any, isFinal: boolean = true) {
+export function addMessage(message: any, isFinal: boolean = true, options?: { skipScroll?: boolean }) {
     if (dom.welcomeMessage) {
         dom.welcomeMessage.style.display = 'none';
     }
@@ -3900,6 +3978,8 @@ export function addMessage(message: any, isFinal: boolean = true) {
 
     if (message.role === 'system' && content.startsWith('Attached file:')) {
         addAttachment(message);
+    } else if (options?.skipScroll) {
+        addChatMessage(message, isFinal, isPurelyTechnical);
     } else {
         // Prevent layout shifts during appending: batch scroll metrics
         const wasAtBottom = dom.messagesDiv && (dom.messagesDiv.scrollHeight - dom.messagesDiv.scrollTop - dom.messagesDiv.clientHeight < 40);
@@ -4153,7 +4233,8 @@ export class ContextPresenter {
         allowSummarize: boolean = false,
         fileTokensMap: Record<string, number> = {},
         sortOrder: 'heavy-to-light' | 'light-to-heavy' | 'name' | 'modified' | 'tree' | 'visible-first' | 'muted-first' = 'heavy-to-light',
-        mutedFiles: string[] = []
+        mutedFiles: string[] = [],
+        options?: { isInlineBulkMode?: boolean }
     ): string {
         if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
 
@@ -4161,11 +4242,7 @@ export class ContextPresenter {
         const mtimeMap = (state as any).fileMtimeMap || {};
 
         const isPathMuted = (p: string) => {
-            const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
-            return mutedFiles.some((m: string) => {
-                const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
-                return cleanM === cleanP || cleanP.endsWith('/' + cleanM) || cleanM.endsWith('/' + cleanP);
-            });
+            return mutedFiles.some((m: string) => areFilesMatching(m, p));
         };
 
         // Normalize list items to objects with byte sizes, mtime, and approximate token conversions
@@ -4213,7 +4290,7 @@ export class ContextPresenter {
             return { path: rawPath, fileName, dirName, bytes, tokens, mtime, state: fileState, isMuted };
         });
 
-        const showCheckbox = !!(state as any).isInlineBulkMode;
+        const showCheckbox = options?.isInlineBulkMode !== undefined ? options.isInlineBulkMode : !!(state as any).isInlineBulkMode;
 
         const renderFileItemRow = (item: typeof normalized[0], isTree: boolean = false): string => {
             const f = item.path;
@@ -4450,6 +4527,85 @@ export class ContextPresenter {
                 `;}).join('')}
                </div>`
             : '<div class="empty-context-msg">No specialized skills currently active.</div>';
+    }
+
+    public static renderFilesPanelHtml(opts: {
+        idPrefix: 'hud' | 'wizard';
+        filesCount: number;
+        filesHtml: string;
+        sortOrder: string;
+        isInlineBulkMode: boolean;
+        filterQuery: string;
+        showLibrarianBtn: boolean;
+    }): string {
+        const isHud = opts.idPrefix === 'hud';
+        const presetId = isHud ? 'hud-visibility-preset-select' : 'wizard-visibility-preset-select';
+        const govBtnId = isHud ? 'governor-filter-btn' : 'wizard-panel-governor-btn';
+        const sortSelectId = isHud ? 'sort-files-select' : 'wizard-sort-files-select';
+        const sortBtnId = isHud ? 'sort-files-btn' : 'wizard-sort-files-btn';
+        const toggleBulkId = isHud ? 'toggle-inline-bulk-btn' : 'wizard-toggle-inline-bulk-btn';
+        const bulkToolbarId = isHud ? 'inline-bulk-toolbar' : 'wizard-inline-bulk-toolbar';
+        const bulkSelectAllId = isHud ? 'inline-bulk-select-all' : 'wizard-inline-bulk-select-all';
+        const bulkCountId = isHud ? 'inline-bulk-count' : 'wizard-inline-bulk-count';
+        const bulkMuteId = isHud ? 'inline-bulk-mute-btn' : 'wizard-inline-bulk-mute-btn';
+        const bulkUnmuteId = isHud ? 'inline-bulk-unmute-btn' : 'wizard-inline-bulk-unmute-btn';
+        const bulkStructId = isHud ? 'inline-bulk-structure-btn' : 'wizard-inline-bulk-structure-btn';
+        const bulkRemoveId = isHud ? 'inline-bulk-remove-btn' : 'wizard-inline-bulk-remove-btn';
+        const searchInpId = isHud ? 'hud-files-search-input' : 'wizard-files-search-input';
+        const searchClearId = isHud ? 'hud-files-search-clear' : 'wizard-files-search-clear';
+        const listClass = isHud ? 'hud-project-files-list' : 'wizard-project-files-list';
+        const sortOrder = opts.sortOrder || 'heavy-to-light';
+        const sortIconClass = sortOrder === 'tree' ? 'codicon-folder-opened'
+            : (sortOrder === 'visible-first' ? 'codicon-eye'
+            : (sortOrder === 'muted-first' ? 'codicon-eye-closed'
+            : (sortOrder === 'modified' ? 'codicon-history'
+            : (sortOrder === 'name' ? 'codicon-sort-alphabetically' : 'codicon-graph-line'))));
+
+        return `
+            <div class="fp-panel-root" data-panel-prefix="${opts.idPrefix}">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 8px;">
+                    <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
+                        <select id="${presetId}" class="section-bulk-btn fp-preset-select" style="height:20px; font-size:10px; padding: 0 4px; max-width: 130px; cursor: pointer;" title="Quick switch visibility profile / preset">
+                            <option value="">📁 Preset...</option>
+                        </select>
+                        ${opts.showLibrarianBtn ? `<button type="button" id="${govBtnId}" class="section-bulk-btn fp-governor-btn" title="Librarian: Scout codebase & optimize files with AI based on prompt"><span class="codicon codicon-library"></span> Librarian</button>` : ''}
+                        <select id="${sortSelectId}" class="section-bulk-btn fp-sort-select" style="height:20px; font-size:10px; padding: 0 4px; cursor: pointer; max-width: 140px;" title="Organize & Sort Files">
+                            <option value="tree" ${sortOrder === 'tree' ? 'selected' : ''}>🌳 Folder (Tree)</option>
+                            <option value="visible-first" ${sortOrder === 'visible-first' ? 'selected' : ''}>👁️ Visible First</option>
+                            <option value="muted-first" ${sortOrder === 'muted-first' ? 'selected' : ''}>🙈 Muted First</option>
+                            <option value="heavy-to-light" ${sortOrder === 'heavy-to-light' ? 'selected' : ''}>📊 Size (Heavy → Light)</option>
+                            <option value="light-to-heavy" ${sortOrder === 'light-to-heavy' ? 'selected' : ''}>📊 Size (Light → Heavy)</option>
+                            <option value="name" ${sortOrder === 'name' ? 'selected' : ''}>🔤 Name (A-Z)</option>
+                            <option value="modified" ${sortOrder === 'modified' ? 'selected' : ''}>🕒 Last Modified</option>
+                        </select>
+                        <button type="button" id="${sortBtnId}" class="section-bulk-btn fp-sort-cycle-btn" title="Cycle Organization Mode" style="padding: 2px 5px;">
+                            <span class="codicon ${sortIconClass}"></span>
+                        </button>
+                        ${opts.filesCount > 0 ? `<button type="button" id="${toggleBulkId}" class="section-bulk-btn fp-toggle-bulk-btn ${opts.isInlineBulkMode ? 'active' : ''}" style="${opts.isInlineBulkMode ? 'background: var(--vscode-button-background); color: var(--vscode-button-foreground); font-weight: bold;' : ''}" title="Toggle bulk selection checkboxes in file list"><span class="codicon codicon-checklist"></span> Select</button>` : ''}
+                    </div>
+                </div>
+                ${opts.isInlineBulkMode ? `
+                <div id="${bulkToolbarId}" class="fp-bulk-toolbar" style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; margin-bottom: 6px; background: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-radius: 4px; gap: 6px; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <input type="checkbox" id="${bulkSelectAllId}" class="fp-bulk-select-all" title="Select / Deselect All Files" style="margin: 0; cursor: pointer;">
+                        <label for="${bulkSelectAllId}" style="font-size: 10px; font-weight: 700; cursor: pointer; user-select: none;">All</label>
+                        <span id="${bulkCountId}" class="fp-bulk-count" style="font-size: 9.5px; opacity: 0.7;">(0 selected)</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <button type="button" id="${bulkMuteId}" class="code-action-btn secondary-btn fp-bulk-mute-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Mute selected files (reduce content tokens to 0)"><i class="codicon codicon-eye-closed"></i> Mute</button>
+                        <button type="button" id="${bulkUnmuteId}" class="code-action-btn secondary-btn fp-bulk-unmute-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Reveal / Unmute selected files (full content)"><i class="codicon codicon-eye"></i> Unmute</button>
+                        <button type="button" id="${bulkStructId}" class="code-action-btn secondary-btn fp-bulk-structure-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px; color: var(--vscode-charts-blue); border-color: rgba(0, 122, 204, 0.4);" title="Half-mute selected: Structure / Definitions only (save tokens)"><i class="codicon codicon-symbol-class"></i> Structure</button>
+                        <button type="button" id="${bulkRemoveId}" class="code-action-btn delete-btn fp-bulk-remove-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Remove selected files from context"><i class="codicon codicon-trash"></i> Remove</button>
+                    </div>
+                </div>` : ''}
+                <div class="hud-files-search-bar" style="display: flex; align-items: center; gap: 6px; margin: 0 0 8px 0; padding: 2px 8px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px;" title="Supports substrings, wildcards (*, **, ?, {a,b}), exclusions (!pattern or -pattern), OR (| or ,), and /regex/">
+                    <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.6;"></i>
+                    <input type="text" id="${searchInpId}" class="fp-search-input" placeholder="Filter files (e.g. *.ts, src/**, !test, /regex/)..." title="Supports wildcards (*, **, ?, {a,b}), exclusions (! or -), OR (| or ,), and /regex/" value="${opts.filterQuery || ''}" style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); flex: 1; height: 22px; padding: 0;">
+                    <button type="button" id="${searchClearId}" class="icon-btn fp-search-clear" title="Clear filter" style="padding: 0; width: 18px; height: 18px; display: ${opts.filterQuery ? 'inline-flex' : 'none'};"><i class="codicon codicon-close" style="font-size: 11px;"></i></button>
+                </div>
+                <div class="${listClass} fp-files-list">${opts.filesHtml}</div>
+            </div>
+        `;
     }
 
     public static getDashboardHtml(
@@ -4723,47 +4879,15 @@ export class ContextPresenter {
                             </div>
                         </summary>
                         <div class="collapsible-content hud-files-container" style="padding-top: 8px;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 8px;">
-                                <div style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
-                                    <select id="hud-visibility-preset-select" class="section-bulk-btn" style="height:20px; font-size:10px; padding: 0 4px; max-width: 130px; cursor: pointer;" title="Quick switch visibility profile / preset">
-                                        <option value="">📁 Preset...</option>
-                                    </select>
-                                    ${(!isAgentActive && finalProjectFilesCount > 0) ? `<button id="governor-filter-btn" class="section-bulk-btn" title="Librarian: Scout codebase & optimize files with AI based on prompt"><span class="codicon codicon-library"></span> Librarian</button>` : ''}
-                                    <select id="sort-files-select" class="section-bulk-btn" style="height:20px; font-size:10px; padding: 0 4px; cursor: pointer; max-width: 140px;" title="Organize & Sort Files">
-                                        <option value="tree" ${state.fileSortOrder === 'tree' ? 'selected' : ''}>🌳 Folder (Tree)</option>
-                                        <option value="visible-first" ${state.fileSortOrder === 'visible-first' ? 'selected' : ''}>👁️ Visible First</option>
-                                        <option value="muted-first" ${state.fileSortOrder === 'muted-first' ? 'selected' : ''}>🙈 Muted First</option>
-                                        <option value="heavy-to-light" ${state.fileSortOrder === 'heavy-to-light' ? 'selected' : ''}>📊 Size (Heavy → Light)</option>
-                                        <option value="light-to-heavy" ${state.fileSortOrder === 'light-to-heavy' ? 'selected' : ''}>📊 Size (Light → Heavy)</option>
-                                        <option value="name" ${state.fileSortOrder === 'name' ? 'selected' : ''}>🔤 Name (A-Z)</option>
-                                        <option value="modified" ${state.fileSortOrder === 'modified' ? 'selected' : ''}>🕒 Last Modified</option>
-                                    </select>
-                                    <button id="sort-files-btn" class="section-bulk-btn" title="Cycle Organization Mode" style="padding: 2px 5px;">
-                                        <span class="codicon ${state.fileSortOrder === 'tree' ? 'codicon-folder-opened' : (state.fileSortOrder === 'visible-first' ? 'codicon-eye' : (state.fileSortOrder === 'muted-first' ? 'codicon-eye-closed' : (state.fileSortOrder === 'modified' ? 'codicon-history' : (state.fileSortOrder === 'name' ? 'codicon-sort-alphabetically' : 'codicon-graph-line'))))}"></span>
-                                    </button>
-                                    ${finalProjectFilesCount > 0 ? `<button id="toggle-inline-bulk-btn" class="section-bulk-btn ${(state as any).isInlineBulkMode ? 'active' : ''}" style="${(state as any).isInlineBulkMode ? 'background: var(--vscode-button-background); color: var(--vscode-button-foreground); font-weight: bold;' : ''}" title="Toggle bulk selection checkboxes in file list"><span class="codicon codicon-checklist"></span> Select</button>` : ''}
-                                </div>
-                            </div>
-                            ${(state as any).isInlineBulkMode ? `
-                            <div id="inline-bulk-toolbar" style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; margin-bottom: 6px; background: var(--vscode-editor-inactiveSelectionBackground); border: 1px solid var(--vscode-widget-border); border-radius: 4px; gap: 6px; flex-wrap: wrap;">
-                                <div style="display: flex; align-items: center; gap: 6px;">
-                                    <input type="checkbox" id="inline-bulk-select-all" title="Select / Deselect All Files" style="margin: 0; cursor: pointer;">
-                                    <label for="inline-bulk-select-all" style="font-size: 10px; font-weight: 700; cursor: pointer; user-select: none;">All</label>
-                                    <span id="inline-bulk-count" style="font-size: 9.5px; opacity: 0.7;">(0 selected)</span>
-                                </div>
-                                <div style="display: flex; align-items: center; gap: 4px;">
-                                    <button id="inline-bulk-mute-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Mute selected files (reduce content tokens to 0)"><i class="codicon codicon-eye-closed"></i> Mute</button>
-                                    <button id="inline-bulk-unmute-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Reveal / Unmute selected files (full content)"><i class="codicon codicon-eye"></i> Unmute</button>
-                                    <button id="inline-bulk-structure-btn" class="code-action-btn secondary-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px; color: var(--vscode-charts-blue); border-color: rgba(0, 122, 204, 0.4);" title="Half-mute selected: Structure / Definitions only (save tokens)"><i class="codicon codicon-symbol-class"></i> Structure</button>
-                                    <button id="inline-bulk-remove-btn" class="code-action-btn delete-btn" style="height: 20px; font-size: 9.5px; padding: 0 6px;" title="Remove selected files from context"><i class="codicon codicon-trash"></i> Remove</button>
-                                </div>
-                            </div>` : ''}
-                            <div class="hud-files-search-bar" style="display: flex; align-items: center; gap: 6px; margin: 0 0 8px 0; padding: 2px 8px; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 4px;">
-                                <i class="codicon codicon-search" style="font-size: 11px; opacity: 0.6;"></i>
-                                <input type="text" id="hud-files-search-input" placeholder="Filter context files by name or path..." value="${(state as any).hudFileFilterQuery || ''}" style="background: transparent; border: none; outline: none; font-size: 11px; color: var(--vscode-input-foreground); flex: 1; height: 22px; padding: 0;">
-                                <button id="hud-files-search-clear" class="icon-btn" title="Clear filter" style="padding: 0; width: 18px; height: 18px; display: ${(state as any).hudFileFilterQuery ? 'inline-flex' : 'none'};"><i class="codicon codicon-close" style="font-size: 11px;"></i></button>
-                            </div>
-                            <div class="hud-project-files-list">${projectFilesHtml}</div>
+                            ${ContextPresenter.renderFilesPanelHtml({
+                                idPrefix: 'hud',
+                                filesCount: finalProjectFilesCount,
+                                filesHtml: projectFilesHtml,
+                                sortOrder: state.fileSortOrder || 'heavy-to-light',
+                                isInlineBulkMode: !!(state as any).isInlineBulkMode,
+                                filterQuery: (state as any).hudFileFilterQuery || '',
+                                showLibrarianBtn: !isAgentActive && finalProjectFilesCount > 0
+                            })}
                         </div>
                     </details>
 
@@ -4985,6 +5109,465 @@ export class ContextBinder {
                 menu.classList.add('visible');
             }
         };
+    }
+
+    public static bindFilesPanel(
+        container: HTMLElement,
+        callbacks: {
+            filterQuery: string;
+            sortOrder: string;
+            getMutedFiles: () => string[];
+            onFilterChange: (query: string) => void;
+            onSortChange: (newOrder: string) => void;
+            onToggleInlineBulk: () => void;
+            onApplyPreset: (presetName: string) => void;
+            onOpenLibrarian?: () => void;
+            onToggleMuteFile: (filePath: string, isMutingNow: boolean) => void;
+            onBulkMuteFolder: (paths: string[], isUnmuting: boolean) => void;
+            onBulkMute: (paths: string[]) => void;
+            onBulkUnmute: (paths: string[]) => void;
+            onBulkStructure: (paths: string[]) => void;
+            onBulkRemove: (paths: string[]) => void;
+            onRemoveSingle: (filePath: string, rowEl: HTMLElement | null) => void;
+            onToggleStructure: (filePath: string, targetState: string) => void;
+        }
+    ) {
+        container.querySelectorAll('.collapse-folder-children-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const folderDetails = btn.closest('.context-tree-folder');
+                if (!folderDetails) return;
+                const childFolderDetails = folderDetails.querySelectorAll('.context-tree-folder-body .context-tree-folder');
+                if (childFolderDetails.length === 0) return;
+
+                const anyOpen = Array.from(childFolderDetails).some((d: any) => d.open);
+                childFolderDetails.forEach((d: any) => { d.open = !anyOpen; });
+
+                const icon = btn.querySelector('.codicon');
+                if (icon) icon.className = `codicon ${anyOpen ? 'codicon-expand-all' : 'codicon-collapse-all'}`;
+                (btn as HTMLElement).title = anyOpen
+                    ? `Expand all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`
+                    : `Collapse all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`;
+            });
+        });
+
+        const searchInp = container.querySelector('.fp-search-input') as HTMLInputElement;
+        const searchClear = container.querySelector('.fp-search-clear') as HTMLElement;
+        let refreshBulkCheckStatus: (() => void) | undefined;
+
+        const applyFilesFilter = (query: string) => {
+            callbacks.onFilterChange(query);
+            const trimmedQ = query.trim();
+            if (searchClear) searchClear.style.display = trimmedQ ? 'inline-flex' : 'none';
+
+            const matcher = createFilePatternMatcher(trimmedQ);
+            const projectList = container.querySelector('.fp-files-list') || container;
+            const fileItems = projectList.querySelectorAll('.context-item[data-path]');
+            fileItems.forEach((item: any) => {
+                const p = item.dataset.path || '';
+                const name = item.querySelector('.path-text')?.textContent || '';
+                const matches = !trimmedQ || matcher(p, name);
+                item.style.display = matches ? '' : 'none';
+            });
+
+            const folders = projectList.querySelectorAll('.context-tree-folder');
+            Array.from(folders).reverse().forEach((folder: any) => {
+                const visibleFiles = folder.querySelectorAll('.context-item[data-path]:not([style*="display: none"])');
+                if (!trimmedQ) {
+                    folder.style.display = '';
+                } else if (visibleFiles.length > 0) {
+                    folder.style.display = '';
+                    folder.open = true;
+                } else {
+                    folder.style.display = 'none';
+                }
+            });
+
+            if (refreshBulkCheckStatus) refreshBulkCheckStatus();
+        };
+
+        if (searchInp) {
+            searchInp.oninput = () => applyFilesFilter(searchInp.value);
+            searchInp.onkeydown = (e) => {
+                if (e.key === 'Escape') {
+                    searchInp.value = '';
+                    applyFilesFilter('');
+                    searchInp.blur();
+                }
+            };
+        }
+
+        if (searchClear) {
+            searchClear.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (searchInp) searchInp.value = '';
+                applyFilesFilter('');
+            };
+        }
+
+        if (callbacks.filterQuery) {
+            applyFilesFilter(callbacks.filterQuery);
+        }
+
+        container.querySelectorAll('.file-row-main').forEach(row => {
+            row.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const p = (row as HTMLElement).dataset.path || (row.closest('.context-item') as HTMLElement)?.dataset.path;
+                if (p) vscode.postMessage({ command: 'openFile', path: p });
+            });
+        });
+
+        container.querySelectorAll('.edit-file-structure-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const p = (btn as HTMLElement).dataset.path;
+                if (p) import('./ui.js').then(ui => ui.openStructureEditorModal(p));
+            });
+        });
+
+        container.querySelectorAll('.toggle-structure-file-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const btnEl = btn as HTMLElement;
+                const p = btnEl.dataset.path;
+                const targetState = btnEl.dataset.state || 'definitions-only';
+                if (!p) return;
+
+                const isNowDefOnly = targetState === 'definitions-only';
+                btnEl.classList.toggle('is-active', isNowDefOnly);
+                btnEl.dataset.state = isNowDefOnly ? 'included' : 'definitions-only';
+                btnEl.style.color = isNowDefOnly ? 'var(--vscode-charts-blue)' : 'var(--vscode-foreground)';
+                btnEl.style.opacity = isNowDefOnly ? '1' : '0.6';
+                btnEl.title = isNowDefOnly
+                    ? 'Currently in Structure Only mode (Click to load full content)'
+                    : 'Half-Mute: Include Structure / Definitions Only (save tokens)';
+
+                const row = btnEl.closest('.context-item');
+                if (row) {
+                    row.classList.toggle('file-def-only', isNowDefOnly);
+                    const badge = row.querySelector('.file-token-badge:not(.file-mtime-badge)') as HTMLElement;
+                    if (badge) {
+                        if (isNowDefOnly) {
+                            badge.className = 'file-token-badge weight-medium';
+                            badge.style.borderColor = 'var(--vscode-charts-blue)';
+                            badge.style.color = 'var(--vscode-charts-blue)';
+                            if (!badge.textContent?.includes('[STRUCTURE]')) {
+                                badge.textContent = `[STRUCTURE] ${badge.textContent}`;
+                            }
+                        } else {
+                            badge.style.borderColor = '';
+                            badge.style.color = '';
+                            badge.textContent = badge.textContent?.replace(/\[STRUCTURE\]\s*/g, '') || '';
+                        }
+                    }
+                }
+                callbacks.onToggleStructure(p, targetState);
+            });
+        });
+
+        const toggleBulkBtn = container.querySelector('.fp-toggle-bulk-btn') as HTMLElement;
+        if (toggleBulkBtn) {
+            toggleBulkBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                callbacks.onToggleInlineBulk();
+            };
+        }
+
+        const inlineBulkToolbar = container.querySelector('.fp-bulk-toolbar');
+        if (inlineBulkToolbar) {
+            const masterCheck = inlineBulkToolbar.querySelector('.fp-bulk-select-all') as HTMLInputElement;
+            const countLabel = inlineBulkToolbar.querySelector('.fp-bulk-count') as HTMLElement;
+            const muteBtn = inlineBulkToolbar.querySelector('.fp-bulk-mute-btn') as HTMLElement;
+            const unmuteBtn = inlineBulkToolbar.querySelector('.fp-bulk-unmute-btn') as HTMLElement;
+            const structBtn = inlineBulkToolbar.querySelector('.fp-bulk-structure-btn') as HTMLElement;
+            const removeBtn = inlineBulkToolbar.querySelector('.fp-bulk-remove-btn') as HTMLElement;
+
+            const isFileCheckVisible = (cb: HTMLElement): boolean => {
+                const item = cb.closest('.context-item') as HTMLElement;
+                if (!item || item.style.display === 'none') return false;
+                const folder = item.closest('.context-tree-folder') as HTMLElement;
+                if (folder && folder.style.display === 'none') return false;
+                return true;
+            };
+
+            const getTargetFileChecks = (): HTMLInputElement[] => {
+                const allChecks = Array.from(container.querySelectorAll('.inline-file-check')) as HTMLInputElement[];
+                const hasSearchFilter = !!(searchInp?.value.trim());
+                return hasSearchFilter ? allChecks.filter(isFileCheckVisible) : allChecks;
+            };
+
+            const updateCheckedCount = () => {
+                const targetChecks = getTargetFileChecks();
+                const checked = targetChecks.filter(cb => cb.checked);
+                if (countLabel) countLabel.textContent = `(${checked.length} selected)`;
+                if (masterCheck) {
+                    masterCheck.checked = targetChecks.length > 0 && checked.length === targetChecks.length;
+                    masterCheck.indeterminate = checked.length > 0 && checked.length < targetChecks.length;
+                }
+            };
+
+            refreshBulkCheckStatus = updateCheckedCount;
+
+            if (masterCheck) {
+                masterCheck.onchange = () => {
+                    const checked = masterCheck.checked;
+                    getTargetFileChecks().forEach(cb => { cb.checked = checked; });
+                    container.querySelectorAll('.inline-folder-check').forEach((fcb: any) => {
+                        const folder = fcb.closest('.context-tree-folder') as HTMLElement;
+                        if (folder && folder.style.display !== 'none') {
+                            const childChecks = (Array.from(folder.querySelectorAll('.inline-file-check')) as HTMLInputElement[]).filter(isFileCheckVisible);
+                            if (childChecks.length > 0) {
+                                fcb.checked = childChecks.every(c => c.checked);
+                                fcb.indeterminate = childChecks.some(c => c.checked) && !fcb.checked;
+                            }
+                        }
+                    });
+                    updateCheckedCount();
+                };
+            }
+
+            container.querySelectorAll('.inline-file-check').forEach(cb => cb.addEventListener('change', updateCheckedCount));
+            container.querySelectorAll('.inline-folder-check').forEach((fcb: any) => {
+                fcb.addEventListener('change', () => {
+                    const isChecked = fcb.checked;
+                    const folder = fcb.closest('.context-tree-folder');
+                    if (folder) {
+                        (Array.from(folder.querySelectorAll('.inline-file-check')) as HTMLInputElement[])
+                            .filter(isFileCheckVisible)
+                            .forEach(cb => { cb.checked = isChecked; });
+                    }
+                    updateCheckedCount();
+                });
+            });
+
+            const getCheckedPaths = (): string[] => getTargetFileChecks().filter(c => c.checked).map(c => c.dataset.path || '').filter(Boolean);
+
+            if (muteBtn) muteBtn.onclick = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const paths = getCheckedPaths();
+                if (paths.length === 0) { vscode.postMessage({ command: 'showWarning', message: 'No files selected.' }); return; }
+                callbacks.onBulkMute(paths);
+            };
+            if (unmuteBtn) unmuteBtn.onclick = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const paths = getCheckedPaths();
+                if (paths.length === 0) { vscode.postMessage({ command: 'showWarning', message: 'No files selected.' }); return; }
+                callbacks.onBulkUnmute(paths);
+            };
+            if (structBtn) structBtn.onclick = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const paths = getCheckedPaths();
+                if (paths.length === 0) { vscode.postMessage({ command: 'showWarning', message: 'No files selected.' }); return; }
+                callbacks.onBulkStructure(paths);
+            };
+            if (removeBtn) removeBtn.onclick = (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const paths = getCheckedPaths();
+                if (paths.length === 0) { vscode.postMessage({ command: 'showWarning', message: 'No files selected.' }); return; }
+                callbacks.onBulkRemove(paths);
+            };
+        }
+
+        const updateFolderMuteDom = (folderDetails: HTMLElement) => {
+            const allFileRows = Array.from(folderDetails.querySelectorAll('.context-item[data-path]'));
+            if (allFileRows.length === 0) return;
+            const mutedCount = allFileRows.filter(r => r.classList.contains('file-muted')).length;
+            const visibleCount = allFileRows.length - mutedCount;
+            const isAllMuted = mutedCount === allFileRows.length;
+            const isSomeMuted = mutedCount > 0 && !isAllMuted;
+
+            folderDetails.classList.toggle('folder-muted', isAllMuted);
+            folderDetails.classList.toggle('folder-partially-muted', isSomeMuted);
+
+            const summary = folderDetails.querySelector('summary');
+            if (summary) {
+                const folderBtn = summary.querySelector('.toggle-mute-folder-btn') as HTMLElement;
+                if (folderBtn) {
+                    folderBtn.className = `toggle-mute-folder-btn ${isAllMuted ? 'is-muted' : (isSomeMuted ? 'is-partially-muted' : 'is-active')}`;
+                    folderBtn.dataset.action = isAllMuted || isSomeMuted ? 'unmute' : 'mute';
+                    folderBtn.title = isAllMuted
+                        ? `All ${allFileRows.length} file(s) muted (Click to reveal all)`
+                        : (isSomeMuted
+                            ? `${visibleCount} of ${allFileRows.length} files visible (${mutedCount} muted). Click to reveal all.`
+                            : `All ${allFileRows.length} file(s) visible (Click to mute all)`);
+                    const icon = folderBtn.querySelector('.codicon');
+                    if (icon) icon.className = `codicon ${isAllMuted ? 'codicon-eye-closed' : 'codicon-eye'}`;
+                }
+                const nameSpan = summary.querySelector('span:nth-of-type(2)') as HTMLElement;
+                if (nameSpan) {
+                    nameSpan.style.textDecoration = isAllMuted ? 'line-through' : '';
+                    nameSpan.style.opacity = isAllMuted ? '0.65' : (isSomeMuted ? '0.85' : '1');
+                }
+                const countSpan = summary.querySelector('span:nth-of-type(3)') as HTMLElement;
+                if (countSpan) {
+                    countSpan.textContent = isSomeMuted
+                        ? `${allFileRows.length} files (${visibleCount} visible, ${mutedCount} muted)`
+                        : `${allFileRows.length} file${allFileRows.length === 1 ? '' : 's'}${isAllMuted ? ' (all muted)' : ''}`;
+                }
+                const badge = summary.querySelector('.file-token-badge') as HTMLElement;
+                if (badge) {
+                    badge.className = `file-token-badge ${isAllMuted ? 'weight-muted' : 'weight-light'}`;
+                    const curText = badge.textContent || '';
+                    const tokMatch = curText.match(/~[\d.]+k?\s*tok/);
+                    const tokStr = tokMatch ? tokMatch[0] : '';
+                    badge.textContent = isAllMuted ? `${tokStr} [MUTED]` : tokStr;
+                }
+            }
+        };
+
+        const updateFileMuteDom = (filePath: string, isMuted: boolean) => {
+            const normPath = filePath.replace(/\\/g, '/').toLowerCase().trim();
+            container.querySelectorAll(`.context-item[data-path]`).forEach((row: any) => {
+                const rowPath = row.dataset.path || '';
+                if (areFilesMatching(rowPath, filePath)) {
+                    row.classList.toggle('file-muted', isMuted);
+                    if (!isMuted) {
+                        row.classList.remove('file-def-only');
+                        const structBtn = row.querySelector('.toggle-structure-file-btn') as HTMLElement;
+                        if (structBtn) {
+                            structBtn.classList.remove('is-active');
+                            structBtn.dataset.state = 'definitions-only';
+                            structBtn.style.color = 'var(--vscode-foreground)';
+                            structBtn.style.opacity = '0.6';
+                            structBtn.title = 'Half-Mute: Include Structure / Definitions Only (save tokens)';
+                        }
+                    }
+                    const btn = row.querySelector('.toggle-mute-file-btn') as HTMLElement;
+                    if (btn) {
+                        btn.className = `toggle-mute-file-btn ${isMuted ? 'is-muted' : 'is-active'}`;
+                        btn.title = isMuted
+                            ? 'Reactivate file content for this discussion (Unmute)'
+                            : 'Deactivate file content for this discussion (Mute / Manual Governor)';
+                        const icon = btn.querySelector('.codicon');
+                        if (icon) icon.className = `codicon ${isMuted ? 'codicon-eye-closed' : 'codicon-eye'}`;
+                    }
+                    const badge = row.querySelector('.file-token-badge:not(.file-mtime-badge)') as HTMLElement;
+                    if (badge) {
+                        const itemData = state.lastContextData?.files?.find((fi: any) => {
+                            const p = (typeof fi === 'string' ? fi : fi?.path || '').replace(/\\/g, '/').toLowerCase().trim();
+                            return p.length > 0 && (p === normPath || p.endsWith('/' + normPath) || normPath.endsWith('/' + p));
+                        });
+                        let bytes = (typeof itemData === 'object' && itemData) ? (itemData.bytes || 0) : 0;
+                        let tokens = (typeof itemData === 'object' && itemData) ? (itemData.tokens || 0) : 0;
+                        if (tokens === 0 && state.fileTokensMap?.[filePath]) tokens = state.fileTokensMap[filePath];
+                        if (bytes === 0 && tokens > 0) bytes = Math.round(tokens * 3.5);
+                        else if (tokens === 0 && bytes > 0) tokens = Math.max(1, Math.ceil(bytes / 3.5));
+
+                        let formattedBytes = `${bytes} B`;
+                        if (bytes >= 1024 * 1024) formattedBytes = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+                        else if (bytes >= 1024) formattedBytes = `${(bytes / 1024).toFixed(1)} KB`;
+                        const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
+
+                        if (isMuted) {
+                            badge.className = 'file-token-badge weight-muted';
+                            badge.title = `Muted: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens liberated / 0 active tokens)`;
+                            badge.textContent = `${formattedBytes} [MUTED]`;
+                        } else {
+                            const weightClass = bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light');
+                            badge.className = `file-token-badge ${weightClass}`;
+                            badge.title = `Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)`;
+                            badge.textContent = `${formattedBytes} (~${displayTok} tok)`;
+                        }
+                    }
+                    const folderDetails = row.closest('.context-tree-folder');
+                    if (folderDetails) updateFolderMuteDom(folderDetails as HTMLElement);
+                }
+            });
+        };
+
+        container.querySelectorAll('.toggle-mute-file-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const pathVal = (btn as HTMLElement).dataset.path;
+                if (!pathVal) return;
+                const currentMuted = callbacks.getMutedFiles();
+                const isMutedNow = currentMuted.some(p => areFilesMatching(p, pathVal));
+                const isMutingNow = !isMutedNow;
+                updateFileMuteDom(pathVal, isMutingNow);
+                callbacks.onToggleMuteFile(pathVal, isMutingNow);
+            });
+        });
+
+        container.querySelectorAll('.toggle-mute-folder-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const btnEl = btn as HTMLElement;
+                const rawPaths = btnEl.dataset.paths;
+                const action = btnEl.dataset.action;
+                if (!rawPaths) return;
+                try {
+                    const paths: string[] = JSON.parse(decodeURIComponent(rawPaths));
+                    if (paths.length > 0) {
+                        const isUnmuting = action === 'unmute';
+                        paths.forEach(p => updateFileMuteDom(p, !isUnmuting));
+                        callbacks.onBulkMuteFolder(paths, isUnmuting);
+                    }
+                } catch {}
+            });
+        });
+
+        container.querySelectorAll('.remove-context-btn[data-type="file"]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const target = e.currentTarget as HTMLElement;
+                const value = target.dataset.value;
+                if (value) callbacks.onRemoveSingle(value, target.closest('.context-item') as HTMLElement | null);
+            });
+        });
+
+        container.querySelectorAll('.open-context-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const value = (e.currentTarget as HTMLElement).dataset.value;
+                if (value) vscode.postMessage({ command: 'openFile', path: value });
+            });
+        });
+
+        const govBtn = container.querySelector('.fp-governor-btn') as HTMLElement;
+        if (govBtn && callbacks.onOpenLibrarian) {
+            govBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                callbacks.onOpenLibrarian!();
+            };
+        }
+
+        const presetSelect = container.querySelector('.fp-preset-select') as HTMLSelectElement;
+        if (presetSelect) {
+            import('./ui.js').then(ui => ui.refreshVisibilityPresetsDropdowns());
+            presetSelect.onchange = (e) => {
+                e.stopPropagation();
+                if (presetSelect.value) callbacks.onApplyPreset(presetSelect.value);
+            };
+        }
+
+        const sortSelect = container.querySelector('.fp-sort-select') as HTMLSelectElement;
+        if (sortSelect) {
+            sortSelect.onchange = (e) => {
+                e.stopPropagation();
+                callbacks.onSortChange(sortSelect.value);
+            };
+        }
+
+        const sortBtn = container.querySelector('.fp-sort-cycle-btn') as HTMLElement;
+        if (sortBtn) {
+            sortBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const orders = ['tree', 'visible-first', 'muted-first', 'heavy-to-light', 'light-to-heavy', 'name', 'modified'];
+                const curIdx = orders.indexOf(callbacks.sortOrder);
+                const nextOrder = orders[(curIdx + 1) % orders.length];
+                callbacks.onSortChange(nextOrder);
+            };
+        }
     }
 
     public static bindGestures(dashboard: HTMLElement, files: string[], skills: any[]) {
@@ -5734,6 +6317,10 @@ export class ContextBinder {
                     expandLabel.textContent = state.isHudExpanded ? 'Collapse' : 'Expand';
                 }
                 toggleExpandBtn.title = state.isHudExpanded ? 'Collapse Context Panel' : 'Expand Context Panel to inspect & configure';
+
+                if (state.isHudExpanded && !hudBodyPanel.hasAttribute('data-hydrated')) {
+                    updateContext();
+                }
             };
         }
 
@@ -5892,118 +6479,6 @@ export class ContextBinder {
             });
         }
 
-        // Bind collapse/expand children buttons for folders with subfolders
-        dashboard.querySelectorAll('.collapse-folder-children-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const folderDetails = btn.closest('.context-tree-folder');
-                if (!folderDetails) return;
-                const childFolderDetails = folderDetails.querySelectorAll('.context-tree-folder-body .context-tree-folder');
-                if (childFolderDetails.length === 0) return;
-
-                const anyOpen = Array.from(childFolderDetails).some((d: any) => d.open);
-                childFolderDetails.forEach((d: any) => {
-                    d.open = !anyOpen;
-                });
-
-                const icon = btn.querySelector('.codicon');
-                if (icon) {
-                    icon.className = `codicon ${anyOpen ? 'codicon-expand-all' : 'codicon-collapse-all'}`;
-                }
-                btn.title = anyOpen
-                    ? `Expand all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`
-                    : `Collapse all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`;
-            });
-        });
-
-        // Bind HUD Files List Search & Real-Time Filter
-        const hudFilesSearchInp = dashboard.querySelector('#hud-files-search-input') as HTMLInputElement;
-        const hudFilesSearchClear = dashboard.querySelector('#hud-files-search-clear') as HTMLElement;
-
-        let refreshBulkCheckStatus: (() => void) | undefined;
-
-        const applyFilesFilter = (query: string) => {
-            (state as any).hudFileFilterQuery = query;
-            const cleanQ = query.toLowerCase().trim();
-            if (hudFilesSearchClear) {
-                hudFilesSearchClear.style.display = cleanQ ? 'inline-flex' : 'none';
-            }
-
-            const projectList = dashboard.querySelector('.hud-project-files-list');
-            if (!projectList) return;
-
-            // 1. Filter flat items
-            const fileItems = projectList.querySelectorAll('.context-item[data-path]');
-            fileItems.forEach((item: any) => {
-                const p = (item.dataset.path || '').toLowerCase();
-                const name = (item.querySelector('.path-text')?.textContent || '').toLowerCase();
-                const matches = !cleanQ || p.includes(cleanQ) || name.includes(cleanQ);
-                item.style.display = matches ? '' : 'none';
-            });
-
-            // 2. Filter tree folders (bottom-up from deepest to shallowest)
-            const folders = projectList.querySelectorAll('.context-tree-folder');
-            Array.from(folders).reverse().forEach((folder: any) => {
-                const folderName = (folder.getAttribute('data-folder') || '').toLowerCase();
-                const visibleFiles = folder.querySelectorAll('.context-item[data-path]:not([style*="display: none"])');
-                const hasVisibleFiles = visibleFiles.length > 0;
-                const matchesFolder = folderName.includes(cleanQ);
-
-                if (!cleanQ) {
-                    folder.style.display = '';
-                } else if (hasVisibleFiles || matchesFolder) {
-                    folder.style.display = '';
-                    folder.open = true; // Automatically expand so matching files are visible
-                } else {
-                    folder.style.display = 'none';
-                }
-            });
-
-            if (refreshBulkCheckStatus) {
-                refreshBulkCheckStatus();
-            }
-        };
-
-        if (hudFilesSearchInp) {
-            hudFilesSearchInp.oninput = () => {
-                applyFilesFilter(hudFilesSearchInp.value);
-            };
-
-            hudFilesSearchInp.onkeydown = (e) => {
-                if (e.key === 'Escape') {
-                    hudFilesSearchInp.value = '';
-                    applyFilesFilter('');
-                    hudFilesSearchInp.blur();
-                }
-            };
-        }
-
-        if (hudFilesSearchClear) {
-            hudFilesSearchClear.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (hudFilesSearchInp) hudFilesSearchInp.value = '';
-                applyFilesFilter('');
-            };
-        }
-
-        if ((state as any).hudFileFilterQuery) {
-            applyFilesFilter((state as any).hudFileFilterQuery);
-        }
-
-        // Bind direct file opening in VS Code editor tab on clicking row/name
-        dashboard.querySelectorAll('.file-row-main').forEach(row => {
-            row.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const p = (row as HTMLElement).dataset.path || (row.closest('.context-item') as HTMLElement)?.dataset.path;
-                if (p) {
-                    vscode.postMessage({ command: 'openFile', path: p });
-                }
-            });
-        });
-
         // Helper to retrieve accurate token weight for optimistic HUD recalculations
         const getFileTokenWeight = (filePath: string): number => {
             if (!filePath) return 100;
@@ -6037,64 +6512,136 @@ export class ContextBinder {
             return 100;
         };
 
-        // Bind Structure Selection Studio button
-        dashboard.querySelectorAll('.edit-file-structure-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const p = (btn as HTMLElement).dataset.path;
-                if (p) {
-                    import('./ui.js').then(ui => ui.openStructureEditorModal(p));
+        ContextBinder.bindFilesPanel(dashboard, {
+            filterQuery: (state as any).hudFileFilterQuery || '',
+            sortOrder: state.fileSortOrder || 'heavy-to-light',
+            getMutedFiles: () => state.mutedFiles || [],
+            onFilterChange: (q) => {
+                (state as any).hudFileFilterQuery = q;
+            },
+            onSortChange: (newOrder) => {
+                state.fileSortOrder = newOrder as any;
+                try { localStorage.setItem('lollms_file_sort_order', newOrder); } catch {}
+                updateContext();
+            },
+            onToggleInlineBulk: () => {
+                (state as any).isInlineBulkMode = !(state as any).isInlineBulkMode;
+                updateContext();
+            },
+            onApplyPreset: (sel) => {
+                vscode.postMessage({ command: 'applyVisibilityPreset', name: sel });
+            },
+            onOpenLibrarian: () => {
+                import('./ui.js').then(ui => ui.openGovernorFilterModal());
+            },
+            onToggleMuteFile: (pathVal, isMutingNow) => {
+                if (!state.mutedFiles) state.mutedFiles = [];
+                if (isMutingNow) {
+                    if (!state.mutedFiles.some(p => areFilesMatching(p, pathVal))) {
+                        state.mutedFiles.push(pathVal);
+                    }
+                } else {
+                    state.mutedFiles = state.mutedFiles.filter(p => !areFilesMatching(p, pathVal));
                 }
-            });
-        });
+                if (state.lastContextData) state.lastContextData.mutedFiles = [...state.mutedFiles];
 
-        // Bind half-mute (structure only / definitions only) toggle button
-        dashboard.querySelectorAll('.toggle-structure-file-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const btnEl = btn as HTMLElement;
-                const p = btnEl.dataset.path;
-                const targetState = btnEl.dataset.state || 'definitions-only';
-                if (!p) return;
-
-                // Immediate responsive optimistic UI feedback
-                const isNowDefOnly = targetState === 'definitions-only';
-                btnEl.classList.toggle('is-active', isNowDefOnly);
-                btnEl.dataset.state = isNowDefOnly ? 'included' : 'definitions-only';
-                btnEl.style.color = isNowDefOnly ? 'var(--vscode-charts-blue)' : 'var(--vscode-foreground)';
-                btnEl.style.opacity = isNowDefOnly ? '1' : '0.6';
-                btnEl.title = isNowDefOnly 
-                    ? 'Currently in Structure Only mode (Click to load full content)' 
-                    : 'Half-Mute: Include Structure / Definitions Only (save tokens)';
-
-                // Update row styling and badge in-place
-                const row = btnEl.closest('.context-item');
-                if (row) {
-                    row.classList.toggle('file-def-only', isNowDefOnly);
-                    const badge = row.querySelector('.file-token-badge:not(.file-mtime-badge)') as HTMLElement;
-                    if (badge) {
-                        if (isNowDefOnly) {
-                            badge.className = 'file-token-badge weight-medium';
-                            badge.style.borderColor = 'var(--vscode-charts-blue)';
-                            badge.style.color = 'var(--vscode-charts-blue)';
-                            if (!badge.textContent?.includes('[STRUCTURE]')) {
-                                badge.textContent = `[STRUCTURE] ${badge.textContent}`;
-                            }
-                        } else {
-                            badge.style.borderColor = '';
-                            badge.style.color = '';
-                            badge.textContent = badge.textContent?.replace(/\[STRUCTURE\]\s*/g, '') || '';
+                const fileTok = getFileTokenWeight(pathVal);
+                if (state.lastTokenMetrics && fileTok > 0) {
+                    if (isMutingNow) {
+                        state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - fileTok);
+                        if (state.lastTokenMetrics.segments?.files !== undefined) {
+                            state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - fileTok);
+                        }
+                    } else {
+                        state.lastTokenMetrics.totalTokens += fileTok;
+                        if (state.lastTokenMetrics.segments?.files !== undefined) {
+                            state.lastTokenMetrics.segments.files += fileTok;
                         }
                     }
+                    const barContainer = document.getElementById('token-progress-container');
+                    const labelEl = document.getElementById('token-count-label');
+                    if (labelEl) {
+                        labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()} (Updating...)`;
+                    }
+                    updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
                 }
+                setCalculatingTokens(true, "Updating tokens...");
+                vscode.postMessage({ command: 'toggleMuteFile', path: pathVal, muted: isMutingNow });
+            },
+            onBulkMuteFolder: (paths, isUnmuting) => {
+                if (!state.mutedFiles) state.mutedFiles = [];
+                if (isUnmuting) {
+                    state.mutedFiles = state.mutedFiles.filter(m => !paths.some(p => areFilesMatching(m, p)));
+                    vscode.postMessage({ command: 'bulkUnmuteFiles', paths });
+                } else {
+                    paths.forEach(p => {
+                        if (!state.mutedFiles.some(m => areFilesMatching(m, p))) {
+                            state.mutedFiles.push(p);
+                        }
+                    });
+                    vscode.postMessage({ command: 'bulkMuteFiles', paths });
+                }
+                if (state.lastContextData) state.lastContextData.mutedFiles = [...state.mutedFiles];
 
-                // OPTIMISTIC TOKEN PROGRESS BAR UPDATE (0ms instant response)
+                let totalDelta = 0;
+                paths.forEach(p => { totalDelta += (state.fileTokensMap?.[p] || 0); });
+                if (state.lastTokenMetrics && totalDelta > 0) {
+                    if (!isUnmuting) {
+                        const allFiles = (state.lastContextData?.files || []).map((f: any) => typeof f === 'string' ? f : (f?.path || ''));
+                        const isAllMuted = allFiles.length > 0 && allFiles.every(p => {
+                            const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
+                            return state.mutedFiles.some(m => {
+                                const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
+                                return cleanM === cleanP || cleanM.endsWith('/' + cleanP) || cleanP.endsWith('/' + cleanM);
+                            });
+                        });
+                        if (isAllMuted && state.lastTokenMetrics.segments) {
+                            const prevFiles = state.lastTokenMetrics.segments.files || 0;
+                            state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - prevFiles);
+                            state.lastTokenMetrics.segments.files = 0;
+                        } else if (totalDelta > 0) {
+                            state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - totalDelta);
+                            if (state.lastTokenMetrics.segments?.files !== undefined) {
+                                state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - totalDelta);
+                            }
+                        }
+                    } else {
+                        state.lastTokenMetrics.totalTokens += totalDelta;
+                        if (state.lastTokenMetrics.segments?.files !== undefined) {
+                            state.lastTokenMetrics.segments.files += totalDelta;
+                        }
+                    }
+                    const barContainer = document.getElementById('token-progress-container');
+                    const labelEl = document.getElementById('token-count-label');
+                    if (labelEl) {
+                        labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()}`;
+                    }
+                    updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
+                }
+                setCalculatingTokens(true, "Updating tokens...");
+            },
+            onBulkMute: (paths) => vscode.postMessage({ command: 'bulkMuteFiles', paths }),
+            onBulkUnmute: (paths) => vscode.postMessage({ command: 'bulkUnmuteFiles', paths }),
+            onBulkStructure: (paths) => vscode.postMessage({ command: 'bulkSetFilesStructure', paths, targetState: 'definitions-only' }),
+            onBulkRemove: (paths) => vscode.postMessage({ command: 'bulkRemoveFiles', paths }),
+            onRemoveSingle: (value, row) => {
+                if (row) {
+                    row.style.opacity = '0.3';
+                    row.style.pointerEvents = 'none';
+                }
+                if (state.lastContextData && Array.isArray(state.lastContextData.files)) {
+                    state.lastContextData.files = state.lastContextData.files.filter((item: any) => {
+                        const p = typeof item === 'string' ? item : (item?.path || '');
+                        return p !== value && p.toLowerCase() !== value.toLowerCase();
+                    });
+                }
+                vscode.postMessage({ command: 'removeFileFromContext', path: value });
+            },
+            onToggleStructure: (p, targetState) => {
+                const isNowDefOnly = targetState === 'definitions-only';
                 const fileTok = getFileTokenWeight(p);
                 const structTok = Math.min(fileTok, Math.max(25, Math.round(fileTok * 0.15)));
                 const delta = fileTok - structTok;
-
                 if (state.lastTokenMetrics) {
                     if (isNowDefOnly) {
                         state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - delta);
@@ -6114,461 +6661,17 @@ export class ContextBinder {
                     }
                     updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
                 }
-
                 setCalculatingTokens(true, "Updating structure view...");
-
                 const regItem = (window as any).lazyFilesRegistry?.get(p);
-                if (regItem && typeof regItem === 'object') {
-                    regItem.state = targetState;
-                }
+                if (regItem && typeof regItem === 'object') regItem.state = targetState;
                 const normP = p.replace(/\\/g, '/').toLowerCase();
                 const ctxFile = state.lastContextData?.files?.find((fi: any) => {
                     const cf = (typeof fi === 'string' ? fi : fi.path || '').replace(/\\/g, '/').toLowerCase();
                     return cf === normP || cf.endsWith('/' + normP) || normP.endsWith('/' + cf);
                 });
-                if (ctxFile && typeof ctxFile === 'object') {
-                    ctxFile.state = targetState;
-                }
-
-                // Post dedicated command to extension host
-                vscode.postMessage({
-                    command: 'toggleFileStructure',
-                    path: p,
-                    targetState: targetState
-                });
-            });
-        });
-
-        // Bind inline bulk selection mode toggle button
-        const toggleInlineBulkBtn = dashboard.querySelector('#toggle-inline-bulk-btn') as HTMLElement;
-        if (toggleInlineBulkBtn) {
-            toggleInlineBulkBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                (state as any).isInlineBulkMode = !(state as any).isInlineBulkMode;
-                updateContext();
-            };
-        }
-
-        // Bind inline bulk action toolbar
-        const inlineBulkToolbar = dashboard.querySelector('#inline-bulk-toolbar');
-        if (inlineBulkToolbar) {
-            const masterCheck = inlineBulkToolbar.querySelector('#inline-bulk-select-all') as HTMLInputElement;
-            const countLabel = inlineBulkToolbar.querySelector('#inline-bulk-count') as HTMLElement;
-            const muteBtn = inlineBulkToolbar.querySelector('#inline-bulk-mute-btn') as HTMLElement;
-            const unmuteBtn = inlineBulkToolbar.querySelector('#inline-bulk-unmute-btn') as HTMLElement;
-            const structBtn = inlineBulkToolbar.querySelector('#inline-bulk-structure-btn') as HTMLElement;
-            const removeBtn = inlineBulkToolbar.querySelector('#inline-bulk-remove-btn') as HTMLElement;
-
-            const isFileCheckVisible = (cb: HTMLElement): boolean => {
-                const item = cb.closest('.context-item') as HTMLElement;
-                if (!item) return false;
-                if (item.style.display === 'none') return false;
-                const folder = item.closest('.context-tree-folder') as HTMLElement;
-                if (folder && folder.style.display === 'none') return false;
-                return true;
-            };
-
-            const getTargetFileChecks = (): HTMLInputElement[] => {
-                const allChecks = Array.from(dashboard.querySelectorAll('.inline-file-check')) as HTMLInputElement[];
-                const hasSearchFilter = !!((state as any).hudFileFilterQuery && (state as any).hudFileFilterQuery.trim()) ||
-                                        !!(dashboard.querySelector('#hud-files-search-input') as HTMLInputElement)?.value.trim();
-                return hasSearchFilter ? allChecks.filter(isFileCheckVisible) : allChecks;
-            };
-
-            const updateCheckedCount = () => {
-                const targetChecks = getTargetFileChecks();
-                const checked = targetChecks.filter(cb => cb.checked);
-                if (countLabel) countLabel.textContent = `(${checked.length} selected)`;
-                if (masterCheck) {
-                    masterCheck.checked = targetChecks.length > 0 && checked.length === targetChecks.length;
-                    masterCheck.indeterminate = checked.length > 0 && checked.length < targetChecks.length;
-                }
-            };
-
-            refreshBulkCheckStatus = updateCheckedCount;
-
-            if (masterCheck) {
-                masterCheck.onchange = () => {
-                    const checked = masterCheck.checked;
-                    const targetChecks = getTargetFileChecks();
-                    targetChecks.forEach((cb: HTMLInputElement) => {
-                        cb.checked = checked;
-                    });
-                    dashboard.querySelectorAll('.inline-folder-check').forEach((fcb: any) => {
-                        const folder = fcb.closest('.context-tree-folder') as HTMLElement;
-                        if (folder && folder.style.display !== 'none') {
-                            const childChecks = (Array.from(folder.querySelectorAll('.inline-file-check')) as HTMLInputElement[]).filter(isFileCheckVisible);
-                            if (childChecks.length > 0) {
-                                fcb.checked = childChecks.every(c => c.checked);
-                                fcb.indeterminate = childChecks.some(c => c.checked) && !fcb.checked;
-                            }
-                        }
-                    });
-                    updateCheckedCount();
-                };
+                if (ctxFile && typeof ctxFile === 'object') ctxFile.state = targetState;
+                vscode.postMessage({ command: 'toggleFileStructure', path: p, targetState });
             }
-
-            dashboard.querySelectorAll('.inline-file-check').forEach(cb => {
-                cb.addEventListener('change', updateCheckedCount);
-            });
-
-            dashboard.querySelectorAll('.inline-folder-check').forEach((fcb: any) => {
-                fcb.addEventListener('change', () => {
-                    const isChecked = fcb.checked;
-                    const folder = fcb.closest('.context-tree-folder');
-                    if (folder) {
-                        const childChecks = (Array.from(folder.querySelectorAll('.inline-file-check')) as HTMLInputElement[]).filter(isFileCheckVisible);
-                        childChecks.forEach((cb: HTMLInputElement) => {
-                            cb.checked = isChecked;
-                        });
-                    }
-                    updateCheckedCount();
-                });
-            });
-
-            const getCheckedPaths = (): string[] => {
-                const targetChecks = getTargetFileChecks();
-                const checks = targetChecks.filter(c => c.checked);
-                return checks.map(c => c.dataset.path || '').filter(Boolean);
-            };
-
-            if (muteBtn) {
-                muteBtn.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const paths = getCheckedPaths();
-                    if (paths.length === 0) {
-                        vscode.postMessage({ command: 'showWarning', message: 'No files selected.' });
-                        return;
-                    }
-                    vscode.postMessage({ command: 'bulkMuteFiles', paths });
-                };
-            }
-
-            if (unmuteBtn) {
-                unmuteBtn.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const paths = getCheckedPaths();
-                    if (paths.length === 0) {
-                        vscode.postMessage({ command: 'showWarning', message: 'No files selected.' });
-                        return;
-                    }
-                    vscode.postMessage({ command: 'bulkUnmuteFiles', paths });
-                };
-            }
-
-            if (structBtn) {
-                structBtn.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const paths = getCheckedPaths();
-                    if (paths.length === 0) {
-                        vscode.postMessage({ command: 'showWarning', message: 'No files selected.' });
-                        return;
-                    }
-                    vscode.postMessage({
-                        command: 'bulkSetFilesStructure',
-                        paths: paths,
-                        targetState: 'definitions-only'
-                    });
-                };
-            }
-
-            if (removeBtn) {
-                removeBtn.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const paths = getCheckedPaths();
-                    if (paths.length === 0) {
-                        vscode.postMessage({ command: 'showWarning', message: 'No files selected.' });
-                        return;
-                    }
-                    vscode.postMessage({ command: 'bulkRemoveFiles', paths });
-                };
-            }
-        }
-
-        // Helper function for surgical, in-place DOM updates when toggling file mute status
-        const updateFileMuteDom = (filePath: string, isMuted: boolean) => {
-            const normPath = filePath.replace(/\\/g, '/').trim().toLowerCase();
-            const rows = dashboard.querySelectorAll(`.context-item[data-path]`);
-
-            rows.forEach((row: any) => {
-                const rowPath = (row.dataset.path || '').replace(/\\/g, '/').trim().toLowerCase();
-                if (rowPath === normPath || rowPath.endsWith('/' + normPath) || normPath.endsWith('/' + rowPath)) {
-                    row.classList.toggle('file-muted', isMuted);
-
-                    if (!isMuted) {
-                        row.classList.remove('file-def-only');
-                        const structBtn = row.querySelector('.toggle-structure-file-btn') as HTMLElement;
-                        if (structBtn) {
-                            structBtn.classList.remove('is-active');
-                            structBtn.dataset.state = 'definitions-only';
-                            structBtn.style.color = 'var(--vscode-foreground)';
-                            structBtn.style.opacity = '0.6';
-                            structBtn.title = 'Half-Mute: Include Structure / Definitions Only (save tokens)';
-                        }
-                        const regItem = (window as any).lazyFilesRegistry?.get(filePath);
-                        if (regItem && typeof regItem === 'object') {
-                            regItem.state = 'included';
-                        }
-                        const ctxFile = state.lastContextData?.files?.find((fi: any) => {
-                            const p = (typeof fi === 'string' ? fi : fi.path || '').replace(/\\/g, '/').toLowerCase();
-                            return p === normPath || p.endsWith('/' + normPath) || normPath.endsWith('/' + p);
-                        });
-                        if (ctxFile && typeof ctxFile === 'object') {
-                            ctxFile.state = 'included';
-                        }
-                    }
-
-                    const btn = row.querySelector('.toggle-mute-file-btn') as HTMLElement;
-                    if (btn) {
-                        btn.className = `toggle-mute-file-btn ${isMuted ? 'is-muted' : 'is-active'}`;
-                        btn.title = isMuted 
-                            ? 'Reactivate file content for this discussion (Unmute)' 
-                            : 'Deactivate file content for this discussion (Mute / Manual Governor)';
-                        const icon = btn.querySelector('.codicon');
-                        if (icon) {
-                            icon.className = `codicon ${isMuted ? 'codicon-eye-closed' : 'codicon-eye'}`;
-                        }
-                    }
-
-                    const badge = row.querySelector('.file-token-badge:not(.file-mtime-badge)') as HTMLElement;
-                    if (badge) {
-                        const itemData = state.lastContextData?.files?.find((fi: any) => {
-                            const p = (typeof fi === 'string' ? fi : fi.path || '').replace(/\\/g, '/').toLowerCase();
-                            return p === normPath || p.endsWith('/' + normPath) || normPath.endsWith('/' + p);
-                        });
-                        let bytes = 0;
-                        let tokens = 0;
-                        if (typeof itemData === 'object' && itemData) {
-                            bytes = itemData.bytes || 0;
-                            tokens = itemData.tokens || 0;
-                        }
-                        if (tokens === 0 && state.fileTokensMap?.[filePath]) {
-                            tokens = state.fileTokensMap[filePath];
-                        }
-                        if (bytes === 0 && tokens > 0) bytes = Math.round(tokens * 3.5);
-                        else if (tokens === 0 && bytes > 0) tokens = Math.max(1, Math.ceil(bytes / 3.5));
-
-                        let formattedBytes = `${bytes} B`;
-                        if (bytes >= 1024 * 1024) formattedBytes = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-                        else if (bytes >= 1024) formattedBytes = `${(bytes / 1024).toFixed(1)} KB`;
-                        const displayTok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
-
-                        if (isMuted) {
-                            badge.className = 'file-token-badge weight-muted';
-                            badge.title = `Muted: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens liberated / 0 active tokens)`;
-                            badge.textContent = `${formattedBytes} [MUTED]`;
-                        } else {
-                            const weightClass = bytes >= 35000 ? 'weight-heavy' : (bytes >= 10000 ? 'weight-medium' : 'weight-light');
-                            badge.className = `file-token-badge ${weightClass}`;
-                            badge.title = `Size: ${bytes.toLocaleString()} bytes (~${tokens.toLocaleString()} tokens)`;
-                            badge.textContent = `${formattedBytes} (~${displayTok} tok)`;
-                        }
-                    }
-
-                    // Update parent folder in tree view if applicable
-                    const folderDetails = row.closest('.context-tree-folder');
-                    if (folderDetails) {
-                        updateFolderMuteDom(folderDetails as HTMLElement);
-                    }
-                }
-            });
-        };
-
-        const updateFolderMuteDom = (folderDetails: HTMLElement) => {
-            const allFileRows = Array.from(folderDetails.querySelectorAll('.context-item[data-path]'));
-            if (allFileRows.length === 0) return;
-            const mutedCount = allFileRows.filter(r => r.classList.contains('file-muted')).length;
-            const visibleCount = allFileRows.length - mutedCount;
-            const isAllMuted = mutedCount === allFileRows.length;
-            const isSomeMuted = mutedCount > 0 && !isAllMuted;
-
-            folderDetails.classList.toggle('folder-muted', isAllMuted);
-            folderDetails.classList.toggle('folder-partially-muted', isSomeMuted);
-
-            const summary = folderDetails.querySelector('summary');
-            if (summary) {
-                const folderBtn = summary.querySelector('.toggle-mute-folder-btn') as HTMLElement;
-                if (folderBtn) {
-                    folderBtn.className = `toggle-mute-folder-btn ${isAllMuted ? 'is-muted' : (isSomeMuted ? 'is-partially-muted' : 'is-active')}`;
-                    folderBtn.dataset.action = isAllMuted || isSomeMuted ? 'unmute' : 'mute';
-                    folderBtn.title = isAllMuted 
-                        ? `All ${allFileRows.length} file(s) muted (Click to reveal all)`
-                        : (isSomeMuted 
-                            ? `${visibleCount} of ${allFileRows.length} files visible (${mutedCount} muted). Click to reveal all.`
-                            : `All ${allFileRows.length} file(s) visible (Click to mute all)`);
-                    const icon = folderBtn.querySelector('.codicon');
-                    if (icon) {
-                        icon.className = `codicon ${isAllMuted ? 'codicon-eye-closed' : 'codicon-eye'}`;
-                    }
-                }
-                const nameSpan = summary.querySelector('span:nth-of-type(2)') as HTMLElement;
-                if (nameSpan) {
-                    nameSpan.style.textDecoration = isAllMuted ? 'line-through' : '';
-                    nameSpan.style.opacity = isAllMuted ? '0.65' : (isSomeMuted ? '0.85' : '1');
-                }
-                const countSpan = summary.querySelector('span:nth-of-type(3)') as HTMLElement;
-                if (countSpan) {
-                    countSpan.textContent = isSomeMuted
-                        ? `${allFileRows.length} files (${visibleCount} visible, ${mutedCount} muted)`
-                        : `${allFileRows.length} file${allFileRows.length === 1 ? '' : 's'}${isAllMuted ? ' (all muted)' : ''}`;
-                }
-                const badge = summary.querySelector('.file-token-badge') as HTMLElement;
-                if (badge) {
-                    badge.className = `file-token-badge ${isAllMuted ? 'weight-muted' : 'weight-light'}`;
-                    const curText = badge.textContent || '';
-                    const tokMatch = curText.match(/~[\d.]+k?\s*tok/);
-                    const tokStr = tokMatch ? tokMatch[0] : '';
-                    badge.textContent = isAllMuted ? `${tokStr} [MUTED]` : tokStr;
-                }
-            }
-        };
-
-        // Bind mute / deactivate toggle buttons for files with surgical in-place DOM updates
-        dashboard.querySelectorAll('.toggle-mute-file-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const pathVal = (btn as HTMLElement).dataset.path;
-                if (pathVal) {
-                    if (!state.mutedFiles) state.mutedFiles = [];
-                    const normPath = pathVal.replace(/\\/g, '/').trim().toLowerCase();
-                    const idx = state.mutedFiles.findIndex(p => {
-                        const cleanP = p.replace(/\\/g, '/').trim().toLowerCase();
-                        return cleanP === normPath || cleanP.endsWith('/' + normPath) || normPath.endsWith('/' + cleanP);
-                    });
-                    const isMutingNow = idx === -1;
-                    if (isMutingNow) {
-                        state.mutedFiles.push(pathVal);
-                    } else {
-                        state.mutedFiles.splice(idx, 1);
-                    }
-                    if (state.lastContextData) {
-                        state.lastContextData.mutedFiles = [...state.mutedFiles];
-                    }
-
-                    // Surgical in-place DOM update (zero rerenders, zero scroll jumping)
-                    updateFileMuteDom(pathVal, isMutingNow);
-
-                    // Optimistic token metrics update with resilient weight discovery (0ms response)
-                    const fileTok = getFileTokenWeight(pathVal);
-                    if (state.lastTokenMetrics && fileTok > 0) {
-                        if (isMutingNow) {
-                            state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - fileTok);
-                            if (state.lastTokenMetrics.segments?.files !== undefined) {
-                                state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - fileTok);
-                            }
-                        } else {
-                            state.lastTokenMetrics.totalTokens += fileTok;
-                            if (state.lastTokenMetrics.segments?.files !== undefined) {
-                                state.lastTokenMetrics.segments.files += fileTok;
-                            }
-                        }
-
-                        const barContainer = document.getElementById('token-progress-container');
-                        const labelEl = document.getElementById('token-count-label');
-                        if (labelEl) {
-                            labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()} (Updating...)`;
-                        }
-                        updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
-                    }
-
-                    setCalculatingTokens(true, "Updating tokens...");
-                    vscode.postMessage({ command: 'toggleMuteFile', path: pathVal });
-                }
-            });
-        });
-
-        // Folder-level mute / unmute button in tree view with surgical in-place updates
-        dashboard.querySelectorAll('.toggle-mute-folder-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const btnEl = btn as HTMLElement;
-                const rawPaths = btnEl.dataset.paths;
-                const action = btnEl.dataset.action;
-                if (rawPaths) {
-                    try {
-                        const paths: string[] = JSON.parse(decodeURIComponent(rawPaths));
-                        if (paths.length > 0) {
-                            const isUnmuting = action === 'unmute';
-                            if (isUnmuting) {
-                                const targetSet = new Set(paths.map(p => p.replace(/\\/g, '/').toLowerCase().trim()));
-                                state.mutedFiles = (state.mutedFiles || []).filter(m => !targetSet.has(m.replace(/\\/g, '/').toLowerCase().trim()));
-                                vscode.postMessage({ command: 'bulkUnmuteFiles', paths });
-                            } else {
-                                if (!state.mutedFiles) state.mutedFiles = [];
-                                const existingSet = new Set(state.mutedFiles.map(p => p.replace(/\\/g, '/').toLowerCase().trim()));
-                                paths.forEach(p => {
-                                    const clean = p.replace(/\\/g, '/').toLowerCase().trim();
-                                    if (!existingSet.has(clean)) {
-                                        state.mutedFiles.push(p);
-                                        existingSet.add(clean);
-                                    }
-                                });
-                                vscode.postMessage({ command: 'bulkMuteFiles', paths });
-                            }
-                            if (state.lastContextData) {
-                                state.lastContextData.mutedFiles = [...state.mutedFiles];
-                            }
-                            vscode.postMessage({
-                                command: 'updateDiscussionCapabilitiesPartial',
-                                partial: { mutedFiles: state.mutedFiles }
-                            });
-
-                            // Surgical DOM update for each file in the folder (no full rerender, no scroll jump)
-                            paths.forEach(p => updateFileMuteDom(p, !isUnmuting));
-
-                            // Update token bar metrics optimistically
-                            let totalDelta = 0;
-                            paths.forEach(p => {
-                                totalDelta += (state.fileTokensMap?.[p] || 0);
-                            });
-                            if (state.lastTokenMetrics && totalDelta > 0) {
-                                if (!isUnmuting) {
-                                    const allFiles = (state.lastContextData?.files || []).map((f: any) => typeof f === 'string' ? f : (f?.path || ''));
-                                    const isAllMuted = allFiles.length > 0 && allFiles.every(p => {
-                                        const cleanP = p.replace(/\\/g, '/').toLowerCase().trim();
-                                        return state.mutedFiles.some(m => {
-                                            const cleanM = m.replace(/\\/g, '/').toLowerCase().trim();
-                                            return cleanM === cleanP || cleanM.endsWith('/' + cleanP) || cleanP.endsWith('/' + cleanM);
-                                        });
-                                    });
-                                    if (isAllMuted && state.lastTokenMetrics.segments) {
-                                        const prevFiles = state.lastTokenMetrics.segments.files || 0;
-                                        state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - prevFiles);
-                                        state.lastTokenMetrics.segments.files = 0;
-                                    } else if (totalDelta > 0) {
-                                        state.lastTokenMetrics.totalTokens = Math.max(0, state.lastTokenMetrics.totalTokens - totalDelta);
-                                        if (state.lastTokenMetrics.segments?.files !== undefined) {
-                                            state.lastTokenMetrics.segments.files = Math.max(0, state.lastTokenMetrics.segments.files - totalDelta);
-                                        }
-                                    }
-                                } else {
-                                    state.lastTokenMetrics.totalTokens += totalDelta;
-                                    if (state.lastTokenMetrics.segments?.files !== undefined) {
-                                        state.lastTokenMetrics.segments.files += totalDelta;
-                                    }
-                                }
-                                const barContainer = document.getElementById('token-progress-container');
-                                const labelEl = document.getElementById('token-count-label');
-                                if (labelEl) {
-                                    labelEl.textContent = `Tokens: ${state.lastTokenMetrics.totalTokens.toLocaleString()} / ${state.lastTokenMetrics.contextSize.toLocaleString()}`;
-                                }
-                                updateProgressBar(barContainer, state.lastTokenMetrics.totalTokens, state.lastTokenMetrics.contextSize, state.lastTokenMetrics.segments);
-                            }
-
-                            setCalculatingTokens(true, "Updating tokens...");
-                        }
-                    } catch (err) {
-                        console.error("Failed to parse folder mute paths", err);
-                    }
-                }
-            });
         });
 
         dashboard.querySelectorAll('.toggle-mute-tool-btn').forEach(btn => {
@@ -6598,28 +6701,15 @@ export class ContextBinder {
             });
         });
 
-        // Bind deletion / removal buttons natively
+        // Bind non-file deletion / removal buttons natively (files are handled by bindFilesPanel)
         dashboard.querySelectorAll('.remove-context-btn').forEach(btn => {
+            const type = (btn as HTMLElement).dataset.type;
+            if (type === 'file') return;
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const target = e.currentTarget as HTMLElement;
-                const type = target.dataset.type;
                 const value = target.dataset.value;
-
-                if (type === 'file' && value) {
-                    const row = target.closest('.context-item') as HTMLElement;
-                    if (row) {
-                        row.style.opacity = '0.3';
-                        row.style.pointerEvents = 'none';
-                    }
-                    if (state.lastContextData && Array.isArray(state.lastContextData.files)) {
-                        state.lastContextData.files = state.lastContextData.files.filter((item: any) => {
-                            const p = typeof item === 'string' ? item : (item?.path || '');
-                            return p !== value && p.toLowerCase() !== value.toLowerCase();
-                        });
-                    }
-                    vscode.postMessage({ command: 'removeFileFromContext', path: value });
-                } else if (type === 'skill') {
+                if (type === 'skill') {
                     vscode.postMessage({ command: 'removeSkillFromContext', skillId: value });
                 } else if (type === 'diagram') {
                     vscode.postMessage({ 
@@ -6628,18 +6718,6 @@ export class ContextBinder {
                     });
                 } else if (type === 'tool') {
                     vscode.postMessage({ command: 'removeToolFromContext', toolName: value });
-                }
-            });
-        });
-
-        // Open Files natively
-        dashboard.querySelectorAll('.open-context-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const target = e.currentTarget as HTMLElement;
-                const value = target.dataset.value;
-                if (value) {
-                    vscode.postMessage({ command: 'openFile', path: value });
                 }
             });
         });
@@ -6655,59 +6733,6 @@ export class ContextBinder {
                 }
             });
         });
-
-        // Bind Governor Filter Button
-        const govFilterBtn = dashboard.querySelector('#governor-filter-btn') as HTMLElement;
-        if (govFilterBtn) {
-            govFilterBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                import('./ui.js').then(ui => ui.openGovernorFilterModal());
-            };
-        }
-
-        // Bind Quick Visibility Preset Dropdown in HUD
-        const hudPresetSelect = dashboard.querySelector('#hud-visibility-preset-select') as HTMLSelectElement;
-        if (hudPresetSelect) {
-            import('./ui.js').then(ui => ui.refreshVisibilityPresetsDropdowns());
-            hudPresetSelect.onchange = (e) => {
-                e.stopPropagation();
-                const sel = hudPresetSelect.value;
-                if (!sel) return;
-                vscode.postMessage({ command: 'applyVisibilityPreset', name: sel });
-            };
-        }
-
-        // Bind Sort/Organize select dropdown
-        const sortSelect = dashboard.querySelector('#sort-files-select') as HTMLSelectElement;
-        if (sortSelect) {
-            sortSelect.onchange = (e) => {
-                e.stopPropagation();
-                const newOrder = sortSelect.value as any;
-                state.fileSortOrder = newOrder;
-                try {
-                    localStorage.setItem('lollms_file_sort_order', newOrder);
-                } catch {}
-                updateContext();
-            };
-        }
-
-        // Bind Sort button (Cycle through modes)
-        const sortBtn = dashboard.querySelector('#sort-files-btn') as HTMLElement;
-        if (sortBtn) {
-            sortBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const orders: any[] = ['tree', 'visible-first', 'muted-first', 'heavy-to-light', 'light-to-heavy', 'name', 'modified'];
-                const curIdx = orders.indexOf(state.fileSortOrder);
-                const nextOrder = orders[(curIdx + 1) % orders.length];
-                state.fileSortOrder = nextOrder;
-                try {
-                    localStorage.setItem('lollms_file_sort_order', nextOrder);
-                } catch {}
-                updateContext();
-            };
-        }
 
         // Helper to extract file path string
         const getFilePath = (item: any) => typeof item === 'string' ? item : (item?.path || '');
@@ -7107,10 +7132,19 @@ export function updateContext(
         const currentMutedSkills = state.mutedSkills || state.lastContextData.mutedSkills || [];
         const currentMutedDiagrams = state.mutedDiagrams || state.lastContextData.mutedDiagrams || [];
 
-        const projectFilesHtml = ContextPresenter.renderFileList(safeProjectFiles, "No project files selected.", false, tokenMap, sortOrder, currentMutedFiles);
-        const externalFilesHtml = ContextPresenter.renderFileList(safeExternalFiles, "No external documents or links in context.", true, tokenMap, sortOrder, currentMutedFiles);
-        const skillsHtml = ContextPresenter.renderSkills(safeFinalSkills, currentMutedSkills);
-        const briefingHtml = finalBriefing ? renderDataBriefing(finalBriefing) : '<div style="font-style:italic; opacity:0.5;">No specific task constraints defined. Click the shield to add instructions.</div>';
+        // Skip building heavy file-tree/skills/markdown DOM when HUD is collapsed
+        const projectFilesHtml = state.isHudExpanded
+            ? ContextPresenter.renderFileList(safeProjectFiles, "No project files selected.", false, tokenMap, sortOrder, currentMutedFiles)
+            : '';
+        const externalFilesHtml = state.isHudExpanded
+            ? ContextPresenter.renderFileList(safeExternalFiles, "No external documents or links in context.", true, tokenMap, sortOrder, currentMutedFiles)
+            : '';
+        const skillsHtml = state.isHudExpanded
+            ? ContextPresenter.renderSkills(safeFinalSkills, currentMutedSkills)
+            : '';
+        const briefingHtml = state.isHudExpanded
+            ? (finalBriefing ? renderDataBriefing(finalBriefing) : '<div style="font-style:italic; opacity:0.5;">No specific task constraints defined. Click the shield to add instructions.</div>')
+            : '';
 
         const isAgentActive = state.capabilities?.agentMode === true;
         const themeClass = isAgentActive ? 'agent-mode-bubble' : 'standard-mode-bubble';
@@ -7142,6 +7176,9 @@ export function updateContext(
 
         const dashboard = document.getElementById('fused-context-dashboard');
         if (dashboard) {
+            if (state.isHudExpanded) {
+                dashboard.querySelector('#hud-body-panel')?.setAttribute('data-hydrated', 'true');
+            }
             // Run dedicated DOM binding system (Layer 2)
             ContextBinder.bindGestures(dashboard, finalFiles, finalSkills);
 
@@ -7419,10 +7456,11 @@ export function showBulkOperationsModal(files: any[]) {
             return;
         }
 
-        // Apply search query filter
-        const cleanQ = searchQuery.toLowerCase().trim();
-        const filtered = cleanQ
-            ? normalizedFiles.filter(item => item.path.toLowerCase().includes(cleanQ) || item.fileName.toLowerCase().includes(cleanQ))
+        // Apply search query filter (supports grep-style patterns & wildcards)
+        const trimmedQ = searchQuery.trim();
+        const matcher = createFilePatternMatcher(trimmedQ);
+        const filtered = trimmedQ
+            ? normalizedFiles.filter(item => matcher(item.path, item.fileName))
             : normalizedFiles;
 
         if (filtered.length === 0) {
@@ -7857,9 +7895,10 @@ export function showBulkOperationsModal(files: any[]) {
 
     if (master) {
         master.onchange = () => {
-            const cleanQ = searchQuery.toLowerCase().trim();
-            const targetFiles = cleanQ
-                ? normalizedFiles.filter(item => item.path.toLowerCase().includes(cleanQ) || item.fileName.toLowerCase().includes(cleanQ))
+            const trimmedQ = searchQuery.trim();
+            const matcher = createFilePatternMatcher(trimmedQ);
+            const targetFiles = trimmedQ
+                ? normalizedFiles.filter(item => matcher(item.path, item.fileName))
                 : normalizedFiles;
 
             if (master.checked) targetFiles.forEach(f => selectedPaths.add(f.path));

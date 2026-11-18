@@ -353,6 +353,7 @@ export class CodeGraphManager {
 
     private activeBuildPromise: Promise<void> | null = null;
     private activeIncrementalPromises = new Map<string, Promise<void>>();
+    private _saveCacheTimer?: NodeJS.Timeout;
 
     // High-performance caching layers for incremental compiles
     private parsedFilesCache = new Map<string, {
@@ -748,6 +749,14 @@ export class CodeGraphManager {
     /**
      * Persists the compiled graph and parsed file metadata to .lollms/graph_cache.json
      */
+    private scheduleSaveToDiskCache(): void {
+        if (this._saveCacheTimer) clearTimeout(this._saveCacheTimer);
+        this._saveCacheTimer = setTimeout(() => {
+            this._saveCacheTimer = undefined;
+            this.saveToDiskCache().catch(() => {});
+        }, 2000);
+    }
+
     public async saveToDiskCache(): Promise<void> {
         if (!this.workspaceRoot || this.graph.nodes.length === 0) return;
         try {
@@ -1037,7 +1046,7 @@ export class CodeGraphManager {
 
                 if (this.buildState === 'ready') {
                     this.linkFileInGraph(relPath);
-                    this.saveToDiskCache().catch(() => {});
+                    this.scheduleSaveToDiskCache();
                 }
 
             } catch (e) {
@@ -1212,37 +1221,73 @@ export class CodeGraphManager {
     private linkGraphStructure() {
             const nodes: GraphNode[] = [];
             const edges: GraphEdge[] = [];
+            const edgeIdsSet = new Set<string>();
+            const pushEdge = (edge: GraphEdge) => {
+                if (!edgeIdsSet.has(edge.id)) {
+                    edgeIdsSet.add(edge.id);
+                    edges.push(edge);
+                }
+            };
 
             const fileNodeIds = new Map<string, string>();
+            const fileNodesById = new Map<string, GraphNode>();
             const classNameToId = new Map<string, string>();
             const libraryNodesMap = new Map<string, string>();
+            const callablesByFile = new Map<string, GraphNode[]>();
+            const callablesByName = new Map<string, GraphNode[]>();
+
+            const indexCallable = (node: GraphNode) => {
+                const lower = node.label.toLowerCase();
+                const addKey = (k: string) => {
+                    let arr = callablesByName.get(k);
+                    if (!arr) {
+                        arr = [];
+                        callablesByName.set(k, arr);
+                    }
+                    arr.push(node);
+                };
+                addKey(lower);
+                const dotIdx = lower.lastIndexOf('.');
+                if (dotIdx !== -1 && dotIdx + 1 < lower.length) {
+                    addKey(lower.substring(dotIdx + 1));
+                }
+            };
 
             // 1. First Pass: Instantiate nodes with stable IDs (Files and nested Symbols)
             for (const [relPath, cache] of this.parsedFilesCache.entries()) {
                 const fileNodeId = `file_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}`;
                 fileNodeIds.set(relPath, fileNodeId);
 
-                nodes.push({
+                const fileNode: GraphNode = {
                     id: fileNodeId,
                     label: path.posix.basename(relPath),
                     type: 'file',
                     filePath: relPath,
                     startLine: 0,
                     linesCount: cache.linesCount
-                });
+                };
+                nodes.push(fileNode);
+                fileNodesById.set(fileNodeId, fileNode);
 
                 const localIdToGlobal = new Map<string, string>();
+                const fileCallables: GraphNode[] = [];
 
                 cache.nodes.forEach(n => {
                     const sysId = `sym_${relPath.replace(/[^a-zA-Z0-9_]/g, '_')}_${n.type}_${n.label.replace(/[^a-zA-Z0-9_]/g, '_')}`;
                     localIdToGlobal.set(n.id, sysId);
 
-                    nodes.push({
+                    const fullNode: GraphNode = {
                         ...n,
                         id: sysId,
                         filePath: relPath,
                         docstring: n.docstring || undefined
-                    });
+                    };
+                    nodes.push(fullNode);
+
+                    if (n.type === 'function' || n.type === 'method' || n.type === 'endpoint') {
+                        fileCallables.push(fullNode);
+                        indexCallable(fullNode);
+                    }
 
                     if (n.type === 'class' || n.type === 'interface') {
                         classNameToId.set(n.label, sysId);
@@ -1250,7 +1295,7 @@ export class CodeGraphManager {
 
                     // Top-level entities are contained in the source file
                     if (n.type !== 'method') {
-                        edges.push({
+                        pushEdge({
                             id: `edge_contains_${fileNodeId}_${sysId}`,
                             source: fileNodeId,
                             target: sysId,
@@ -1259,12 +1304,14 @@ export class CodeGraphManager {
                     }
                 });
 
+                callablesByFile.set(relPath, fileCallables);
+
                 // Map Class -> Method containment accurately via unique node IDs
                 cache.edges.forEach(e => {
                     const srcMapped = localIdToGlobal.get(e.source);
                     const trgMapped = localIdToGlobal.get(e.target);
                     if (srcMapped && trgMapped) {
-                        edges.push({
+                        pushEdge({
                             id: `edge_${e.label}_${srcMapped}_${trgMapped}`,
                             source: srcMapped,
                             target: trgMapped,
@@ -1274,7 +1321,7 @@ export class CodeGraphManager {
                 });
             }
 
-            // 2. Second Pass: Link dependencies (Imports) & Invocations (Calls)
+            // 2. Second Pass: Link dependencies (Imports) & Invocations (Calls) in O(N)
             for (const [relPath, cache] of this.parsedFilesCache.entries()) {
                 const fileNodeId = fileNodeIds.get(relPath);
                 if (!fileNodeId) continue;
@@ -1285,15 +1332,12 @@ export class CodeGraphManager {
                     if (targetPath) {
                         const targetFileId = fileNodeIds.get(targetPath);
                         if (targetFileId && targetFileId !== fileNodeId) {
-                            const edgeId = `edge_imports_${fileNodeId}_${targetFileId}`;
-                            if (!edges.some(e => e.id === edgeId)) {
-                                edges.push({
-                                    id: edgeId,
-                                    source: fileNodeId,
-                                    target: targetFileId,
-                                    label: 'imports'
-                                });
-                            }
+                            pushEdge({
+                                id: `edge_imports_${fileNodeId}_${targetFileId}`,
+                                source: fileNodeId,
+                                target: targetFileId,
+                                label: 'imports'
+                            });
                         }
                     } else if (!imp.startsWith('.')) {
                         const libName = imp.split('/')[0].replace(/['"]/g, '').trim();
@@ -1307,50 +1351,41 @@ export class CodeGraphManager {
                                 });
                                 libraryNodesMap.set(libName, libId);
                             }
-                            const edgeId = `edge_imports_${fileNodeId}_${libId}`;
-                            if (!edges.some(e => e.id === edgeId)) {
-                                edges.push({
-                                    id: edgeId,
-                                    source: fileNodeId,
-                                    target: libId,
-                                    label: 'imports'
-                                });
-                            }
+                            pushEdge({
+                                id: `edge_imports_${fileNodeId}_${libId}`,
+                                source: fileNodeId,
+                                target: libId,
+                                label: 'imports'
+                            });
                         }
                     }
                 });
 
-                // Function/Method Calls: Attribute caller to the enclosing function/method or file
+                // Function/Method Calls: O(1) indexed lookup instead of O(N) node scan
                 if (cache.calls && Array.isArray(cache.calls)) {
-                    // Find all callables in this file
-                    const callablesInFile = nodes.filter(n => n.filePath === relPath && (n.type === 'function' || n.type === 'method' || n.type === 'endpoint'));
+                    const callablesInFile = callablesByFile.get(relPath) || [];
+                    const fallbackFileNode = fileNodesById.get(fileNodeId);
+                    const callerSources = callablesInFile.length > 0
+                        ? callablesInFile
+                        : (fallbackFileNode ? [fallbackFileNode] : []);
 
-                    cache.calls.forEach(calledName => {
-                        // Find matching targets across the entire codebase
-                        const targetSymbols = nodes.filter(n => 
-                            (n.type === 'function' || n.type === 'method' || n.type === 'endpoint') && 
-                            (n.label.toLowerCase() === calledName.toLowerCase() || n.label.toLowerCase().endsWith('.' + calledName.toLowerCase()))
-                        );
+                    for (const calledName of cache.calls) {
+                        const targetSymbols = callablesByName.get(calledName.toLowerCase());
+                        if (!targetSymbols) continue;
 
                         for (const targetSymbol of targetSymbols) {
-                            // Connect from each callable in this file if it calls the symbol, or from the file node itself
-                            const callerSources = callablesInFile.length > 0 ? callablesInFile : [nodes.find(n => n.id === fileNodeId)].filter(Boolean);
-
                             for (const callerNode of callerSources) {
-                                if (callerNode && callerNode.id !== targetSymbol.id) {
-                                    const edgeId = `edge_calls_${callerNode.id}_${targetSymbol.id}`;
-                                    if (!edges.some(e => e.id === edgeId)) {
-                                        edges.push({
-                                            id: edgeId,
-                                            source: callerNode.id,
-                                            target: targetSymbol.id,
-                                            label: 'calls'
-                                        });
-                                    }
+                                if (callerNode.id !== targetSymbol.id) {
+                                    pushEdge({
+                                        id: `edge_calls_${callerNode.id}_${targetSymbol.id}`,
+                                        source: callerNode.id,
+                                        target: targetSymbol.id,
+                                        label: 'calls'
+                                    });
                                 }
                             }
                         }
-                    });
+                    }
                 }
             }
 
@@ -1374,15 +1409,12 @@ export class CodeGraphManager {
                         const parentId = classNameToId.get(parentName);
 
                         if (childId && parentId) {
-                            const edgeId = `edge_inherits_${childId}_${parentId}`;
-                            if (!edges.some(e => e.id === edgeId)) {
-                                edges.push({
-                                    id: edgeId,
-                                    source: childId,
-                                    target: parentId,
-                                    label: 'inherits'
-                                });
-                            }
+                            pushEdge({
+                                id: `edge_inherits_${childId}_${parentId}`,
+                                source: childId,
+                                target: parentId,
+                                label: 'inherits'
+                            });
                         }
                     }
                 }

@@ -61,23 +61,34 @@ function computeSimpleLineDiff(oldText: string, newText: string): string {
 
 export const missionBriefingPlugin: TagPlugin = {
     id: 'mission_briefing',
-    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<mission_briefing\b([^>]*?)>([\s\S]*?)<\/mission_briefing>/gim,
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<mission_briefing\b([^>]*?)(?:\/>|>([\s\S]*?)<\/mission_briefing>)/gim,
     render: (match: RegExpExecArray, context: PluginContext) => {
         const attrStr = match[1] || "";
         const content = (match[2] || "").trim();
 
-        const actionMatch = attrStr.match(/action=["'](write|patch)["']/i);
-        const isPatch = actionMatch ? actionMatch[1].toLowerCase() === 'patch' : content.includes('<<<<<<< SEARCH');
-        const action = isPatch ? 'PATCH' : 'WRITE';
+        const actionMatch = attrStr.match(/action=["'](add|edit|delete|write|patch|upsert|remove)["']/i);
+        const rawAction = actionMatch ? actionMatch[1].toLowerCase() : (content.includes('<<<<<<< SEARCH') ? 'patch' : 'upsert');
+        const isPatch = rawAction === 'patch' || content.includes('<<<<<<< SEARCH');
+        const isDelete = rawAction === 'delete' || rawAction === 'remove';
+        const action = rawAction.toUpperCase();
 
         const scopeMatch = attrStr.match(/scope=["'](global|local)["']/i);
         const scope = scopeMatch ? scopeMatch[1].toUpperCase() : 'GLOBAL';
+
+        const sectionMatch = attrStr.match(/section=["']([^"']+)["']/i);
+        const idMatch = attrStr.match(/id=["']([^"']+)["']/i);
+        const titleMatch = attrStr.match(/title=["']([^"']+)["']/i);
+        const section = (sectionMatch?.[1] || idMatch?.[1] || '').trim();
+        const title = (titleMatch?.[1] || '').trim();
+        const sectionLabel = section ? ` &middot; Section: <code>${section}</code>` : '';
 
         const cardId = `doctrine-proposal-${context.messageId}-${Math.random().toString(36).substring(7)}`;
 
         let bodyHtml = "";
 
-        if (isPatch) {
+        if (isDelete) {
+            bodyHtml = `<div style="color: var(--vscode-charts-red); font-weight: 600;">Delete briefing section: <code>${section || title || content}</code></div>`;
+        } else if (isPatch) {
             const normalized = normalizeAiderContent(content);
             const hunks = parseAiderHunks(normalized);
 
@@ -123,17 +134,19 @@ export const missionBriefingPlugin: TagPlugin = {
             <div class="briefing-header" style="color: var(--vscode-charts-purple); display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: rgba(155, 89, 182, 0.1); border-bottom: 1px solid var(--vscode-widget-border);">
                 <div style="display: flex; align-items: center; gap: 8px;">
                     <span class="codicon codicon-shield"></span>
-                    <strong style="letter-spacing: 0.5px;">MISSION DOCTRINE & CONSTRAINTS (${action} &middot; ${scope})</strong>
+                    <strong style="letter-spacing: 0.5px;">MISSION BRIEFING (${action} &middot; ${scope}${sectionLabel})</strong>
                 </div>
                 <div style="display: flex; gap: 6px; align-items: center;">
                     <button class="code-action-btn apply-btn apply-briefing-btn" 
                             id="apply-btn-${cardId}" 
                             data-card-id="${cardId}" 
                             data-content="${encodeURIComponent(content)}" 
-                            data-action="${action.toLowerCase()}" 
+                            data-action="${rawAction}" 
+                            data-section="${encodeURIComponent(section)}"
+                            data-title="${encodeURIComponent(title)}"
                             data-scope="${scope.toLowerCase()}" 
-                            title="Apply this doctrine update to workspace context">
-                        <i class="codicon codicon-check"></i> Apply Doctrine
+                            title="Apply this briefing section update">
+                        <i class="codicon codicon-check"></i> Apply Section
                     </button>
                     <button class="code-action-btn secondary-btn inspect-briefing-btn" title="Open Mission Briefing Modal to inspect and manually edit">
                         <i class="codicon codicon-edit"></i> Edit in Modal
@@ -156,11 +169,13 @@ export const missionBriefingPlugin: TagPlugin = {
                 bEl.disabled = true;
                 bEl.innerHTML = '<span class="spinner" style="width:10px; height:10px; border-width:2px; margin-right:4px;"></span> Applying...';
 
-                const content = decodeURIComponent(d.content);
+                const content = decodeURIComponent(d.content || '');
                 context.vscode.postMessage({
                     command: 'applyMissionBriefing',
                     content: content,
-                    action: d.action || 'patch',
+                    action: d.action || 'upsert',
+                    section: d.section ? decodeURIComponent(d.section) : undefined,
+                    title: d.title ? decodeURIComponent(d.title) : undefined,
                     scope: d.scope || 'global',
                     cardId: d.cardId
                 });

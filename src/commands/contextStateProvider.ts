@@ -66,22 +66,31 @@ export function isDangerousOrBlocked(fsPathOrRel: string, workspaceRoot?: string
     }
 
     // If an absolute path is passed, only inspect segments relative to the workspace root
-    if (workspaceRoot) {
-        const root = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
-        if (target.toLowerCase().startsWith(root.toLowerCase() + '/')) {
-            target = target.substring(root.length + 1);
-        }
-    } else if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-        for (const wf of vscode.workspace.workspaceFolders) {
-            const root = wf.uri.fsPath.replace(/\\/g, '/').replace(/\/+$/, '');
+    const isAbsTarget = target.startsWith('/') || /^[a-zA-Z]:\//.test(target);
+    if (isAbsTarget) {
+        if (workspaceRoot) {
+            const root = workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
             if (target.toLowerCase().startsWith(root.toLowerCase() + '/')) {
                 target = target.substring(root.length + 1);
-                break;
             }
+        } else if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+            let matchedRoot = false;
+            for (const wf of vscode.workspace.workspaceFolders) {
+                const root = wf.uri.fsPath.replace(/\\/g, '/').replace(/\/+$/, '');
+                if (target.toLowerCase().startsWith(root.toLowerCase() + '/')) {
+                    target = target.substring(root.length + 1);
+                    matchedRoot = true;
+                    break;
+                }
+            }
+            if (!matchedRoot) {
+                const allSegs = target.split('/').filter(Boolean);
+                target = allSegs.slice(Math.max(0, allSegs.length - 2)).join('/');
+            }
+        } else {
+            const allSegs = target.split('/').filter(Boolean);
+            target = allSegs.slice(Math.max(0, allSegs.length - 2)).join('/');
         }
-    } else if (path.isAbsolute(target)) {
-        const allSegs = target.split('/').filter(Boolean);
-        target = allSegs.slice(Math.max(0, allSegs.length - 2)).join('/');
     }
 
     target = target.replace(/^\/+/, '');
@@ -119,6 +128,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     // Fast-path lookup sets to prevent O(N * M) scans
     private _activeParentPrefixes: Set<string> = new Set();
     private _cachedStateKeys: { [key: string]: ContextState } | null = null;
+    private _lastContextKeySignatures: Map<string, string> = new Map();
 
     private defaultCollapsedFolders = new Set([
         'node_modules', 'dist', 'build', 'out', 'obj', 'target',
@@ -136,11 +146,10 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         vscode.workspace.onDidDeleteFiles(e => this.handleFileDeletions(e.files));
         
-        // Perform cleanup and migration on init
+        // Perform cleanup and migration on init (refresh already updates context keys)
         this.cleanNonExistentFiles()
             .then(() => this.migrateDefaultCollapsedFolders())
-            .then(() => this.refresh())
-            .then(() => this.updateContextKeys());
+            .then(() => this.refresh());
     }
 
     private getUnifiedWorkspaceState(): { [key: string]: ContextState } {
@@ -668,11 +677,19 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             }
         } catch {}
 
-        vscode.commands.executeCommand('setContext', 'lollms:includedPaths', includedMap);
-        vscode.commands.executeCommand('setContext', 'lollms:definitionsPaths', definitionsMap);
-        vscode.commands.executeCommand('setContext', 'lollms:collapsedPaths', collapsedMap);
-        vscode.commands.executeCommand('setContext', 'lollms:excludedPaths', excludedMap);
-        vscode.commands.executeCommand('setContext', 'lollms:configuredPaths', configuredMap);
+        const syncContextIfChanged = (key: string, map: Record<string, boolean>) => {
+            const sig = Object.keys(map).sort().join('|');
+            if (this._lastContextKeySignatures.get(key) !== sig) {
+                this._lastContextKeySignatures.set(key, sig);
+                vscode.commands.executeCommand('setContext', key, map);
+            }
+        };
+
+        syncContextIfChanged('lollms:includedPaths', includedMap);
+        syncContextIfChanged('lollms:definitionsPaths', definitionsMap);
+        syncContextIfChanged('lollms:collapsedPaths', collapsedMap);
+        syncContextIfChanged('lollms:excludedPaths', excludedMap);
+        syncContextIfChanged('lollms:configuredPaths', configuredMap);
     }
 
     /**
@@ -1121,10 +1138,8 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         this._cachedStateKeys = newState;
         this.rebuildActivePrefixCache(newState);
-        this._isTreeDirty = true;
-        this._cachedVisibleFiles = null;
         await this.context.workspaceState.update(this.stateKey, newState);
-        this.refresh(true);
+        this.refresh(false);
         this._onDidChangeFileDecorations.fire(undefined);
     }
 

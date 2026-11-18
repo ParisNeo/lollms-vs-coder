@@ -86,33 +86,34 @@ Maximum Allowed Scouting Rounds: Up to ${maxRounds}.
    - Tool responses accumulate in context across rounds.
    - Early convergence: Stop scouting as soon as you have sufficient certainty!
 
-2. **PHASE 2: UNDERSTANDING**:
-   - Reformulate your technical findings into a coherent, clear structure ready for the Coder inside \`<findings>\`.
-   - Explain system mechanics, public interfaces, caller/callee flows, and exact contracts discovered.
+2. **PHASE 2: UNDERSTANDING (\`<findings>\` = FACTUAL DISCOVERIES ONLY)**:
+   - Inside \`<findings>\`, document **ONLY factual discoveries** about the existing codebase: how the system currently works, caller/callee flows, data contracts, and exact file/symbol locations.
+   - **STRICT SEPARATION**: NEVER put action items, TODOs, or "what needs to be changed" inside \`<findings>\`. Findings explain *how things work*; \`<phase><instruction>\` states *what to implement*.
 
-3. **PHASE 3: WEIGHING FILES & PRODUCING A VIEWING STRATEGY**:
-   - Weigh each candidate file based on size (tokens), importance, and task role to form the most token-efficient viewing strategy:
-     - **Full File** (\`full\`): Load the entire file content. Use when the Coder must directly write or modify this file, or for small tightly-coupled files.
-     - **Structure / Definitions Only** (\`structure\`): Load only classes, interfaces, function signatures, and docstrings without implementation bodies. Saves 80–90% of tokens while giving the Coder 100% type & contract awareness.
-     - **Structure + Targeted Real Code** (\`symbols: sym1, Class2:method3\`): Load the file's structure PLUS the exact implementation code of specific functions, methods, or classes needed to understand the mechanics! Saves massive tokens while delivering exact source code where it matters!
-     - **Muted** (\`muted\`): Keep in project tree as reference at 0 tokens.
-   - Specify your viewing strategy for each file in your plan:
+3. **PHASE 3: SYMBOL-FIRST VIEWING STRATEGY & CONCRETE TASK INSTRUCTIONS**:
+   - Keep the Coder's context as small and focused as possible. **NEVER bloat context with \`mode="full"\` when symbol-level activation suffices**:
+     - **Targeted Symbols + Structure (\`mode="symbols"\`, DEFAULT FOR EDITS & INSPECTIONS)**: Load the file's structure/signatures PLUS the exact implementation code of ONLY the symbols (\`symbols="SymbolA,ClassB.methodC"\`) the Coder needs to read or modify. Always prefer this whenever updating specific functions, methods, or classes in existing files!
+     - **Structure / Definitions Only (\`mode="structure"\`)**: Load only classes, interfaces, and function signatures without implementation bodies. Use for reference-only files to give 100% type & contract awareness at ~85% token savings.
+     - **Full File (\`mode="full"\`, LAST RESORT ONLY)**: Load the entire file content **ONLY when absolutely needed** (e.g., very small files, brand-new files, or files requiring sweeping whole-file structural rewrites that cannot be scoped to symbols).
+     - **Muted (\`mode="muted"\`)**: Keep in project tree as reference at 0 tokens.
+   - In \`<phase><instruction>\`, write **concrete, self-contained coding instructions** specifying exact target files, exact symbol names to modify/add, exact behavior, and edge cases. **NEVER** write vague delegates like *"implement what was said in the findings"* or *"apply the changes from findings"*.
 
 <plan>
     <findings>
-        The full findings text organized as markdown with optional code snippets, function contracts, and architecture analysis.
+        Factual discoveries only: how the existing system works, execution flow, data contracts, and exact symbol locations. No action items or TODOs here.
     </findings>
     <viewing_strategy>
-        <file path="path/to/target.ext" mode="full" justification="Primary editing target" />
-        <file path="path/to/reference.ext" mode="symbols" symbols="validateSession,createSession" justification="Need exact implementation of session creation" />
+        <file path="path/to/target.ext" mode="symbols" symbols="targetFunction,TargetClass.handleEvent" justification="Coder only needs to update these two symbols" />
+        <file path="path/to/reference.ext" mode="symbols" symbols="validateSession" justification="Need exact implementation of session validation" />
         <file path="path/to/types.ext" mode="structure" justification="Only need type definitions & signatures" />
+        <file path="path/to/small_config.json" mode="full" justification="Small file requiring direct full-file edit" />
         <file path="path/to/helper.ext" mode="muted" justification="Not required for this task" />
     </viewing_strategy>
     <phase id="1">
-        <instruction>Detailed technical instructions for Phase 1</instruction>
+        <instruction>Concrete, self-contained task: In path/to/target.ext, update TargetClass.handleEvent to validate X using validateSession from reference.ext, and add Y error handling in targetFunction.</instruction>
         <files_list>
-            path/to/target.ext (full)
-            path/to/reference.ext (symbols: validateSession, createSession)
+            path/to/target.ext (symbols: targetFunction, TargetClass.handleEvent)
+            path/to/reference.ext (symbols: validateSession)
             path/to/types.ext (structure)
         </files_list>
     </phase>
@@ -133,8 +134,9 @@ Maximum Allowed Scouting Rounds: Up to ${maxRounds}.
    - If you discovered valuable long-term architectural facts, conventions, or design patterns that will benefit future sessions, record them using \`<record_insight topic="..." hashtags="#architecture">...</record_insight>\`.
 
 ### 🛑 CRITICAL INVARIANTS:
-- The Coder can ONLY modify files loaded with full content under [C].
-- In your \`<files_list>\`, list the real paths of all files that must be modified or read in that phase.
+- Make sure the Coder has every symbol or file it needs before concluding so it never has to stall or complain about missing context.
+- Prefer \`mode="symbols"\` over \`mode="full"\` whenever possible; use \`mode="full"\` only when absolutely needed.
+- In your \`<files_list>\`, list the real paths (and symbol/structure modes) of all files needed in that phase.
 - Output ONLY your tool tags during scouting rounds, and emit the final \`<plan>\` tag when ready.`;
     }
 

@@ -4,6 +4,10 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [2026-11-18 22:50]
+
+- Fix: Update version to 1.0.97 and remove deprecated component (other.ts)
+
 ## [2026-11-13 17:11]
 
 - Add version 1.0.91 and enhance chat panel features for better message rendering.

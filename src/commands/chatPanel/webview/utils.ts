@@ -98,6 +98,324 @@ function isMetaPlaceholder(line: string): boolean {
     return false;
 }
 
+function escapeRegexChar(ch: string): string {
+    return ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function splitTopLevel(input: string, delimiter: string): string[] {
+    const parts: string[] = [];
+    let current = '';
+    let parenDepth = 0;
+    let braceDepth = 0;
+    let bracketDepth = 0;
+    let quote: string | null = null;
+
+    for (let i = 0; i < input.length; i++) {
+        const ch = input[i];
+        if (ch === '\\' && i + 1 < input.length) {
+            current += ch + input[i + 1];
+            i++;
+            continue;
+        }
+        if (quote) {
+            if (ch === quote) quote = null;
+            current += ch;
+            continue;
+        }
+        if (ch === '"' || ch === "'") {
+            quote = ch;
+            current += ch;
+            continue;
+        }
+        if (ch === '(') parenDepth++;
+        else if (ch === ')' && parenDepth > 0) parenDepth--;
+        else if (ch === '{') braceDepth++;
+        else if (ch === '}' && braceDepth > 0) braceDepth--;
+        else if (ch === '[') bracketDepth++;
+        else if (ch === ']' && bracketDepth > 0) bracketDepth--;
+
+        if (parenDepth === 0 && braceDepth === 0 && bracketDepth === 0 && ch === delimiter) {
+            parts.push(current);
+            current = '';
+        } else {
+            current += ch;
+        }
+    }
+    parts.push(current);
+    return parts;
+}
+
+function splitWhitespaceTopLevel(input: string): string[] {
+    const tokens: string[] = [];
+    let current = '';
+    let parenDepth = 0;
+    let braceDepth = 0;
+    let bracketDepth = 0;
+    let quote: string | null = null;
+
+    for (let i = 0; i < input.length; i++) {
+        const ch = input[i];
+        if (ch === '\\' && i + 1 < input.length) {
+            current += ch + input[i + 1];
+            i++;
+            continue;
+        }
+        if (quote) {
+            if (ch === quote) quote = null;
+            current += ch;
+            continue;
+        }
+        if (ch === '"' || ch === "'") {
+            quote = ch;
+            current += ch;
+            continue;
+        }
+        if (ch === '(') parenDepth++;
+        else if (ch === ')' && parenDepth > 0) parenDepth--;
+        else if (ch === '{') braceDepth++;
+        else if (ch === '}' && braceDepth > 0) braceDepth--;
+        else if (ch === '[') bracketDepth++;
+        else if (ch === ']' && bracketDepth > 0) bracketDepth--;
+
+        if (parenDepth === 0 && braceDepth === 0 && bracketDepth === 0 && /\s/.test(ch)) {
+            if (current.length > 0) {
+                tokens.push(current);
+                current = '';
+            }
+        } else {
+            current += ch;
+        }
+    }
+    if (current.length > 0) {
+        tokens.push(current);
+    }
+    return tokens;
+}
+
+function globToRegexBody(pattern: string): string {
+    let out = '';
+    for (let i = 0; i < pattern.length; i++) {
+        const ch = pattern[i];
+
+        if (ch === '*') {
+            if (pattern[i + 1] === '*') {
+                while (pattern[i + 1] === '*') i++;
+                if (pattern[i + 1] === '/') {
+                    i++;
+                    out += '(?:.*/)?';
+                } else {
+                    out += '.*';
+                }
+            } else {
+                out += '[^/]*';
+            }
+            continue;
+        }
+
+        if (ch === '?') {
+            out += '[^/]';
+            continue;
+        }
+
+        if (ch === '{') {
+            let depth = 1;
+            let j = i + 1;
+            while (j < pattern.length && depth > 0) {
+                if (pattern[j] === '{') depth++;
+                else if (pattern[j] === '}') depth--;
+                j++;
+            }
+            if (depth === 0) {
+                const inner = pattern.slice(i + 1, j - 1);
+                const alts = splitTopLevel(inner, ',').map(a => globToRegexBody(a.trim()));
+                out += `(?:${alts.join('|')})`;
+                i = j - 1;
+                continue;
+            }
+        }
+
+        if (ch === '[') {
+            let j = i + 1;
+            if (pattern[j] === '!' || pattern[j] === '^') j++;
+            if (pattern[j] === ']') j++;
+            while (j < pattern.length && pattern[j] !== ']') {
+                j++;
+            }
+            if (j < pattern.length && pattern[j] === ']') {
+                let inner = pattern.slice(i + 1, j);
+                if (inner.startsWith('!')) {
+                    inner = '^' + inner.slice(1);
+                }
+                out += `[${inner}]`;
+                i = j;
+                continue;
+            }
+        }
+
+        out += escapeRegexChar(ch);
+    }
+    return out;
+}
+
+function compileSingleFilePattern(rawToken: string): (normPath: string, normName: string) => boolean {
+    let cleanToken = rawToken.trim();
+    if ((cleanToken.startsWith('"') && cleanToken.endsWith('"')) || (cleanToken.startsWith("'") && cleanToken.endsWith("'"))) {
+        cleanToken = cleanToken.slice(1, -1).trim();
+    }
+    if (!cleanToken) return () => true;
+
+    // 1. Explicit /regex/flags literal
+    const regexLiteralMatch = cleanToken.match(/^\/(.+)\/([gimsuy]*)$/);
+    if (regexLiteralMatch) {
+        try {
+            const flags = (regexLiteralMatch[2] || 'i').replace(/g/g, '');
+            const re = new RegExp(regexLiteralMatch[1], flags);
+            return (normPath: string, normName: string) => re.test(normPath) || re.test(normName);
+        } catch {
+            // Fall back to literal/glob matching while typing incomplete regex
+        }
+    }
+
+    // 2. Regex-specific grep syntax (^, $, grouping, +, \d/\w/\., .*, .+, {m,n})
+    const hasRegexMarkers =
+        /[\^$()+]|\\[dDwWsSbBnrt.^$+?()[\]{}|\\]|(?:\.\*|\.\+)|\{\d+(?:,\d*)?\}/.test(cleanToken);
+
+    if (hasRegexMarkers) {
+        try {
+            const re = new RegExp(cleanToken, 'i');
+            return (normPath: string, normName: string) => re.test(normPath) || re.test(normName);
+        } catch {
+            const lower = cleanToken.toLowerCase();
+            return (normPath: string, normName: string) =>
+                normPath.toLowerCase().includes(lower) || normName.toLowerCase().includes(lower);
+        }
+    }
+
+    // 3. Glob wildcard syntax (*, **, ?, {a,b}, [abc])
+    const hasGlobChars = /[*?\[\]{}]/.test(cleanToken);
+    if (hasGlobChars) {
+        const normalizedGlob = cleanToken.replace(/\\/g, '/').replace(/^\.\//, '');
+        const startsWithSlash = normalizedGlob.startsWith('/');
+        const cleanGlob = startsWithSlash ? normalizedGlob.slice(1) : normalizedGlob;
+        const hasSlash = cleanGlob.includes('/');
+
+        try {
+            const body = globToRegexBody(cleanGlob);
+            let regexSrc: string;
+            if (startsWithSlash) {
+                regexSrc = cleanGlob.endsWith('/') ? `^${body}` : `^${body}$`;
+            } else if (hasSlash) {
+                regexSrc = cleanGlob.endsWith('/') ? `(?:^|/)${body}` : `(?:^|/)${body}$`;
+            } else {
+                regexSrc = `(?:^|/)${body}(?:$|/)`;
+            }
+            const re = new RegExp(regexSrc, 'i');
+            return (normPath: string, normName: string) => re.test(normPath) || re.test(normName);
+        } catch {
+            const lower = cleanToken.toLowerCase();
+            return (normPath: string, normName: string) =>
+                normPath.toLowerCase().includes(lower) || normName.toLowerCase().includes(lower);
+        }
+    }
+
+    // 4. Plain substring fallback
+    const lower = cleanToken.replace(/\\/g, '/').toLowerCase();
+    return (normPath: string, normName: string) =>
+        normPath.toLowerCase().includes(lower) || normName.toLowerCase().includes(lower);
+}
+
+/**
+ * Compiles a grep/glob-style file search query into a reusable predicate.
+ * Supports wildcards (*, **, ?, {a,b}, [abc]), regex (/pattern/ or ^$),
+ * OR alternatives (| or ,), space-separated AND terms, and exclusions (! or - prefix).
+ */
+export function createFilePatternMatcher(query: string): (filePath: string, fileName?: string) => boolean {
+    const trimmed = (query || '').trim();
+    if (!trimmed) return () => true;
+
+    // Preserve explicit single /regex/flags literal without splitting internal spaces
+    if (/^\/.+\/[gimsuy]*$/.test(trimmed)) {
+        const single = compileSingleFilePattern(trimmed);
+        return (filePath: string, fileName?: string) => {
+            const normPath = (filePath || '').replace(/\\/g, '/');
+            const normName = fileName || normPath.split('/').pop() || normPath;
+            return single(normPath, normName);
+        };
+    }
+
+    const rawTokens = splitWhitespaceTopLevel(trimmed);
+    const groups: { negated: boolean; alternatives: ((p: string, n: string) => boolean)[] }[] = [];
+    let expectOr = false;
+
+    for (const rawTok of rawTokens) {
+        if (rawTok === '|' || rawTok === ',') {
+            expectOr = true;
+            continue;
+        }
+
+        const startsWithOr = rawTok.startsWith('|') || rawTok.startsWith(',');
+        const endsWithOr = rawTok.endsWith('|') || rawTok.endsWith(',');
+        if (startsWithOr) expectOr = true;
+
+        const alts: string[] = [];
+        for (const pipePart of splitTopLevel(rawTok, '|')) {
+            for (const commaPart of splitTopLevel(pipePart, ',')) {
+                const part = commaPart.trim();
+                if (part) alts.push(part);
+            }
+        }
+        if (alts.length === 0) {
+            if (endsWithOr) expectOr = true;
+            continue;
+        }
+
+        if (expectOr && groups.length > 0 && !groups[groups.length - 1].negated) {
+            for (const a of alts) {
+                groups[groups.length - 1].alternatives.push(compileSingleFilePattern(a));
+            }
+            expectOr = endsWithOr;
+        } else {
+            expectOr = endsWithOr;
+            if (alts.length === 1) {
+                const tok = alts[0];
+                if ((tok.startsWith('!') || tok.startsWith('-')) && tok.length > 1) {
+                    groups.push({
+                        negated: true,
+                        alternatives: [compileSingleFilePattern(tok.slice(1))]
+                    });
+                    continue;
+                }
+                if (tok === '!' || tok === '-') {
+                    continue;
+                }
+            }
+            groups.push({
+                negated: false,
+                alternatives: alts.map(compileSingleFilePattern)
+            });
+        }
+    }
+
+    if (groups.length === 0) return () => true;
+
+    return (filePath: string, fileName?: string) => {
+        const normPath = (filePath || '').replace(/\\/g, '/');
+        const normName = fileName || normPath.split('/').pop() || normPath;
+
+        for (const grp of groups) {
+            const matched = grp.alternatives.some(fn => fn(normPath, normName));
+            if (grp.negated ? matched : !matched) {
+                return false;
+            }
+        }
+        return true;
+    };
+}
+
+export function matchesFilePattern(filePath: string, query: string, fileName?: string): boolean {
+    return createFilePatternMatcher(query)(filePath, fileName);
+}
+
 export function isValidFilePath(filePath: string): boolean {
     if (!filePath || typeof filePath !== 'string') return false;
     let clean = filePath.trim().replace(/^['"`]|['"`]$/g, '');

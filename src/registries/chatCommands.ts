@@ -32,6 +32,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             let raw = Array.isArray(m.content) ? m.content.map((c: any) => c.type === 'text' ? c.text : '[Image]').join('\n') : (m.content || '');
             const cleaned = stripThinkingTags(raw)
                 .replace(/<lollms_tool\b[^>]*>[\s\S]*?<\/lollms_tool>/gi, '')
+                .replace(/<agent_git_diff\b[^>]*\/?>/gi, '')
                 .replace(/<details\s+class=["']processing-block["']>[\s\S]*?<\/details>/gi, '')
                 .replace(/<details\s+class=["']lollms-form-block["']>[\s\S]*?<\/details>/gi, '')
                 .trim();
@@ -78,30 +79,24 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
 
     // --- HOOKED NEW DISCUSSION: REPLACES BLIND DIRECT WRITING WITH MODAL TRIGGER ---
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
-        const savedSelections = await getAvailableContextSelections();
         const panel = ChatPanel.currentPanel || Array.from(ChatPanel.panels.values())[0];
-        if (panel) {
+        if (panel && !panel.isDisposed) {
             panel._panel.reveal();
+            const savedSelections = await getAvailableContextSelections();
+            const activeFiles = services.contextManager.getContextStateProvider()?.getIncludedFiles() || [];
+            const activeMuted = panel.getCurrentDiscussion()?.mutedFiles ?? services.discussionManager.getLastMutedFiles();
             panel._panel.webview.postMessage({ 
                 command: 'openNewDiscussionWizard',
-                selections: savedSelections
+                selections: savedSelections,
+                files: activeFiles,
+                mutedFiles: activeMuted
             });
         } else {
-            vscode.commands.executeCommand<ChatPanel>('lollms-vs-coder.newTempDiscussion').then((panel) => {
-                if (panel) {
-                    const checkInterval = setInterval(async () => {
-                        if (panel.isWebviewReady && panel._panel && panel._panel.webview && !panel.isDisposed) {
-                            clearInterval(checkInterval);
-                            const currentSelections = await getAvailableContextSelections();
-                            panel._panel.webview.postMessage({ 
-                                command: 'openNewDiscussionWizard',
-                                selections: currentSelections
-                            });
-                        }
-                    }, 100);
-                    setTimeout(() => clearInterval(checkInterval), 10000);
-                }
-            });
+            const tempPanel = await vscode.commands.executeCommand<ChatPanel>('lollms-vs-coder.newTempDiscussion');
+            if (tempPanel && !tempPanel.isDisposed) {
+                const savedSelections = await getAvailableContextSelections();
+                await tempPanel.openNewDiscussionWizard(savedSelections);
+            }
         }
     }));
 
@@ -119,10 +114,14 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'max',
         fastMode?: boolean,
         mutedFiles?: string[],
+        importedSkills?: string[],
+        projectSkills?: string[],
         sendToAi: boolean
     }) => {
+        const sourcePanel = ChatPanel.currentPanel && !ChatPanel.currentPanel.isDisposed ? ChatPanel.currentPanel : undefined;
         const workspaceFolder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
         if (!workspaceFolder) {
+            sourcePanel?._panel.webview.postMessage({ command: 'hideDiscussionLoader' });
             vscode.window.showErrorMessage("Workspace required to initialize discussion.");
             return;
         }
@@ -140,6 +139,13 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             if (discussion.capabilities) {
                 discussion.capabilities.mutedFiles = [...params.mutedFiles];
             }
+        }
+
+        // Apply selected chat skills
+        if (Array.isArray(params.importedSkills)) {
+            discussion.importedSkills = Array.from(new Set(
+                params.importedSkills.filter((id: string) => id && !id.includes('-lib') && !id.startsWith('zoo-'))
+            ));
         }
 
         // Sync custom capabilities chosen in the wizard
@@ -171,63 +177,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             discussion.capabilities.folderSettings = folderSettings;
         }
 
-        // Handle chosen context selection
-        if (params.contextSelection && params.contextSelection !== 'current' && params.contextSelection !== 'empty') {
-            try {
-                const loadedSel = await loadContextSelectionFile(params.contextSelection);
-                if (loadedSel && discussion.capabilities) {
-                    const allFolders = vscode.workspace.workspaceFolders || [];
-                    const newSettings = { ... (discussion.capabilities.folderSettings || {}) };
-                    loadedSel.files.forEach((f: string) => {
-                        const segments = f.split('/');
-                        const projFolder = allFolders.find(fd => fd.name === segments[0]);
-                        if (projFolder) {
-                            newSettings[projFolder.uri.toString()] = { tree: true, content: true };
-                        }
-                    });
-                    discussion.capabilities.folderSettings = newSettings;
-                    // Loading a selection toggles to fast mode automatically
-                    discussion.capabilities.fastMode = true;
-                }
-            } catch (e) {}
-        }
-
-        // Save to disk immediately
-        await services.discussionManager.saveDiscussion(discussion);
-
-        // Spawn panel
-        const panel = ChatPanel.createOrShow(services, discussion.id);
-        panel._panel.reveal();
-
-        const agent = new AgentManager(
-            panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
-            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
-            services.toolManager,
-            services.rlmDb
-        );
-        agent.projectMemoryManager = services.projectMemoryManager;
-        agent.personalityManager = services.personalityManager;
-        agent.setProcessManager(services.processManager);
-        panel.setAgentManager(agent);
-
-        panel.setProcessManager(services.processManager);
-        panel.setContextManager(services.contextManager);
-        panel.setPersonalityManager(services.personalityManager);
-        panel.setHerdManager(services.herdManager);
-
-        // Apply chosen context selection state
-        if (params.contextSelection === 'empty') {
-            await services.contextManager.getContextStateProvider()?.softReset();
-            discussion.mutedFiles = [];
-            if (discussion.capabilities) {
-                discussion.capabilities.mutedFiles = [];
-            }
-            await services.discussionManager.saveDiscussion(discussion);
-        } else if (params.contextSelection && params.contextSelection !== 'current') {
-            await vscode.commands.executeCommand('lollms-vs-coder.loadContextSelectionDirect', params.contextSelection);
-        }
-
-        // 🎯 DUAL-PATH PROMPT PREPARATION
+        // Prompt extraction
         let textToSet = "";
         let imagesToSet: any[] = [];
         if (typeof params.prompt === 'string') {
@@ -240,67 +190,152 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             }));
         }
 
-        if (!params.sendToAi && (textToSet || imagesToSet.length > 0)) {
-            (panel as any)._initialPrompt = textToSet;
-            (panel as any)._initialImages = imagesToSet;
+        // Immediately show or promote the target panel BEFORE async disk/state operations
+        const sourceDisc = sourcePanel?.getCurrentDiscussion();
+        const canReuseSourcePanel = !!(
+            sourcePanel &&
+            sourceDisc &&
+            sourceDisc.id.startsWith('temp-') &&
+            (!sourceDisc.messages || sourceDisc.messages.length === 0)
+        );
+
+        const panel = canReuseSourcePanel
+            ? sourcePanel!
+            : ChatPanel.createOrShow(services, discussion.id);
+
+        if (sourcePanel && !canReuseSourcePanel) {
+            sourcePanel._panel.webview.postMessage({ command: 'hideDiscussionLoader' });
         }
 
-        await panel.loadDiscussion();
-        services.treeProviders.discussion?.refresh();
+        panel.setProcessManager(services.processManager);
+        panel.setContextManager(services.contextManager);
+        panel.setPersonalityManager(services.personalityManager);
+        panel.setHerdManager(services.herdManager);
 
-        if (params.sendToAi) {
-            setImmediate(async () => {
-                const initialMessage: ChatMessage = {
-                    id: 'msg_' + Date.now(),
-                    role: 'user',
-                    content: params.prompt,
-                    timestamp: Date.now()
-                };
+        const agent = new AgentManager(
+            panel, services.lollmsAPI, services.contextManager, services.gitIntegration,
+            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+            services.toolManager,
+            services.rlmDb
+        );
+        agent.projectMemoryManager = services.projectMemoryManager;
+        agent.personalityManager = services.personalityManager;
+        agent.setProcessManager(services.processManager);
+        panel.setAgentManager(agent);
 
-                await panel.sendMessage(initialMessage);
+        panel.adoptDiscussion(discussion);
+        panel._panel.reveal();
 
-                // AUTO-TITLING PASS
-                if (!params.title) {
-                    try {
-                        const generatedTitle = await services.discussionManager.generateDiscussionTitle({
-                            ...discussion,
-                            messages: [initialMessage]
-                        });
-                        if (generatedTitle && generatedTitle.trim()) {
-                            const cleanTitle = generatedTitle.trim();
-                            discussion.title = cleanTitle;
-                            if (panel.getCurrentDiscussion()) {
-                                panel.getCurrentDiscussion()!.title = cleanTitle;
-                            }
-                            await services.discussionManager.saveDiscussion(discussion);
-                            panel._panel.title = cleanTitle;
-                            services.treeProviders.discussion?.refresh();
-                        }
-                    } catch (err) {
-                        console.warn("Background auto-titling failed.", err);
-                    }
-                }
+        if (panel.isWebviewReady) {
+            panel._panel.webview.postMessage({
+                command: 'showDiscussionLoader',
+                title: params.sendToAi ? 'Creating discussion & preparing prompt...' : 'Creating discussion...'
             });
-        } else {
-            // PATH 2: "CREATE ONLY" - reflect prompt into input
-            await panel.setInputText(textToSet, imagesToSet);
+        }
 
-            if (!params.title && (textToSet || imagesToSet.length > 0)) {
-                setImmediate(async () => {
-                    try {
-                        const generatedTitle = await services.discussionManager.generateDiscussionTitle({
-                            ...discussion,
-                            messages: [{ role: 'user', content: textToSet || "New Session" } as ChatMessage]
-                        });
-                        if (generatedTitle) {
-                            discussion.title = generatedTitle.trim();
-                            await services.discussionManager.saveDiscussion(discussion);
-                            panel._panel.title = discussion.title;
-                            services.treeProviders.discussion?.refresh();
-                        }
-                    } catch (e) {}
-                });
+        try {
+            // Apply project skills atomically (O(1) single state write)
+            if (Array.isArray(params.projectSkills)) {
+                const cleanProjSkills = params.projectSkills.filter((id: string) => id && !id.includes('-lib') && !id.startsWith('zoo-'));
+                await services.contextManager.setProjectSkills(cleanProjSkills);
             }
+
+            // Apply chosen context selection state
+            if (params.contextSelection === 'empty') {
+                await services.contextManager.getContextStateProvider()?.softReset();
+                discussion.mutedFiles = [];
+                if (discussion.capabilities) {
+                    discussion.capabilities.mutedFiles = [];
+                }
+                await services.discussionManager.saveLastMutedFiles([]);
+            } else if (params.contextSelection && params.contextSelection !== 'current') {
+                try {
+                    const loadedSel = await loadContextSelectionFile(params.contextSelection);
+                    if (loadedSel && discussion.capabilities) {
+                        const allFolders = vscode.workspace.workspaceFolders || [];
+                        const newSettings = { ...(discussion.capabilities.folderSettings || {}) };
+                        loadedSel.files.forEach((f: string) => {
+                            const segments = f.split('/');
+                            const projFolder = allFolders.find(fd => fd.name === segments[0]);
+                            if (projFolder) {
+                                newSettings[projFolder.uri.toString()] = { tree: true, content: true };
+                            }
+                        });
+                        discussion.capabilities.folderSettings = newSettings;
+                    }
+                } catch {}
+                await vscode.commands.executeCommand('lollms-vs-coder.loadContextSelectionDirect', params.contextSelection);
+                if (params.fastMode !== undefined && discussion.capabilities) {
+                    discussion.capabilities.fastMode = params.fastMode;
+                }
+            }
+
+            if (!params.sendToAi && (textToSet || imagesToSet.length > 0)) {
+                (panel as any)._initialPrompt = textToSet;
+                (panel as any)._initialImages = imagesToSet;
+            }
+
+            await services.discussionManager.saveDiscussion(discussion);
+            await panel.loadDiscussion();
+            services.treeProviders.discussion?.refresh();
+
+            if (params.sendToAi) {
+                setImmediate(async () => {
+                    const initialMessage: ChatMessage = {
+                        id: 'msg_' + Date.now(),
+                        role: 'user',
+                        content: params.prompt,
+                        timestamp: Date.now()
+                    };
+
+                    await panel.sendMessage(initialMessage);
+
+                    // AUTO-TITLING PASS
+                    if (!params.title) {
+                        try {
+                            const generatedTitle = await services.discussionManager.generateDiscussionTitle({
+                                ...discussion,
+                                messages: [initialMessage]
+                            });
+                            if (generatedTitle && generatedTitle.trim()) {
+                                const cleanTitle = generatedTitle.trim();
+                                discussion.title = cleanTitle;
+                                if (panel.getCurrentDiscussion()) {
+                                    panel.getCurrentDiscussion()!.title = cleanTitle;
+                                }
+                                await services.discussionManager.saveDiscussion(discussion);
+                                panel._panel.title = cleanTitle;
+                                services.treeProviders.discussion?.refresh();
+                            }
+                        } catch (err) {
+                            console.warn("Background auto-titling failed.", err);
+                        }
+                    }
+                });
+            } else {
+                // PATH 2: "CREATE ONLY" - reflect prompt into input
+                await panel.setInputText(textToSet, imagesToSet);
+
+                if (!params.title && (textToSet || imagesToSet.length > 0)) {
+                    setImmediate(async () => {
+                        try {
+                            const generatedTitle = await services.discussionManager.generateDiscussionTitle({
+                                ...discussion,
+                                messages: [{ role: 'user', content: textToSet || "New Session" } as ChatMessage]
+                            });
+                            if (generatedTitle) {
+                                discussion.title = generatedTitle.trim();
+                                await services.discussionManager.saveDiscussion(discussion);
+                                panel._panel.title = discussion.title;
+                                services.treeProviders.discussion?.refresh();
+                            }
+                        } catch (e) {}
+                    });
+                }
+            }
+        } catch (err: any) {
+            panel._panel.webview.postMessage({ command: 'hideDiscussionLoader' });
+            vscode.window.showErrorMessage(`Failed to create discussion: ${err?.message || err}`);
         }
     }));
 

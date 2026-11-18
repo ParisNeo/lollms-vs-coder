@@ -411,6 +411,16 @@ export class ProjectMemoryManager {
 
         const finalScope = scope || (id.startsWith('global_') || ['user', 'global'].includes(category) ? 'global' : 'local');
 
+        if (action !== 'delete') {
+            const { MissionBriefingManager } = require('./missionBriefingManager');
+            const isEpisodic = MissionBriefingManager.isEpisodicEventReport(content || '', title || id) ||
+                /^(?:session|turn|step|attempt|task|lesson|fixed_bug)_/i.test(id);
+            if (isEpisodic) {
+                Logger.info(`[ProjectMemoryManager] Rejected episodic event report '${id}' from long-term memory.`);
+                return;
+            }
+        }
+
         if (action === 'delete') {
             this._cache = this._cache.filter(m => m.id !== id);
             this._cache.forEach(m => {

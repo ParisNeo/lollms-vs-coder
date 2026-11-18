@@ -1299,9 +1299,10 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
 
     if (isFastMode) {
         operationalMandate = `
-    ### 🛡️ FAST MODE: DIRECT IMPLEMENTATION
-    - You must deliver the implementation directly in <file> tags.
-    - You can only use <unmute_files> and <add_files_to_context> to request files. No other tools or sub-agents are available.
+    ### 🛡️ FAST MODE: DIRECT IMPLEMENTATION & PHASED CONTEXT
+    - Deliver the implementation directly in <file> tags.
+    - **Work in Phases (Prevent Context Loops)**: Never try to load all files at once. Load only a small subset (1–3 files) per phase via \`<add_files_to_context>\` / \`<unmute_files>\`, release finished files with \`<mute_files>\` before loading more, and use \`<show_symbol>\` / \`<peek_files>\` / \`<load_structure>\` for targeted lookups.
+    - **If a Fix Fails in One Go**: Automatically instrument the code with \`[LOLLMS_DEBUG]\` logs to test your hypothesis and emit a \`<user_instruction title="..." type="instrumentation" hypothesis="...">\` block telling the user how to run and what output to report back.
     `;
     } else if (isExport) {
         operationalMandate = `
@@ -1360,6 +1361,7 @@ You are operating under strict **Agentic Engineering** constraints to prevent Th
        - ONLY ask the user using \`<lollms_form>\` if multiple viable choices exist requiring user decision.
 
     **AUTHORIZED WORKER TAGS:**
+    - \`<user_instruction title="..." type="instrumentation" hypothesis="...">\nClear steps for the user to run/reproduce and what output to report back...\n</user_instruction>\`
     - \`<lollms_form title="..." id="...">\nInteractive form inputs for the user...\n</lollms_form>\`
     - \`<mission_briefing action="write|patch">\nUpdate project doctrine...\n</mission_briefing>\`
     - \`<file path="..." action="write|patch|update_symbol">\n</file>
@@ -2112,92 +2114,260 @@ export function normalizePseudoFileBlocks(text: string): string {
     return result;
 }
 
+function findMatchingInlineBacktickEnd(line: string, startInLine: number): number {
+    let tickCount = 0;
+    while (startInLine + tickCount < line.length && line[startInLine + tickCount] === '`') {
+        tickCount++;
+    }
+    if (tickCount === 0) return -1;
+    let i = startInLine + tickCount;
+    while (i < line.length) {
+        if (line[i] === '`') {
+            let closeCount = 0;
+            while (i + closeCount < line.length && line[i + closeCount] === '`') {
+                closeCount++;
+            }
+            if (closeCount === tickCount) {
+                return i + closeCount;
+            }
+            i += closeCount;
+        } else {
+            i++;
+        }
+    }
+    return -1;
+}
+
 export function extractFileBlocks(text: string): ExtractedFileBlock[] {
     const blocks: ExtractedFileBlock[] = [];
     if (!text || typeof text !== 'string') return blocks;
 
     const targetText = normalizePseudoFileBlocks(text);
-    const openTagRegex = /^[ \t]*<file\s+([^>]*?)>/gim;
-    let match: RegExpExecArray | null;
+    const len = targetText.length;
 
-    while ((match = openTagRegex.exec(targetText)) !== null) {
-        let start = match.index;
-        const attrStr = match[1] || "";
-        const bodyStart = match.index + match[0].length;
+    let activeFence: { char: string; len: number } | null = null;
+    let pendingWrapperFence: { start: number; char: string; len: number } | null = null;
+    let openBlock: {
+        start: number;
+        bodyStart: number;
+        attrStr: string;
+        wrapperFence?: { start: number; char: string; len: number };
+    } | null = null;
 
+    const explicitPathAttrRegex = /\b(?:path|file_path|filepath|file)\s*=\s*(?:["'][^"']+["']|[^\s>]+)/i;
+
+    const isValidOpenTag = (attrStr: string, isAtLineStart: boolean): boolean => {
         const fileAttrs = parseFileTagAttributes(attrStr);
         if (!fileAttrs || !fileAttrs.path || !isValidFilePath(fileAttrs.path)) {
-            continue;
+            return false;
         }
+        if (!isAtLineStart && !explicitPathAttrRegex.test(attrStr)) {
+            return false;
+        }
+        return true;
+    };
 
-        let isClosed = false;
-        let end = targetText.length;
-        let bodyEnd = targetText.length;
-
-        // Strictly match line-start tags to prevent inline code strings from corrupting block limits
-        const tagFinder = /(?:^|\r?\n)[ \t]*(?:(<\/file>[ \t]*(?:\r?\n|$))|(<file\s+[^>]*?>))/gim;
-        tagFinder.lastIndex = bodyStart;
-
-        let innerMatch: RegExpExecArray | null;
-        while ((innerMatch = tagFinder.exec(targetText)) !== null) {
-            const closeTag = innerMatch[1];
-            const nextOpenTag = innerMatch[2];
-
-            if (closeTag) {
-                isClosed = true;
-                bodyEnd = innerMatch.index;
-                end = innerMatch.index + innerMatch[0].length;
-                break;
-            } else if (nextOpenTag) {
-                const nextAttrs = parseFileTagAttributes(nextOpenTag);
-                if (nextAttrs && nextAttrs.path && isValidFilePath(nextAttrs.path)) {
-                    isClosed = true;
-                    bodyEnd = innerMatch.index;
-                    end = innerMatch.index;
-                    break;
-                }
+    const nextNonEmptyLineStartsWithValidFile = (fromOffset: number): boolean => {
+        let p = fromOffset;
+        while (p < len) {
+            let nl = targetText.indexOf('\n', p);
+            if (nl === -1) nl = len;
+            const line = targetText.slice(p, nl).replace(/\r$/, '');
+            if (line.trim().length > 0) {
+                const fm = line.match(/^[ \t]*<file\s+([^>]*?)>/i);
+                return !!(fm && isValidOpenTag(fm[1] || '', true));
             }
+            p = nl + 1;
         }
+        return false;
+    };
 
-        const textBefore = targetText.substring(0, start);
-        const fenceBeforeMatch = textBefore.match(/(?:^|\n)[ \t]*(`{3,}|~{3,})(?:[a-zA-Z0-9_\-]+)?[ \t]*\r?\n[ \t]*$/);
-
-        let fenceLen = 0;
-        let fenceChar = '';
-        if (fenceBeforeMatch) {
-            fenceChar = fenceBeforeMatch[1][0];
-            fenceLen = fenceBeforeMatch[1].length;
-            const matchOffsetInBefore = textBefore.length - fenceBeforeMatch[0].length;
-            const newlineIndex = fenceBeforeMatch[0].indexOf('\n');
-            start = newlineIndex !== -1 ? matchOffsetInBefore + newlineIndex + 1 : matchOffsetInBefore;
-        }
-
-        if (fenceLen > 0 && isClosed) {
-            const textAfter = targetText.substring(end);
-            const fenceAfterRegex = new RegExp(`^[ \\t]*(?:\\r?\\n)[ \\t]*${fenceChar}{${fenceLen},}[ \\t]*(?=\\r?\\n|$)`);
+    const finalizeClosedBlock = (bodyEnd: number, closeEnd: number) => {
+        if (!openBlock) return;
+        let end = closeEnd;
+        if (openBlock.wrapperFence) {
+            const { char, len: fLen } = openBlock.wrapperFence;
+            const textAfter = targetText.slice(end);
+            const fenceAfterRegex = new RegExp(`^[ \\t]*(?:\\r?\\n)[ \\t]*${char}{${fLen},}[ \\t]*(?=\\r?\\n|$)`);
             const fenceAfterMatch = textAfter.match(fenceAfterRegex);
             if (fenceAfterMatch) {
                 end += fenceAfterMatch[0].length;
             }
         }
-
-        let rawContent = targetText.substring(bodyStart, bodyEnd);
+        let rawContent = targetText.slice(openBlock.bodyStart, bodyEnd);
         if (/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s.test(rawContent.trim())) {
             rawContent = rawContent.trim().replace(/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s, '$1');
         }
-
-        const fullMatch = targetText.substring(start, end);
-
         blocks.push({
-            attrStr,
+            attrStr: openBlock.attrStr,
             rawContent,
-            fullMatch,
-            start,
+            fullMatch: targetText.slice(openBlock.start, end),
+            start: openBlock.start,
             end,
-            isClosed
+            isClosed: true
         });
+        openBlock = null;
+    };
 
-        openTagRegex.lastIndex = end;
+    let lineStart = 0;
+    while (lineStart < len) {
+        let nlIdx = targetText.indexOf('\n', lineStart);
+        let lineEnd = nlIdx === -1 ? len : nlIdx;
+        if (lineEnd > lineStart && targetText[lineEnd - 1] === '\r') {
+            lineEnd--;
+        }
+        const nextLineStart = nlIdx === -1 ? len : nlIdx + 1;
+        const lineText = targetText.slice(lineStart, lineEnd);
+
+        // 1. Inside a fenced block (``` or ~~~)
+        if (activeFence) {
+            const closeFenceMatch = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+            if (closeFenceMatch && closeFenceMatch[1][0] === activeFence.char && closeFenceMatch[1].length >= activeFence.len) {
+                const trailing = closeFenceMatch[2] || '';
+                if (trailing.trim() === '') {
+                    activeFence = null;
+                    lineStart = nextLineStart;
+                    continue;
+                }
+                if (openBlock && /^[ \t]*<\/file>/i.test(trailing)) {
+                    const colOffset = lineText.indexOf(trailing);
+                    activeFence = null;
+                    // Fall through to scan </file> from colOffset
+                    let col = colOffset;
+                    while (col < lineText.length) {
+                        if (lineText[col] === '`') {
+                            const endCol = findMatchingInlineBacktickEnd(lineText, col);
+                            if (endCol !== -1) { col = endCol; continue; }
+                        }
+                        if (openBlock && lineText[col] === '<' && /^<\/file>/i.test(lineText.slice(col))) {
+                            finalizeClosedBlock(lineStart + col, lineStart + col + 7);
+                            col += 7;
+                            continue;
+                        }
+                        col++;
+                    }
+                    lineStart = nextLineStart;
+                    continue;
+                }
+            }
+            lineStart = nextLineStart;
+            continue;
+        }
+
+        // 2. Check if this line opens a fenced code block (``` or ~~~)
+        const openFenceMatch = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+        if (openFenceMatch) {
+            const fMarker = openFenceMatch[1];
+            const fChar = fMarker[0];
+            const fLen = fMarker.length;
+            const fTrailing = openFenceMatch[2] || '';
+            const isSingleLineInline = fChar === '`' && fTrailing.includes(fMarker);
+
+            if (!isSingleLineInline) {
+                if (!openBlock && nextNonEmptyLineStartsWithValidFile(nextLineStart)) {
+                    pendingWrapperFence = { start: lineStart, char: fChar, len: fLen };
+                } else {
+                    pendingWrapperFence = null;
+                    activeFence = { char: fChar, len: fLen };
+                }
+                lineStart = nextLineStart;
+                continue;
+            }
+        }
+
+        // 3. Scan line outside fenced code blocks, skipping inline backtick spans
+        let col = 0;
+        let seenNonWhitespace = false;
+        while (col < lineText.length) {
+            const ch = lineText[col];
+            if (ch === '`') {
+                seenNonWhitespace = true;
+                pendingWrapperFence = null;
+                const endCol = findMatchingInlineBacktickEnd(lineText, col);
+                if (endCol !== -1) {
+                    col = endCol;
+                    continue;
+                }
+                col++;
+                continue;
+            }
+
+            if (ch === '<') {
+                const slice = lineText.slice(col);
+
+                if (openBlock) {
+                    // Close when an open <file> is detected (start of line OR mid-line), outside fences & backticks
+                    if (/^<\/file>/i.test(slice)) {
+                        const closeEnd = lineStart + col + 7;
+                        let adjustedEnd = closeEnd;
+                        if (!seenNonWhitespace) {
+                            const trailingAfterClose = lineText.slice(col + 7);
+                            if (trailingAfterClose.trim() === '') {
+                                adjustedEnd = nextLineStart;
+                            }
+                        }
+                        finalizeClosedBlock(lineStart + col, adjustedEnd);
+                        col += 7;
+                        seenNonWhitespace = true;
+                        continue;
+                    }
+
+                    // Line-start implicit recovery if a new valid <file ...> starts before </file>
+                    if (!seenNonWhitespace) {
+                        const nextOpenMatch = slice.match(/^<file\s+([^>]*?)>/i);
+                        if (nextOpenMatch && isValidOpenTag(nextOpenMatch[1] || '', true)) {
+                            finalizeClosedBlock(lineStart + col, lineStart + col);
+                            openBlock = {
+                                start: lineStart + col,
+                                bodyStart: lineStart + col + nextOpenMatch[0].length,
+                                attrStr: nextOpenMatch[1] || ''
+                            };
+                            col += nextOpenMatch[0].length;
+                            seenNonWhitespace = true;
+                            continue;
+                        }
+                    }
+                } else {
+                    const openMatch = slice.match(/^<file\s+([^>]*?)>/i);
+                    if (openMatch && isValidOpenTag(openMatch[1] || '', !seenNonWhitespace)) {
+                        const wrapper = !seenNonWhitespace ? pendingWrapperFence || undefined : undefined;
+                        openBlock = {
+                            start: wrapper ? wrapper.start : lineStart + col,
+                            bodyStart: lineStart + col + openMatch[0].length,
+                            attrStr: openMatch[1] || '',
+                            wrapperFence: wrapper
+                        };
+                        pendingWrapperFence = null;
+                        col += openMatch[0].length;
+                        seenNonWhitespace = true;
+                        continue;
+                    }
+                }
+            }
+
+            if (ch !== ' ' && ch !== '\t') {
+                seenNonWhitespace = true;
+                pendingWrapperFence = null;
+            }
+            col++;
+        }
+
+        lineStart = nextLineStart;
+    }
+
+    if (openBlock) {
+        let rawContent = targetText.slice(openBlock.bodyStart);
+        if (/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s.test(rawContent.trim())) {
+            rawContent = rawContent.trim().replace(/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s, '$1');
+        }
+        blocks.push({
+            attrStr: openBlock.attrStr,
+            rawContent,
+            fullMatch: targetText.slice(openBlock.start),
+            start: openBlock.start,
+            end: len,
+            isClosed: false
+        });
     }
 
     return blocks;

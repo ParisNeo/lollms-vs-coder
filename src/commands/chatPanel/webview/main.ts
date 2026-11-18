@@ -365,7 +365,6 @@ document.getElementById('ttsButton')?.addEventListener('click', () => {
         console.log("[Lollms Debug] VS Code API verified on window object.");
 
         window.addEventListener('message', (event) => {
-            console.log("[Lollms Debug] Webview inbound IPC message intercepted:", event.data?.command);
             handleExtensionMessage(event);
         });
         
@@ -404,8 +403,9 @@ document.getElementById('ttsButton')?.addEventListener('click', () => {
             console.log("[Lollms Debug] Emitting webview-ready bootstrap handshake to extension host...");
             vscode.postMessage({ command: 'webview-ready' });
 
-            // High-frequency live timer updater for active thinking engrams
+            // Live timer updater only runs while actively generating
             setInterval(() => {
+                if (!state.isGenerating) return;
                 const liveThinkingElements = document.querySelectorAll('.live-thinking');
                 liveThinkingElements.forEach((el: any) => {
                     const startTime = parseInt(el.dataset.startTime || '0', 10);
@@ -414,7 +414,7 @@ document.getElementById('ttsButton')?.addEventListener('click', () => {
                         el.textContent = `thinking... (${elapsed}s)`;
                     }
                 });
-            }, 100);
+            }, 500);
         });
 
     } catch (e: any) {

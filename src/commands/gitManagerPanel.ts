@@ -43,8 +43,39 @@ export class GitManagerPanel {
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
         this._setWebviewMessageListener(this._panel.webview);
 
-        // Load initial recent history
+        // Load initial recent history and starting baseline ref
         this.performSearch({});
+        this.loadDefaultBaseRef();
+    }
+
+    private async getTargetWorkspaceFolder(): Promise<vscode.WorkspaceFolder | undefined> {
+        const folders = vscode.workspace.workspaceFolders || [];
+        for (const f of folders) {
+            if (await this._gitIntegration.isGitRepo(f)) return f;
+        }
+        return folders[0];
+    }
+
+    private async loadDefaultBaseRef() {
+        const folder = await this.getTargetWorkspaceFolder();
+        if (!folder) return;
+        try {
+            const { ChatPanel } = await import('./chatPanel/chatPanel');
+            const disc = ChatPanel.currentPanel?.getCurrentDiscussion();
+            const preferred = disc?.gitState?.startCommitHash || disc?.gitState?.originalBranch;
+            const [resolved, branches, currentBranch] = await Promise.all([
+                this._gitIntegration.resolveStartingRef(folder, preferred),
+                this._gitIntegration.getBranches(folder),
+                this._gitIntegration.getCurrentBranch(folder)
+            ]);
+            this._panel.webview.postMessage({
+                command: 'setDefaultBaseRef',
+                baseRef: resolved?.ref || '',
+                label: resolved?.label || '',
+                branches,
+                currentBranch
+            });
+        } catch {}
     }
 
     public dispose() {
@@ -70,6 +101,37 @@ export class GitManagerPanel {
                     break;
                 case 'askAI':
                     await this.askAI(message.query);
+                    break;
+                case 'showFullDiffFromStart':
+                    await this.showFullDiffFromStart(message.baseRef, message.targetRef);
+                    break;
+                case 'explainComparisonWithAI':
+                    await this.explainComparisonWithAI(message.baseRef, message.targetRef, message.diff, message.files);
+                    break;
+                case 'openNativeFileDiffFromRef':
+                    if (message.path && message.baseRef) {
+                        const targetFolder = (await this.getTargetWorkspaceFolder()) || folder;
+                        const gitCwd = (await this._gitIntegration.resolveGitCwd(targetFolder)) || targetFolder.uri.fsPath;
+                        const targetRef = message.targetRef || 'WORKING_TREE';
+                        const leftContent = await this._gitIntegration.getFileContentAtRef(targetFolder, message.baseRef, message.path);
+                        const cacheDir = vscode.Uri.joinPath(targetFolder.uri, '.lollms', 'diff_cache');
+                        await vscode.workspace.fs.createDirectory(cacheDir);
+                        const shortBase = String(message.baseRef).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 12);
+                        const shortTarget = targetRef === 'WORKING_TREE' ? 'Current' : String(targetRef).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 12);
+                        const baseName = require('path').basename(message.path);
+                        const leftUri = vscode.Uri.joinPath(cacheDir, `${shortBase}_${baseName}`);
+                        await vscode.workspace.fs.writeFile(leftUri, Buffer.from(leftContent, 'utf8'));
+
+                        let rightUri: vscode.Uri;
+                        if (targetRef === 'WORKING_TREE') {
+                            rightUri = vscode.Uri.file(require('path').join(gitCwd, message.path));
+                        } else {
+                            const rightContent = await this._gitIntegration.getFileContentAtRef(targetFolder, targetRef, message.path);
+                            rightUri = vscode.Uri.joinPath(cacheDir, `${shortTarget}_${baseName}`);
+                            await vscode.workspace.fs.writeFile(rightUri, Buffer.from(rightContent, 'utf8'));
+                        }
+                        await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, `${baseName} (${shortBase} ↔ ${shortTarget})`);
+                    }
                     break;
                 case 'viewCommit':
                     vscode.commands.executeCommand('lollms-vs-coder.inspectCommit', message.hash);
@@ -107,6 +169,69 @@ export class GitManagerPanel {
             this._panel.webview.postMessage({ command: 'showCommitDetails', hash, diff });
         } catch (e: any) {
             vscode.window.showErrorMessage("Failed to get diff: " + e.message);
+        }
+    }
+
+    private async showFullDiffFromStart(requestedBaseRef?: string, requestedTargetRef?: string) {
+        const folder = await this.getTargetWorkspaceFolder();
+        if (!folder) return;
+
+        try {
+            const { ChatPanel } = await import('./chatPanel/chatPanel');
+            const disc = ChatPanel.currentPanel?.getCurrentDiscussion();
+            const fallbackPref = disc?.gitState?.startCommitHash || disc?.gitState?.originalBranch;
+            const resolved = await this._gitIntegration.resolveStartingRef(folder, requestedBaseRef || fallbackPref);
+
+            if (!resolved) {
+                vscode.window.showInformationMessage("No starting Git commit or branch found to compare against.");
+                return;
+            }
+
+            const targetRef = requestedTargetRef || 'WORKING_TREE';
+            const [currentBranch, files, diff] = await Promise.all([
+                this._gitIntegration.getCurrentBranch(folder),
+                this._gitIntegration.getChangedFilesSince(folder, resolved.ref, targetRef),
+                this._gitIntegration.getCompareDiff(folder, resolved.ref, targetRef)
+            ]);
+
+            this._panel.webview.postMessage({
+                command: 'showFullDiffFromStartResult',
+                baseRef: resolved.ref,
+                baseLabel: resolved.label,
+                targetRef,
+                targetLabel: targetRef === 'WORKING_TREE' ? `Current (${currentBranch || 'HEAD'})` : targetRef,
+                currentBranch: currentBranch || 'HEAD',
+                files,
+                diff
+            });
+        } catch (e: any) {
+            vscode.window.showErrorMessage("Failed to compute full diff: " + e.message);
+        }
+    }
+
+    private async explainComparisonWithAI(requestedBaseRef?: string, requestedTargetRef?: string, providedDiff?: string, providedFiles?: any[]) {
+        const folder = await this.getTargetWorkspaceFolder();
+        if (!folder) return;
+        try {
+            const resolved = await this._gitIntegration.resolveStartingRef(folder, requestedBaseRef);
+            if (!resolved) return;
+            const targetRef = requestedTargetRef || 'WORKING_TREE';
+            const diffText = (providedDiff && providedDiff.trim()) ? providedDiff : await this._gitIntegration.getCompareDiff(folder, resolved.ref, targetRef);
+            const filesList = Array.isArray(providedFiles) && providedFiles.length > 0 ? providedFiles : await this._gitIntegration.getChangedFilesSince(folder, resolved.ref, targetRef);
+
+            if (!diffText || !diffText.trim()) {
+                this._panel.webview.postMessage({ command: 'aiCompareSummaryResult', summary: `No differences detected between ${resolved.label} and ${targetRef}.` });
+                return;
+            }
+            const excerpt = diffText.length > 12000 ? diffText.substring(0, 12000) + '\n... [truncated]' : diffText;
+            const filesSummary = filesList.map((f: any) => `- [${f.status}] ${f.path}`).join('\n');
+            const response = await this._lollmsAPI.sendChat([
+                { role: 'system', content: 'You are a Senior Software Engineer reviewing Git branch differences. Explain clearly what changed between the two states.' },
+                { role: 'user', content: `Compare **${resolved.label}** -> **${targetRef}**\n\nChanged Files (${filesList.length}):\n${filesSummary}\n\nDiff:\n\`\`\`diff\n${excerpt}\n\`\`\`` }
+            ]);
+            this._panel.webview.postMessage({ command: 'aiCompareSummaryResult', summary: response.trim() });
+        } catch (e: any) {
+            this._panel.webview.postMessage({ command: 'aiCompareSummaryResult', error: e.message });
         }
     }
 
@@ -211,7 +336,23 @@ export class GitManagerPanel {
 </head>
 <body>
     <div class="container">
-        
+        <!-- Compare Branches / States -->
+        <div class="card" style="border-left: 4px solid var(--vscode-charts-blue);">
+            <h2>Compare Two Branches / States (What's the Difference?)</h2>
+            <div class="ai-section" style="align-items: center; flex-wrap: wrap;">
+                <select id="base-ref-select" style="min-width:170px;"></select>
+                <span style="opacity:0.7; font-weight:bold;">&rarr;</span>
+                <select id="target-ref-select" style="min-width:170px;"></select>
+                <input type="text" id="base-ref-input" placeholder="Optional custom Base SHA/ref (overrides Base)" style="min-width:180px;">
+                <button class="btn" id="full-diff-btn">What's the Difference?</button>
+                <button class="btn" id="explain-diff-ai-btn">Explain with AI</button>
+            </div>
+            <div id="full-diff-hint" style="margin-top:6px; font-size:0.85em; color:var(--vscode-descriptionForeground);">
+                Select any two branches or states (e.g. main &rarr; ai-task-... or Working Tree) to inspect all changes.
+            </div>
+            <div id="compare-ai-summary" style="display:none; margin-top:10px; padding:10px; background:var(--vscode-textCodeBlock-background); border:1px solid var(--vscode-panel-border); white-space:pre-wrap;"></div>
+        </div>
+
         <!-- AI Search -->
         <div class="card">
             <h2>Ask Git</h2>
@@ -261,9 +402,39 @@ export class GitManagerPanel {
         const vscode = acquireVsCodeApi();
         
         // Elements
+        const baseRefSelect = document.getElementById('base-ref-select');
+        const targetRefSelect = document.getElementById('target-ref-select');
+        const baseRefInput = document.getElementById('base-ref-input');
+        const fullDiffBtn = document.getElementById('full-diff-btn');
+        const explainDiffAiBtn = document.getElementById('explain-diff-ai-btn');
+        const compareAiSummary = document.getElementById('compare-ai-summary');
         const aiInput = document.getElementById('ai-input');
         const aiBtn = document.getElementById('ai-btn');
         const aiStatus = document.getElementById('ai-status');
+
+        let lastFullDiffPayload = null;
+
+        fullDiffBtn.addEventListener('click', () => {
+            fullDiffBtn.textContent = 'Computing Diff...';
+            const chosenBase = baseRefInput.value.trim() || baseRefSelect.value;
+            const chosenTarget = targetRefSelect.value || 'WORKING_TREE';
+            vscode.postMessage({ command: 'showFullDiffFromStart', baseRef: chosenBase, targetRef: chosenTarget });
+        });
+
+        explainDiffAiBtn.addEventListener('click', () => {
+            explainDiffAiBtn.textContent = 'Thinking...';
+            compareAiSummary.style.display = 'block';
+            compareAiSummary.textContent = 'Analyzing differences between selected branches...';
+            const chosenBase = baseRefInput.value.trim() || baseRefSelect.value;
+            const chosenTarget = targetRefSelect.value || 'WORKING_TREE';
+            vscode.postMessage({
+                command: 'explainComparisonWithAI',
+                baseRef: chosenBase,
+                targetRef: chosenTarget,
+                diff: lastFullDiffPayload?.diff || '',
+                files: lastFullDiffPayload?.files || []
+            });
+        });
         
         const sMessage = document.getElementById('s-message');
         const sAuthor = document.getElementById('s-author');
@@ -323,9 +494,40 @@ export class GitManagerPanel {
                 case 'updateResults':
                     renderResults(msg.commits);
                     break;
+                case 'setDefaultBaseRef':
+                    {
+                        const branches = msg.branches || [];
+                        const cur = msg.currentBranch || '';
+                        let optsA = '';
+                        if (msg.baseRef) {
+                            optsA += '<option value="' + escapeHtml(msg.baseRef) + '">Start (' + escapeHtml(msg.label || msg.baseRef.substring(0, 7)) + ')</option>';
+                        }
+                        branches.forEach(b => {
+                            optsA += '<option value="' + escapeHtml(b) + '">' + escapeHtml(b) + (b === cur ? ' (current)' : '') + '</option>';
+                        });
+                        optsA += '<option value="HEAD">HEAD</option>';
+                        baseRefSelect.innerHTML = optsA;
+
+                        let optsB = '<option value="WORKING_TREE">Working Tree (Current)</option><option value="HEAD">HEAD (' + escapeHtml(cur || 'Current') + ')</option>';
+                        branches.forEach(b => {
+                            optsB += '<option value="' + escapeHtml(b) + '">' + escapeHtml(b) + (b === cur ? ' (current)' : '') + '</option>';
+                        });
+                        targetRefSelect.innerHTML = optsB;
+                    }
+                    break;
+                case 'aiCompareSummaryResult':
+                    explainDiffAiBtn.textContent = 'Explain with AI';
+                    compareAiSummary.style.display = 'block';
+                    compareAiSummary.textContent = msg.error ? ('Error: ' + msg.error) : (msg.summary || '');
+                    break;
+                case 'showFullDiffFromStartResult':
+                    fullDiffBtn.textContent = "What's the Difference?";
+                    lastFullDiffPayload = msg;
+                    renderFullDiffDetails(msg);
+                    break;
                 case 'showCommitDetails':
                     detailHash.textContent = msg.hash;
-                    detailContent.textContent = msg.diff;
+                    renderColoredDiff(detailContent, msg.diff);
                     detailsView.style.display = 'block';
                     detailsView.scrollIntoView({ behavior: 'smooth' });
                     break;
@@ -373,6 +575,51 @@ export class GitManagerPanel {
                 
                 resultsList.appendChild(div);
             });
+        }
+
+        function renderColoredDiff(targetEl, diffText) {
+            if (!diffText || !diffText.trim()) {
+                targetEl.textContent = '(No differences detected between starting state and current state)';
+                return;
+            }
+            targetEl.innerHTML = diffText.split('\\n').map(line => {
+                let color = 'inherit';
+                let bg = 'transparent';
+                if (line.startsWith('diff --git ')) { color = 'var(--vscode-textLink-foreground)'; bg = 'rgba(0,122,204,0.12)'; }
+                else if (line.startsWith('+') && !line.startsWith('+++')) { color = 'var(--vscode-charts-green)'; bg = 'rgba(0,255,0,0.06)'; }
+                else if (line.startsWith('-') && !line.startsWith('---')) { color = 'var(--vscode-charts-red)'; bg = 'rgba(255,0,0,0.06)'; }
+                else if (line.startsWith('@@')) { color = 'var(--vscode-charts-blue)'; }
+                return '<div style="color:' + color + '; background:' + bg + '; padding: 0 6px;">' + escapeHtml(line) + '</div>';
+            }).join('');
+        }
+
+        function renderFullDiffDetails(msg) {
+            const files = msg.files || [];
+            const targetRef = msg.targetRef || 'WORKING_TREE';
+            const targetLabel = msg.targetLabel || msg.currentBranch || 'HEAD';
+            detailHash.textContent = (msg.baseLabel || msg.baseRef) + ' -> ' + targetLabel + ' (' + files.length + ' files changed)';
+            const fileChips = files.map(f =>
+                '<button class="btn" style="padding:3px 8px; font-size:11px; margin:2px;" data-file="' + escapeHtml(f.path) + '" data-base="' + escapeHtml(msg.baseRef) + '" data-target="' + escapeHtml(targetRef) + '">[' + escapeHtml(f.status) + '] ' + escapeHtml(f.path) + '</button>'
+            ).join('');
+
+            const existingBar = document.getElementById('full-diff-files-bar');
+            if (existingBar) existingBar.remove();
+            if (files.length > 0) {
+                const bar = document.createElement('div');
+                bar.id = 'full-diff-files-bar';
+                bar.style.cssText = 'margin-bottom:10px; display:flex; flex-wrap:wrap; gap:4px;';
+                bar.innerHTML = fileChips;
+                bar.querySelectorAll('button').forEach(b => {
+                    b.addEventListener('click', () => {
+                        vscode.postMessage({ command: 'openNativeFileDiffFromRef', path: b.getAttribute('data-file'), baseRef: b.getAttribute('data-base'), targetRef: b.getAttribute('data-target') });
+                    });
+                });
+                detailContent.parentElement.insertBefore(bar, detailContent);
+            }
+
+            renderColoredDiff(detailContent, msg.diff);
+            detailsView.style.display = 'block';
+            detailsView.scrollIntoView({ behavior: 'smooth' });
         }
 
         function escapeHtml(text) {

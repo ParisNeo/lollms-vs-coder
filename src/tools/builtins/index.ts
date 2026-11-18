@@ -16,11 +16,13 @@ import { deleteFileTool } from './deleteFile';
 import { readCodeGraphTool } from './readCodeGraph';
 import { updateCodeGraphTool } from './updateCodeGraph';
 import { queryArchitectureTool } from './queryArchitecture';
+import { readExternalFileTool } from './readExternalFile';
 import { readFileTool } from './readFile';
 import { readFilesTool } from './readFiles';
 import { requestUserInputTool } from './requestUserInput';
 import { rlmReplTool } from './rlmRepl';
 import { runFileTool } from './runFile';
+import { runTestsTool } from './runTests';
 import { scrapeWebsiteTool } from './scrapeWebsite';
 import { searchArxivTool } from './searchArxiv';
 import { grepSearchTool } from './searchFiles';
@@ -69,6 +71,7 @@ export const allTools: ToolDefinition[] = [
     generateCodeTool,
     editCodeTool,
     updateFunctionTool,
+    readExternalFileTool,
     readFileTool,
     readFilesTool,
     listFilesTool,
@@ -97,6 +100,7 @@ export const allTools: ToolDefinition[] = [
     createPythonEnvironmentTool,
     installPythonDependenciesTool,
     runFileTool,
+    runTestsTool,
     setLaunchEntrypointTool,
     setVscodePythonInterpreterTool,
     generateImageTool,
@@ -119,12 +123,14 @@ export const allTools: ToolDefinition[] = [
 
 export const enabledToolsList = [
     'show_symbol',
+    'read_external_file',
     'read_file',
     'read_files',
     'edit_code',
     'generate_code',
     'update_function',
     'execute_command',
+    'run_tests',
     'submit_response',
     'read_code_graph',
     'build_skill',

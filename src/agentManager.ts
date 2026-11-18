@@ -4,7 +4,7 @@ import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
 import { InfoPanel } from './commands/infoPanel';
 import { PlanParser } from './planParser';
-import { stripThinkingTags, getProcessedSystemPrompt, stripAnsiCodes } from './utils';
+import { stripThinkingTags, getProcessedSystemPrompt, stripAnsiCodes, arePathsEqual, extractFileBlocks, parseFileTagAttributes, getContextLimitForModel, isProjectFile } from './utils';
 import { ProcessManager } from './processManager';
 import { DiscussionManager, Discussion } from './discussionManager';
 import * as fs from 'fs/promises';
@@ -80,6 +80,8 @@ export class AgentManager {
         projectMemory: string[]; 
         secureCredentials: Record<string, string>;
         isSafetyCheckPassed: boolean;
+        startCommitHash?: string;
+        startBranch?: string;
         unverifiedFiles: Set<string>; 
         lastFilesystemWriteTime: number; 
         blacklistedTools: Set<string>; 
@@ -618,6 +620,7 @@ const isEquipped = allEquipped.has(t.name);
         }
 
         currentBranch = await this.gitIntegration.getCurrentBranch(folder);
+        const startHash = await this.gitIntegration.getCurrentHash(folder);
 
         if (!currentBranch.startsWith('ai-task-') && !currentBranch.startsWith('debug/')) {
             const branchName = `ai-task-${Date.now()}`;
@@ -625,12 +628,33 @@ const isEquipped = allEquipped.has(t.name);
             const gitMsg = `[GIT] 🌿 BRANCHED: Switched from \`${currentBranch}\` to isolated workspace \`${branchName}\`.`;
             this.completedActionsHistory.push(gitMsg);
 
+            this.sessionState.startCommitHash = startHash;
+            this.sessionState.startBranch = currentBranch;
+            if (this.currentDiscussion) {
+                this.currentDiscussion.gitState = {
+                    originalBranch: currentBranch,
+                    tempBranch: branchName,
+                    startCommitHash: startHash
+                };
+            }
+
             await this.ui.addMessageToDiscussion({
                 role: 'system',
                 content: `<git_event type="branch" from="${currentBranch}" to="${branchName}" />`,
                 skipInPrompt: true
             });
         } else {
+            if (!this.sessionState.startCommitHash) {
+                const existingStart = this.currentDiscussion?.gitState?.startCommitHash;
+                if (existingStart) {
+                    this.sessionState.startCommitHash = existingStart;
+                    this.sessionState.startBranch = this.currentDiscussion?.gitState?.originalBranch || currentBranch;
+                } else {
+                    const resolvedStart = await this.gitIntegration.resolveStartingRef(folder);
+                    this.sessionState.startCommitHash = resolvedStart?.ref || startHash;
+                    this.sessionState.startBranch = resolvedStart?.label || currentBranch;
+                }
+            }
             this.completedActionsHistory.push(`[GIT] ℹ️ Persistence: Operating on isolated branch \`${currentBranch}\`.`);
         }
 
@@ -687,6 +711,8 @@ const isEquipped = allEquipped.has(t.name);
             this.sessionState.workingMemory = discussion.agentSession.workingMemory || [];
             this.sessionState.secureCredentials = discussion.agentSession.secureCredentials || {};
             this.sessionState.isSafetyCheckPassed = discussion.agentSession.isSafetyCheckPassed || false;
+            this.sessionState.startCommitHash = discussion.agentSession.startCommitHash || discussion.gitState?.startCommitHash;
+            this.sessionState.startBranch = discussion.agentSession.startBranch || discussion.gitState?.originalBranch;
             
             this.completedActionsHistory = discussion.agentSession.completedActionsHistory || [];
             Logger.info(`[Sovereign] Restored audit trail: ${this.completedActionsHistory.length} events loaded.`);
@@ -814,6 +840,16 @@ Please commit or stash your work before starting an iterative debug session to e
 
             await this.runAutonomousLoop(content, controller.signal, processId, this.currentDiscussion.model);
 
+            const gitDiffTag = await this.buildEndOfWorkGitDiffTag(workspaceFolder);
+            if (gitDiffTag) {
+                await this.ui.addMessageToDiscussion({
+                    id: `agent_git_diff_${Date.now()}`,
+                    role: 'assistant',
+                    content: gitDiffTag,
+                    model: this.currentDiscussion.model
+                });
+            }
+
         } catch (error: any) {
             if (error.name !== 'AbortError' && error.message !== 'AbortError') {
                 this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error:** ${error.message}` });
@@ -825,6 +861,8 @@ Please commit or stash your work before starting an iterative debug session to e
                     workingMemory: this.sessionState.workingMemory,
                     secureCredentials: this.sessionState.secureCredentials,
                     isSafetyCheckPassed: this.sessionState.isSafetyCheckPassed,
+                    startCommitHash: this.sessionState.startCommitHash,
+                    startBranch: this.sessionState.startBranch,
                     completedActionsHistory: this.completedActionsHistory,
                     blacklistedTools: Array.from(this.sessionState.blacklistedTools),
                     extensionVersion: this.sessionState.extensionVersion
@@ -1277,26 +1315,16 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                 return; 
             }
 
-            // Check token budget ratio
-            const currentData = await this.contextManager.getContextContent({
-                discussionId: this.currentDiscussion.id,
-                importedSkillIds: this.currentDiscussion.importedSkills,
-                mutedFiles: this.currentDiscussion.mutedFiles,
-                mutedSkills: this.currentDiscussion.mutedSkills,
-                mutedDiagrams: this.currentDiscussion.mutedDiagrams,
-                capabilities: this.currentDiscussion.capabilities,
-                modelName: model,
-                signal
-            });
-            const tokenInfo = await this.lollmsApi.tokenize(currentData.text, model);
-            const limitInfo = await this.lollmsApi.getContextSize(model);
-
-            const usageRatio = tokenInfo.count / limitInfo.context_size;
-            if (usageRatio > 0.90) {
-                const pruneWarning = `[SYSTEM WARNING] Context usage is at ${Math.round(usageRatio * 100)}%. Prune unnecessary files with 'remove_files_from_context' or finalize your task now.`;
-                this.completedActionsHistory.push(pruneWarning);
-                this.ui.addMessageToDiscussion({ role: 'system', content: `⚖️ **Context Governor:** Context at ${Math.round(usageRatio * 100)}% capacity.` });
+            const justAddedInStep: string[] = [];
+            if (task.action === 'add_files_to_context' && task.parameters?.paths) {
+                const pList = Array.isArray(task.parameters.paths) ? task.parameters.paths : [task.parameters.paths];
+                pList.forEach((p: any) => { if (typeof p === 'string' && p.trim()) justAddedInStep.push(p.trim()); });
+            } else if (['edit_code', 'generate_code'].includes(task.action)) {
+                const fp = task.parameters?.file_path || task.parameters?.path;
+                if (typeof fp === 'string' && fp.trim()) justAddedInStep.push(fp.trim());
             }
+
+            await this.enforceAgentContextBudget(justAddedInStep, model || this.lollmsApi.getModelName(), signal);
 
             if (signal.aborted) break;
         }
@@ -1310,7 +1338,7 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
     }
 
     private inferWorkerScope(action: string, params: any, description: string): import('./tools/tool').WorkerScope {
-        if (['read_file', 'read_files', 'search_files', 'grep_search', 'read_code_graph', 'query_architecture', 'peek_at_context', 'smart_scout'].includes(action)) {
+        if (['read_external_file', 'read_file', 'read_files', 'search_files', 'grep_search', 'read_code_graph', 'query_architecture', 'peek_at_context', 'smart_scout'].includes(action)) {
             const files = params?.path ? [params.path] : (params?.paths || []);
             return {
                 role: 'scout',
@@ -1326,7 +1354,7 @@ Do NOT repeat the failing parameters. Analyze the error output above, update you
                 targetFiles: files
             };
         }
-        if (['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'test_web_ui', 'test_web_page', 'interactive_ui_test', 'secure_run'].includes(action)) {
+        if (['execute_command', 'run_file', 'execute_python_script', 'run_tests', 'run_tests_and_fix', 'test_web_ui', 'test_web_page', 'interactive_ui_test', 'secure_run'].includes(action)) {
             return {
                 role: 'tester',
                 focus: 'Runtime Execution, Web UI & Testing',
@@ -1795,7 +1823,7 @@ Please provide a clear, concise final response to the user summarizing the outco
             const isStuck = recentFailures.length >= 3 && recentFailures.every(t => t.action === task.action);
 
             const isWriteAction = ['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'markdown_coding'].includes(task.action);
-            const isVerifyAction = ['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'test_web_page', 'test_web_ui', 'interactive_ui_test', 'secure_run'].includes(task.action);
+            const isVerifyAction = ['execute_command', 'run_file', 'execute_python_script', 'run_tests', 'run_tests_and_fix', 'test_web_page', 'test_web_ui', 'interactive_ui_test', 'secure_run'].includes(task.action);
             const targetFile = resolvedParams.file_path || resolvedParams.path || "";
 
             if (task.action === 'generate_code' && resolvedParams.file_path) {
@@ -1962,7 +1990,7 @@ Please provide a clear, concise final response to the user summarizing the outco
 
         if (result.success) {
             const isWriteAction = ['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'markdown_coding'].includes(task.action);
-            const isVerifyAction = ['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'test_web_page', 'secure_run'].includes(task.action);
+            const isVerifyAction = ['execute_command', 'run_file', 'execute_python_script', 'run_tests', 'run_tests_and_fix', 'test_web_page', 'secure_run'].includes(task.action);
 
             if (isWriteAction) {
                 const targetFile = resolvedParams.file_path || resolvedParams.path;
@@ -2315,6 +2343,28 @@ Please provide a clear, concise final response to the user summarizing the outco
         return { success: true, message: `Git checkpoint created: ${label}` };
     }
 
+    public async buildEndOfWorkGitDiffTag(folder: vscode.WorkspaceFolder): Promise<string | null> {
+        try {
+            if (!(await this.gitIntegration.isGitRepo(folder))) return null;
+            const preferredBase = this.sessionState.startCommitHash ||
+                this.currentDiscussion?.gitState?.startCommitHash ||
+                this.currentDiscussion?.gitState?.originalBranch;
+
+            const resolved = await this.gitIntegration.resolveStartingRef(folder, preferredBase);
+            if (!resolved) return null;
+
+            const changedFiles = await this.gitIntegration.getChangedFilesSince(folder, resolved.ref, 'WORKING_TREE');
+            if (changedFiles.length === 0) return null;
+
+            const currentBranch = await this.gitIntegration.getCurrentBranch(folder) || 'HEAD';
+            const esc = (v: string) => String(v || '').replace(/"/g, '&quot;');
+            return `<agent_git_diff base="${esc(resolved.ref)}" label="${esc(resolved.label)}" branch="${esc(currentBranch)}" files="${changedFiles.length}" />`;
+        } catch (err: any) {
+            Logger.warn(`[AgentManager] Failed to build end-of-work git diff summary: ${err?.message || err}`);
+            return null;
+        }
+    }
+
     public async rollbackAgentMutations(scope: 'last' | 'all' = 'all'): Promise<{ restored: string[]; deleted: string[]; errors: string[] }> {
         const res = await this.securityGuard.rollbackMutations(scope, this.contextManager);
         this.syncSecurityHudState();
@@ -2444,7 +2494,7 @@ ${checkpointOpt}
         }
     }
 
-    private checkGlobalPermission(tool: ToolDefinition, params?: any): { allowed: boolean, message?: string } {
+    private async checkGlobalPermission(tool: ToolDefinition, params?: any): Promise<{ allowed: boolean, message?: string }> {
         const pathCandidates: string[] = [];
         if (params) {
             ['path', 'file_path', 'source', 'destination', 'script_path', 'file'].forEach(k => {
@@ -2456,11 +2506,19 @@ ${checkpointOpt}
         }
 
         const isWriteOrDeleteTool = tool.permissionGroup === 'filesystem_write' || ['delete_file', 'move_file', 'edit_code', 'generate_code', 'update_function'].includes(tool.name);
+        const isReadOnlyTool = tool.permissionGroup === 'filesystem_read' || tool.name === 'read_external_file';
+
         for (const p of pathCandidates) {
             if (isWriteOrDeleteTool) {
                 const protCheck = AgentSecurityGuard.isProtectedPath(p);
                 if (protCheck.protected) {
                     return { allowed: false, message: `🛑 SECURITY VIOLATION: ${protCheck.reason}` };
+                }
+            }
+            if (isReadOnlyTool) {
+                const authorizedExternal = await this.contextManager.resolveAuthorizedExternalFile(p);
+                if (authorizedExternal) {
+                    continue;
                 }
             }
             const boundaryCheck = this.checkProjectBoundary(p);
@@ -2481,7 +2539,7 @@ ${checkpointOpt}
         const tool = this.toolManager.getTool(action) || this.toolManager.getAllTools().find(t => t.name === action);
         if (!tool) return { success: false, output: `Unknown action: ${action}` };
 
-        const perm = this.checkGlobalPermission(tool, params);
+        const perm = await this.checkGlobalPermission(tool, params);
         if (!perm.allowed) {
             this.securityGuard.recordAudit({ verdict: 'blocked', tool: action, target: JSON.stringify(params).slice(0, 120), reason: perm.message || 'Permission denied' });
             return { success: false, output: perm.message || "Permission denied." };
@@ -3260,6 +3318,198 @@ OUTPUT JSON ONLY for tool calls.
         const finalReport = `🛑 **Debugger Stopped**: Reached maximum iteration limit (${maxSteps} steps) without reaching a verified conclusion.`;
         if (this.ui.updateMessageContent) await this.ui.updateMessageContent(dbgMsgId, finalReport);
         return "Max steps reached";
+    }
+
+    private async enforceAgentContextBudget(justAddedFiles: string[], model: string, signal: AbortSignal): Promise<void> {
+        if (!this.currentDiscussion || this.currentDiscussion.capabilities?.ignoreContextSize === true) {
+            return;
+        }
+
+        const currentData = await this.contextManager.getContextContent({
+            discussionId: this.currentDiscussion.id,
+            importedSkillIds: this.currentDiscussion.importedSkills,
+            mutedFiles: this.currentDiscussion.mutedFiles,
+            mutedSkills: this.currentDiscussion.mutedSkills,
+            mutedDiagrams: this.currentDiscussion.mutedDiagrams,
+            capabilities: this.currentDiscussion.capabilities,
+            modelName: model,
+            signal
+        });
+
+        const limitInfo = await this.lollmsApi.getContextSize(model).catch(() => null);
+        const maxTokens = (limitInfo && limitInfo.context_size > 0)
+            ? limitInfo.context_size
+            : (this.currentDiscussion.lastTokenMetrics?.contextSize || getContextLimitForModel(model) || 128000);
+
+        const triggerPct = Math.min(98, this.currentDiscussion.capabilities?.contextGovernorThreshold ?? 95);
+        const targetPct = Math.min(triggerPct, this.currentDiscussion.capabilities?.contextGovernorTargetThreshold ?? 70);
+        const triggerBudget = Math.round(maxTokens * (triggerPct / 100));
+        const targetBudget = Math.round(maxTokens * (targetPct / 100));
+
+        const getChatHistoryChars = () => this.chatHistory.slice(-4).reduce((sum, m) => {
+            const txt = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+            return sum + txt.length;
+        }, 0);
+
+        const getActionsChars = () => this.completedActionsHistory.slice(-12).join('\n\n').length;
+
+        const contextTokens = Math.ceil((currentData.text || '').length / 3.5);
+        let actionsTokens = Math.ceil(getActionsChars() / 3.5);
+        let historyTokens = Math.ceil(getChatHistoryChars() / 3.5);
+        const systemOverhead = 3500;
+
+        let totalEstimated = contextTokens + actionsTokens + historyTokens + systemOverhead;
+        const initialTotal = totalEstimated;
+
+        if (totalEstimated <= triggerBudget) {
+            if (totalEstimated / maxTokens > 0.90) {
+                const pruneWarning = `[SYSTEM WARNING] Context usage is at ${Math.round((totalEstimated / maxTokens) * 100)}%. Prune unnecessary files with 'remove_files_from_context' or finalize your task now.`;
+                this.completedActionsHistory.push(pruneWarning);
+            }
+            return;
+        }
+
+        const actionsLog: string[] = [];
+
+        // 1. Compact older completedActionsHistory entries (keep the most recent 4 intact)
+        if (this.completedActionsHistory.length > 4 && actionsTokens > 1500) {
+            const olderCount = this.completedActionsHistory.length - 4;
+            let savedChars = 0;
+            for (let i = 0; i < olderCount; i++) {
+                const entry = this.completedActionsHistory[i];
+                if (entry.length > 260) {
+                    const compacted = `${entry.substring(0, 220)}... [compacted]`;
+                    savedChars += entry.length - compacted.length;
+                    this.completedActionsHistory[i] = compacted;
+                }
+            }
+            if (savedChars > 0) {
+                const savedTok = Math.ceil(savedChars / 3.5);
+                totalEstimated = Math.max(0, totalEstimated - savedTok);
+                actionsTokens = Math.ceil(getActionsChars() / 3.5);
+                actionsLog.push(`- **Timeline Compacted**: Abbreviated ${olderCount} earlier step log(s) (~${savedTok.toLocaleString()} tok saved).`);
+            }
+        }
+
+        // 2. Compact older chatHistory entries (keep the most recent 2 intact)
+        if (this.chatHistory.length > 2 && historyTokens > 1500 && totalEstimated > targetBudget) {
+            const olderLimit = this.chatHistory.length - 2;
+            let savedChars = 0;
+            for (let i = 0; i < olderLimit; i++) {
+                const msg = this.chatHistory[i];
+                if (typeof msg.content === 'string' && msg.content.length > 400) {
+                    const compacted = `${msg.content.substring(0, 350)}\n... [earlier message compacted]`;
+                    savedChars += msg.content.length - compacted.length;
+                    this.chatHistory[i] = { ...msg, content: compacted };
+                }
+            }
+            if (savedChars > 0) {
+                const savedTok = Math.ceil(savedChars / 3.5);
+                totalEstimated = Math.max(0, totalEstimated - savedTok);
+                historyTokens = Math.ceil(getChatHistoryChars() / 3.5);
+                actionsLog.push(`- **History Compacted**: Abbreviated earlier chat messages (~${savedTok.toLocaleString()} tok saved).`);
+            }
+        }
+
+        // 3. Reduce previous files (shrink to definitions-only, then mute), strictly preserving justAddedFiles
+        const isProtectedFile = (p: string) => justAddedFiles.some(jp => arePathsEqual(p, jp));
+        const loadedBlocks = extractFileBlocks(currentData.selectedFilesContent || '');
+        const candidates = loadedBlocks.map((fb: any) => {
+            const attrs = parseFileTagAttributes(fb.attrStr, fb.rawContent);
+            const filePath = attrs?.path || '';
+            const tokens = Math.max(1, Math.ceil((fb.fullMatch || fb.rawContent || '').length / 3.5));
+            const isStructure = attrs?.mode === 'structure' || fb.attrStr.includes('mode="structure"') || fb.attrStr.includes('mode="definitions-only"');
+            return {
+                path: filePath,
+                tokens,
+                isStructure,
+                isProtected: isProtectedFile(filePath),
+                muted: false
+            };
+        }).filter(c => c.path && !c.isProtected)
+          .sort((a, b) => b.tokens - a.tokens);
+
+        const provider = this.contextManager.getContextStateProvider();
+        const shrunkToStructure: string[] = [];
+        const mutedPrevious: string[] = [];
+        let filesSavedTok = 0;
+
+        // Pass A: Convert full project files to definitions-only
+        const urisForDefs: vscode.Uri[] = [];
+        for (const cand of candidates) {
+            if (totalEstimated <= targetBudget) break;
+            if (cand.isStructure || !isProjectFile(cand.path)) continue;
+            const res = await this.contextManager.resolveWorkspaceFromPath(cand.path).catch(() => null);
+            if (!res) continue;
+
+            try {
+                const defs = await this.contextManager.extractDefinitions(res.uri);
+                if (!defs || defs === '(No definitions found)' || defs === '(No significant definitions found)') continue;
+                const defTokens = Math.max(1, Math.ceil(defs.length / 3.5));
+                if (defTokens < cand.tokens - 40) {
+                    const saved = cand.tokens - defTokens;
+                    cand.tokens = defTokens;
+                    cand.isStructure = true;
+                    totalEstimated = Math.max(0, totalEstimated - saved);
+                    filesSavedTok += saved;
+                    urisForDefs.push(res.uri);
+                    shrunkToStructure.push(cand.path);
+
+                    if (Array.isArray((this.currentDiscussion as any).includedFiles)) {
+                        const entry = (this.currentDiscussion as any).includedFiles.find((f: any) => arePathsEqual(typeof f === 'string' ? f : f.path, cand.path));
+                        if (entry && typeof entry === 'object') {
+                            entry.state = 'definitions-only';
+                        }
+                    }
+                }
+            } catch {}
+        }
+
+        if (provider && urisForDefs.length > 0) {
+            await provider.setStateForUris(urisForDefs, 'definitions-only');
+            for (const u of urisForDefs) {
+                this.contextManager.refreshFileInCache(u);
+            }
+        }
+
+        // Pass B: Mute previous files if still above targetBudget
+        if (totalEstimated > targetBudget) {
+            if (!this.currentDiscussion.mutedFiles) this.currentDiscussion.mutedFiles = [];
+            for (const cand of candidates) {
+                if (totalEstimated <= targetBudget) break;
+                if (cand.muted) continue;
+                cand.muted = true;
+                totalEstimated = Math.max(0, totalEstimated - cand.tokens);
+                filesSavedTok += cand.tokens;
+                mutedPrevious.push(cand.path);
+                if (!this.currentDiscussion.mutedFiles.some(m => arePathsEqual(m, cand.path))) {
+                    this.currentDiscussion.mutedFiles.push(cand.path);
+                }
+            }
+            if (this.currentDiscussion.capabilities) {
+                this.currentDiscussion.capabilities.mutedFiles = [...this.currentDiscussion.mutedFiles];
+            }
+        }
+
+        if (shrunkToStructure.length > 0) {
+            actionsLog.push(`- **Previous Files Compacted to Structure [D]**: ${shrunkToStructure.map(f => `\`${f}\``).join(', ')}`);
+        }
+        if (mutedPrevious.length > 0) {
+            actionsLog.push(`- **Previous Files Muted [M]** (~${filesSavedTok.toLocaleString()} tok saved; kept just-added files [${justAddedFiles.join(', ') || 'active'}]): ${mutedPrevious.map(f => `\`${f}\``).join(', ')}`);
+        }
+
+        if (actionsLog.length > 0) {
+            if (!this.currentDiscussion.id.startsWith('temp-') && !this.currentDiscussion.id.startsWith('remote-')) {
+                await this.discussionManager.saveDiscussion(this.currentDiscussion);
+            }
+            const summaryMsg = `🗜️ **Agent Context Budget Cleared** (~${initialTotal.toLocaleString()} → ~${totalEstimated.toLocaleString()} tokens / ${maxTokens.toLocaleString()} limit)\n${actionsLog.join('\n')}`;
+            this.completedActionsHistory.push(summaryMsg);
+            await this.ui.addMessageToDiscussion({
+                role: 'system',
+                content: summaryMsg,
+                skipInPrompt: true
+            });
+        }
     }
 
     private async deactivateAgent() {

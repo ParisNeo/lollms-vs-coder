@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
+import { AgentSecurityGuard } from '../../security/agentSecurityGuard';
 
 export const readFilesTool: ToolDefinition = {
     name: "read_files",
@@ -32,7 +33,16 @@ export const readFilesTool: ToolDefinition = {
 
             try {
                 let cleanPath = String(filePath).trim();
-                if (cleanPath.startsWith('/') || cleanPath.startsWith('\\')) cleanPath = cleanPath.substring(1);
+                const authorizedExternal = await env.contextManager.resolveAuthorizedExternalFile(cleanPath);
+                const pathCheck = AgentSecurityGuard.validateWorkspacePath(cleanPath, env.workspaceRoot);
+                if (!pathCheck.valid && !authorizedExternal) {
+                    errors.push(`Security violation for ${cleanPath}: ${pathCheck.reason}`);
+                    continue;
+                }
+
+                if (!authorizedExternal && (cleanPath.startsWith('/') || cleanPath.startsWith('\\'))) {
+                    cleanPath = cleanPath.substring(1);
+                }
 
                 const ext = path.extname(cleanPath).toLowerCase();
 
@@ -41,8 +51,14 @@ export const readFilesTool: ToolDefinition = {
                     continue;
                 }
 
-                const res = await env.contextManager.resolveWorkspaceFromPath(cleanPath);
-                const fileUri = res ? res.uri : vscode.Uri.joinPath(env.workspaceRoot.uri, cleanPath);
+                let fileUri: vscode.Uri;
+                if (authorizedExternal) {
+                    fileUri = authorizedExternal.uri;
+                    cleanPath = authorizedExternal.path;
+                } else {
+                    const res = await env.contextManager.resolveWorkspaceFromPath(cleanPath);
+                    fileUri = res ? res.uri : vscode.Uri.joinPath(env.workspaceRoot.uri, cleanPath);
+                }
                 const fileContent = await vscode.workspace.fs.readFile(fileUri);
 
                 let text = "";

@@ -48,6 +48,10 @@ export class GitIntegration {
     this.lollmsAPI = lollmsAPI;
   }
 
+  public getLollmsAPI(): LollmsAPI {
+    return this.lollmsAPI;
+  }
+
   private async verifyGitWorkTree(dirPath: string): Promise<boolean> {
       try {
           const { stdout } = await execAsync('git --no-pager rev-parse --is-inside-work-tree', { cwd: dirPath, timeout: 5000 });
@@ -1074,5 +1078,182 @@ export class GitIntegration {
       } catch (e) {
           return "";
       }
+  }
+
+  private sanitizeGitRef(ref: string): string | null {
+      const trimmed = (ref || '').trim();
+      if (!trimmed || trimmed.startsWith('-')) return null;
+      if (!/^[a-zA-Z0-9._\-\/^~@{}]+$/.test(trimmed)) return null;
+      return trimmed;
+  }
+
+  public async isValidRef(folder: vscode.WorkspaceFolder, ref: string): Promise<boolean> {
+      const safeRef = this.sanitizeGitRef(ref);
+      if (!safeRef) return false;
+      try {
+          const cwd = await this.getCwd(folder);
+          await execAsync(`git --no-pager rev-parse --verify "${safeRef}^{commit}"`, { cwd, timeout: 5000 });
+          return true;
+      } catch {
+          return false;
+      }
+  }
+
+  public async getMergeBase(folder: vscode.WorkspaceFolder, refA: string, refB: string = 'HEAD'): Promise<string | null> {
+      const safeA = this.sanitizeGitRef(refA);
+      const safeB = this.sanitizeGitRef(refB);
+      if (!safeA || !safeB) return null;
+      try {
+          const cwd = await this.getCwd(folder);
+          const { stdout } = await execAsync(`git --no-pager merge-base "${safeA}" "${safeB}"`, { cwd, timeout: 5000 });
+          const hash = stdout.trim();
+          return hash || null;
+      } catch {
+          return null;
+      }
+  }
+
+  public async resolveStartingRef(folder: vscode.WorkspaceFolder, preferredRef?: string): Promise<{ ref: string; label: string } | null> {
+      if (preferredRef && await this.isValidRef(folder, preferredRef)) {
+          const shortLabel = /^[0-9a-f]{40}$/i.test(preferredRef) ? preferredRef.substring(0, 7) : preferredRef;
+          return { ref: preferredRef, label: shortLabel };
+      }
+
+      const currentBranch = await this.getCurrentBranch(folder);
+      const currentHead = await this.getCurrentHash(folder);
+      const branches = await this.getBranches(folder);
+
+      const candidateBases = ['main', 'master', 'develop', ...branches.filter(b => b !== currentBranch && !['main', 'master', 'develop'].includes(b))];
+      for (const baseBranch of candidateBases) {
+          if (baseBranch === currentBranch) continue;
+          if (!branches.includes(baseBranch)) continue;
+          const mergeBase = await this.getMergeBase(folder, baseBranch, 'HEAD');
+          if (mergeBase) {
+              return {
+                  ref: mergeBase,
+                  label: `${baseBranch} (${mergeBase.substring(0, 7)})`
+              };
+          }
+      }
+
+      if (await this.isValidRef(folder, 'HEAD~1')) {
+          const cwd = await this.getCwd(folder);
+          try {
+              const { stdout } = await execAsync('git --no-pager rev-parse HEAD~1', { cwd, timeout: 5000 });
+              const prevHash = stdout.trim();
+              if (prevHash) {
+                  return { ref: prevHash, label: `HEAD~1 (${prevHash.substring(0, 7)})` };
+              }
+          } catch {}
+      }
+
+      if (currentHead) {
+          return { ref: currentHead, label: `HEAD (${currentHead.substring(0, 7)})` };
+      }
+      return null;
+  }
+
+  public async getChangedFilesSince(folder: vscode.WorkspaceFolder, baseRef: string, targetRef: string = 'WORKING_TREE'): Promise<{ path: string; status: string }[]> {
+      if (!folder) return [];
+      const safeBase = this.sanitizeGitRef(baseRef);
+      if (!safeBase) return [];
+
+      const cwd = await this.getCwd(folder);
+      const resultsMap = new Map<string, string>();
+
+      try {
+          const isWorkingTree = !targetRef || targetRef === 'WORKING_TREE';
+          const safeTarget = isWorkingTree ? '' : this.sanitizeGitRef(targetRef);
+          if (!isWorkingTree && !safeTarget) return [];
+
+          const targetArg = safeTarget ? ` "${safeTarget}"` : '';
+          const { stdout } = await execAsync(`git --no-pager diff --name-status "${safeBase}"${targetArg}`, {
+              cwd,
+              maxBuffer: MAX_BUFFER_SIZE,
+              timeout: 15000
+          });
+
+          for (const line of stdout.split('\n')) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              const parts = trimmed.split('\t');
+              if (parts.length >= 2) {
+                  const status = parts[0].trim().charAt(0) || 'M';
+                  const filePath = parts[parts.length - 1].trim();
+                  resultsMap.set(filePath, status);
+              }
+          }
+
+          if (isWorkingTree) {
+              const untracked = await this._getUntrackedFiles(folder);
+              for (const u of untracked) {
+                  if (!resultsMap.has(u)) {
+                      resultsMap.set(u, '?');
+                  }
+              }
+          }
+      } catch (e) {
+          console.error(`getChangedFilesSince failed for ${baseRef}:`, e);
+      }
+
+      return Array.from(resultsMap.entries()).map(([filePath, status]) => ({ path: filePath, status }));
+  }
+
+  public async getCompareDiff(folder: vscode.WorkspaceFolder, baseRef: string, targetRef: string = 'WORKING_TREE'): Promise<string> {
+      if (!folder) return '';
+      const safeBase = this.sanitizeGitRef(baseRef);
+      if (!safeBase) return '';
+
+      const cwd = await this.getCwd(folder);
+      const isWorkingTree = !targetRef || targetRef === 'WORKING_TREE';
+      const safeTarget = isWorkingTree ? '' : this.sanitizeGitRef(targetRef);
+      if (!isWorkingTree && !safeTarget) return '';
+
+      let diffOutput = '';
+      try {
+          const targetArg = safeTarget ? ` "${safeTarget}"` : '';
+          const { stdout } = await execAsync(`git --no-pager diff "${safeBase}"${targetArg}`, {
+              cwd,
+              maxBuffer: MAX_BUFFER_SIZE,
+              timeout: 15000
+          });
+          diffOutput = stdout || '';
+      } catch (error: any) {
+          if (error?.message?.includes('maxBuffer')) {
+              try {
+                  const targetArg = safeTarget ? ` "${safeTarget}"` : '';
+                  const { stdout: statOut } = await execAsync(`git --no-pager diff --stat "${safeBase}"${targetArg}`, { cwd, timeout: 15000 });
+                  return `Diff too large to display in full.\n\n${statOut}`;
+              } catch {
+                  return '';
+              }
+          }
+          return '';
+      }
+
+      if (isWorkingTree) {
+          const untracked = await this._getUntrackedFiles(folder);
+          for (const relPath of untracked.slice(0, 20)) {
+              try {
+                  const fullPath = path.join(cwd, relPath);
+                  const stat = await fs.promises.stat(fullPath);
+                  if (stat.size > 100 * 1024) {
+                      diffOutput += `\ndiff --git a/${relPath} b/${relPath}\nnew file mode 100644\n--- /dev/null\n+++ b/${relPath}\n@@ -0,0 +1,1 @@\n+[New untracked file (${stat.size} bytes)]\n`;
+                      continue;
+                  }
+                  const buf = await fs.promises.readFile(fullPath);
+                  if (buf.includes(0)) {
+                      diffOutput += `\ndiff --git a/${relPath} b/${relPath}\nnew file mode 100644\nBinary file ${relPath} added\n`;
+                      continue;
+                  }
+                  const lines = buf.toString('utf8').replace(/\r\n/g, '\n').split('\n');
+                  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+                  const addedLines = lines.map(l => `+${l}`).join('\n');
+                  diffOutput += `\ndiff --git a/${relPath} b/${relPath}\nnew file mode 100644\n--- /dev/null\n+++ b/${relPath}\n@@ -0,0 +1,${lines.length} @@\n${addedLines}\n`;
+              } catch {}
+          }
+      }
+
+      return diffOutput;
   }
 }

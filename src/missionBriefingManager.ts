@@ -1,10 +1,17 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { LollmsAPI } from './lollmsAPI';
 import { stripThinkingTags } from './utils';
 import { Logger } from './logger';
 
 export type BriefingCategory = 'doctrine' | 'architecture' | 'decisions' | 'pitfalls' | 'tasks' | 'custom';
+
+export interface BriefingSection {
+    name: string;
+    title: string;
+    content: string;
+    relatedFiles?: string[];
+    updatedAt: number;
+}
 
 export interface BriefingEntry {
     id: string;
@@ -20,17 +27,19 @@ export interface BriefingEntry {
 
 export interface ProjectBriefingStore {
     version: number;
-    doctrine: string;
-    entries: BriefingEntry[];
+    sections: BriefingSection[];
     lastCompactedAt: number;
 }
 
 export class MissionBriefingManager {
     public static readonly BRIEFING_JSON_FILE = 'mission_briefing.json';
     public static readonly WORKSPACE_STATE_KEY = 'lollms_global_briefing';
-    public static readonly MAX_RENDERED_CHARS = 7000;
-    public static readonly MAX_ENTRIES = 24;
-    public static readonly MAX_ENTRY_CHARS = 900;
+    public static readonly DESCRIPTION_SECTION = 'description';
+    public static readonly MAX_TOTAL_CHARS = 3600;
+    public static readonly MAX_RENDERED_CHARS = 3600;
+    public static readonly MAX_SECTIONS = 12;
+    public static readonly MAX_SECTION_CHARS = 550;
+    public static readonly MAX_DESCRIPTION_CHARS = 750;
 
     private cachedStore: ProjectBriefingStore | null = null;
 
@@ -47,10 +56,127 @@ export class MissionBriefingManager {
 
     private createEmptyStore(): ProjectBriefingStore {
         return {
-            version: 1,
-            doctrine: '',
-            entries: [],
+            version: 2,
+            sections: [],
             lastCompactedAt: 0
+        };
+    }
+
+    private normalizeSectionName(rawName: string, fallbackTitle?: string): string {
+        const base = (rawName || fallbackTitle || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9_]+/g, '_')
+            .replace(/^_+|_+$/g, '');
+        if (!base) return `section_${Date.now().toString(36)}`;
+        if (base === 'project_description' || base === 'overview' || base === 'purpose' || base === 'project_doctrine' || base === 'doctrine') {
+            return MissionBriefingManager.DESCRIPTION_SECTION;
+        }
+        return base.slice(0, 48);
+    }
+
+    private formatSectionTitle(name: string, explicitTitle?: string): string {
+        if (name === MissionBriefingManager.DESCRIPTION_SECTION) {
+            return 'Description';
+        }
+        if (explicitTitle && explicitTitle.trim()) {
+            return explicitTitle.trim().slice(0, 60);
+        }
+        return name
+            .split('_')
+            .filter(Boolean)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(' ');
+    }
+
+    private extractFilePathsFromText(text: string): string[] {
+        const matches = text.match(/`([a-zA-Z0-9_.\-/]+\.[a-zA-Z0-9]{1,8})`/g) || [];
+        return Array.from(new Set(matches.map(m => m.slice(1, -1).replace(/\\/g, '/'))));
+    }
+
+    /**
+     * Detects episodic/event-reporting logs (session recaps, test outcomes, failure narratives, TODOs)
+     * so they cannot overwrite or bloat the project workings reference.
+     */
+    public static isEpisodicEventReport(text: string, titleOrName?: string): boolean {
+        const combined = `${titleOrName || ''} ${text || ''}`.trim();
+        if (!combined) return false;
+        const lower = combined.toLowerCase();
+
+        if (/^(?:session|turn|step|attempt|phase)\s*(?:#?\d+|:)/i.test(lower)) return true;
+        if (/^\s*(?:\*\*task\*\*|task:|todo:|next step:|status:|resolved bug:|fixed in)\b/im.test(lower)) return true;
+        if (/\b(?:in this session|in the previous turn|previous attempt|earlier turns|just fixed|just updated|just added|was fixed in|failed to apply|test run (?:passed|failed)|we resolved|i have updated|i modified|user asked to)\b/i.test(lower)) {
+            return true;
+        }
+        return false;
+    }
+
+    private ensureDescriptionFirst(sections: BriefingSection[]): BriefingSection[] {
+        const cleaned = sections.filter(s => s && s.name && s.content && s.content.trim().length > 0);
+        const descIdx = cleaned.findIndex(s => s.name === MissionBriefingManager.DESCRIPTION_SECTION);
+        if (descIdx > 0) {
+            const [desc] = cleaned.splice(descIdx, 1);
+            cleaned.unshift(desc);
+        } else if (descIdx === -1 && cleaned.length > 0) {
+            cleaned.unshift({
+                name: MissionBriefingManager.DESCRIPTION_SECTION,
+                title: 'Description',
+                content: 'Project overview not yet described. Update the `description` section with general purpose and main features.',
+                updatedAt: Date.now()
+            });
+        }
+        return cleaned;
+    }
+
+    private capSectionContent(name: string, content: string): string {
+        const maxLen = name === MissionBriefingManager.DESCRIPTION_SECTION
+            ? MissionBriefingManager.MAX_DESCRIPTION_CHARS
+            : MissionBriefingManager.MAX_SECTION_CHARS;
+        const trimmed = content.trim();
+        if (trimmed.length <= maxLen) return trimmed;
+        return trimmed.slice(0, maxLen - 3).trimEnd() + '...';
+    }
+
+    private migrateLegacyStore(parsed: any): ProjectBriefingStore {
+        const sections: BriefingSection[] = [];
+        const now = Date.now();
+
+        if (typeof parsed.doctrine === 'string' && parsed.doctrine.trim()) {
+            const cleanDoc = parsed.doctrine.trim();
+            if (!MissionBriefingManager.isEpisodicEventReport(cleanDoc, 'description')) {
+                sections.push({
+                    name: MissionBriefingManager.DESCRIPTION_SECTION,
+                    title: 'Description',
+                    content: this.capSectionContent(MissionBriefingManager.DESCRIPTION_SECTION, cleanDoc),
+                    relatedFiles: this.extractFilePathsFromText(cleanDoc),
+                    updatedAt: now
+                });
+            }
+        }
+
+        if (Array.isArray(parsed.entries)) {
+            for (const e of parsed.entries) {
+                if (!e || !e.content) continue;
+                const id = String(e.id || '');
+                if (id.startsWith('session_') || e.category === 'tasks') continue;
+                if (MissionBriefingManager.isEpisodicEventReport(e.content, e.title)) continue;
+
+                const name = this.normalizeSectionName(id, e.title);
+                if (sections.some(s => s.name === name)) continue;
+
+                sections.push({
+                    name,
+                    title: this.formatSectionTitle(name, e.title),
+                    content: this.capSectionContent(name, String(e.content)),
+                    relatedFiles: Array.isArray(e.relatedFiles) ? e.relatedFiles : this.extractFilePathsFromText(String(e.content)),
+                    updatedAt: e.updatedAt || now
+                });
+            }
+        }
+
+        return {
+            version: 2,
+            sections: this.ensureDescriptionFirst(sections),
+            lastCompactedAt: parsed.lastCompactedAt || 0
         };
     }
 
@@ -61,36 +187,50 @@ export class MissionBriefingManager {
                 const bytes = await vscode.workspace.fs.readFile(uri);
                 const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
                 if (parsed && typeof parsed === 'object') {
-                    const store: ProjectBriefingStore = {
-                        version: parsed.version || 1,
-                        doctrine: typeof parsed.doctrine === 'string' ? parsed.doctrine : '',
-                        entries: Array.isArray(parsed.entries) ? parsed.entries : [],
-                        lastCompactedAt: parsed.lastCompactedAt || 0
-                    };
-                    this.cachedStore = store;
-                    return store;
+                    if (Array.isArray(parsed.sections)) {
+                        const store: ProjectBriefingStore = {
+                            version: 2,
+                            sections: this.ensureDescriptionFirst(
+                                parsed.sections.map((s: any) => ({
+                                    name: this.normalizeSectionName(s.name || '', s.title),
+                                    title: this.formatSectionTitle(this.normalizeSectionName(s.name || '', s.title), s.title),
+                                    content: this.capSectionContent(this.normalizeSectionName(s.name || '', s.title), String(s.content || '')),
+                                    relatedFiles: Array.isArray(s.relatedFiles) ? s.relatedFiles : this.extractFilePathsFromText(String(s.content || '')),
+                                    updatedAt: s.updatedAt || Date.now()
+                                }))
+                            ),
+                            lastCompactedAt: parsed.lastCompactedAt || 0
+                        };
+                        this.cachedStore = store;
+                        return store;
+                    }
+                    const migrated = this.migrateLegacyStore(parsed);
+                    this.cachedStore = migrated;
+                    return migrated;
                 }
             } catch {}
         }
 
-        // Migrate seamlessly from legacy workspaceState flat string if present
         const legacyText = this.context.workspaceState.get<string>(MissionBriefingManager.WORKSPACE_STATE_KEY, '').trim();
-        const migrated = this.createEmptyStore();
+        const empty = this.createEmptyStore();
         if (legacyText) {
-            migrated.doctrine = legacyText;
+            const parsedFromText = this.parseRenderedOrRawText(legacyText, empty);
             if (uri) {
-                await this.saveStore(migrated, workspaceFolder);
+                await this.saveStore(parsedFromText, workspaceFolder);
             }
+            this.cachedStore = parsedFromText;
+            return parsedFromText;
         }
-        this.cachedStore = migrated;
-        return migrated;
+        this.cachedStore = empty;
+        return empty;
     }
 
     public async saveStore(store: ProjectBriefingStore, workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
+        store.sections = this.ensureDescriptionFirst(store.sections);
+        this.enforceTotalSizeCap(store);
         this.cachedStore = store;
         const rendered = this.renderStore(store);
 
-        // Keep workspaceState synchronously readable for fast HUD/prompt construction
         await this.context.workspaceState.update(MissionBriefingManager.WORKSPACE_STATE_KEY, rendered);
 
         const uri = this.getStoreUri(workspaceFolder);
@@ -113,36 +253,123 @@ export class MissionBriefingManager {
         return this.context.workspaceState.get<string>(MissionBriefingManager.WORKSPACE_STATE_KEY, '').trim();
     }
 
-    private normalizeId(rawId: string, category: BriefingCategory, title: string): string {
-        const base = (rawId || `${category}_${title}` || `${category}_${Date.now()}`)
-            .toLowerCase()
-            .replace(/[^a-z0-9_]+/g, '_')
-            .replace(/^_+|_+$/g, '');
-        return base.slice(0, 64) || `${category}_${Date.now()}`;
-    }
+    /**
+     * Enforces hard cap on section count and total rendered character length.
+     * The mandatory `description` section is always preserved first.
+     */
+    private enforceTotalSizeCap(store: ProjectBriefingStore): void {
+        store.sections = this.ensureDescriptionFirst(store.sections);
 
-    private extractFilePathsFromText(text: string): string[] {
-        const matches = text.match(/`([a-zA-Z0-9_.\-/]+\.[a-zA-Z0-9]{1,8})`/g) || [];
-        return Array.from(new Set(matches.map(m => m.slice(1, -1).replace(/\\/g, '/'))));
-    }
-
-    private tokenSimilarity(a: string, b: string): number {
-        const tokenize = (s: string) => new Set(
-            s.toLowerCase().replace(/[^a-z0-9_]+/g, ' ').split(/\s+/).filter(w => w.length > 2)
-        );
-        const setA = tokenize(a);
-        const setB = tokenize(b);
-        if (setA.size === 0 || setB.size === 0) return 0;
-        let overlap = 0;
-        for (const t of setA) {
-            if (setB.has(t)) overlap++;
+        // Cap individual section sizes first
+        for (const sec of store.sections) {
+            sec.content = this.capSectionContent(sec.name, sec.content);
         }
-        return overlap / Math.max(setA.size, setB.size);
+
+        // Evict oldest non-description sections if exceeding MAX_SECTIONS
+        while (store.sections.length > MissionBriefingManager.MAX_SECTIONS) {
+            const removable = store.sections
+                .filter(s => s.name !== MissionBriefingManager.DESCRIPTION_SECTION)
+                .sort((a, b) => a.updatedAt - b.updatedAt);
+            if (removable.length === 0) break;
+            const victim = removable[0];
+            store.sections = store.sections.filter(s => s.name !== victim.name);
+        }
+
+        // Evict oldest non-description sections if total rendered size exceeds MAX_TOTAL_CHARS
+        while (
+            store.sections.length > 1 &&
+            this.renderStore(store).length > MissionBriefingManager.MAX_TOTAL_CHARS
+        ) {
+            const removable = store.sections
+                .filter(s => s.name !== MissionBriefingManager.DESCRIPTION_SECTION)
+                .sort((a, b) => a.updatedAt - b.updatedAt);
+            if (removable.length === 0) break;
+            const victim = removable[0];
+            store.sections = store.sections.filter(s => s.name !== victim.name);
+        }
     }
 
     /**
-     * Upserts a structured cross-session entry without stacking duplicates.
-     * Automatically prunes stale references and compacts if exceeding budget.
+     * Adds or updates a single named section without disturbing other sections.
+     */
+    public async upsertSection(
+        sectionName: string,
+        content: string,
+        options?: {
+            title?: string;
+            relatedFiles?: string[];
+            mode?: 'add' | 'edit' | 'upsert';
+            workspaceFolder?: vscode.WorkspaceFolder;
+        }
+    ): Promise<string> {
+        const store = await this.loadStore(options?.workspaceFolder);
+        const cleanContent = (content || '').trim();
+        if (!cleanContent) {
+            return this.renderStore(store);
+        }
+
+        const normName = this.normalizeSectionName(sectionName, options?.title);
+
+        if (
+            normName !== MissionBriefingManager.DESCRIPTION_SECTION &&
+            MissionBriefingManager.isEpisodicEventReport(cleanContent, options?.title || normName)
+        ) {
+            Logger.info(`[MissionBriefingManager] Rejected episodic event report for section '${normName}'.`);
+            return this.renderStore(store);
+        }
+
+        const title = this.formatSectionTitle(normName, options?.title);
+        const boundedContent = this.capSectionContent(normName, cleanContent);
+        const detectedFiles = this.extractFilePathsFromText(boundedContent);
+        const relatedFiles = Array.from(new Set([...(options?.relatedFiles || []), ...detectedFiles]));
+        const now = Date.now();
+
+        const existingIdx = store.sections.findIndex(s => s.name === normName);
+        if (existingIdx !== -1) {
+            store.sections[existingIdx] = {
+                ...store.sections[existingIdx],
+                title: normName === MissionBriefingManager.DESCRIPTION_SECTION ? 'Description' : (options?.title?.trim() || store.sections[existingIdx].title),
+                content: boundedContent,
+                relatedFiles: relatedFiles.length > 0 ? relatedFiles : store.sections[existingIdx].relatedFiles,
+                updatedAt: now
+            };
+        } else {
+            const newSection: BriefingSection = {
+                name: normName,
+                title,
+                content: boundedContent,
+                relatedFiles,
+                updatedAt: now
+            };
+            if (normName === MissionBriefingManager.DESCRIPTION_SECTION) {
+                store.sections.unshift(newSection);
+            } else {
+                store.sections.push(newSection);
+            }
+        }
+
+        return await this.saveStore(store, options?.workspaceFolder);
+    }
+
+    public async deleteSection(sectionOrTitle: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
+        const store = await this.loadStore(workspaceFolder);
+        const clean = this.normalizeSectionName(sectionOrTitle);
+        if (clean === MissionBriefingManager.DESCRIPTION_SECTION) {
+            Logger.warn(`[MissionBriefingManager] Blocked attempt to delete mandatory 'description' section.`);
+            return this.renderStore(store);
+        }
+
+        const rawLower = (sectionOrTitle || '').toLowerCase().trim();
+        store.sections = store.sections.filter(s =>
+            s.name !== clean &&
+            s.name.toLowerCase() !== rawLower &&
+            s.title.toLowerCase() !== rawLower
+        );
+        return await this.saveStore(store, workspaceFolder);
+    }
+
+    /**
+     * Backward-compatible wrapper routing keyed entries to sections.
      */
     public async upsertEntry(
         input: {
@@ -155,223 +382,183 @@ export class MissionBriefingManager {
         },
         options?: { compact?: boolean; workspaceFolder?: vscode.WorkspaceFolder }
     ): Promise<string> {
-        const store = await this.loadStore(options?.workspaceFolder);
-        const category: BriefingCategory = input.category || 'decisions';
-        const cleanContent = (input.content || '').trim();
-        if (!cleanContent) {
-            return this.renderStore(store);
-        }
-
-        const title = (input.title || cleanContent.split('\n')[0].replace(/^[#*\-\s]+/, '').slice(0, 60)).trim();
-        const normId = this.normalizeId(input.id || '', category, title);
-        const detectedFiles = this.extractFilePathsFromText(cleanContent);
-        const relatedFiles = Array.from(new Set([...(input.relatedFiles || []), ...detectedFiles]));
-        const now = Date.now();
-
-        const boundedContent = cleanContent.length > MissionBriefingManager.MAX_ENTRY_CHARS
-            ? cleanContent.slice(0, MissionBriefingManager.MAX_ENTRY_CHARS - 3) + '...'
-            : cleanContent;
-
-        // Match by exact ID or high semantic similarity in the same category to prevent duplicate crumbling
-        let existingIdx = store.entries.findIndex(e => e.id === normId);
-        if (existingIdx === -1) {
-            existingIdx = store.entries.findIndex(e =>
-                e.category === category && (
-                    e.title.toLowerCase() === title.toLowerCase() ||
-                    this.tokenSimilarity(`${e.title} ${e.content}`, `${title} ${boundedContent}`) >= 0.72
-                )
-            );
-        }
-
-        if (existingIdx !== -1) {
-            const existing = store.entries[existingIdx];
-            store.entries[existingIdx] = {
-                ...existing,
-                title: title || existing.title,
-                content: boundedContent,
-                relatedFiles: relatedFiles.length > 0 ? relatedFiles : existing.relatedFiles,
-                confidence: Math.min(100, Math.max(existing.confidence, input.confidence ?? 80) + 5),
-                updatedAt: now,
-                sessionCount: (existing.sessionCount || 1) + 1
-            };
-        } else {
-            store.entries.push({
-                id: normId,
-                category,
-                title,
-                content: boundedContent,
-                relatedFiles,
-                confidence: input.confidence ?? 75,
-                createdAt: now,
-                updatedAt: now,
-                sessionCount: 1
-            });
-        }
-
-        if (options?.compact !== false) {
-            await this.compactIfNeeded(store, options?.workspaceFolder);
-        }
-
-        return await this.saveStore(store, options?.workspaceFolder);
+        const sectionName = this.normalizeSectionName(input.id || '', input.title);
+        return await this.upsertSection(sectionName, input.content, {
+            title: input.title,
+            relatedFiles: input.relatedFiles,
+            mode: 'upsert',
+            workspaceFolder: options?.workspaceFolder
+        });
     }
 
     public async removeEntry(idOrTitle: string, workspaceFolder?: vscode.WorkspaceFolder): Promise<string> {
-        const store = await this.loadStore(workspaceFolder);
-        const clean = idOrTitle.toLowerCase().trim();
-        store.entries = store.entries.filter(e =>
-            e.id.toLowerCase() !== clean && e.title.toLowerCase() !== clean
-        );
-        return await this.saveStore(store, workspaceFolder);
+        return await this.deleteSection(idOrTitle, workspaceFolder);
     }
 
     /**
-     * Applies a <mission_briefing> mutation or manual modal save cleanly.
+     * Applies a <mission_briefing> mutation (add | edit | delete | write | patch | upsert | remove).
      */
     public async applyUpdate(
         content: string,
-        action: 'write' | 'patch' | 'upsert' | 'remove' = 'upsert',
-        meta?: { category?: BriefingCategory; id?: string; title?: string },
+        action: 'add' | 'edit' | 'delete' | 'write' | 'patch' | 'upsert' | 'remove' = 'upsert',
+        meta?: { category?: BriefingCategory; id?: string; section?: string; title?: string; isUserModalSave?: boolean },
         workspaceFolder?: vscode.WorkspaceFolder
     ): Promise<string> {
         const store = await this.loadStore(workspaceFolder);
         const trimmed = (content || '').trim();
+        const targetSection = (meta?.section || meta?.id || '').trim();
 
-        if (action === 'remove') {
-            return await this.removeEntry(meta?.id || meta?.title || trimmed, workspaceFolder);
+        if (action === 'delete' || action === 'remove') {
+            const nameToDelete = targetSection || meta?.title || trimmed;
+            if (!nameToDelete) return this.renderStore(store);
+            return await this.deleteSection(nameToDelete, workspaceFolder);
         }
 
-        if (action === 'upsert' || meta?.category || meta?.id) {
-            return await this.upsertEntry({
-                id: meta?.id,
-                category: meta?.category || 'decisions',
-                title: meta?.title,
-                content: trimmed
-            }, { workspaceFolder });
+        if (action === 'add' || action === 'edit' || action === 'upsert') {
+            // Support Aider SEARCH/REPLACE patch inside an edit section call
+            if (action === 'edit' && trimmed.includes('<<<<<<< SEARCH')) {
+                const normName = this.normalizeSectionName(targetSection || MissionBriefingManager.DESCRIPTION_SECTION, meta?.title);
+                const existing = store.sections.find(s => s.name === normName);
+                if (existing) {
+                    const { normalizeAiderContent, parseAiderHunks, applySearchReplace } = require('./utils');
+                    const hunks = parseAiderHunks(normalizeAiderContent(trimmed));
+                    if (hunks.length > 0) {
+                        let patched = existing.content;
+                        let anyApplied = false;
+                        for (const h of hunks) {
+                            const res = applySearchReplace(patched, h.searchPart, h.replacePart);
+                            if (res.success) {
+                                patched = res.result;
+                                anyApplied = true;
+                            }
+                        }
+                        if (anyApplied) {
+                            return await this.upsertSection(normName, patched, { title: meta?.title || existing.title, workspaceFolder });
+                        }
+                    }
+                }
+            }
+
+            const effectiveSection = targetSection || (meta?.title ? this.normalizeSectionName('', meta.title) : (store.sections.length === 0 ? MissionBriefingManager.DESCRIPTION_SECTION : ''));
+            if (!effectiveSection) {
+                Logger.warn('[MissionBriefingManager] Ignored add/edit without a target section name.');
+                return this.renderStore(store);
+            }
+            return await this.upsertSection(effectiveSection, trimmed, { title: meta?.title, mode: action, workspaceFolder });
         }
 
         if (action === 'patch') {
             const { normalizeAiderContent, parseAiderHunks, applySearchReplace } = require('./utils');
-            const currentRendered = this.renderStore(store);
             const normalizedAider = normalizeAiderContent(trimmed);
             const hunks = parseAiderHunks(normalizedAider);
+            const normTarget = targetSection ? this.normalizeSectionName(targetSection, meta?.title) : '';
 
-            if (hunks.length > 0 && store.doctrine) {
-                let updatedDoctrine = store.doctrine;
-                let applied = false;
-                for (const hunk of hunks) {
-                    const res = applySearchReplace(updatedDoctrine, hunk.searchPart, hunk.replacePart);
-                    if (res.success) {
-                        updatedDoctrine = res.result;
-                        applied = true;
+            if (hunks.length > 0) {
+                // Target either the named section or search across sections to patch in place
+                const candidates = normTarget
+                    ? store.sections.filter(s => s.name === normTarget)
+                    : store.sections;
+                for (const sec of candidates) {
+                    let updated = sec.content;
+                    let applied = false;
+                    for (const h of hunks) {
+                        const res = applySearchReplace(updated, h.searchPart, h.replacePart);
+                        if (res.success) {
+                            updated = res.result;
+                            applied = true;
+                        }
+                    }
+                    if (applied) {
+                        return await this.upsertSection(sec.name, updated, { title: sec.title, workspaceFolder });
                     }
                 }
-                if (applied) {
-                    store.doctrine = updatedDoctrine.trim();
-                    await this.compactIfNeeded(store, workspaceFolder);
-                    return await this.saveStore(store, workspaceFolder);
+                const additions = hunks.map((h: any) => h.replacePart || '').filter(Boolean).join('\n').trim();
+                if (additions && (normTarget || meta?.title)) {
+                    return await this.upsertSection(normTarget || '', additions, { title: meta?.title, workspaceFolder });
                 }
             }
 
-            // Fallback: treat patch additions as a keyed decision entry instead of appending messy raw text to doctrine
-            const additions = hunks.length > 0
-                ? hunks.map((h: any) => h.replacePart || '').filter(Boolean).join('\n').trim()
-                : trimmed;
-
-            if (currentRendered && additions) {
-                return await this.upsertEntry({
-                    category: 'decisions',
-                    content: additions
-                }, { workspaceFolder });
+            if (normTarget || meta?.title) {
+                return await this.upsertSection(normTarget || '', trimmed, { title: meta?.title, workspaceFolder });
             }
+            return this.renderStore(store);
         }
 
-        // action === 'write': If the user edited the full rendered briefing in the modal, parse back sections cleanly
+        // action === 'write':
+        // Only overwrite the entire store when explicitly saved by the user in the modal OR when parsing ### sections cleanly.
+        if (targetSection && !meta?.isUserModalSave) {
+            return await this.upsertSection(targetSection, trimmed, { title: meta?.title, workspaceFolder });
+        }
+
         if (!trimmed) {
-            store.doctrine = '';
-            store.entries = [];
-            return await this.saveStore(store, workspaceFolder);
+            if (meta?.isUserModalSave) {
+                store.sections = [];
+                return await this.saveStore(store, workspaceFolder);
+            }
+            return this.renderStore(store);
         }
 
         const parsed = this.parseRenderedOrRawText(trimmed, store);
-        await this.compactIfNeeded(parsed, workspaceFolder);
         return await this.saveStore(parsed, workspaceFolder);
     }
 
     private parseRenderedOrRawText(text: string, existingStore: ProjectBriefingStore): ProjectBriefingStore {
-        const hasStructuredHeaders = /^###\s+(?:🎯|🏛️|⚠️|📌)/m.test(text);
-        if (!hasStructuredHeaders) {
+        const hasSectionHeaders = /^###\s+/m.test(text);
+        if (!hasSectionHeaders) {
+            // Treat plain prose as the mandatory 'description' section, preserving other sections if already present
+            const updatedSections = existingStore.sections.filter(s => s.name !== MissionBriefingManager.DESCRIPTION_SECTION);
+            updatedSections.unshift({
+                name: MissionBriefingManager.DESCRIPTION_SECTION,
+                title: 'Description',
+                content: this.capSectionContent(MissionBriefingManager.DESCRIPTION_SECTION, text.trim()),
+                relatedFiles: this.extractFilePathsFromText(text),
+                updatedAt: Date.now()
+            });
             return {
-                ...existingStore,
-                doctrine: text.trim()
+                version: 2,
+                sections: this.ensureDescriptionFirst(updatedSections),
+                lastCompactedAt: existingStore.lastCompactedAt
             };
         }
 
-        const nextStore: ProjectBriefingStore = {
-            version: existingStore.version,
-            doctrine: '',
-            entries: [],
-            lastCompactedAt: existingStore.lastCompactedAt
-        };
+        const nextSections: BriefingSection[] = [];
+        const rawBlocks = text.split(/(?=^###\s+)/m);
+        const now = Date.now();
 
-        const sections = text.split(/(?=^###\s+)/m);
-        for (const sec of sections) {
-            const lines = sec.trim().split('\n');
-            const header = lines[0] || '';
+        for (const block of rawBlocks) {
+            const lines = block.trim().split('\n');
+            const headerLine = (lines[0] || '').replace(/^###\s+/, '').trim();
             const body = lines.slice(1).join('\n').trim();
-            if (!body) continue;
+            if (!headerLine || !body) continue;
 
-            if (header.includes('Project Doctrine')) {
-                nextStore.doctrine = body;
-            } else {
-                let category: BriefingCategory = 'decisions';
-                if (header.includes('Architecture')) category = 'architecture';
-                else if (header.includes('Pitfalls')) category = 'pitfalls';
-                else if (header.includes('Objectives') || header.includes('Tasks')) category = 'tasks';
+            const slugMatch = headerLine.match(/\[`([^`]+)`\]/);
+            const cleanTitle = headerLine
+                .replace(/\[`[^`]+`\]/g, '')
+                .replace(/^[\p{Emoji}\u2600-\u27BF\uFE0F\s]+/u, '')
+                .trim();
 
-                const bulletBlocks = body.split(/(?=^- \*\*)/m).map(b => b.trim()).filter(Boolean);
-                for (const block of bulletBlocks) {
-                    const titleMatch = block.match(/^- \*\*([^*]+)\*\*(?:\s*\[`([^`]+)`\])?:?\s*([\s\S]*)/);
-                    if (titleMatch) {
-                        const title = titleMatch[1].trim();
-                        const id = titleMatch[2]?.trim() || this.normalizeId('', category, title);
-                        const content = titleMatch[3].trim();
-                        const existing = existingStore.entries.find(e => e.id === id);
-                        nextStore.entries.push({
-                            id,
-                            category,
-                            title,
-                            content,
-                            relatedFiles: this.extractFilePathsFromText(content),
-                            confidence: existing?.confidence ?? 80,
-                            createdAt: existing?.createdAt ?? Date.now(),
-                            updatedAt: Date.now(),
-                            sessionCount: existing?.sessionCount ?? 1
-                        });
-                    } else {
-                        nextStore.entries.push({
-                            id: this.normalizeId('', category, block.slice(0, 40)),
-                            category,
-                            title: block.slice(0, 50),
-                            content: block.replace(/^- /, '').trim(),
-                            relatedFiles: this.extractFilePathsFromText(block),
-                            confidence: 75,
-                            createdAt: Date.now(),
-                            updatedAt: Date.now(),
-                            sessionCount: 1
-                        });
-                    }
-                }
-            }
+            const name = this.normalizeSectionName(slugMatch ? slugMatch[1] : '', cleanTitle);
+            if (nextSections.some(s => s.name === name)) continue;
+
+            nextSections.push({
+                name,
+                title: this.formatSectionTitle(name, cleanTitle),
+                content: this.capSectionContent(name, body),
+                relatedFiles: this.extractFilePathsFromText(body),
+                updatedAt: now
+            });
         }
 
-        return nextStore;
+        return {
+            version: 2,
+            sections: this.ensureDescriptionFirst(nextSections),
+            lastCompactedAt: existingStore.lastCompactedAt
+        };
     }
 
     /**
-     * Anti-Crumble Engine:
-     * 1. Prunes entries whose referenced project files no longer exist on disk.
-     * 2. Deduplicates overlapping entries in the same category.
-     * 3. Consolidates excess entries via LLM (with deterministic fallback) when exceeding token budget.
+     * Prunes sections whose referenced files no longer exist on disk, enforces size caps,
+     * and optionally consolidates via LLM when forced.
      */
     public async compactStore(workspaceFolder?: vscode.WorkspaceFolder, force: boolean = false): Promise<{
         rendered: string;
@@ -380,31 +567,25 @@ export class MissionBriefingManager {
         compactedViaLlm: boolean;
     }> {
         const store = await this.loadStore(workspaceFolder);
-        const stats = await this.compactIfNeeded(store, workspaceFolder, force);
-        const rendered = await this.saveStore(store, workspaceFolder);
-        return { rendered, ...stats };
-    }
-
-    private async compactIfNeeded(
-        store: ProjectBriefingStore,
-        workspaceFolder?: vscode.WorkspaceFolder,
-        force: boolean = false
-    ): Promise<{ prunedStaleCount: number; deduplicatedCount: number; compactedViaLlm: boolean }> {
         let prunedStaleCount = 0;
         let deduplicatedCount = 0;
         let compactedViaLlm = false;
 
         const folder = workspaceFolder || vscode.workspace.workspaceFolders?.[0];
 
-        // 1. Prune stale entries pointing exclusively to deleted workspace files
-        if (folder && store.entries.length > 0) {
-            const surviving: BriefingEntry[] = [];
-            for (const entry of store.entries) {
-                const files = entry.relatedFiles || [];
-                if (files.length === 0) {
-                    surviving.push(entry);
-                    continue;
-                }
+        // 1. Prune episodic reports & sections referencing exclusively deleted files (except mandatory description)
+        const surviving: BriefingSection[] = [];
+        for (const sec of store.sections) {
+            if (sec.name === MissionBriefingManager.DESCRIPTION_SECTION) {
+                surviving.push(sec);
+                continue;
+            }
+            if (MissionBriefingManager.isEpisodicEventReport(sec.content, sec.title)) {
+                prunedStaleCount++;
+                continue;
+            }
+            const files = sec.relatedFiles || [];
+            if (folder && files.length > 0) {
                 let anyExists = false;
                 for (const rel of files) {
                     const cleanRel = rel.replace(/\\/g, '/').replace(/^\.?\//, '');
@@ -414,100 +595,77 @@ export class MissionBriefingManager {
                         break;
                     } catch {}
                 }
-                if (anyExists) {
-                    surviving.push(entry);
-                } else {
+                if (!anyExists) {
                     prunedStaleCount++;
-                    Logger.info(`[MissionBriefingManager] Pruned stale briefing entry '${entry.id}' (referenced files deleted).`);
+                    continue;
                 }
             }
-            store.entries = surviving;
+            surviving.push(sec);
         }
+        store.sections = surviving;
 
-        // 2. Deduplicate overlapping entries in the same category
-        const deduped: BriefingEntry[] = [];
-        const sortedByRecency = [...store.entries].sort((a, b) => b.updatedAt - a.updatedAt);
-        for (const entry of sortedByRecency) {
-            const duplicate = deduped.find(kept =>
-                kept.category === entry.category &&
-                this.tokenSimilarity(`${kept.title} ${kept.content}`, `${entry.title} ${entry.content}`) >= 0.65
-            );
-            if (duplicate) {
+        // 2. Deduplicate by section name
+        const deduped: BriefingSection[] = [];
+        const seenNames = new Set<string>();
+        for (const sec of store.sections) {
+            if (seenNames.has(sec.name)) {
                 deduplicatedCount++;
-                duplicate.confidence = Math.min(100, Math.max(duplicate.confidence, entry.confidence) + 5);
-                duplicate.sessionCount = Math.max(duplicate.sessionCount, entry.sessionCount);
-            } else {
-                deduped.push(entry);
+                continue;
             }
+            seenNames.add(sec.name);
+            deduped.push(sec);
         }
-        store.entries = deduped;
+        store.sections = deduped;
 
-        // 3. Check budget and consolidate if bloated (or forced)
+        // 3. Optional AI condensation when forced or bloated
         const currentLen = this.renderStore(store).length;
-        const needsCompaction = force || currentLen > MissionBriefingManager.MAX_RENDERED_CHARS || store.entries.length > MissionBriefingManager.MAX_ENTRIES;
+        if ((force || currentLen > MissionBriefingManager.MAX_TOTAL_CHARS) && store.sections.length > 2 && this.lollmsAPI) {
+            try {
+                const prompt = `Compact these project architecture briefing sections so total size is concise (< ${MissionBriefingManager.MAX_TOTAL_CHARS} chars).
+RULES:
+1. Keep 'description' as the FIRST section (general project purpose and main features).
+2. Each section must describe timeless factual project workings (e.g., which files handle which actions/endpoints/modules).
+3. Remove ALL episodic events, failure logs, session summaries, or task statuses.
+SECTIONS (JSON):
+${JSON.stringify(store.sections.map(s => ({ name: s.name, title: s.title, content: s.content })))}
+Output ONLY a valid JSON array of { "name", "title", "content" }.`;
 
-        if (needsCompaction && store.entries.length > 3) {
-            if (this.lollmsAPI) {
-                try {
-                    const prompt = `You are a Software Architecture Memory Consolidator.
-The project's cross-session Mission Briefing has accumulated ${store.entries.length} entries (~${Math.ceil(currentLen / 3.5)} tokens).
-Consolidate and merge them into at most 12 crisp, non-overlapping, high-signal entries without losing critical architectural decisions, invariants, or bug pitfalls.
+                const resp = await this.lollmsAPI.sendChat([
+                    { role: 'system', content: 'Output ONLY a valid JSON array. Zero prose.' },
+                    { role: 'user', content: prompt }
+                ], null, undefined, undefined, { thinking: false });
 
-EXISTING ENTRIES (JSON):
-${JSON.stringify(store.entries.map(e => ({ id: e.id, category: e.category, title: e.title, content: e.content, relatedFiles: e.relatedFiles })))}
-
-Output ONLY a valid JSON array of consolidated objects with keys: "id", "category" ("architecture"|"decisions"|"pitfalls"|"tasks"), "title", "content", "relatedFiles".`;
-
-                    const response = await this.lollmsAPI.sendChat([
-                        { role: 'system', content: 'Output ONLY a valid JSON array. Zero prose.' },
-                        { role: 'user', content: prompt }
-                    ], null, undefined, undefined, { thinking: false });
-
-                    const clean = stripThinkingTags(response).trim();
-                    const jsonMatch = clean.match(/\[[\s\S]*\]/);
-                    if (jsonMatch) {
-                        const parsed = JSON.parse(jsonMatch[0]);
-                        if (Array.isArray(parsed) && parsed.length > 0) {
-                            const now = Date.now();
-                            store.entries = parsed.slice(0, 14).map((item: any) => ({
-                                id: this.normalizeId(item.id || '', item.category || 'decisions', item.title || 'note'),
-                                category: (['doctrine', 'architecture', 'decisions', 'pitfalls', 'tasks', 'custom'].includes(item.category) ? item.category : 'decisions') as BriefingCategory,
-                                title: String(item.title || 'Architectural Note').slice(0, 70),
-                                content: String(item.content || '').slice(0, MissionBriefingManager.MAX_ENTRY_CHARS),
-                                relatedFiles: Array.isArray(item.relatedFiles) ? item.relatedFiles : this.extractFilePathsFromText(String(item.content || '')),
-                                confidence: 85,
-                                createdAt: now,
-                                updatedAt: now,
-                                sessionCount: 2
-                            }));
-                            store.lastCompactedAt = now;
-                            compactedViaLlm = true;
-                        }
+                const clean = stripThinkingTags(resp).trim();
+                const jsonMatch = clean.match(/\[[\s\S]*\]/);
+                if (jsonMatch) {
+                    const parsed = JSON.parse(jsonMatch[0]);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        const now = Date.now();
+                        store.sections = this.ensureDescriptionFirst(
+                            parsed.slice(0, MissionBriefingManager.MAX_SECTIONS).map((item: any) => {
+                                const name = this.normalizeSectionName(String(item.name || ''), String(item.title || ''));
+                                const content = this.capSectionContent(name, String(item.content || ''));
+                                return {
+                                    name,
+                                    title: this.formatSectionTitle(name, String(item.title || '')),
+                                    content,
+                                    relatedFiles: this.extractFilePathsFromText(content),
+                                    updatedAt: now
+                                };
+                            })
+                        );
+                        store.lastCompactedAt = now;
+                        compactedViaLlm = true;
                     }
-                } catch (err: any) {
-                    Logger.warn(`[MissionBriefingManager] LLM consolidation fallback triggered: ${err.message}`);
                 }
-            }
-
-            // Deterministic LRU + Confidence eviction fallback if still over budget
-            if (this.renderStore(store).length > MissionBriefingManager.MAX_RENDERED_CHARS || store.entries.length > MissionBriefingManager.MAX_ENTRIES) {
-                store.entries.sort((a, b) => (b.confidence * 10 + b.sessionCount * 5) - (a.confidence * 10 + a.sessionCount * 5) || b.updatedAt - a.updatedAt);
-                while (
-                    store.entries.length > 4 &&
-                    (this.renderStore(store).length > MissionBriefingManager.MAX_RENDERED_CHARS || store.entries.length > MissionBriefingManager.MAX_ENTRIES)
-                ) {
-                    store.entries.pop();
-                }
-                store.lastCompactedAt = Date.now();
+            } catch (err: any) {
+                Logger.warn(`[MissionBriefingManager] Consolidation fallback: ${err.message}`);
             }
         }
 
-        // Trim doctrine itself if extraordinarily oversized
-        if (store.doctrine.length > 3500) {
-            store.doctrine = store.doctrine.slice(0, 3450).trim() + '\n... [trimmed to fit briefing budget]';
-        }
-
-        return { prunedStaleCount, deduplicatedCount, compactedViaLlm };
+        this.enforceTotalSizeCap(store);
+        const rendered = await this.saveStore(store, workspaceFolder);
+        return { rendered, prunedStaleCount, deduplicatedCount, compactedViaLlm };
     }
 
     public async clearAll(workspaceFolder?: vscode.WorkspaceFolder): Promise<void> {
@@ -516,27 +674,16 @@ Output ONLY a valid JSON array of consolidated objects with keys: "id", "categor
     }
 
     public renderStore(store: ProjectBriefingStore): string {
-        const parts: string[] = [];
-
-        if (store.doctrine && store.doctrine.trim()) {
-            parts.push(`### 🎯 Project Doctrine & Invariants\n${store.doctrine.trim()}`);
+        if (!store || !Array.isArray(store.sections) || store.sections.length === 0) {
+            return '';
         }
 
-        const groups: { cat: BriefingCategory; header: string }[] = [
-            { cat: 'architecture', header: '### 🏛️ Architecture & Module Contracts' },
-            { cat: 'decisions', header: '### 🧭 Cross-Session Design Decisions' },
-            { cat: 'pitfalls', header: '### ⚠️ Known Pitfalls & Resolved Bugs' },
-            { cat: 'tasks', header: '### 📌 Active Multi-Session Objectives' },
-            { cat: 'custom', header: '### 📝 Project Notes' }
-        ];
-
-        for (const g of groups) {
-            const items = store.entries.filter(e => e.category === g.cat);
-            if (items.length === 0) continue;
-            const lines = items.map(e => `- **${e.title}** [\`${e.id}\`]: ${e.content}`);
-            parts.push(`${g.header}\n${lines.join('\n')}`);
-        }
-
-        return parts.join('\n\n').trim();
+        const ordered = this.ensureDescriptionFirst(store.sections);
+        return ordered.map(sec => {
+            if (sec.name === MissionBriefingManager.DESCRIPTION_SECTION) {
+                return `### 📖 Description [\`description\`]\n${sec.content.trim()}`;
+            }
+            return `### 🧩 ${sec.title} [\`${sec.name}\`]\n${sec.content.trim()}`;
+        }).join('\n\n').trim();
     }
 }

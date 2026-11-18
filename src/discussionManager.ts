@@ -17,7 +17,7 @@ export interface Discussion {
     model?: string;
     capabilities?: DiscussionCapabilities; 
     personalityId?: string;
-    gitState?: { originalBranch: string, tempBranch: string };
+    gitState?: { originalBranch: string, tempBranch: string, startCommitHash?: string };
     importedSkills?: string[];
     selectedFolders?: string[]; // URIs of selected workspace folders
     activeDiagrams?: string[]; // e.g., ['class_diagram', 'call_graph']
@@ -49,6 +49,8 @@ export interface Discussion {
         completedActionsHistory: string[]; // This stores the raw technical logs
         secureCredentials?: Record<string, string>;
         isSafetyCheckPassed?: boolean;
+        startCommitHash?: string;
+        startBranch?: string;
         extensionVersion: string;
         blacklistedTools: string[];
     };
@@ -95,7 +97,10 @@ export class DiscussionManager {
     }
 
     public async saveLastCapabilities(caps: DiscussionCapabilities) {
-        await this.context.globalState.update('lollms_last_capabilities', caps);
+        const sanitized = { ...caps };
+        delete (sanitized as any).mutedFiles;
+        delete (sanitized as any).includedFiles;
+        await this.context.globalState.update('lollms_last_capabilities', sanitized);
     }
 
     public getLastMutedFiles(): string[] {
@@ -243,8 +248,10 @@ export class DiscussionManager {
             }
             // Ensure responseProfileId exists if loading old capability object
             if (!merged.responseProfileId) {
-                merged.responseProfileId = defaultProfileId;
+                merged.responseProfileId = defaults.responseProfileId;
             }
+            delete (merged as any).includedFiles;
+            merged.mutedFiles = this.getLastMutedFiles();
             return merged;
         }
         return defaults;
@@ -319,7 +326,7 @@ export class DiscussionManager {
                 return true;
             });
             const discussionToSave = { ...discussion, messages: cleanMessages };
-            const content = Buffer.from(JSON.stringify(discussionToSave, null, 2), 'utf8');
+            const content = Buffer.from(JSON.stringify(discussionToSave), 'utf8');
             const { getLollmsStorageUri } = require('./utils');
             const dir = vscode.Uri.joinPath(getLollmsStorageUri(this.context), 'discussions');
             const filePath = vscode.Uri.joinPath(dir, `${discussion.id}.json`);

@@ -39,6 +39,10 @@ window.addEventListener('message', e => {
         }
     } else if(msg.command === 'showDiff') {
         renderDiff(msg.path, msg.diff);
+    } else if(msg.command === 'showFullDiffRange') {
+        renderFullDiffRange(msg);
+    } else if(msg.command === 'aiCompareSummaryResult') {
+        renderAiCompareSummary(msg);
     } else if(msg.command === 'commitDetails') {
         renderCommitDetails(msg.hash, msg.files);
     } else if(msg.command === 'setMessage') {
@@ -88,7 +92,7 @@ function switchView(view) {
     }
 
     const target = document.getElementById('view-' + view) || document.getElementById('view-DETAILS');
-    if (target) target.style.display = 'block';
+    if (target) target.style.display = view === 'DIFF' ? 'flex' : 'block';
 }
 
 function commit() { 
@@ -201,6 +205,57 @@ function renderBranches(branches, current) {
     
     const statusBranchLabel = document.getElementById('status-branch-label');
     if (statusBranchLabel) statusBranchLabel.textContent = current;
+
+    populateCompareDropdowns(branches, current, gitData?.startingRef);
+}
+
+function populateCompareDropdowns(branches, currentBranch, startingRef) {
+    const selA = document.getElementById('diff-ref-a');
+    const selB = document.getElementById('diff-ref-b');
+    if (!selA || !selB) return;
+
+    const prevA = selA.value;
+    const prevB = selB.value;
+    const branchList = branches || [];
+
+    let optsA = '';
+    if (startingRef && startingRef.ref) {
+        optsA += `<option value="${escapeHtml(startingRef.ref)}">Starting State (${escapeHtml(startingRef.label || startingRef.ref.substring(0, 7))})</option>`;
+    }
+    branchList.forEach(b => {
+        optsA += `<option value="${escapeHtml(b)}">${escapeHtml(b)}${b === currentBranch ? ' (current)' : ''}</option>`;
+    });
+    optsA += `<option value="HEAD">HEAD (Current Commit)</option>`;
+    if (branchList.length === 0) {
+        optsA += `<option value="HEAD~1">HEAD~1 (Previous Commit)</option>`;
+    }
+
+    let optsB = `<option value="WORKING_TREE">Working Tree (Current State)</option>`;
+    optsB += `<option value="HEAD">HEAD (${escapeHtml(currentBranch || 'Current Commit')})</option>`;
+    branchList.forEach(b => {
+        optsB += `<option value="${escapeHtml(b)}">${escapeHtml(b)}${b === currentBranch ? ' (current)' : ''}</option>`;
+    });
+
+    selA.innerHTML = optsA;
+    selB.innerHTML = optsB;
+
+    if (prevA && Array.from(selA.options).some(o => o.value === prevA)) {
+        selA.value = prevA;
+    } else if (startingRef && startingRef.ref) {
+        selA.value = startingRef.ref;
+    } else {
+        const preferredBase = ['main', 'master', 'develop'].find(b => branchList.includes(b) && b !== currentBranch)
+            || branchList.find(b => b !== currentBranch)
+            || branchList[0]
+            || 'HEAD';
+        selA.value = preferredBase;
+    }
+
+    if (prevB && Array.from(selB.options).some(o => o.value === prevB)) {
+        selB.value = prevB;
+    } else {
+        selB.value = 'WORKING_TREE';
+    }
 }
 
 function renderWorkingTree(status) {
@@ -259,22 +314,71 @@ function selectFile(path, isStaged, commitHash) {
     }
 }
 
-function selectBranch(branchName) {
+function triggerCompareBranches() {
+    const selA = document.getElementById('diff-ref-a');
+    const selB = document.getElementById('diff-ref-b');
+    if (!selA || !selB) return;
+
+    const refA = selA.value;
+    const refB = selB.value;
+    const labelA = selA.options[selA.selectedIndex]?.text || refA;
+    const labelB = selB.options[selB.selectedIndex]?.text || refB;
+
     switchView('DIFF');
-    document.getElementById('diff-content-area').innerHTML = '<div style="opacity:0.5; padding:40px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Inspecting branch delta...</div>';
-    post('getFileDiff', { path: branchName, isBranchComparison: true });
-    
-    const right = document.getElementById('metadata-panel');
-    right.innerHTML = `
-        <div style="margin-bottom:20px;">
-            <div style="font-size:10px; opacity:0.6; text-transform:uppercase; font-weight:bold;">Branch Context</div>
-            <h3 style="margin:5px 0; color:var(--vscode-textLink-foreground);">${escapeHtml(branchName)}</h3>
-            <p style="font-size:11px; opacity:0.7;">Viewing differences against current active branch.</p>
-            <button class="btn" style="width:100%; margin-top:10px;" onclick="post('switch', {branch: '${jsEscape(branchName)}'})">
-                <i class="codicon codicon-target"></i> Checkout this Branch
-            </button>
-        </div>
-    `;
+    const aiBox = document.getElementById('diff-ai-summary');
+    if (aiBox) aiBox.style.display = 'none';
+    document.getElementById('diff-content-area').innerHTML = '<div style="opacity:0.5; padding:40px; text-align:center; font-family:var(--vscode-font-family);"><i class="codicon codicon-sync spinner"></i> Computing diff between ' + escapeHtml(labelA) + ' and ' + escapeHtml(labelB) + '...</div>';
+    post('compareRefs', { refA, refB, labelA, labelB });
+}
+
+function selectBranch(branchName) {
+    const selA = document.getElementById('diff-ref-a');
+    const selB = document.getElementById('diff-ref-b');
+    const cur = gitData?.currentBranch;
+
+    if (selA && selB) {
+        if (branchName === cur) {
+            const other = (gitData?.branches || []).find(b => b !== cur);
+            if (other) selA.value = other;
+            selB.value = 'WORKING_TREE';
+        } else {
+            selA.value = branchName;
+            selB.value = cur || 'WORKING_TREE';
+        }
+    }
+
+    switchView('DIFF');
+    document.getElementById('diff-content-area').innerHTML = '<div style="opacity:0.5; padding:40px; text-align:center; font-family:var(--vscode-font-family);"><i class="codicon codicon-sync spinner"></i> Inspecting branch delta...</div>';
+    post('compareRefs', {
+        refA: selA ? selA.value : branchName,
+        refB: selB ? selB.value : 'WORKING_TREE',
+        labelA: selA ? selA.value : branchName,
+        labelB: selB ? (selB.value === 'WORKING_TREE' ? `Current (${cur || 'HEAD'})` : selB.value) : 'Current'
+    });
+}
+
+function renderDiffLinesHtml(diff) {
+    if (!diff || !diff.trim()) return '';
+    return diff.split('\n').map(line => {
+        let color = 'inherit';
+        let bg = 'transparent';
+        let fontWeight = 'normal';
+        if (line.startsWith('diff --git ')) {
+            color = 'var(--vscode-textLink-foreground)';
+            bg = 'rgba(0, 122, 204, 0.14)';
+            fontWeight = 'bold';
+        } else if (line.startsWith('+') && !line.startsWith('+++')) {
+            color = 'var(--vscode-charts-green)';
+            bg = 'rgba(0, 255, 0, 0.07)';
+        } else if (line.startsWith('-') && !line.startsWith('---')) {
+            color = 'var(--vscode-charts-red)';
+            bg = 'rgba(255, 0, 0, 0.07)';
+        } else if (line.startsWith('@@')) {
+            color = 'var(--vscode-charts-blue)';
+            bg = 'rgba(0, 122, 204, 0.06)';
+        }
+        return `<div style="color:${color}; background:${bg}; font-weight:${fontWeight}; padding: 1px 10px; border-bottom: 1px solid rgba(255,255,255,0.02)">${escapeHtml(line)}</div>`;
+    }).join('');
 }
 
 function renderDiff(path, diff) {
@@ -283,19 +387,127 @@ function renderDiff(path, diff) {
         container.innerHTML = '<div style="opacity:0.5; padding:40px; text-align:center;">No differences (File may be new or binary).</div>';
         return;
     }
-    
-    const lines = diff.split('\n').map(line => {
-        let color = 'inherit';
-        let bg = 'transparent';
-        let opacity = '1';
-        if (line.startsWith('+')) { color = 'var(--vscode-charts-green)'; bg = 'rgba(0,255,0,0.05)'; }
-        else if (line.startsWith('-')) { color = 'var(--vscode-charts-red)'; bg = 'rgba(255,0,0,0.05)'; }
-        else if (line.startsWith('@@')) { color = 'var(--vscode-charts-blue)'; opacity = '0.7'; }
-        
-        return `<div style="color:${color}; background:${bg}; opacity:${opacity}; padding: 0 10px; border-bottom: 1px solid rgba(255,255,255,0.02)">${escapeHtml(line)}</div>`;
-    }).join('');
 
-    container.innerHTML = `<div style="padding: 10px 0; background: var(--vscode-editor-background);">${lines}</div>`;
+    container.innerHTML = `<div style="padding: 10px 0; background: var(--vscode-editor-background);">${renderDiffLinesHtml(diff)}</div>`;
+}
+
+function renderAiCompareSummary(msg) {
+    const box = document.getElementById('diff-ai-summary');
+    const explainBtn = document.getElementById('diff-explain-ai-btn');
+    if (explainBtn) {
+        explainBtn.disabled = false;
+        explainBtn.innerHTML = '<i class="codicon codicon-sparkle"></i> Explain with AI';
+    }
+    if (!box) return;
+    box.style.display = 'block';
+    if (msg.error) {
+        box.innerHTML = `<div style="color:var(--vscode-errorForeground);"><i class="codicon codicon-error"></i> ${escapeHtml(msg.error)}</div>`;
+    } else {
+        box.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-weight:bold; color:var(--vscode-textLink-foreground);">
+                <span><i class="codicon codicon-sparkle"></i> AI Summary: What's Different</span>
+                <button class="icon-btn" onclick="document.getElementById('diff-ai-summary').style.display='none'" title="Close">&times;</button>
+            </div>
+            <div style="white-space:pre-wrap;">${escapeHtml(msg.summary || '')}</div>
+        `;
+    }
+}
+
+function renderFullDiffRange(data) {
+    switchView('DIFF');
+    const container = document.getElementById('diff-content-area');
+    const right = document.getElementById('metadata-panel');
+    const files = Array.isArray(data.files) ? data.files : [];
+    const diff = data.diff || '';
+    const targetRef = data.targetRef || 'WORKING_TREE';
+    const targetLabel = data.targetLabel || (targetRef === 'WORKING_TREE' ? `Current (${data.currentBranch || 'HEAD'})` : targetRef);
+
+    window._lastFullDiffText = diff;
+    window._lastComparisonState = { refA: data.baseRef, refB: targetRef, files, diff };
+
+    const selA = document.getElementById('diff-ref-a');
+    const selB = document.getElementById('diff-ref-b');
+    if (selA && data.baseRef && Array.from(selA.options).some(o => o.value === data.baseRef)) {
+        selA.value = data.baseRef;
+    }
+    if (selB && targetRef && Array.from(selB.options).some(o => o.value === targetRef)) {
+        selB.value = targetRef;
+    }
+
+    let added = 0;
+    let removed = 0;
+    if (diff) {
+        diff.split('\n').forEach(l => {
+            if (l.startsWith('+') && !l.startsWith('+++')) added++;
+            else if (l.startsWith('-') && !l.startsWith('---')) removed++;
+        });
+    }
+
+    const headerBar = `
+        <div style="position: sticky; top: 0; z-index: 5; background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-widget-border); padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-family: var(--vscode-font-family);">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <i class="codicon codicon-git-compare" style="color: var(--vscode-charts-blue); font-size: 16px;"></i>
+                <strong style="font-size: 13px;">Full Diff: ${escapeHtml(data.baseLabel || data.baseRef)} &rarr; ${escapeHtml(targetLabel)}</strong>
+                <span class="badge-pill badge-branch">${files.length} file${files.length === 1 ? '' : 's'}</span>
+                <span style="font-size: 11px; color: var(--vscode-charts-green); font-weight: bold;">+${added}</span>
+                <span style="font-size: 11px; color: var(--vscode-charts-red); font-weight: bold;">-${removed}</span>
+            </div>
+            <div style="display: flex; gap: 6px; align-items: center;">
+                <button class="btn btn-secondary" onclick="post('copyToClipboard', {text: window._lastFullDiffText || ''})" title="Copy full unified diff">
+                    <i class="codicon codicon-copy"></i> Copy Diff
+                </button>
+                <button class="btn btn-secondary" onclick="post('openDiffTextInEditor', {diff: window._lastFullDiffText || ''})" title="Open full diff in VS Code editor tab">
+                    <i class="codicon codicon-go-to-file"></i> Open in Editor
+                </button>
+                <button class="btn" onclick="post('compareRefs', {refA: '${jsEscape(data.baseRef)}', refB: '${jsEscape(targetRef)}', labelA: '${jsEscape(data.baseLabel || data.baseRef)}', labelB: '${jsEscape(targetLabel)}'})" title="Refresh full diff">
+                    <i class="codicon codicon-refresh"></i> Refresh
+                </button>
+            </div>
+        </div>
+    `;
+
+    const bodyHtml = diff && diff.trim()
+        ? `<div style="padding: 8px 0; background: var(--vscode-editor-background);">${renderDiffLinesHtml(diff)}</div>`
+        : `<div style="opacity:0.6; padding:40px; text-align:center; font-family: var(--vscode-font-family);">No differences detected between <strong>${escapeHtml(data.baseLabel || data.baseRef)}</strong> and <strong>${escapeHtml(targetLabel)}</strong>.</div>`;
+
+    container.innerHTML = headerBar + bodyHtml;
+
+    if (right) {
+        const fileRows = files.map(f => {
+            const safePath = jsEscape(f.path);
+            const safeBase = jsEscape(data.baseRef);
+            const safeTarget = jsEscape(targetRef);
+            return `
+            <div class="nav-item" onclick="post('getFileDiffSinceStart', {path: '${safePath}', baseRef: '${safeBase}', targetRef: '${safeTarget}'})" title="Click to view file diff">
+                <div class="file-status-badge status-${escapeHtml(f.status || 'M')}">${escapeHtml(f.status || 'M')}</div>
+                <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(f.path)}</span>
+                <div class="item-actions">
+                    <button class="icon-btn" onclick="event.stopPropagation(); post('openNativeFileDiffFromRef', {path: '${safePath}', baseRef: '${safeBase}', targetRef: '${safeTarget}'})" title="Open VS Code side-by-side diff">
+                        <i class="codicon codicon-diff"></i>
+                    </button>
+                </div>
+            </div>`;
+        }).join('');
+
+        right.innerHTML = `
+            <div style="margin-bottom: 16px;">
+                <div style="font-size:10px; opacity:0.6; text-transform:uppercase; font-weight:bold;">Comparison Range</div>
+                <div style="font-size:12px; font-weight:bold; margin-top:4px; color:var(--vscode-textLink-foreground);">${escapeHtml(data.baseLabel || data.baseRef)} &rarr; ${escapeHtml(targetLabel)}</div>
+                <button class="btn" style="width:100%; margin-top:10px;" onclick="post('compareRefs', {refA: '${jsEscape(data.baseRef)}', refB: '${jsEscape(targetRef)}', labelA: '${jsEscape(data.baseLabel || data.baseRef)}', labelB: '${jsEscape(targetLabel)}'})">
+                    <i class="codicon codicon-diff"></i> Show All Files Diff
+                </button>
+            </div>
+            <div class="nav-section" id="section-range-files">
+                <div class="nav-section-header" onclick="toggleSection('section-range-files')">
+                    <span>CHANGED FILES (${files.length})</span>
+                    <i class="codicon codicon-chevron-down"></i>
+                </div>
+                <div class="nav-content" style="max-height: 450px; overflow-y: auto; background: rgba(0,0,0,0.1); border-radius: 4px;">
+                    ${fileRows || '<div style="opacity:0.5; padding:12px; font-size:11px;">No changed files.</div>'}
+                </div>
+            </div>
+        `;
+    }
 }
 
 function renderBadges(deco) {
@@ -559,6 +771,52 @@ function setupResizer(resizerId, targetId, isRight) {
             resizer.classList.remove('dragging');
             document.body.style.cursor = 'default';
         }
+    });
+}
+
+const diffCompareBtn = document.getElementById('diff-compare-btn');
+if (diffCompareBtn) {
+    diffCompareBtn.addEventListener('click', triggerCompareBranches);
+}
+
+const diffSwapBtn = document.getElementById('diff-swap-btn');
+if (diffSwapBtn) {
+    diffSwapBtn.addEventListener('click', () => {
+        const selA = document.getElementById('diff-ref-a');
+        const selB = document.getElementById('diff-ref-b');
+        if (!selA || !selB) return;
+        const valA = selA.value;
+        const valB = selB.value;
+        if (valB !== 'WORKING_TREE' && Array.from(selA.options).some(o => o.value === valB)) {
+            selA.value = valB;
+        }
+        if (Array.from(selB.options).some(o => o.value === valA)) {
+            selB.value = valA;
+        }
+        triggerCompareBranches();
+    });
+}
+
+const diffExplainAiBtn = document.getElementById('diff-explain-ai-btn');
+if (diffExplainAiBtn) {
+    diffExplainAiBtn.addEventListener('click', () => {
+        const selA = document.getElementById('diff-ref-a');
+        const selB = document.getElementById('diff-ref-b');
+        const refA = selA ? selA.value : '';
+        const refB = selB ? selB.value : 'WORKING_TREE';
+        diffExplainAiBtn.disabled = true;
+        diffExplainAiBtn.innerHTML = '<i class="codicon codicon-sync spinner"></i> Explaining...';
+        const aiBox = document.getElementById('diff-ai-summary');
+        if (aiBox) {
+            aiBox.style.display = 'block';
+            aiBox.innerHTML = '<i class="codicon codicon-sync spinner"></i> Asking AI to explain the differences...';
+        }
+        post('explainComparisonWithAI', {
+            refA,
+            refB,
+            diff: window._lastComparisonState?.refA === refA && window._lastComparisonState?.refB === refB ? window._lastComparisonState.diff : '',
+            files: window._lastComparisonState?.refA === refA && window._lastComparisonState?.refB === refB ? window._lastComparisonState.files : []
+        });
     });
 }
 

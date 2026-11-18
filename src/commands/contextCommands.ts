@@ -537,6 +537,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.resetContextSelection', async () => {
         await services.contextManager.getContextStateProvider()?.softReset();
+        await services.discussionManager.saveLastMutedFiles([]);
         services.contextManager.clearAllCaches();
 
         ChatPanel.panels.forEach(panel => {
@@ -568,6 +569,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         const confirm = await vscode.window.showWarningMessage(vscode.l10n.t('prompt.confirmResetContext'), { modal: true }, vscode.l10n.t('label.reset'));
         if (confirm === vscode.l10n.t('label.reset')) {
             await services.contextManager.getContextStateProvider()?.fullReset();
+            await services.discussionManager.saveLastMutedFiles([]);
             services.contextManager.clearAllCaches();
 
             ChatPanel.panels.forEach(panel => {
@@ -609,6 +611,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
 
         if (isReplace) {
             await provider?.softReset();
+            await services.discussionManager.saveLastMutedFiles(mutedFiles);
             for (const panel of openPanels) {
                 const disc = panel.getCurrentDiscussion();
                 if (disc) {

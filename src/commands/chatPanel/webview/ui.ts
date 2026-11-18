@@ -1,5 +1,5 @@
 import { dom, state, vscode } from "./dom.js";
-import { isScrolledToBottom, applySearchReplace, normalizeAiderContent, parseAiderHunks } from "./utils.js";
+import { isScrolledToBottom, applySearchReplace, normalizeAiderContent, parseAiderHunks, createFilePatternMatcher } from "./utils.js";
 import { processThinkTags } from "./messageRenderer.js";
 import DOMPurify from 'dompurify';
 
@@ -1297,6 +1297,7 @@ export function setCalculatingTokens(isCalculating: boolean, text?: string) {
 
 
 export function setGeneratingState(isGenerating: boolean, statusText?: string, showRaiseHand: boolean = false, buttonLabel?: string) {
+    state.isGenerating = isGenerating;
     // Ensure project loader is cleared if we are starting a real generation
     if (isGenerating) hideProjectLoader();
 
@@ -3031,12 +3032,17 @@ export function renderFileSearchTree(container: HTMLElement, files: string[]) {
 /**
  * Filters the skills tree based on a search query.
  */
-export function filterSkillsTree(query: string) {
-    const container = dom.skillsTreeContainer;
+export function filterSkillsTree(
+    query: string,
+    targetContainer?: HTMLElement | null,
+    caseInputEl?: HTMLInputElement | null,
+    regexInputEl?: HTMLInputElement | null
+) {
+    const container = targetContainer || dom.skillsTreeContainer;
     if (!container) return;
 
-    const useRegex = (document.getElementById('skills-search-regex') as HTMLInputElement)?.checked;
-    const matchCase = (document.getElementById('skills-search-case') as HTMLInputElement)?.checked;
+    const useRegex = (regexInputEl ?? (document.getElementById('skills-search-regex') as HTMLInputElement))?.checked;
+    const matchCase = (caseInputEl ?? (document.getElementById('skills-search-case') as HTMLInputElement))?.checked;
     const searchTerm = query.trim();
 
     const items = container.querySelectorAll('.skills-tree-item');
@@ -4014,6 +4020,7 @@ export function updateContextFileUsage(filePath: string, tokens: number) {
 export function refreshVisibilityPresetsDropdowns(presets?: Record<string, string[]>) {
     const rawSaved = presets || (state as any).visibilityPresets || JSON.parse(localStorage.getItem('lollms_saved_mute_patterns') || '{}');
     const hudSelect = document.getElementById('hud-visibility-preset-select') as HTMLSelectElement;
+    const wizardPresetSelect = document.getElementById('wizard-visibility-preset-select') as HTMLSelectElement;
     const modalSelect = document.getElementById('modal-visibility-preset-select') as HTMLSelectElement;
     const bulkSelect = document.getElementById('bulk-mute-pattern-select') as HTMLSelectElement;
 
@@ -4030,10 +4037,39 @@ export function refreshVisibilityPresetsDropdowns(presets?: Record<string, strin
     };
 
     populate(hudSelect, '📁 Preset...');
+    populate(wizardPresetSelect, '📁 Preset...');
     populate(modalSelect, '-- Select Saved Preset --');
     populate(bulkSelect, '-- Apply Saved Pattern --');
 }
 (window as any).refreshVisibilityPresetsDropdowns = refreshVisibilityPresetsDropdowns;
+
+export function updateWizardSkillsCount() {
+    const container = document.getElementById('wizard-skills-tree-container');
+    const badge = document.getElementById('wizard-tab-skills-count');
+    if (!container || !badge) return;
+
+    const activeIds = new Set<string>();
+    container.querySelectorAll('.skill-node input.skill-discussion-checkbox:checked, .skill-node input.skill-project-checkbox:checked').forEach((cb: any) => {
+        if (cb.value) activeIds.add(cb.value);
+    });
+    badge.textContent = String(activeIds.size);
+}
+
+export function renderWizardSkillsTab(skillsTree: any, discussionSkills: string[] = [], projectSkills: string[] = []) {
+    const container = document.getElementById('wizard-skills-tree-container');
+    if (!container) return;
+
+    container.innerHTML = '';
+    if (!skillsTree || !skillsTree.children || skillsTree.children.every((c: any) => !c.children || c.children.length === 0)) {
+        container.innerHTML = '<div style="padding: 30px; text-align: center; opacity: 0.6; font-size: 11px;">No saved skills found in your library.</div>';
+        updateWizardSkillsCount();
+        return;
+    }
+
+    renderSkillsTree(container, skillsTree, discussionSkills, projectSkills);
+    container.addEventListener('change', () => updateWizardSkillsCount());
+    updateWizardSkillsCount();
+}
 
 export interface GovernorCandidateFile {
     path: string;
@@ -4860,11 +4896,12 @@ export function renderGovernorFileList() {
     if (!listEl) return;
 
     const files = governorStudioState.candidateFiles;
-    const filter = (governorStudioState.searchFilter || '').toLowerCase().trim();
+    const filter = (governorStudioState.searchFilter || '').trim();
     const mutedSet = governorStudioState.mutedSet;
 
+    const matcher = createFilePatternMatcher(filter);
     const filtered = filter
-        ? files.filter(f => f.path.toLowerCase().includes(filter) || f.fileName.toLowerCase().includes(filter))
+        ? files.filter(f => matcher(f.path, f.fileName))
         : files;
 
     if (filtered.length === 0) {
@@ -5367,6 +5404,54 @@ export let wizardCandidateFiles: WizardCandidateFile[] = [];
 export let wizardMutedSet: Set<string> = new Set<string>();
 export let wizardStagedImages: { name: string; data: string }[] = [];
 (window as any).wizardStagedImages = wizardStagedImages;
+(window as any).wizardMutedSet = wizardMutedSet;
+
+let wizardFileListRenderSeq = 0;
+
+export function areWizardPathsEqual(pathA: string, pathB: string): boolean {
+    if (!pathA || !pathB) return false;
+    const cleanA = pathA.replace(/\\/g, '/').toLowerCase().trim().replace(/^\.?\/+/, '');
+    const cleanB = pathB.replace(/\\/g, '/').toLowerCase().trim().replace(/^\.?\/+/, '');
+    if (cleanA === cleanB) return true;
+    if (cleanA.includes('/') && !cleanB.includes('/')) {
+        const partsA = cleanA.split('/');
+        return partsA[partsA.length - 1] === cleanB && partsA.slice(1).join('/') === cleanB;
+    }
+    if (cleanB.includes('/') && !cleanA.includes('/')) {
+        const partsB = cleanB.split('/');
+        return partsB[partsB.length - 1] === cleanA && partsB.slice(1).join('/') === cleanA;
+    }
+    return false;
+}
+
+export function getCanonicalWizardMutedList(): string[] {
+    const out: string[] = [];
+    wizardMutedSet.forEach(rawNorm => {
+        const cand = wizardCandidateFiles.find(f => areWizardPathsEqual(f.path, rawNorm));
+        const val = cand ? cand.path : rawNorm;
+        if (!out.some(existing => areWizardPathsEqual(existing, val))) {
+            out.push(val);
+        }
+    });
+    return out;
+}
+
+export function setWizardFilesMuted(paths: string[], mute: boolean): void {
+    for (const p of paths) {
+        const clean = p.replace(/\\/g, '/').toLowerCase().trim();
+        if (!clean) continue;
+        for (const existing of Array.from(wizardMutedSet)) {
+            if (areWizardPathsEqual(existing, clean)) {
+                wizardMutedSet.delete(existing);
+            }
+        }
+        if (mute) {
+            wizardMutedSet.add(clean);
+        }
+    }
+    state.wizardMutedFiles = getCanonicalWizardMutedList();
+    (window as any).wizardMutedSet = wizardMutedSet;
+}
 
 export function renderWizardStagedImages() {
     const previewArea = document.getElementById('wizard-image-preview-area');
@@ -5412,7 +5497,7 @@ export function updateWizardContextBar() {
     let mutedCount = 0;
 
     wizardCandidateFiles.forEach(f => {
-        const isMuted = wizardMutedSet.has(f.path.toLowerCase().trim());
+        const isMuted = Array.from(wizardMutedSet).some(m => areWizardPathsEqual(m, f.path));
         if (isMuted) {
             mutedCount++;
         } else {
@@ -5529,274 +5614,121 @@ export function updateWizardContextBar() {
         const tokStr = activeFilesTokens >= 1000 ? `${(activeFilesTokens / 1000).toFixed(1)}k` : `${activeFilesTokens}`;
         filesLoadLabel.textContent = `~${tokStr} tok active`;
     }
+
+    const tabCountEl = document.getElementById('wizard-tab-files-count');
+    if (tabCountEl) {
+        tabCountEl.textContent = `${activeCount}/${wizardCandidateFiles.length}`;
+    }
 }
 (window as any).updateWizardContextBar = updateWizardContextBar;
 
-export function renderWizardFileList(searchQuery: string = '') {
-    const listEl = document.getElementById('wizard-files-list');
-    if (!listEl) return;
+export function renderWizardFileList(searchQuery?: string) {
+    const host = document.getElementById('wizard-files-panel-host');
+    if (!host) return;
 
-    const files = wizardCandidateFiles;
-    const cleanQ = searchQuery.toLowerCase().trim();
+    const effectiveQuery = searchQuery !== undefined ? searchQuery : ((state as any).wizardFileFilterQuery || '');
+    (state as any).wizardFileFilterQuery = effectiveQuery;
+    const sortOrder = (state as any).wizardFileSortOrder || 'visible-first';
+    const isBulk = !!(state as any).isWizardInlineBulkMode;
+    const renderSeq = ++wizardFileListRenderSeq;
 
-    const filtered = cleanQ
-        ? files.filter(f => f.path.toLowerCase().includes(cleanQ) || f.fileName.toLowerCase().includes(cleanQ))
-        : files;
+    import('./messageRenderer.js').then(m => {
+        if (renderSeq !== wizardFileListRenderSeq) return;
+        const mutedList = getCanonicalWizardMutedList();
+        const filesHtml = m.ContextPresenter.renderFileList(
+            wizardCandidateFiles,
+            "No candidate files in context. Use Add File or Power Search above.",
+            false,
+            state.fileTokensMap || {},
+            sortOrder,
+            mutedList,
+            { isInlineBulkMode: isBulk }
+        );
 
-    if (filtered.length === 0) {
-        listEl.innerHTML = '<div style="padding: 20px; opacity: 0.6; text-align: center; font-size: 11px;">No candidate files found matching filter.</div>';
-        updateWizardContextBar();
-        return;
-    }
+        host.innerHTML = m.ContextPresenter.renderFilesPanelHtml({
+            idPrefix: 'wizard',
+            filesCount: wizardCandidateFiles.length,
+            filesHtml,
+            sortOrder,
+            isInlineBulkMode: isBulk,
+            filterQuery: effectiveQuery,
+            showLibrarianBtn: false
+        });
 
-    const sortOrder = (state as any).wizardFileSortOrder || (document.getElementById('wizard-files-sort-select') as HTMLSelectElement)?.value || 'visible-first';
+        refreshVisibilityPresetsDropdowns();
 
-    // Synchronize select and cycle button icon
-    const sortSelect = document.getElementById('wizard-files-sort-select') as HTMLSelectElement;
-    if (sortSelect && sortSelect.value !== sortOrder) {
-        sortSelect.value = sortOrder;
-    }
-    const iconEl = document.getElementById('wizard-files-sort-icon');
-    if (iconEl) {
-        const iconMap: Record<string, string> = {
-            'tree': 'codicon-folder-opened',
-            'visible-first': 'codicon-eye',
-            'muted-first': 'codicon-eye-closed',
-            'heavy-to-light': 'codicon-graph-line',
-            'light-to-heavy': 'codicon-graph-line',
-            'name': 'codicon-sort-alphabetically',
-            'modified': 'codicon-history'
-        };
-        iconEl.className = `codicon ${iconMap[sortOrder] || 'codicon-eye'}`;
-    }
-
-    const renderFileRow = (f: WizardCandidateFile) => {
-        const isMuted = wizardMutedSet.has(f.path.toLowerCase().trim());
-        const tokStr = f.tokens >= 1000 ? `${(f.tokens / 1000).toFixed(1)}k` : `${f.tokens}`;
-        const icon = isMuted ? 'codicon-eye-closed' : 'codicon-check';
-        const color = isMuted ? 'var(--vscode-charts-orange)' : 'var(--vscode-charts-green)';
-
-        let formattedBytes = `${f.bytes} B`;
-        if (f.bytes >= 1024 * 1024) formattedBytes = `${(f.bytes / (1024 * 1024)).toFixed(1)} MB`;
-        else if (f.bytes >= 1024) formattedBytes = `${(f.bytes / 1024).toFixed(1)} KB`;
-
-        return `
-        <div class="wizard-file-row ${isMuted ? 'is-muted' : 'is-active'}" data-path="${f.path}">
-            <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;">
-                <i class="codicon ${icon}" style="color: ${color}; flex-shrink: 0; font-size: 13px;"></i>
-                <div style="min-width: 0; flex: 1;">
-                    <div class="wizard-file-title" style="font-weight: 600; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${f.path}">${f.fileName}</div>
-                    ${f.dirName ? `<div style="font-size: 9px; opacity: 0.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${f.dirName}</div>` : ''}
-                </div>
-            </div>
-            <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
-                <span class="file-token-badge ${isMuted ? 'weight-muted' : 'weight-light'}">${isMuted ? `${formattedBytes} [MUTED]` : `${formattedBytes} (~${tokStr} tok)`}</span>
-                <button type="button" class="code-action-btn secondary-btn wizard-row-toggle-btn" data-path="${f.path}" style="height: 20px; font-size: 9px; padding: 0 6px;">
-                    ${isMuted ? 'Reveal' : 'Mute'}
-                </button>
-            </div>
-        </div>`;
-    };
-
-    // ── 1. BY FOLDER (TREE VIEW) ──────────────────────────────────────────
-    if (sortOrder === 'tree') {
-        interface WizardTreeDir {
-            name: string;
-            fullPath: string;
-            subDirs: Map<string, WizardTreeDir>;
-            files: WizardCandidateFile[];
-        }
-
-        const rootDir: WizardTreeDir = {
-            name: '',
-            fullPath: '',
-            subDirs: new Map(),
-            files: []
+        const syncWizardMute = (filePath: string, isMutingNow: boolean) => {
+            setWizardFilesMuted([filePath], isMutingNow);
+            updateWizardContextBar();
         };
 
-        filtered.forEach(item => {
-            const parts = item.path.split('/');
-            if (parts.length === 1) {
-                rootDir.files.push(item);
-            } else {
-                let curr = rootDir;
-                for (let i = 0; i < parts.length - 1; i++) {
-                    const seg = parts[i];
-                    if (!curr.subDirs.has(seg)) {
-                        curr.subDirs.set(seg, {
-                            name: seg,
-                            fullPath: parts.slice(0, i + 1).join('/'),
-                            subDirs: new Map(),
-                            files: []
-                        });
+        m.ContextBinder.bindFilesPanel(host, {
+            filterQuery: effectiveQuery,
+            sortOrder,
+            getMutedFiles: () => getCanonicalWizardMutedList(),
+            onFilterChange: (q) => { (state as any).wizardFileFilterQuery = q; },
+            onSortChange: (newOrder) => {
+                (state as any).wizardFileSortOrder = newOrder;
+                try { localStorage.setItem('lollms_wizard_file_sort_order', newOrder); } catch {}
+                renderWizardFileList();
+            },
+            onToggleInlineBulk: () => {
+                (state as any).isWizardInlineBulkMode = !(state as any).isWizardInlineBulkMode;
+                renderWizardFileList();
+            },
+            onApplyPreset: (presetName) => {
+                vscode.postMessage({ command: 'applyVisibilityPreset', name: presetName, caller: 'wizard' });
+            },
+            onToggleMuteFile: (filePath, isMutingNow) => {
+                syncWizardMute(filePath, isMutingNow);
+            },
+            onBulkMuteFolder: (paths, isUnmuting) => {
+                setWizardFilesMuted(paths, !isUnmuting);
+                updateWizardContextBar();
+            },
+            onBulkMute: (paths) => {
+                setWizardFilesMuted(paths, true);
+                renderWizardFileList();
+            },
+            onBulkUnmute: (paths) => {
+                setWizardFilesMuted(paths, false);
+                renderWizardFileList();
+            },
+            onBulkRemove: (paths) => {
+                for (let i = wizardCandidateFiles.length - 1; i >= 0; i--) {
+                    if (paths.some(p => areWizardPathsEqual(wizardCandidateFiles[i].path, p))) {
+                        wizardCandidateFiles.splice(i, 1);
                     }
-                    curr = curr.subDirs.get(seg)!;
                 }
-                curr.files.push(item);
-            }
-        });
-
-        const renderTreeDir = (dir: WizardTreeDir): string => {
-            let html = '';
-            const sortedSubDirs = Array.from(dir.subDirs.values()).sort((a, b) => a.name.localeCompare(b.name));
-
-            sortedSubDirs.forEach(sub => {
-                const getAllSubFiles = (d: WizardTreeDir): WizardCandidateFile[] => {
-                    return [...d.files, ...Array.from(d.subDirs.values()).flatMap(getAllSubFiles)];
-                };
-                const allSubFiles = getAllSubFiles(sub);
-                const totalTokens = allSubFiles.reduce((sum, f) => sum + f.tokens, 0);
-                const tokDisplay = totalTokens >= 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : `${totalTokens}`;
-
-                const subPaths = allSubFiles.map(f => f.path);
-                const mutedCount = allSubFiles.filter(f => wizardMutedSet.has(f.path.toLowerCase().trim())).length;
-                const visibleCount = allSubFiles.length - mutedCount;
-                const isAllMuted = allSubFiles.length > 0 && mutedCount === allSubFiles.length;
-                const isSomeMuted = mutedCount > 0 && !isAllMuted;
-
-                const folderMuteClass = isAllMuted ? 'is-muted' : (isSomeMuted ? 'is-partially-muted' : 'is-active');
-                const folderMuteIcon = isAllMuted ? 'codicon-eye-closed' : 'codicon-eye';
-                const folderAction = isAllMuted || isSomeMuted ? 'unmute' : 'mute';
-                const folderMuteTitle = isAllMuted 
-                    ? `All ${allSubFiles.length} files muted in "${sub.name}" (Click to reveal all)`
-                    : (isSomeMuted
-                        ? `${visibleCount} of ${allSubFiles.length} visible (${mutedCount} muted) in "${sub.name}". Click to reveal all.`
-                        : `All ${allSubFiles.length} files visible in "${sub.name}" (Click to mute all)`);
-
-                const encodedSubPaths = encodeURIComponent(JSON.stringify(subPaths));
-                const hasSubfolders = sub.subDirs.size > 0;
-
-                html += `
-                <details class="context-tree-folder ${isAllMuted ? 'folder-muted' : (isSomeMuted ? 'folder-partially-muted' : '')}" open style="margin-bottom: 4px; border: 1px solid var(--vscode-widget-border); border-radius: 4px; background: rgba(0,0,0,0.06);" data-folder="${sub.fullPath}">
-                    <summary style="padding: 3px 6px; cursor: pointer; font-size: 11px; font-weight: 700; display: flex; align-items: center; gap: 6px; user-select: none; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 3px;">
-                        <button type="button" class="toggle-mute-folder-btn wizard-folder-mute-btn ${folderMuteClass}" data-paths="${encodedSubPaths}" data-action="${folderAction}" title="${folderMuteTitle}" style="background: transparent; border: none; cursor: pointer; padding: 2px 4px; display: inline-flex; align-items: center; justify-content: center;">
-                            <span class="codicon ${folderMuteIcon}"></span>
-                        </button>
-                        ${hasSubfolders ? `
-                        <button type="button" class="collapse-folder-children-btn wizard-collapse-folder-btn" data-folder="${sub.fullPath}" title="Collapse/Expand child folders in ${sub.name}" style="background: transparent; border: none; color: var(--vscode-icon-foreground); padding: 1px 3px; border-radius: 3px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; opacity: 0.75; flex-shrink: 0;">
-                            <span class="codicon codicon-collapse-all" style="font-size: 12px;"></span>
-                        </button>` : ''}
-                        <span class="codicon codicon-folder"></span>
-                        <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; ${isAllMuted ? 'text-decoration: line-through; opacity: 0.75;' : ''}">${sub.name}</span>
-                        <span style="font-size: 9px; opacity: 0.6; font-weight: normal;">${allSubFiles.length} file${allSubFiles.length === 1 ? '' : 's'}${isSomeMuted ? ` (${mutedCount} muted)` : ''}</span>
-                        <span class="file-token-badge ${isAllMuted ? 'weight-muted' : 'weight-light'}">${isAllMuted ? `~${tokDisplay} tok [MUTED]` : `~${tokDisplay} tok`}</span>
-                    </summary>
-                    <div class="context-tree-folder-body" style="padding: 4px 2px 4px 8px; border-left: 1px dashed var(--vscode-tree-indentGuidesStroke, rgba(255,255,255,0.15)); margin-left: 6px; display: flex; flex-direction: column; gap: 3px;">
-                        ${renderTreeDir(sub)}
-                        ${sub.files.sort((a, b) => a.fileName.localeCompare(b.fileName)).map(renderFileRow).join('')}
-                    </div>
-                </details>`;
-            });
-
-            return html;
-        };
-
-        const rootTreeHtml = renderTreeDir(rootDir);
-        const rootFilesHtml = rootDir.files.sort((a, b) => a.fileName.localeCompare(b.fileName)).map(renderFileRow).join('');
-
-        listEl.innerHTML = `
-            <div style="display: flex; flex-direction: column; gap: 3px;">
-                ${rootTreeHtml}
-                ${rootFilesHtml}
-            </div>
-        `;
-
-        // Wire folder-level mute buttons inside wizard tree view
-        listEl.querySelectorAll('.wizard-folder-mute-btn').forEach((btn: any) => {
-            btn.onclick = (e: MouseEvent) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const rawPaths = btn.dataset.paths;
-                const action = btn.dataset.action;
-                if (rawPaths) {
-                    try {
-                        const paths: string[] = JSON.parse(decodeURIComponent(rawPaths));
-                        const isUnmuting = action === 'unmute';
-                        paths.forEach(p => {
-                            const clean = p.toLowerCase().trim();
-                            if (isUnmuting) {
-                                wizardMutedSet.delete(clean);
-                            } else {
-                                wizardMutedSet.add(clean);
-                            }
-                        });
-                        state.wizardMutedFiles = Array.from(wizardMutedSet);
-                        renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
-                    } catch {}
+                setWizardFilesMuted(paths, false);
+                vscode.postMessage({ command: 'bulkRemoveFiles', paths });
+                renderWizardFileList();
+            },
+            onRemoveSingle: (filePath) => {
+                for (let i = wizardCandidateFiles.length - 1; i >= 0; i--) {
+                    if (areWizardPathsEqual(wizardCandidateFiles[i].path, filePath)) {
+                        wizardCandidateFiles.splice(i, 1);
+                    }
                 }
-            };
-        });
-
-        // Wire folder collapse children buttons inside wizard tree view
-        listEl.querySelectorAll('.wizard-collapse-folder-btn').forEach((btn: any) => {
-            btn.onclick = (e: MouseEvent) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const folderDetails = btn.closest('.context-tree-folder');
-                if (!folderDetails) return;
-                const childFolders = folderDetails.querySelectorAll('.context-tree-folder-body .context-tree-folder');
-                if (childFolders.length === 0) return;
-
-                const anyOpen = Array.from(childFolders).some((d: any) => d.open);
-                childFolders.forEach((d: any) => { d.open = !anyOpen; });
-                const icon = btn.querySelector('.codicon');
-                if (icon) icon.className = `codicon ${anyOpen ? 'codicon-expand-all' : 'codicon-collapse-all'}`;
-                btn.title = anyOpen
-                    ? `Expand all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`
-                    : `Collapse all subfolders inside ${btn.getAttribute('data-folder') || 'folder'}`;
-            };
-        });
-    }
-    // ── 2. FLAT SORTED MODES ──────────────────────────────────────────────
-    else {
-        const sorted = [...filtered].sort((a, b) => {
-            const isAMuted = wizardMutedSet.has(a.path.toLowerCase().trim());
-            const isBMuted = wizardMutedSet.has(b.path.toLowerCase().trim());
-
-            if (sortOrder === 'visible-first') {
-                const diff = Number(isAMuted) - Number(isBMuted);
-                return diff || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName);
-            } else if (sortOrder === 'muted-first') {
-                const diff = Number(isBMuted) - Number(isAMuted);
-                return diff || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName);
-            } else if (sortOrder === 'heavy-to-light') {
-                return (b.bytes - a.bytes) || (b.tokens - a.tokens) || a.fileName.localeCompare(b.fileName);
-            } else if (sortOrder === 'light-to-heavy') {
-                return (a.bytes - b.bytes) || (a.tokens - b.tokens) || a.fileName.localeCompare(b.fileName);
-            } else if (sortOrder === 'name') {
-                return a.fileName.localeCompare(b.fileName) || a.path.localeCompare(b.path);
-            } else if (sortOrder === 'modified') {
-                return (b.mtime - a.mtime) || (b.bytes - a.bytes) || a.fileName.localeCompare(b.fileName);
+                setWizardFilesMuted([filePath], false);
+                vscode.postMessage({ command: 'removeFileFromContext', path: filePath });
+                renderWizardFileList();
+            },
+            onToggleStructure: (filePath, targetState) => {
+                vscode.postMessage({ command: 'toggleFileStructure', path: filePath, targetState });
+                updateWizardContextBar();
             }
-            return 0;
         });
 
-        listEl.innerHTML = sorted.map(renderFileRow).join('');
-    }
-
-    // Attach row click listeners to toggle mute/reveal
-    listEl.querySelectorAll('.wizard-file-row').forEach((row: any) => {
-        row.onclick = () => {
-            const filePath = row.dataset.path;
-            if (!filePath) return;
-            const clean = filePath.toLowerCase().trim();
-            if (wizardMutedSet.has(clean)) {
-                wizardMutedSet.delete(clean);
-            } else {
-                wizardMutedSet.add(clean);
-            }
-            state.wizardMutedFiles = Array.from(wizardMutedSet);
-            renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
-        };
+        updateWizardContextBar();
     });
-
-    updateWizardContextBar();
 }
 (window as any).renderWizardFileList = renderWizardFileList;
 
 export function openNewDiscussionWizard(
     selections: (string | { name: string; fileName: string; fileCount?: number })[] = [],
-    initialFiles?: any[]
+    initialFiles?: any[],
+    initialMutedFiles?: string[]
 ) {
     if (!dom.wizardModal) return;
 
@@ -5834,14 +5766,37 @@ export function openNewDiscussionWizard(
         wizardSortSelect.value = savedSortOrder;
     }
 
-    const initialMuted = state.wizardMutedFiles || [];
-    wizardMutedSet = new Set(initialMuted.map(m => m.replace(/\\/g, '/').toLowerCase().trim()));
-    state.wizardMutedFiles = Array.from(wizardMutedSet);
+    const resolvedMuted = Array.isArray(initialMutedFiles)
+        ? initialMutedFiles
+        : (state.mutedFiles || state.lastContextData?.mutedFiles || []);
+    if (Array.isArray(initialMutedFiles)) {
+        state.mutedFiles = [...initialMutedFiles];
+    }
+    wizardMutedSet.clear();
+    resolvedMuted.forEach((m: string) => {
+        const clean = String(m || '').replace(/\\/g, '/').toLowerCase().trim();
+        if (clean) wizardMutedSet.add(clean);
+    });
+    state.wizardMutedFiles = getCanonicalWizardMutedList();
+    (window as any).wizardMutedSet = wizardMutedSet;
+    (state as any).wizardFileFilterQuery = '';
 
-    const filterInput = document.getElementById('wizard-file-filter-input') as HTMLInputElement;
-    if (filterInput) filterInput.value = '';
+    // Reset active wizard tab to Prompt
+    document.querySelectorAll('.wizard-tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.wizard-tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelector('.wizard-tab-btn[data-tab="tab-wizard-prompt"]')?.classList.add('active');
+    document.getElementById('tab-wizard-prompt')?.classList.add('active');
 
     renderWizardFileList('');
+
+    // 0.4 Load Skills Library into Wizard Skills Tab
+    const wizardSkillsContainer = document.getElementById('wizard-skills-tree-container');
+    if (wizardSkillsContainer) {
+        wizardSkillsContainer.innerHTML = '<div style="padding: 30px; text-align: center; opacity: 0.7; font-size: 11px;"><div class="spinner" style="margin-bottom: 8px;"></div><div>Loading skills library...</div></div>';
+    }
+    const wizardSkillsSearch = document.getElementById('wizard-skills-search-input') as HTMLInputElement;
+    if (wizardSkillsSearch) wizardSkillsSearch.value = '';
+    vscode.postMessage({ command: 'requestWizardSkills' });
 
     // 0.5 Populate Target Model Select in Wizard
     const wizardModelSelect = document.getElementById('wizard-model') as HTMLSelectElement;
@@ -5993,8 +5948,7 @@ export function openNewDiscussionWizard(
         wizardFastModeCheck.checked = state.capabilities?.fastMode !== false;
     }
 
-    // 6. Clear prior governor states for wizard
-    state.wizardMutedFiles = undefined;
+    // 6. Reset governor caller context for wizard
     state.governorCaller = 'chat';
     const govStatus = document.getElementById('wizard-governor-status');
     if (govStatus) govStatus.style.display = 'none';

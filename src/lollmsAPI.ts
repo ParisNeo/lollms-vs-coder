@@ -1160,6 +1160,7 @@ export class LollmsAPI {
                     .replace(/<div\s+class=["']waiting-animation["']>[\s\S]*?<\/div>/gi, '')
                     .replace(/<details\s+class=["']lollms-form-block["']>[\s\S]*?<\/details>/gi, '')
                     .replace(/<lollms_tool\b[^>]*>[\s\S]*?<\/lollms_tool>/gi, '')
+                    .replace(/<agent_git_diff\b[^>]*\/?>/gi, '')
                     .trim();
             };
 

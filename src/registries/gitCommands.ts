@@ -458,6 +458,18 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showGitDashboard', () => {
         GitDashboardPanel.createOrShow(services.extensionUri, services.gitIntegration);
     }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showGitDiffFromStart', async (args?: { baseRef?: string; label?: string }) => {
+        const folder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
+        if (!folder) {
+            vscode.window.showErrorMessage("No workspace folder found.");
+            return;
+        }
+        const gitState = ChatPanel.currentPanel?.getCurrentDiscussion()?.gitState;
+        const baseRef = args?.baseRef || gitState?.startCommitHash || gitState?.originalBranch;
+        const label = args?.label || (gitState?.originalBranch ? `${gitState.originalBranch} (${(gitState.startCommitHash || '').substring(0, 7) || 'start'})` : undefined);
+        await GitDashboardPanel.createOrShowWithFullDiff(services.extensionUri, services.gitIntegration, baseRef, label);
+    }));
     // Command: Compare File Versions & Restore (Across all branches)
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showFileGitHistory', async (arg?: any) => {
         try {

@@ -21,16 +21,22 @@ export const readFileTool: ToolDefinition = {
             return { success: false, output: "Error: No active workspace folder." };
         }
         
+        const authorizedExternal = await env.contextManager.resolveAuthorizedExternalFile(rawPath);
         const pathCheck = AgentSecurityGuard.validateWorkspacePath(rawPath, env.workspaceRoot);
-        if (!pathCheck.valid) {
+        if (!pathCheck.valid && !authorizedExternal) {
             return { success: false, output: `🛑 SECURITY VIOLATION: ${pathCheck.reason}` };
         }
 
         let filePath = rawPath.trim();
-        if (filePath.startsWith('/') || filePath.startsWith('\\')) filePath = filePath.substring(1);
-
-        const res = await env.contextManager.resolveWorkspaceFromPath(filePath);
-        const fileUri = res ? res.uri : vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
+        let fileUri: vscode.Uri;
+        if (authorizedExternal) {
+            fileUri = authorizedExternal.uri;
+            filePath = authorizedExternal.path;
+        } else {
+            if (filePath.startsWith('/') || filePath.startsWith('\\')) filePath = filePath.substring(1);
+            const res = await env.contextManager.resolveWorkspaceFromPath(filePath);
+            fileUri = res ? res.uri : vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
+        }
         let retries = 3;
         let lastError = "";
 

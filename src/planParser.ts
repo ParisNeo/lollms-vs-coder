@@ -287,7 +287,7 @@ Turns wasted on repetition or broken tools directly decrease your mission score 
     }
 
     private inferWorkerScope(action: string, params: any, description: string): import('./tools/tool').WorkerScope {
-        if (['read_file', 'read_files', 'search_files', 'grep_search', 'read_code_graph', 'query_architecture', 'peek_at_context', 'smart_scout'].includes(action)) {
+        if (['read_external_file', 'read_file', 'read_files', 'search_files', 'grep_search', 'read_code_graph', 'query_architecture', 'peek_at_context', 'smart_scout'].includes(action)) {
             const files = params?.path ? [params.path] : (params?.paths || []);
             return {
                 role: 'scout',

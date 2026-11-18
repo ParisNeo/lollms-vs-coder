@@ -428,6 +428,7 @@ export class ContextLibrarian {
         keptFiles: string[];
         mutedFiles: string[];
         addedFiles: string[];
+        fileModes?: Array<{ path: string; mode: 'full' | 'structure' | 'symbols'; symbols?: string[] }>;
         rationale: string;
         advice?: string;
         signatures?: string;
@@ -661,7 +662,7 @@ ${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-
             onRoundProgress
         });
 
-        const { decision, workerAdvice, signatures: rawSignatures, governorReport, discoverySteps, addedFiles, multiPartPlan } = negotiationResult;
+        const { decision, workerAdvice, signatures: rawSignatures, governorReport, discoverySteps, addedFiles, multiPartPlan, fileModes } = negotiationResult;
 
         const keptFiles: string[] = [];
         const mutedFiles: string[] = [];
@@ -772,6 +773,7 @@ ${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-
             keptFiles,
             mutedFiles,
             addedFiles: addedFiles || newlyAddedFiles,
+            fileModes,
             rationale: findingsBody,
             advice: workerAdvice,
             signatures,
@@ -1078,6 +1080,7 @@ ${stepsHtml ? `<div style="display:flex; flex-direction:column; gap:4px; margin-
         governorReport?: string;
         discoverySteps?: { type: string; label: string; detail?: string }[];
         addedFiles?: string[];
+        fileModes?: Array<{ path: string; mode: 'full' | 'structure' | 'symbols'; symbols?: string[] }>;
         multiPartPlan?: MultiPartPlan;
         roundsUsed?: number;
     }> {
@@ -2196,9 +2199,43 @@ Analyze the requirements. Use your discovery tools (<read_definitions>, <show_sy
                     }
                 }
 
+                const allModePaths = new Set<string>();
+                const fileModes: Array<{ path: string; mode: 'full' | 'structure' | 'symbols'; symbols?: string[] }> = [];
+                const resolveToWorkspacePath = (rawPath: string) => {
+                    const norm = rawPath.replace(/\\/g, '/').replace(/^['"`]|['"`]$/g, '').trim();
+                    return allWorkspaceFiles.find(wf => this.pathsMatch(wf, norm)) || norm;
+                };
+
+                for (const sf of symbolFiles) {
+                    const rp = resolveToWorkspacePath(sf.path);
+                    const syms = Array.from(new Set(sf.symbols.filter(Boolean)));
+                    if (syms.length > 0 && !allModePaths.has(rp.toLowerCase())) {
+                        allModePaths.add(rp.toLowerCase());
+                        fileModes.push({ path: rp, mode: 'symbols', symbols: syms });
+                    }
+                }
+                for (const sp of structurePaths) {
+                    const rp = resolveToWorkspacePath(sp);
+                    if (!allModePaths.has(rp.toLowerCase())) {
+                        allModePaths.add(rp.toLowerCase());
+                        fileModes.push({ path: rp, mode: 'structure' });
+                    }
+                }
+                for (const ep of resolvedEditPaths) {
+                    if (!allModePaths.has(ep.toLowerCase())) {
+                        allModePaths.add(ep.toLowerCase());
+                        fileModes.push({ path: ep, mode: 'full' });
+                    }
+                }
+
                 fileCandidates.forEach(c => {
-                    if (resolvedEditPaths.some(ep => this.pathsMatch(ep, c.path))) {
+                    const hasSymbolMode = fileModes.some(fm => fm.mode === 'symbols' && this.pathsMatch(fm.path, c.path));
+                    const hasStructureMode = fileModes.some(fm => fm.mode === 'structure' && this.pathsMatch(fm.path, c.path));
+                    if (resolvedEditPaths.some(ep => this.pathsMatch(ep, c.path)) || hasSymbolMode) {
                         c.role = 'edit';
+                        c.keep = true;
+                    } else if (hasStructureMode) {
+                        c.role = 'context';
                         c.keep = true;
                     } else if (resolvedContextPaths.some(cp => this.pathsMatch(cp, c.path))) {
                         c.role = 'context';
@@ -2276,6 +2313,7 @@ Analyze the requirements. Use your discovery tools (<read_definitions>, <show_sy
                     governorReport: extractedReport || extractedSignatures,
                     discoverySteps,
                     addedFiles: newlyAddedFiles,
+                    fileModes,
                     multiPartPlan,
                     roundsUsed: currentRound
                 };
@@ -2763,10 +2801,10 @@ Target files relevant to this task: [${targetFiles.join(', ')}]
 ${codeSnippets ? `### CODE EXTRACTS:\n${codeSnippets.substring(0, 5000)}\n\n` : ''}
 
 TASK:
-Produce a concise, technical architectural directive for the Coder addressing "${prompt}":
-1. **Target Subsystem**: Identify the exact component or styling/theme logic involved.
-2. **Required Modifications**: Specify what needs to be added, changed, or fixed in [${targetFiles.join(', ')}].
-3. **DO NOT dump lists of unrelated files or function tables**. Focus purely on the task at hand.`;
+Produce concise, factual architectural findings explaining how the existing code works for "${prompt}":
+1. **Target Subsystem**: Identify the exact components, classes, and symbols involved.
+2. **Current Mechanics & Contracts**: Explain how the relevant functions/methods currently operate, their inputs/outputs, and call flow.
+3. **DO NOT write TODOs, action items, or implementation instructions in findings**—focus strictly on factual discoveries.`;
 
         try {
             const resp = await lollmsAPI.sendChat([

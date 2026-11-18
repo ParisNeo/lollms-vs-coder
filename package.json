@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.93",
+  "version": "1.0.97",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -168,6 +168,11 @@
         "command": "lollms-vs-coder.gitManager",
         "title": "Lollms: Git Manager",
         "icon": "$(history)"
+      },
+      {
+        "command": "lollms-vs-coder.showGitDiffFromStart",
+        "title": "Lollms: Show Full Diff vs Starting State",
+        "icon": "$(diff)"
       },
       {
         "command": "lollmsApi.recreateClient",

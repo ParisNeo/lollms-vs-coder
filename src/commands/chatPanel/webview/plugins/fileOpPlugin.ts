@@ -19,12 +19,15 @@ export interface ExtractedFileBlock {
     isClosed: boolean;
 }
 
+let _lastNormIn = '';
+let _lastNormOut = '';
+
 export function normalizePseudoFileBlocks(text: string): string {
     if (!text || typeof text !== 'string') return '';
+    if (text === _lastNormIn) return _lastNormOut;
     let result = text;
 
-    // Ensure <file ...> tags that accidentally follow prose on the same line (outside backticks) start on their own line
-    result = result.replace(/^([^\r\n`]+?)[ \t]*(<file\s+(?=[^>]*\bpath=["'][^"']+["'])[^>]*>)/gim, '$1\n\n$2');
+
 
     const replaceTagRegex = /<replace\b[^>]*>[\s\r\n]*<search\b[^>]*>([\s\S]*?)<\/search>[\s\r\n]*<(?:replace_with|replace)\b[^>]*>([\s\S]*?)<\/(?:replace_with|replace)>[\s\r\n]*<\/replace>/gi;
     
@@ -116,6 +119,8 @@ export function normalizePseudoFileBlocks(text: string): string {
         return fullMatch;
     });
 
+    _lastNormIn = text;
+    _lastNormOut = result;
     return result;
 }
 
@@ -167,94 +172,262 @@ export function getFileContextStatus(filePath: string): 'muted' | 'structure_onl
 }
 (window as any).getFileContextStatus = getFileContextStatus;
 
+function findMatchingInlineBacktickEnd(line: string, startInLine: number): number {
+    let tickCount = 0;
+    while (startInLine + tickCount < line.length && line[startInLine + tickCount] === '`') {
+        tickCount++;
+    }
+    if (tickCount === 0) return -1;
+    let i = startInLine + tickCount;
+    while (i < line.length) {
+        if (line[i] === '`') {
+            let closeCount = 0;
+            while (i + closeCount < line.length && line[i + closeCount] === '`') {
+                closeCount++;
+            }
+            if (closeCount === tickCount) {
+                return i + closeCount;
+            }
+            i += closeCount;
+        } else {
+            i++;
+        }
+    }
+    return -1;
+}
+
+let _lastExtractIn = '';
+let _lastExtractOut: ExtractedFileBlock[] = [];
+
 export function extractFileBlocks(text: string): ExtractedFileBlock[] {
+    if (!text || typeof text !== 'string') return [];
+    if (text === _lastExtractIn) return _lastExtractOut;
     const blocks: ExtractedFileBlock[] = [];
-    if (!text || typeof text !== 'string') return blocks;
 
     const targetText = normalizePseudoFileBlocks(text);
-    const openTagRegex = /^[ \t]*<file\s+([^>]*?)>/gim;
-    let match: RegExpExecArray | null;
+    const len = targetText.length;
 
-    while ((match = openTagRegex.exec(targetText)) !== null) {
-        let start = match.index;
-        const attrStr = match[1] || "";
-        const bodyStart = match.index + match[0].length;
+    let activeFence: { char: string; len: number } | null = null;
+    let pendingWrapperFence: { start: number; char: string; len: number } | null = null;
+    let openBlock: {
+        start: number;
+        bodyStart: number;
+        attrStr: string;
+        wrapperFence?: { start: number; char: string; len: number };
+    } | null = null;
 
+    const explicitPathAttrRegex = /\b(?:path|file_path|filepath|file)\s*=\s*(?:["'][^"']+["']|[^\s>]+)/i;
+
+    const isValidOpenTag = (attrStr: string, isAtLineStart: boolean): boolean => {
         const fileAttrs = parseFileTagAttributes(attrStr);
         if (!fileAttrs || !fileAttrs.path || !isValidFilePath(fileAttrs.path)) {
-            continue;
+            return false;
         }
+        if (!isAtLineStart && !explicitPathAttrRegex.test(attrStr)) {
+            return false;
+        }
+        return true;
+    };
 
-        let isClosed = false;
-        let end = targetText.length;
-        let bodyEnd = targetText.length;
-
-        // Strictly match line-start tags to prevent inline code strings (e.g. `<file path="...">`) from corrupting depth
-        const tagFinder = /(?:^|\r?\n)[ \t]*(?:(<\/file>[ \t]*(?:\r?\n|$))|(<file\s+[^>]*?>))/gim;
-        tagFinder.lastIndex = bodyStart;
-
-        let innerMatch: RegExpExecArray | null;
-        while ((innerMatch = tagFinder.exec(targetText)) !== null) {
-            const closeTag = innerMatch[1];
-            const nextOpenTag = innerMatch[2];
-
-            if (closeTag) {
-                isClosed = true;
-                bodyEnd = innerMatch.index;
-                end = innerMatch.index + innerMatch[0].length;
-                break;
-            } else if (nextOpenTag) {
-                const nextAttrs = parseFileTagAttributes(nextOpenTag);
-                if (nextAttrs && nextAttrs.path && isValidFilePath(nextAttrs.path)) {
-                    isClosed = true;
-                    bodyEnd = innerMatch.index;
-                    end = innerMatch.index;
-                    break;
-                }
+    const nextNonEmptyLineStartsWithValidFile = (fromOffset: number): boolean => {
+        let p = fromOffset;
+        while (p < len) {
+            let nl = targetText.indexOf('\n', p);
+            if (nl === -1) nl = len;
+            const line = targetText.slice(p, nl).replace(/\r$/, '');
+            if (line.trim().length > 0) {
+                const fm = line.match(/^[ \t]*<file\s+([^>]*?)>/i);
+                return !!(fm && isValidOpenTag(fm[1] || '', true));
             }
+            p = nl + 1;
         }
+        return false;
+    };
 
-        const textBefore = targetText.substring(0, start);
-        const fenceBeforeMatch = textBefore.match(/(?:^|\n)[ \t]*(`{3,}|~{3,})(?:[a-zA-Z0-9_\-]+)?[ \t]*\r?\n[ \t]*$/);
-
-        let fenceLen = 0;
-        let fenceChar = '';
-        if (fenceBeforeMatch) {
-            fenceChar = fenceBeforeMatch[1][0];
-            fenceLen = fenceBeforeMatch[1].length;
-            const matchOffsetInBefore = textBefore.length - fenceBeforeMatch[0].length;
-            const newlineIndex = fenceBeforeMatch[0].indexOf('\n');
-            start = newlineIndex !== -1 ? matchOffsetInBefore + newlineIndex + 1 : matchOffsetInBefore;
-        }
-
-        if (fenceLen > 0 && isClosed) {
-            const textAfter = targetText.substring(end);
-            const fenceAfterRegex = new RegExp(`^[ \\t]*(?:\\r?\\n)[ \\t]*${fenceChar}{${fenceLen},}[ \\t]*(?=\\r?\\n|$)`);
+    const finalizeClosedBlock = (bodyEnd: number, closeEnd: number) => {
+        if (!openBlock) return;
+        let end = closeEnd;
+        if (openBlock.wrapperFence) {
+            const { char, len: fLen } = openBlock.wrapperFence;
+            const textAfter = targetText.slice(end);
+            const fenceAfterRegex = new RegExp(`^[ \\t]*(?:\\r?\\n)[ \\t]*${char}{${fLen},}[ \\t]*(?=\\r?\\n|$)`);
             const fenceAfterMatch = textAfter.match(fenceAfterRegex);
             if (fenceAfterMatch) {
                 end += fenceAfterMatch[0].length;
             }
         }
-
-        let rawContent = targetText.substring(bodyStart, bodyEnd);
+        let rawContent = targetText.slice(openBlock.bodyStart, bodyEnd);
         if (/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s.test(rawContent.trim())) {
             rawContent = rawContent.trim().replace(/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s, '$1');
         }
-
-        const fullMatch = targetText.substring(start, end);
-
         blocks.push({
-            attrStr,
+            attrStr: openBlock.attrStr,
             rawContent,
-            fullMatch,
-            start,
+            fullMatch: targetText.slice(openBlock.start, end),
+            start: openBlock.start,
             end,
-            isClosed
+            isClosed: true
         });
+        openBlock = null;
+    };
 
-        openTagRegex.lastIndex = end;
+    let lineStart = 0;
+    while (lineStart < len) {
+        let nlIdx = targetText.indexOf('\n', lineStart);
+        let lineEnd = nlIdx === -1 ? len : nlIdx;
+        if (lineEnd > lineStart && targetText[lineEnd - 1] === '\r') {
+            lineEnd--;
+        }
+        const nextLineStart = nlIdx === -1 ? len : nlIdx + 1;
+        const lineText = targetText.slice(lineStart, lineEnd);
+
+        if (activeFence) {
+            const closeFenceMatch = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+            if (closeFenceMatch && closeFenceMatch[1][0] === activeFence.char && closeFenceMatch[1].length >= activeFence.len) {
+                const trailing = closeFenceMatch[2] || '';
+                if (trailing.trim() === '') {
+                    activeFence = null;
+                    lineStart = nextLineStart;
+                    continue;
+                }
+                if (openBlock && /^[ \t]*<\/file>/i.test(trailing)) {
+                    const colOffset = lineText.indexOf(trailing);
+                    activeFence = null;
+                    let col = colOffset;
+                    while (col < lineText.length) {
+                        if (lineText[col] === '`') {
+                            const endCol = findMatchingInlineBacktickEnd(lineText, col);
+                            if (endCol !== -1) { col = endCol; continue; }
+                        }
+                        if (openBlock && lineText[col] === '<' && /^<\/file>/i.test(lineText.slice(col))) {
+                            finalizeClosedBlock(lineStart + col, lineStart + col + 7);
+                            col += 7;
+                            continue;
+                        }
+                        col++;
+                    }
+                    lineStart = nextLineStart;
+                    continue;
+                }
+            }
+            lineStart = nextLineStart;
+            continue;
+        }
+
+        const openFenceMatch = lineText.match(/^[ \t]*(`{3,}|~{3,})(.*)$/);
+        if (openFenceMatch) {
+            const fMarker = openFenceMatch[1];
+            const fChar = fMarker[0];
+            const fLen = fMarker.length;
+            const fTrailing = openFenceMatch[2] || '';
+            const isSingleLineInline = fChar === '`' && fTrailing.includes(fMarker);
+
+            if (!isSingleLineInline) {
+                if (!openBlock && nextNonEmptyLineStartsWithValidFile(nextLineStart)) {
+                    pendingWrapperFence = { start: lineStart, char: fChar, len: fLen };
+                } else {
+                    pendingWrapperFence = null;
+                    activeFence = { char: fChar, len: fLen };
+                }
+                lineStart = nextLineStart;
+                continue;
+            }
+        }
+
+        let col = 0;
+        let seenNonWhitespace = false;
+        while (col < lineText.length) {
+            const ch = lineText[col];
+            if (ch === '`') {
+                seenNonWhitespace = true;
+                pendingWrapperFence = null;
+                const endCol = findMatchingInlineBacktickEnd(lineText, col);
+                if (endCol !== -1) {
+                    col = endCol;
+                    continue;
+                }
+                col++;
+                continue;
+            }
+
+            if (ch === '<') {
+                const slice = lineText.slice(col);
+
+                if (openBlock) {
+                    if (/^<\/file>/i.test(slice)) {
+                        const closeEnd = lineStart + col + 7;
+                        let adjustedEnd = closeEnd;
+                        if (!seenNonWhitespace) {
+                            const trailingAfterClose = lineText.slice(col + 7);
+                            if (trailingAfterClose.trim() === '') {
+                                adjustedEnd = nextLineStart;
+                            }
+                        }
+                        finalizeClosedBlock(lineStart + col, adjustedEnd);
+                        col += 7;
+                        seenNonWhitespace = true;
+                        continue;
+                    }
+
+                    if (!seenNonWhitespace) {
+                        const nextOpenMatch = slice.match(/^<file\s+([^>]*?)>/i);
+                        if (nextOpenMatch && isValidOpenTag(nextOpenMatch[1] || '', true)) {
+                            finalizeClosedBlock(lineStart + col, lineStart + col);
+                            openBlock = {
+                                start: lineStart + col,
+                                bodyStart: lineStart + col + nextOpenMatch[0].length,
+                                attrStr: nextOpenMatch[1] || ''
+                            };
+                            col += nextOpenMatch[0].length;
+                            seenNonWhitespace = true;
+                            continue;
+                        }
+                    }
+                } else {
+                    const openMatch = slice.match(/^<file\s+([^>]*?)>/i);
+                    if (openMatch && isValidOpenTag(openMatch[1] || '', !seenNonWhitespace)) {
+                        const wrapper = !seenNonWhitespace ? pendingWrapperFence || undefined : undefined;
+                        openBlock = {
+                            start: wrapper ? wrapper.start : lineStart + col,
+                            bodyStart: lineStart + col + openMatch[0].length,
+                            attrStr: openMatch[1] || '',
+                            wrapperFence: wrapper
+                        };
+                        pendingWrapperFence = null;
+                        col += openMatch[0].length;
+                        seenNonWhitespace = true;
+                        continue;
+                    }
+                }
+            }
+
+            if (ch !== ' ' && ch !== '\t') {
+                seenNonWhitespace = true;
+                pendingWrapperFence = null;
+            }
+            col++;
+        }
+
+        lineStart = nextLineStart;
     }
 
+    if (openBlock) {
+        let rawContent = targetText.slice(openBlock.bodyStart);
+        if (/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s.test(rawContent.trim())) {
+            rawContent = rawContent.trim().replace(/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/s, '$1');
+        }
+        blocks.push({
+            attrStr: openBlock.attrStr,
+            rawContent,
+            fullMatch: targetText.slice(openBlock.start),
+            start: openBlock.start,
+            end: len,
+            isClosed: false
+        });
+    }
+
+    _lastExtractIn = text;
+    _lastExtractOut = blocks;
     return blocks;
 }
 
@@ -1677,6 +1850,191 @@ export const peekFilesPlugin: TagPlugin = {
                     btnEl.disabled = false;
                     btnEl.innerHTML = '<i class="codicon codicon-error"></i> Failed';
                 }
+            };
+        });
+    }
+};
+
+export function extractRunTestsTargets(attrStr: string, inner: string): string[] {
+    const targets: string[] = [];
+    const addT = (raw: string) => {
+        if (!raw) return;
+        const clean = raw.trim().replace(/^['"`]|['"`]$/g, '').replace(/^-\s*/, '').trim();
+        if (clean && !clean.startsWith('<') && !targets.includes(clean)) {
+            targets.push(clean);
+        }
+    };
+
+    const attrRegex = /(?:targets|files|paths|path|file)=["']([^"']+)["']/gi;
+    let aMatch: RegExpExecArray | null;
+    while ((aMatch = attrRegex.exec(attrStr)) !== null) {
+        const val = aMatch[1].trim();
+        if (val.startsWith('[') && val.endsWith(']')) {
+            try {
+                const parsed = JSON.parse(val.replace(/'/g, '"'));
+                if (Array.isArray(parsed)) parsed.forEach(p => addT(String(p)));
+            } catch {
+                val.slice(1, -1).split(/[\r\n,]+/).forEach(addT);
+            }
+        } else {
+            val.split(/[\r\n,;]+/).forEach(addT);
+        }
+    }
+
+    if (inner && inner.trim()) {
+        inner.split(/[\r\n,;]+/).forEach(addT);
+    }
+
+    return targets;
+}
+
+export const runTestsPlugin: TagPlugin = {
+    id: 'run_tests',
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<run_tests\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/run_tests>)?)/gim,
+    render: (match, context) => {
+        const attrStr = match[1] || "";
+        const inner = (match[2] || "").trim();
+        const targets = extractRunTestsTargets(attrStr, inner);
+        if (targets.length === 0) return null;
+
+        const runnerMatch = attrStr.match(/\brunner=["']([^"']+)["']/i);
+        const filterMatch = attrStr.match(/\bfilter=["']([^"']+)["']/i);
+        const runner = runnerMatch ? runnerMatch[1].trim() : 'auto';
+        const filter = filterMatch ? filterMatch[1].trim() : undefined;
+
+        const blockId = `run-tests-${context.messageId}-${Math.random().toString(36).substring(7)}`;
+        const payload = { targets, runner, filter };
+        const encodedPayload = encodeURIComponent(JSON.stringify(payload));
+
+        return `
+        <div class="file-operation-block assistant-executable-card run-tests-card" id="${blockId}" data-action-type="run_tests" data-payload="${encodedPayload}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-green); border-radius: 8px; margin: 10px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border); flex-wrap: wrap; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                    <span class="codicon codicon-beaker" style="color: var(--vscode-charts-green);"></span>
+                    <span>Run Tests Request (${targets.join(', ')})</span>
+                    <span class="file-token-badge weight-light" style="font-size: 9px; padding: 1px 6px;">${runner}</span>
+                    ${filter ? `<span class="file-token-badge weight-medium" style="font-size: 9px; padding: 1px 6px;">filter: ${filter}</span>` : ''}
+                </div>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                    <button class="code-action-btn secondary-btn run-tests-local-btn" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                        <i class="codicon codicon-terminal"></i> Run Tests
+                    </button>
+                    <button class="code-action-btn apply-btn run-tests-reprompt-btn" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold; background: var(--vscode-charts-green) !important; color: white !important;">
+                        <i class="codicon codicon-play"></i> Run &amp; Reprompt
+                    </button>
+                </div>
+            </div>
+            <div class="expansion-body" style="padding: 8px 12px; font-size: 11px;">
+                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                    ${targets.map(t => `<span class="file-token-badge weight-light" style="font-family: var(--vscode-editor-font-family);"><i class="codicon codicon-beaker"></i> ${t}</span>`).join('')}
+                </div>
+                <div class="run-tests-output-preview" style="display:none; margin-top:8px; max-height:260px; overflow-y:auto; font-family:var(--vscode-editor-font-family); font-size:11px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); border-radius:4px; padding:8px; white-space:pre-wrap;"></div>
+            </div>
+        </div>`;
+    },
+    initialize: (container, context) => {
+        container.querySelectorAll('.run-tests-local-btn, .run-tests-reprompt-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const encoded = btnEl.dataset.payload;
+                const blockId = btnEl.dataset.blockId;
+                const isReprompt = btnEl.classList.contains('run-tests-reprompt-btn');
+                if (!encoded) return;
+
+                try {
+                    const payload = JSON.parse(decodeURIComponent(encoded));
+                    const card = blockId ? document.getElementById(blockId) : btnEl.closest('.run-tests-card');
+                    card?.querySelectorAll('.run-tests-local-btn, .run-tests-reprompt-btn').forEach((b: any) => {
+                        b.disabled = true;
+                        b.style.opacity = '0.6';
+                    });
+                    btnEl.innerHTML = `<div class="spinner"></div> Running Tests...`;
+
+                    context.vscode.postMessage({
+                        command: 'runTestsOnly',
+                        targets: payload.targets,
+                        runner: payload.runner,
+                        filter: payload.filter,
+                        blockId,
+                        reprompt: isReprompt
+                    });
+                } catch {}
+            };
+        });
+    }
+};
+
+export const readExternalFilePlugin: TagPlugin = {
+    id: 'read_external_file',
+    tagPattern: /(?:^[ \t]*|(?<=>)[ \t]*)<read_external_file\b([^>]*?)(?:\/>|>(?:([\s\S]*?)<\/read_external_file>)?)/gim,
+    render: (match) => {
+        const attrStr = match[1] || "";
+        const rawInner = (match[2] || "").trim();
+        const pMatch = attrStr.match(/(?:path|file|file_path|filePath)=["']([^"']+)["']/i);
+        const startMatch = attrStr.match(/start_line=["']?(\d+)["']?/i);
+        const endMatch = attrStr.match(/end_line=["']?(\d+)["']?/i);
+        const reqPath = (pMatch ? pMatch[1] : rawInner.split(/[\r\n]+/)[0] || '').replace(/^['"]|['"]$/g, '').trim();
+
+        const blockId = `read-ext-${Date.now().toString(36)}-${Math.random().toString(36).substring(7)}`;
+        const payload = {
+            path: reqPath || undefined,
+            start_line: startMatch ? parseInt(startMatch[1], 10) : undefined,
+            end_line: endMatch ? parseInt(endMatch[1], 10) : undefined
+        };
+        const encodedPayload = encodeURIComponent(JSON.stringify(payload));
+        const label = reqPath || 'List All Linked External Files';
+
+        return `
+        <div class="file-operation-block assistant-executable-card read-external-card" id="${blockId}" data-action-type="read_external_file" data-payload="${encodedPayload}" style="background-color: var(--vscode-editor-inactiveSelectionBackground); border: 1.5px solid var(--vscode-charts-teal, #00b4d8); border-radius: 8px; margin: 10px 0; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+            <div class="file-operation-header" style="padding: 8px 12px; background: var(--vscode-sideBarSectionHeader-background); display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--vscode-widget-border); flex-wrap: wrap; gap: 6px;">
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                    <span class="codicon codicon-link" style="color: var(--vscode-charts-teal, #00b4d8);"></span>
+                    <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">External Reference Request: <code>${label}</code></span>
+                </div>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                    <button class="code-action-btn secondary-btn read-ext-local-btn" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 8px;">
+                        <i class="codicon codicon-eye"></i> View
+                    </button>
+                    <button class="code-action-btn apply-btn read-ext-reprompt-btn" data-payload="${encodedPayload}" data-block-id="${blockId}" style="height: 22px; font-size: 10px; padding: 0 10px; font-weight: bold; background: var(--vscode-charts-teal, #00b4d8) !important; color: white !important;">
+                        <i class="codicon codicon-play"></i> Read &amp; Reprompt
+                    </button>
+                </div>
+            </div>
+            <div class="expansion-body" style="padding: 8px 12px; font-size: 11px;">
+                <div>The AI requested read-only access to linked external reference: <code>${label}</code></div>
+                <div class="read-ext-output-preview" style="display:none; margin-top:8px; max-height:260px; overflow-y:auto; font-family:var(--vscode-editor-font-family); font-size:11px; background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border); border-radius:4px; padding:8px; white-space:pre-wrap;"></div>
+            </div>
+        </div>`;
+    },
+    initialize: (container, context) => {
+        container.querySelectorAll('.read-ext-local-btn, .read-ext-reprompt-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                const btnEl = btn as HTMLButtonElement;
+                const encoded = btnEl.dataset.payload;
+                const blockId = btnEl.dataset.blockId;
+                const isReprompt = btnEl.classList.contains('read-ext-reprompt-btn');
+                if (!encoded) return;
+
+                try {
+                    const payload = JSON.parse(decodeURIComponent(encoded));
+                    const card = blockId ? document.getElementById(blockId) : btnEl.closest('.read-external-card');
+                    card?.querySelectorAll('.read-ext-local-btn, .read-ext-reprompt-btn').forEach((b: any) => {
+                        b.disabled = true;
+                        b.style.opacity = '0.6';
+                    });
+                    btnEl.innerHTML = `<div class="spinner"></div> Reading...`;
+
+                    context.vscode.postMessage({
+                        command: 'readExternalFileOnly',
+                        path: payload.path,
+                        start_line: payload.start_line,
+                        end_line: payload.end_line,
+                        blockId,
+                        reprompt: isReprompt
+                    });
+                } catch {}
             };
         });
     }

@@ -194,8 +194,16 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
                     textSnippet = rawStr.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 50);
                 } catch {}
 
+                if (isSystem && rawContentStr) {
+                    const sysSnippet = rawContentStr.replace(/<[^>]+>/g, '').replace(/[*_`#]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 90);
+                    if (sysSnippet) {
+                        textSnippet = sysSnippet;
+                    }
+                }
+
                 if (textSnippet && !isLibrarian && fileCount === 0) {
-                    pillHtml += `<span style="opacity:0.65; font-style:italic; font-size:10.5px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">"${textSnippet}..."</span>`;
+                    const maxW = isSystem ? '420px' : '220px';
+                    pillHtml += `<span style="opacity:0.7; font-style:italic; font-size:10.5px; max-width:${maxW}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">"${textSnippet}..."</span>`;
                 }
 
                 previewPill.innerHTML = pillHtml;
@@ -307,21 +315,26 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
 
         // Attach toggleCollapse to wrapper for bottom button access
         (wrapper as any).toggleCollapse = (forceCollapse?: boolean, scrollIntoView: boolean = true) => {
+            wrapper.dataset.userToggledCollapse = 'true';
             updateCollapseState(forceCollapse, scrollIntoView);
         };
+        (wrapper as any)._updateCollapseState = updateCollapseState;
 
         collapseBtn.onclick = (e) => {
             e.stopPropagation();
+            wrapper.dataset.userToggledCollapse = 'true';
             updateCollapseState();
         };
 
         actions.querySelector('.collapse-msg-action-btn')?.addEventListener('click', (e) => {
             e.stopPropagation();
+            wrapper.dataset.userToggledCollapse = 'true';
             updateCollapseState();
         });
 
         header.ondblclick = (e) => {
             if ((e.target as HTMLElement).closest('button')) return;
+            wrapper.dataset.userToggledCollapse = 'true';
             updateCollapseState();
         };
 
@@ -391,4 +404,14 @@ export function renderAssistantMessage(messageId: string, rawContent: any, isFin
     }
 
     renderMessageContent(messageId, rawContent, isFinal);
+
+    // Collapse System Alerts by default unless manually expanded by the user or containing an interactive form
+    const hasInteractiveForm = /<(?:lollms_form|form)\b/i.test(rawContentStr);
+    if (isSystem && !hasInteractiveForm && wrapper.dataset.userToggledCollapse !== 'true') {
+        if (typeof (wrapper as any)._updateCollapseState === 'function') {
+            (wrapper as any)._updateCollapseState(true, false);
+        } else {
+            wrapper.classList.add('collapsed-message');
+        }
+    }
 }

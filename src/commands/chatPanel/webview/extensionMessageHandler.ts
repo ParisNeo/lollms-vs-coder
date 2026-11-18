@@ -759,11 +759,34 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         const stream = state.streamingMessages[msgId];
                         if (stream) {
                             if (stream.timer) clearTimeout(stream.timer);
-                            const buffer = stream.buffer || '';
+                            let buffer = stream.buffer || '';
                             delete state.streamingMessages[msgId];
+
+                            const lastSearchIdx = buffer.lastIndexOf('<<<<<<< SEARCH');
+                            const lastReplaceIdx = buffer.lastIndexOf('>>>>>>> REPLACE');
+                            if (lastSearchIdx !== -1 && lastSearchIdx > lastReplaceIdx) {
+                                const lastSepIdx = buffer.lastIndexOf('=======');
+                                if (lastSepIdx < lastSearchIdx) {
+                                    buffer += '\n=======\n';
+                                }
+                                buffer += '\n>>>>>>> REPLACE';
+                            }
+
+                            const fileOpenCount = (buffer.match(/<file\b[^>]*>/gi) || []).length;
+                            const fileCloseCount = (buffer.match(/<\/file>/gi) || []).length;
+                            if (fileOpenCount > fileCloseCount) {
+                                buffer += '\n';
+                            }
+
+                            const fenceMatches = buffer.match(/```/g) || [];
+                            if (fenceMatches.length % 2 !== 0) {
+                                buffer += '\n```';
+                            }
+
                             renderMessageContent(msgId, buffer, true);
                         }
                     });
+                    syncExpansionBlocks();
 
                     // Remove any leftover "Streaming..." badges and re-enable apply buttons
                     document.querySelectorAll('.file-stream-indicator').forEach(el => el.remove());
@@ -864,10 +887,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             const mtime = (typeof f === 'object' && f.mtime) ? f.mtime : (mtimeMap[rawPath] || 0);
                             ui.wizardCandidateFiles.push({ path: rawPath, fileName, dirName, tokens, bytes, mtime });
                         });
-                        ui.renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+                        ui.renderWizardFileList();
                     });
                 }
-                updateBadges();
+                // updateContext() already refreshes badges cleanly
                 // Only schedule background sync if generation is not actively streaming
                 if (!state.isGenerating) {
                     if ((window as any)._syncTimer) clearTimeout((window as any)._syncTimer);
@@ -919,6 +942,26 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         import('./messageRenderer.js').then(mRenderer => {
                             mRenderer.updateContext();
                         });
+
+                        // Also sync Wizard Files & Context tab if open
+                        if (dom.wizardModal && dom.wizardModal.classList.contains('visible') && Array.isArray(files)) {
+                            import('./ui.js').then(ui => {
+                                const mtimeMap = (state as any).fileMtimeMap || {};
+                                ui.wizardCandidateFiles.length = 0;
+                                files.forEach((f: any) => {
+                                    const rawPath = typeof f === 'string' ? f : (f.path || '');
+                                    if (!rawPath) return;
+                                    const normPath = rawPath.replace(/\\/g, '/');
+                                    const fileName = normPath.split('/').pop() || normPath;
+                                    const dirName = normPath.includes('/') ? normPath.substring(0, normPath.lastIndexOf('/')) : '';
+                                    const tokens = (typeof f === 'object' && f.tokens) ? f.tokens : (state.fileTokensMap?.[rawPath] || Math.ceil((f.bytes || 1000) / 3.5));
+                                    const bytes = (typeof f === 'object' && f.bytes) ? f.bytes : Math.round(tokens * 3.5);
+                                    const mtime = (typeof f === 'object' && f.mtime) ? f.mtime : (mtimeMap[rawPath] || 0);
+                                    ui.wizardCandidateFiles.push({ path: rawPath, fileName, dirName, tokens, bytes, mtime });
+                                });
+                                ui.renderWizardFileList();
+                            });
+                        }
                     } else if (action === 'lazy_load_file') {
                         const registry = (window as any).lazyFilesRegistry;
                         if (registry && registry.has(filePath)) {
@@ -999,7 +1042,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
 
             case 'openNewDiscussionWizard':
-                openNewDiscussionWizard(message.selections || [], message.files);
+                openNewDiscussionWizard(message.selections || [], message.files, message.mutedFiles);
                 break;
             case 'openGovernorFilterModal':
                 import('./ui.js').then(ui => ui.openGovernorFilterModal());
@@ -1160,8 +1203,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             });
                         }
                         ui.wizardMutedSet.clear();
-                        (message.mutedFiles || []).forEach((m: string) => ui.wizardMutedSet.add(m.replace(/\\/g, '/').toLowerCase().trim()));
-                        ui.renderWizardFileList((document.getElementById('wizard-file-filter-input') as HTMLInputElement)?.value || '');
+                        ui.setWizardFilesMuted(message.mutedFiles || [], true);
+                        ui.renderWizardFileList();
                     });
                     const statusEl = document.getElementById('wizard-governor-status');
                     const statusText = document.getElementById('wizard-governor-status-text');
@@ -1192,6 +1235,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 {
                     if (message.caller === 'wizard') {
                         state.wizardMutedFiles = Array.isArray(message.mutedFiles) ? [...message.mutedFiles] : [];
+                        import('./ui.js').then(ui => {
+                            ui.wizardMutedSet.clear();
+                            ui.setWizardFilesMuted(state.wizardMutedFiles || [], true);
+                            ui.renderWizardFileList();
+                        });
                         const statusEl = document.getElementById('wizard-governor-status');
                         const statusText = document.getElementById('wizard-governor-status-text');
                         if (statusEl && statusText) {
@@ -1270,6 +1318,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         state.isInspectorEnabled = message.isInspectorEnabled;
                     }
                     state.appliedState = message.appliedState || {};
+                    if (Array.isArray(message.mutedFiles)) {
+                        state.mutedFiles = [...message.mutedFiles];
+                    }
                     if (message.agentProfiles) {
                         state.agentProfiles = message.agentProfiles;
                     }
@@ -1299,7 +1350,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (Array.isArray(message.messages)) {
                         message.messages.forEach((msg: any) => {
                             try {
-                                addMessage(msg, true);
+                                addMessage(msg, true, { skipScroll: true });
                                 if ((msg.role === 'user' || msg.role === 'assistant') && (!msg.id || !msg.id.startsWith('attachment_'))) {
                                     hasChatContent = true;
                                 }
@@ -2480,6 +2531,52 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             }
+            case 'runTestsResult': {
+                const { blockId, success, output } = message;
+                const card = blockId ? document.getElementById(blockId) : null;
+                if (card) {
+                    card.querySelectorAll('.run-tests-local-btn, .run-tests-reprompt-btn').forEach((b: any) => {
+                        b.disabled = false;
+                        b.style.opacity = '1';
+                    });
+                    const localBtn = card.querySelector('.run-tests-local-btn') as HTMLButtonElement | null;
+                    const repromptBtn = card.querySelector('.run-tests-reprompt-btn') as HTMLButtonElement | null;
+                    if (localBtn) localBtn.innerHTML = `<i class="codicon ${success ? 'codicon-check' : 'codicon-error'}"></i> ${success ? 'Passed' : 'Failed (Rerun)'}`;
+                    if (repromptBtn) repromptBtn.innerHTML = `<i class="codicon codicon-play"></i> Run &amp; Reprompt`;
+                    card.classList.toggle('status-completed', !!success);
+                    const preview = card.querySelector('.run-tests-output-preview') as HTMLElement | null;
+                    if (preview) {
+                        preview.style.display = 'block';
+                        preview.innerHTML = (window as any).DOMPurify
+                            ? (window as any).DOMPurify.sanitize((window as any).marked.parse(output || ''))
+                            : (output || '');
+                    }
+                }
+                break;
+            }
+            case 'readExternalFileResult': {
+                const { blockId, success, output } = message;
+                const card = blockId ? document.getElementById(blockId) : null;
+                if (card) {
+                    card.querySelectorAll('.read-ext-local-btn, .read-ext-reprompt-btn').forEach((b: any) => {
+                        b.disabled = false;
+                        b.style.opacity = '1';
+                    });
+                    const localBtn = card.querySelector('.read-ext-local-btn') as HTMLButtonElement | null;
+                    const repromptBtn = card.querySelector('.read-ext-reprompt-btn') as HTMLButtonElement | null;
+                    if (localBtn) localBtn.innerHTML = `<i class="codicon ${success ? 'codicon-check' : 'codicon-error'}"></i> ${success ? 'Loaded' : 'Failed'}`;
+                    if (repromptBtn) repromptBtn.innerHTML = `<i class="codicon codicon-play"></i> Read &amp; Reprompt`;
+                    card.classList.toggle('status-completed', !!success);
+                    const preview = card.querySelector('.read-ext-output-preview') as HTMLElement | null;
+                    if (preview) {
+                        preview.style.display = 'block';
+                        preview.innerHTML = (window as any).DOMPurify
+                            ? (window as any).DOMPurify.sanitize((window as any).marked.parse(output || ''))
+                            : (output || '');
+                    }
+                }
+                break;
+            }
             case 'fileSymbolsData':
                 import('./ui.js').then(ui => ui.handleFileSymbolsData(message));
                 break;
@@ -2782,6 +2879,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         message.isAssistantMode
                     );
                 }
+                break;
+            case 'wizardSkillsData':
+                import('./ui.js').then(ui => {
+                    ui.renderWizardSkillsTab(
+                        message.skillsTree,
+                        message.discussionSkills || [],
+                        message.projectSkills || []
+                    );
+                });
                 break;
             case 'showSkillsModal':
                 if (dom.skillsModal) {
